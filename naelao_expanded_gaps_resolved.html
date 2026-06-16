@@ -36512,6 +36512,1510 @@ interface LaunchpadMiniAGIConfig {
 
     </div><!-- /gap-resolutions -->
 
+
+
+    <!-- =====================================================================
+         APPENDIX B — NEW GAP RESOLUTIONS (N01–N30)
+         30 additional technical gaps discovered in deep audit, June 2026
+         ===================================================================== -->
+    <div id="gap-resolutions-b" style="margin-top:80px;padding-top:40px;border-top:2px solid var(--bl);">
+
+      <h1 style="font-family:'Fraunces',serif;font-size:52px;font-weight:700;color:var(--hd);letter-spacing:-.03em;line-height:1.05;margin-bottom:16px;">
+        Appendix B — Deep Audit Gap Resolutions
+      </h1>
+      <p class="lead">30 additional technical gaps discovered in a second-pass deep audit, focusing on Cloudflare
+        platform hard limits, features that will not work at all as specified, and costs that will surprise at scale.
+        Gaps are labelled G-N01 through G-N30. These are in addition to the 125 gaps resolved in Appendix A.</p>
+
+      <div class="box box-rd" style="margin:32px 0 48px;">
+        <div class="box-lbl">Severity Ratings</div>
+        <p><strong>CRITICAL</strong> — The feature does not work at all as specified; will fail at deploy time or first
+          run. <strong>HIGH</strong> — The feature works under light load but breaks in production, causes data loss,
+          or creates a security hole. <strong>MEDIUM</strong> — Will cost significantly at scale or cause
+          reliability degradation over time.</p>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Cloudflare Platform Limits</h2>
+      <div class="bar"></div>
+
+      <div id="G-N01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N01</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">CRITICAL</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">NaelaoAgentDO — CF Worker CPU Time Budget Exceeded by Agent Loop</h3>
+        </div>
+        <div class="box box-rd">
+          <div class="box-lbl">The Gap</div>
+          <p>NaelaoAgentDO's agent loop runs inside a single DO request handler: build the system prompt, inject memory items, serialize all MCP tool schemas, call the LLM API (network wait), parse the XML response, and dispatch tool calls. The CPU-bound phases alone (prompt construction iterating 20 memory items + all skill schemas + all MCP schemas) consume 5–15 ms of CPU time before the network call even starts. On standard Cloudflare Workers the CPU time budget is 10 ms on the free plan and 30 s on the Unbound billing model. The spec never declares NaelaoAgentDO (or any agent-loop Worker) as Unbound, which means the agent product will hit CPU timeout on the default Worker configuration and will not run at all.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Declare every Worker that houses an agent loop as Unbound in wrangler.jsonc: set limits.cpu_ms = 30000 for NaelaoAgentDO, AssistantDO, and any DO whose request handler drives an agent iteration. Add an architecture rule: 'Any Durable Object that calls an LLM API must be deployed as an Unbound Worker.' Validate this in CI by grepping wrangler.jsonc for each DO class and asserting limits.cpu_ms is present.</p>
+        </div>
+      </div>
+
+      <div id="G-N03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N03</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">CRITICAL</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Dynamic TypeScript Execution — CF Workers Prohibit eval() and Dynamic import()</h3>
+        </div>
+        <div class="box box-rd">
+          <div class="box-lbl">The Gap</div>
+          <p>The Dynamic Worker Loader (Artifacts) and agent-written workflow code are described as TypeScript loaded from R2 at runtime and executed. CF Workers explicitly disable eval(), new Function(), and dynamic import() of URLs — these are prohibited by the V8 isolate sandbox. There is no way to execute arbitrary JavaScript loaded from a URL inside a CF Worker. The only way to run agent-written code is to deploy a new Worker via the CF Workers API (requires CLOUDFLARE_API_TOKEN, takes ~30 seconds, creates a new isolate). The spec never mentions the deployment step, its latency, or its API token requirement. The Artifacts feature and all dynamic code execution will fail at runtime with a 'Code generation from strings disallowed' error.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Use CF Workers for Platforms (Dispatch Namespace) as the execution model for agent-written code. When an agent writes a workflow script: (1) upload the compiled JS to the dispatch namespace via the Workers API, (2) assign it a unique script name (artifact:{spaceId}:{hash}), (3) invoke it via the dispatch namespace binding. Alternatively, restrict agent-written logic to a JSON-based DSL (step definitions, conditional branches, tool call sequences) interpreted by a fixed platform Worker — no code generation needed. Declare a dispatch_namespaces binding in wrangler.jsonc and a CLOUDFLARE_API_TOKEN secret for the Workers API deployment step.</p>
+        </div>
+      </div>
+
+      <div id="G-N04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N04</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">CRITICAL</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">SpaceDO SQLite — 1 GB Per-Account Ceiling, Not Per-DO</h3>
+        </div>
+        <div class="box box-rd">
+          <div class="box-lbl">The Gap</div>
+          <p>CF Durable Objects SQLite storage has a 1 GB limit per Cloudflare account, not per DO instance. The spec treats SpaceDO as if each space gets an unlimited personal SQLite database and stores threads, messages, memories, knowledge chunks, workflow definitions, and file metadata all in SpaceDO SQLite. With 100 active spaces the average per-space budget is 10 MB. A single space with a large knowledge base (5,000 chunks × 2 KB each = 10 MB) consumes the entire per-space budget. When the account-wide 1 GB limit is reached, all writes to all SpaceDOs fail simultaneously with no warning to the user.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Move large data out of DO SQLite into purpose-fit stores: knowledge chunks and message bodies → R2 (blob storage, no per-account size cap); relational cross-space queries → Cloudflare D1 (serverless SQLite with larger limits). DO SQLite should hold only hot-path metadata: active session IDs, permission grants, run state, schema version. Add a storage monitor: a DO alarm that fires when ctx.storage.sql.databaseSize() exceeds 800 MB account-wide (query via CF API from naelao-admin) and sends an alert before the ceiling is hit.</p>
+        </div>
+      </div>
+
+      <div id="G-N06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N06</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">CF Workflows — 1,000 Step Hard Limit Kills Long-Running Agents</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>CF Workflows (the engine behind runFiber() and Dynamic Workflows) have a hard limit of 1,000 steps per workflow instance. The spec describes long-running agent workflows with loops: 'run until task is complete,' retry loops, multi-step research pipelines, and MiniAGI orchestration trees. A research agent making 10 tool calls per iteration over 150 iterations consumes 1,500 steps and is silently terminated mid-run. The spec never mentions this limit or a strategy for workflows requiring more than 1,000 steps.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Implement workflow checkpointing at step 800: serialize the current agent state (conversation history, tool results, pending goals) to R2 at fibers/{spaceId}/{fiberId}/checkpoint.json. Complete the current workflow instance and immediately spawn a continuation workflow that restores from the checkpoint and resumes execution. The runFiber() API must transparently chain continuations so callers see a single logical workflow regardless of how many CF Workflow instances it spans internally.</p>
+        </div>
+      </div>
+
+      <div id="G-N07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N07</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">CF Queue — 128 KB Message Limit Silently Drops Large Tool Results</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>CF Queues have a 128 KB maximum message size. The spec passes tool results through CF Queues between workers (agent loop → tool executor → result delivery). Tool results routinely exceed 128 KB: a read_file of a large source file, a web_search returning a long article, execute_python stdout from a data processing script, or a base64-encoded screenshot. CF Queues reject oversized messages with no dead-letter; the message is silently dropped. The agent receives no tool output and either hallucinates a result or errors with a confusing 'no tool response' message.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Any tool result exceeding 64 KB must be stored in R2 before being placed in the queue. The queue message contains only a reference: { type: 'r2_ref', key: 'tool-results/{runId}/{toolCallId}', size: bytes }. The queue consumer checks for type === 'r2_ref' and fetches from R2 before injecting the result into the agent context. Add a MAX_INLINE_RESULT_BYTES = 65536 constant and enforce it in every tool executor. This also prevents context overflow from raw tool output.</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// Tool result dispatch — auto-promotes large results to R2
+async function dispatchToolResult(env: Env, result: ToolResult): Promise&lt;void&gt; {
+  const body = JSON.stringify(result);
+  if (body.length &gt; MAX_INLINE_RESULT_BYTES) {
+    const key = `tool-results/${result.runId}/${result.callId}`;
+    await env.R2.put(key, body, { httpMetadata: { contentType: &#x27;application/json&#x27; } });
+    await env.QUEUE.send({ type: &#x27;r2_ref&#x27;, key, size: body.length, callId: result.callId });
+  } else {
+    await env.QUEUE.send({ type: &#x27;inline&#x27;, ...result });
+  }
+}</code></pre>
+      </div>
+
+      <div id="G-N15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N15</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Analytics Engine — All Spec Queries Use Wrong SQL Dialect; Every Dashboard Breaks</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>CF Analytics Engine uses ClickHouse-compatible SQL queried via a GraphQL API. The spec shows Analytics Engine queries written as standard PostgreSQL SQL with JOIN across tables, named columns, HAVING clauses, and percentile_cont() aggregations. CF Analytics Engine has no JOIN support (single flat event model), uses blob1–blob20 and double1–double20 for all fields (no named columns), and uses quantile() not percentile_cont(). Every analytics query in the spec will fail with a syntax or schema error at runtime. This means the entire observability layer — agent run metrics, credit usage charts, space growth dashboards — produces no data.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Rewrite all Analytics Engine queries to use the actual CF schema. Define a schema mapping file (analytics-schema.ts) that documents which slot each field occupies: e.g. blob1=event_name, blob2=space_id, blob3=agent_id, double1=credits_used, double2=duration_ms. Example corrected query: SELECT blob1 AS event_name, SUM(double1) AS total_credits FROM naelao_analytics WHERE blob1 = 'agent_run' AND timestamp &gt; NOW() - INTERVAL 7 DAY GROUP BY blob1. Validate all queries against CF Analytics Engine's API before any dashboard ships. Add a CI step that runs each analytics query against a CF staging account and asserts non-null results.</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// analytics-schema.ts — CF Analytics Engine field mapping
+export const ANALYTICS_SCHEMA = {
+  // blob fields (string, up to 1KB each)
+  event_name: &#x27;blob1&#x27;,   // e.g. &#x27;agent_run&#x27;, &#x27;tool_call&#x27;, &#x27;credit_debit&#x27;
+  space_id:   &#x27;blob2&#x27;,
+  agent_id:   &#x27;blob3&#x27;,
+  tool_name:  &#x27;blob4&#x27;,
+  model_id:   &#x27;blob5&#x27;,
+  // double fields (float64)
+  credits_used:  &#x27;double1&#x27;,
+  duration_ms:   &#x27;double2&#x27;,
+  token_count:   &#x27;double3&#x27;,
+} as const;</code></pre>
+      </div>
+
+      <div id="G-N23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N23</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">MEDIUM</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">CF KV Namespace — 1,000 Account Limit Broken by Dynamic Namespace Creation</h3>
+        </div>
+        <div class="box box-bl">
+          <div class="box-lbl">The Gap</div>
+          <p>CF allows a maximum of 1,000 KV namespaces per account. The spec uses KV for skill caching, session token storage, space type metadata caching, and potentially other per-space fast-access stores. If any component creates KV namespaces dynamically at runtime (e.g. one namespace per space, one per skill), the platform hits the account limit at 1,000 spaces and all subsequent KV operations for new resources fail. The spec is ambiguous about whether KV namespaces are statically declared in wrangler.jsonc (safe) or created at runtime via the KV API (dangerous).</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>All KV namespaces must be statically declared in wrangler.jsonc as named bindings: SKILL_CACHE, SESSION_STORE, SPACE_TYPE_CACHE. Never create KV namespaces at runtime. For per-space data, use key namespacing within a single KV namespace: key pattern space:{spaceId}:{field}. Document in architecture principles: 'KV namespaces are account-level infrastructure resources. The platform uses a fixed set of N namespaces declared at deploy time. Runtime namespace creation is prohibited.' Add a CI check that counts KV namespace bindings in wrangler.jsonc and fails the build if the count exceeds 20 (leaving headroom for growth).</p>
+        </div>
+      </div>
+
+      <div id="G-N30" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N30</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">MEDIUM</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Durable Object Class Count — 20+ Classes Approaching 500/Account Limit</h3>
+        </div>
+        <div class="box box-bl">
+          <div class="box-lbl">The Gap</div>
+          <p>CF accounts are limited to 500 Durable Object classes per account. The spec already defines 20+ named DO classes and the extensibility model allows space types to register custom DOs and the Artifacts feature deploys dynamic Workers (potentially with associated DOs). As third-party space types grow, each registering one or more custom DO classes, the account limit will be approached. The spec contains no DO class budget policy, no governance process for new DO class approval, and no alternative pattern for space types that need custom DO-like behaviour without consuming a class slot.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Document the DO class budget in architecture principles: 'DO classes are scarce account-level resources (500/account limit). The platform reserves 50 for first-party infrastructure DOs. Third-party space types must use the AssistantSandboxDO moltworker pattern (dispatch namespace workers) rather than registering new DO classes. Any new first-party DO class requires platform architecture review.' Track DO class count in the naelao-admin dashboard. Add a CI gate that counts DO class declarations in all wrangler.jsonc files and fails the build if the count exceeds 40.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Security &amp; Multi-Tenant Isolation</h2>
+      <div class="bar"></div>
+
+      <div id="G-N02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N02</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">CRITICAL</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">SpaceDO SQLite — Application-Level 'RLS' Has No Enforcement Mechanism</h3>
+        </div>
+        <div class="box box-rd">
+          <div class="box-lbl">The Gap</div>
+          <p>The spec repeatedly references 'RLS policies' and 'Row Level Security' for SpaceDO's SQLite database. Cloudflare DO SQLite (via ctx.storage.sql) is standard SQLite — it does not support PostgreSQL-style RLS (CREATE POLICY, ALTER TABLE ENABLE ROW LEVEL SECURITY). Every 'RLS policy' in the spec is an application-level WHERE space_id = ? clause added manually to each query. There is no query builder, ORM, or ESLint rule that enforces this clause. A single developer forgetting the WHERE clause on any query — a list endpoint, a search handler, an admin route — silently returns data from all tenants. This is an undetectable multi-tenant data breach that requires only one missing WHERE clause anywhere in the codebase.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Define a mandatory SpaceDB wrapper class that takes spaceId in its constructor and appends AND space_id = ? to every query via a typed query builder. Direct ctx.storage.sql.exec() calls must be banned via an ESLint no-restricted-syntax rule that forbids importing ctx.storage.sql directly in any module except SpaceDB. The wrapper must be the only path to SpaceDO's SQLite. Add an integration test that calls every list/search endpoint without a spaceId header and asserts it returns 0 rows, not rows from other spaces.</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// SpaceDB wrapper — the ONLY path to SpaceDO SQLite
+class SpaceDB {
+  constructor(private sql: SqlStorage, private spaceId: string) {}
+  exec&lt;T&gt;(query: string, ...params: unknown[]): T[] {
+    // automatically append space isolation to every WHERE clause
+    const isolated = query.includes(&#x27;WHERE&#x27;)
+      ? query.replace(/WHERE/i, &#x27;WHERE space_id = ? AND&#x27;)
+      : query + &#x27; WHERE space_id = ?&#x27;;
+    return [...this.sql.exec&lt;T&gt;(isolated, this.spaceId, ...params)];
+  }
+}</code></pre>
+      </div>
+
+      <div id="G-N17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N17</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Community Skills via npm — No Version Pinning Enables Supply Chain Attack</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>Skills loaded from npm packages default to the latest tag when no version is pinned in the skill manifest. A community skill author whose npm account is compromised can publish a malicious new version that all agents using that skill silently receive on the next skill cache miss. The spec mentions SHA256 verification of the currently cached skill file, but this provides no protection if the new (malicious) version is fetched and cached. There is no version pinning requirement, no integrity hash in the skill manifest, and no approval gate for community skill version upgrades.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Skill manifests must include a required version field (semver, not 'latest') and an integrity field (sha512 hash in npm subresource integrity format, e.g. sha512-abc123==). SkillRegistryDO must reject skill installations where version === 'latest' or integrity is absent. When a new skill version is published: (1) the platform flags it as pending-review, (2) builders receive an in-app notification, (3) builders explicitly approve the upgrade in their space settings. Auto-upgrades are disabled for all community skills. Platform skills (first-party) can auto-upgrade within a major version.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Agent Runtime &amp; Workflows</h2>
+      <div class="bar"></div>
+
+      <div id="G-N05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N05</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">runFiber() Result Delivery — Caller Cannot Receive the Result</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>runFiber() starts a CF Workflow instance and the spec implies the result is returned to the calling agent. CF Workflows are asynchronous — the caller receives a workflow instance ID immediately; the result is produced later. If a fiber runs for 30 minutes, the original HTTP request that launched it has timed out after CF's 30-second limit. The agent loop that awaits the fiber result will hang until the Worker request times out, returning an empty or error response. The spec never specifies how the eventual fiber result is delivered back to the agent — no polling endpoint, no WebSocket push, no callback mechanism.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>runFiber() must return immediately with { fiberId, status: 'running' }. On completion, the workflow writes its result to R2 at a well-known key (fibers/{spaceId}/{fiberId}/result.json) and sets a 'completed' flag in SpaceDO SQLite. The agent polls GET /fibers/{fiberId}/result with exponential backoff (1s, 2s, 4s, max 30s). For streaming results, the Space Assistant WebSocket connection is used to push fiber.complete events to the frontend in real time. The agent loop must treat fiber results as async tool results, not synchronous return values.</p>
+        </div>
+      </div>
+
+      <div id="G-N10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N10</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Skills (SKILL.md) — No Execution Runtime Specified; Skills Are Inert Documentation</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>Skills are defined as SKILL.md files with YAML frontmatter describing tool names, parameters, descriptions, and examples. A SKILL.md is a markdown document — it cannot be executed. The spec never defines a skill executor: a component that reads the SKILL.md, extracts a tool implementation, and runs it with actual inputs. The implied model is that the LLM reads the SKILL.md and generates the correct tool calls itself (prompt engineering). This means skill reliability is entirely LLM-dependent: skills cannot be unit-tested deterministically, cannot call external APIs with guaranteed request shapes, and cannot enforce parameter contracts. The entire skill marketplace is built on an unspecified and undeterministic foundation.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Define a concrete skill execution model: skills are implemented as CF Worker endpoints registered in the dispatch namespace. Each skill has a worker entry point (skill.worker.ts) that exports a fetch() handler. The SKILL.md describes the API; the skill.worker.ts implements it. SkillRegistryDO stores the dispatch namespace script name alongside the SKILL.md. When the agent calls a skill tool, naelao-mcp-hub routes the call to the skill's dispatch namespace worker — deterministic execution, testable, sandboxed. Skills that are LLM-mediated (no code implementation) must be explicitly marked type: 'llm-mediated' in SKILL.md so builders understand the reliability model.</p>
+        </div>
+      </div>
+
+      <div id="G-N11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N11</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">MCP Tool Calls via naelao-mcp-hub — 30s CF Worker Timeout Truncates Long Tools</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>naelao-mcp-hub proxies MCP tool calls from agents to external MCP app servers using Server-Sent Events (SSE). CF Workers have a 30-second response timeout (wall clock). A long-running MCP tool — a web scraper, a code compiler, a PDF parser, or any tool that itself calls an LLM — will have its SSE stream terminated by CF after 30 seconds. The MCP client (NaelaoAgentDO) receives a truncated or empty response with no error signal. The agent sees a null tool result and may hallucinate, retry indefinitely, or stall. The spec never addresses this timeout in the MCP hub design.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>For MCP tool calls expected to take &gt;10 seconds, naelao-mcp-hub must use an async pattern: (1) Accept the tool call request and immediately return { callId, status: 'pending' } within the 30s window. (2) A DO (McpProxyDO) opens the long-lived connection to the external MCP server and streams partial results to R2. (3) The agent polls GET /mcp/calls/{callId}/result until status is 'complete'. Tool manifests must declare an estimated_duration field; tools with estimated_duration &gt; 10s automatically use the async path.</p>
+        </div>
+      </div>
+
+      <div id="G-N14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N14</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">LoRA Fine-Tuning — Together AI Job Poll Runs in 30s Worker, Not a Durable Workflow</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>The fine-tuning pipeline calls Together AI to start a training job, then polls GET /v1/fine-tunes/{jobId} for completion. Together AI fine-tuning jobs run for 30 minutes to 4+ hours. The polling code is shown in the naelao-sweeper cron, which has a 30-second execution budget. A single cron invocation cannot track a 4-hour job. If the sweeper fires every 5 minutes and the job fails between polls, the failure is missed and FinetuneJobDO stays in a 'running' state permanently. The spec never specifies what happens to the model deployment step if the sweeper crashes mid-poll.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Replace the sweeper-poll approach with a CF Workflow per fine-tune job. The workflow: step 1 — POST to Together AI to start the job and save jobId. step 2 — step.sleep('1h'). step 3 — GET job status; if still running, goto step 2 (up to 24 iterations = 24 hours max). step 4 — on success, trigger model registration in SpaceDO and notify the builder. step 5 — on failure, write error to FinetuneJobDO and alert. CF Workflows survive across sleep periods making them the correct primitive for multi-hour async jobs.</p>
+        </div>
+      </div>
+
+      <div id="G-N24" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N24</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Sub-Agent Recursion — No Maximum Depth; Exponential Resource Exhaustion</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>MiniAGI and the general sub-agent system allow an orchestrator agent to spawn sub-agents, which can spawn their own sub-agents. The spec describes sub-tree cancellation as a gap but never specifies a maximum recursion depth. An agent with a complex goal can spawn 10 sub-agents, each of which spawns 10 more, creating 100 leaf agents each consuming compute and credits. At depth 3 with branching factor 5: 125 concurrent agents. A misconfigured or malicious agent can create an exponential tree that drains the user's credit balance and platform resources in seconds before any billing circuit breaker can respond.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Enforce a hard maximum sub-agent depth of 5 (configurable per plan tier: free=3, pro=5, enterprise=8). Pass the current depth in every spawn payload: { ..., _meta: { depth: currentDepth + 1, rootRunId } }. AssistantDO must reject spawn requests where _meta.depth &gt; maxDepth with ERR_MAX_DEPTH_EXCEEDED. This check must also be enforced in ConcurrencyDO to prevent bypass via direct DO stub calls. Log all depth-exceeded rejections to Analytics Engine for abuse monitoring.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Billing &amp; Payments</h2>
+      <div class="bar"></div>
+
+      <div id="G-N08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N08</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">WalletDO — Single DO Serializes All Credit Debits, Bottleneck at Scale</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>WalletDO is a single Durable Object per user. DO request handlers execute sequentially — one at a time. Every agent action that costs credits sends a debit request to WalletDO. In MiniAGI mode with 10 concurrent sub-agents each making one tool call per second, WalletDO receives 10 debit requests per second, each requiring a SQLite read-modify-write (~5 ms). The 10th request waits ~45 ms in queue. At 50 sub-agents (a realistic MiniAGI orchestration tree) every tool call adds 250 ms of queuing latency — making the agent feel frozen to the user. The spec's MiniAGI and Launchpad features require exactly this level of parallelism.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Replace per-call debits with a credit reservation model: at agent run start, call walletDO.reserve(estimatedCredits) to pre-allocate a credit pool for the entire run. Sub-agents draw from a local in-memory counter (no DO call). At run end, call walletDO.commit(actualUsed, reservationId) to settle the actual amount. If actual &gt; reserved, the overage is debited in the commit. This reduces WalletDO calls from N-per-tool-call to 2-per-agent-run regardless of sub-agent count. Add walletDO.reserve(), walletDO.commit(), and walletDO.cancel() to the WalletDO API spec.</p>
+        </div>
+      </div>
+
+      <div id="G-N22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N22</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Stripe Webhook — No Idempotency; Retries Cause Double Credit Top-Ups</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>When a user purchases credits via Stripe, Stripe sends a webhook to naelao-billing's POST /webhooks/stripe. Stripe retries webhooks on 5xx responses or timeouts, delivering the same event up to 3 times within 24 hours. The spec's handleCheckoutComplete() function calls walletDO.topUp(credits) with no check for whether this Stripe payment intent has already been processed. A single Stripe infrastructure blip causing a 2-second response delay (past Stripe's 1-second webhook timeout) results in a retry and a double credit grant. This is trivially exploitable by an attacker who can intercept and replay webhook calls.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Add a processed_stripe_events table to naelao-billing's SpaceDO SQLite: CREATE TABLE processed_stripe_events (event_id TEXT PRIMARY KEY, processed_at TEXT). Before applying any webhook: check if event_id exists, return HTTP 200 immediately if so without crediting. On successful credit application, INSERT the event_id. This INSERT must be in the same SQLite transaction as the credit UPDATE. Use the Stripe event ID (evt_xxx) as the dedup key, not the payment intent ID. Respond to Stripe within 5 seconds to avoid spurious retries.</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">async function handleStripeWebhook(event: StripeEvent, spaceDb: SpaceDB) {
+  // idempotency check — must be first
+  const existing = spaceDb.exec(
+    &#x27;SELECT event_id FROM processed_stripe_events WHERE event_id = ?&#x27;,
+    event.id
+  );
+  if (existing.length &gt; 0) return new Response(&#x27;already processed&#x27;, { status: 200 });
+
+  // process in a single atomic transaction
+  spaceDb.exec(&#x27;BEGIN&#x27;);
+  spaceDb.exec(&#x27;INSERT INTO processed_stripe_events VALUES (?, ?)&#x27;, event.id, new Date().toISOString());
+  spaceDb.exec(&#x27;UPDATE wallet SET credits = credits + ? WHERE id = ?&#x27;, creditsToAdd, userId);
+  spaceDb.exec(&#x27;COMMIT&#x27;);
+}</code></pre>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Scalability</h2>
+      <div class="bar"></div>
+
+      <div id="G-N09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N09</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">SpaceTypeRegistryDO — Global Singleton Hot-Spot With No Cache Layer</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>SpaceTypeRegistryDO is instantiated as a single global Durable Object ('global' instance key) that handles all space type lookups, canary rollout decisions, install confirmations, and version checks. Every space creation and every page load that needs to verify the current space type version must query this one DO. DOs process requests sequentially. At 1,000 active spaces each doing a space type version check on page load (a cold start scenario after a deploy), all 1,000 requests queue behind each other in a single DO. The spec shows no caching layer in front of SpaceTypeRegistryDO.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Cache space type metadata in CF KV with a 60-second TTL, keyed by space_type_id:version:metadata. SpaceTypeRegistryDO is only queried on cache miss or on explicit canary rollout decisions (which are infrequent). For the hot path (version check on every space load), a Worker-level in-memory LRU cache (Map with 100-entry cap, 30s TTL) eliminates KV round-trips within a single isolate lifetime. SpaceTypeRegistryDO becomes a write-path-only component in steady state.</p>
+        </div>
+      </div>
+
+      <div id="G-N28" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N28</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">MEDIUM</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">R2 Single Bucket — No Per-Space Rate Limiting Creates Noisy Neighbour</h3>
+        </div>
+        <div class="box box-bl">
+          <div class="box-lbl">The Gap</div>
+          <p>The spec uses a single R2 bucket (naelao-workspace) for all user spaces with path prefix isolation (spaces/{spaceId}/...). R2 has undocumented per-bucket throughput limits. One power user running an agent that performs continuous file tree traversal or knowledge base re-indexing (1,000+ R2 operations per minute) can consume the bucket's API rate allowance and cause throttling errors (429/503) for all other users' file operations simultaneously. The spec specifies no per-space R2 operation rate limit.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Implement per-space R2 operation rate limiting in the file-manager skill. Track R2 op count in SpaceDO SQLite: a r2_ops_current_minute INTEGER counter reset by a DO alarm every 60 seconds. Maximum 200 R2 operations per minute per space on free plans, 1,000 on pro. Reject operations above the limit with 429 Too Many Requests and a Retry-After: 60 header. Log throttle events to Analytics Engine for noisy-neighbour detection. Enterprise plans get dedicated R2 buckets provisioned at space creation.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Missing Specifications</h2>
+      <div class="bar"></div>
+
+      <div id="G-N12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N12</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">EmDash CMS — Sites Space Type Foundation Is Completely Unspecified</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>The Sites space type is described as 'AI-Managed Web Publishing (EmDash)' in multiple sections. EmDash is referenced as a CMS layer that manages content collections, generates site structure, handles builds, and serves dynamic routes. However EmDash has zero specification in the entire document: no API contract, no Worker endpoints, no content schema, no CF Pages build pipeline, no R2 asset storage layout. EmDash is not a known public product or open-source project — it appears to be a placeholder name for a system that has not been designed. The entire Sites space type (one of the 8 primary space types) cannot be built without this specification.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Replace 'EmDash' with a concrete Sites CMS specification. Content model: SpaceDO SQLite tables — pages (id, slug, title, content_r2_key, status), collections (id, name, schema_json), assets (id, r2_key, mime, size). Build pipeline: agent writes content to SpaceDO → triggers CF Pages deploy via Pages API (POST /accounts/{id}/pages/projects/{name}/deployments) → static assets served from R2 behind a custom domain. Preview mode: serve draft content via a Worker (GET /{slug}?preview=true reads from SpaceDO directly). Publishing: flip page.status from 'draft' to 'published' and trigger a Pages rebuild. Specify all of this in a new 'naelao-sites' worker section.</p>
+        </div>
+      </div>
+
+      <div id="G-N13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N13</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">VAPI Voice Calls — Webhook Callback Receiver Never Specified</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>The spec integrates VAPI for agent voice calls and notifications. VAPI initiates calls asynchronously and delivers the transcript and outcome via a POST webhook to a callback URL. The spec never specifies a VAPI webhook receiver: which Worker handles POST /webhooks/vapi, how VAPI's HMAC signature is verified, where call transcripts are stored, or how the result is routed back to the agent that triggered the call. Without this receiver, voice calls are fire-and-forget: the agent can start a call but never learns what was said, whether the call connected, or what action the customer took. Voice is described as a key Launchpad feature for customer-facing agents.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Add POST /webhooks/vapi to naelao-notifications. Handler steps: (1) Verify X-VAPI-Signature HMAC-SHA256 against the webhook secret. (2) Parse the VAPI call event (call.ended, call.failed, transcript.ready). (3) Write to SpaceDO SQLite: INSERT INTO vapi_calls (call_id, space_id, transcript, outcome, duration_ms, ended_at). (4) Push a WebSocket message to the Space Assistant: { type: 'vapi.call_complete', callId, transcript, outcome }. (5) If an agentRunId is attached to the call metadata, resume the waiting agent fiber with the call result as a tool response.</p>
+        </div>
+      </div>
+
+      <div id="G-N27" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N27</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">CRITICAL</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">BuilderAccountDO — Zero Schema; Blocker for Auth, Rate-Limiting, and Billing Stack</h3>
+        </div>
+        <div class="box box-rd">
+          <div class="box-lbl">The Gap</div>
+          <p>BuilderAccountDO is the first object checked on every API request and the authoritative store for builder identity, plan tier, feature flags, API rate limits, and billing status. Despite being the most critical Durable Object in the system, the spec provides zero implementation detail: no SQLite table definitions, no API endpoints, no alarm handlers, no field names, no plan tier values, no stub TypeScript. Every other component — auth middleware, rate limiting, plan enforcement, billing, credit checks — depends on BuilderAccountDO existing and returning data. Without its schema, the entire auth and billing stack is blocked.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Specify BuilderAccountDO in full. SQLite schema: CREATE TABLE builders (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, plan TEXT NOT NULL DEFAULT 'free', credit_balance_cents INTEGER NOT NULL DEFAULT 0, api_key_hash TEXT, rate_limit_rpm INTEGER NOT NULL DEFAULT 60, status TEXT NOT NULL DEFAULT 'active', created_at TEXT, trial_ends_at TEXT). API endpoints: GET / (return builder profile), PUT /plan (upgrade plan), POST /credits/add (add credits), GET /usage (current month usage). Alarms: monthly_reset (first of each month — reset RPM counters), trial_expiry (fire at trial_ends_at — downgrade to free if not upgraded). Auth: every naelao-* Worker must stub BuilderAccountDO.verify(apiKeyHash) returning { builderId, plan, rateLimit }.</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// BuilderAccountDO — minimum viable schema
+const SCHEMA = `
+  CREATE TABLE IF NOT EXISTS builders (
+    id            TEXT PRIMARY KEY,
+    email         TEXT UNIQUE NOT NULL,
+    plan          TEXT NOT NULL DEFAULT &#x27;free&#x27;,
+    credit_cents  INTEGER NOT NULL DEFAULT 0,
+    api_key_hash  TEXT,
+    rate_limit_rpm INTEGER NOT NULL DEFAULT 60,
+    status        TEXT NOT NULL DEFAULT &#x27;active&#x27;,
+    created_at    TEXT DEFAULT (datetime(&#x27;now&#x27;)),
+    trial_ends_at TEXT
+  );
+`;</code></pre>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Operational</h2>
+      <div class="bar"></div>
+
+      <div id="G-N16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N16</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">MEDIUM</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">APNs Certificate — Expires After Exactly 1 Year With No Rotation Alert</h3>
+        </div>
+        <div class="box box-bl">
+          <div class="box-lbl">The Gap</div>
+          <p>The spec stores the Apple Push Notification service (APNs) p8 key in the secrets store for iOS push notification delivery. APNs p8 keys are valid for exactly 1 year. When the key expires all iOS push notifications silently stop delivering — APNs returns a 401 AuthenticationTokenExpired error, but without a logged alert this goes unnoticed until users report that notifications stopped working. The spec never stores the expiry date, never schedules a rotation reminder, and never specifies the APNs environment (production vs. sandbox).</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>In naelao-credentials, store apns_key_id, apns_team_id, apns_key (p8 content), apns_key_expires_at (ISO8601), and apns_environment ('production' | 'sandbox'). Add a naelao-sweeper cron check that runs monthly: if apns_key_expires_at is within 30 days, send an email alert to the platform admin via Resend with subject 'ACTION REQUIRED: APNs key expires in N days'. Document the manual rotation procedure: generate a new p8 key in Apple Developer portal, update naelao-credentials, restart naelao-notifications.</p>
+        </div>
+      </div>
+
+      <div id="G-N21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N21</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Canary Rollout — Schema Migrations Are Irreversible; No Rollback SQL Specified</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>Canary rollouts for space type version upgrades run SpaceDO SQLite schema migrations (ALTER TABLE, CREATE INDEX, CREATE TABLE). SQLite ALTER TABLE operations are largely irreversible: columns cannot be dropped in older SQLite versions, and CF's SQLite version is not specified. If a canary version has a bug discovered after 5% of spaces have migrated, rolling back the Worker code is possible, but rolling back the schema is not. The migrated spaces now run old Worker code against a schema that old code does not understand. The spec mentions rollback as a goal but provides zero rollback SQL for any migration.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>All schema migrations must be backward-compatible: only add columns with DEFAULT values, never drop or rename existing columns. Each migration file must include a companion V{N}_rollback.sql that undoes the change (e.g. removes an added column via CREATE TABLE ... AS SELECT ... excluding the new column, then rename). Migration state is tracked in schema_migrations table (version INTEGER, applied_at TEXT, checksum TEXT). CI runs both forward and rollback migrations against a test SpaceDO before any canary ships. The canary deployment pipeline must run the rollback migration on all affected spaces before rolling back the Worker code.</p>
+        </div>
+      </div>
+
+      <div id="G-N25" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N25</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">MEDIUM</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">naelao-sweeper — CF Cron Has No Delivery Guarantee; Critical Ops Must Use DO Alarms</h3>
+        </div>
+        <div class="box box-bl">
+          <div class="box-lbl">The Gap</div>
+          <p>naelao-sweeper is a CF cron Worker running every 5 minutes. CF Worker crons have no delivery guarantee — they are 'at least once' and may fire late, early, or be skipped entirely during CF infrastructure maintenance. The spec relies on the sweeper for time-critical operations: assistant heartbeat checks, WAL entry cleanup, subscription expiry enforcement, fine-tuning job polling, and scheduled cron-job dispatch. A skipped sweeper invocation means expired subscriptions stay active, stale WAL entries accumulate, and scheduled agent jobs don't fire. A double-fire triggers the already-known cron double-dispatch race condition.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Classify sweeper operations by time-sensitivity. Critical (subscription expiry, WAL cleanup): migrate to DO alarms on the relevant DO — alarms are guaranteed-once delivery. Semi-critical (heartbeat checks, job polling): keep in sweeper but make strictly idempotent by checking timestamps, never assuming fixed intervals. All sweeper operations must use compare-and-swap patterns: read last_processed_at, skip if &lt; 4 minutes ago, process and write new timestamp in one DO transaction. This makes double-fires safe.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Developer Space</h2>
+      <div class="bar"></div>
+
+      <div id="G-N18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N18</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Multiple Local Machines Connected to Same Space — No Conflict Model</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>The spec allows a builder to connect their local machine to a Developer Space via LocalTunnelDO. It does not address the case where two team members connect their laptops to the same Space simultaneously. LocalTunnelDO would have two active WebSocket connections and would need to decide which local machine handles a given execute_bash or read_file call. Without a specified routing model, both machines may respond to the same tool call (first response wins, second dropped), or the DO may route to an arbitrary machine. File system commands run against two different file systems producing non-deterministic results.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>LocalTunnelDO must enforce at most one active local machine connection per Space. On a second connection attempt, reject with HTTP 409: { error: 'LOCAL_MACHINE_CONFLICT', message: 'Machine alice-laptop is already connected. Disconnect it first or use container execution.' }. Store the active connection's machine_name and connected_at in DO SQLite. Expose a DELETE /local-tunnel endpoint to force-disconnect a stale session. For teams that genuinely need multi-machine routing, define named machine slots in the skill manifest: tool_routing.local_machine: 'alice-laptop'.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Infrastructure Cost</h2>
+      <div class="bar"></div>
+
+      <div id="G-N19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N19</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">MEDIUM</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">CF Analytics Engine — 25M Event/Month Free Quota Exceeded at 10k Users</h3>
+        </div>
+        <div class="box box-bl">
+          <div class="box-lbl">The Gap</div>
+          <p>CF Analytics Engine has a 25 million data point monthly limit on free plans. The spec fires an Analytics Engine event for every agent action: tool calls, message sends, credit debits, space loads, and skill invocations. At 10,000 active users each making 50 tool calls per day the platform generates 10,000 × 50 × 30 = 15 million tool-call events per month, plus message, load, and credit events pushing the total above 50 million. Analytics Engine billing above the free tier is $0.25 per million events. At 100,000 active users the analytics bill alone exceeds $5,000/month — never mentioned in the infrastructure cost model.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Batch analytics writes: accumulate events in a Worker-isolate in-memory buffer (max 25 events or 5 seconds, whichever comes first) and flush as a single CF Analytics Engine batch write (up to 25 data points per API call). This reduces API calls by 25× with no loss of data. For very high-volume events (individual token counts), sample at 10%: record 1 in 10 events and multiply the value by 10 in dashboard queries. Add an estimated analytics cost line to the infrastructure cost model: N users × 150 events/day × 30 days × $0.25/1M = cost per month.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Real-Time Collaboration</h2>
+      <div class="bar"></div>
+
+      <div id="G-N20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N20</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">MEDIUM</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">ProjectDO Presence — In-Memory Presence Map Lost on DO Hibernation</h3>
+        </div>
+        <div class="box box-bl">
+          <div class="box-lbl">The Gap</div>
+          <p>ProjectDO maintains a presence map (which users are editing which files, cursor positions, active locks) in a JavaScript Map in DO memory. When CF hibernates the DO after a period of inactivity, the in-memory presence map is destroyed. When the next user connects, presence starts empty — all other connected users appear to have left, even if they reconnected after hibernation. Cursor positions and edit locks are silently lost. The spec describes hibernation as the normal DO lifecycle but provides no persistence strategy for presence state.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Persist the presence map to DO SQLite on every change (debounced 500ms): INSERT OR REPLACE INTO presence (user_id, file_path, cursor_line, cursor_col, last_seen) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP). On DO startup (webSocketMessage handler first call after hibernation), reload presence from SQLite and broadcast a presence-sync event to all connected clients. Evict stale presence entries where last_seen &lt; NOW() - 60 seconds. Client sends a presence heartbeat every 30 seconds to keep the entry alive.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Notifications</h2>
+      <div class="bar"></div>
+
+      <div id="G-N26" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N26</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">MEDIUM</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Push Notification Ordering — FCM/APNs Do Not Preserve Message Sequence</h3>
+        </div>
+        <div class="box box-bl">
+          <div class="box-lbl">The Gap</div>
+          <p>FCM (Android) and APNs (iOS) explicitly do not guarantee message delivery order. The spec sends rapid status update sequences via push notifications: 'task started' → 'tool called' → 'task complete' or 'payment processed' → 'payment confirmed'. These notifications may arrive at the user's device in any order. For transactional sequences (payment processing) out-of-order delivery is a correctness issue: the user sees 'payment confirmed' before 'payment processing'. No sequence numbers or timestamps are included in notification payloads in the spec.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Include sequence_number (monotonically increasing integer per space, stored in SpaceDO SQLite) and sent_at (ISO8601 timestamp) in every notification payload. The mobile client must buffer notifications received out of order and display them in sequence_number order. For transactional notifications (payment, auth, billing) use email delivery via Resend in addition to push — SMTP maintains delivery order within a session. Mark transactional notifications with priority: 'high' in the FCM/APNs payload to reduce OS-level batching delay.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Third-Party Integrations</h2>
+      <div class="bar"></div>
+
+      <div id="G-N29" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--bl);background:rgba(59,130,246,.12);padding:2px 8px;border-radius:4px;">G-N29</span>
+          <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);background:rgba(232,105,42,.1);padding:2px 8px;border-radius:4px;">HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Together AI — Single Shared API Key; One User's Overuse Blocks Everyone</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>naelao-together-ai uses a single platform-level Together AI API key for all users' LLM inference calls, fine-tuning jobs, and model hosting. If a heavy user triggers Together AI rate limits on the shared key (requests-per-minute or daily token cap), the entire platform loses access to open-source model inference simultaneously. There is no per-user key isolation, no key pooling, and no fallback key rotation. The spec mentions BYOK for the AI Gateway but not for Together AI specifically, leaving all users dependent on the shared platform key.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Implement per-user Together AI key injection: builders on Pro+ plans can supply their own Together AI API key stored in naelao-credentials (TOGETHER_AI_KEY). naelao-together-ai checks for a space-level key first; falls back to the platform pool key. For the platform pool: maintain 3–5 Together AI API keys (TOGETHER_AI_KEY_1 … _5) and round-robin requests across them with per-key rate limit tracking in a ConcurrencyDO. If a key hits a 429, mark it in backoff for 60 seconds and route to the next key.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:80px;margin-bottom:8px;">Appendix B — Gap Index</h2>
+      <div class="bar"></div>
+      <table class="t" style="margin-top:24px;">
+        <thead>
+          <tr><th>ID</th><th>Severity</th><th>Gap Title</th><th>Category</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="tl"><a href="#G-N01" style="color:var(--bl);text-decoration:none;">G-N01</a></td>
+            <td style="color:var(--rd);font-weight:600;">CRITICAL</td>
+            <td>NaelaoAgentDO — CF Worker CPU Time Budget Exceeded by Agent Loop</td>
+            <td class="dim">Cloudflare Platform Limits</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N02" style="color:var(--bl);text-decoration:none;">G-N02</a></td>
+            <td style="color:var(--rd);font-weight:600;">CRITICAL</td>
+            <td>SpaceDO SQLite — Application-Level 'RLS' Has No Enforcement Mechanism</td>
+            <td class="dim">Security &amp; Multi-Tenant Isolation</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N03" style="color:var(--bl);text-decoration:none;">G-N03</a></td>
+            <td style="color:var(--rd);font-weight:600;">CRITICAL</td>
+            <td>Dynamic TypeScript Execution — CF Workers Prohibit eval() and Dynamic …</td>
+            <td class="dim">Cloudflare Platform Limits</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N04" style="color:var(--bl);text-decoration:none;">G-N04</a></td>
+            <td style="color:var(--rd);font-weight:600;">CRITICAL</td>
+            <td>SpaceDO SQLite — 1 GB Per-Account Ceiling, Not Per-DO</td>
+            <td class="dim">Cloudflare Platform Limits</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N05" style="color:var(--bl);text-decoration:none;">G-N05</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>runFiber() Result Delivery — Caller Cannot Receive the Result</td>
+            <td class="dim">Agent Runtime &amp; Workflows</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N06" style="color:var(--bl);text-decoration:none;">G-N06</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>CF Workflows — 1,000 Step Hard Limit Kills Long-Running Agents</td>
+            <td class="dim">Cloudflare Platform Limits</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N07" style="color:var(--bl);text-decoration:none;">G-N07</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>CF Queue — 128 KB Message Limit Silently Drops Large Tool Results</td>
+            <td class="dim">Cloudflare Platform Limits</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N08" style="color:var(--bl);text-decoration:none;">G-N08</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>WalletDO — Single DO Serializes All Credit Debits, Bottleneck at Scale</td>
+            <td class="dim">Billing &amp; Payments</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N09" style="color:var(--bl);text-decoration:none;">G-N09</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>SpaceTypeRegistryDO — Global Singleton Hot-Spot With No Cache Layer</td>
+            <td class="dim">Scalability</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N10" style="color:var(--bl);text-decoration:none;">G-N10</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>Skills (SKILL.md) — No Execution Runtime Specified; Skills Are Inert D…</td>
+            <td class="dim">Agent Runtime &amp; Workflows</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N11" style="color:var(--bl);text-decoration:none;">G-N11</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>MCP Tool Calls via naelao-mcp-hub — 30s CF Worker Timeout Truncates Lo…</td>
+            <td class="dim">Agent Runtime &amp; Workflows</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N12" style="color:var(--bl);text-decoration:none;">G-N12</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>EmDash CMS — Sites Space Type Foundation Is Completely Unspecified</td>
+            <td class="dim">Missing Specifications</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N13" style="color:var(--bl);text-decoration:none;">G-N13</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>VAPI Voice Calls — Webhook Callback Receiver Never Specified</td>
+            <td class="dim">Missing Specifications</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N14" style="color:var(--bl);text-decoration:none;">G-N14</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>LoRA Fine-Tuning — Together AI Job Poll Runs in 30s Worker, Not a Dura…</td>
+            <td class="dim">Agent Runtime &amp; Workflows</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N15" style="color:var(--bl);text-decoration:none;">G-N15</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>Analytics Engine — All Spec Queries Use Wrong SQL Dialect; Every Dashb…</td>
+            <td class="dim">Cloudflare Platform Limits</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N16" style="color:var(--bl);text-decoration:none;">G-N16</a></td>
+            <td style="color:var(--bl);">MEDIUM</td>
+            <td>APNs Certificate — Expires After Exactly 1 Year With No Rotation Alert</td>
+            <td class="dim">Operational</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N17" style="color:var(--bl);text-decoration:none;">G-N17</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>Community Skills via npm — No Version Pinning Enables Supply Chain Att…</td>
+            <td class="dim">Security &amp; Multi-Tenant Isolation</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N18" style="color:var(--bl);text-decoration:none;">G-N18</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>Multiple Local Machines Connected to Same Space — No Conflict Model</td>
+            <td class="dim">Developer Space</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N19" style="color:var(--bl);text-decoration:none;">G-N19</a></td>
+            <td style="color:var(--bl);">MEDIUM</td>
+            <td>CF Analytics Engine — 25M Event/Month Free Quota Exceeded at 10k Users</td>
+            <td class="dim">Infrastructure Cost</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N20" style="color:var(--bl);text-decoration:none;">G-N20</a></td>
+            <td style="color:var(--bl);">MEDIUM</td>
+            <td>ProjectDO Presence — In-Memory Presence Map Lost on DO Hibernation</td>
+            <td class="dim">Real-Time Collaboration</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N21" style="color:var(--bl);text-decoration:none;">G-N21</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>Canary Rollout — Schema Migrations Are Irreversible; No Rollback SQL S…</td>
+            <td class="dim">Operational</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N22" style="color:var(--bl);text-decoration:none;">G-N22</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>Stripe Webhook — No Idempotency; Retries Cause Double Credit Top-Ups</td>
+            <td class="dim">Billing &amp; Payments</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N23" style="color:var(--bl);text-decoration:none;">G-N23</a></td>
+            <td style="color:var(--bl);">MEDIUM</td>
+            <td>CF KV Namespace — 1,000 Account Limit Broken by Dynamic Namespace Crea…</td>
+            <td class="dim">Cloudflare Platform Limits</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N24" style="color:var(--bl);text-decoration:none;">G-N24</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>Sub-Agent Recursion — No Maximum Depth; Exponential Resource Exhaustio…</td>
+            <td class="dim">Agent Runtime &amp; Workflows</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N25" style="color:var(--bl);text-decoration:none;">G-N25</a></td>
+            <td style="color:var(--bl);">MEDIUM</td>
+            <td>naelao-sweeper — CF Cron Has No Delivery Guarantee; Critical Ops Must …</td>
+            <td class="dim">Operational</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N26" style="color:var(--bl);text-decoration:none;">G-N26</a></td>
+            <td style="color:var(--bl);">MEDIUM</td>
+            <td>Push Notification Ordering — FCM/APNs Do Not Preserve Message Sequence</td>
+            <td class="dim">Notifications</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N27" style="color:var(--bl);text-decoration:none;">G-N27</a></td>
+            <td style="color:var(--rd);font-weight:600;">CRITICAL</td>
+            <td>BuilderAccountDO — Zero Schema; Blocker for Auth, Rate-Limiting, and B…</td>
+            <td class="dim">Missing Specifications</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N28" style="color:var(--bl);text-decoration:none;">G-N28</a></td>
+            <td style="color:var(--bl);">MEDIUM</td>
+            <td>R2 Single Bucket — No Per-Space Rate Limiting Creates Noisy Neighbour</td>
+            <td class="dim">Scalability</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N29" style="color:var(--bl);text-decoration:none;">G-N29</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>Together AI — Single Shared API Key; One User's Overuse Blocks Everyon…</td>
+            <td class="dim">Third-Party Integrations</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N30" style="color:var(--bl);text-decoration:none;">G-N30</a></td>
+            <td style="color:var(--bl);">MEDIUM</td>
+            <td>Durable Object Class Count — 20+ Classes Approaching 500/Account Limit</td>
+            <td class="dim">Cloudflare Platform Limits</td>
+          </tr>
+        </tbody>
+      </table>
+    </div><!-- /gap-resolutions-b -->
+
+
+    <!-- =====================================================================
+         APPENDIX C — DEEP AUDIT GAP RESOLUTIONS (N31–N52)
+         22 critical gaps found in second-pass spec audit, June 2026
+         ===================================================================== -->
+    <div id="gap-resolutions-c" style="margin-top:80px;padding-top:40px;border-top:2px solid var(--pu);">
+
+      <h1 style="font-family:'Fraunces',serif;font-size:52px;font-weight:700;color:var(--hd);letter-spacing:-.03em;line-height:1.05;margin-bottom:16px;">
+        Appendix C — Second-Pass Audit Gap Resolutions
+      </h1>
+      <p class="lead">22 additional critical gaps found in a targeted second-pass audit focusing on concrete code-level
+        defects: wrong SQL syntax, reversed array operations, hardcoded strings, missing error handlers, and
+        architectural chokepoints that will OOM or deadlock under production load. Labels G-N31 through G-N52.</p>
+
+      <div class="box box-pu" style="margin:32px 0 48px;">
+        <div class="box-lbl">Why These Gaps Are Especially Dangerous</div>
+        <p>Unlike architectural gaps (which are caught in design review), these are implementation-level defects that
+          appear correct on first reading. The RegExp lastIndex bug looks like normal pattern matching. The
+          splice-in-reverse loop looks like a valid array manipulation. The 'unknown' hardcode looks like a reasonable
+          default. Each will pass code review and only manifest under specific runtime conditions — concurrent load,
+          large datasets, long agent sessions — making them extremely difficult to diagnose in production.</p>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Scheduling &amp; Workflows</h2>
+      <div class="bar"></div>
+
+      <div id="G-N31" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--rd);background:rgba(239,68,68,.12);">G-N31 · CRITICAL</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">WorkflowRegistryDO cron Parser — Day-of-Month Field Skipped; Range/List Expressions Return NaN</h3>
+        </div>
+        <div class="box box-rd">
+          <div class="box-lbl">The Gap</div>
+          <p>parseCronToNextTimestamp() destructures the cron string as const [min, hour, , month, dow] = cron.split(' ') — the third field (day-of-month) is deliberately skipped with a blank slot. Any workflow scheduled with a specific day (e.g. '0 9 15 * *' — 9am on the 15th) fires on every day of the month because the day-of-month constraint is never checked. Additionally, the comparison uses parseInt(dow) === next.getUTCDay() which means any range expression ('1-5' for weekdays) or list ('1,3,5') returns NaN from parseInt(), which never equals a day number — so any workflow using standard cron range/list syntax silently never fires. The O(n) synchronous loop runs up to 10,080 iterations (7 days × 1440 min/day) inside the DO's CPU budget with no progress log.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Replace the hand-rolled parser entirely. Use a CF-compatible bundled cron-parser library (e.g. cronstrue, cron-parser compiled to ESM). At minimum fix the implementation: (1) parse all 5 fields including day-of-month, (2) handle range (1-5), list (1,3,5), and step (*/15) syntax using set-based matching not parseInt, (3) replace the O(n) minute-loop with direct timestamp arithmetic. Store computed next_run_at in the DB and use a CF Alarm to fire at that exact time rather than iterating minutes.</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// Corrected cron next-timestamp using cron-parser (bundled)
+import parser from &#x27;cron-parser&#x27;;
+
+function parseCronToNextTimestamp(cron: string, after = new Date()): number {
+  const interval = parser.parseExpression(cron, {
+    currentDate: after,
+    utc: true,
+  });
+  return interval.next().getTime();
+}</code></pre>
+      </div>
+
+      <div id="G-N32" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--am);background:rgba(245,158,11,.12);">G-N32 · HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">WorkflowRegistryDO error_count — Cumulative, Never Reset; Transient Errors Permanently Pause Healthy Workflows</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>The auto-pause logic increments error_count on every failure but never resets it on success. A workflow that runs successfully 100 times, hits a transient network error, then succeeds 2 more times, then hits another transient error accumulates error_count = 2 and pauses on the next error — even though it has been mostly healthy. The SQL UPDATE workflows SET error_count=error_count+1 has no corresponding reset on successful execution. The pause threshold check reads the pre-increment value so the pause triggers after 3 lifetime errors regardless of when they occurred or whether they were consecutive. Paused workflows produce no notification — operators discover the failure only when a scheduled task simply stops running.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Track consecutive_error_count (reset to 0 on success, increment on failure) separately from total_error_count (append-only for observability). Auto-pause only when consecutive_error_count &gt;= 3. On successful execution: UPDATE workflows SET consecutive_error_count=0, last_success_at=? WHERE id=?. When a workflow is auto-paused send a notification via naelao-notifications to the space owner: subject 'Workflow paused after 3 consecutive failures', body includes the workflow name, last error message, and a resume link.</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// On workflow success
+db.exec(`UPDATE workflows
+         SET consecutive_error_count = 0,
+             last_success_at = datetime(&#x27;now&#x27;)
+         WHERE id = ?`, [workflowId]);
+
+// On workflow failure
+db.exec(`UPDATE workflows
+         SET consecutive_error_count = consecutive_error_count + 1,
+             total_error_count = total_error_count + 1,
+             last_error = ?,
+             status = CASE WHEN consecutive_error_count + 1 &gt;= 3
+                          THEN &#x27;paused&#x27; ELSE status END
+         WHERE id = ?`, [errorMsg, workflowId]);</code></pre>
+      </div>
+
+      <div id="G-N52" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--am);background:rgba(245,158,11,.12);">G-N52 · HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">WorkflowRegistryDO Alarm Dispatches Workflows Sequentially — Long Dispatch Blocks All Other Scheduled Jobs</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>WorkflowRegistryDO uses a single CF Alarm to fire workflow dispatch. When the alarm fires, it iterates all due workflows and dispatches them sequentially within the single DO execution context. If Workflow A's dispatch (invoking an agent, calling an LLM) takes significant time, it blocks Workflows B, C, and D. DO handlers have a 30-second timeout. At any meaningful workflow density — 100 spaces each with an hourly workflow all scheduled at the top of the hour — sequential dispatch within 30 seconds is impossible. Workflows beyond the first N dispatched are silently skipped with no retry or catch-up for the missed cycle.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>In the alarm handler, fan out workflow dispatch to a CF Queue rather than executing dispatches inline: for each due workflow, call env.WORKFLOW_DISPATCH_QUEUE.send({ workflowId, scheduledAt }) — this is fast (microseconds per send, not seconds per dispatch). The alarm handler completes quickly regardless of how many workflows are due. A separate Queue consumer Worker handles the actual dispatch: it receives individual workflow jobs, invokes the agent, and handles retries via CF Queue's built-in retry semantics (exponential backoff, dead-letter on repeated failure). This decouples scheduling latency from execution latency.</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// In the DO alarm handler — fast fan-out only
+async alarm() {
+  const dueWorkflows = this.db.exec&lt;{id: string}&gt;(
+    `SELECT id FROM workflows WHERE next_run_at &lt;= datetime(&#x27;now&#x27;) AND status=&#x27;active&#x27;`
+  );
+
+  // Send to queue — microseconds each, not seconds
+  await Promise.all(
+    dueWorkflows.map(wf =&gt;
+      this.env.WORKFLOW_DISPATCH_QUEUE.send({
+        workflowId: wf.id,
+        scheduledAt: new Date().toISOString(),
+      })
+    )
+  );
+
+  // Reschedule alarm for next dispatch window
+  this.ctx.storage.setAlarm(Date.now() + 60_000);
+}</code></pre>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Security</h2>
+      <div class="bar"></div>
+
+      <div id="G-N33" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--rd);background:rgba(239,68,68,.12);">G-N33 · CRITICAL</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">27-Pattern Security Scanner — Module-Level Global RegExp With /g Flag; Concurrent Requests Corrupt Scan Results</h3>
+        </div>
+        <div class="box box-rd">
+          <div class="box-lbl">The Gap</div>
+          <p>The BLOCKED_PATTERNS array is declared at module scope with RegExp literals using the g (global) flag. JavaScript RegExp objects with the g flag maintain lastIndex state between calls to .test() or .exec(). In a CF Worker handling concurrent requests within the same isolate, two simultaneous calls to scanCode() share the same RegExp objects. Request A's lastIndex is partially advanced when Request B reads it, causing alternating matches to be missed (lastIndex skips ahead) or phantom matches to be reported (stale lastIndex applied to a different string). Security bypass rate approaches 50% under concurrent load. An attacker submitting code concurrently with another user can reliably bypass the scanner. CF Workers do not serialize requests within an isolate.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Move BLOCKED_PATTERNS inside the scanCode() function body so each call gets fresh RegExp instances with lastIndex=0, OR reconstruct the RegExp on each use: new RegExp(pat.source, pat.flags.replace('g', '')). Remove the g flag entirely since .test() on a non-global RegExp is stateless and correct for presence detection. Add a concurrent-request unit test: call scanCode() twice simultaneously with payloads containing patterns at different positions and assert both return the correct result.</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// WRONG — module-level stateful RegExp with /g flag
+const BLOCKED_PATTERNS = [
+  { pattern: /process\.env\./g, severity: &#x27;critical&#x27; },
+];
+
+// CORRECT — reconstruct per call, no /g flag needed for .test()
+function scanCode(code: string) {
+  const PATTERNS = [
+    { pattern: /process\.env\./, severity: &#x27;critical&#x27; },
+    { pattern: /require\([&#x27;&quot;]child_process[&#x27;&quot;\)]/, severity: &#x27;critical&#x27; },
+  ];
+  return PATTERNS.filter(p =&gt; p.pattern.test(code));
+}</code></pre>
+      </div>
+
+      <div id="G-N48" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--am);background:rgba(245,158,11,.12);">G-N48 · HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Dynamic Worker Loader — No Sandbox Memory Limit; Malicious Code Exhausts Host Worker Heap</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>The Dynamic Worker Loader evaluates space code in the same V8 heap as the host Worker. There is no memory quota applied to evaluated code. A malicious or buggy space script that allocates large buffers (new ArrayBuffer(100 * 1024 * 1024)) consumes the shared 128 MB Worker memory limit, causing OOM for both the space code and the host infrastructure. A tight loop in space code also consumes the Worker's 30s wall-clock timeout, blocking all requests sharing the isolate. If the loader is a singleton DO (a common pattern), a single malicious space takes down code execution for all spaces globally until the DO restarts.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Execute untrusted space code in true isolate isolation. Use CF Containers (Tier 5 execution) or CF Workers for Platforms (Dispatch Namespace) for any code that is not first-party. Each space script runs in its own isolated Worker with an independent 128 MB heap — an OOM in one space does not affect other spaces. Enforce a per-space CPU time budget using AbortController and a Race between the code execution and a setTimeout(reject, MAX_CPU_MS) wrapper. Document in the architecture principles: 'Untrusted code never executes in the host Worker's heap.'</p>
+        </div>
+      </div>
+
+      <div id="G-N51" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--rd);background:rgba(239,68,68,.12);">G-N51 · CRITICAL</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">naelao-mcp-hub Credential Injection — spaceId Trusted From Request Body; Cross-Tenant Credential Leak</h3>
+        </div>
+        <div class="box box-rd">
+          <div class="box-lbl">The Gap</div>
+          <p>MCP server credentials (OAuth tokens, API keys for third-party services) are stored in naelao-credentials keyed by spaceId. The MCP hub's credential injection path reads credentials using the spaceId extracted from the request body without validating it against the authenticated agent's actual space membership. An agent in Space A that crafts a request with Space B's spaceId retrieves Space B's MCP credentials (OAuth tokens, API keys). spaceIds are often UUIDs or sequential integers that may be discoverable. No credentials access control check is shown in the spec — only a KV/secrets lookup by key. This is horizontal privilege escalation affecting every MCP server integration on the platform.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>In the credential injection path, always derive the authoritative spaceId from the authenticated principal — never from the request body. The agent's JWT or DO session contains the canonical spaceId; extract it there and use only that for the credential lookup. Add an explicit access check: if (authSpaceId !== requestedSpaceId) return 403 Forbidden. Store credentials encrypted with a space-specific key derived from PLATFORM_MASTER_KEY + spaceId using HKDF so that even raw KV/secrets access does not yield plaintext credentials for other spaces. Add an integration test that asserts a request authenticated as Space A cannot retrieve Space B's credentials even when Space B's spaceId is in the request body.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Agent Runtime &amp; Artifacts</h2>
+      <div class="bar"></div>
+
+      <div id="G-N34" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--rd);background:rgba(239,68,68,.12);">G-N34 · CRITICAL</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">React Artifacts — import from 'react-dom/server' Has No npm Resolution in CF Workers; Feature Non-Functional</h3>
+        </div>
+        <div class="box box-rd">
+          <div class="box-lbl">The Gap</div>
+          <p>wrapArtifactCode() for React type artifacts generates code that imports from react-dom/server: import { renderToString } from 'react-dom/server'. This code is executed inside a CF Dynamic Worker (V8 isolate). CF Workers have no npm resolution at runtime — there is no node_modules directory, no npm install step, and no bundler running at evaluation time. react-dom/server is not available in the CF Workers runtime environment. The generated JSX also requires a JSX transform that is not applied at runtime. Every React artifact execution will throw 'Cannot find module react-dom/server' before any user code runs. The React artifact type — likely the most common UI artifact — is completely non-functional.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Two viable options: (a) Bundle approach — add an artifact build step that runs esbuild with JSX transform on artifact upload, storing the compiled bundle (not raw source) in R2. The Dynamic Worker Loader executes the bundle directly with no runtime compilation needed. Specify the esbuild config: jsx: 'automatic', bundle: true, platform: 'browser', target: 'es2022'. (b) Pre-injected globals approach — include React and ReactDOM as globals in the Dynamic Worker Loader bootstrap code so artifacts can reference globalThis.React and globalThis.ReactDOM without import. Option (a) is architecturally correct and supports any npm dependency, not just React.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Agent Runtime &amp; MCP</h2>
+      <div class="bar"></div>
+
+      <div id="G-N35" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--am);background:rgba(245,158,11,.12);">G-N35 · HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">naelao-mcp-hub resolveToolRoute() — 'unknown' Hardcoded as agentId; Cache Always Misses</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>The tool schema cache lookup uses a hardcoded literal string 'unknown' where the agentId should be substituted: env.KV.get(`tool-schemas:${spaceId}:unknown`). Tool schemas are written to KV with the actual agentId as the key segment (e.g. tool-schemas:space-123:agent-456), but the read always looks up tool-schemas:space-123:unknown. Every tool routing call misses the cache, falls through to the cold path (re-fetching all tool schemas from every registered MCP server), and the cached data written by the tool discovery process is permanently orphaned in KV and never read. Under load this means every agent tool call makes a full MCP server round-trip adding 200–2000ms of avoidable latency per tool call.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Extract agentId from the authenticated request context and substitute it into the cache key: env.KV.get(`tool-schemas:${spaceId}:${agentId}`). Audit all KV read/write pairs in naelao-mcp-hub to confirm the write path uses the same key format as the read path. Add an integration test that writes a schema under a real agentId, calls resolveToolRoute() with that agentId, and asserts the result comes from cache (verify with a KV.get spy that only one read occurs, not a full MCP discovery round-trip).</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// WRONG
+const cached = await env.KV.get(`tool-schemas:${spaceId}:unknown`);
+
+// CORRECT — agentId from authenticated request
+const { spaceId, agentId } = ctx.auth; // from JWT / DO stub
+const cacheKey = `tool-schemas:${spaceId}:${agentId}`;
+const cached = await env.KV.get(cacheKey);
+if (cached) return JSON.parse(cached);
+// ... cold path: fetch from MCP servers, then:
+await env.KV.put(cacheKey, JSON.stringify(schemas), { expirationTtl: 300 });</code></pre>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Observability</h2>
+      <div class="bar"></div>
+
+      <div id="G-N36" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--rd);background:rgba(239,68,68,.12);">G-N36 · CRITICAL</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Analytics Engine Dashboard — PostgreSQL Syntax Used Throughout; ClickHouse Dialect Required; All Queries Fail</h3>
+        </div>
+        <div class="box box-rd">
+          <div class="box-lbl">The Gap</div>
+          <p>The dashboard query builder generates SQL using PostgreSQL-specific functions that CF Analytics Engine's ClickHouse-like dialect does not support: PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY double1) — AE uses quantile(0.95)(double1); DATE_TRUNC('minute', timestamp) — AE uses toStartOfMinute(timestamp); NOW() - INTERVAL '1 hour' — AE uses now() - toIntervalHour(1); JOIN across tables — AE has a flat single-table model. Every query sent to the AE Workers Analytics Engine API returns a parse error. All dashboard endpoints return 500 errors. No space operator can view usage metrics, agent activity, cost tracking, or performance data. This is a complete feature failure for the entire observability surface.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Rewrite all AE queries using ClickHouse/AE syntax. Define an analytics-schema.ts mapping file documenting which blob1–blob20 and double1–double20 slot each field occupies. Build a typed query builder that generates correct AE SQL from named metrics (p95Latency, hourlyRollup, creditUsage). Add a CI step that posts each analytics query to the CF AE SQL validation endpoint against a staging account and asserts a 200 response before any dashboard ships.</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// analytics-schema.ts — CF Analytics Engine field mapping
+export const AE = {
+  blobs: {
+    event_name: &#x27;blob1&#x27;,
+    space_id:   &#x27;blob2&#x27;,
+    agent_id:   &#x27;blob3&#x27;,
+    tool_name:  &#x27;blob4&#x27;,
+    model_id:   &#x27;blob5&#x27;,
+  },
+  doubles: {
+    credits_used: &#x27;double1&#x27;,
+    duration_ms:  &#x27;double2&#x27;,
+    token_count:  &#x27;double3&#x27;,
+  },
+} as const;
+
+// Correct AE query (no JOIN, ClickHouse syntax)
+const q = `
+  SELECT ${AE.blobs.event_name} AS event,
+         SUM(${AE.doubles.credits_used}) AS total_credits,
+         quantile(0.95)(${AE.doubles.duration_ms}) AS p95_ms
+  FROM naelao_events
+  WHERE ${AE.blobs.space_id} = &#x27;${spaceId}&#x27;
+    AND timestamp &gt; now() - toIntervalDay(7)
+  GROUP BY ${AE.blobs.event_name}
+`;</code></pre>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Voice &amp; Notifications</h2>
+      <div class="bar"></div>
+
+      <div id="G-N37" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--rd);background:rgba(239,68,68,.12);">G-N37 · CRITICAL</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">VAPI Voice Escalation — Fire-and-Forget; Approval Results Never Delivered Back to Waiting Agent Fiber</h3>
+        </div>
+        <div class="box box-rd">
+          <div class="box-lbl">The Gap</div>
+          <p>triggerVapiCall() makes an outbound POST to the VAPI API to initiate a voice call, checks response.ok, and returns. There is no webhook handler anywhere in the spec for VAPI to POST the call result (approved/rejected/ no-answer) back to the platform. The calling agent loop suspends waiting for the escalation outcome but there is no mechanism to resume it. VAPI delivers call outcomes asynchronously via webhook; without a registered endpoint and a mechanism to wake the waiting fiber, the agent times out after 30 seconds with the escalation permanently unresolved. Critical business workflows requiring human approval via voice — large transactions, compliance sign-offs — are completely non-functional.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Implement the full VAPI webhook lifecycle: (1) POST /webhooks/vapi in naelao-notifications — verify X-VAPI-Signature HMAC, parse call.ended event, extract transcript and outcome. (2) When initiating the call, store a pending escalation record in SpaceDO SQLite: INSERT INTO escalations (call_id, fiber_id, space_id, expires_at). (3) On webhook receipt, look up the fiber by call_id, write the result to DO storage, set a CF Alarm to wake the DO and resume the fiber with the call result as a tool response. (4) Add a timeout alarm (10 minutes default) after which the escalation auto-rejects with outcome='no_answer' so the fiber is never permanently stuck.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">LoRA Fine-Tuning</h2>
+      <div class="bar"></div>
+
+      <div id="G-N38" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--am);background:rgba(245,158,11,.12);">G-N38 · HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">LoRA Training Data Loaded Entirely Into Worker Memory — Files Over 50 MB Crash With OOM</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>The fine-tuning pipeline reads the entire training dataset into memory: const trainingData = await trainingObj.text(). CF Workers have a 128 MB memory limit per isolate. A production fine-tune with 10,000 training examples × 500 tokens each is 20–50 MB of JSONL. The .text() call materializes the entire file as a JavaScript UTF-16 string (2× byte count), JSON.parse() creates another copy, and the Together AI API call serializes a third copy. Three copies of a 50 MB file = 150 MB, exceeding the 128 MB hard limit. The Worker OOM-crashes, killing the training job mid-execution with no recovery path. Bootstrap mode — the path from annotation flywheel to autopilot — depends entirely on this pipeline succeeding.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Use the R2 object's .body (ReadableStream) instead of .text(). Stream the training data directly to Together AI's upload endpoint using a pass-through TransformStream: await fetch('https://api.together.ai/v1/files', { method: 'POST', body: trainingObj.body }). If Together AI requires a known Content-Length, use the R2 object's .size property from the metadata response. For multi-part uploads (files &gt; 100 MB), use a CF Workflow with step.do() per chunk so memory is freed between steps. Never buffer more than 5 MB in a single Worker at a time.</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// WRONG — loads entire file into memory
+const trainingData = await r2Object.text(); // OOM for large files
+
+// CORRECT — stream directly to Together AI
+const r2Object = await env.R2.get(`spaces/${spaceId}/finetune/${jobId}/train.jsonl`);
+if (!r2Object) throw new Error(&#x27;Training data not found&#x27;);
+
+const uploadResp = await fetch(&#x27;https://api.together.ai/v1/files&#x27;, {
+  method: &#x27;POST&#x27;,
+  headers: {
+    &#x27;Authorization&#x27;: `Bearer ${togetherApiKey}`,
+    &#x27;Content-Type&#x27;: &#x27;application/jsonl&#x27;,
+    &#x27;Content-Length&#x27;: String(r2Object.size),
+  },
+  body: r2Object.body, // ReadableStream, never buffered
+});</code></pre>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Quality &amp; CI</h2>
+      <div class="bar"></div>
+
+      <div id="G-N39" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--am);background:rgba(245,158,11,.12);">G-N39 · HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">naelao-eval — Returns 'started' via waitUntil(); CI Gate Has No Way to Read the Score</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>The eval endpoint uses ctx.executionCtx.waitUntil(runEvaluationSuite(...)) and immediately returns { status: 'started', datasetPath }. The CI integration blocks deployment on eval score thresholds, but waitUntil() runs the eval suite after the response is sent — the CI pipeline receives 'started' with no way to retrieve the final score. There is no polling endpoint, no webhook callback, no KV or DO slot where CI can find the completed result. The eval suite runs (or times out at 30s) with results going nowhere. CI either deploys without a score (defeating the quality gate) or hangs indefinitely. The safety net preventing degraded LoRA checkpoints from reaching production is non-functional.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Implement an async eval job model: (1) On POST /eval/run, write a job record to KV with status 'running': eval-job:{jobId} = { status, startedAt }. Return { jobId } immediately. (2) runEvaluationSuite() writes results back to KV on completion: eval-job:{jobId} = { status: 'complete', scores, passedGate, modelId }. (3) Add GET /eval/jobs/:jobId returning the KV record. (4) CI polls GET /eval/jobs/:jobId every 10s until status === 'complete', then reads scores and applies the threshold gate (fail the deploy if passedGate === false). Add a 30-minute CI timeout with a clear error message.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Memory OS</h2>
+      <div class="bar"></div>
+
+      <div id="G-N40" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--am);background:rgba(245,158,11,.12);">G-N40 · HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Memory OS decay_rate — Field Defined in Schema, Never Read or Applied; Relevance Scores Never Decay</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>The memory layer schema defines decay_rate REAL NOT NULL DEFAULT 0.05 and last_used INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000) on the structured facts table. The Memory OS spec describes time-based relevance decay as a core mechanism for preventing stale facts from dominating retrieval. However there is no query, alarm, or scheduled job anywhere in the spec that reads decay_rate or last_used to compute a decayed relevance score. Retrieval queries select facts by relevance_score directly without applying decay. Over time old facts from early sessions accumulate the same relevance score as recent ones, causing the assistant to surface stale information with equal priority to current context. The columns consume storage but provide no value.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Apply decay at query time by computing an effective score in the SELECT: ORDER BY (relevance_score * exp(-decay_rate * (unixepoch('now') * 1000 - last_used) / 86400000.0)) DESC. This requires no scheduled job and is always current. Additionally register a daily DO Alarm that prunes facts below a minimum effective score threshold (e.g. 0.01): DELETE FROM facts WHERE relevance_score * exp(-decay_rate * (unixepoch('now')*1000 - last_used) / 86400000.0) &lt; 0.01. Update last_used = unixepoch('now') * 1000 whenever a fact is retrieved and used in a response.</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// Memory retrieval with time-decay applied
+const facts = db.exec(`
+  SELECT content, source,
+         relevance_score * exp(
+           -decay_rate * (unixepoch(&#x27;now&#x27;) * 1000 - last_used) / 86400000.0
+         ) AS effective_score
+  FROM facts
+  WHERE space_id = ?
+  ORDER BY effective_score DESC
+  LIMIT 20
+`, [spaceId]);</code></pre>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Security &amp; Multi-Tenant Isolation</h2>
+      <div class="bar"></div>
+
+      <div id="G-N41" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--rd);background:rgba(239,68,68,.12);">G-N41 · CRITICAL</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">AssistantDO Session Lookup — Channel Type Only as Key; All Slack Users Share One Session</h3>
+        </div>
+        <div class="box box-rd">
+          <div class="box-lbl">The Gap</div>
+          <p>Session resolution queries SELECT id FROM sessions WHERE channel = ? with the channel type (e.g. 'slack') as the only discriminator. Every user who messages the Space Assistant via Slack — regardless of which Slack channel or which user DM — is routed into the same single session. User A's conversation history, shared files, and stated credentials are visible in User B's assistant context. The session has no user_id, external_channel_id, or thread_id component. In a multi-user space (a company with multiple Slack users) this constitutes unauthorized cross-user data access. Secrets shared in one Slack DM contaminate the context of all other Slack interactions in the same space.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Change the session key to include platform-specific channel and user identifiers: WHERE channel = ? AND external_channel_id = ? AND external_user_id = ?. Add external_channel_id VARCHAR and external_user_id VARCHAR columns to the sessions table with NOT NULL constraints. Create a composite unique index: CREATE UNIQUE INDEX idx_session_channel ON sessions (space_id, channel, external_channel_id, external_user_id). Extract these from incoming webhook payloads — Slack provides both channel and user fields in every event object. Existing sessions without these fields must be migrated (backfilled with a sentinel value and invalidated).</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// WRONG — all Slack users share one session per space
+SELECT id FROM sessions WHERE channel = &#x27;slack&#x27; AND space_id = ?
+
+// CORRECT — one session per user per channel thread
+SELECT id FROM sessions
+WHERE channel = ?
+  AND external_channel_id = ?   -- e.g. Slack channel C123
+  AND external_user_id = ?      -- e.g. Slack user U456
+  AND space_id = ?</code></pre>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Performance</h2>
+      <div class="bar"></div>
+
+      <div id="G-N42" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--am);background:rgba(245,158,11,.12);">G-N42 · HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">naelao-portal — Portal Code Fetched From R2 on Every Request; No Caching; High Latency and Cost</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>The portal loader executes on every incoming HTTP request: env.NAELAO_WORKSPACE.get(`spaces/${spaceId}/portal/index.ts`) followed by portalObj.text(), then passes the raw source code to the Dynamic Worker Loader DO for evaluation. Every page view triggers an R2 GET operation (latency 50–100ms) plus a full code evaluation cycle in the DO. At 1,000 page views per day per space this is 1,000 R2 GETs per day per space purely for code loading. R2 charges $0.36 per million CLASS B operations (GET). There is no ETag, conditional GET, Cache API usage, or in-memory cache. Under moderate traffic, this hits R2 operation rate limits and makes every portal page response 50–100ms slower than it needs to be.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Cache the compiled portal artifact in the CF Cache API. On first request: fetch from R2, compile/validate, cache using cache.put() with a cache key of `https://naelao-portal-cache/${spaceId}/${portalEtag}` and a Cache-Control: public, max-age=3600 header. On subsequent requests: check cache.match() first; serve from cache if hit. On portal code update (when the builder saves changes): call cache.delete() for all cached versions of that spaceId. Store the compiled bundle (not raw TypeScript) so evaluation cost is paid once at upload time, not once per request.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">LoRA &amp; Bootstrap Mode</h2>
+      <div class="bar"></div>
+
+      <div id="G-N43" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--am);background:rgba(245,158,11,.12);">G-N43 · HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Bootstrap Annotation LLM Judge — No Model, No Prompt, No Rubric; Quality Gate Is Unmeasurable</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>Bootstrap mode defines a quality gate of 'average quality score &gt;= 7.5/10' and 'LLM judge scores stored per annotation'. No model is specified for the judge (Claude? Together AI? GPT-4?), no system prompt or rubric is defined for what constitutes a 1 vs 7 vs 10 quality score, and no prompt template is shown. Without a fixed rubric, different model versions score the same annotation differently, making the 7.5 threshold meaningless as models change over time. Historical score comparisons are invalid across judge model upgrades. The primary safety mechanism preventing low-quality data from entering LoRA training is undefined — anyone implementing it will implement it differently.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Specify the judge completely in code: (1) model: pin a specific model + version (e.g. claude-haiku-4-5-20251001 for cost efficiency at annotation scale). (2) system_prompt: include explicit rubric with score bands — 1–3: factually wrong or harmful; 4–6: partially correct; 7–8: correct and helpful; 9–10: ideal, cite-worthy. (3) Store judge_model_version alongside every score in the annotations table so historical queries can filter by judge version. (4) Add 5% human spot-check sampling: randomly flag 1 in 20 annotations for human review in a naelao-admin queue to calibrate automated scores against human judgment.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Agent Runtime &amp; Context</h2>
+      <div class="bar"></div>
+
+      <div id="G-N44" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--rd);background:rgba(239,68,68,.12);">G-N44 · CRITICAL</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">StreamingXMLParser truncateMiddle() — Inserts Messages in Reverse Order; Context Window Corruption</h3>
+        </div>
+        <div class="box box-rd">
+          <div class="box-lbl">The Gap</div>
+          <p>The context truncation function uses keep.splice(1, 0, messages[i]) inside a loop iterating i from messages.length-1 down to 1 (reverse order). splice(1, 0, item) always inserts at index 1. On iteration 1: [first, last]. On iteration 2: [first, second-to-last, last]. On iteration 3: [first, third-to-last, second-to-last, last]. The result is a conversation history where recent messages appear in reverse chronological order between the first and last message. The LLM receives scrambled conversation history, misattributes statements to the wrong turn, and produces incoherent responses. No error is thrown — the request is silently sent to the LLM with corrupted context. This triggers on every agent session that exceeds the context window limit, which is the common case for any long-running agent.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Replace the splice-based loop with a single array operation: const keep = [messages[0], ...messages.slice(-(targetCount - 1))]. This correctly keeps the first message (system prompt or initial context) and the most recent (targetCount - 1) messages in original chronological order. Add a unit test: assert that truncateMiddle([m0,m1,m2,m3,m4], 3) returns [m0, m3, m4] — not [m0, m4, m3] or any other order.</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// WRONG — splice at index 1 in reverse loop produces reversed messages
+for (let i = messages.length - 1; i &gt;= 1; i--) {
+  keep.splice(1, 0, messages[i]); // always inserts at [1], reversing order
+  if (keep.length &gt;= targetCount) break;
+}
+
+// CORRECT — keep first message + most recent (targetCount-1) messages
+function truncateMiddle(messages: Message[], targetCount: number): Message[] {
+  if (messages.length &lt;= targetCount) return messages;
+  return [messages[0], ...messages.slice(-(targetCount - 1))];
+}</code></pre>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Scalability</h2>
+      <div class="bar"></div>
+
+      <div id="G-N45" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--am);background:rgba(245,158,11,.12);">G-N45 · HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">SpaceTypeRegistryDO — Global Singleton Write Bottleneck; Memory Ceiling at Large Catalog Size</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>SpaceTypeRegistryDO is instantiated with idFromName('global-space-type-registry'), making it a single DO instance globally. All space type registrations, lookups, canary decisions, and version checks route to this one SQLite-backed DO. CF DOs serialize write transactions — one at a time. During a product launch or viral event with 1,000 concurrent space creations all checking the latest space type version, all 1,000 requests queue behind each other in this single DO. A large space type catalog with thousands of entries and full schema definitions loaded into the 128 MB DO memory ceiling causes OOM crashes that take down space type resolution globally for all users until the DO restarts.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Shard the registry by category using idFromName(`space-type-registry:${category}`). Use a two-tier design: a lightweight index DO stores only type IDs, names, and category tags; individual SpaceTypeDO instances (one per space type) store the full schema, system prompt addenda, and versioning data. The index DO is queried for discovery (lightweight); individual SpaceTypeDO instances are fetched only for installation. Front the index DO with a KV cache (TTL 60s) for read-heavy paths (version checks on every page load). SpaceTypeRegistryDO becomes a write-path-only component in steady state.</p>
+        </div>
+      </div>
+
+      <div id="G-N49" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--am);background:rgba(245,158,11,.12);">G-N49 · HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">AppRegistryDO — Global Singleton With No Pagination; Full Table Scan OOMs at Scale</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>AppRegistryDO is instantiated with idFromName('global-app-registry'), making it a single DO instance globally. App listing queries retrieve all published apps for the marketplace. As the catalog grows to thousands of entries, SELECT * FROM apps WHERE status='published' performs a full table scan, loads all results into the DO's 128 MB memory, and serializes the entire result set in the response. At 10,000 apps with full metadata (descriptions, schemas, permissions, icon URLs) this easily exceeds the 128 MB memory ceiling. The DO OOM-crashes, taking down app discovery for all users globally with no graceful degradation. There is no LIMIT/OFFSET or cursor-based pagination visible in the app listing endpoints.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Add mandatory pagination to all app listing queries: SELECT id, name, category, rating FROM apps WHERE status='published' AND id &gt; ? ORDER BY id LIMIT 50 — cursor-based pagination on an indexed id column. AppRegistryDO stores only index data (id, name, category, rating, install_count). Individual AppDO instances (one per app) store full metadata fetched on demand. Shard the registry by category using idFromName(`app-registry:${category}`) to distribute write load and reduce per-shard memory usage. Cache category indexes in KV (TTL 60s) for the marketplace browse path.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Agent Runtime &amp; Error Handling</h2>
+      <div class="bar"></div>
+
+      <div id="G-N46" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--am);background:rgba(245,158,11,.12);">G-N46 · HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">runFiber() Launched With void — Unhandled Exceptions Leave Fiber State 'running' Forever</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>The agent loop is launched as: void this.runFiber('agent-run-'+fiberId, async (ctx) =&gt; { await this.executeAgentLoop(...) }). The void operator discards the returned Promise. If executeAgentLoop() throws an unhandled exception (network timeout, LLM API error, OOM, uncaught tool failure) and it escapes runFiber()'s catch handler, the fiber row in SQLite remains status='running' indefinitely. There is no outer .catch() to detect this. Dead fibers in 'running' state prevent session garbage collection, appear as hanging agent sessions in operator dashboards, and may block new runs on the same session if the spec includes a guard against concurrent fibers.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Remove void and handle the promise explicitly: this.runFiber(...).catch(async (err) =&gt; { await this.ctx.storage.sql.exec( "UPDATE fibers SET status='failed', error=?, ended_at=datetime('now') WHERE id=?", [err.message, fiberId]); this.broadcastError(sessionId, err); }). Ensure runFiber() itself wraps the callback in try/catch and always transitions fiber state to either 'completed' or 'failed'. Register a DO Alarm as watchdog: if any fiber remains 'running' for more than 10 minutes, transition it to 'failed' and push a timeout event to the client WebSocket.</p>
+        </div>
+        <pre style="background:var(--bg3);border:1px solid var(--brd);border-radius:8px;padding:16px;overflow-x:auto;margin-top:12px;"><code style="font-family:'DM Mono',monospace;font-size:11.5px;color:var(--cy);line-height:1.6;">// WRONG — void discards errors, fiber stays &#x27;running&#x27; on exception
+void this.runFiber(`agent-run-${fiberId}`, async (ctx) =&gt; {
+  await this.executeAgentLoop(sessionId, userMsgId, ctx);
+});
+
+// CORRECT — always settle fiber state
+this.runFiber(`agent-run-${fiberId}`, async (ctx) =&gt; {
+  await this.executeAgentLoop(sessionId, userMsgId, ctx);
+}).catch(async (err: Error) =&gt; {
+  await this.db.exec(
+    `UPDATE fibers SET status=&#x27;failed&#x27;, error=?, ended_at=datetime(&#x27;now&#x27;) WHERE id=?`,
+    [err.message, fiberId]
+  );
+  this.broadcast({ type: &#x27;fiber.failed&#x27;, fiberId, error: err.message });
+});</code></pre>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Billing &amp; Payments</h2>
+      <div class="bar"></div>
+
+      <div id="G-N47" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--am);background:rgba(245,158,11,.12);">G-N47 · HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">WalletDO x402 Cross-Space Payment — Nested DO Calls Risk Deadlock; Funds Lost on Timeout</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>The x402 payment flow orchestrates both the payer's debit and the payee's credit through WalletDO instances. If the orchestration calls the payer's WalletDO which then internally calls the payee's WalletDO within the same request chain, and CF routes both to the same DO instance (naming collision, or if a space pays itself), the nested DO fetch deadlocks: the outer request holds the DO's single-thread lock while waiting for the inner request, which cannot execute because the lock is held. CF DOs do not support reentrant locking. After 30 seconds the outer DO times out. The debit may have already been committed to SQLite, resulting in funds permanently lost from the payer with no credit to the payee.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Never nest WalletDO calls. Use a PaymentCoordinatorDO as the orchestrator: it receives the payment request, calls payer WalletDO.debit() in one independent request, then calls payee WalletDO.credit() in a second independent request. Use a two-phase commit log in PaymentCoordinatorDO: write 'debit_pending', execute debit, write 'debit_done', execute credit, write 'complete'. A recovery alarm handles any state stuck at 'debit_done' by retrying the credit. Add a guard rejecting self-payments before initiating the flow: if payerSpaceId === payeeSpaceId return 400 error.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:64px;margin-bottom:8px;">Operational</h2>
+      <div class="bar"></div>
+
+      <div id="G-N50" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+        <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+          <span style="font-family:'DM Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;color:var(--am);background:rgba(245,158,11,.12);">G-N50 · HIGH</span>
+          <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;">Space Provisioner — Returns Space ID Immediately; Race With Premature API Calls Corrupts DO State</h3>
+        </div>
+        <div class="box box-am">
+          <div class="box-lbl">The Gap</div>
+          <p>The space creation endpoint calls the provisioner via ctx.waitUntil() and returns the new space ID immediately. The client immediately begins making requests to the new space — adding members, installing apps, configuring settings — before the provisioner has completed creating SpaceDO, AgentDO, AssistantDO, and WalletDO instances and their SQLite schemas. These requests arrive at DOs that do not yet exist or whose schemas are incomplete. CF creates a new empty DO instance on first access, but when the provisioner subsequently initializes the same DO it finds conflicting state. The resulting corruption manifests as missing tables, duplicate rows, and wrong schema versions — difficult to diagnose and often permanent.</p>
+        </div>
+        <div class="box box-gr" style="margin-top:12px;">
+          <div class="box-lbl">Required Fix</div>
+          <p>Add status: 'provisioning' | 'ready' | 'error' to the space record in the central registry (SpaceTypeRegistryDO or a dedicated SpaceIndexDO). All API endpoints targeting a space must check status === 'ready' before proceeding, returning 503 Service Unavailable with Retry-After: 5 while provisioning is in progress. The provisioner transitions status to 'ready' only after all DO initializations complete successfully in sequence: SpaceDO → AgentDO → AssistantDO → WalletDO. Register a provisioning watchdog DO Alarm: if status remains 'provisioning' for more than 60 seconds, transition to 'error' and send an operator alert.</p>
+        </div>
+      </div>
+
+      <h2 style="margin-top:80px;margin-bottom:8px;">Appendix C — Gap Index</h2>
+      <div class="bar"></div>
+      <table class="t" style="margin-top:24px;">
+        <thead>
+          <tr><th>ID</th><th>Severity</th><th>Gap Title</th><th>Category</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="tl"><a href="#G-N31" style="color:var(--pu);text-decoration:none;">G-N31</a></td>
+            <td style="color:var(--rd);font-weight:600;">CRITICAL</td>
+            <td>WorkflowRegistryDO cron Parser — Day-of-Month Field Skipped; Range/Lis…</td>
+            <td class="dim">Scheduling &amp; Workflows</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N32" style="color:var(--pu);text-decoration:none;">G-N32</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>WorkflowRegistryDO error_count — Cumulative, Never Reset; Transient Er…</td>
+            <td class="dim">Scheduling &amp; Workflows</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N33" style="color:var(--pu);text-decoration:none;">G-N33</a></td>
+            <td style="color:var(--rd);font-weight:600;">CRITICAL</td>
+            <td>27-Pattern Security Scanner — Module-Level Global RegExp With /g Flag;…</td>
+            <td class="dim">Security</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N34" style="color:var(--pu);text-decoration:none;">G-N34</a></td>
+            <td style="color:var(--rd);font-weight:600;">CRITICAL</td>
+            <td>React Artifacts — import from 'react-dom/server' Has No npm Resolution…</td>
+            <td class="dim">Agent Runtime &amp; Artifacts</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N35" style="color:var(--pu);text-decoration:none;">G-N35</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>naelao-mcp-hub resolveToolRoute() — 'unknown' Hardcoded as agentId; Ca…</td>
+            <td class="dim">Agent Runtime &amp; MCP</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N36" style="color:var(--pu);text-decoration:none;">G-N36</a></td>
+            <td style="color:var(--rd);font-weight:600;">CRITICAL</td>
+            <td>Analytics Engine Dashboard — PostgreSQL Syntax Used Throughout; ClickH…</td>
+            <td class="dim">Observability</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N37" style="color:var(--pu);text-decoration:none;">G-N37</a></td>
+            <td style="color:var(--rd);font-weight:600;">CRITICAL</td>
+            <td>VAPI Voice Escalation — Fire-and-Forget; Approval Results Never Delive…</td>
+            <td class="dim">Voice &amp; Notifications</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N38" style="color:var(--pu);text-decoration:none;">G-N38</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>LoRA Training Data Loaded Entirely Into Worker Memory — Files Over 50 …</td>
+            <td class="dim">LoRA Fine-Tuning</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N39" style="color:var(--pu);text-decoration:none;">G-N39</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>naelao-eval — Returns 'started' via waitUntil(); CI Gate Has No Way to…</td>
+            <td class="dim">Quality &amp; CI</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N40" style="color:var(--pu);text-decoration:none;">G-N40</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>Memory OS decay_rate — Field Defined in Schema, Never Read or Applied;…</td>
+            <td class="dim">Memory OS</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N41" style="color:var(--pu);text-decoration:none;">G-N41</a></td>
+            <td style="color:var(--rd);font-weight:600;">CRITICAL</td>
+            <td>AssistantDO Session Lookup — Channel Type Only as Key; All Slack Users…</td>
+            <td class="dim">Security &amp; Multi-Tenant Isolation</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N42" style="color:var(--pu);text-decoration:none;">G-N42</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>naelao-portal — Portal Code Fetched From R2 on Every Request; No Cachi…</td>
+            <td class="dim">Performance</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N43" style="color:var(--pu);text-decoration:none;">G-N43</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>Bootstrap Annotation LLM Judge — No Model, No Prompt, No Rubric; Quali…</td>
+            <td class="dim">LoRA &amp; Bootstrap Mode</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N44" style="color:var(--pu);text-decoration:none;">G-N44</a></td>
+            <td style="color:var(--rd);font-weight:600;">CRITICAL</td>
+            <td>StreamingXMLParser truncateMiddle() — Inserts Messages in Reverse Orde…</td>
+            <td class="dim">Agent Runtime &amp; Context</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N45" style="color:var(--pu);text-decoration:none;">G-N45</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>SpaceTypeRegistryDO — Global Singleton Write Bottleneck; Memory Ceilin…</td>
+            <td class="dim">Scalability</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N46" style="color:var(--pu);text-decoration:none;">G-N46</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>runFiber() Launched With void — Unhandled Exceptions Leave Fiber State…</td>
+            <td class="dim">Agent Runtime &amp; Error Handling</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N47" style="color:var(--pu);text-decoration:none;">G-N47</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>WalletDO x402 Cross-Space Payment — Nested DO Calls Risk Deadlock; Fun…</td>
+            <td class="dim">Billing &amp; Payments</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N48" style="color:var(--pu);text-decoration:none;">G-N48</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>Dynamic Worker Loader — No Sandbox Memory Limit; Malicious Code Exhaus…</td>
+            <td class="dim">Security</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N49" style="color:var(--pu);text-decoration:none;">G-N49</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>AppRegistryDO — Global Singleton With No Pagination; Full Table Scan O…</td>
+            <td class="dim">Scalability</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N50" style="color:var(--pu);text-decoration:none;">G-N50</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>Space Provisioner — Returns Space ID Immediately; Race With Premature …</td>
+            <td class="dim">Operational</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N51" style="color:var(--pu);text-decoration:none;">G-N51</a></td>
+            <td style="color:var(--rd);font-weight:600;">CRITICAL</td>
+            <td>naelao-mcp-hub Credential Injection — spaceId Trusted From Request Bod…</td>
+            <td class="dim">Security</td>
+          </tr>
+          <tr>
+            <td class="tl"><a href="#G-N52" style="color:var(--pu);text-decoration:none;">G-N52</a></td>
+            <td style="color:var(--am);font-weight:600;">HIGH</td>
+            <td>WorkflowRegistryDO Alarm Dispatches Workflows Sequentially — Long Disp…</td>
+            <td class="dim">Scheduling &amp; Workflows</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="box box-or" style="margin-top:48px;">
+        <div class="box-lbl">Complete Gap Coverage Summary</div>
+        <p>Appendix A: 125 gaps (G-SEC-01 through G-MIS-12) — structural and architectural gaps from the original
+          multi-volume audit. Appendix B: 30 gaps (G-N01 through G-N30) — Cloudflare platform hard limits, missing
+          feature specifications, and cost traps. Appendix C: 22 gaps (G-N31 through G-N52) — implementation-level
+          defects found in second-pass code-level audit. Total: 177 gaps identified and resolved across all three
+          appendices.</p>
+      </div>
+
+    </div><!-- /gap-resolutions-c -->
+
 </body>
 
 </html>
