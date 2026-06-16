@@ -38623,6 +38623,334 @@ Inject FakeVectorize via the env binding in tests. This enables full integration
   </p>
 </div>
 </section>
+
+
+<section id="appendix-f" style="margin:80px 0 0;padding:60px 0 0;border-top:3px solid var(--or);">
+<div style="margin-bottom:32px;">
+  <span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:8px;">Appendix F · Fifth-Pass Audit</span>
+  <h2 style="font-family:'Fraunces',serif;font-size:clamp(28px,4vw,40px);font-weight:700;color:var(--tx);margin:0 0 12px;">Operational, Distributed-Systems &amp; Cloudflare Runtime Gaps</h2>
+  <p style="color:#94A3B8;max-width:720px;line-height:1.7;">
+    26 additional gaps identified in a fifth-pass review targeting under-examined categories: operational
+    readiness, distributed-systems edge cases, Cloudflare-specific runtime traps (alarm contention,
+    DO eviction, WebSocket hibernation, JSONC parse bugs), data model correctness, and observability.
+    6 critical, 13 high, 7 medium severity issues.
+  </p>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:16px;">
+    <span style="font-family:'DM Mono',monospace;font-size:11px;background:#EF444422;color:#EF4444;border:1px solid #EF444444;padding:4px 10px;border-radius:4px;">6 CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:11px;background:#E8692A22;color:#E8692A;border:1px solid #E8692A44;padding:4px 10px;border-radius:4px;">13 HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:11px;background:#EAB30822;color:#EAB308;border:1px solid #EAB30844;padding:4px 10px;border-radius:4px;">7 MEDIUM</span>
+  </div>
+</div>
+
+<div style="margin:48px 0 0;padding:24px 0 0;border-top:1px solid #1E293B;">
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.12em;text-transform:uppercase;">CRITICAL SEVERITY — 6 GAPS</span>
+</div>
+
+<div id="G-F01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F01</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">ConcurrencyDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">ConcurrencyDO Alarm Contention — Noisy-Neighbour Starvation Under Burst Load</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">ConcurrencyDO uses a single ctx.storage.setAlarm() to sweep stale runs. Every active run in a space hits the same DO, and a single space with many concurrent runs keeps the alarm firing continuously, starving the alarm handler of time to process heartbeat checks for other spaces sharing the same Cloudflare account&#x27;s alarm concurrency budget. With thousands of spaces each having a ConcurrencyDO, a burst of concurrent agents (e.g., a viral Launchpad product) can cause alarm queue backup across the entire platform.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Key ConcurrencyDOs by {spaceId} and enforce a platform-level MAX_CONCURRENT_AGENT_RUNS_PER_SPACE hard cap before reserving a slot, preventing any single space from exhausting the alarm budget. Implement exponential backoff on alarm rescheduling when no stale runs are found. Monitor ConcurrencyDO.alarm() latency via Analytics Engine — alert when P99 exceeds 500ms.</p></div>
+</div>
+
+<div id="G-F02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F02</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">WalletDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">No Platform-Level Daily Spending Cap — Runaway Agent Can Exhaust Credits Without Ceiling</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec defines per-space monthly_budget and max_single_spend policies in WalletDO, but these are builder-configurable defaults, not platform-enforced hard ceilings. An agent in an infinite loop calls deductCredits() on every LLM turn. Blocking happens on the next run&#x27;s pre-flight, not mid-run — meaning an in-flight loop burns balance unchecked. There is no platform-level absolute ceiling (e.g. $500/day/space) that Naelao enforces independent of builder policy.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add PLATFORM_DAILY_CREDIT_CEILING_USD (e.g. $500) enforced in WalletDO.deductCredits() independent of builder policy. Track daily_spent in the wallet table, reset at UTC midnight via DO alarm. If daily_spent + amount &gt; PLATFORM_CEILING, reject with { success: false, reason: &#x27;platform_daily_limit_exceeded&#x27; } and emit a security_rate_limit analytics event. naelao-sweeper should scan for wallets with daily_spent &gt; 0.8 * CEILING and alert ops.</p></div>
+</div>
+
+<div id="G-F03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F03</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">SpaceDO / naelao-auth</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">No Negative Auth-Result Caching — Banned User Can DoS SpaceDO with Auth Stampede</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">SpaceDO.authCheck() explicitly avoids caching negative lookups to allow fast invite propagation. This means every rejected request from a banned or uninvited user performs a full recursive CTE query against SpaceDO SQLite. A single banned user making 100 requests/second generates 100 recursive CTE queries per second against the SpaceDO for that product. Since SpaceDO is single-threaded, this serialises all auth checks for all users of that product, making it effectively unavailable during the attack.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Cache negative auth results in DO memory with a 30-second TTL (fast enough for invite propagation). Key: deny:{userId}:{spaceId}. On invalidateUser() call, clear both positive and negative cache entries. Add a per-IP rate limit (from CF-Connecting-IP header) upstream in naelao-auth: max 20 auth attempts per IP per 10 seconds stored in NAELAO_CIRCUIT_KV, returning HTTP 429 before the SpaceDO is ever contacted.</p></div>
+</div>
+
+<div id="G-F04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F04</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-workflows / Dynamic Workflow</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Workflow SpaceId Binding Is Not Cryptographically Verified — Tenant Code Execution Forgery</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The workflow loader reads event.payload.spaceId to determine which R2 path (spaces/{spaceId}/workflows/{name}.ts) to load. If an attacker forges the spaceId field in a CF Workflow event payload (e.g. via queue message injection), the loader executes another tenant&#x27;s workflow code under the attacker&#x27;s credentials. The validation is only a string equality check on untrusted input with no cryptographic binding between the loaded R2 code and the requesting spaceId.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Before loading workflow code from R2, verify spaceId against the user&#x27;s JWT via SpaceDO.authCheck(). Additionally, store a HMAC of {spaceId}:{workflowName}:{createdAt} in WorkflowRegistryDO at registration time and verify it matches before code execution. This creates a two-factor check — string equality + cryptographic binding — that cannot be forged without access to NAELAO_JWT_SECRET.</p></div>
+</div>
+
+<div id="G-F05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F05</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">LocalTunnelDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Pending Tool-Call Resolve Functions Stored in JS Map — Lost on DO Eviction, Agent Hangs Forever</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">LocalTunnelDO.execOnLocal() stores resolve functions in this.pendingCalls (a JS Map) with a 30-second setTimeout. If the DO is evicted before the local agent responds, the pendingCalls Map is destroyed. When the DO is recreated, the local agent&#x27;s response arrives as a WebSocket message but this.pendingCalls.get(callId) returns undefined. The AgentDO is waiting on a Promise that will never resolve — a silent hang that the sweeper won&#x27;t detect for 5 minutes.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Persist pending call state in ctx.storage.sql with columns (call_id, agent_run_id, started_at, timeout_ms). In webSocketMessage(), check the DB first. Use ctx.storage.setAlarm() instead of setTimeout — alarms survive DO eviction, setTimeout does not. In alarm(), sweep expired pending calls and resolve them with a timeout error, triggering WAL-based recovery in AgentDO.</p></div>
+</div>
+
+<div id="G-F06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F06</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-credentials</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Static NAELAO_INTERNAL_TOKEN Allows Cross-Space Credential Exfiltration if Any Worker Is Compromised</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">NAELAO_INTERNAL_TOKEN is a static secret shared across all Workers. If any Workflow template or Dynamic Worker can call the credentials endpoint with this token via direct fetch(), it bypasses Service Binding isolation. Compromise of any one Worker exposes all credentials for all spaces. The token has no per-request expiry, no spaceId binding, and no audit trail.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace NAELAO_INTERNAL_TOKEN for credential access with a short-lived, per-request HMAC signed with NAELAO_JWT_SECRET that includes {spaceId}:{agentId}:{timestamp} and expires in 60 seconds. The credentials Worker must verify HMAC signature and timestamp freshness before returning any credential. Disallow fetching credentials for any spaceId not matching the HMAC-embedded spaceId, preventing horizontal access between spaces.</p></div>
+</div>
+
+<div style="margin:48px 0 0;padding:24px 0 0;border-top:1px solid #1E293B;">
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.12em;text-transform:uppercase;">HIGH SEVERITY — 13 GAPS</span>
+</div>
+
+<div id="G-F07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F07</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">NaelaoAgentDO / SQLite</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Missing Index on run_wal(run_id, status) — O(n) Full Table Scan on Every Fiber Recovery</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">onFiberRecovered() queries run_wal to find pending tool calls for a given run_id. The schema only has a primary key on id (the WAL entry UUID). A query like SELECT * FROM run_wal WHERE run_id = ? AND status = &#x27;pending&#x27; performs a full table scan. An agent that has run 10,000 tool calls will have 10,000 WAL rows. Recovery after DO eviction takes O(n) time proportional to total WAL history, which can exceed the CPU limit for long-running agents.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add CREATE INDEX IF NOT EXISTS idx_wal_run_status ON run_wal(run_id, status) in initSchema(). Also add CREATE INDEX IF NOT EXISTS idx_wal_started_at ON run_wal(started_at) to support the sweeper&#x27;s cleanup query. Add a WAL compaction step that deletes rows older than 7 days where status IN (&#x27;complete&#x27;, &#x27;failed&#x27;), preventing unbounded table growth.</p></div>
+</div>
+
+<div id="G-F08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F08</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">SpaceDO / naelao-billing</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Billing Schema Split-Brain — space_credits Specified in Both PostgreSQL Migration and SpaceDO SQLite</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Section §22 shows space_credits and token_usage as PostgreSQL RLS-backed tables in migration 0012_billing_schema.sql. But the architecture simultaneously states &#x27;no external PostgreSQL — data layer is SpaceDO SQLite per product&#x27;. naelao-billing Worker code calls db.query() with $1/$2 parameterization (PostgreSQL syntax) against what appears to be Hyperdrive. This is a fundamental contradiction — the billing schema exists in two specified backends simultaneously, and a developer implementing this will create a split-brain billing system.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Explicitly declare that space_credits and token_usage live exclusively in SpaceDO SQLite. Remove all db.query() calls in naelao-billing that touch these tables and replace them with spaceDO.deductCredits() and spaceDO.recordTokenUsage() typed methods. Remove all PostgreSQL migration files for billing tables from the spec. Add a CI test: &#x27;billing Worker never imports or references a Hyperdrive/D1 binding&#x27;.</p></div>
+</div>
+
+<div id="G-F09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F09</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">Artifact Worker</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Template Literal Interpolation in wrapArtifactCode() — Backtick Injection Escapes to Dynamic Worker Code</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">For the React artifact type, user-controlled code is interpolated as ${code} directly into the worker body without escaping, inside a template literal for the HTML string. A React artifact containing backtick or ${...} sequences in string literals or comments will break out of the template context, potentially executing arbitrary code in the Dynamic Worker serving the artifact, which runs under naelao-artifact Worker&#x27;s permissions.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Never use template literal interpolation for user-controlled code in wrapArtifactCode(). Store the code string as a base64-encoded constant and decode at runtime: const userCode = atob(&#x27;${btoa(code)}&#x27;). For React artifacts, use a code-splitting approach: store the component code in R2 and import via await import(r2SignedUrl) rather than inlining into the harness. The code scanner should reject artifacts containing ${...} outside of string literals.</p></div>
+</div>
+
+<div id="G-F10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F10</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">wrangler.jsonc / Portal router</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">NAELAO_PORTAL_ROUTES KV Binding Absent from wrangler.jsonc — Portal Routing Broken at Deploy</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The portal router uses env.PORTAL_ROUTES — a KV namespace binding that appears in portal code but is absent from the wrangler.jsonc spec. Only three KV namespaces are declared: NAELAO_CONFIG_KV, NAELAO_CIRCUIT_KV, and NAELAO_ARTIFACT_KV. If portal keys are stored in NAELAO_CONFIG_KV as a fallback, a space with slug &#x27;skill-signature&#x27; creates a key colliding with the skill signature key pattern. Portal routing will throw &#x27;binding not found&#x27; on first deploy.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add { &#x27;binding&#x27;: &#x27;NAELAO_PORTAL_ROUTES&#x27;, &#x27;id&#x27;: &#x27;YOUR_PORTAL_ROUTES_KV_ID&#x27; } to kv_namespaces in wrangler.jsonc. Update all portal router and provisioner code to use env.NAELAO_PORTAL_ROUTES exclusively. Document the key namespace for each KV binding in a spec section. Add a CI test that verifies no KV binding writes a key matching another binding&#x27;s prefix pattern.</p></div>
+</div>
+
+<div id="G-F11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F11</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">R2 / naelao-workspace</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">R2 Object Versioning Not Enabled — Partial Writes Silently Destroy Live File Content</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec uses R2 for the agent filesystem and version history. However, R2 object versioning (CF&#x27;s built-in feature, distinct from the app-level .versions/ folder) is never mentioned as enabled. Without it, a partial write (connection drop mid-upload, Worker timeout during large file write) replaces the live key with a zero-byte or truncated object. The app-level version history only captures successfully completed writes — a failed write creates no version entry and destroys current content permanently.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Enable R2 object versioning via wrangler r2 bucket versioning enable naelao-workspace. Update writeFileWithVersioning() to specify ifMatch ETag on overwrite operations for optimistic concurrency. Add a restore_version endpoint in the file-manager skill using R2&#x27;s versioned object API. Document the R2 versioning strategy in the disaster recovery section and add it to the pre-launch checklist.</p></div>
+</div>
+
+<div id="G-F12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F12</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">FinetuneJobDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">alarm() Uses PostgreSQL-Style db.query() in a Durable Object — Throws Runtime Error After Eviction</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">FinetuneJobDO.alarm() uses await db.query(&#x27;UPDATE fine_tune_jobs SET status = $1 ...&#x27;) with $1/$2/$3 PostgreSQL parameterization. A DO cannot hold a reference to an external database connection across hibernation events. The db variable treated as a persistent module-level reference will throw a runtime error when the alarm fires after a DO eviction. Additionally, fine_tune_jobs is defined in the SpaceDO SQLite schema — the correct data access path is a Service Binding call, not a direct DB connection.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace db.query() in FinetuneJobDO.alarm() with a Service Binding call to SpaceDO: const spaceDO = this.env.NAELAO_SPACE_DO.get(this.env.NAELAO_SPACE_DO.idFromName(this.rootSpaceId)); await spaceDO.updateFinetuneJob({ jobId, status, resultModel }). Store rootSpaceId and spaceId in DO storage (this.ctx.storage.put()) during init() so they survive eviction. Add an integration test that verifies alarm() succeeds after a simulated DO eviction.</p></div>
+</div>
+
+<div id="G-F13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F13</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-mcp-hub</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">No Idempotency Key on MCP Tool Calls — Retries Cause Duplicate External Actions</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When NaelaoAgentDO calls an App&#x27;s MCP tool via naelao-mcp-hub and the HTTP response times out or returns 5xx, AgentDO&#x27;s retry logic (CF queue retry or WAL-based recovery) re-invokes the tool. The MCP protocol has no idempotency key in the spec — no X-Idempotency-Key header, no deduplication window, and no guidance about making handlers idempotent. A payment tool called twice charges the customer twice. An email tool called twice sends two emails.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add X-Naelao-Idempotency-Key: {runId}:{walEntryId} header to all MCP tool calls made through naelao-mcp-hub. The WAL entry ID is already written before tool execution and is stable across retries. Document this header in the App developer guide and provide a checkIdempotency(key, env) helper in the Naelao Apps SDK that stores processed keys in KV with 24-hour TTL. Mark it REQUIRED for App tools that perform external write operations.</p></div>
+</div>
+
+<div id="G-F14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F14</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">SpaceTypeRegistryDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Canary Promotion Has No Minimum Sample Size Guard — 0/2 Error Rate Triggers Full Rollout</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">processCanaryRollouts() checks errorRate &lt; 0.05 before promoting a canary. If a Space Type is newly published with canary_pct = 5% and there is minimal traffic (e.g., 2 provisioning events), an error rate of 0/2 = 0% passes the check and the canary is promoted to 20% then 100%. A latent bug not triggered by the 2 test events is then deployed to all users. The spec shows no minimum sample count guard.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a minimum sample size check before allowing canary promotion: if (sampleCount &lt; MIN_CANARY_SAMPLE_SIZE) { continue; } where MIN_CANARY_SAMPLE_SIZE = 50. Also require hoursSincePublish &gt;= 48 before full promotion to 100%. Add a canary_sample_count column to the versions table. If a canary has been stuck at 5% for more than 7 days (insufficient traffic), auto-promote with an ops alert rather than holding indefinitely.</p></div>
+</div>
+
+<div id="G-F15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F15</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">NaelaoAgentDO / token_buffer</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">token_buffer Table Grows Unbounded — Long-Running Agents Exhaust DO SQLite Storage Limit</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Every streaming token from the LLM is inserted into token_buffer(run_id, delta, created_at). There is no LIMIT enforced on insertion and no cleanup mechanism. A multi-hour background agent generating 2M output tokens inserts 2M rows into this table. At ~50 bytes per row, 10 concurrent long-running agents can approach the 1GB DO SQLite storage limit. Additionally, the reconnect replay query SELECT * FROM token_buffer WHERE run_id = ? returns millions of rows, causing multi-second context switches on reconnect.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add cleanup in the insertToken() path: after every 1000 inserts, delete rows beyond the last 500: DELETE FROM token_buffer WHERE run_id = ? AND id NOT IN (SELECT id FROM token_buffer WHERE run_id = ? ORDER BY id DESC LIMIT 500). Add a token_buffer_watermark column to fibers table to track the last replayed token position, enabling incremental replay rather than full-table scan.</p></div>
+</div>
+
+<div id="G-F16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F16</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-notifications</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">sendPush() Calls fetch(spaceDO.getActiveDeviceTokens()) — API Misuse, Push Delivery Broken</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">In sendPush(), the code is: const resp = await fetch(spaceDO.getActiveDeviceTokens(payload.userId)). spaceDO.getActiveDeviceTokens() is a DO method that returns unknown[] directly, not a URL string. Passing its return value to fetch() throws TypeError at runtime. This means push notification delivery is broken by a fundamental API misuse in the spec&#x27;s reference implementation, caught by Promise.allSettled as a silent error — notifications are never delivered.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace with the correct Service Binding pattern: const stub = this.env.NAELAO_SPACE_DO.get(this.env.NAELAO_SPACE_DO.idFromName(rootSpaceId)); const tokenResp = await stub.fetch(new Request(&#x27;http://space/device-tokens&#x27;, { method: &#x27;POST&#x27;, body: JSON.stringify({ userId: payload.userId }) })); const tokens = await tokenResp.json(). Add device_tokens table to SpaceDO SQLite schema with columns (user_id, token, platform, registered_at) and add this endpoint to the SpaceDO spec section and test suite.</p></div>
+</div>
+
+<div id="G-F17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F17</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">wrangler.jsonc</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Commented-Out Hyperdrive Block Creates JSONC Parse Ambiguity — Ghost Bindings on Some Wrangler Versions</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The wrangler.jsonc spec shows a // comment on line 1 of a multi-line block, but // only comments out the remainder of that single line. The multi-line content on subsequent lines (containing { &#x27;binding&#x27;: &#x27;SPACE_DO&#x27;, &#x27;class_name&#x27;: &#x27;SpaceDO&#x27;, ... }) is NOT commented out. Some wrangler versions reject the file with a parse error; others silently include a duplicate SPACE_DO binding name that conflicts with the DO binding of the same name.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove the commented-out Hyperdrive block entirely from wrangler.jsonc. Replace with a single-line comment: // Hyperdrive binding removed — see SpaceDO per-product DB architecture (§22). Add a CI step that runs wrangler deploy --dry-run and fails on any wrangler parse error. Add a test that parses wrangler.jsonc with a strict JSONC parser and verifies no duplicate binding names exist.</p></div>
+</div>
+
+<div id="G-F18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F18</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">AssistantDO / WorkflowRegistryDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Custom Cron Parser Skips Day-of-Month Field, No Timezone Support, No Input Validation</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">nextCronFire() uses a custom parser: const [min, hour, , month, dow] = cron.split(&#x27; &#x27;). The destructure skips the day-of-month field with a comma. Monthly crons (0 0 1 * *) silently run daily instead. All times are treated as UTC — a user configuring &#x27;9am&#x27; means their local timezone. No validation at store time — invalid cron like &#x27;every day&#x27; is stored without error and nextCronFire() returns Date.now() + 86_400_000 (fallback), causing the job to run every 24h from save time, not midnight.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the custom cron parser with a CF-compatible ESM library (e.g. croner, no Node dependencies). Add timezone field to cron job configuration: { schedule: &#x27;0 9 * * 1-5&#x27;, timezone: &#x27;America/New_York&#x27; }. Validate at registration time by calling nextCronFire(schedule) — if it throws or returns implausibly far future, reject with HTTP 400 and a human-readable error. Add Suite test: &#x27;Monthly cron 0 0 1 * * fires on the 1st, not daily&#x27;.</p></div>
+</div>
+
+<div id="G-F19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F19</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">NaelaoAgentDO / WebSocket</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">acceptWebSocket() Not Called in Upgrade Handler — DO Hibernation API Not Activated</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">CF WebSocket Hibernation requires explicitly calling ctx.acceptWebSocket(server, tags) in the DO before returning the 101 response. The spec&#x27;s handleWebSocketUpgrade() in websocket.ts creates a WebSocketPair and returns the client in the response, but never passes the server-side WebSocket to the DO&#x27;s hibernation API. This is done correctly in LocalTunnelDO but skipped in the main agent WebSocket upgrade path. Without acceptWebSocket(), messages during hibernation are not delivered to webSocketMessage(), breaking reconnect replay for users who go offline and come back.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">In handleWebSocketUpgrade(), after security checks pass, route to the target NaelaoAgentDO and call ctx.acceptWebSocket(server, [spaceId, agentId]) within the DO context — not in an intermediary Worker. Document in the spec that acceptWebSocket() must be called in the DO that will handle the messages. Add a test: &#x27;WebSocket message received after DO hibernation is delivered to webSocketMessage() handler&#x27;.</p></div>
+</div>
+
+<div style="margin:48px 0 0;padding:24px 0 0;border-top:1px solid #1E293B;">
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.12em;text-transform:uppercase;">MEDIUM SEVERITY — 7 GAPS</span>
+</div>
+
+<div id="G-F20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F20</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-analytics</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Positional Analytics Engine Fields Have No Schema Registry — Adding a Field Silently Corrupts All Queries</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Analytics Engine data points use positional indexing: TOKEN_USAGE_BY_MODEL queries blob4 as model and double5 as total_cost_usd. The mapping from position to field name is only defined in mapEventToDataPoint(). If a developer adds a new field at position 3 in the doubles array, double5 (total_cost_usd) shifts to double6 — all existing Analytics queries silently return wrong values for cost (likely zero). No schema versioning, no compile-time check, and query strings are raw SQL with no type safety.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Create a typed schema registry file analytics-schema.ts that exports named constants: export const TOKEN_USAGE = { doubles: { inputTokens: 0, outputTokens: 1, costUsd: 4 }, blobs: { eventType: 0, userId: 1, model: 3 } }. Use these constants in both mapEventToDataPoint() and all query strings. Add a CI test that generates a data point and verifies positional values match the schema registry. Version the schema (e.g. v1_ prefix) so breaking changes require explicit migration.</p></div>
+</div>
+
+<div id="G-F21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F21</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">All Workers (API design)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">No API Versioning Strategy — All Endpoints at Root Path, Breaking Changes Impossible to Deploy Safely</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">All API endpoints are defined without a version prefix: POST /spaces, GET /spaces/:spaceId, POST /agents/:agentId/run. When apps are built against this API, changing any endpoint signature breaks all existing clients simultaneously. There is no mechanism for a builder&#x27;s SDK to target a specific API version. Error response format is also inconsistent between endpoints — some return { error: &#x27;message&#x27; }, others { error: &#x27;CODE&#x27;, message: &#x27;text&#x27; }.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add /v1/ prefix to all Naelao HTTP API routes. Define a standard error envelope: { error: { code: &#x27;SNAKE_CASE_CODE&#x27;, message: &#x27;Human readable&#x27;, details?: Record&lt;string, unknown&gt; } } and enforce it via a shared errorResponse(code, message) helper. Add API-Version: 1 response header to all responses. Declare a stability policy: /v1/ endpoints are stable for 12 months; breaking changes increment to /v2/. Add to pre-launch checklist: &#x27;All 22 Workers return { error: { code, message } } format — verified by integration test&#x27;.</p></div>
+</div>
+
+<div id="G-F22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F22</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">SpaceDO / naelao-threads</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">getLlmFormattedMessages Uses LIMIT Without Cursor and WalletDO Uses O(n) Offset Pagination</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">SpaceDO.getLlmFormattedMessages(threadId, limit=100) returns the most recent 100 messages with no cursor or before_id parameter. For threads with 500+ messages, the context manager can only see the last 100 — earlier tool results and decisions are invisible to the agent. WalletDO.getTransactions() uses LIMIT/OFFSET pagination — offset pagination is O(n), scanning 10,000 transactions to reach offset 9,900 is a full SQLite table scan.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add cursor (a message_id) parameter to getLlmFormattedMessages(): SELECT * FROM messages WHERE thread_id = ? AND id &lt; ? ORDER BY created_at DESC LIMIT ?. Return nextCursor in the response when more messages exist. Replace offset pagination in WalletDO.getTransactions() with keyset pagination: WHERE id &lt; ? ORDER BY id DESC LIMIT ?. Update ContextManager to use cursor pagination when building long-context windows, fetching earlier pages only when the token budget allows.</p></div>
+</div>
+
+<div id="G-F23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F23</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-admin / KV</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">KV-Based Emergency Kill Switch Has 60-Second Propagation Delay — Agents Continue Running During Incidents</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">AgentDO checks env.NAELAO_CONFIG_KV.get(&#x27;emergency:kill-all-agents&#x27;) at the top of every LLM loop iteration. CF KV is eventually consistent with up to 60-second propagation SLA to all edge nodes. During a security incident requiring immediate agent halt, agents at edge nodes that haven&#x27;t received the KV update continue executing for up to 60 seconds. For an agent actively exfiltrating data via tool calls, 60 seconds is significant damage.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Supplement the KV kill switch with a DO-based kill signal for immediate propagation: maintain a KillSwitchDO singleton (idFromName(&#x27;global-kill-switch&#x27;)) that AgentDO checks via Service Binding before each LLM call. Service Binding calls propagate in under 1ms. Keep the KV check as secondary for steady-state (lower cost). Document the dual-check pattern in the security architecture section and add a test: &#x27;Kill switch activation halts agent within 1 LLM iteration&#x27;.</p></div>
+</div>
+
+<div id="G-F24" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F24</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">FinetuneJobDO / AssistantDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Alarm Handlers Not Idempotent — CF At-Least-Once Delivery Causes Duplicate Notifications and Status Updates</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">CF&#x27;s alarm system guarantees at-least-once delivery. FinetuneJobDO.alarm() calls Together AI API → UPDATE fine_tune_jobs → send notification. If the alarm fires twice (CF retry on timeout), two notifications are sent and NAELAO_NOTIFICATIONS_QUEUE.send() produces duplicate messages downstream. The UPDATE itself is idempotent, but notification sends are not — they produce duplicate emails/push messages to the builder.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add idempotency guard to all alarm handlers. Store last_alarm_executed_at in DO storage. At the start of every alarm: const lastExec = await this.ctx.storage.get(&#x27;last_alarm_executed_at&#x27;); if (lastExec &amp;&amp; Date.now() - lastExec &lt; 60_000) return;. Update after execution: await this.ctx.storage.put(&#x27;last_alarm_executed_at&#x27;, Date.now()). For notification sends, pass a deterministic id: id: `finetune-complete:${jobId}` rather than a random UUID, using the existing KV idempotency check with 24-hour TTL.</p></div>
+</div>
+
+<div id="G-F25" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F25</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-credentials</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Single Global Encryption Key for All Tenant MCP Credentials — No Per-Tenant Key Isolation</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">naelao-credentials encrypts all MCP credentials (Stripe keys, GitHub tokens, CRM credentials) using a single platform-wide NAELAO_MCP_ENCRYPTION_KEY. Key rotation requires re-encrypting all credentials for all spaces simultaneously. A side-channel attack extracting the key from any Worker instance exposes all tenant credentials. The spec&#x27;s BYOK section shows HKDF per-space key derivation but this pattern is not applied to the main credential store.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Adopt the BYOK HKDF pattern: derive a per-space encryption key using HKDF(masterKey, salt=spaceId, info=&#x27;mcp-credentials&#x27;). Store only the master key as NAELAO_MCP_MASTER_KEY. Per-space derived keys are never stored — recomputed on each decrypt. This means compromise of any single worker instance does not expose all credentials. Version the HKDF info string (mcp-credentials-v2) to allow rotation without full re-encryption.</p></div>
+</div>
+
+<div id="G-F26" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-F26</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">All systems / Observability</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">No Distributed Trace ID Propagation Across 22-Worker Call Chain — Cross-Worker Debugging Is Impossible</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">An agent run involves: naelao-router → naelao-agents → NaelaoAgentDO → naelao-mcp-hub → [App Worker] → naelao-billing → naelao-analytics. Each Worker logs independently with its own request IDs. There is no X-Trace-ID header propagated through Service Binding calls. Analytics Engine records runId for agent events but not for billing or MCP events, breaking the correlation chain. Debugging a failed agent run requires manually correlating logs from 6+ Workers by matching timestamps — slow and error-prone.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Generate traceId = crypto.randomUUID() at naelao-router entry point for every request. Propagate as X-Trace-ID header in all Service Binding calls (Service Binding fetch() accepts custom headers). Add traceId to the AnalyticsEvent base interface so all Analytics Engine events include the trace. Add CF-Ray correlation to link CF&#x27;s own request traces. Add to pre-launch checklist: &#x27;Query Analytics Engine for a single traceId — confirm events from all 22 Workers appear in the result&#x27;.</p></div>
+</div>
+
+<div style="margin:60px 0 0;padding:32px;background:#0A1628;border:1px solid #1E293B;border-radius:8px;">
+  <p style="font-family:'DM Mono',monospace;font-size:11px;color:#64748B;margin:0;line-height:1.8;">
+    Appendix F complete. Combined gap audit total: A (125) + B (30) + C (22) + D (22) + E (24) +
+    F (26) = <strong style="color:var(--or);">249 documented technical gaps</strong> with required fixes.
+    Recurring themes in this pass: <strong style="color:#94A3B8;">DO eviction not accounted for</strong>
+    (G-F05, G-F07, G-F12), <strong style="color:#94A3B8;">missing KV binding declarations</strong>
+    (G-F10, G-F17), <strong style="color:#94A3B8;">alarm handler at-least-once semantics ignored</strong>
+    (G-F24), and <strong style="color:#94A3B8;">per-tenant isolation gaps</strong> (G-F03, G-F25).
+  </p>
+</div>
+</section>
 </body>
 
 </html>
