@@ -39283,6 +39283,275 @@ Inject FakeVectorize via the env binding in tests. This enables full integration
   </p>
 </div>
 </section>
+
+
+<section id="appendix-h" style="margin:80px 0 0;padding:60px 0 0;border-top:3px solid var(--or);">
+<div style="margin-bottom:32px;">
+  <span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:8px;">Appendix H · Billing Provider Strategy</span>
+  <h2 style="font-family:'Fraunces',serif;font-size:clamp(28px,4vw,40px);font-weight:700;color:var(--tx);margin:0 0 12px;">Lemon Squeezy Primary / Stripe Future — Provider-Agnostic Billing Architecture</h2>
+  <p style="color:#94A3B8;max-width:720px;line-height:1.7;">
+    The current spec hardcodes Stripe throughout the billing layer. Stripe is unavailable in many regions,
+    requiring <strong style="color:var(--tx);">Lemon Squeezy as the primary provider</strong> with Stripe
+    as a future addition. This appendix documents: (1) a provider-agnostic BillingProvider interface
+    that makes both work without code duplication, (2) every place the spec must change to support
+    Lemon Squeezy, and (3) a clean migration path for when Stripe becomes available.
+  </p>
+
+  <div style="margin:24px 0;padding:24px;background:#0A1628;border:1px solid #1E3B6A;border-radius:8px;">
+    <div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);margin-bottom:12px;text-transform:uppercase;letter-spacing:.08em;">Provider Abstraction Interface</div>
+    <pre style="font-family:'DM Mono',monospace;font-size:12px;color:#94A3B8;line-height:1.7;margin:0;overflow-x:auto;"><code>// workers/naelao-billing/src/providers/types.ts
+interface NormalizedBillingEvent {
+  type:           'payment.success' | 'payment.failed' | 'subscription.created'
+                | 'subscription.updated' | 'subscription.cancelled'
+                | 'subscription.paused' | 'subscription.resumed' | 'refund.issued';
+  provider:       'lemon_squeezy' | 'stripe';
+  spaceId:        string;
+  customerId:     string;
+  subscriptionId: string | null;
+  variantOrPriceId: string;
+  amountCents:    number;   // always integer, always cents
+  currency:       string;
+  metadata:       Record&lt;string, string&gt;;
+}
+
+interface BillingProvider {
+  verifyWebhook(rawBody: string, headers: Headers): Promise&lt;boolean&gt;;
+  parseWebhookEvent(rawBody: string): NormalizedBillingEvent;
+  createCheckout(params: CheckoutParams): Promise&lt;{ url: string }&gt;;
+  getCustomerPortalUrl(subscriptionId: string): Promise&lt;string&gt;;
+  cancelSubscription(subscriptionId: string): Promise&lt;void&gt;;
+}
+
+// Runtime provider selection — change BILLING_PROVIDER env var to switch
+const provider: BillingProvider =
+  env.BILLING_PROVIDER === 'stripe'
+    ? new StripeProvider(env)
+    : new LemonSqueezyProvider(env);</code></pre>
+  </div>
+
+  <div style="margin:24px 0;padding:24px;background:#0A1628;border:1px solid #1E3B6A;border-radius:8px;">
+    <div style="font-family:'DM Mono',monospace;font-size:11px;color:#22C55E;margin-bottom:12px;text-transform:uppercase;letter-spacing:.08em;">Lemon Squeezy Event Mapping</div>
+    <pre style="font-family:'DM Mono',monospace;font-size:12px;color:#94A3B8;line-height:1.7;margin:0;overflow-x:auto;"><code>// Lemon Squeezy → Normalized
+order_created                → payment.success
+order_refunded               → refund.issued
+subscription_created         → subscription.created
+subscription_updated         → subscription.updated
+subscription_cancelled       → subscription.cancelled
+subscription_paused          → subscription.paused    ← no Stripe equiv
+subscription_unpaused        → subscription.resumed
+subscription_payment_success → payment.success
+subscription_payment_failed  → payment.failed
+subscription_payment_recovered → payment.success
+
+// spaceId path in LS webhooks
+event.meta.custom_data.spaceId           // order events
+event.data.attributes.custom_data.spaceId // subscription events
+
+// Amount parsing — always parse as integer
+const amountCents = parseInt(event.data.attributes.total, 10); // NOT parseFloat</code></pre>
+  </div>
+
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:16px;">
+    <span style="font-family:'DM Mono',monospace;font-size:11px;background:#EF444422;color:#EF4444;border:1px solid #EF444444;padding:4px 10px;border-radius:4px;">4 CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:11px;background:#E8692A22;color:#E8692A;border:1px solid #E8692A44;padding:4px 10px;border-radius:4px;">8 HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:11px;background:#EAB30822;color:#EAB308;border:1px solid #EAB30844;padding:4px 10px;border-radius:4px;">3 MEDIUM</span>
+  </div>
+</div>
+
+<div style="margin:48px 0 0;padding:24px 0 0;border-top:1px solid #1E293B;">
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.12em;text-transform:uppercase;">CRITICAL SEVERITY — 4 GAPS</span>
+</div>
+
+<div id="G-H01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H01</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / billing architecture</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Entire Billing Layer Hardcoded to Stripe — No Provider Abstraction, Cannot Use Lemon Squeezy Without Full Rewrite</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Every billing touchpoint in the spec assumes Stripe: checkout sessions, webhooks, subscription lifecycle events, customer portal, RevenueCat for mobile, and the naelao-billing Worker&#x27;s handler switch cases. There is no provider interface, no routing layer, and no abstraction between billing events and credit logic. Stripe is unavailable in many regions (including the builder&#x27;s current country), making this architecture unbuildable today. Even once Stripe becomes available, migrating from Lemon Squeezy without a provider abstraction would require touching every billing-related call site across the codebase simultaneously — a high-risk big-bang migration.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define a BillingProvider interface in a shared types package: interface BillingProvider { createCheckout(params: CheckoutParams): Promise&lt;{ url: string }&gt;; verifyWebhook(rawBody: string, headers: Headers): boolean; parseWebhookEvent(rawBody: string): NormalizedBillingEvent; getCustomerPortalUrl(customerId: string): Promise&lt;string&gt;; cancelSubscription(subscriptionId: string): Promise&lt;void&gt;; }. Implement LemonSqueezyProvider and StripeProvider separately, both implementing this interface. The naelao-billing Worker selects the provider at runtime from an environment variable: BILLING_PROVIDER = &#x27;lemon_squeezy&#x27; | &#x27;stripe&#x27;. All credit logic and SpaceDO writes use NormalizedBillingEvent only — never provider-specific types. This allows switching providers by changing one env var with zero code changes.</p></div>
+</div>
+
+<div id="G-H02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H02</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / Lemon Squeezy webhooks</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">No Lemon Squeezy Webhook Signature Verification Implemented — All LS Webhooks Accepted Unauthenticated</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Lemon Squeezy uses a different webhook authentication scheme than Stripe. Rather than Stripe&#x27;s timestamped t=...,v1=... format, Lemon Squeezy signs webhooks with a single X-Signature header containing a hex-encoded HMAC-SHA256 of the raw request body using the webhook secret. The current verifySignature() function only implements GitHub (HMAC-SHA256 with X-Hub-Signature-256) and Stripe formats. Adding Lemon Squeezy without implementing its verification means all LS webhooks are either rejected (if the unknown-provider guard is fixed per G-F09) or accepted unauthenticated (if the current return true bug is still present), allowing anyone to forge payment confirmations and grant themselves unlimited credits.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement Lemon Squeezy webhook verification in verifySignature(): case &#x27;lemon_squeezy&#x27;: { const signature = headers.get(&#x27;X-Signature&#x27;); if (!signature) return false; const key = await crypto.subtle.importKey(&#x27;raw&#x27;, new TextEncoder().encode(secret), { name: &#x27;HMAC&#x27;, hash: &#x27;SHA-256&#x27; }, false, [&#x27;sign&#x27;]); const expected = await crypto.subtle.sign(&#x27;HMAC&#x27;, key, new TextEncoder().encode(rawBody)); const expectedHex = [...new Uint8Array(expected)].map(b =&gt; b.toString(16).padStart(2,&#x27;0&#x27;)).join(&#x27;&#x27;); return timingSafeEqual(expectedHex, signature); } Store the LS webhook secret in naelao-credentials as LEMON_SQUEEZY_WEBHOOK_SECRET. Implement timingSafeEqual using crypto.subtle to avoid timing attacks.</p></div>
+</div>
+
+<div id="G-H03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H03</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / Lemon Squeezy checkout</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Lemon Squeezy Passes spaceId via custom_data Not Metadata — Current spaceId Resolution Path Breaks for LS Events</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec resolves spaceId from Stripe&#x27;s invoice.metadata.spaceId or invoice.subscription_details.metadata.spaceId. Lemon Squeezy has no concept of subscription metadata or invoice metadata. Instead, custom data is passed on the checkout URL as custom_data[spaceId]=... and is returned in webhook payloads under data.meta.custom_data.spaceId (for order events) or data.attributes.custom_data.spaceId (for subscription events). If the existing spaceId resolver is used against a Lemon Squeezy webhook payload, it returns undefined for every event, subscription status updates silently no-op, and credit grants never happen.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">In the NormalizedBillingEvent layer, the LemonSqueezyProvider.parseWebhookEvent() must extract spaceId from the correct LS path: const spaceId = payload.meta?.custom_data?.spaceId ?? payload.data?.attributes?.custom_data?.spaceId. When generating the Lemon Squeezy checkout URL, embed spaceId in the custom_data query parameter: checkoutUrl + &#x27;?checkout[custom][spaceId]=&#x27; + encodeURIComponent(spaceId). For subscriptions, also embed spaceId in the variant&#x27;s custom_data via the LS API at checkout creation time so it survives all subscription lifecycle events. Add a unit test: parse a real LS order_created webhook fixture and assert spaceId is correctly extracted.</p></div>
+</div>
+
+<div id="G-H04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H04</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / event taxonomy</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Lemon Squeezy Event Names Are Entirely Different From Stripe — Billing Handler switch() Cases All Miss</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The naelao-billing webhook handler switch(event.type) has cases for Stripe event names: &#x27;checkout.session.completed&#x27;, &#x27;invoice.payment_failed&#x27;, &#x27;customer.subscription.updated&#x27;, &#x27;customer.subscription.deleted&#x27;. Lemon Squeezy event names are completely different: &#x27;order_created&#x27;, &#x27;order_refunded&#x27;, &#x27;subscription_created&#x27;, &#x27;subscription_updated&#x27;, &#x27;subscription_cancelled&#x27;, &#x27;subscription_resumed&#x27;, &#x27;subscription_expired&#x27;, &#x27;subscription_payment_success&#x27;, &#x27;subscription_payment_failed&#x27;, &#x27;subscription_payment_recovered&#x27;. None of the Stripe switch cases will match any Lemon Squeezy event, meaning every LS webhook falls through to the default case with no action — no credits are granted, no subscription states are updated, and no cancellations are processed.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">The NormalizedBillingEvent interface must map all provider-specific events to a unified taxonomy: type NormalizedEventType = &#x27;payment.success&#x27; | &#x27;payment.failed&#x27; | &#x27;subscription.created&#x27; | &#x27;subscription.updated&#x27; | &#x27;subscription.cancelled&#x27; | &#x27;subscription.resumed&#x27; | &#x27;refund.issued&#x27;. LemonSqueezyProvider maps: order_created → payment.success, subscription_created → subscription.created, subscription_cancelled → subscription.cancelled, subscription_payment_failed → payment.failed, subscription_payment_recovered → payment.success, order_refunded → refund.issued. StripeProvider maps its own events to the same taxonomy. The billing handler switch() operates only on NormalizedEventType — provider-specific event names never reach the handler logic.</p></div>
+</div>
+
+<div style="margin:48px 0 0;padding:24px 0 0;border-top:1px solid #1E293B;">
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.12em;text-transform:uppercase;">HIGH SEVERITY — 8 GAPS</span>
+</div>
+
+<div id="G-H05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H05</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / Lemon Squeezy checkout creation</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Lemon Squeezy Uses Variant IDs Not Price IDs — All Product/Pricing Config Must Change</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec creates Stripe Checkout Sessions with price IDs from environment variables (STRIPE_PRICE_ID_PRO, STRIPE_PRICE_ID_ENTERPRISE). Lemon Squeezy uses a fundamentally different product model: a Store contains Products, each Product has Variants (equivalent to Stripe Prices). The checkout URL is generated per Variant, not per Session. Unlike Stripe, Lemon Squeezy does not support programmatic product or variant creation via API — all products, variants, and pricing must be created manually in the LS dashboard. There is no STRIPE_PRICE_ID equivalent to put in the env — the LS variant ID is a numeric integer found in the dashboard, not a generated ID.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add Lemon Squeezy environment variables: LEMON_SQUEEZY_STORE_ID, LEMON_SQUEEZY_VARIANT_ID_STARTER, LEMON_SQUEEZY_VARIANT_ID_PRO, LEMON_SQUEEZY_VARIANT_ID_ENTERPRISE, LEMON_SQUEEZY_API_KEY. The LemonSqueezyProvider.createCheckout() generates a checkout URL via the LS API: POST https://api.lemonsqueezy.com/v1/checkouts with body { data: { type: &#x27;checkouts&#x27;, attributes: { checkout_options: { embed: false }, checkout_data: { custom: { spaceId } } }, relationships: { store: { data: { type: &#x27;stores&#x27;, id: STORE_ID } }, variant: { data: { type: &#x27;variants&#x27;, id: variantId } } } } }. Document in the pre-launch checklist that LS products must be manually created in the dashboard and variant IDs entered in the environment config before billing can be tested.</p></div>
+</div>
+
+<div id="G-H06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H06</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / subscription lifecycle</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Lemon Squeezy Subscription Pause and Resume Events Have No Handler — Paused Spaces Continue Serving Requests</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Lemon Squeezy supports subscription_paused and subscription_unpaused events (when a builder pauses their plan or when Lemon Squeezy pauses it due to failed payment). Stripe has no direct equivalent — a paused LS subscription is neither active nor cancelled. The current billing handler (designed for Stripe) has no case for these states. If a builder&#x27;s LS subscription is paused due to payment failure, Naelao receives the subscription_paused webhook but takes no action — the space continues serving traffic, agents continue running, and credits continue being consumed with no payment. Similarly, subscription_resumed has no handler, so a builder who resumes their subscription after payment recovery is not reactivated.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add &#x27;subscription.paused&#x27; and &#x27;subscription.resumed&#x27; to the NormalizedEventType union. In LemonSqueezyProvider, map: subscription_paused → subscription.paused, subscription_unpaused → subscription.resumed. In the billing handler, add cases: case &#x27;subscription.paused&#x27;: await spaceDO.setStatus(&#x27;paused&#x27;); await notifyBuilder(&#x27;subscription_paused&#x27;, spaceId); break; case &#x27;subscription.resumed&#x27;: await spaceDO.setStatus(&#x27;active&#x27;); await creditSubscriptionPeriod(event); break; Add &#x27;paused&#x27; as a valid value in the space_status CHECK constraint in SpaceDO SQLite. Paused spaces should return HTTP 402 Payment Required on API calls with a { error: &#x27;SUBSCRIPTION_PAUSED&#x27;, resumeUrl: customerPortalUrl } response body.</p></div>
+</div>
+
+<div id="G-H07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H07</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / customer portal</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Lemon Squeezy Customer Portal Is Hosted by LS With No Customization — naelao-billing Must Generate a Portal URL Per Customer, Not a Static Link</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Stripe&#x27;s customer portal is configured once per account and builders access it via a session URL generated server-side. Lemon Squeezy&#x27;s customer portal works differently: each subscription has a unique customer portal URL stored at data.attributes.urls.customer_portal in subscription webhook payloads. This URL must be stored at subscription creation time and retrieved when the builder requests access to their billing portal. The current spec has a single POST /api/billing/portal endpoint that creates a Stripe portal session — this does not work for Lemon Squeezy. Additionally, LS customer portal URLs can expire and must be refreshed via the subscriptions API.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">At subscription_created time, store the customer portal URL in SpaceDO: spaceDO.exec(&#x27;UPDATE spaces SET billing_portal_url = ? WHERE id = ?&#x27;, payload.data.attributes.urls.customer_portal, spaceId). The POST /api/billing/portal endpoint for LS retrieves this stored URL: const { billing_portal_url } = spaceDO.exec(&#x27;SELECT billing_portal_url FROM spaces WHERE id = ?&#x27;, spaceId)[0]; return c.redirect(billing_portal_url). If the stored URL is older than 24 hours, refresh it via the LS API: GET https://api.lemonsqueezy.com/v1/subscriptions/{id} and re-store the updated URL. Add billing_portal_url TEXT to the spaces table schema.</p></div>
+</div>
+
+<div id="G-H08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H08</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / credit amounts</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Credit-Per-Payment Mapping Not Defined for Lemon Squeezy — No Equivalent of Stripe Price ID to Credit Amount Config</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The Stripe billing handler maps checkout.session.completed to a credit grant by reading the price ID from the event and looking up a PRICE_TO_CREDITS map (e.g., STRIPE_PRICE_ID_PRO → 10000 credits). Lemon Squeezy events contain a variant ID and the order total (in cents) but no server-side price ID mapping. The current credit mapping logic will find no match for any LS variant ID and grant zero credits. Additionally, Lemon Squeezy&#x27;s order_created event contains the total_formatted field ($29.00) but the billing handler expects a numeric credit count — there is no specified conversion from dollar amount to credits.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define a VARIANT_TO_CREDITS map in environment config: LEMON_SQUEEZY_VARIANT_CREDITS = &#x27;{&quot;VARIANT_ID_STARTER&quot;:5000,&quot;VARIANT_ID_PRO&quot;:10000,&quot;VARIANT_ID_ENTERPRISE&quot;:50000}&#x27;. Parse this JSON string at Worker startup and store in module scope. In LemonSqueezyProvider.parseWebhookEvent(), extract the variant ID from event.data.attributes.first_order_item.variant_id (order events) or event.data.attributes.variant_id (subscription events). Map variant ID to credit amount: const credits = variantCreditsMap[variantId] ?? 0. If credits === 0 for a known payment, log a structured error to Analytics Engine and emit an ops alert — this prevents silent zero-credit grants on misconfiguration.</p></div>
+</div>
+
+<div id="G-H09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H09</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / refund handling</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Lemon Squeezy order_refunded Event Has No Handler — Refunded Users Retain Credits Indefinitely</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Lemon Squeezy fires an order_refunded event when a payment is refunded (either partial or full). The current billing handler has no case for refunds — neither for Stripe chargebacks (handled via dispute.created) nor for LS refunds. When a builder receives a refund on their credit purchase, Naelao takes no action and the builder retains all purchased credits. At scale this is exploitable: purchase credits, use them, request refund, receive refund, repeat. Additionally, Lemon Squeezy refunds can be partial (refund_amount &lt; total_amount), meaning the credit deduction should be proportional, not full.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Map order_refunded → refund.issued in LemonSqueezyProvider. In the billing handler, handle refund.issued: const { refundAmountCents, totalAmountCents, variantId, spaceId } = event; const totalCredits = variantCreditsMap[variantId] ?? 0; const refundFraction = refundAmountCents / totalAmountCents; const creditsToDeduct = Math.ceil(totalCredits * refundFraction); await walletDO.deductCredits(spaceId, creditsToDeduct, &#x27;refund&#x27;); If the wallet balance goes negative after deduction, set space status to &#x27;suspended&#x27;. Notify the builder via the notifications queue. For Stripe, map charge.refunded with the same proportional logic.</p></div>
+</div>
+
+<div id="G-H10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H10</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / provider switching</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">No Migration Path When Switching From Lemon Squeezy to Stripe — Existing Subscribers Cannot Be Transitioned Without Data Loss</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When Stripe becomes available and builders are migrated from Lemon Squeezy to Stripe, there is no mechanism to map existing LS subscription IDs to new Stripe subscription IDs or to transfer the billing portal link. Builders mid-subscription period would need to re-subscribe on Stripe, potentially being double-billed for the overlapping period. The SpaceDO schema has no field to store the payment provider identifier or customer ID per provider — only a single stripe_customer_id field implied by the spec&#x27;s Stripe-only design. A builder with an active LS subscription has no path to Stripe without manual intervention.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Store provider-agnostic billing fields in SpaceDO: billing_provider TEXT NOT NULL DEFAULT &#x27;lemon_squeezy&#x27; CHECK(billing_provider IN (&#x27;lemon_squeezy&#x27;,&#x27;stripe&#x27;)), billing_customer_id TEXT, billing_subscription_id TEXT, billing_variant_or_price_id TEXT, billing_portal_url TEXT, billing_status TEXT DEFAULT &#x27;none&#x27;. At migration time, run a naelao-admin migration job that: (1) cancels each LS subscription at period end (not immediately), (2) emails the builder a Stripe checkout link for re-subscription at the same plan price, (3) grants prorated credits for the remaining LS subscription period, (4) updates billing_provider = &#x27;stripe&#x27; once Stripe subscription is confirmed. The BILLING_PROVIDER env var controls which provider handles new checkouts during the migration window.</p></div>
+</div>
+
+<div id="G-H11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H11</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / RevenueCat</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">RevenueCat Integration Is Mobile-Specific and Has No Lemon Squeezy Equivalent — Mobile Billing Is Undefined for LS Phase</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec integrates RevenueCat for mobile in-app purchases, which feeds into naelao-billing via a separate webhook endpoint. RevenueCat is a mobile purchase abstraction layer that normalizes Apple App Store and Google Play purchases. Lemon Squeezy is a web-based payment platform with no mobile SDK or App Store integration. During the Lemon Squeezy phase, any mobile billing (iOS/Android app purchases) has no defined path — the RevenueCat webhook handler that requires Stripe customer IDs will fail against LS-only accounts. The spec does not specify whether a mobile app exists or if mobile billing is deferred.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Defer RevenueCat integration entirely until the Stripe phase. Remove the RevenueCat webhook endpoint from the naelao-billing Worker&#x27;s public routes during the Lemon Squeezy phase — return 503 Service Unavailable with body { error: &#x27;MOBILE_BILLING_NOT_YET_AVAILABLE&#x27; }. In the pre-launch checklist, add a phase gate: &#x27;RevenueCat integration — Stripe phase only.&#x27; When Stripe is activated, re-enable the RevenueCat endpoint and configure RevenueCat to use Stripe as the backend payment processor. Document that mobile billing requires Stripe and cannot be fulfilled via Lemon Squeezy.</p></div>
+</div>
+
+<div id="G-H12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H12</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / test mode</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Lemon Squeezy Test Mode Works Differently From Stripe — No Per-Request Test Mode Toggle, Separate API Keys Required</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Stripe test mode is toggled per API key: test keys (sk_test_...) hit the test API and are completely separate from live keys (sk_live_...). The spec uses STRIPE_SECRET_KEY in dev/staging and STRIPE_LIVE_SECRET_KEY in production. Lemon Squeezy test mode works at the store level: a store can be in test mode (toggle in the LS dashboard), not per API key. Both test and live stores use the same API key format. This means the spec&#x27;s pattern of using different env var names for test vs live keys doesn&#x27;t apply to LS — in staging vs production, the same LEMON_SQUEEZY_API_KEY env var is used but pointing to different store IDs. A misconfigured LEMON_SQUEEZY_STORE_ID in staging that points to the live store would process real payments in staging tests.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use separate LS stores for test and production: LEMON_SQUEEZY_STORE_ID_TEST and LEMON_SQUEEZY_STORE_ID_PROD. The Worker selects the store ID based on the ENVIRONMENT env var: const storeId = env.ENVIRONMENT === &#x27;production&#x27; ? env.LEMON_SQUEEZY_STORE_ID_PROD : env.LEMON_SQUEEZY_STORE_ID_TEST. Maintain separate variant IDs for test and production: test variants can be priced at $0.01 for easy testing. Maintain separate webhook secrets for each store in naelao-credentials. Add a canary assertion at Worker startup: if ENVIRONMENT === &#x27;production&#x27; &amp;&amp; LEMON_SQUEEZY_STORE_ID contains &#x27;test&#x27;, throw a configuration error to prevent accidental staging config in production.</p></div>
+</div>
+
+<div style="margin:48px 0 0;padding:24px 0 0;border-top:1px solid #1E293B;">
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.12em;text-transform:uppercase;">MEDIUM SEVERITY — 3 GAPS</span>
+</div>
+
+<div id="G-H13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H13</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / Lemon Squeezy webhook public route</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Lemon Squeezy Webhook Endpoint Must Be Publicly Accessible and Auth-Middleware-Exempt — naelao-router Must Whitelist the Route</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Like the RevenueCat issue (G-G12), the Lemon Squeezy webhook must be publicly accessible for LS to POST to it. The naelao-router&#x27;s auth middleware validates Bearer JWTs on all routes except /api/auth/*. A POST from Lemon Squeezy&#x27;s servers carries an X-Signature header but no Authorization header — the JWT middleware will reject it with 401 before it reaches naelao-billing. The current spec only whitelists /api/auth/* from JWT validation, not /api/billing/webhook/*.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add /api/billing/webhook to the auth middleware whitelist in naelao-router: const PUBLIC_PATHS = [&#x27;/api/auth/&#x27;, &#x27;/api/billing/webhook/&#x27;, &#x27;/api/portal/&#x27;]. The billing webhook endpoint authenticates itself via the LS webhook signature verification (G-H02), not via JWT. Add a separate public route group in the router that skips JWT validation: router.use(&#x27;/api/billing/webhook/*&#x27;, (c, next) =&gt; next()). Log every unauthenticated request to /api/billing/webhook with the source IP for security monitoring — reject any request that fails signature verification with 401 and emit a security event to Analytics Engine.</p></div>
+</div>
+
+<div id="G-H14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H14</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / Lemon Squeezy order total</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Lemon Squeezy Reports Amounts in Cents as Strings Not Integers — Billing Arithmetic Uses Wrong Type, Credit Grants Are Off By 100x</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Lemon Squeezy order amounts are returned as strings in the format &#x27;2900&#x27; representing $29.00 (cents as string). The spec&#x27;s credit grant logic uses event.amount_total / 100 (Stripe&#x27;s pattern where amount_total is already an integer in cents). If a developer applies this same division to the LS amount string &#x27;2900&#x27;, JavaScript coerces it to the number 2900 and divides by 100, giving 29 — which happens to be correct for the dollar amount but is meaningless when the expected value is a credit count from the variant map. The real risk is when amount-based credit formulas are used: a $29 order mistakenly treated as $0.29 (parsing &#x27;2900&#x27; as 29.00 and dividing by 100 again) would grant 1/100th of the expected credits.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">In LemonSqueezyProvider, always parse LS amounts via parseInt(): const totalCents = parseInt(payload.data.attributes.total, 10); const refundCents = parseInt(payload.data.attributes.refund_amount, 10); Never use parseFloat() on LS amounts — floating point rounding on monetary values causes incorrect credit grants. The NormalizedBillingEvent must carry amounts as integer cents with explicit documentation: amountCents: number (integer, in cents). Add a unit test: LemonSqueezyProvider.parseWebhookEvent() for a $29.00 order returns amountCents === 2900 (not 29, not 0.29).</p></div>
+</div>
+
+<div id="G-H15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-H15</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">naelao-billing / dual provider</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">No Billing Dashboard Aggregation Across Providers — Admin Revenue Reporting Breaks When Both LS and Stripe Are Active</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When both Lemon Squeezy and Stripe are active (e.g., during migration period or if some users are on LS and others on Stripe), the naelao-admin revenue dashboard queries Analytics Engine for billing events. If LS events and Stripe events are written to Analytics Engine with different blob1 (event_type) values (e.g., &#x27;ls_payment_success&#x27; vs &#x27;stripe_payment_success&#x27;), the dashboard&#x27;s SUM(double1) WHERE blob1 = &#x27;payment_success&#x27; query misses half the revenue. If both use the same event type string (&#x27;payment_success&#x27;), the provider is indistinguishable in Analytics Engine and provider-level reporting is impossible (e.g., &#x27;how much revenue from LS vs Stripe this month&#x27;).</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use the NormalizedEventType for blob1 (&#x27;payment.success&#x27;, not provider-prefixed). Store the provider in a separate blob field: blob6 = billing_provider (&#x27;lemon_squeezy&#x27; | &#x27;stripe&#x27;). The admin revenue query aggregates across both: SELECT SUM(double1) as total_cents FROM naelao_events WHERE blob1 = &#x27;payment.success&#x27;. For provider breakdown: SELECT blob6 as provider, SUM(double1) as total_cents FROM naelao_events WHERE blob1 = &#x27;payment.success&#x27; GROUP BY blob6. Update the Analytics Engine schema registry (G-F20) to include billing_provider at the reserved blob6 position.</p></div>
+</div>
+
+<div style="margin:60px 0 0;padding:32px;background:#0A1628;border:1px solid #1E293B;border-radius:8px;">
+  <div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);margin-bottom:12px;text-transform:uppercase;letter-spacing:.08em;">Billing Rollout Phases</div>
+  <table class="t" style="width:100%;margin:0;">
+    <tr><th>Phase</th><th>Provider</th><th>Action</th></tr>
+    <tr><td>Now</td><td style="color:#E8692A;">Lemon Squeezy</td><td>Implement BillingProvider interface + LemonSqueezyProvider. Set BILLING_PROVIDER=lemon_squeezy. Create products manually in LS dashboard. Configure webhooks at api.naelao.com/api/billing/webhook.</td></tr>
+    <tr><td>Later</td><td style="color:#22C55E;">Stripe (added)</td><td>Implement StripeProvider. Set BILLING_PROVIDER=stripe for new accounts. Keep LemonSqueezyProvider active for existing LS subscribers until period end. Run migration job to transition active LS subscriptions to Stripe with prorated credits.</td></tr>
+    <tr><td>Optional</td><td style="color:#94A3B8;">Both</td><td>Route by account region: LS for regions where Stripe is unavailable, Stripe everywhere else. billing_provider field in SpaceDO tracks which provider owns each subscription.</td></tr>
+  </table>
+</div>
+
+<div style="margin:32px 0 0;padding:32px;background:#0A1628;border:1px solid #1E293B;border-radius:8px;">
+  <p style="font-family:'DM Mono',monospace;font-size:11px;color:#64748B;margin:0;line-height:1.8;">
+    Appendix H complete. Combined gap audit total: A (125) + B (30) + C (22) + D (22) + E (24) + F (26) + G (26) + H (15)
+    = <strong style="color:var(--or);">290 documented technical gaps</strong> with required fixes.
+  </p>
+</div>
+</section>
 </body>
 
 </html>
