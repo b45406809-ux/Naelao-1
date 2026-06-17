@@ -15,6 +15,13 @@ CRITICAL FIXES:
 1. G-F05: Pending calls MUST be stored in SQLite, NOT in a JS Map (Map is lost on DO eviction)
 2. LocalTunnelDO MUST use ctx.acceptWebSocket(server, ['local-agent']) (correct, already in spec)
 3. Use ctx.storage.setAlarm for timeouts (NOT setTimeout - alarm survives eviction)
+4. G-I04 (CRITICAL): WebSocket upgrade MUST return `webSocket: client` NOT `webSocket: server`.
+   The DO keeps the server side via acceptWebSocket(). Returning server creates a self-loop.
+   CORRECT: return new Response(null, { status: 101, webSocket: client });
+5. G-I05 (CRITICAL): CF DO storage.get() is non-blocking — there is NO blocking poll primitive.
+   /exec MUST NOT attempt to wait for a result in the same request.
+   Instead: /exec stores the call and returns immediately with { callId }.
+   The caller polls GET /result/:callId until result is available or 30s alarm expires.
 
 class LocalTunnelDO extends DurableObject<Env>:
 
@@ -26,14 +33,20 @@ HTTP routes:
   GET /ws -> WebSocket upgrade for local agent connection
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server, ['local-agent']);
-    return new Response(null, { status: 101, webSocket: server });
+    return new Response(null, { status: 101, webSocket: client });  // CRITICAL (G-I04): client not server
 
   POST /exec { callId; toolName; toolArgs; agentRunId; timeoutMs? }
     -> Store in pending_calls table
     -> Send JSON message to connected local agent WebSocket
     -> Set alarm for timeout: ctx.storage.setAlarm(Date.now() + (timeoutMs ?? 30000))
-    -> Wait for response via DO storage poll (use storage.get/waitForResponse pattern)
-    -> Return { result: unknown }
+    -> Return IMMEDIATELY with { callId } — do NOT attempt to poll for result in this handler
+    CRITICAL (G-I05): There is no blocking wait in CF DO. Callers must poll GET /result/:callId.
+
+  GET /result/:callId
+    -> Check storage.get('result:' + callId)
+    -> If found: return { result, error? } with 200; delete storage key
+    -> If not found and callId is in pending_calls: return { pending: true } with 202
+    -> If not found and callId not in pending_calls: return { error: 'not_found_or_expired' } with 404
 
   POST /result { callId; result; error? }
     -> Store result in DO storage: storage.put('result:' + callId, { result, error })

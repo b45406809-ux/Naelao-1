@@ -31,6 +31,9 @@ CRITICAL FIX (G-E10): Never load all users at once. Paginate using cursor stored
     Process 100 spaces per run, advance cursor
     When cursor wraps: reset to beginning
     Use KV.list({ prefix: 'space:', limit: 100, cursor }) pattern
+    CRITICAL (G-I12 fix): KV 'space:*' keys are ONLY available if naelao-spaces writes them
+    at createSpace time (POST /internal/space-index/register). If these keys don't exist,
+    sweepHeartbeats finds zero spaces. Confirm naelao-spaces wires this up.
 
 Tasks to run (all via Promise.allSettled to prevent one failure blocking others):
   sweepAbandonedAgentRuns(env)
@@ -48,11 +51,13 @@ Tasks to run (all via Promise.allSettled to prevent one failure blocking others)
     - Call naelao-registry Service Binding: POST /v1/registry/canary/process
     - This wires up the previously disconnected canary promotion (G-G11 fix)
 
-  sweepDLQ(env)
-    - Consume up to 100 DLQ messages
-    - CRITICAL (G-E20 fix): check retryCount and age before re-queuing
-    - If retryCount >= 5 OR age > 3 days: log to NAELAO_ANALYTICS and discard
-    - Otherwise: re-queue with retryCount + 1
+  sweepDLQ — REMOVED. Do NOT implement a sweepDLQ() function.
+    CRITICAL (G-I19 fix): CF Queues are push-only. There is no pull/consume API on a Queue
+    producer binding. sweepDLQ() as a function is architecturally impossible.
+    Instead: naelao-sweeper exports BOTH a scheduled handler AND a queue handler:
+      export default { scheduled(...) { ... }, async queue(batch, env) { /* DLQ re-queue logic */ } }
+    The queue handler receives DLQ messages that CF pushes to the consumer binding (see wrangler config).
+    In the queue handler: check retryCount and age, discard if > 5 retries or > 3 days, else re-queue.
 
   sweepExpiredFileLocks(env)
     - Clean up expired file locks in KV (prefix: 'filelock:')

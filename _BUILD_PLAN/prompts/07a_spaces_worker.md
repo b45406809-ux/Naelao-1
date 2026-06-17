@@ -54,5 +54,29 @@ CRITICAL gap fixes:
    - spaceDO.fetch(new Request('http://space/members/add', { method:'POST', body: JSON.stringify({...}) }))
    - Never write to any database directly from this Worker
 
+4. CRITICAL (G-I08 fix): Add internal routes for service-to-service calls. These are called by naelao-agents
+   and other workers via Service Binding. They MUST NOT be exposed through naelao-router to the public.
+   Protect with X-Internal-Token header check:
+   
+   POST /internal/members/check
+     Body: { userId: string; spaceId: string }
+     -> Forward to SpaceDO: spaceDO.fetch('/members/check', POST, { userId })
+     -> Return: { isMember: boolean; role?: string }
+   
+   GET /internal/agents/runs?spaceId=&userId=&limit=&cursor=
+     -> Forward to SpaceDO: spaceDO.fetch('/agents/runs/list', GET, query params)
+     -> Return: { runs: AgentRun[]; nextCursor?: string }
+   
+   POST /internal/space-index/register
+     Body: { spaceId: string }
+     -> Write to NAELAO_CONFIG_KV: 'space:' + spaceId = spaceId
+     CRITICAL (G-I12 fix): This KV entry is how naelao-sweeper finds all active spaces.
+     Must be called from createSpace AFTER SpaceDO /init succeeds.
+   
+   DELETE /internal/space-index/deregister
+     Body: { spaceId: string }
+     -> Delete from NAELAO_CONFIG_KV: 'space:' + spaceId
+     Must be called from deleteSpace AFTER SpaceDO is deprovisioned.
+
 Import authMiddleware from './middleware' (it's generated separately, stub the import).
 

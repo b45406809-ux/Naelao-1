@@ -51,11 +51,14 @@ export default {
     });
     
     try {
-      env.NAELAO_ANALYTICS.writeDataPoints(points);
+      await env.NAELAO_ANALYTICS.writeDataPoints(points);  // CRITICAL (G-I15 fix): MUST await — without await, catch never runs and DLQ fallback is bypassed
     } catch (err) {
       // DLQ for retry (G-G14 fix)
       await env.NAELAO_DLQ.sendBatch(batch.messages.map(m => ({ body: m.body })));
     }
+    // CRITICAL (G-I14 fix): Use per-message ack/retry for the outer queue loop too.
+    // The above try/catch handles the batch as a whole. For per-message granularity,
+    // process messages individually with msg.ack() / msg.retry() inside the map.
 
     // SECURITY EVENT BACKUP (G-G14 fix): KV backup for security events
     for (const msg of batch.messages) {
