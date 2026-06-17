@@ -42784,5 +42784,558 @@ This keeps all personalization data within the JavaScript execution boundary and
 </div>
 </section>
 
+
+<section id="appendix-m" style="max-width:900px;margin:0 auto;padding:clamp(32px,6vw,80px) clamp(16px,4vw,48px);">
+<h2 style="font-family:'Fraunces',serif;font-size:clamp(22px,4vw,36px);font-weight:700;color:var(--tx);margin:0 0 8px;">Appendix M — Final Technical Gap Audit (Fifth Pass)</h2>
+<p style="font-family:'DM Mono',monospace;font-size:12px;color:#64748B;margin:0 0 32px;line-height:1.7;">
+  Fifth and final pass covering all remaining spec sections: §28 naelao-threads (WebSocket upgrade detection, SSE waitUntil, undefined db), §30 pricing/billing (BEGIN/COMMIT/ROLLBACK, PostgreSQL syntax), §naelao-os createSpace (use-before-declaration), §space-type-registry-appendix (missing settled column, undefined db in settleEarnings), §naelao-spaces-deep (duplicate const declarations causing SyntaxError, COUNT::int cast, NOW()+INTERVAL invite logic), §workflow-examples (SSRF on sourceUrl, GET with body, external fetch), §remoteloop + §remoteloop-appendix (dynamic binding undefined, TTL insufficient), §appendix-custom-dos (CartDO token loss, provisioner errors swallowed, admin db artifacts), §agentpress (truncateMiddle reverse order, StreamingXMLParser hibernation, Orchestrator timeout), §56 analytics (ClickHouse SQL dialect errors, index2 never populated), §observability (silent writeDataPoint failures), §space-type-sites (external fetch), §file-manager-skill-spec (path-stripping offset).
+  This pass identified 31 new gaps: 10 CRITICAL, 12 HIGH, 7 MEDIUM, 2 LOW.
+</p>
+
+<div id="G-M01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M01</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§28 — naelao-threads</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">WebSocket Upgrade Detection Reads URL Query Param Instead of Upgrade Header — All WebSocket Clients Silently Downgraded to SSE</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">openStreamConnection() decides whether to open a WebSocket vs SSE stream with:
+  url.searchParams.get('upgrade') === 'websocket'
+
+The WebSocket protocol upgrade is signaled by the Upgrade: websocket HTTP header, not a query-string parameter. This condition is always false — no client sends an ?upgrade= param by default. All WebSocket connection requests are silently downgraded to SSE with no error, and the WebSocket code path is dead code that can never be reached.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the URL-param check with the correct header check:
+  request.headers.get('Upgrade')?.toLowerCase() === 'websocket'
+
+Then return the WebSocket upgrade response:
+  const [client, server] = Object.values(new WebSocketPair());
+  server.accept();
+  return new Response(null, { status: 101, webSocket: client });
+
+The SSE path remains the fallback for any non-upgrade request.</p></div>
+</div>
+<div id="G-M02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M02</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§28 — naelao-threads</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">SSE Background Writer Started with void async IIFE and No waitUntil — Stream Killed After First Chunk</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">createSSEStream() spawns the streaming delivery loop as:
+  void (async () => { for await (const chunk of stream) { writer.write(...); } })()
+
+In CF Workers, the runtime terminates the isolate as soon as the Response is returned; any in-flight promise not registered with ctx.waitUntil() is torn down. The SSE stream is cut short mid-delivery — typically after the first chunk — with no error surfaced to the client. The user sees a partial agent response that silently stops.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Pass the async IIFE promise to ctx.waitUntil() on the ExecutionContext:
+  const streamPromise = (async () => {
+    for await (const chunk of stream) { writer.write(...); }
+    writer.close();
+  })();
+  ctx.waitUntil(streamPromise);
+
+The ExecutionContext (third argument to the Worker fetch handler) must be threaded down from the top-level handler to createSSEStream(). Do NOT call waitUntil on DurableObjectState — that method does not exist on this.ctx in a DO.</p></div>
+</div>
+<div id="G-M03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M03</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§28 — naelao-threads</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">createThread() and getMessages() Reference Undefined db Variable — ReferenceError on Every Call</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">createThread() calls await db.from('projects').select(...) and await db.from('threads').insert(...). getMessages() calls await db.from('messages').select(...). The variable db is never declared in the naelao-threads Worker — it is a Supabase client artifact left over from the PostgreSQL migration. The spaceDO Service Binding is correctly obtained just lines earlier but then ignored. Every call to createThread() or getMessages() throws ReferenceError: db is not defined, making thread creation and message retrieval completely non-functional.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove all db.* calls. Use the already-obtained spaceDO Service Binding for all reads and writes:
+  const result = await spaceDO.fetch(new Request('https://do/threads', {
+    method: 'POST',
+    body: JSON.stringify({ sql: 'INSERT INTO threads (id, space_id, title, created_at) VALUES (?,?,?,?)', params: [id, spaceId, title, Date.now()] })
+  }));
+Replace all $N placeholders with ? and ensure every route handler uses spaceDO.fetch() not db.*.</p></div>
+</div>
+<div id="G-M04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M04</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§30 — Pricing / handleTokenUsage</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">handleTokenUsage() Uses BEGIN/COMMIT/ROLLBACK Manual Transactions — No-Op or Parse Error in DO SQLite</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The billing handler calls await db.query('BEGIN'), await db.query('COMMIT'), and in the catch block await db.query('ROLLBACK'). DO SQLite (this.ctx.storage.sql.exec()) does not support explicit transaction control statements — each exec() call is automatically atomic and single-threaded within the DO. Sending 'BEGIN' as a standalone SQL statement is either a no-op or causes a parse error; the catch block's ROLLBACK then triggers a second error, leaving the handler in an unrecoverable state with partial billing data written.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove all BEGIN/COMMIT/ROLLBACK calls. To achieve multi-statement atomicity, combine all related DML statements into a single this.ctx.storage.sql.exec() call as a semicolon-separated string. The DO's single-threaded model guarantees that no other request can interleave with a single exec() call. Replace all $1/$N placeholders with ? and replace NOW() with Date.now() passed as a parameter.</p></div>
+</div>
+<div id="G-M05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M05</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§30 — Pricing / handleTokenUsage</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">handleTokenUsage() Uses NOW(), DATE_TRUNC(), and $N PostgreSQL Syntax — All Billing Queries Fail</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The billing queries in handleTokenUsage() use NOW(), DATE_TRUNC('month', NOW()), and $1/$2/$N positional placeholders. None of these are valid SQLite constructs. NOW() is undefined, DATE_TRUNC does not exist, and $N causes a parse error. The billing system fails to record any token usage, silently allowing unlimited consumption and producing no revenue data. This affects the pricing section's billing logic, which is distinct from the naelao-billing Worker covered in G-K02.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace NOW() with a JavaScript Date value passed as a ? parameter: const now = new Date().toISOString(). Replace DATE_TRUNC('month', NOW()) with strftime('%Y-%m', 'now') for monthly bucketing in SQLite. Replace all $N placeholders with ?. Example:
+  this.ctx.storage.sql.exec(
+    `INSERT INTO token_usage (space_id, model, tokens, month, created_at) VALUES (?,?,?,strftime('%Y-%m','now'),?)`,
+    spaceId, model, tokens, now
+  );</p></div>
+</div>
+<div id="G-M06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M06</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§naelao-os — createSpace()</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">createSpace() Calls spaceDO.query() Before spaceDO Is Declared — ReferenceError: Cannot Access spaceDO Before Initialization</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">In createSpace(), the line await spaceDO.query('INSERT INTO spaces ... VALUES ($1,$2,$3,$4,$5)', [...]) appears before the const spaceDO = ... declaration. JavaScript const does not hoist; accessing a const before its declaration throws ReferenceError: Cannot access 'spaceDO' before initialization. Additionally, spaceDO.query() is not a valid Service Binding method — Service Bindings only expose fetch(). Every space creation call throws immediately and no space is ever created.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Move the const spaceDO declaration to before its first use. Replace spaceDO.query() with spaceDO.fetch():
+  const spaceDO = env.NAELAO_SPACE_DO.get(env.NAELAO_SPACE_DO.idFromName('space:' + spaceId));
+  await spaceDO.fetch(new Request('https://do/init', {
+    method: 'POST',
+    body: JSON.stringify({ spaceId, name, ownerId, spaceType, planTier })
+  }));
+Replace all $N PostgreSQL placeholders with ? in any SQL executed within the SpaceDO's init handler.</p></div>
+</div>
+<div id="G-M07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M07</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§space-type-registry-appendix — SpaceTypeRegistryDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">settleEarnings() Queries Non-Existent settled Column — SQLite: no such column Crashes Every Earnings Settlement</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">settleEarnings() runs:
+  SELECT ... FROM registry_earnings WHERE settled = 0
+  UPDATE registry_earnings SET settled = 1 WHERE id = ?
+
+The registry_earnings table DDL defines only id, app_id, author_id, amount, and created_at — there is no settled column. Both the SELECT and UPDATE throw SQLite: no such column: settled. No earnings are ever settled, no Stripe payouts are ever triggered, and app developers are never paid — silently and permanently.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add settled INTEGER NOT NULL DEFAULT 0 to the registry_earnings DDL:
+  CREATE TABLE IF NOT EXISTS registry_earnings (
+    id TEXT PRIMARY KEY,
+    app_id TEXT NOT NULL,
+    author_id TEXT NOT NULL,
+    amount REAL NOT NULL,
+    settled INTEGER NOT NULL DEFAULT 0,
+    settled_at INTEGER,
+    created_at INTEGER DEFAULT (unixepoch('now')*1000)
+  );
+Apply as a migration for existing DO instances. Alternatively, use a separate registry_earnings_settled table for an append-only ledger pattern.</p></div>
+</div>
+<div id="G-M08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M08</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§space-type-registry-appendix — SpaceTypeRegistryDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">settleEarnings() References Undefined db Variable and Uses $N Placeholders — Every Settlement Throws ReferenceError</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">settleEarnings() calls db.query('SELECT stripe_connect_account_id ... WHERE author_id = $1', [row.author_id]). The db variable is the undefined Supabase client artifact that recurs throughout the spec. The $1 PostgreSQL placeholder syntax is also wrong for SQLite. This function throws ReferenceError: db is not defined on every invocation, making it impossible to look up Stripe connect accounts or complete any earnings settlement cycle. App developers can never receive payments.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the db.query() call with this.ctx.storage.sql.exec() using ? placeholders:
+  const rows = [...this.ctx.storage.sql.exec(
+    'SELECT stripe_connect_account_id FROM author_profiles WHERE author_id = ?',
+    row.author_id
+  )];
+  if (!rows[0]?.stripe_connect_account_id) throw new Error('No Stripe account for author: ' + row.author_id);
+Remove all db.* references from SpaceTypeRegistryDO. Use this.ctx.storage.sql.exec() for every SQL operation.</p></div>
+</div>
+<div id="G-M09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M09</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§naelao-spaces-deep — Space Routes</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Duplicate const spaceDO Declarations in Route Handler Scope — SyntaxError Prevents Worker from Deploying</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Multiple route handlers in naelao-spaces declare const spaceDO = ... twice within the same function scope. JavaScript's const does not allow redeclaration in the same block scope — this is a SyntaxError thrown at parse time, before any request is handled. The entire naelao-spaces Worker fails to deploy and returns 500 for every request. This is a compile-time error: the Worker is dead on deployment and cannot serve any traffic.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove the duplicate declarations. Declare spaceDO once at the top of each route handler (or inside a block scope using curly braces) and reuse the single reference throughout. If the same binding is needed in multiple branches, extract it to a shared helper function:
+  function getSpaceDO(env: Env, spaceId: string): DurableObjectStub {
+    return env.NAELAO_SPACE_DO.get(env.NAELAO_SPACE_DO.idFromName('space:' + spaceId));
+  }</p></div>
+</div>
+<div id="G-M10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M10</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§workflow-examples — DataPipelineWorkflow</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">DataPipelineWorkflow Step 'extract' Fetches Arbitrary User-Supplied sourceUrl Without Validation — SSRF</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">DataPipelineWorkflow.run() step 'extract' executes:
+  await fetch(pipelineConfig.sourceUrl)
+
+pipelineConfig comes directly from user-supplied workflow input with no URL validation. An attacker can set sourceUrl to http://169.254.169.254/ (EC2 IMDS), http://localhost:8080/, or any Cloudflare-internal address to probe internal services or exfiltrate cloud metadata. CF Workers can reach internal network addresses not publicly accessible, making this a concrete SSRF attack vector.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Validate pipelineConfig.sourceUrl against a domain allowlist before fetching:
+  const parsed = new URL(pipelineConfig.sourceUrl); // throws on invalid URL
+  if (parsed.protocol !== 'https:') throw new Error('Only HTTPS sources allowed');
+  const ALLOWED_DOMAINS = env.ALLOWED_SOURCE_DOMAINS?.split(',') ?? [];
+  if (!ALLOWED_DOMAINS.some(d => parsed.hostname === d || parsed.hostname.endsWith('.' + d))) {
+    throw new Error('Source domain not in allowlist: ' + parsed.hostname);
+  }
+Store approved source configurations in DO storage rather than accepting raw URLs from user input.</p></div>
+</div>
+<div id="G-M11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M11</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§56 — Analytics Engine Queries</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Analytics Engine Queries Use PostgreSQL Syntax — All Health, Error-Rate, and Latency Dashboards Return Errors</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Multiple named query constants throughout the analytics section use PostgreSQL-specific syntax:
+  NOW() - INTERVAL '1 hour' (no equivalent in CF AE SQL)
+  DATE_TRUNC('minute', timestamp) (use toStartOfMinute() in ClickHouse)
+  PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY value) (use quantile(0.95)(value))
+
+CF Analytics Engine uses ClickHouse-style SQL, not PostgreSQL. Every one of these queries throws a SQL parse error at runtime, silently returning no data. The platform health monitor, error rate dashboard, LLM latency percentiles, and security timeline all show zero or error states permanently.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace PostgreSQL constructs with ClickHouse equivalents:
+  • NOW() - INTERVAL '1 hour' → toDateTime(now() - 3600)
+  • DATE_TRUNC('minute', timestamp) → toStartOfMinute(timestamp)
+  • PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY value) → quantile(0.95)(value)
+  • INTERVAL '30 days' → now() - (30 * 86400)
+Consult the CF Analytics Engine SQL reference (ClickHouse subset) for the complete function catalog. Add a CI check that lints AE SQL strings for prohibited PostgreSQL-only functions.</p></div>
+</div>
+<div id="G-M12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M12</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§56 — Analytics Engine Queries</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">SECURITY_EVENT_TIMELINE Filters on index2 — index2 Is Never Populated, Security Dashboard Always Empty</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The SECURITY_EVENT_TIMELINE Analytics Engine query includes:
+  WHERE index2 LIKE 'security_%'
+
+CF Analytics Engine only stores indexes[0] as the indexed field (documented in G-J18). indexes[1] and beyond are silently dropped. As a result, index2 is always NULL across all records. This query permanently returns an empty result set regardless of how many security events are recorded. The security event timeline dashboard is structurally broken and cannot display any data.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Store the security event discriminator in indexes[0] using a composite key:
+  indexes: ['security_' + event.subtype + ':' + event.spaceId]
+
+Alternatively, store it in blob1 and update the query:
+  WHERE blob1 LIKE 'security_%'
+
+Update all queries that reference index2 to reference the correct storage field. Apply the same audit to any other query that references index2 through indexN.</p></div>
+</div>
+<div id="G-M13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M13</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§workflow-examples — DailyReportWorkflow</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">DailyReportWorkflow Uses Public HTTPS fetch() for All Internal API Calls — Violates Service Binding Architecture</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">DailyReportWorkflow.run() calls:
+  await fetch('https://app.naelao.dev/api/analytics/...')
+  await fetch('https://app.naelao.dev/api/ai/analyze')
+  await fetch('https://app.naelao.dev/api/workspace/...')
+
+for all internal operations. This routes traffic out of Cloudflare's network and back in via public DNS, adding 50–200ms per call and consuming egress bandwidth. CF architecture requires all internal Worker-to-Worker calls to use Service Bindings. For a workflow that may issue 10–20 internal calls per run, this adds 1–4 seconds of unnecessary latency per execution.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Inject the target Worker bindings into WorkflowEntrypoint via this.env:
+  const analyticsResult = await this.env.ANALYTICS_WORKER.fetch(new Request('/query', { method: 'POST', body: JSON.stringify(params) }));
+  const aiResult = await this.env.AI_WORKER.fetch(new Request('/analyze', { method: 'POST', body: JSON.stringify(content) }));
+Register all required Service Bindings (ANALYTICS_WORKER, AI_WORKER, WORKSPACE_WORKER) in the Workflow Worker's wrangler.jsonc. Remove all fetch('https://app.naelao.dev/...') calls from Workflow implementations.</p></div>
+</div>
+<div id="G-M14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M14</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§workflow-examples — DataPipelineWorkflow</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">DataPipelineWorkflow Step 'transform' Sends GET Request with a Body — Body Silently Stripped</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">DataPipelineWorkflow.run() step 'transform' calls:
+  await fetch('https://app.naelao.dev/api/workspace/read', { method: 'GET', body: JSON.stringify({...}) })
+
+The HTTP specification prohibits GET requests from having a body. Most HTTP clients and proxies silently strip GET bodies. CF Workers' fetch() implementation will either drop the body or throw a TypeError. The workspace read endpoint never receives the payload, causing the step to return an empty or error response and silently corrupting the pipeline output data.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Change the method to POST and ensure the target endpoint accepts a JSON body:
+  await this.env.WORKSPACE_WORKER.fetch(new Request('/workspace/read', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ spaceId, projectId, paths })
+  }))
+Alternatively, encode short read parameters as URL query params on a GET request: GET /workspace/read?spaceId=...&projectId=.... Convert to Service Binding (see G-M13).</p></div>
+</div>
+<div id="G-M15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M15</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§remoteloop — RemoteLoop Dispatch</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Dynamic env[workerBinding] Access Returns undefined With No Diagnostic — TypeError Crashes RemoteLoop</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">dispatchRemoteLoop() resolves the target loop Worker as:
+  const loopWorker = ctx.env[workerBinding] as Fetcher;
+  await loopWorker.fetch(...);
+
+TypeScript's as Fetcher cast performs no runtime check. If workerBinding does not exactly match a key declared in wrangler.jsonc (e.g., different casing, typo, or missing binding declaration), loopWorker is undefined. The immediately following loopWorker.fetch(...) throws TypeError: Cannot read properties of undefined (reading 'fetch') with no indication of which binding was missing or what the correct name should be.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add an explicit guard before the dynamic lookup:
+  const loopWorker = (this.env as Record<string, Fetcher | undefined>)[workerBinding];
+  if (!loopWorker || typeof loopWorker.fetch !== 'function') {
+    throw new Error(`RemoteLoop binding '${workerBinding}' not found. Check wrangler.jsonc [services] bindings.`);
+  }
+Maintain a constant array of valid binding names and validate workerBinding against it before the dynamic access. Log the full workerBinding value and available binding names on failure.</p></div>
+</div>
+<div id="G-M16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M16</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§naelao-spaces-deep — Space Queries</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">naelao-spaces Uses COUNT(*)::int PostgreSQL Cast Syntax — SQLite Parse Error on Every Row Count Query</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">naelao-spaces query helpers use:
+  SELECT COUNT(*)::int AS count FROM spaces WHERE ...
+
+The ::type cast operator is PostgreSQL-specific syntax. SQLite does not support it and throws SQLite: near "::": syntax error at parse time. COUNT(*) in SQLite already returns an integer natively, so the cast is unnecessary but still breaks the query. Any endpoint that relies on row counts — pagination, quota checks, admin dashboards, or space listing — fails silently and returns an error response.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove the ::int cast entirely — it is unnecessary in SQLite:
+  SELECT COUNT(*) AS count FROM spaces WHERE ...
+
+SQLite's COUNT(*) natively returns an integer value. Apply the same fix to all other ::type cast expressions throughout the naelao-spaces section. Add a linting rule to flag the :: operator pattern in SQL strings targeting DO SQLite.</p></div>
+</div>
+<div id="G-M17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M17</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§naelao-spaces-deep — Invite System</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Invite Creation Uses NOW() + INTERVAL '7 days' — PostgreSQL Syntax, No Invite Can Ever Be Created</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The space invite creation handler builds the expiry with:
+  expires_at = NOW() + INTERVAL '7 days'
+directly inside the SQL string passed to DO SQLite. NOW() and INTERVAL arithmetic are PostgreSQL constructs. SQLite has neither. The INSERT fails with a parse error, meaning no invite tokens can ever be created. The entire space invitation system is non-functional at runtime.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Compute the expiry in JavaScript before constructing the SQL:
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  this.ctx.storage.sql.exec(
+    'INSERT INTO invites (token, space_id, inviter_id, expires_at, created_at) VALUES (?,?,?,?,?)',
+    token, spaceId, inviterId, expiresAt, new Date().toISOString()
+  );
+Pass all timestamp values as bound ? parameters rather than generating them inside SQL.</p></div>
+</div>
+<div id="G-M18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M18</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§naelao-spaces-deep — Invite Accept</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Accept-Invite Handler Uses db.query() with $N and NOW() — ReferenceError, No Invite Can Be Accepted</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The accept-invite handler calls:
+  db.query('UPDATE invites SET accepted=true, accepted_at=NOW() WHERE token=$1 AND expires_at &gt; NOW()', [token])
+
+db is the undefined Supabase client artifact. $1 is PostgreSQL placeholder syntax. NOW() is not a SQLite function. true is not a valid SQLite boolean literal (use 1). This throws ReferenceError: db is not defined immediately, making it impossible for any user to accept a space invitation. Every invite sent is permanently unusable.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace with DO SQLite syntax:
+  const now = new Date().toISOString();
+  const result = this.ctx.storage.sql.exec(
+    'UPDATE invites SET accepted=1, accepted_at=? WHERE token=? AND accepted=0 AND expires_at &gt; ?',
+    now, token, now
+  );
+  if (result.rowsWritten === 0) return c.json({ error: 'Invite not found, already used, or expired' }, 404);
+Use integer 1/0 for booleans throughout the invites schema.</p></div>
+</div>
+<div id="G-M19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M19</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§appendix-custom-dos — CartDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">CartDO.checkout() Generates checkoutToken but Never Persists It — Token Lost on Network Failure, Cart Wiped Without Order</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">CartDO.checkout() generates checkoutToken: crypto.randomUUID(), clears the cart from DO storage, then attempts to call the downstream payment processor with the token. If the network call fails after the cart is cleared, the token was never written to storage. The user's cart is permanently wiped but no order is created. The token cannot be recovered to retry the checkout — there is no rollback mechanism and no compensating transaction.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Persist the checkoutToken and cart snapshot BEFORE clearing the cart and BEFORE any external API call:
+  await this.ctx.storage.put('pendingCheckout', { token: checkoutToken, items: cartItems, createdAt: Date.now() });
+  // Now safe to clear cart
+  await this.ctx.storage.delete('cart');
+  // Attempt payment — retry-safe because pendingCheckout holds state
+  const result = await callPaymentProcessor(checkoutToken, cartItems);
+  if (result.ok) { await this.ctx.storage.delete('pendingCheckout'); }
+
+On retry, detect the existing pending checkout and reuse the stored token rather than generating a new one.</p></div>
+</div>
+<div id="G-M20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M20</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§appendix-custom-dos — Space Provisioner</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Space Provisioner Errors Swallowed in waitUntil — Space Marked active Before Provisioning Completes, Failures Silent</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The space provisioner spawns DO initialization via ctx.waitUntil(provisionSpace(...)). The space record is inserted with status: 'active' synchronously before waitUntil completes. If provisionSpace throws — due to DO creation failure, timeout, or storage error — the exception is swallowed by the waitUntil executor with no logging, no status update, and no notification. The user sees a space marked active that has a broken, uninitiated SpaceDO underneath it.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Set initial status: 'provisioning' in the INSERT. Inside the waitUntil callback, update the status on completion:
+  ctx.waitUntil((async () => {
+    try {
+      await provisionSpace(spaceId, spaceType, env);
+      await spaceDO.fetch(new Request('https://do/set-status', { body: JSON.stringify({ status: 'active' }) }));
+    } catch (err) {
+      await spaceDO.fetch(new Request('https://do/set-status', { body: JSON.stringify({ status: 'failed', error: err.message }) }));
+      console.error('space_provision_failed', { spaceId, error: err.message });
+    }
+  })());
+Expose a GET /status endpoint so clients can poll for provisioning completion.</p></div>
+</div>
+<div id="G-M21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M21</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§appendix-custom-dos — naelao-admin</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Admin Metrics Query References auth.users and Uses NOW()-INTERVAL — Supabase Artifact, User Count Always Broken</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The admin metrics handler queries:
+  SELECT COUNT(*) FROM auth.users WHERE created_at &gt; NOW()-INTERVAL '24h'
+
+auth.users is a Supabase-internal table that does not exist in any CF DO SQLite database. NOW() and INTERVAL arithmetic are also PostgreSQL-only. This query throws both a schema error (no such table: auth.users) and a syntax error (INTERVAL). The admin dashboard user count stat is permanently broken and always shows zero or an error.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace with a query against the platform's own user table in SpaceDO:
+  SELECT COUNT(*) AS count FROM user_profiles WHERE created_at &gt; ?
+with new Date(Date.now() - 86400000).toISOString() as the bound parameter. Remove all references to auth.* schema throughout the admin section. Ensure user_profiles is declared in the SpaceDO SQLite schema with an appropriate INTEGER created_at column.</p></div>
+</div>
+<div id="G-M22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M22</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§appendix-custom-dos — naelao-admin</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Admin User Ban Uses db.query() with $N, NOW(), and boolean true — ReferenceError, Admins Cannot Ban Users</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The user ban handler calls:
+  db.query('UPDATE user_profiles SET banned=true, banned_at=NOW() WHERE user_id=$1', [userId])
+
+db is the undefined Supabase artifact. $1 is PostgreSQL placeholder syntax. NOW() is not SQLite. true is not a valid SQLite boolean literal (SQLite uses 1/0). The function throws ReferenceError: db is not defined immediately. Admins cannot ban users at all, leaving a critical security response capability non-functional. Even if a ban is needed urgently, the admin panel cannot execute it.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace with DO SQLite syntax:
+  this.ctx.storage.sql.exec(
+    'UPDATE user_profiles SET banned=1, banned_at=? WHERE user_id=?',
+    new Date().toISOString(), userId
+  );
+
+After banning, propagate the change to active sessions by writing to a revocation KV key (ban:${userId}) so naelao-auth can check it on the next request. Set a short TTL (e.g., 60 seconds) and force a DO revocation check for security-critical bans.</p></div>
+</div>
+<div id="G-M23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M23</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§agentpress — ContextManager</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">truncateMiddle() Inserts Middle Messages in Reverse-Chronological Order — LLM Receives Backwards Context</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The truncation loop iterates messages backwards and calls keep.splice(1, 0, messages[i]) for each element. Because splice(1, 0, x) inserts at index 1 on every iteration, each new message is inserted ahead of the previous one. The final keep array has the first and last messages correctly placed, but the middle segment is in reverse chronological order. An LLM receiving this context sees conversation history backwards, producing incoherent responses for any multi-turn reasoning task where the order of exchanges matters.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Iterate the messages array forward and collect the middle candidates, then insert them in correct order:
+  const middle = messages.slice(1, -1).filter((_, i) => shouldKeep(i));
+  const result = [messages[0], ...middle, messages[messages.length - 1]];
+  return result;
+
+If backward iteration is required for priority selection, reverse the collected middle array before inserting: keep = [keep[0], ...middleItems.reverse(), keep[keep.length - 1]].</p></div>
+</div>
+<div id="G-M24" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M24</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§agentpress — StreamingXMLParser</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">StreamingXMLParser State Fields Are In-Memory — Lost on DO Hibernation Between Stream Chunks, Corrupting Tool-Call Extraction</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">StreamingXMLParser stores all parse state in class-level fields: buffer, insideTag, currentTagName, currentAttributes. If the DO hosting the parser hibernates between streaming LLM chunks (possible during network latency spikes in a long stream), all fields reset to their initial values. The resumed parser starts fresh mid-stream, misidentifying element boundaries and producing corrupted or missing tool-call arguments for any tool call that spans the hibernation boundary.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Persist parser state to DO storage after processing each chunk:
+  await this.ctx.storage.put('xmlParserState', { buffer: this.buffer, insideTag: this.insideTag, currentTagName: this.currentTagName, currentAttributes: this.currentAttributes });
+
+Restore it at the start of each invocation:
+  const saved = await this.ctx.storage.get&lt;XMLParserState&gt;('xmlParserState');
+  if (saved) Object.assign(this, saved);
+
+Alternatively, restructure the parser to be created and consumed entirely within a single DO invocation, accumulating the full stream before parsing.</p></div>
+</div>
+<div id="G-M25" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M25</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§remoteloop-appendix — runAnalysisBranch()</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">runAnalysisBranch() Uses env.AI Workers AI Binding — Absent from RemoteLoop Workers That Don't Declare It</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">runAnalysisBranch() calls callLLM(prompt, env.AI) where env.AI is a CF Workers AI binding. RemoteLoop Workers are custom community-deployed Workers that do not automatically receive any platform bindings. If a loop Worker's wrangler.jsonc does not declare an [ai] binding, env.AI is undefined at runtime. The subsequent callLLM call throws TypeError: Cannot read properties of undefined, silently failing the entire analysis branch with no actionable error message.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Guard the binding access and provide a clear error:
+  if (!env.AI) {
+    throw new Error('RemoteLoop requires a Workers AI [ai] binding in wrangler.jsonc. Add: [ai] binding = "AI"');
+  }
+Document clearly in the RemoteLoop onboarding guide that loop Workers implementing AI analysis must declare the ai binding. Consider injecting the AI binding reference through the RemoteLoop dispatch payload as a Service Binding to avoid requiring each loop Worker to independently declare it.</p></div>
+</div>
+<div id="G-M26" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M26</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§remoteloop-appendix — Token TTL</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">RemoteLoop Execution Token TTL of 120 Seconds Is Insufficient for Multi-Branch Reasoning — Runs Aborted Mid-Execution</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">RemoteLoop issues execution tokens with a 120-second TTL. Tree-of-Thought reasoning involves 3–5 parallel branches, each making one or more LLM calls (5–15s each), followed by a scoring pass and optional knowledge-base retrieval. Under realistic LLM latency and queue contention, total wall-clock time can easily exceed 120 seconds. When the token expires mid-execution, the loop Worker's next status callback is rejected as unauthorized, aborting the run with no partial result saved.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Make the TTL configurable per loopType:
+  const TTL_BY_TYPE: Record&lt;string, number&gt; = {
+    'standard': 120_000,
+    'tree-of-thought': 600_000,
+    'multi-agent': 300_000,
+  };
+  const ttl = TTL_BY_TYPE[loopConfig.type] ?? 120_000;
+
+Implement a token-refresh endpoint that the orchestrating DO can call before TTL expiry. Store token expiry in DO SQLite so refresh logic survives hibernation.</p></div>
+</div>
+<div id="G-M27" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M27</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§space-type-sites — executeContentLoop</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">executeContentLoop Uses Public HTTPS fetch() for Internal Tool Calls — Unnecessary Latency and Egress Cost</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">executeContentLoop in the Sites space type calls internal tool endpoints via await fetch('https://app.naelao.dev/api/tools/...'). Like DailyReportWorkflow (G-M13), this routes through the public internet rather than CF's zero-latency Service Binding path. For a content generation loop that may invoke 10–50 tool calls per content piece, this adds 500ms–10 seconds of unnecessary latency per execution and violates the CF architecture mandate that all internal calls use Service Bindings.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Inject the TOOLS_WORKER binding into the Sites space handler and use it for all internal tool calls:
+  await this.env.TOOLS_WORKER.fetch(new Request('/tools/' + toolName, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(toolParams)
+  }))
+Register the TOOLS_WORKER Service Binding in the Sites Worker's wrangler.jsonc. Audit all space-type Worker implementations for the same public-fetch pattern.</p></div>
+</div>
+<div id="G-M28" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M28</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§file-manager-skill-spec — list_files</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">list_files Path-Stripping Uses a Fixed Offset Instead of Prefix Match — Returns Malformed Relative Paths</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The list_files handler strips the SpaceR2 key prefix from listed object keys to return relative paths. If the stripping formula uses a hardcoded character offset (e.g., key.slice(FIXED_PREFIX_LENGTH)) but the actual R2 key was constructed with a dynamic segment (e.g., including the space ID or project slug), the offset is wrong. The resulting relative paths either retain part of the prefix or strip too many characters, returning malformed paths. Any downstream code that reconstructs a full R2 key from the returned path will reference a non-existent object.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Store the exact prefix used at upload time and strip it by string prefix match:
+  const prefix = 'spaces/' + spaceId + '/projects/' + projectId + '/';
+  const relPaths = objects.map(obj =>
+    obj.key.startsWith(prefix) ? obj.key.slice(prefix.length) : obj.key
+  );
+Do not use a hardcoded character offset. Log a warning when a key is found that does not match the expected prefix, as this indicates a storage schema inconsistency that needs investigation.</p></div>
+</div>
+<div id="G-M29" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M29</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§observability — Analytics Engine writeDataPoint</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">writeDataPoint() Called Fire-and-Forget with No Error Handling — Metric Loss Is Silent, Operators Fly Blind During Incidents</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The writeDataPoint() wrapper is called fire-and-forget in multiple hot-path handlers with no try/catch and no fallback. If the Analytics Engine binding is unavailable (misconfigured binding, account limit hit, transient CF error), the failure is completely silent. The system continues operating normally but all observability data stops being recorded. During an incident, operators have no metrics, no error rates, and no latency data — the exact moment when observability is most critical.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Wrap all writeDataPoint calls in try/catch with structured logging fallback:
+  try {
+    env.ANALYTICS.writeDataPoint({ indexes: [...], doubles: [...], blobs: [...] });
+  } catch (err) {
+    console.error(JSON.stringify({ event: 'analytics_write_failed', metric: eventType, error: err.message }));
+  }
+Consider a circuit-breaker pattern that temporarily disables analytics writes after repeated failures to avoid adding latency to hot paths. The console.error output routes to CF Logpush and provides an audit trail even when AE is unavailable.</p></div>
+</div>
+<div id="G-M30" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M30</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#10B981;letter-spacing:.08em;text-transform:uppercase;background:#10B98118;padding:3px 8px;border-radius:3px;white-space:nowrap;">LOW</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§naelao-spaces-deep — createSpace</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">createSpace Passes NOW() as Inline SQL Rather Than a Bound Parameter — created_at Always NULL</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The naelao-spaces createSpace route builds its INSERT as:
+  VALUES ($1, $2, $3, $4, NOW())
+with NOW() inline in the SQL string. Even ignoring the $N placeholder issue, NOW() is a PostgreSQL function not available in DO SQLite. The created_at column for every space is NULL or the query errors out, breaking all time-based queries, retention calculations, and admin space-listing sort orders.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Compute the timestamp in JavaScript and pass it as a bound ? parameter:
+  const createdAt = new Date().toISOString();
+  this.ctx.storage.sql.exec(
+    'INSERT INTO spaces (id, name, owner_id, space_type, created_at) VALUES (?,?,?,?,?)',
+    spaceId, name, ownerId, spaceType, createdAt
+  );
+Apply the same fix everywhere NOW() appears inline in SQL strings in the naelao-spaces section.</p></div>
+</div>
+<div id="G-M31" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-M31</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#10B981;letter-spacing:.08em;text-transform:uppercase;background:#10B98118;padding:3px 8px;border-radius:3px;white-space:nowrap;">LOW</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§agentpress — Orchestrator</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Orchestrator.executeTools() Has No Per-Tool Timeout — Hung Tool Call Kills Entire Agent Turn After 30s</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">executeTools() awaits each tool call with no timeout guard. If a tool (shell command, file read, or external API call) hangs indefinitely, the entire orchestrator stalls. CF Workers have a 30-second CPU time limit; a hung tool call eventually causes the Worker to be killed with a generic timeout error, losing all progress from the current agent turn with no structured error recovery and no tool error result for the LLM to reason about.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Wrap each tool execution in Promise.race against a timeout:
+  const TOOL_TIMEOUT_MS = 29_000;
+  const result = await Promise.race([
+    executeTool(tool),
+    new Promise&lt;ToolError&gt;((_, reject) =&gt;
+      setTimeout(() =&gt; reject(new Error('Tool timeout: ' + tool.name)), TOOL_TIMEOUT_MS)
+    )
+  ]).catch(err =&gt; ({ type: 'error', message: err.message, tool: tool.name }));
+This produces a structured tool error result the LLM can reason about rather than a hard crash. Store partial progress in DO SQLite before each tool call so a retry can resume from the last successful point.</p></div>
+</div>
+<div style="margin:32px 0 0;padding:32px;background:#0A1628;border:1px solid #1E293B;border-radius:8px;">
+  <p style="font-family:'DM Mono',monospace;font-size:11px;color:#64748B;margin:0;line-height:1.8;">
+    Appendix M complete — fifth and final pass. Combined gap audit total: A (125) + B (30) + C (22) + D (22) + E (24) + F (26) + G (26) + H (15) + I (34) + J (20) + K (51) + L (23) + M (31)
+    = <strong style="color:var(--or);">449 documented technical gaps</strong> with required fixes.
+  </p>
+</div>
+</section>
+
 </body>
 </html>
