@@ -8,7 +8,12 @@ Platform: Naelao = multi-tenant AI agent builder on Cloudflare Workers + Durable
 
 Generate ONE file: workers/naelao-agents/src/remote-loop.ts
 
-This calls the LLM API and streams the response. It uses Together AI's OpenAI-compatible API.
+CRITICAL FIX (G-I06): This file MUST NOT call the Together AI API directly.
+All LLM calls MUST go through the naelao-together-ai Service Binding (env.NAELAO_TOGETHER_AI).
+Direct Together AI calls bypass the credit reservation/settlement system in WalletDO.
+The naelao-agents wrangler config does NOT include TOGETHER_AI_API_KEY.
+
+This calls the LLM API via the naelao-together-ai Service Binding, which handles credit charging and streaming passthrough.
 
   interface RemoteLoopOptions {
     model: string;
@@ -16,7 +21,7 @@ This calls the LLM API and streams the response. It uses Together AI's OpenAI-co
     tools?: ToolDefinition[];
     spaceId: string;
     runId: string;
-    apiKey: string;
+    togetherAiService: Service;  // NAELAO_TOGETHER_AI service binding — NOT an apiKey string
     timeoutMs?: number;  // default 25000 (G-E17 fix)
   }
 
@@ -27,19 +32,27 @@ This calls the LLM API and streams the response. It uses Together AI's OpenAI-co
     usage?: { promptTokens: number; completionTokens: number };
   }
 
-CRITICAL (G-E17 fix) - MUST implement stream timeout:
+CRITICAL (G-E17 fix + G-I06 fix) - MUST call via Service Binding, MUST implement stream timeout:
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort('stream_timeout'), options.timeoutMs ?? 25_000);
   try {
-    const resp = await fetch('https://api.together.xyz/v1/chat/completions', {
-      method: 'POST',
-      signal: ac.signal,
-      headers: { 'Authorization': 'Bearer ' + options.apiKey, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages, tools, stream: true, max_tokens: 4096 }),
-    });
+    // CORRECT: Use Service Binding, not direct fetch to api.together.xyz
+    const resp = await options.togetherAiService.fetch(
+      new Request('https://placeholder/v1/ai/chat', {
+        method: 'POST',
+        signal: ac.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Space-Id': options.spaceId,
+          'X-Run-Id': options.runId,
+        },
+        body: JSON.stringify({ model: options.model, messages: options.messages, tools: options.tools, stream: true, max_tokens: 4096 }),
+      })
+    );
     // parse SSE stream line by line
     // each line: 'data: {...}' or 'data: [DONE]'
   } finally { clearTimeout(timer); }
+  // The naelao-together-ai worker handles credit reservation before the call and settlement after [DONE]
 
   async function* streamCompletion(options: RemoteLoopOptions): AsyncGenerator<StreamChunk>
   // Yields StreamChunk for each SSE event

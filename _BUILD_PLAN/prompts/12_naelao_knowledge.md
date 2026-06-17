@@ -15,7 +15,8 @@ The index must be created with: wrangler vectorize create naelao-knowledge-base 
 Env:
   NAELAO_VECTORIZE: VectorizeIndex
   NAELAO_SPACE_DO: DurableObjectNamespace
-  NAELAO_ANALYTICS_QUEUE: Queue
+  NAELAO_ANALYTICS_QUEUE: Queue   (for analytics events only)
+  NAELAO_KNOWLEDGE_QUEUE: Queue   (CRITICAL G-I03 fix: dedicated queue for indexing jobs)
   AI: Ai  (Cloudflare AI binding for embeddings)
   NAELAO_R2: R2Bucket  (store original documents)
   NAELAO_JWT_SECRET: string
@@ -51,7 +52,11 @@ Token-aware text chunker (G-E11 fix - word count is WRONG, use actual token esti
   - Embed each chunk
   - Upsert to Vectorize with metadata: { spaceId, docId, chunkIndex }
   - ID format: docId + ':chunk:' + chunkIndex
-  - Batch upserts: vectorize.upsert([{ id, values, metadata }])
+  - CRITICAL (G-I17 fix): Vectorize max batch size is 1000 vectors per upsert call. Documents with
+    many chunks will fail if all chunks are sent in one call. Use batches of 100 (conservative):
+    for (let i = 0; i < vectors.length; i += 100) {
+      await vectorize.upsert(vectors.slice(i, i + 100));
+    }
 
   async function deleteDocChunks(vectorize: VectorizeIndex, docId: string, chunkCount: number): Promise<void>
   - Build IDs: [docId+':chunk:0', ..., docId+':chunk:'+(chunkCount-1)]
@@ -65,7 +70,10 @@ Routes:
   POST /v1/knowledge/:spaceId/ingest
     { title: string; content: string; mimeType?: string; projectId?: string }
     -> Store doc metadata in SpaceDO with status='queued'
-    -> Enqueue to NAELAO_ANALYTICS_QUEUE with { type: 'knowledge_index', docId, spaceId, content, title, mimeType }
+    -> Enqueue to NAELAO_KNOWLEDGE_QUEUE with { type: 'knowledge_index', docId, spaceId, content, title, mimeType }
+    CRITICAL (G-I03 fix): MUST use NAELAO_KNOWLEDGE_QUEUE, NOT NAELAO_ANALYTICS_QUEUE.
+    NAELAO_ANALYTICS_QUEUE is consumed by naelao-analytics which only processes AnalyticsEvents.
+    Knowledge indexing jobs sent there will be silently dropped, leaving documents in 'queued' forever.
     -> Return { docId; status: 'queued' }
 
   GET /v1/knowledge/:spaceId/documents

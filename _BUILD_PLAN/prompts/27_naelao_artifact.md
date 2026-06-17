@@ -22,14 +22,22 @@ CRITICAL FIX (G-F09): NEVER use template literal interpolation for user code.
 
   function wrapHtmlArtifact(code: string, title?: string): string
   - Wraps user HTML in a safe sandboxed wrapper
-  - Content Security Policy: no external scripts, no inline event handlers
-  - CORRECT: store code as base64, decode at runtime — NOT string interpolation
-  - return '<html><head><meta charset="utf-8"><title>' + (title ?? 'Artifact') + '</title></head>'
-    + '<body><script>document.write(atob("' + btoa(code) + '"))</' + 'script></body></html>'
-  
-  Actually: for HTML, safely embed using template but encode ALL special chars:
-    Escape: < > & " ' / in user code before any embedding
-    Use DOMParser approach (no DOM in Workers) - store as base64 constant, write via script
+  - CRITICAL (G-I09 fix): NEVER use document.write(atob(base64)). Base64 is NOT sanitization.
+    Any user HTML containing <script src="evil.com"> or onerror= attributes would execute if
+    rendered with document.write. This is a stored XSS vulnerability.
+  - CORRECT approach: use a sandboxed iframe with srcdoc attribute:
+    1. HTML-encode the user code for safe srcdoc embedding:
+       const escaped = code.replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+         .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    2. Wrap in sandboxed iframe:
+       return `<!DOCTYPE html><html><body style="margin:0">
+         <iframe sandbox="allow-scripts" srcdoc="${escaped}"
+           style="width:100%;height:100%;border:0;"></iframe></body></html>`;
+    The sandbox="allow-scripts" attribute prevents: same-origin access, form submission,
+    top navigation, and popups, while still allowing user's JS to execute within the iframe.
+  - Set response headers on ALL artifact responses:
+    X-Frame-Options: DENY
+    X-Content-Type-Options: nosniff
 
   function wrapReactArtifact(code: string): string
   - NEVER interpolate code into template literal

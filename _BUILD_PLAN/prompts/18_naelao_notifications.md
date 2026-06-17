@@ -29,9 +29,19 @@ Notification payload types:
   }
 
 Export default with queue handler:
+CRITICAL (G-I14 fix): Promise.allSettled swallows errors — failed messages are silently ACKed.
+MUST use per-message msg.ack() / msg.retry() to properly route failures to the DLQ:
   export default {
     async queue(batch: MessageBatch<NotificationPayload>, env: Env): Promise<void> {
-      await Promise.allSettled(batch.messages.map(msg => handleNotification(msg.body, env)));
+      await Promise.allSettled(batch.messages.map(async (msg) => {
+        try {
+          await handleNotification(msg.body, env);
+          msg.ack();
+        } catch (err) {
+          console.error('notification failed, will retry:', err);
+          msg.retry();
+        }
+      }));
     }
   }
 

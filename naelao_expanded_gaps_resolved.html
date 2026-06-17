@@ -39552,6 +39552,912 @@ const amountCents = parseInt(event.data.attributes.total, 10); // NOT parseFloat
   </p>
 </div>
 </section>
-</body>
 
+<section id="appendix-i" style="margin:80px 0 0;padding:60px 0 0;border-top:3px solid var(--or);">
+<div style="margin-bottom:32px;">
+  <span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);letter-spacing:.1em;text-transform:uppercase;display:block;margin-bottom:8px;">Appendix I · Cross-Reference, Integration &amp; Platform Gap Analysis</span>
+  <h2 style="font-family:'Fraunces',serif;font-size:clamp(28px,4vw,40px);font-weight:700;color:var(--tx);margin:0 0 12px;">GAP-291 – GAP-324: Wrangler Config Mismatches, Broken Seams, CF Platform Violations</h2>
+  <p style="color:#94A3B8;max-width:720px;line-height:1.7;">
+    This appendix documents 34 new gaps discovered by cross-referencing every <code>_BUILD_PLAN/prompts/</code> file
+    against <code>28_wrangler_configs.md</code> and against each other. The focus is on
+    <strong style="color:var(--tx);">runtime failures that only manifest after deployment</strong>:
+    missing wrangler bindings, broken inter-worker seams, Cloudflare platform constraints violated by the
+    current prompt designs, and security holes in the auth/credit/artifact layers.
+    None of these gaps were covered in Appendices A–H.
+  </p>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:16px;">
+    <span style="font-family:'DM Mono',monospace;font-size:11px;background:#EF444422;color:#EF4444;border:1px solid #EF444444;padding:4px 10px;border-radius:4px;">9 CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:11px;background:#E8692A22;color:#E8692A;border:1px solid #E8692A44;padding:4px 10px;border-radius:4px;">17 HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:11px;background:#EAB30822;color:#EAB308;border:1px solid #EAB30844;padding:4px 10px;border-radius:4px;">7 MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:11px;background:#22C55E22;color:#22C55E;border:1px solid #22C55E44;padding:4px 10px;border-radius:4px;">1 LOW</span>
+  </div>
+</div>
+
+<div style="margin:48px 0 0;padding:24px 0 0;border-top:1px solid #1E293B;">
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.12em;text-transform:uppercase;">CRITICAL SEVERITY — 9 GAPS</span>
+</div>
+
+<div id="GAP-291" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-291</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">25b_naelao_eval.md / 28_wrangler_configs.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">naelao-eval Wrangler Config Declares Wrong Binding (NAELAO_AGENTS) — All Five Real Bindings Are Missing</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The naelao-eval wrangler config in 28_wrangler_configs.md declares a single service binding: NAELAO_AGENTS -&gt; naelao-agents. The actual eval worker (25b_naelao_eval.md) uses five completely different bindings: TOGETHER_AI_SERVICE (service binding to naelao-together-ai), ANALYTICS_SERVICE (service binding to naelao-analytics), R2_EVAL_RESULTS (R2Bucket), KV_EVAL_LOCK (KVNamespace), and the secrets ADMIN_SECRET, EVAL_SPACE_ID, MAX_EVAL_CONCURRENCY. None of these appear in the wrangler config. NAELAO_AGENTS, which does appear, is never referenced by the eval worker at all. At runtime every binding access throws: "Cannot read properties of undefined".</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the naelao-eval section in 28_wrangler_configs.md with the correct binding set:
+
+// wrangler.jsonc – naelao-eval
+{
+  "services": [
+    { "binding": "TOGETHER_AI_SERVICE", "service": "naelao-together-ai" },
+    { "binding": "ANALYTICS_SERVICE",   "service": "naelao-analytics"   }
+  ],
+  "r2_buckets":  [{ "binding": "R2_EVAL_RESULTS", "bucket_name": "naelao-eval-results" }],
+  "kv_namespaces": [{ "binding": "KV_EVAL_LOCK", "id": "&lt;KV_ID&gt;" }],
+  "vars": {
+    "EVAL_SPACE_ID": "&lt;space-id&gt;",
+    "MAX_EVAL_CONCURRENCY": "4"
+  }
+}
+// Secrets (via wrangler secret put): ADMIN_SECRET
+// Remove the NAELAO_AGENTS service binding entirely.</p></div>
+</div>
+
+<div id="GAP-292" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-292</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">20_naelao_triggers.md / 28_wrangler_configs.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">naelao-triggers Wrangler Config Missing NAELAO_SPACE_DO Service Binding — SpaceDO Trigger Queries Always Fail</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The naelao-triggers wrangler config lists only a Queue producer binding (NAELAO_WORKFLOW_DISPATCH) and secrets. The triggers index.ts, at step 5 of its request handling flow, must "Query SpaceDO for registered triggers matching (provider, eventType, spaceId)". This requires a NAELAO_SPACE_DO DurableObjectNamespace binding pointing to the naelao-spaces worker. Without it, env.NAELAO_SPACE_DO is undefined and every inbound webhook that requires trigger lookup throws at runtime, making the entire trigger dispatch system non-functional.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add the following to the naelao-triggers wrangler config in 28_wrangler_configs.md:
+
+// wrangler.jsonc – naelao-triggers (add to existing config)
+{
+  "durable_objects": {
+    "bindings": [
+      { "name": "NAELAO_SPACE_DO", "class_name": "SpaceDO", "script_name": "naelao-spaces" }
+    ]
+  }
+}
+
+In 20_naelao_triggers.md, add NAELAO_SPACE_DO: DurableObjectNamespace to the Env interface. The trigger lookup call becomes:
+const id = env.NAELAO_SPACE_DO.idFromName('space:' + spaceId);
+const stub = env.NAELAO_SPACE_DO.get(id);
+const res = await stub.fetch('/internal/triggers/match', { method: 'POST', body: JSON.stringify({ provider, eventType }) });</p></div>
+</div>
+
+<div id="GAP-293" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-293</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">13f_local_tunnel.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">LocalTunnelDO /exec Uses Non-Existent Blocking Storage Poll — Synchronous Request/Response Pattern Is Broken</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The /exec route in LocalTunnelDO describes a "Wait for response via DO storage poll (use storage.get/waitForResponse pattern)". There is no blocking poll in Cloudflare Durable Objects storage. storage.get() is async but returns immediately with the current stored value — it does not block until a value appears. The DO cannot long-poll its own storage. The /exec handler will return immediately with undefined instead of waiting for the local agent to POST a response back. The entire synchronous tool-call bridge is non-functional.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the storage-poll pattern with WebSocket hibernation inside the DO. The /exec handler upgrades the inbound request to a WebSocket, stores the pending call in SQLite, and suspends via hibernation. When the local agent POSTs the response to /exec/:callId/respond, the DO wakes, fetches the stored WebSocket tag, and sends the result down the socket. The caller receives it via the WebSocket client.
+
+// LocalTunnelDO – /exec handler
+const { 0: client, 1: server } = new WebSocketPair();
+this.ctx.acceptWebSocket(server, ['exec:' + callId]);
+// store pending call in SQLite
+this.sql.exec('INSERT INTO pending_calls VALUES (?,?,?)', callId, JSON.stringify(payload), Date.now());
+return new Response(null, { status: 101, webSocket: client });
+
+// LocalTunnelDO – /exec/:callId/respond handler
+const sockets = this.ctx.getWebSockets('exec:' + callId);
+if (sockets[0]) { sockets[0].send(JSON.stringify(result)); sockets[0].close(); }
+this.sql.exec('DELETE FROM pending_calls WHERE id=?', callId);</p></div>
+</div>
+
+<div id="GAP-294" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-294</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">12_naelao_knowledge.md / 19_naelao_analytics.md / 28_wrangler_configs.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Knowledge Indexing Jobs Sent to NAELAO_ANALYTICS_QUEUE — Consumed by Analytics Worker, Never Indexed</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The naelao-knowledge ingest handler enqueues messages of shape { type: 'knowledge_index', docId, spaceId, content, title, mimeType } to NAELAO_ANALYTICS_QUEUE. The wrangler config declares naelao-analytics as the sole consumer of that queue. The analytics worker expects MessageBatch&lt;AnalyticsEvent&gt; with fields event_type, space_id, agent_id, credits_used — it writes records to Analytics Engine and has no knowledge of chunking, embedding, or Vectorize. The analytics consumer will attempt to write the knowledge_index messages as analytics data points using wrong field names and silently produce garbage rows. Actual knowledge indexing (chunking → embedding → vectorize upsert) never happens. The knowledge base is permanently empty.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Create a dedicated queue for knowledge indexing. In 28_wrangler_configs.md add:
+
+// New queue in account queues config
+{ "queue_name": "naelao-knowledge-queue", "dead_letter_queue": "naelao-knowledge-dlq", "max_retries": 3 }
+
+// wrangler.jsonc – naelao-knowledge: add consumer binding
+{ "queues": { "consumers": [{ "queue": "naelao-knowledge-queue", "max_batch_size": 10, "max_retries": 3 }],
+              "producers": [{ "binding": "NAELAO_KNOWLEDGE_QUEUE", "queue": "naelao-knowledge-queue" }] } }
+
+In 12_naelao_knowledge.md: change all env.NAELAO_ANALYTICS_QUEUE.send({ type: 'knowledge_index', ... }) to env.NAELAO_KNOWLEDGE_QUEUE.send(...). Implement the queue() consumer in the knowledge worker's default export to handle knowledge_index messages with chunking, embedding, and vectorize upsert. Remove knowledge_index message handling from any analytics consumer path.</p></div>
+</div>
+
+<div id="GAP-295" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-295</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">13a_agent_worker.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">naelao-agents Calls SPACES_SERVICE /internal/members/check — Route Does Not Exist in naelao-spaces</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The agent worker's /agents/run/start handler calls SPACES_SERVICE.fetch('/internal/members/check') with { userId, spaceId } expecting { isMember: boolean }. The naelao-spaces worker (07a_spaces_worker.md) defines only public REST routes under /v1/spaces/. There are no /internal/* routes defined anywhere in that worker. Every membership check returns 404. The agent worker treats a non-200 response as "not a member" and returns 403, making every single agent run fail at authorization before the agent DO is ever contacted.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add an internal route to 07a_spaces_worker.md:
+
+// workers/naelao-spaces/src/index.ts
+app.post('/internal/members/check', async (c) =&gt; {
+  const { userId, spaceId } = await c.req.json&lt;{ userId: string; spaceId: string }&gt;();
+  const id = c.env.NAELAO_SPACE_DO.idFromName('space:' + spaceId);
+  const stub = c.env.NAELAO_SPACE_DO.get(id);
+  const res = await stub.fetch('/members/check?userId=' + encodeURIComponent(userId));
+  const { isMember } = await res.json&lt;{ isMember: boolean }&gt;();
+  return c.json({ isMember });
+});
+
+Add the corresponding /members/check handler in SpaceDO (07b_SpaceDO.md) that queries:
+SELECT 1 FROM members WHERE space_id=? AND user_id=? AND status='active'</p></div>
+</div>
+
+<div id="GAP-296" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-296</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">27_naelao_artifact.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">wrapHtmlArtifact Uses document.write(atob(base64)) — Base64 Does Not Sanitize; Stored XSS via User HTML</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The sandbox.ts wrapHtmlArtifact function embeds user HTML as: '&lt;script&gt;document.write(atob("' + btoa(code) + '"))&lt;/script&gt;'. Base64 encodes bytes but does not sanitize content. When the browser decodes and writes it, all user-supplied scripts, inline event handlers, and iframe srcdoc attributes execute in full. The CSP on the GET route declares script-src 'self', but document.write() injects inline script at parse time before CSP is evaluated on the injected DOM. If the artifact is served from the same origin as the application (not a sandboxed subdomain), this is a stored XSS allowing session hijacking and credential theft. The simple regex scan for process.env / require / eval is trivially bypassed with string splitting or Unicode escapes.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Serve all artifacts from a fully isolated subdomain (e.g., artifact-sandbox.naelao.com) with no cookies and no shared origin with the main app. Add a Content-Security-Policy that disables all script execution for HTML artifacts not marked as trusted:
+
+// GET /v1/artifacts/:artifactId response headers (for type=html)
+Content-Security-Policy: default-src 'none'; sandbox allow-scripts allow-same-origin;
+X-Frame-Options: SAMEORIGIN
+Cross-Origin-Resource-Policy: same-site
+
+Replace the btoa/document.write pattern with a proper srcdoc iframe served inline:
+// sandbox.ts
+export function wrapHtmlArtifact(code: string): string {
+  // Serve as an iframe with sandbox attribute — never inject via document.write
+  // Return the raw HTML to be stored in R2; serve it from isolated subdomain
+  return code; // store verbatim, serve from artifact-sandbox.naelao.com
+}
+The artifact worker must be deployed to artifact-sandbox.naelao.com, not api.naelao.com.</p></div>
+</div>
+
+<div id="GAP-297" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-297</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">21_naelao_workflows.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Workers for Platforms Dispatch Namespace Pattern Is Broken — Code Loaded from R2 Is Never Uploaded to Dispatch Namespace</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The naelao-workflows worker loads user workflow code from R2 (const code = await codeObj.text()) then calls env.DISPATCH_NAMESPACE.get(spaceId + '-' + workflowId) to dispatch it. dispatchNamespace.get(name) retrieves a pre-deployed script by its registered script name — it does not accept or execute code dynamically. The script named spaceId + '-' + workflowId does not exist in the dispatch namespace unless it was previously uploaded via the Cloudflare Workers for Platforms Upload API. The prompt acknowledges eval() and dynamic import() are prohibited but never includes the required upload step. Every workflow dispatch call throws "Worker not found" at runtime. The prompt stores code in R2 as the "source of truth" but CF Workers for Platforms requires the code to be uploaded to the namespace separately via the CF API before dispatch is possible.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a workflow deployment step to naelao-workflows. When a user saves or updates a workflow, the worker must upload the script to the dispatch namespace via the CF Workers for Platforms API before any dispatch can occur:
+
+// workers/naelao-workflows/src/index.ts – deployWorkflow()
+async function deployWorkflow(workflowId: string, code: string, env: Env): Promise&lt;void&gt; {
+  const scriptName = env.DISPATCH_NAMESPACE_NAME + '-' + workflowId;
+  const res = await fetch(
+    `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/workers/dispatch/namespaces/${env.DISPATCH_NAMESPACE_NAME}/scripts/${scriptName}`,
+    { method: 'PUT', headers: { 'Authorization': 'Bearer ' + env.CF_API_TOKEN, 'Content-Type': 'application/javascript' }, body: code }
+  );
+  if (!res.ok) throw new Error('Deploy failed: ' + await res.text());
+}
+// Call deployWorkflow() on POST /workflows/:id (create/update) BEFORE storing to R2.
+// Add CF_ACCOUNT_ID, CF_API_TOKEN, DISPATCH_NAMESPACE_NAME to Env and wrangler secrets.</p></div>
+</div>
+
+<div id="GAP-298" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-298</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">13a_agent_worker.md / 13b_NaelaoAgentDO.md / 13e_remote_loop.md / 24_naelao_together_ai.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">NaelaoAgentDO Calls Together AI Directly via TOGETHER_AI_API_KEY — Bypasses Credit Reservation, WalletDO, and Analytics Entirely</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">NaelaoAgentDO's remote-loop.ts calls Together AI using env.TOGETHER_AI_API_KEY directly, bypassing the naelao-together-ai proxy worker entirely. The naelao-together-ai worker exists specifically to implement the wallet reservation pattern (reserve credits before streaming, settle actuals after), write analytics events, and enforce per-model credit rates. When the agent DO calls the Together AI API directly: (1) no credits are reserved in WalletDO before the call starts, (2) no credits are deducted after completion, (3) no analytics events are written, and (4) per-model rate limiting in naelao-together-ai is skipped. Users can run unlimited LLM inference with zero credit cost. This is a complete billing bypass for all agent runs.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove TOGETHER_AI_API_KEY from NaelaoAgentDO's Env interface and from the naelao-agents wrangler config. Add TOGETHER_AI_SERVICE as a service binding to naelao-together-ai in both the Env interface and wrangler config. In remote-loop.ts, replace all direct Together AI fetch() calls with calls through the service binding:
+
+// remote-loop.ts — before (WRONG)
+const res = await fetch('https://api.together.xyz/v1/chat/completions', {
+  headers: { 'Authorization': 'Bearer ' + env.TOGETHER_AI_API_KEY }, body: ...
+});
+
+// remote-loop.ts — after (CORRECT)
+const res = await env.TOGETHER_AI_SERVICE.fetch(
+  new Request('https://naelao-together-ai/v1/ai/chat', {
+    method: 'POST', headers: { 'X-Space-Id': spaceId, 'X-User-Id': userId },
+    body: JSON.stringify({ model, messages, stream: true })
+  })
+);
+// The proxy worker handles reservation, settlement, and analytics.</p></div>
+</div>
+
+<div id="GAP-299" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-299</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">17_naelao_sweeper.md / 28_wrangler_configs.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">naelao-sweeper Has Only a DLQ Producer Binding — Cannot Consume DLQ Messages; sweepDLQ Is Non-Functional</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The naelao-sweeper wrangler config declares NAELAO_DLQ as a Queue producer binding. A Queue producer binding only exposes .send()/.sendBatch() — it provides no mechanism to read or consume messages from the queue. The sweeper's sweepDLQ() function is described as "Consume up to 100 DLQ messages, inspect retryCount and age, re-queue or discard". This is impossible with a producer-only binding. Queue consumption in Cloudflare requires the queue consumer export (export default { async queue(batch, env) {} }) with a consumer binding declared in wrangler. The sweepDLQ logic will never execute; failed messages accumulate in the DLQ indefinitely and are never retried or discarded.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a consumer binding for NAELAO_DLQ to the naelao-sweeper wrangler config:
+
+// wrangler.jsonc – naelao-sweeper
+{ "queues": {
+    "producers": [],  // remove DLQ from producers
+    "consumers": [{
+      "queue": "naelao-dlq",
+      "max_batch_size": 100,
+      "max_retries": 0,          // sweeper handles retry logic itself
+      "dead_letter_queue": null  // terminal — sweeper decides fate
+    }]
+} }
+
+In 17_naelao_sweeper.md, add the queue() handler to the default export alongside fetch() and scheduled():
+export default {
+  async queue(batch: MessageBatch, env: Env): Promise&lt;void&gt; {
+    for (const msg of batch.messages) {
+      const body = msg.body as { retryCount: number; payload: unknown; enqueuedAt: number };
+      const ageMs = Date.now() - body.enqueuedAt;
+      if (body.retryCount &lt; 3 &amp;&amp; ageMs &lt; 86_400_000) {
+        await env.NAELAO_WORKFLOW_DISPATCH.send(body.payload); // re-queue to appropriate queue
+        msg.ack();
+      } else {
+        msg.ack(); // discard permanently, log to analytics
+      }
+    }
+  }
+};</p></div>
+</div>
+
+<div style="margin:48px 0 0;padding:24px 0 0;border-top:1px solid #1E293B;">
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.12em;text-transform:uppercase;">HIGH SEVERITY — 17 GAPS</span>
+</div>
+
+<div id="GAP-300" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-300</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">16_naelao_registry.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">WorkflowRegistryDO alarm() Unconditionally Reschedules — Missing getAlarm() Guard Causes Last-Writer-Wins Overwrite</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">WorkflowRegistryDO's alarm() body ends with this.ctx.storage.setAlarm(Date.now() + 60_000) unconditionally. The register() handler also calls setAlarm() but the prompt says "set alarm if not already set" without showing the getAlarm() guard. Under concurrent workflow registrations that arrive before the first alarm fires, each registration calls setAlarm() — each call replaces the previous scheduled time. The last writer wins. If ten workflows register simultaneously and the final setAlarm() is called 59 seconds from now while earlier ones expected 10 seconds, the earlier workflows miss their window. CF Durable Objects explicitly state that setAlarm() replaces any existing alarm.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Guard every setAlarm() call with a getAlarm() pre-check:
+
+// WorkflowRegistryDO – register() handler
+async register(workflow: WorkflowConfig): Promise&lt;void&gt; {
+  this.sql.exec('INSERT OR REPLACE INTO workflows VALUES (?,?,?,?)',
+    workflow.id, workflow.cronExpr, 'active', computeNextRun(workflow.cronExpr));
+  const existing = await this.ctx.storage.getAlarm();
+  if (existing === null) {
+    await this.ctx.storage.setAlarm(Date.now() + 1_000); // wake soon to schedule
+  }
+}
+
+// alarm() — schedule next tick for the soonest due workflow only
+async alarm(): Promise&lt;void&gt; {
+  const due = [...this.sql.exec&lt;{id:string}&gt;(
+    'SELECT id FROM workflows WHERE next_run_at &lt;= datetime("now") AND status="active" LIMIT 100'
+  )];
+  await Promise.allSettled(due.map(wf =&gt; this.env.NAELAO_WORKFLOW_DISPATCH.send({ workflowId: wf.id })));
+  const next = [...this.sql.exec&lt;{t:string}&gt;('SELECT MIN(next_run_at) AS t FROM workflows WHERE status="active"')][0]?.t;
+  if (next) await this.ctx.storage.setAlarm(new Date(next).getTime());
+}</p></div>
+</div>
+
+<div id="GAP-301" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-301</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">17_naelao_sweeper.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Sweeper Lists 'space:' KV Prefix That Does Not Exist — sweepAbandonedAgentRuns Always Finds Zero Spaces</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The sweeper's sweepAbandonedAgentRuns uses KV.list({ prefix: 'space:', limit: 100, cursor }) to enumerate all spaces. Spaces are stored in SpaceDO SQLite, not in KV. The string 'space:' is used as the DO instance name prefix (env.NAELAO_SPACE_DO.idFromName('space:' + spaceId)) — that is a DO naming convention, not a KV entry. NAELAO_CONFIG_KV contains no 'space:' prefixed keys. The KV list will always return zero results. The heartbeat cursor pagination loop immediately exits, and no abandoned agent runs are ever swept, causing stale ConcurrencyDO slots to accumulate indefinitely.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the KV list approach with a direct query to an index. Two options:
+
+Option A (preferred): Maintain a 'space-index' KV key containing a JSON array of active spaceIds, updated by naelao-provisioner on create/delete. The sweeper reads this single key.
+
+Option B: Add a /spaces/list endpoint to naelao-spaces (or an /internal/spaces/list endpoint callable via service binding) that queries a global registry DO or SpaceDO directly.
+
+// 17_naelao_sweeper.md — sweepAbandonedAgentRuns()
+const indexJson = await env.NAELAO_CONFIG_KV.get('space-index');
+const spaceIds: string[] = indexJson ? JSON.parse(indexJson) : [];
+for (const spaceId of spaceIds) {
+  const id = env.NAELAO_SPACE_DO.idFromName('space:' + spaceId);
+  const stub = env.NAELAO_SPACE_DO.get(id);
+  // query for abandoned runs, call ConcurrencyDO /release per stale run
+}</p></div>
+</div>
+
+<div id="GAP-302" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-302</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">22_naelao_provisioner.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">deprovisionSpace KV Credential Deletion Issues 2000+ Individual KV Deletes — Exceeds 1000 Subrequest Limit</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">deprovisionSpace Step E enumerates credentials with kv.list({ prefix: 'cred:' + spaceId + ':' }) and deletes them individually. For a space with 2000 stored credentials this produces 2 KV list calls (1000 keys each) plus 2000 individual KV delete subrequests. Combined with R2 list/delete pagination, Vectorize batch deletes, SpaceDO calls, and registry calls, the total subrequest count easily exceeds Cloudflare's hard limit of 1000 subrequests per Worker invocation. The Worker is killed mid-execution, leaving the space in a partially deprovisioned state with orphaned credentials in KV. Additionally, kv.list() is only called once (no cursor loop), so only the first 1000 credentials are even attempted.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use kv.list() with cursor pagination AND batch the deletes:
+
+// workers/naelao-provisioner/src/deprovision.ts
+async function deleteSpaceCredentials(spaceId: string, kv: KVNamespace): Promise&lt;void&gt; {
+  let cursor: string | undefined;
+  const BATCH = 100; // well under subrequest budget per iteration
+  do {
+    const listed = await kv.list({ prefix: 'cred:' + spaceId + ':', limit: 1000, cursor });
+    // Use CF KV bulk delete if available, otherwise delete in small batches
+    // to stay within subrequest budget across the full Worker invocation
+    for (let i = 0; i &lt; listed.keys.length; i += BATCH) {
+      await Promise.all(listed.keys.slice(i, i + BATCH).map(k =&gt; kv.delete(k.name)));
+    }
+    cursor = listed.list_complete ? undefined : listed.cursor;
+    // If subrequest budget is near limit, enqueue remainder to NAELAO_DLQ for continuation
+  } while (cursor);
+}
+For large spaces, use a staged deprovision pattern: enqueue each cleanup phase (R2, Vectorize, KV) as separate queue messages so each executes in its own Worker invocation with a fresh subrequest budget.</p></div>
+</div>
+
+<div id="GAP-303" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-303</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">05_naelao_auth.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">KV Refresh Token Revocation Has 60-Second Eventual Consistency Window — Token Replay Attack After Logout</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">On logout, the refresh token is deleted from KV (key refresh:&lt;token&gt;). KV is eventually consistent: a delete in one Cloudflare region may not propagate to other regions for up to 60 seconds. During this window an attacker who captured the refresh token can POST it to /v1/auth/refresh from a CF region that has not yet received the delete, obtain a new access token, and continue accessing the API. The same window applies to member revocation: the revoked:userId:spaceId KV key written on member removal may not be visible in all regions for up to 60 seconds, allowing a removed member to continue making authenticated API calls.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use a Durable Object for refresh token storage instead of KV. DOs are strongly consistent — a delete is immediately visible to all subsequent requests to that DO instance:
+
+// Replace KV refresh token storage with a TokenRevocationDO
+// workers/naelao-auth/src/index.ts
+const tokenId = env.TOKEN_REVOCATION_DO.idFromName('refresh:' + tokenHash);
+const stub = env.TOKEN_REVOCATION_DO.get(tokenId);
+// On logout: await stub.fetch('/revoke', { method: 'POST' })
+// On refresh: const valid = await stub.fetch('/check') — returns 200 if token exists, 410 if revoked
+
+For member revocation, write revoked:userId:spaceId into SpaceDO SQLite (strongly consistent) and check it there rather than in KV. The naelao-router revocation check must call SpaceDO, not read from KV.</p></div>
+</div>
+
+<div id="GAP-304" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-304</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">23_naelao_admin.md / 13a_agent_worker.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Impersonation Token Scope Field Is Not Enforced in naelao-agents — Read-Scoped Tokens Can Trigger Write Operations</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Admin impersonation tokens include a scope array such as ['read:spaces','read:threads','read:agents']. The naelao-agents auth middleware validates the JWT signature and extracts userId and spaceId but never reads or enforces the scope field. An impersonation token scoped to read:agents can be used to call POST /agents/run/start (start a run), POST /agents/run/:runId/cancel (cancel a run), or any other write endpoint in the agents worker. This allows an admin impersonating a user to perform actions outside the declared scope, violating least-privilege and potentially creating audit log confusion.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add scope enforcement to the agents worker auth middleware. Define a route-to-required-scope map and check it when the JWT contains a scope field:
+
+// workers/naelao-agents/src/middleware/auth.ts
+const ROUTE_SCOPES: Record&lt;string, string&gt; = {
+  'POST:/agents/run/start':          'write:agents',
+  'POST:/agents/run/:runId/cancel':  'write:agents',
+  'GET:/agents/runs':                'read:agents',
+  'GET:/agents/run/:runId':          'read:agents',
+};
+// In middleware, after JWT validation:
+const jwt = c.get('jwt');
+if (jwt.scope) { // only impersonation tokens carry scope
+  const required = ROUTE_SCOPES[method + ':' + pattern];
+  if (required &amp;&amp; !jwt.scope.includes(required)) {
+    return c.json({ error: { code: 'FORBIDDEN_SCOPE', message: 'Token scope insufficient' } }, 403);
+  }
+}
+Apply the same pattern in naelao-threads, naelao-knowledge, and naelao-spaces for any worker that accepts impersonation tokens.</p></div>
+</div>
+
+<div id="GAP-305" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-305</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">13a_agent_worker.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">GET /agents/runs Calls SPACES_SERVICE /internal/agents/runs — Endpoint Does Not Exist, Run History Non-Functional</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The agent worker's GET /agents/runs handler calls SPACES_SERVICE.fetch('/internal/agents/runs') to retrieve run metadata indexed by spaceId. naelao-spaces (07a_spaces_worker.md) has no /internal/agents/runs route. Agent run metadata is stored in NaelaoAgentDO SQLite (per-run DO instance) and there is no secondary index of runs by spaceId maintained anywhere. This endpoint will always return 404, making the agent run history list completely non-functional for every user.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Maintain a run index in SpaceDO. When NaelaoAgentDO starts a run, it must write a summary row to SpaceDO:
+
+// NaelaoAgentDO – on run start
+await env.NAELAO_SPACE_DO_STUB.fetch('/internal/runs/upsert', {
+  method: 'POST',
+  body: JSON.stringify({ runId, agentId, userId, status: 'running', startedAt: Date.now() })
+});
+
+Add to SpaceDO schema (07c_schema.ts):
+CREATE TABLE IF NOT EXISTS agent_runs (
+  run_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, user_id TEXT NOT NULL,
+  status TEXT NOT NULL, started_at INTEGER NOT NULL, ended_at INTEGER,
+  error_code TEXT
+);
+
+Add to 07a_spaces_worker.md:
+app.get('/internal/runs', ...) — queries agent_runs with optional userId/status filters.
+app.post('/internal/runs/upsert', ...) — inserts or updates a run row.
+
+Update GET /agents/runs in 13a_agent_worker.md to call this new endpoint.</p></div>
+</div>
+
+<div id="GAP-306" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-306</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">15_naelao_billing.md / 20_naelao_triggers.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Lemon Squeezy Billing Webhooks Processed by Both naelao-billing and naelao-triggers — Duplicate Credit Grants</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">naelao-billing handles POST /v1/billing/webhook and credits users on payment.success events. naelao-triggers handles POST /v1/webhooks/lemon_squeezy/:spaceId and also has LEMON_SQUEEZY_WEBHOOK_SECRET in its env. The naelao-router sends /v1/billing/webhook to NAELAO_BILLING and /v1/webhooks/* to naelao-triggers — both paths are active simultaneously. When Lemon Squeezy sends an order_created event, the billing platform must only send it to one endpoint. But if a space registers a trigger on the lemon_squeezy provider in naelao-triggers, and the same event arrives at /v1/billing/webhook, both consumers execute. The naelao-billing worker grants credits AND naelao-triggers fires user-configured workflows. The billing worker grants credits correctly; the triggers worker should only fire user automation, not billing logic. The problem is if a developer misconfigures the LS webhook URL to /v1/webhooks/lemon_squeezy/:spaceId instead of /v1/billing/webhook, billing is silently skipped.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Clearly separate the two webhook surfaces in documentation and wrangler config. naelao-billing /v1/billing/webhook is the only endpoint that should be registered in the Lemon Squeezy dashboard for billing events. naelao-triggers /v1/webhooks/lemon_squeezy/:spaceId is for user-configured space-level automation (not billing). To prevent accidental double-billing, naelao-billing should forward a copy of the normalized event to naelao-triggers after credit processing is complete (fan-out pattern), rather than having LS deliver to both independently:
+
+// 15_naelao_billing.md — after credit grant
+await env.NAELAO_TRIGGERS_SERVICE.fetch('/internal/billing-event', {
+  method: 'POST', body: JSON.stringify({ provider: 'lemon_squeezy', event: normalizedEvent })
+});
+// naelao-triggers then fans out to any matching user-registered triggers — no credit logic runs there.</p></div>
+</div>
+
+<div id="GAP-307" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-307</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">18_naelao_notifications.md / 19_naelao_analytics.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Queue Consumers Use Promise.allSettled Without Per-Message ack()/retry() — Failed Messages Silently Dropped</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Both naelao-notifications and naelao-analytics queue consumers use Promise.allSettled(batch.messages.map(msg =&gt; handle(msg.body, env))). allSettled() never throws, so the queue handler always returns normally. Cloudflare Queues interpret a normal return as "all messages ACKed". Failed messages (push service down, Analytics Engine timeout, etc.) are silently ACKed and permanently lost — they never enter the dead-letter queue. The DLQ configuration in wrangler is never triggered because messages are ACKed before they can be retried. The naelao-analytics fix of "send to DLQ on error" in the catch block also fails because the non-awaited writeDataPoints() (see GAP-316) means the catch block never fires.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use explicit per-message acknowledgment:
+
+// workers/naelao-notifications/src/index.ts
+export default {
+  async queue(batch: MessageBatch&lt;NotificationPayload&gt;, env: Env): Promise&lt;void&gt; {
+    for (const msg of batch.messages) {
+      try {
+        await handleNotification(msg.body, env);
+        msg.ack();
+      } catch (err) {
+        console.error('Notification failed, will retry:', msg.body, err);
+        msg.retry(); // returns message to queue for redelivery
+      }
+    }
+  }
+};
+
+Apply the same pattern to naelao-analytics. For the analytics worker specifically, if Analytics Engine is unavailable, retry the entire batch rather than losing data. Ensure max_retries and dead_letter_queue are set in wrangler so permanently failed messages land in the DLQ instead of disappearing.</p></div>
+</div>
+
+<div id="GAP-308" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-308</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">24_naelao_together_ai.md / 08_WalletDO.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">ctx.waitUntil() Credit Settlement Not Guaranteed — Worker Eviction Before Settlement Causes Permanent Revenue Leak</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">naelao-together-ai settles the WalletDO credit reservation via ctx.waitUntil(walletDO.settle(reservationId, actualCredits)) after returning the streaming response. CF Workers guarantee that waitUntil() extends the worker lifetime, but this is not absolute: platform incidents, aggressive eviction, or timeout overruns can terminate the worker before the settlement resolves. If settlement never completes, the 300-second reservation sweep in WalletDO refunds the credits. The user received LLM inference for free. Under high-volume concurrent streaming this is an exploitable revenue leak: a client that opens thousands of simultaneous streams and aborts them immediately forces reservations that never settle, each refunding after 5 minutes.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Make credit settlement durable by writing a settlement record to a Queue before returning the response. The Queue guarantees at-least-once delivery even if the Worker is evicted:
+
+// workers/naelao-together-ai/src/index.ts — after streaming completes
+// Instead of: ctx.waitUntil(walletDO.settle(reservationId, actualCredits))
+// Do:
+ctx.waitUntil(
+  env.NAELAO_ANALYTICS_QUEUE.send({
+    type: 'wallet_settle',
+    reservationId,
+    actualCredits,
+    userId,
+    spaceId,
+    timestamp: Date.now()
+  })
+);
+// A queue consumer (can be a new handler in naelao-analytics or a dedicated settlement worker)
+// calls walletDO.settle() with at-least-once guarantee.
+// WalletDO settle() must be idempotent on reservationId to handle duplicate deliveries.</p></div>
+</div>
+
+<div id="GAP-309" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-309</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">07b_SpaceDO.md / 07c_schema.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">space_credits Table Defined Differently in SpaceDO vs schema.ts — Missing Columns Cause NULL Reads at Runtime</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">07b_SpaceDO.md defines space_credits with columns: space_id, balance_credits, daily_spent_credits, daily_reset_at (TEXT), monthly_budget_credits, platform_daily_ceiling, updated_at (TEXT). 07c_schema.ts defines space_credits with: space_id, balance_credits NOT NULL, reserved_credits NOT NULL, daily_spent_credits NOT NULL, daily_limit_credits NOT NULL DEFAULT 1000000, daily_reset_at INTEGER NOT NULL, updated_at INTEGER NOT NULL. The two schemas diverge on: (1) 07b has monthly_budget_credits and platform_daily_ceiling not in 07c; (2) 07c has reserved_credits and daily_limit_credits not in 07b; (3) timestamp type is TEXT in 07b vs INTEGER in 07c; (4) 07c has NOT NULL constraints absent from 07b. The deployed DO will use one schema. Code from the other prompt reading non-existent columns gets NULL silently. Credit limit enforcement via daily_limit_credits will always pass (NULL &gt; any integer is false in SQLite comparisons with NULL = no enforcement).</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Canonicalize on the 07c_schema.ts definition as the source of truth. Update 07b_SpaceDO.md to use the identical column set:
+
+CREATE TABLE IF NOT EXISTS space_credits (
+  space_id            TEXT PRIMARY KEY,
+  balance_credits     INTEGER NOT NULL DEFAULT 0,
+  reserved_credits    INTEGER NOT NULL DEFAULT 0,
+  daily_spent_credits INTEGER NOT NULL DEFAULT 0,
+  daily_limit_credits INTEGER NOT NULL DEFAULT 1000000,
+  daily_reset_at      INTEGER NOT NULL DEFAULT 0,   -- unix ms
+  updated_at          INTEGER NOT NULL DEFAULT 0    -- unix ms
+);
+
+Remove monthly_budget_credits and platform_daily_ceiling from the space_credits table — these belong in a separate space_billing_config table if needed. Read PLATFORM_DAILY_CREDIT_CEILING from the env var (already done in WalletDO). Ensure all timestamp reads/writes in SpaceDO use Date.now() (integer) not new Date().toISOString() (text).</p></div>
+</div>
+
+<div id="GAP-310" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-310</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">17_naelao_sweeper.md / 28_wrangler_configs.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">naelao-sweeper Missing NAELAO_CONCURRENCY_DO Binding — sweepAbandonedAgentRuns Cannot Release Stale Slots</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">17_naelao_sweeper.md's Env interface declares NAELAO_CONCURRENCY_DO: DurableObjectNamespace for the sweepAbandonedAgentRuns task, which must call /slots and /release on ConcurrencyDO instances. The naelao-sweeper wrangler config in 28_wrangler_configs.md lists only two service bindings (NAELAO_SPACE_DO, NAELAO_REGISTRY) and zero Durable Object namespace bindings. Without NAELAO_CONCURRENCY_DO, env.NAELAO_CONCURRENCY_DO is undefined at runtime and every call throws "Cannot read properties of undefined (reading 'idFromName')". Stale concurrency slots from crashed or evicted agent runs are never released, gradually starving new agent runs of concurrency capacity.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add the ConcurrencyDO binding to the naelao-sweeper wrangler config:
+
+// wrangler.jsonc – naelao-sweeper (add to durable_objects section)
+{
+  "durable_objects": {
+    "bindings": [
+      { "name": "NAELAO_CONCURRENCY_DO", "class_name": "ConcurrencyDO", "script_name": "naelao-spaces" }
+    ]
+  }
+}
+
+Verify that ConcurrencyDO exports a /slots GET handler (returning occupied slot list) and a /release POST handler (accepting a runId) in 09_ConcurrencyDO.md. Add these handlers if missing.</p></div>
+</div>
+
+<div id="GAP-311" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-311</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">22_naelao_provisioner.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">deprovisionSpace KV Credential Deletion Uses Single kv.list() — No Cursor Pagination, First 1000 Only</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Separate from the subrequest budget issue in GAP-302, Step E of deprovisionSpace calls kv.list({ prefix: 'cred:' + spaceId + ':' }) once with no cursor loop. KV list returns a maximum of 1000 keys per call. For enterprise spaces with more than 1000 stored credentials, only the first 1000 are deleted. The remaining credentials persist in KV indefinitely as orphaned data. For GDPR compliance (right to erasure), this is a data leak: deleted space data survives in KV with no cleanup mechanism. The R2 deletion in the same function correctly implements cursor pagination with do { } while (cursor) — the same pattern is absent for KV.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add cursor pagination to the KV credential deletion loop in deprovision.ts:
+
+// workers/naelao-provisioner/src/deprovision.ts – Step E
+let cursor: string | undefined;
+do {
+  const listed = await env.NAELAO_CONFIG_KV.list({
+    prefix: 'cred:' + spaceId + ':',
+    limit: 1000,
+    cursor
+  });
+  await Promise.all(listed.keys.map(k =&gt; env.NAELAO_CONFIG_KV.delete(k.name)));
+  cursor = listed.list_complete ? undefined : listed.cursor;
+} while (cursor);
+
+Note: for spaces with &gt;1000 credentials, combine this fix with the subrequest budget fix from GAP-302 (staged deletion via queue messages) to avoid hitting the 1000-subrequest-per-invocation ceiling.</p></div>
+</div>
+
+<div id="GAP-312" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-312</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">19_naelao_analytics.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Analytics Engine writeDataPoints() Called Without await — Rejections Unhandled, DLQ Fallback Never Fires</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">In 19_naelao_analytics.md the queue consumer calls env.NAELAO_ANALYTICS.writeDataPoints(points) without await. Analytics Engine writeDataPoints() is asynchronous. Without await: (1) if the call rejects, the rejection is unhandled — the surrounding try/catch does not catch asynchronous rejections from non-awaited promises; (2) the catch block that sends failed events to the DLQ never executes even when Analytics Engine is down; (3) the queue handler returns before the write completes, so the message is ACKed (per allSettled) before it is known whether the write succeeded. The entire DLQ fallback mechanism is broken.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add await and combine with the per-message ack fix from GAP-307:
+
+// workers/naelao-analytics/src/index.ts
+export default {
+  async queue(batch: MessageBatch&lt;AnalyticsEvent&gt;, env: Env): Promise&lt;void&gt; {
+    const points = batch.messages.map(m =&gt; mapEventToDataPoint(m.body));
+    for (const msg of batch.messages) {
+      try {
+        await env.NAELAO_ANALYTICS.writeDataPoints([mapEventToDataPoint(msg.body)]);
+        msg.ack();
+      } catch (err) {
+        console.error('Analytics write failed:', err);
+        msg.retry(); // requeue for retry up to max_retries, then DLQ
+      }
+    }
+  }
+};
+// If batching writes is important for throughput, write in groups of 20 and retry the group on failure.</p></div>
+</div>
+
+<div id="GAP-313" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-313</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">24_naelao_together_ai.md / 07b_SpaceDO.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Fine-Tune Job Storage Calls SpaceDO Endpoint That Does Not Exist — finetune_jobs Schema and Routes Absent</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">naelao-together-ai POST /v1/ai/finetune/start calls the SpaceDO service binding to "Store job in SpaceDO". SpaceDO (07b_SpaceDO.md) has no fine-tune job routes (/finetune/*) and 07c_schema.ts has no finetune_jobs table. The Together AI worker will call a non-existent endpoint and receive 404. Fine-tune job creation silently fails after the Together AI API call succeeds, meaning jobs are submitted to Together AI but never tracked. naelao-sweeper's sweepStaleFineTuneJobs also calls SpaceDO to "Find running fine-tune jobs" — that query also fails since the table doesn't exist.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add fine-tune job tracking to SpaceDO. In 07c_schema.ts add:
+
+CREATE TABLE IF NOT EXISTS finetune_jobs (
+  job_id       TEXT PRIMARY KEY,
+  space_id     TEXT NOT NULL,
+  model        TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending',  -- pending|running|completed|failed
+  together_job_id TEXT,
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+
+In 07b_SpaceDO.md add routes:
+POST /finetune/jobs        — insert a new job row
+GET  /finetune/jobs        — list jobs for this space (with status filter)
+PATCH /finetune/jobs/:id   — update status
+
+In 24_naelao_together_ai.md, call these routes via the SpaceDO stub after the Together AI API responds with a job ID. In 17_naelao_sweeper.md, sweepStaleFineTuneJobs should call GET /finetune/jobs?status=running on each SpaceDO instance.</p></div>
+</div>
+
+<div id="GAP-314" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-314</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">05_naelao_auth.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">KV Rate Limit Counter is Non-Atomic — Concurrent Burst Allows Brute Force Bypass</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">naelao-auth rate-limits login attempts via a KV counter keyed rl:login:&lt;ip&gt;. The implementation reads the current count, checks it against the limit, increments, and writes back. KV writes are not atomic. Under concurrent requests: 100 simultaneous login attempts all read count=0, all pass the check, and all write count=1. The effective limit is never enforced against burst traffic. An attacker sending 100 parallel requests to /v1/auth/login can brute force passwords indefinitely by always sending requests in concurrent bursts, as each burst sees count=0.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the KV counter with a Durable Object for atomic counting, or use Cloudflare's built-in Rate Limiting API (if available on the plan):
+
+Option A — Rate Limiting DO (always available):
+// workers/naelao-auth/src/rate-limit.ts
+export class RateLimitDO implements DurableObject {
+  private count = 0; private resetAt = 0;
+  async fetch(req: Request): Promise&lt;Response&gt; {
+    const now = Date.now();
+    if (now &gt; this.resetAt) { this.count = 0; this.resetAt = now + 900_000; }
+    this.count++;
+    return Response.json({ allowed: this.count &lt;= 10, count: this.count });
+  }
+}
+// In naelao-auth login handler:
+const id = env.RATE_LIMIT_DO.idFromName('rl:login:' + ip);
+const { allowed } = await env.RATE_LIMIT_DO.get(id).fetch('/').then(r =&gt; r.json());
+if (!allowed) return c.json({ error: { code: 'RATE_LIMITED' } }, 429);
+
+Option B — Cloudflare Rate Limiting binding (requires paid plan):
+Add to wrangler.jsonc: { "rate_limits": [{ "binding": "LOGIN_RATE_LIMIT", "namespace_id": "&lt;id&gt;" }] }</p></div>
+</div>
+
+<div id="GAP-315" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-315</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">25_naelao_router.md / 05_naelao_auth.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Router Auth Middleware Double-Hops Every Request Through naelao-auth — Revocation Check Inconsistency and Single Point of Failure</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">naelao-router's auth middleware calls NAELAO_AUTH service binding GET /v1/auth/me on every authenticated request to verify the JWT. This is a double-hop: router validates the JWT via auth-worker, then the router forwards the request to the target worker. Every authenticated request incurs 2x latency. More critically: if naelao-auth is down or cold-starting, 100% of authenticated requests fail — naelao-auth becomes a single point of failure for the entire platform. Additionally, naelao-router performs a KV revocation check (revoked:userId:spaceId) before calling auth-worker. Service Binding calls that bypass the router (worker-to-worker internal calls) skip both the revocation check and the auth-worker verification entirely, creating a gap where a revoked member can still reach internal endpoints.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Verify JWTs locally in naelao-router without calling naelao-auth. The JWT secret (NAELAO_JWT_SECRET) is already an env var. Use Web Crypto to verify HMAC-SHA256 inline:
+
+// workers/naelao-router/src/middleware/auth.ts
+import { verifyJwt } from '../../naelao-auth/src/jwt'; // shared util via package
+// OR inline the verification — it's 10 lines of Web Crypto
+const payload = await verifyJwtLocally(token, env.NAELAO_JWT_SECRET);
+// No network hop needed — JWT is self-contained.
+
+Reserve naelao-auth calls for token refresh, login, and logout only. For revocation, write revoked:userId:spaceId into SpaceDO (strongly consistent) and check it via a SpaceDO stub in the router middleware. This removes the auth-worker as a SPOF and cuts per-request latency by ~10ms.</p></div>
+</div>
+
+<div id="GAP-316" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-316</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#E8692A;letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">20_naelao_triggers.md / 14_naelao_mcp_hub.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">SSRF via MCP Hub App Worker URL — User-Controlled App Worker URLs Fetch Internal CF Metadata Endpoints</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">naelao-mcp-hub forwards tool calls to "App Workers" via fetch() using a URL retrieved from SpaceDO. If the App Worker URL is user-controllable (set when registering an app), an attacker who can register an app with a malicious URL causes the MCP hub to fetch arbitrary URLs. Cloudflare Workers can reach internal metadata endpoints (169.254.169.254 on some CF network paths), other internal CF services, or other customers' workers. The prompt does not show URL validation before the fetch() call. Similarly, naelao-triggers webhook forwarding uses :provider from the URL path — if the trigger configuration allows a user to set an arbitrary forwarding URL, the triggers worker can be used as an SSRF proxy.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Validate App Worker URLs at registration time and at call time:
+
+// workers/naelao-mcp-hub/src/index.ts – before fetch()
+function validateAppWorkerUrl(url: string): void {
+  const parsed = new URL(url); // throws on invalid URL
+  // Only allow HTTPS
+  if (parsed.protocol !== 'https:') throw new Error('App Worker URL must use HTTPS');
+  // Block internal/private IP ranges and CF metadata endpoints
+  const blocked = ['169.254.', '10.', '172.16.', '192.168.', 'localhost', '127.'];
+  if (blocked.some(prefix =&gt; parsed.hostname.startsWith(prefix))) {
+    throw new Error('App Worker URL cannot target internal addresses');
+  }
+  // Only allow *.workers.dev or customer-registered domains (stored in an allowlist)
+  if (!parsed.hostname.endsWith('.workers.dev') &amp;&amp; !isAllowlistedDomain(parsed.hostname)) {
+    throw new Error('App Worker URL not in allowlist');
+  }
+}
+// Apply the same validation in naelao-triggers for any user-configurable forwarding URLs.</p></div>
+</div>
+<div style="margin:48px 0 0;padding:24px 0 0;border-top:1px solid #1E293B;">
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.12em;text-transform:uppercase;">MEDIUM SEVERITY — 7 GAPS</span>
+</div>
+
+<div id="GAP-317" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-317</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">26_naelao_portal_router.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Portal Router In-Memory Route Cache Is Not Shared Across Worker Instances — Cache Is Ineffective and Inconsistent</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">naelao-portal-router caches portal route lookups in a module-level Map with a 60-second TTL to reduce KV reads. Cloudflare Workers are not singletons: Cloudflare runs multiple isolate instances simultaneously across PoPs and scales them horizontally. Each instance has its own independent Map. A request routed to isolate A sees the cached route; a request routed to isolate B sees nothing. The cache provides no meaningful hit rate benefit. Worse, when a portal route is updated in KV, some isolates continue serving the old route for up to 60 seconds while others immediately serve the new route, creating inconsistent behavior visible to end users depending on which CF PoP handles their request.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove the in-memory Map cache. KV reads are fast (~1ms) and globally consistent within 60 seconds. For a portal router whose purpose is mapping slugs/hostnames to spaceIds, the KV read cost is negligible and consistency is more important than a cache that provides no real benefit across isolates. If caching is truly needed, use a Durable Object as a shared cache (one DO instance per portal slug, with a short TTL stored in DO SQLite). Alternatively, accept the KV eventual consistency window and document it as expected behavior — routes take up to 60 seconds to propagate globally after update.</p></div>
+</div>
+
+<div id="GAP-318" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-318</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">27_naelao_artifact.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Artifact R2 Key and KV Metadata Key Lack Namespace — Artifact IDs Are Not Scoped per Space, Enabling Enumeration</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Artifacts are stored in R2 under artifacts/&lt;spaceId&gt;/&lt;artifactId&gt;.&lt;ext&gt; and metadata in KV under artifact:&lt;artifactId&gt;. The artifactId is presumably a UUID, but the KV metadata key includes no spaceId prefix. Two consequences: (1) the KV namespace is flat across all spaces — if any service leaks an artifactId, the metadata is accessible without knowing the spaceId; (2) listing KV keys with prefix artifact: exposes artifact IDs from all spaces. The ownership check "verify requester's spaceId matches artifact.spaceId" is correct for direct access but fails to prevent enumeration by an attacker who guesses or lists artifact IDs. Additionally, the artifact content-type detection from file extension in the GET handler, if the extension comes from user-supplied type stored in KV metadata without strict validation, could serve crafted MIME types.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Namespace the KV metadata key by spaceId:
+
+// Change KV key from: artifact:&lt;artifactId&gt;
+// To: artifact:&lt;spaceId&gt;:&lt;artifactId&gt;
+
+// GET /v1/artifacts/:artifactId — extract spaceId from JWT, build scoped key:
+const meta = await env.NAELAO_ARTIFACT_KV.get('artifact:' + spaceId + ':' + artifactId, 'json');
+if (!meta) return c.json({ error: { code: 'NOT_FOUND' } }, 404);
+
+// POST /v1/artifacts — store with scoped key:
+await env.NAELAO_ARTIFACT_KV.put('artifact:' + spaceId + ':' + artifactId, JSON.stringify(metadata));
+
+For content-type, use an explicit allowlist: const ALLOWED_TYPES = { html: 'text/html', js: 'text/javascript', css: 'text/css', json: 'application/json', png: 'image/png', jpg: 'image/jpeg' }; Never serve application/octet-stream for unknown types — return 400 instead.</p></div>
+</div>
+
+<div id="GAP-319" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-319</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">08_WalletDO.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">WalletDO expires_at and daily_reset_at Stored as TEXT — Inconsistent Format Risks Silent Incorrect Comparisons</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">WalletDO stores reservation expires_at and daily_reset_at as TEXT. SQLite TEXT column comparisons work correctly for ISO 8601 format ("2024-01-15T10:30:00Z" &lt; "2024-01-16T10:30:00Z") but only if all values use the same format with timezone designation. If some code paths write datetime strings without the Z suffix (e.g., new Date().toISOString().slice(0,19)) and others write with Z, the comparisons fail silently: "2024-01-15T10:30:00" &gt; "2024-01-15T10:30:00Z" in lexicographic comparison, so records with the non-Z format never expire. The date('now') comparison used in daily_reset_at checks compares only the date portion, which is correct, but mixing with datetime() in the same column causes inconsistency.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Store all timestamps in WalletDO as INTEGER (Unix milliseconds) not TEXT. This is unambiguous and avoids all timezone and format inconsistency issues:
+
+// In WalletDO schema — change TEXT to INTEGER for all timestamp columns
+expires_at   INTEGER NOT NULL,  -- unix ms
+daily_reset_at INTEGER NOT NULL, -- unix ms
+updated_at   INTEGER NOT NULL   -- unix ms
+
+// Update all reads/writes accordingly:
+// Instead of: WHERE expires_at < datetime('now')
+// Use:        WHERE expires_at < ?   [pass Date.now() as the parameter]
+
+// Sweep expired reservations:
+this.sql.exec('DELETE FROM reservations WHERE expires_at &lt; ?', Date.now());
+// Daily reset check:
+if (wallet.daily_reset_at &lt; startOfTodayMs()) { /* reset */ }</p></div>
+</div>
+
+<div id="GAP-320" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-320</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">16_naelao_registry.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">WorkflowRegistryDO alarm() Fan-Out Has No LIMIT — Full Cursor Spread OOMs on Large Workflow Sets, 30s Timeout Risk</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">WorkflowRegistryDO alarm() fans out due workflows with [...due] spread, which pulls the entire SQL cursor result into a JavaScript array in memory with no row limit. Cloudflare Durable Objects have a 128MB memory ceiling. If thousands of workflows are due simultaneously (e.g., after a platform outage where alarms backed up), this spread allocates a large array and can exhaust DO memory. Additionally, DO alarm() has a 30-second execution timeout. Promise.all() on thousands of queue sends can exceed this timeout. A mid-execution timeout means some workflows are dispatched and some are not, with no partial-completion tracking — the next alarm invocation re-dispatches only the still-overdue workflows (if next_run_at is updated transactionally), but if the alarm times out before the DB update, some workflows get double-dispatched.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a LIMIT to the due workflows query and process in batches within the alarm, scheduling another immediate alarm if more remain:
+
+// WorkflowRegistryDO – alarm()
+async alarm(): Promise&lt;void&gt; {
+  const BATCH = 50; // safe well within 30s and memory limits
+  const due = [...this.sql.exec&lt;{id:string}&gt;(
+    'SELECT id FROM workflows WHERE next_run_at &lt;= datetime("now") AND status="active" LIMIT ?', BATCH
+  )];
+  if (due.length === 0) { /* schedule next alarm at soonest next_run_at */ return; }
+  // Update next_run_at BEFORE dispatching (prevents double-dispatch on timeout)
+  this.sql.exec('BEGIN');
+  for (const wf of due) {
+    this.sql.exec('UPDATE workflows SET next_run_at=computeNext(cron) WHERE id=?', wf.id);
+  }
+  this.sql.exec('COMMIT');
+  await Promise.allSettled(due.map(wf =&gt; this.env.NAELAO_WORKFLOW_DISPATCH.send({ workflowId: wf.id })));
+  if (due.length === BATCH) {
+    // More rows may remain — wake immediately to process next batch
+    await this.ctx.storage.setAlarm(Date.now() + 100);
+  } else {
+    // Schedule next alarm at next due workflow time
+    const next = [...this.sql.exec&lt;{t:string}&gt;('SELECT MIN(next_run_at) AS t FROM workflows WHERE status="active"')][0]?.t;
+    if (next) await this.ctx.storage.setAlarm(new Date(next).getTime());
+  }
+}</p></div>
+</div>
+
+<div id="GAP-321" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-321</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">02_shared_types.md / 05_naelao_auth.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">JWTPayload in naelao-auth Missing iat Field vs Shared Types — rootSpaceId Never Populated at Login</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Two issues: (1) The JWTPayload interface in 05_naelao_auth.md omits the iat?: number field present in the shared types definition (02_shared_types.md). TypeScript will error on any code that reads jwt.iat from a token verified by the auth worker. (2) rootSpaceId is declared in both JWTPayload definitions, but no code in the login or token-issue flow is shown to populate it. SpaceDO instances are named 'space:' + spaceId but rootSpaceId (the top-level parent space for hierarchical spaces) requires a lookup that is never described in the auth flow. Code across the platform that reads jwt.rootSpaceId will get undefined at runtime, silently passing an undefined value to any function that uses it as a DO name segment or permission check.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Fix 1: Add iat to the auth worker's local JWTPayload and set it in the token issue function:
+// workers/naelao-auth/src/jwt.ts
+const payload: JWTPayload = { sub: userId, spaceId, rootSpaceId, role, builderId,
+  iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600 };
+
+Fix 2: Populate rootSpaceId at login time. Add a root_space_id column to SpaceDO's spaces table (or store it in the members table). When a user authenticates to a spaceId, query SpaceDO for the root space:
+// workers/naelao-auth/src/index.ts – POST /v1/auth/login
+const spaceMeta = await spaceDOStub.fetch('/meta').then(r =&gt; r.json());
+const rootSpaceId = spaceMeta.rootSpaceId ?? spaceId; // top-level spaces are their own root
+// Include in JWT payload</p></div>
+</div>
+
+<div id="GAP-322" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-322</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">14_naelao_mcp_hub.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">MCP Hub invalidateToolCache Lists Only First 1000 Keys and Issues Unbounded Parallel Deletes — Incomplete Invalidation and KV Rate Limit Risk</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">invalidateToolCache() in naelao-mcp-hub calls kv.list({ prefix: 'tool-schemas:' + spaceId + ':' }) once with no cursor loop, getting at most 1000 keys. For spaces with many agents the remainder of the cache is never invalidated, leaving stale tool schemas in KV. Additionally, Promise.all(listed.keys.map(k =&gt; kv.delete(k.name))) issues all deletes simultaneously. Cloudflare KV has internal rate limiting: while there is no publicly documented per-worker hard limit, issuing 1000 simultaneous delete requests risks throttling responses. Failed deletes from rate limiting are not retried, silently leaving stale cache entries.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add cursor pagination and batch the deletes:
+
+// workers/naelao-mcp-hub/src/index.ts
+async function invalidateToolCache(spaceId: string, kv: KVNamespace): Promise&lt;void&gt; {
+  let cursor: string | undefined;
+  do {
+    const listed = await kv.list({ prefix: 'tool-schemas:' + spaceId + ':', limit: 1000, cursor });
+    // Delete in batches of 25 to avoid KV rate limits
+    for (let i = 0; i &lt; listed.keys.length; i += 25) {
+      await Promise.all(listed.keys.slice(i, i + 25).map(k =&gt; kv.delete(k.name)));
+    }
+    cursor = listed.list_complete ? undefined : listed.cursor;
+  } while (cursor);
+}</p></div>
+</div>
+
+<div id="GAP-323" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-323</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">05_naelao_auth.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">PBKDF2 Password Hash Storage Format Unspecified — Ambiguous Encoding Risks Verify-Always-Pass or Verify-Always-Fail</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">naelao-auth stores PBKDF2 hashed passwords in KV as user:hash:&lt;email&gt; with "16-byte salt stored as prefix". The format for reading back is never specified. The verification step must extract the 16-byte salt, re-derive the key with the same parameters, and compare. If the storage format is ambiguous (raw bytes vs hex vs base64, with or without a length prefix, with or without a separator between salt and hash) then different code generators will implement the format differently. A mismatch causes either: (1) all logins fail (salt extraction reads wrong bytes, re-derived key never matches), or (2) all logins pass (comparison logic is wrong and compares empty arrays). Raw bytes stored in KV are also susceptible to UTF-8 corruption if the KV client encodes the value as a string.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Specify the exact encoding in 05_naelao_auth.md:
+
+// workers/naelao-auth/src/jwt.ts – hashPassword()
+async function hashPassword(password: string): Promise&lt;string&gt; {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const derived = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' }, keyMaterial, 256);
+  // Format: base64(salt):base64(hash) — unambiguous, no binary in KV
+  return btoa(String.fromCharCode(...salt)) + ':' + btoa(String.fromCharCode(...new Uint8Array(derived)));
+}
+
+async function verifyPassword(password: string, stored: string): Promise&lt;boolean&gt; {
+  const [saltB64, hashB64] = stored.split(':');
+  const salt = Uint8Array.from(atob(saltB64), c =&gt; c.charCodeAt(0));
+  const expectedHash = Uint8Array.from(atob(hashB64), c =&gt; c.charCodeAt(0));
+  const keyMaterial = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const derived = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 100_000, hash: 'SHA-256' }, keyMaterial, 256));
+  return crypto.subtle.timingSafeEqual ? crypto.subtle.timingSafeEqual(derived, expectedHash)
+    : derived.every((b, i) =&gt; b === expectedHash[i]); // fallback constant-time compare
+}</p></div>
+</div>
+
+<div style="margin:48px 0 0;padding:24px 0 0;border-top:1px solid #1E293B;">
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:#22C55E;letter-spacing:.12em;text-transform:uppercase;">LOW SEVERITY — 1 GAP</span>
+</div>
+
+<div id="GAP-324" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">GAP-324</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#22C55E;letter-spacing:.08em;text-transform:uppercase;background:#22C55E18;padding:3px 8px;border-radius:3px;white-space:nowrap;">LOW</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">15_naelao_billing.md</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">billingProvider Created Outside Handler for Reuse — No Problem With Reuse, But Secret Selection Logic for verifyWebhook Is Undocumented</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">naelao-billing creates the billingProvider instance at module scope ("CRITICAL: billingProvider const must be created outside the handler to reuse"). The provider instance is reused across requests correctly. However, the verifyWebhook(rawBody, headers, secret) call in the webhook handler never specifies which secret variable to pass. For BILLING_PROVIDER='lemon_squeezy' the correct secret is env.LEMON_SQUEEZY_WEBHOOK_SECRET; for 'stripe' it is env.STRIPE_WEBHOOK_SECRET. Without explicit documentation, a code generator may pass the wrong secret (e.g., always passing LEMON_SQUEEZY_WEBHOOK_SECRET regardless of provider), which would cause webhook verification to silently fail for Stripe webhooks (signature mismatch) or to succeed with the wrong secret for LS webhooks during provider migration. This is low severity because the fix is trivially obvious once flagged, but it is a real failure mode during a provider switch.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Make the secret selection explicit in 15_naelao_billing.md. The BillingProvider interface's verifyWebhook should not take a secret parameter — each provider implementation reads its own secret from the Env it was constructed with:
+
+// packages/billing-providers/src/types.ts
+interface BillingProvider {
+  verifyWebhook(rawBody: string, headers: Headers): Promise&lt;boolean&gt;; // no secret param
+  // ...
+}
+
+// packages/billing-providers/src/lemon-squeezy.ts
+class LemonSqueezyProvider implements BillingProvider {
+  constructor(private env: { LEMON_SQUEEZY_WEBHOOK_SECRET: string }) {}
+  async verifyWebhook(rawBody: string, headers: Headers): Promise&lt;boolean&gt; {
+    return verifyHmacSha256(rawBody, headers.get('X-Signature') ?? '', this.env.LEMON_SQUEEZY_WEBHOOK_SECRET);
+  }
+}
+
+// workers/naelao-billing/src/index.ts
+const provider = createBillingProvider(env); // provider self-selects its own secret
+const verified = await provider.verifyWebhook(rawBody, request.headers); // no secret arg needed</p></div>
+</div>
+
+<div style="margin:32px 0 0;padding:32px;background:#0A1628;border:1px solid #1E293B;border-radius:8px;">
+  <p style="font-family:'DM Mono',monospace;font-size:11px;color:#64748B;margin:0;line-height:1.8;">
+    Appendix I complete. Combined gap audit total: A (125) + B (30) + C (22) + D (22) + E (24) + F (26) + G (26) + H (15) + I (34)
+    = <strong style="color:var(--or);">324 documented technical gaps</strong> with required fixes.
+  </p>
+</div>
+</section>
+</body>
 </html>
