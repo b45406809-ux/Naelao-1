@@ -42310,5 +42310,479 @@ Add a POST /update-tier endpoint to ConcurrencyDO called by the billing Worker o
 </div>
 </section>
 
+
+<section id="appendix-l" style="max-width:900px;margin:0 auto;padding:clamp(32px,6vw,80px) clamp(16px,4vw,48px);">
+<h2 style="font-family:'Fraunces',serif;font-size:clamp(22px,4vw,36px);font-weight:700;color:var(--tx);margin:0 0 8px;">Appendix L — Additional Technical Gap Audit (Fourth Pass)</h2>
+<p style="font-family:'DM Mono',monospace;font-size:12px;color:#64748B;margin:0 0 32px;line-height:1.7;">
+  Fourth-pass gap analysis targeting previously unread spec sections: §security (credential allowlist, skill signing), §container-system (SandboxDO fields), §schema (global SpaceDO schema), §file-manager-skill (append locking), §agentdo-api (human-in-the-loop), §mcp-hub (tool resolution), §naelao-triggers (webhook verification), §space-type-versioning (canary function scope), §naelao-apps-registry (AppRegistryDO), §registry-finetune-dos (FinetuneJobDO alarm), §execution-ladder-spec (Browser Worker, Tier 1 locking), §agent-env-declaration (Enterprise tier config), §operator-shell-slots (postMessage security).
+  This pass identified 23 new gaps: 13 CRITICAL, 9 HIGH, 1 MEDIUM.
+</p>
+
+<div id="G-L01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L01</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§security — naelao-credentials</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">SSRF Allowlist Check Uses endsWith() — evilgithub.com Passes as github.com</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The credential injection layer validates outbound URLs against an allowlist using:
+  parsedUrl.hostname.endsWith(d)   // where d = 'github.com', 'api.openai.com', etc.
+
+This check incorrectly matches any hostname ending in a whitelisted string. An attacker-controlled host such as evilgithub.com passes for d='github.com', and evilapi.openai.com passes for d='openai.com'. Any agent or tool call with a crafted URL can route requests — including requests that carry injected API credentials — to an attacker-controlled server, exfiltrating every secret injected into the request.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace endsWith(d) with a proper domain-boundary check:
+  function matchesDomain(hostname: string, allowed: string): boolean {
+    return hostname === allowed || hostname.endsWith('.' + allowed);
+  }
+
+This requires either an exact match (github.com) or a dot-separated subdomain (api.github.com), rejecting evilgithub.com. Apply the same fix to every allowlist check in the naelao-credentials credential injection path and the api-caller SSRF filter. Add a unit test suite specifically for the allowlist matching logic.</p></div>
+</div>
+<div id="G-L02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L02</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§container-system — SandboxDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">sandboxRef Cached In-Memory Is Null After DO Hibernation — All Container exec() Calls Return 503</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">private sandboxRef: SandboxStub | null = null is a class field populated once and cached. The DO uses WebSocket hibernation, which destroys the entire class instance between messages. After any hibernation cycle, ensureRunning() reads container_status = 'running' from SQLite and returns 'already_running' without re-calling getSandbox(). As a result, this.sandboxRef remains null for the remainder of the session and every subsequent exec() call throws a null-dereference TypeError, returning 503.
+
+Note: The same in-memory stub pattern was documented for §25 SandboxDO (G-J03) and §85 AssistantSandboxDO (G-K05). This instance is in the separate §container-system section.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove the cached sandboxRef field entirely. At the start of every request handler, call getSandbox() fresh:
+  async exec(params: ExecParams): Promise&lt;ExecResult&gt; {
+    const sandboxRef = await this.env.CONTAINERS.getSandbox(this.sandboxId); // cheap, idempotent
+    if (!sandboxRef) throw new ContainerNotRunningError();
+    return await sandboxRef.exec(params);
+  }
+getSandbox() is a cheap stub lookup, not a container creation. Never cache DO stubs or Worker Service Binding stubs across potential hibernation boundaries.</p></div>
+</div>
+<div id="G-L03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L03</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§container-system — SandboxDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">lastCommandAt Resets to 0 After Hibernation — Container Stopped Immediately on Every Alarm Tick</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">private lastCommandAt = 0 is an in-memory field updated on each exec() call. After any DO hibernation this field resets to 0. The alarm handler evaluates Date.now() - this.lastCommandAt &gt;= IDLE_TIMEOUT_MS; with lastCommandAt = 0, this difference equals the Unix epoch age and is always enormous, so every alarm fires an immediate container termination even if the user issued a command 30 seconds before hibernation.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Persist lastCommandAt to DO SQLite on every exec() call:
+  this.ctx.storage.sql.exec(
+    `INSERT OR REPLACE INTO container_state (key, value) VALUES ('last_command_at', ?)`,
+    Date.now().toString()
+  );
+
+In alarm(), read it back before evaluating idle timeout:
+  const rows = [...this.ctx.storage.sql.exec('SELECT value FROM container_state WHERE key = ?', 'last_command_at')];
+  const lastCommandAt = rows[0] ? parseInt(rows[0].value) : Date.now();
+  if (Date.now() - lastCommandAt &gt;= this.idleTimeoutMs) { await this.stopContainer(); }</p></div>
+</div>
+<div id="G-L04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L04</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§container-system — LocalTunnelDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">LocalTunnelDO.grants Array Is In-Memory and Never Persisted — All Permissions Lost on Hibernation, Permanent 403</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">grants: LocalPermissionGrant[] = [] is a plain class field populated by grantPermission() but never written to SQLite. After any hibernation cycle the array is empty, and checkPermission() always returns false, causing every subsequent tool call to return 403. The spec provides no mechanism for the client to automatically re-grant permissions after a hibernation — the agent loop silently fails on all local PC tool calls until the entire session is manually restarted.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Persist grants to a local_tunnel_grants SQLite table on every grantPermission() call:
+  this.ctx.storage.sql.exec(
+    `INSERT OR REPLACE INTO local_tunnel_grants (tool_name, path_prefix, granted_at) VALUES (?,?,unixepoch('now')*1000)`,
+    grant.toolName, grant.pathPrefix
+  );
+
+In checkPermission(), query SQLite directly:
+  const rows = [...this.ctx.storage.sql.exec(
+    `SELECT 1 FROM local_tunnel_grants WHERE tool_name = ? AND ? LIKE path_prefix || '%'`,
+    toolName, requestedPath
+  )];
+  return rows.length &gt; 0;</p></div>
+</div>
+<div id="G-L05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L05</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§container-system — LocalTunnelDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">pendingCalls Map and WebSocket Ref Destroyed on Hibernation — In-Flight RPC Responses Silently Dropped</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">pendingCalls: Map&lt;string, {resolve, reject, timer}&gt; and the localAgentWs WebSocket reference are both in-memory fields. The DO uses WebSocket hibernation which destroys both on every hibernation event. When the local PC sends a response to an in-flight RPC call, webSocketMessage() calls this.pendingCalls.get(callId) and finds nothing, silently dropping the response. The original awaiting Promise in the agent loop hangs until a 30-second timeout — and that setTimeout callback is also destroyed on hibernation, so it never fires either.
+
+Note: G-K04 documented the pendingCalls Map issue in §40 LocalTunnelDO. This extends the finding to include the WebSocket reference loss, which means the DO also cannot re-issue the in-flight call after wake.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the in-memory pendingCalls Map with a persistent SQLite table (as described in G-K04). Additionally, persist the WebSocket session identity to SQLite on webSocketOpen. In webSocketMessage, reconstruct response routing from SQLite state rather than in-memory Maps. For timeouts, use ctx.storage.setAlarm() rather than setTimeout() — alarms survive hibernation and fire reliably after wake.</p></div>
+</div>
+<div id="G-L06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L06</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§security — Platform Skills</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Skill Signature Verification Reads from KV — 60-Second Eventual Consistency Allows Revoked Skills to Execute</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Platform skill signatures are written to NAELAO_CONFIG_KV on publish and read from KV on every skill invocation for HMAC verification. KV has up to 60-second eventual consistency lag between global PoPs. A skill whose signing key is revoked (due to a discovered vulnerability in the skill code) continues to pass signature verification for up to 60 seconds after revocation. During a security incident requiring immediate skill disablement, this 60-second window is unacceptable for a platform where skills execute arbitrary code in sandboxed containers.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Store the authoritative skill signature and revocation state in a SkillRegistryDO (strongly consistent). On skill invocation, verify against the DO:
+  const sigResult = await skillRegistryDO.fetch(new Request('http://skill/verify', {
+    method: 'POST', body: JSON.stringify({ skillId, signature })
+  }));
+
+KV may be used as a read-through cache with a short TTL (5 seconds max) and a mandatory DO fallback on miss or cache expiry. This bounds the revocation propagation lag to 5 seconds instead of 60.</p></div>
+</div>
+<div id="G-L07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L07</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§schema — Global SpaceDO Schema</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Global Schema Uses gen_random_uuid() as Column Default — no such function Error Crashes Schema Init for Every Space</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Multiple core tables in the global SpaceDO schema declare:
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid()
+
+This is a PostgreSQL function. SQLite has no gen_random_uuid() built-in. When SpaceDO's initSchema() runs this CREATE TABLE statement, SQLite throws: 'no such function: gen_random_uuid'. Schema initialization fails entirely, preventing the DO from functioning. This affects every space on the platform — the global schema must be fixed before any space can be created or used.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace all DEFAULT gen_random_uuid() with DEFAULT (lower(hex(randomblob(16)))) for inline UUID generation in SQLite:
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16))))
+
+Alternatively, generate UUIDs explicitly in application code using crypto.randomUUID() and insert them explicitly rather than relying on a column default. Apply this fix to ALL tables in the global schema that use gen_random_uuid() as a default value.</p></div>
+</div>
+<div id="G-L08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L08</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§schema — Global SpaceDO Schema</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Global Schema Declares TIMESTAMPTZ DEFAULT NOW() — Every INSERT Using Default Stores NULL, Breaking All Time-Based Logic</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Columns throughout the global SpaceDO schema are declared:
+  created_at TIMESTAMPTZ DEFAULT NOW()
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+
+SQLite treats TIMESTAMPTZ as NUMERIC affinity but has no NOW() function. Every INSERT that relies on the DEFAULT clause will either throw ('no such function: NOW') or store NULL. With NULL in created_at and updated_at, all heartbeat logic, TTL cleanup, abandoned-run detection, and time-based queries across the platform produce incorrect results or errors.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace all TIMESTAMPTZ DEFAULT NOW() with INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000) for millisecond-precision epoch timestamps. Update all timestamp comparisons to use epoch arithmetic:
+  WHERE created_at &gt; (unixepoch('now') - 3600) * 1000
+Apply consistently to all timestamp columns in the global schema and any section-specific schema definitions.</p></div>
+</div>
+<div id="G-L09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L09</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§schema — Global SpaceDO Schema</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">JSONB Column Type Declared in SQLite Schema — Missing NOT NULL Constraints and Broken Type Contract</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Multiple columns are declared with PostgreSQL's JSONB type:
+  settings JSONB DEFAULT '{}'
+  metrics JSONB
+  skills JSONB DEFAULT '[]'
+
+SQLite ignores unknown type names and treats them with NUMERIC affinity, so no JSON binary encoding occurs. The absence of NOT NULL on metrics means any INSERT omitting that column stores NULL, breaking any code that calls JSON_extract() or parses the column value. ORM tools and query builders that inspect declared column types will also reject or mishandle the schema.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Declare all JSON columns as TEXT with explicit NOT NULL and a valid default:
+  settings TEXT NOT NULL DEFAULT '{}'
+  metrics TEXT NOT NULL DEFAULT '{}'
+  skills TEXT NOT NULL DEFAULT '[]'
+
+Optionally add a CHECK constraint:
+  settings TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(settings))
+
+Apply to all JSONB columns throughout the global schema and any section-specific schema definitions.</p></div>
+</div>
+<div id="G-L10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L10</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§schema — Global SpaceDO Schema</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Foreign Keys Reference auth.users(id) — Supabase-Internal Table Does Not Exist in CF DO SQLite</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Multiple tables in the global SpaceDO schema include:
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE
+  owner_id UUID NOT NULL REFERENCES auth.users(id)
+
+The auth schema and auth.users table are Supabase-internal. They do not exist in CF Durable Object SQLite. SQLite may silently accept these FK declarations but the referenced table is absent, making FK enforcement impossible. Schema migration tooling that validates FK targets will also fail, blocking any automated schema management.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove all REFERENCES auth.users(id) foreign key declarations. User identity validation must happen at the application code level — verify JWTs and check the authenticated userId in TypeScript before executing any SQL that modifies user-owned data. If a local user record is needed, define a space_members table explicitly in the SpaceDO schema and reference that instead of auth.users.</p></div>
+</div>
+<div id="G-L11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L11</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§schema — Global SpaceDO Schema</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">ALTER TABLE ENABLE ROW LEVEL SECURITY and CREATE POLICY Statements in Global Schema — Syntax Error Crashes All Space Init</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The global SpaceDO schema includes multiple statements like:
+  ALTER TABLE spaces ENABLE ROW LEVEL SECURITY;
+  CREATE POLICY "Users can only see their own spaces" ON spaces FOR SELECT ...;
+  ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
+  CREATE POLICY "Project access" ON projects FOR ALL ...;
+
+SQLite has no ROW LEVEL SECURITY feature. These statements raise a syntax error when initSchema() executes the schema string, aborting initialization entirely. No space can be created or used until fixed. This is a platform-wide initialization failure.
+
+Note: G-K28 documented RLS policies in the space_templates schema. This gap covers the same issue in the global core schema tables (spaces, projects, and more).</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove ALL ALTER TABLE ... ENABLE ROW LEVEL SECURITY and CREATE POLICY statements from every SQLite schema definition. Multi-tenant row isolation must be enforced at the TypeScript layer by always parameterising queries with the verified spaceId:
+  this.ctx.storage.sql.exec('SELECT * FROM projects WHERE space_id = ? AND id = ?', this.spaceId, projectId)
+Never rely on database-level RLS for multi-tenancy in CF DO SQLite.</p></div>
+</div>
+<div id="G-L12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L12</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§agentdo-api — Human-in-the-Loop</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Human Approval Awaiting In-Memory Promise Lost on DO Hibernation — Agent Loop Permanently Stuck</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The AgentDO human-in-the-loop flow stores approval callbacks in an in-memory Map:
+  private pendingApprovals = new Map&lt;string, { resolve: (v: boolean) =&gt; void, reject: (e: Error) =&gt; void }&gt;();
+
+When the agent pauses for human approval, it awaits a Promise whose resolver lives in this Map. CF DOs hibernate after a short period of inactivity — especially likely during human review which can take minutes or hours. After hibernation the Map is empty. The subsequent POST /approval/:id/decide call finds no entry and the resolve callback is gone forever. The original await never resumes; the agent is permanently stuck consuming a concurrency slot with no way to recover.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace in-memory approval tracking with persistent SQLite state:
+  CREATE TABLE IF NOT EXISTS pending_approvals (
+    approval_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at INTEGER DEFAULT (unixepoch('now')*1000)
+  );
+
+On /approval/:id/decide: UPDATE status in SQLite then call ctx.storage.setAlarm(Date.now() + 100) to wake the DO. In the agent loop's next iteration (triggered by the alarm), query pending_approvals for decided approvals and resume. This makes approval state durable across any number of hibernation cycles.</p></div>
+</div>
+<div id="G-L13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L13</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§naelao-triggers — Webhook Ingress</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Webhook Signature Verification Returns true Unconditionally for All Non-GitHub Providers — Complete Auth Bypass</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The webhook ingress handler calls verifySignature(provider, headers, body). The implementation only performs HMAC validation when provider === 'github'. For Stripe, Linear, custom webhooks, and all other providers, the function returns true unconditionally:
+  if (provider === 'github') { /* HMAC check */ return valid; }
+  return true; // every other provider accepted without verification
+
+Any attacker who discovers a webhook URL can POST arbitrary payloads that trigger agent workflows for Stripe charge events, Linear issue updates, or custom triggers — completely bypassing authentication. This enables arbitrary agent execution on behalf of any space that has registered non-GitHub webhooks.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Default to false (reject) and implement per-provider HMAC verification for each supported provider:
+  switch (provider) {
+    case 'github':  return verifyGithubSignature(headers, body, secret);
+    case 'stripe':  return verifyStripeSignature(headers, body, secret); // 'Stripe-Signature' header
+    case 'linear':  return verifyLinearSignature(headers, body, secret);
+    default: return false; // Reject unknown providers
+  }
+For custom providers, require an explicit HMAC token in the registered webhook configuration. Store per-provider webhook secrets in naelao-credentials (encrypted), looked up by (spaceId, webhookId) before verification.</p></div>
+</div>
+<div id="G-L14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L14</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§space-type-versioning — Canary Rollouts</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">processCanaryRollouts Is a Module-Level Function That References this.ctx — TypeError on Every Invocation</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">processCanaryRollouts is declared as:
+  async function processCanaryRollouts(env: Env) {
+    const staleVersions = [...this.ctx.storage.sql.exec('SELECT ...')];
+    // ...
+  }
+
+This is a standalone module-level function, not a class method. In CF Workers (strict mode), this inside a regular function is undefined. Calling processCanaryRollouts(env) immediately throws TypeError: Cannot read properties of undefined (reading 'ctx'). Even if the alarm/cron wiring were fixed (G-K26), the function itself crashes on invocation and the canary advancement logic never executes.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Convert processCanaryRollouts into a method of the DO class that manages canary rollouts:
+  class SpaceTypeRegistryDO {
+    async processCanaryRollouts(): Promise&lt;void&gt; {
+      const staleVersions = [...this.ctx.storage.sql.exec('SELECT ...')];
+      // advancement logic
+    }
+    async alarm(): Promise&lt;void&gt; {
+      await this.processCanaryRollouts();
+    }
+  }
+Alternatively, pass ctx as an explicit parameter: async function processCanaryRollouts(ctx: DurableObjectState, env: Env).</p></div>
+</div>
+<div id="G-L15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L15</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§naelao-apps-registry — AppRegistryDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">AppRegistryDO.handleInstall Uses db.query() with $N PostgreSQL Placeholders — All App Installs Fail</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">AppRegistryDO.handleInstall executes:
+  await db.query(
+    'INSERT INTO app_installations (id, space_id, app_id, installed_at) VALUES ($1, $2, $3, $4)',
+    [installId, spaceId, appId, new Date().toISOString()]
+  );
+
+Both db.query() and $1/$2 positional parameters are PostgreSQL syntax. CF DO SQLite requires this.ctx.storage.sql.exec(sql, ...params) with ? placeholders. This INSERT fails with a SQLite syntax error on every app install attempt. No app installations are ever recorded. The app ecosystem — installs, listing installed apps, and uninstalls — is entirely non-functional. The same $N pattern recurs in handleList and handleUninstall.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace all db.query(sql, [...params]) with this.ctx.storage.sql.exec(sql_with_?, ...params):
+  this.ctx.storage.sql.exec(
+    'INSERT INTO app_installations (id, space_id, app_id, installed_at) VALUES (?,?,?,?)',
+    installId, spaceId, appId, Date.now()
+  );
+
+Replace new Date().toISOString() with Date.now() (integer epoch ms) for timestamp consistency with the rest of the schema. Apply to all db.query() calls in handleList (SELECT) and handleUninstall (DELETE) as well.</p></div>
+</div>
+<div id="G-L16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L16</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§registry-finetune-dos — FinetuneJobDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">FinetuneJobDO.alarm() Uses db.query() with $N Placeholders and NOW() — All Fine-Tune Jobs Permanently Stuck in 'running'</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The FinetuneJobDO alarm handler polls Together AI for completion then updates the job record:
+  await db.query(
+    'UPDATE fine_tune_jobs SET status = $1, result_model = $2, completed_at = NOW() WHERE job_id = $3',
+    [status, resultModel, jobId]
+  );
+
+db.query(), $N placeholders, and NOW() are all PostgreSQL syntax. CF DO SQLite requires this.ctx.storage.sql.exec() with ? and datetime('now'). This UPDATE throws on every alarm invocation. All fine-tune jobs are permanently stuck with status = 'running', users never see their trained models, and the alarm continues re-firing indefinitely.
+
+Note: G-K31 documented FinetuneJobDO's SSRF bypass. This gap covers the separate db.query syntax error in the alarm's status update path.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace with DO SQLite syntax:
+  this.ctx.storage.sql.exec(
+    `UPDATE fine_tune_jobs SET status = ?, result_model = ?, completed_at = unixepoch('now')*1000
+     WHERE job_id = ?`,
+    status, resultModel, jobId
+  );
+
+Also audit WorkflowRegistryDO.handleRegister and handleList which use the same db.query() pattern. Apply the same fix throughout all DO methods in the registry-finetune-dos section.</p></div>
+</div>
+<div id="G-L17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L17</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§file-manager-skill — append_to_file</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">append_to_file Skips the Advisory File Lock — Concurrent Appends Silently Corrupt File Contents</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The file manager skill's write_file handler correctly acquires an advisory lock via projectDO.fetch('/acquire-lock') before modifying R2 content. However, append_to_file does NOT acquire the lock: it directly reads the R2 object, concatenates the new content, and writes it back without any lock or ETag check. Two concurrent appends to the same file will both read the same original content and each write back only their own addition — one of the two appended entries is silently discarded.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Apply the same advisory lock pattern used by write_file:
+  const lock = await projectDO.fetch(new Request('http://project/acquire-lock', {
+    method: 'POST', body: JSON.stringify({ path: params.path, sessionId })
+  }));
+  try {
+    const existing = await env.R2.get(r2Key);
+    const newContent = (existing ? await existing.text() : '') + params.content;
+    await env.R2.put(r2Key, newContent);
+  } finally {
+    await projectDO.fetch(new Request('http://project/release-lock', {
+      method: 'POST', body: JSON.stringify({ path: params.path, sessionId })
+    }));
+  }</p></div>
+</div>
+<div id="G-L18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L18</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§execution-ladder-spec — Browser Worker</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Buffer.from(screenshot).toString('base64') Uses Node.js Buffer — Not Available in CF Workers</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The Browser Worker (Tier 4/5) returns screenshots by calling:
+  const base64 = Buffer.from(screenshot).toString('base64');
+
+Buffer is a Node.js global. In CF Workers, Buffer is not available in the standard runtime. Even with the nodejs_compat compatibility flag, Buffer in the Workers environment is an incomplete polyfill that does not support all .from() overloads reliably. If screenshot is a Uint8Array from Puppeteer's page.screenshot(), this call throws ReferenceError: Buffer is not defined and the screenshot action returns an error instead of an image.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use the Web platform API instead:
+  function uint8ArrayToBase64(bytes: Uint8Array): string {
+    let binary = '';
+    for (let i = 0; i &lt; bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  }
+  const base64 = uint8ArrayToBase64(new Uint8Array(screenshot));
+
+For large screenshots (&gt;1 MB), process in 8192-byte chunks to avoid stack overflow from String.fromCharCode spread: chunk the Uint8Array and concatenate the results before calling btoa().</p></div>
+</div>
+<div id="G-L19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L19</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§mcp-hub — Tool Resolution</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">resolveToolRoute() Hardcodes agentId='unknown' in KV Cache Lookup — All Agent-Specific Tools Never Found</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The MCP hub caches tool schemas in KV under the key tool-schemas:${spaceId}:${agentId}. However, resolveToolRoute() performs the lookup with:
+  const cached = await env.NAELAO_CONFIG_KV.get('tool-schemas:${spaceId}:unknown');
+
+The agentId is hardcoded as the literal string 'unknown'. Tools registered for a specific agent (e.g., tool-schemas:abc-123:agent-456) are never found because the lookup uses tool-schemas:abc-123:unknown. The resolution falls through to the "tool not found" error path for every tool call, making the entire MCP tool routing system non-functional for any tool registered against a specific agent ID.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Pass the authenticated agentId from the validated JWT into resolveToolRoute():
+  async resolveToolRoute(spaceId: string, agentId: string, toolName: string) {
+    const cacheKey = `tool-schemas:${spaceId}:${agentId}`;
+    const cached = await env.NAELAO_CONFIG_KV.get(cacheKey, { type: 'json' });
+    // ...
+  }
+Ensure the agentId used at write time (tool registration) matches the agentId used at read time (tool resolution). For space-wide tools accessible to all agents, use a consistent space-scoped key like tool-schemas:${spaceId}:global at both read and write.</p></div>
+</div>
+<div id="G-L20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L20</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§agent-env-declaration — Enterprise Containers</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">idleTimeoutMs = -1 for Enterprise Tier Stored In-Memory — Resets to 1 Hour After Hibernation, Enterprise Containers Shut Down</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The DO constructor reads the space tier and sets:
+  if (tier === 'enterprise') this.idleTimeoutMs = -1; // Never time out
+
+this.idleTimeoutMs is a plain instance field that resets to the class default (60 * 60 * 1000 = 1 hour) on any DO hibernation. After hibernation, the alarm handler uses the reset value rather than -1. Enterprise containers that should never idle-out are terminated after 1 hour of post-hibernation activity, violating the Enterprise tier entitlement. This is invisible to users — containers disappear silently.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Store the tier (or derived idleTimeoutMs) in DO SQLite and rehydrate on every wake:
+  ctx.blockConcurrencyWhile(async () => {
+    const rows = [...ctx.storage.sql.exec('SELECT value FROM config WHERE key = ?', 'billing_tier')];
+    const tier = rows[0]?.value ?? 'free';
+    this.idleTimeoutMs = tier === 'enterprise' ? -1 : 60 * 60 * 1000;
+  });
+
+On first POST /init: this.ctx.storage.sql.exec('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', 'billing_tier', tier).</p></div>
+</div>
+<div id="G-L21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L21</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§execution-ladder-spec — Tier 1 Workspace</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Tier 1 write_file Bypasses Advisory Lock — Parallel Tier 1 Writes Race and Corrupt Files</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The Tier 1 workspace tool handler (executeWorkspaceTool in the Tier 1 isolate path) calls:
+  await env.R2.put(key, content);
+
+directly, without acquiring the advisory lock from the projectDO lock table. The lock is only acquired via the Tier 3+ MCP hub code path. Two concurrent Tier 1 write_file calls to the same path — common when an agent issues multiple file writes in a parallel tool call batch — will race, with the second write silently overwriting the first with no error reported to either caller.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Extract lock acquisition into a shared writeFileSafe() helper used by ALL file write paths regardless of execution tier:
+  async function writeFileSafe(env: Env, projectDO: DurableObjectStub, r2Key: string, content: string) {
+    await projectDO.fetch(new Request('http://project/acquire-lock', { method: 'POST', body: JSON.stringify({ path: r2Key }) }));
+    try { await env.R2.put(r2Key, content); }
+    finally { await projectDO.fetch(new Request('http://project/release-lock', { method: 'POST', body: JSON.stringify({ path: r2Key }) })); }
+  }
+Alternatively, consolidate all write paths through the MCP hub layer to ensure locking is always applied.</p></div>
+</div>
+<div id="G-L22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L22</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§operator-shell-slots — Shell postMessage</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">WRITE_LEARNING postMessage Handler Accepts Arbitrary Key/Value from Any Iframe — Storage Flooding and Instruction Injection</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The operator shell processes postMessage events from embedded App iframes:
+  if (msg.type === 'WRITE_LEARNING') {
+    await uiInstructionsDO.writeLearning(msg.key, msg.value);
+  }
+
+There is no validation of msg.key against an allowlist, no maximum length on msg.value, no rate limiting, and event.origin is not verified. A malicious or compromised App iframe can: (1) flood the DO with arbitrary key/value pairs causing unbounded storage growth and cost; (2) overwrite system-level shell instruction keys that control agent behavior; (3) inject malicious content into the operator's UI learning state. Any document in the operator's browser (not just registered Apps) can send this message.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add three layers of defense:
+  window.addEventListener('message', (event) => {
+    // 1. Verify origin
+    if (event.origin !== registeredAppOrigin) return;
+    const msg = event.data;
+    if (msg.type !== 'WRITE_LEARNING') return;
+    // 2. Validate key against allowlist
+    const ALLOWED_KEYS = ['theme-pref', 'layout-pref', 'shortcut-pref'];
+    if (!ALLOWED_KEYS.includes(msg.key)) return;
+    // 3. Enforce value length
+    if (typeof msg.value !== 'string' || msg.value.length &gt; 512) return;
+    await uiInstructionsDO.writeLearning(msg.key, msg.value);
+  });
+Add KV-based rate limiting: max 10 WRITE_LEARNING writes per App per minute.</p></div>
+</div>
+<div id="G-L23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-L23</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§operator-shell-slots — Shell Personalization</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Per-User Personalization Injected in Iframe src URL Hash — Leaks Email and Plan Tier to Browser History</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The operator shell injects per-user personalization (theme, locale, userId, email, planTier) into the embedded App iframe's src URL as a hash fragment:
+  iframeEl.src = appUrl + '#' + encodeURIComponent(JSON.stringify({ theme, locale, userId, email, planTier }));
+
+URL hashes appear in browser history (visible to any browser extension with tabs permission), can be captured by browser sync services, and may be reflected server-side if the App does server-side rendering of the hash. Sensitive user attributes (email address, plan tier, userId) are unnecessarily exposed in a URL that is visible outside the JavaScript execution context.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove personalization from the URL entirely. Load the iframe with a neutral URL and send personalization after load via postMessage with a verified target origin:
+  iframeEl.src = appUrl; // No hash fragment
+  iframeEl.addEventListener('load', () => {
+    iframeEl.contentWindow?.postMessage(
+      { type: 'INIT_PERSONALIZATION', theme, locale, userId, planTier },
+      new URL(appUrl).origin  // verified target origin
+    );
+  });
+This keeps all personalization data within the JavaScript execution boundary and out of URLs.</p></div>
+</div>
+<div style="margin:32px 0 0;padding:32px;background:#0A1628;border:1px solid #1E293B;border-radius:8px;">
+  <p style="font-family:'DM Mono',monospace;font-size:11px;color:#64748B;margin:0;line-height:1.8;">
+    Appendix L complete. Combined gap audit total: A (125) + B (30) + C (22) + D (22) + E (24) + F (26) + G (26) + H (15) + I (34) + J (20) + K (51) + L (23)
+    = <strong style="color:var(--or);">418 documented technical gaps</strong> with required fixes.
+  </p>
+</div>
+</section>
+
 </body>
 </html>
