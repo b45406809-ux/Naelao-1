@@ -40459,5 +40459,1856 @@ const verified = await provider.verifyWebhook(rawBody, request.headers); // no s
   </p>
 </div>
 </section>
+
+<section id="appendix-j" style="margin:80px 0 0;padding:60px 0 0;border-top:3px solid var(--or);">
+<div style="display:flex;align-items:center;gap:16px;margin-bottom:8px;">
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">Appendix J</span>
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.08em;text-transform:uppercase;">Gap Analysis — Spec Body Deep Dive</span>
+</div>
+<h2 style="font-family:'Fraunces',serif;font-size:clamp(22px,3.5vw,36px);font-weight:700;color:var(--tx);margin:0 0 12px;">Appendix J — 20 New Gaps Found in naelao_expanded_gaps_resolved.html Spec</h2>
+<p style="font-family:'DM Sans',sans-serif;font-size:15px;color:#94A3B8;line-height:1.7;max-width:860px;margin:0 0 48px;">This pass read the spec body directly — §18 Artifacts, §24 Execution Ladder, §25 SandboxDO, §28 naelao-threads, §45 WalletDO, §56 Analytics Engine, §57 SpaceDO Methods, §62 SpaceTypeRegistryDO &amp; Provisioner, §63 External Portal System — and identified 20 gaps that do not appear in Appendices A–I. All gaps are Cloudflare platform constraint violations, runtime bugs, or security holes present in the spec's own code listings.</p>
+
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;padding:24px;background:#0A1628;border:1px solid #1E293B;border-radius:8px;margin-bottom:56px;">
+  <div style="text-align:center;"><div style="font-family:'DM Mono',monospace;font-size:24px;font-weight:700;color:#EF4444;">6</div><div style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;text-transform:uppercase;letter-spacing:.08em;margin-top:4px;">Critical</div></div>
+  <div style="text-align:center;"><div style="font-family:'DM Mono',monospace;font-size:24px;font-weight:700;color:#EAB308;">11</div><div style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;text-transform:uppercase;letter-spacing:.08em;margin-top:4px;">High</div></div>
+  <div style="text-align:center;"><div style="font-family:'DM Mono',monospace;font-size:24px;font-weight:700;color:#3B82F6;">3</div><div style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;text-transform:uppercase;letter-spacing:.08em;margin-top:4px;">Medium</div></div>
+  <div style="text-align:center;"><div style="font-family:'DM Mono',monospace;font-size:24px;font-weight:700;color:var(--or);">20</div><div style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;text-transform:uppercase;letter-spacing:.08em;margin-top:4px;">Total</div></div>
+</div>
+
+<div style="margin:48px 0 0;padding:24px 0 0;border-top:1px solid #1E293B;">
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.12em;text-transform:uppercase;">CRITICAL SEVERITY — 6 GAPS</span>
+</div>
+
+<div id="G-J01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J01</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§57 — SpaceDO Methods (Replacing Stored Functions)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Five "SpaceDO Methods" Are PostgreSQL plpgsql Functions — They Cannot Run in DO SQLite</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">§57 is titled "SpaceDO Methods — Replacing All Stored Functions" but every one of its five code listings is a PostgreSQL stored function written in plpgsql: CREATE OR REPLACE FUNCTION ... LANGUAGE plpgsql SECURITY DEFINER. None of them can run in Cloudflare Durable Object SQLite. The specific problems: (1) plpgsql is not a valid SQLite language — DO SQLite has no stored procedure engine. (2) RETURNS TABLE is PostgreSQL syntax. (3) SECURITY DEFINER and auth.uid() are Supabase RLS constructs. (4) p_before TIMESTAMPTZ and INTERVAL '24 hours' are PostgreSQL types. (5) FOR UPDATE row locking (in deduct_space_credits) is not supported in SQLite. Any developer following this section literally will attempt to run plpgsql in SpaceDO SQLite and receive runtime errors on every call.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace all five plpgsql functions with TypeScript DO methods using DO SQLite exec(). Example — get_llm_formatted_messages becomes a method on SpaceDO:
+
+// durable-objects/SpaceDO.ts
+async getLlmFormattedMessages(params: {
+  threadId: string; spaceId: string; limit?: number; before?: number;
+}): Promise&lt;Array&lt;{ role: string; content: string; created_at: number }&gt;&gt; {
+  const { threadId, spaceId, limit = 100, before } = params;
+  const sql = before
+    ? 'SELECT role, content, created_at FROM messages WHERE thread_id = ? AND space_id = ? AND deleted_at IS NULL AND created_at &lt; ? AND role != ? ORDER BY created_at ASC LIMIT ?'
+    : 'SELECT role, content, created_at FROM messages WHERE thread_id = ? AND space_id = ? AND deleted_at IS NULL AND role != ? ORDER BY created_at ASC LIMIT ?';
+  const args = before
+    ? [threadId, spaceId, before, 'system', limit]
+    : [threadId, spaceId, 'system', limit];
+  return this.ctx.storage.sql.exec&lt;{ role: string; content: string; created_at: number }&gt;(sql, ...args).toArray();
+}
+
+Apply the same translation for all 5 functions: use ? placeholders, unixepoch('now')*1000 instead of NOW(), and rely on DO single-threaded execution for atomicity instead of FOR UPDATE.</p></div>
+</div>
+
+<div id="G-J02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J02</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§62 — SpaceTypeRegistryDO &amp; Provisioner</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">provisionSpace() Redeclares spaceDO Twice, Calls db.query() with PostgreSQL Syntax, and References Undefined rootSpaceId</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The provisionSpace() listing in §62 has three fatal errors in the first 15 lines:
+
+(1) spaceDO is declared twice in the same function:
+  const spaceDO = getProductDO(rootSpaceId, env);   // line 1
+  ... (several lines later) ...
+  const spaceDO = env.NAELAO_SPACE_DO.get(...);     // line 2 — TypeScript compile error: cannot redeclare
+
+(2) Between the two declarations: await db.query('SELECT create_space_with_defaults($1, $2, $3, $4, $5)', [...]) — db is not defined anywhere in the CF Workers context. This is PostgreSQL Hyperdrive syntax. The spec's own preamble says "SpaceDO replaces Hyperdrive" but the provisioner code contradicts this.
+
+(3) getProductDO(rootSpaceId, env) references rootSpaceId which is not a parameter of provisionSpace() and is not defined anywhere in scope. This is a NameError at runtime.
+
+These three bugs together mean the provisioner — the most critical lifecycle function in the entire Space Type system — will fail to compile and cannot run.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove the db.query() call entirely (space creation is handled by SpaceDO.init), eliminate the first spaceDO declaration, and use only the correct CF Workers pattern:
+
+// workers/spaces/provisioner.ts
+export async function provisionSpace(params: {
+  spaceId: string; typeId: string; userId: string; name: string; env: Env;
+}): Promise&lt;{ success: boolean; error?: string }&gt; {
+  const { spaceId, typeId, userId, name, env } = params;
+  const provisioned: string[] = [];
+  try {
+    // Step 1: Initialize SpaceDO — the DO itself creates the space record
+    const spaceDO = env.NAELAO_SPACE_DO.get(env.NAELAO_SPACE_DO.idFromName('space:' + spaceId));
+    await spaceDO.fetch(new Request('http://space/init', {
+      method: 'POST',
+      body: JSON.stringify({ spaceId, typeId, userId, name, manifestVersion: manifest.version })
+    }));
+    provisioned.push('space-do');
+    // ... rest of steps
+  } catch (error) {
+    await deprovisionSpace({ spaceId, typeId, provisioned, env });
+    return { success: false, error: (error as Error).message };
+  }
+}</p></div>
+</div>
+
+<div id="G-J03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J03</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§25 — Execution Ladder Tier 5 / SandboxDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">SandboxDO Eviction Leaves containerRef=null While SQLite Says "running" — All exec() Calls Return 409 After DO Wakes</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">SandboxDO stores the running container reference as an in-memory class field: private containerRef: SandboxStub | null = null. When the DO is evicted from memory (after ~30s idle or under memory pressure) and then woken by a subsequent request, the DO is reconstructed fresh with containerRef = null. The container_state SQLite table still says status = 'running' because the container itself may still be alive in CF's container infrastructure.
+
+ensureRunning() checks: if (status === 'running' && this.containerRef) — because containerRef is null after reconstruction, this check fails even though the container is running. ensureRunning() then calls getSandbox() and mountBucket() again, potentially creating a duplicate container or re-mounting.
+
+exec() checks: if (!this.containerRef) return 409 — but ensureRunning() was already called and returned 'already_running' (state said running) without re-populating containerRef. So exec() will return 409 every time after a DO eviction, permanently blocking any sandbox tool execution for that project until the container is explicitly stopped and restarted.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">ensureRunning() must re-acquire containerRef whenever it is null, regardless of what the state table says:
+
+private async ensureRunning(request: Request): Promise&lt;Response&gt; {
+  const { spaceId, projectId } = await request.json();
+  const status = this.ctx.storage.sql
+    .exec("SELECT value FROM container_state WHERE key = 'status'").one()?.value as string;
+
+  if (status === 'running' &amp;&amp; this.containerRef) {
+    this.lastActiveAt = Date.now();
+    return Response.json({ status: 'already_running' });
+  }
+
+  // CRITICAL FIX: containerRef is null after DO eviction — re-acquire even if state says 'running'
+  const containerName = this.buildContainerName(spaceId, projectId);
+  const sandbox = getSandbox(this.env.NAELAO_SANDBOX, containerName);
+  this.containerRef = sandbox;  // re-acquire the stub
+  this.lastActiveAt = Date.now();
+
+  if (status === 'running') {
+    // Container was already running; stub re-acquired — no need to re-mount
+    return Response.json({ status: 'reconnected' });
+  }
+
+  // ... normal start path: mountBucket, exec sync script, update state, setAlarm
+}</p></div>
+</div>
+
+<div id="G-J04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J04</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§25 — Execution Ladder Tier 5 / SandboxDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">validateContainerPath() Uses Node.js require('path') — Throws ReferenceError in CF Workers</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The validateContainerPath() function in §25 (called by exec() on every Tier 5 tool call) uses:
+
+function validateContainerPath(agentPath: string): string {
+  const { resolve, normalize } = require('path');
+  ...
+}
+
+CF Workers do not support CommonJS require(). Node.js built-in modules like 'path' are not available via require() in CF Workers runtime. This code throws ReferenceError: require is not defined on the very first Tier 5 tool execution. Path traversal is therefore completely unprotected — any path passed by the agent executes in the container without sanitization.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement path traversal validation without require('path') using pure string operations valid in CF Workers:
+
+function validateContainerPath(agentPath: string): string {
+  const WORKSPACE_ROOT = '/workspace';
+  // Resolve '..' segments manually — no require('path') needed
+  const parts = agentPath.split('/');
+  const resolved: string[] = [];
+  for (const part of parts) {
+    if (part === '..') resolved.pop();
+    else if (part !== '.' &amp;&amp; part !== '') resolved.push(part);
+  }
+  const normalized = resolved.join('/');
+  const absolute = agentPath.startsWith('/')
+    ? '/' + normalized
+    : WORKSPACE_ROOT + '/' + normalized;
+  // Canonicalize and block traversal outside /workspace
+  if (!absolute.startsWith(WORKSPACE_ROOT + '/') &amp;&amp; absolute !== WORKSPACE_ROOT) {
+    throw new Error('Path traversal blocked: "' + agentPath + '" resolves outside /workspace');
+  }
+  return absolute;
+}</p></div>
+</div>
+
+<div id="G-J05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J05</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§63 — External Portal System / naelao-portal Worker</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Portal Worker Loads Code String from R2 and Passes It to DW Loader at Request Time — Requires eval(), Prohibited in CF Workers</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The naelao-portal Worker in §63 shows this pattern:
+
+const portalCode = await portalObj.text();  // load TypeScript string from R2
+return loaderDO.fetch(new Request('http://loader/execute', {
+  method: 'POST',
+  body: JSON.stringify({ code: portalCode, request: {...} })
+}));
+
+This pattern requires the DW Loader DO to receive an arbitrary code string and execute it dynamically at request time. In CF Workers, dynamic code execution requires eval() or new Function() — both are explicitly prohibited in the CF Workers runtime (throws EvalError at runtime; also blocked by Content-Security-Policy). Workers for Platforms (the correct CF mechanism for user-defined code) requires scripts to be pre-uploaded via the CF API (/accounts/{id}/workers/dispatch/namespaces/{ns}/scripts/{name}) — you cannot pass code strings dynamically to a dispatch namespace at request time. The portal Worker as described is architecturally impossible under CF constraints.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use Workers for Platforms correctly: upload the portal script at provisioning time (not at request time) and dispatch by script name at request time.
+
+// During provisionExternalPortal() — upload script to WfP dispatch namespace:
+await fetch(
+  `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/workers/dispatch/namespaces/naelao-portals/scripts/portal-${spaceId}`,
+  {
+    method: 'PUT',
+    headers: { 'Authorization': 'Bearer ' + env.CF_API_TOKEN,
+                'Content-Type': 'application/javascript' },
+    body: compiledPortalScript  // pre-compiled at provisioning time, not runtime
+  }
+);
+
+// During request time in naelao-portal Worker — dispatch by name, no code string:
+const userWorker = env.NAELAO_DISPATCH_NS.get('portal-' + spaceId);
+return userWorker.fetch(request);  // forwards request to pre-uploaded script
+
+Store portal-slug→spaceId in KV only for routing; never load or execute code strings at request time.</p></div>
+</div>
+
+<div id="G-J06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J06</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§18 — Artifacts (Dynamic Worker Loader)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">wrapArtifactCode() React Type Generates Worker Script Containing JSX — JSX Cannot Execute at Runtime in CF Workers</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The wrapArtifactCode() function in §18 generates a React artifact serving Worker:
+
+return `
+import { renderToString } from 'react-dom/server';
+${code}
+
+export default {
+  fetch(request) {
+    const html = renderToString(&lt;App /&gt;);  // ← RAW JSX
+    ...
+  }
+}`;
+
+Two fatal problems: (1) JSX syntax (&lt;App /&gt;) is not valid JavaScript — it requires a transpilation step (Babel or esbuild) to convert to React.createElement() calls. CF Workers execute JavaScript/WASM, not JSX. The runtime will throw a SyntaxError when it tries to parse the &lt;App /&gt; expression. (2) import { renderToString } from 'react-dom/server' — this npm package is not available in CF Workers without explicit bundling. Dynamic imports of npm packages at runtime in Workers for Platforms scripts are not supported unless the package was bundled at upload time. Both issues make React artifacts completely non-functional.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">React artifacts must be transpiled at artifact creation time, not wrapped in raw JSX. wrapArtifactCode() for 'react' type must:
+
+1. Use esbuild (available in CF Workers via the esbuild WASM build) or pre-bundle react/react-dom into the script.
+2. Transpile JSX to React.createElement() before storing in R2.
+3. The simplest practical fix: React artifacts are stored as pre-rendered static HTML (the agent renders them server-side during creation using a Node.js build step), not as dynamic Worker scripts.
+
+// Recommended: treat React artifacts as static HTML, not dynamic Workers
+function wrapReactArtifact(renderedHtml: string): string {
+  // renderedHtml is pre-rendered HTML passed from the agent's build step
+  const escaped = renderedHtml
+    .replace(/&amp;/g, '&amp;amp;').replace(/"/g, '&amp;quot;')
+    .replace(/&lt;/g, '&amp;lt;').replace(/&gt;/g, '&amp;gt;');
+  return `&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;body style="margin:0"&gt;
+    &lt;iframe sandbox="allow-scripts" srcdoc="${escaped}"
+      style="width:100%;height:100%;border:0;"&gt;&lt;/iframe&gt;&lt;/body&gt;&lt;/html&gt;`;
+}</p></div>
+</div>
+
+<div style="margin:48px 0 0;padding:24px 0 0;border-top:1px solid #1E293B;">
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.12em;text-transform:uppercase;">HIGH SEVERITY — 11 GAPS</span>
+</div>
+
+<div id="G-J07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J07</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§56 — Analytics Engine (naelao-analytics Worker)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">naelao-analytics Queue Consumer ACKs All Messages Before writeDataPoints() — DLQ Fallback Is Bypassed on AE Write Failure</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The §56 naelao-analytics Worker implementation shows:
+
+for (const msg of batch.messages) {
+  const dp = mapEventToDataPoint(msg.body);
+  if (dp) dataPoints.push(dp);
+  msg.ack();  // ← ACK happens here, BEFORE writeDataPoints
+}
+if (dataPoints.length > 0) {
+  await env.NAELAO_ANALYTICS.writeDataPoints(dataPoints);  // ← failure here loses all data
+}
+
+All messages are ACKed before the batch write to Analytics Engine. If writeDataPoints() fails (AE outage, malformed data, rate limit), all messages have already been positively acknowledged and will not be redelivered. The catch block that sends to DLQ is unreachable because the messages are already committed. This silently drops the entire analytics batch with no retry path — billing events, agent run events, and security events are lost permanently.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Attempt the write BEFORE ACKing. Use per-message retry on failure:
+
+export default {
+  async queue(batch: MessageBatch&lt;NaelaoAnalyticsEvent&gt;, env: Env): Promise&lt;void&gt; {
+    const dataPoints = batch.messages.map(msg =&gt; mapEventToDataPoint(msg.body)).filter(Boolean);
+    try {
+      if (dataPoints.length > 0) {
+        await env.NAELAO_ANALYTICS.writeDataPoints(dataPoints);
+      }
+      // Only ACK after successful write
+      for (const msg of batch.messages) msg.ack();
+    } catch (err) {
+      // Write failed — retry all messages (they have not been ACKed)
+      console.error('[analytics] writeDataPoints failed, retrying batch:', err);
+      for (const msg of batch.messages) msg.retry();
+      // DLQ fallback for security events if retry budget is exhausted (handled by queue dead-letter config)
+    }
+    // Security event KV backup (unchanged — runs after AE write attempt)
+    for (const msg of batch.messages) {
+      if (msg.body.event_type?.startsWith('security_')) {
+        await env.NAELAO_CONFIG_KV.put('sec-event:' + Date.now() + ':' + msg.body.event_type,
+          JSON.stringify(msg.body), { expirationTtl: 86400 * 30 });
+      }
+    }
+  }
+};</p></div>
+</div>
+
+<div id="G-J08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J08</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§56 — Analytics Engine (Admin Dashboard Queries)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Admin Dashboard AE SQL Uses PostgreSQL INTERVAL Syntax — Invalid in Workers Analytics Engine SQL Dialect</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The four admin dashboard queries in §56 all use PostgreSQL-style interval arithmetic:
+
+WHERE timestamp > NOW() - INTERVAL '30 days'
+WHERE timestamp > NOW() - INTERVAL '7 days'
+WHERE timestamp > NOW() - INTERVAL '24 hours'
+
+Workers Analytics Engine uses a custom SQL dialect that is NOT PostgreSQL. The INTERVAL '30 days' syntax is PostgreSQL-specific and will cause a parse error in AE SQL. All four dashboard queries — token usage by model, run success rate, tool usage heatmap, and security events — will fail to execute, returning zero data for the admin dashboard.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use the correct AE SQL time-filtering syntax. Workers AE supports toTimestamp() and integer arithmetic on the timestamp field:
+
+-- WRONG (PostgreSQL):
+WHERE timestamp > NOW() - INTERVAL '30 days'
+
+-- CORRECT (Workers AE SQL):
+WHERE timestamp > toTimestamp(toUnixTimestamp(NOW()) - 30 * 86400)
+
+-- Or use the AE-native date_diff approach:
+WHERE date_diff('day', timestamp, NOW()) &lt;= 30
+
+-- Practical fix — use epoch arithmetic (most portable):
+WHERE timestamp > toTimestamp(toUnixTimestamp(NOW()) - 2592000)  -- 30 * 86400 = 2592000
+
+Apply this substitution in all four query constants:
+  TOKEN_USAGE_BY_MODEL: 30 * 86400
+  RUN_SUCCESS_RATE: 7 * 86400
+  TOOL_USAGE_HEATMAP: 7 * 86400
+  SECURITY_EVENTS_24H: 86400</p></div>
+</div>
+
+<div id="G-J09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J09</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§62 — SpaceTypeRegistryDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">listMarketplace() Directly Interpolates filter.maxPrice Into SQL String — SQL Injection in DO SQLite</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">SpaceTypeRegistryDO.listMarketplace() builds a SQL query with direct string interpolation:
+
+if (filter?.maxPrice !== undefined) {
+  query += ` AND price_usd <= ${filter.maxPrice}`;
+}
+return this.ctx.storage.sql.exec(query).toArray();
+
+Although the TypeScript type says maxPrice: number, any value that survives JSON.parse() deserialization and reaches this code — including NaN, Infinity, -Infinity, or a crafted input on an unvalidated API — gets interpolated directly into the SQL string. SQLite will evaluate `price_usd &lt;= NaN` as always-false (no rows) or `price_usd &lt;= Infinity` as always-true (all rows). More critically, if an API boundary fails to enforce the numeric type, a string like `0 OR 1=1` would turn the query into a tautology, bypassing the status/visible filters and returning unapproved or suspended space types.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use parameterized queries for all runtime values, including numeric filters:
+
+async listMarketplace(filter?: { tags?: string[]; maxPrice?: number }): Promise&lt;SpaceTypeListing[]&gt; {
+  const params: (string | number)[] = ['approved', 1];
+  let where = "WHERE status = ? AND visible = ?";
+
+  if (filter?.maxPrice !== undefined) {
+    const maxPrice = Number(filter.maxPrice);  // enforce numeric, rejects NaN/Infinity
+    if (!isFinite(maxPrice) || maxPrice &lt; 0) throw new Error('Invalid maxPrice');
+    where += ' AND price_usd &lt;= ?';
+    params.push(maxPrice);
+  }
+
+  const query = `SELECT id, name, description, author, current_version,
+    price_usd, install_count, rating_avg, rating_count
+    FROM space_types ${where} ORDER BY install_count DESC LIMIT 100`;
+
+  return this.ctx.storage.sql.exec&lt;SpaceTypeListing&gt;(query, ...params).toArray();
+}</p></div>
+</div>
+
+<div id="G-J10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J10</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§18 — Artifacts (wrapArtifactCode)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">wrapArtifactCode() HTML Type Uses Template Literal Interpolation of User Code — Stored XSS in Artifact Worker Scripts</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">wrapArtifactCode() for HTML artifacts generates a Worker script string using template literal interpolation of user-supplied code:
+
+return `
+export default {
+  fetch() {
+    const html = \`${code.replace(/`/g, '\\`')}\`;
+    return new Response(html, { headers: { 'Content-Type': 'text/html' } });
+  }
+}`;
+
+The replace() only escapes backticks to prevent template literal breakout. It does not sanitize: (1) ${...} expressions in the user code which are evaluated by the outer template literal. (2) </script> sequences or other HTML injection. (3) Backslash sequences (  etc.) that may cause the generated JavaScript to behave unexpectedly. A user who submits HTML containing ${env.CF_API_TOKEN} would have that variable interpolated into the script at wrap time, leaking environment secrets into the generated Worker source. This is the same class of vulnerability as G-F09 but in the spec's own implementation listing.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Never interpolate user code into template literals. Use the sandboxed iframe srcdoc pattern from G-I09 (already fixed in prompt 27 but NOT yet reflected in the §18 spec body):
+
+function wrapArtifactCode(code: string, type: string): string {
+  if (type === 'html') {
+    // HTML-encode for safe srcdoc embedding — no template literal interpolation of user code
+    const escaped = code
+      .replace(/&amp;/g, '&amp;amp;').replace(/"/g, '&amp;quot;')
+      .replace(/&lt;/g, '&amp;lt;').replace(/&gt;/g, '&amp;gt;');
+    return `&lt;!DOCTYPE html&gt;&lt;html&gt;&lt;body style="margin:0"&gt;
+      &lt;iframe sandbox="allow-scripts" srcdoc="${escaped}"
+        style="width:100%;height:100%;border:0;"&gt;&lt;/iframe&gt;&lt;/body&gt;&lt;/html&gt;`;
+  }
+  // ... other types
+}
+
+Serve this HTML directly via naelao-artifact Worker — no generated Worker script needed.</p></div>
+</div>
+
+<div id="G-J11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J11</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§63 — External Portal System (provisionExternalPortal)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Portal Template String.replace() Without /g Flag — Second and Later Occurrences of Placeholders Remain as Literal Strings</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">provisionExternalPortal() injects space context into portal templates using:
+
+const portalCode = templateCode
+  .replace('{{SPACE_ID}}', spaceId)
+  .replace('{{PORTAL_SLUG}}', slug)
+  .replace('{{AUTH_MODEL}}', portalConfig.authModel)
+  .replace('{{NAELAO_API_BASE}}', env.NAELAO_API_BASE);
+
+JavaScript's String.replace(string, string) replaces only the FIRST occurrence of the search string. Portal templates that reference {{SPACE_ID}} more than once (e.g., once in the API base URL and once in a data attribute) will have the literal placeholder string {{SPACE_ID}} remain in the deployed portal code after the first occurrence is replaced. This causes: (1) API calls from the portal to include the literal string "{{SPACE_ID}}" as a space ID, returning 404 from naelao-spaces. (2) KV lookups using the placeholder string — returning null. (3) Subtle runtime failures that are hard to debug because the portal "looks" deployed but silently misbehaves.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use regex with the /g (global) flag for all template placeholder replacements:
+
+const portalCode = templateCode
+  .replace(/\{\{SPACE_ID\}\}/g, spaceId)
+  .replace(/\{\{PORTAL_SLUG\}\}/g, slug)
+  .replace(/\{\{AUTH_MODEL\}\}/g, portalConfig.authModel)
+  .replace(/\{\{NAELAO_API_BASE\}\}/g, env.NAELAO_API_BASE);
+
+Additionally, validate that no unreplaced placeholders remain after substitution (defensive check):
+
+const remaining = portalCode.match(/\{\{[A-Z_]+\}\}/g);
+if (remaining) {
+  throw new Error('Unresolved template placeholders in portal code: ' + remaining.join(', '));
+}</p></div>
+</div>
+
+<div id="G-J12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J12</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§45 — WalletDO (x402 Inter-Space Payment)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">x402 Payment Flow Is Non-Atomic — Debit Can Succeed While Creator Credit Fails, With No Rollback</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The x402 inter-space payment flow in §45 consists of three sequential DO-to-DO RPC calls:
+
+1. POST http://wallet/deduct → company WalletDO (deducts full amountUsd)
+2. POST http://workerdef/record-earning → creator WorkerDefinitionDO (credits amountUsd * 0.85)
+3. NAELAO_ANALYTICS_QUEUE.send() → platform fee recorded
+
+The spec itself notes "(NOT atomic — sequential RPCs)" but provides no fix. If step 1 succeeds but step 2 fails (creator DO unavailable, network error, creator DO evicted mid-call), the user pays but the creator is never paid. There is no compensation transaction, no idempotency key, and no retry mechanism. This creates an invisible fund leak: money leaves the payer's wallet and disappears into the platform's accounting gap. At scale, this silently accumulates as unresolvable accounting discrepancies.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement a saga pattern with compensation. Use an idempotency key and a payment coordinator record:
+
+// WalletDO.processX402Payment(params) — transactional saga
+async processX402Payment(params: {
+  paymentId: string;  // idempotency key — include in both debit and credit
+  amountUsd: number;
+  creatorSpaceId: string;
+  workerDefId: string;
+}): Promise&lt;{ success: boolean; error?: string }&gt; {
+  // Check idempotency — already processed?
+  const existing = this.ctx.storage.sql
+    .exec('SELECT status FROM payment_log WHERE id = ?', params.paymentId).one();
+  if (existing?.status === 'complete') return { success: true };
+
+  // Record intent BEFORE debit
+  this.ctx.storage.sql.exec(
+    'INSERT OR IGNORE INTO payment_log (id, amount_usd, creator_space_id, status) VALUES (?, ?, ?, ?)',
+    params.paymentId, params.amountUsd, params.creatorSpaceId, 'pending'
+  );
+
+  // Step 1: Debit
+  const debitResult = await this.deductCredits({ amount: params.amountUsd, reason: 'x402:' + params.paymentId });
+  if (!debitResult.success) return { success: false, error: debitResult.error };
+
+  // Step 2: Credit creator — retry up to 3 times
+  let credited = false;
+  for (let attempt = 0; attempt &lt; 3 &amp;&amp; !credited; attempt++) {
+    try {
+      const creatorDO = this.env.NAELAO_WALLET_DO.get(
+        this.env.NAELAO_WALLET_DO.idFromName('wallet:' + params.creatorSpaceId));
+      await creatorDO.fetch(new Request('http://wallet/credit', {
+        method: 'POST', body: JSON.stringify({ paymentId: params.paymentId, amount: params.amountUsd * 0.85 })
+      }));
+      credited = true;
+    } catch { /* retry */ }
+  }
+  if (!credited) {
+    // Compensate: refund the debit
+    await this.creditCredits({ amount: params.amountUsd, reason: 'x402-refund:' + params.paymentId });
+    this.ctx.storage.sql.exec("UPDATE payment_log SET status='failed' WHERE id=?", params.paymentId);
+    return { success: false, error: 'Creator credit failed after 3 attempts — payment refunded' };
+  }
+  this.ctx.storage.sql.exec("UPDATE payment_log SET status='complete' WHERE id=?", params.paymentId);
+  return { success: true };
+}</p></div>
+</div>
+
+<div id="G-J13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J13</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§24 — Execution Ladder Tier 2 (web_search tool)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Tier 2 web_search Generated Worker Script References TAVILY_KEY as Undefined Variable — ReferenceError at Runtime</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The Tier 2 web_search implementation in §24 generates a Worker script string that references TAVILY_KEY as a bare identifier:
+
+const searchCode = `
+export default {
+  async fetch(request) {
+    ...
+    body: JSON.stringify({
+      api_key: TAVILY_KEY,   // ← bare identifier, not a string literal
+      ...
+    })
+  }
+}`;
+const result = await loaderDO.fetch(new Request('http://loader/execute', {
+  method: 'POST',
+  body: JSON.stringify({
+    code: searchCode,
+    bindings: { TAVILY_KEY: context.env.TAVILY_API_KEY }  // ← passed as binding metadata
+  })
+}))
+
+TAVILY_KEY is not defined anywhere in the generated script. It is not a global, not imported, and not interpolated. When the DW Loader executes this script, the JavaScript engine throws ReferenceError: TAVILY_KEY is not defined. Even if the DW Loader injects bindings as Worker environment variables, bare identifier access to env bindings requires the Workers runtime — the DW Loader would need to implement a binding injection mechanism that wraps the script and exposes bindings as named globals, which the spec does not describe.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Either interpolate the API key directly (safe since TAVILY_KEY is a secret, not user input) or restructure the binding injection:
+
+// Option A: Interpolate the key at code-generation time (safe — it's a platform secret, not user input)
+const searchCode = `
+export default {
+  async fetch(request) {
+    const { query, maxResults = 5 } = await request.json();
+    const resp = await fetch('https://api.tavily.com/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: ${JSON.stringify(context.env.TAVILY_API_KEY)},
+        query, max_results: maxResults, search_depth: 'advanced'
+      })
+    });
+    const data = await resp.json();
+    return Response.json({ results: data.results ?? [] });
+  }
+}`;
+
+// Option B: If DW Loader supports env injection, document the injection mechanism explicitly
+// and use a consistent pattern (e.g., declare const TAVILY_KEY = env.TAVILY_KEY at top of wrapper)</p></div>
+</div>
+
+<div id="G-J14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J14</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§28 — naelao-threads (POST /threads/:id/messages)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">void agentDO.fetch() Without ctx.waitUntil() — Foreground Agent Runs Killed When HTTP Response Returns</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The §28 naelao-threads Worker uses fire-and-forget to dispatch foreground agent runs:
+
+// Step 5b: foreground mode
+void agentDO.fetch('http://agent/run', { method: 'POST', body: JSON.stringify({...}) });
+return Response.json({ messageId, runId, mode: 'foreground' });
+
+In CF Workers, when the outer fetch() handler returns a Response, the runtime terminates any pending microtasks or promises that were not registered with ctx.waitUntil(). A bare void expression is not registered. The HTTP response is sent to the client ({"messageId":..., "mode":"foreground"}) and then the agentDO.fetch() call is silently abandoned. The agent run never executes. The UI shows the user message as sent, the runId is returned, but no LLM call ever happens. This is a silent hang — users see their message accepted but never get a response.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Register the foreground dispatch with ctx.waitUntil() so it survives the Response return:
+
+// In POST /threads/:id/messages handler — context must be passed to the route handler
+app.post('/threads/:id/messages', async (c) =&gt; {
+  // ...validate, persist user message, check concurrency...
+  const runId = crypto.randomUUID();
+
+  // Foreground mode: fire-and-keep-alive with ctx.waitUntil
+  const agentDO = c.env.NAELAO_AGENT_DO.get(
+    c.env.NAELAO_AGENT_DO.idFromName(spaceId + ':' + projectId + ':' + threadId)
+  );
+  c.executionCtx.waitUntil(
+    agentDO.fetch(new Request('http://agent/run', {
+      method: 'POST',
+      body: JSON.stringify({ threadId, runId, spaceId, userId })
+    }))
+  );
+
+  return c.json({ messageId, runId, mode: 'foreground' });
+});
+
+Note: Hono's ExecutionContext is available as c.executionCtx — pass it through from the Worker's fetch handler.</p></div>
+</div>
+
+<div id="G-J15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J15</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§57 — SpaceDO Methods (deduct_space_credits)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">deduct_space_credits() Uses PostgreSQL FOR UPDATE Row Lock — Not Supported in SQLite / DO SQLite</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The deduct_space_credits stored function in §57 uses PostgreSQL row-level locking:
+
+SELECT balance_usd INTO v_current_balance
+FROM space_credits
+WHERE space_id = p_space_id
+FOR UPDATE;
+
+FOR UPDATE is a PostgreSQL (and MySQL) SELECT modifier that acquires a row-level write lock, preventing concurrent transactions from modifying the row until the current transaction commits. SQLite does not support FOR UPDATE — the syntax is a parse error. If translated literally to DO SQLite, the deduction function fails on every call, making credit deduction completely broken. The purpose of FOR UPDATE (preventing concurrent deductions that would overdraw the balance) is actually unnecessary in DO SQLite because Durable Objects have single-threaded execution — no two queries can run concurrently inside a single DO instance. The atomicity concern is real but the solution is different.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove FOR UPDATE — DO single-threaded execution provides the same guarantee. Use a single atomic UPDATE with a conditional WHERE clause instead:
+
+// durable-objects/SpaceDO.ts — deductSpaceCredits()
+async deductSpaceCredits(params: {
+  amountUsd: number; reason: string; runId?: string;
+}): Promise&lt;{ success: boolean; newBalance?: number; error?: string }&gt; {
+  const { amountUsd, reason, runId } = params;
+
+  // Atomic check-and-deduct in one statement — DO single-threaded execution prevents races
+  // No FOR UPDATE needed; no concurrent queries possible in a single DO instance
+  const result = this.ctx.storage.sql.exec(
+    'UPDATE space_credits SET balance_usd = balance_usd - ? WHERE space_id = ? AND balance_usd >= ? RETURNING balance_usd',
+    amountUsd, this.spaceId, amountUsd
+  ).one();
+
+  if (!result) {
+    const current = this.ctx.storage.sql
+      .exec('SELECT balance_usd FROM space_credits WHERE space_id = ?', this.spaceId).one();
+    return { success: false, error: 'Insufficient credits: balance $' + (current?.balance_usd ?? 0) + ', required $' + amountUsd };
+  }
+
+  this.ctx.storage.sql.exec(
+    'INSERT INTO credit_transactions (space_id, type, amount_usd, reason, run_id, balance_after) VALUES (?, ?, ?, ?, ?, ?)',
+    this.spaceId, 'debit', amountUsd, reason, runId ?? null, result.balance_usd
+  );
+  return { success: true, newBalance: result.balance_usd as number };
+}</p></div>
+</div>
+
+<div id="G-J16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J16</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§63 — External Portal System (KV Routing)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Portal Slug→SpaceId Routing Stored in KV — Up to 60-Second Eventual Consistency Window Causes "Portal Not Found" After Creation</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">provisionExternalPortal() writes the portal slug routing entry to KV:
+
+await env.NAELAO_CONFIG_KV.put(`portal-slug:${slug}`, spaceId);
+
+The naelao-portal Worker reads this KV key on every portal request:
+
+const spaceId = await env.NAELAO_CONFIG_KV.get(`portal-slug:${slug}`);
+if (!spaceId) return new Response('Portal not found', { status: 404 });
+
+Cloudflare KV has eventual consistency with up to 60 seconds of propagation delay for newly written keys in remote regions. A user who creates a space with an external portal and immediately navigates to their portal URL ({slug}.naelao.com) will receive "Portal not found" for up to 60 seconds. This is a jarring first-use experience and can be misinterpreted as a deployment failure. The provisioning confirmation email/webhook and the UI success state fire before the portal is actually reachable.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Store the canonical portal slug routing in SpaceDO SQLite (strongly consistent), fall back to KV only as a cache:
+
+// In naelao-portal Worker — two-layer lookup:
+async function resolveSlugToSpaceId(slug: string, env: Env): Promise&lt;string | null&gt; {
+  // Layer 1: KV cache (fast, eventually consistent)
+  const cached = await env.NAELAO_CONFIG_KV.get('portal-slug:' + slug);
+  if (cached) return cached;
+
+  // Layer 2: SpaceTypeRegistryDO (strongly consistent — source of truth)
+  const registryDO = env.NAELAO_SPACE_TYPE_REGISTRY.get(
+    env.NAELAO_SPACE_TYPE_REGISTRY.idFromName('global-space-type-registry')
+  );
+  const resp = await registryDO.fetch(new Request('http://registry/portal-slug/' + slug));
+  if (!resp.ok) return null;
+  const { spaceId } = await resp.json() as { spaceId: string };
+
+  // Back-fill KV cache
+  await env.NAELAO_CONFIG_KV.put('portal-slug:' + slug, spaceId, { expirationTtl: 3600 });
+  return spaceId;
+}</p></div>
+</div>
+
+<div id="G-J17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J17</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EAB308;letter-spacing:.08em;text-transform:uppercase;background:#EAB30818;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§24 — Execution Ladder Tier 5 (routeAndExecute)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">routeAndExecute() Tier 5 Passes Object.values(toolCall.parameters) as Positional args — Property Order Does Not Guarantee Correct CLI Argument Sequence</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The Tier 5 sandbox dispatch in routeAndExecute() maps tool parameters to a command's positional arguments array:
+
+body: JSON.stringify({
+  command: toolName,
+  args: Object.values(toolCall.parameters)
+})
+
+Object.values() returns values in insertion order of properties. The insertion order of a parsed JSON object is theoretically deterministic (string keys in insertion order), but: (1) The LLM that generates tool calls may not output parameters in the order the tool's argument list expects. (2) Different JSON parsers may not preserve insertion order for non-integer keys in all environments. (3) For CLI tools, argument order is semantic — python script.py arg1 is different from python script.py arg2. A Tier 5 tool "run_python" with parameters { script: 'main.py', arg: 'production' } vs { arg: 'production', script: 'main.py' } would produce different command invocations depending purely on LLM output ordering. This causes intermittent, non-deterministic failures that are extremely hard to debug.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Tier 5 tools must define an explicit parameter schema that maps named parameters to their correct positional positions. routeAndExecute() should use the schema to build the args array, not Object.values():
+
+// Tool parameter schema — defines ordered arg list for Tier 5 CLI tools
+const TIER_5_TOOL_SCHEMAS: Record&lt;string, { argsOrder: string[] }&gt; = {
+  'run_python':  { argsOrder: ['script', 'args'] },
+  'run_bash':    { argsOrder: ['command'] },
+  'run_node':    { argsOrder: ['script'] },
+  'run_pytest':  { argsOrder: ['test_path', 'flags'] },
+};
+
+// In routeAndExecute() Tier 5 path:
+const schema = TIER_5_TOOL_SCHEMAS[toolName];
+const orderedArgs = schema
+  ? schema.argsOrder.map(key =&gt; toolCall.parameters[key]).filter(v =&gt; v !== undefined)
+  : Object.values(toolCall.parameters);  // fallback for undeclared tools
+
+body: JSON.stringify({ command: toolName, args: orderedArgs })</p></div>
+</div>
+
+<div style="margin:48px 0 0;padding:24px 0 0;border-top:1px solid #1E293B;">
+  <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.12em;text-transform:uppercase;">MEDIUM SEVERITY — 3 GAPS</span>
+</div>
+
+<div id="G-J18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J18</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§56 — Analytics Engine (mapEventToDataPoint)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Analytics Engine indexes Array Passes Two Values — AE Uses Only First Index, Second Value Is Silently Ignored</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">mapEventToDataPoint() in §56 constructs every data point with:
+
+const base = {
+  indexes: [event.spaceId ?? 'global', event.type],
+  timestamp: new Date(event.timestamp)
+};
+
+Workers Analytics Engine's writeDataPoints() accepts an indexes field that is an array of strings, but AE uses only the first element as the primary queryable index (index1 in SQL). The second element (event.type) is accepted without error but is silently ignored — it is NOT queryable as index2. Dashboard queries that filter by event.type on an index column will always return empty results. This creates confusion: the spec implies both spaceId and event.type are indexed, but only spaceId is. Queries like WHERE index2 = 'agent_run_complete' used in dashboard templates will always return zero rows.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use only one index value, and move event_type to a blob field (which it already is as blobs[0]):
+
+const base = {
+  indexes: [event.spaceId ?? 'global'],  // single index — spaceId is the partition key
+  timestamp: new Date(event.timestamp ?? Date.now())  // guard against undefined timestamp
+};
+
+Update all admin dashboard queries to filter by blob1 (event_type in blobs[0]) instead of index2:
+
+-- WRONG:
+WHERE index2 = 'token_usage'
+
+-- CORRECT (event_type is in blob1):
+WHERE blob1 = 'token_usage'
+
+This matches the AE schema definition already shown in §56 where blobs[0]=event_type.</p></div>
+</div>
+
+<div id="G-J19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J19</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§25 — Execution Ladder Tier 5 / SandboxDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">SandboxDO initSchema() Has No Visible Call Site — SQLite Tables May Not Exist on First Request</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The §25 SandboxDO listing defines private async initSchema() which creates the exec_log and container_state tables. However, no call to initSchema() appears in the spec's DO implementation. The fetch() handler routes directly to ensureRunning(), exec(), getStatus(), or stop() — none of which call initSchema(). On the very first request to a new SandboxDO instance, exec() attempts to INSERT INTO exec_log (...) before the table exists, throwing a SQLite "no such table" error. ensureRunning() attempts to SELECT value FROM container_state before that table exists, throwing another error. All Tier 5 tool executions fail on every new project's first use.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Call initSchema() in the DO constructor, or use the standard DO constructor pattern:
+
+export class SandboxDO extends DurableObject {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    // Initialize schema synchronously — ctx.storage.sql.exec is synchronous
+    ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS exec_log (
+        id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        command     TEXT NOT NULL,
+        exit_code   INTEGER,
+        stdout      TEXT,
+        stderr      TEXT,
+        duration_ms INTEGER,
+        executed_at INTEGER DEFAULT (unixepoch('now') * 1000)
+      );
+      CREATE TABLE IF NOT EXISTS container_state (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      INSERT OR IGNORE INTO container_state VALUES ('status', 'stopped');
+      INSERT OR IGNORE INTO container_state VALUES ('last_started', '0');
+    `);
+  }
+  // ... fetch(), exec(), alarm() etc.
+}
+
+The constructor runs once when the DO is first constructed or reconstructed after eviction, so CREATE TABLE IF NOT EXISTS is safe and idempotent.</p></div>
+</div>
+
+<div id="G-J20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-J20</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§24 — Execution Ladder Tier 4 (Browser / fill_form)</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Browser Tier 4 fill_form Action Passes Form Field Values Through CDP — Passwords and PII Visible in CF Browser Rendering Infrastructure Logs</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The §24 Browser Tier 4 fill_form implementation uses page.type() to send keystrokes:
+
+for (const [selector, value] of Object.entries(params.fields as Record&lt;string, string&gt;)) {
+  await page.type(selector, value);
+}
+
+params.fields is passed as a JSON body from the agent tool call to the naelao-browser Worker and then forwarded as CDP Input.dispatchKeyEvent commands. CF Browser Rendering uses headless Chrome managed by Cloudflare's infrastructure, and CDP session data — including all keystrokes dispatched via page.type() — passes through CF's infrastructure layer. If an agent fills a login form with a real user password, or submits a payment form with a card number, those values appear in CDP session logs at the infrastructure level. This is not specific to CF Browser Rendering but affects any managed headless browser service. The spec does not document this risk or recommend mitigations.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a documented restriction and implement field classification:
+
+1. Document the risk in the spec for §24 Tier 4 and in the naelao-browser Worker:
+   "WARNING: All values passed to fill_form are transmitted as CDP keystrokes through Cloudflare infrastructure. Do not use fill_form with passwords, payment card numbers, SSNs, or other sensitive credentials."
+
+2. Add field classification scanning in the naelao-browser Worker before processing fill_form:
+// workers/browser/index.ts
+const SENSITIVE_SELECTORS = [/password/i, /secret/i, /card/i, /cvv/i, /ssn/i, /token/i];
+const SENSITIVE_TYPES = ['password', 'hidden'];
+
+for (const [selector, value] of Object.entries(params.fields)) {
+  const isSensitive = SENSITIVE_SELECTORS.some(r =&gt; r.test(selector)) ||
+    (await page.$eval(selector, el =&gt; (el as HTMLInputElement).type)).match(/^(password|hidden)$/);
+  if (isSensitive) {
+    // Use page.evaluate() + element.value = ... instead of page.type() to avoid CDP keystroke logs
+    await page.evaluate(
+      ([sel, val]) =&gt; { (document.querySelector(sel) as HTMLInputElement).value = val; },
+      [selector, value]
+    );
+  } else {
+    await page.type(selector, value);
+  }
+}</p></div>
+</div>
+
+<div style="margin:32px 0 0;padding:32px;background:#0A1628;border:1px solid #1E293B;border-radius:8px;">
+  <p style="font-family:'DM Mono',monospace;font-size:11px;color:#64748B;margin:0;line-height:1.8;">
+    Appendix J complete. Combined gap audit total: A (125) + B (30) + C (22) + D (22) + E (24) + F (26) + G (26) + H (15) + I (34) + J (20)
+    = <strong style="color:var(--or);">344 documented technical gaps</strong> with required fixes.
+  </p>
+</div>
+</section>
+
+<section id="appendix-k" style="max-width:900px;margin:0 auto;padding:clamp(32px,6vw,80px) clamp(16px,4vw,48px);">
+<h2 style="font-family:'Fraunces',serif;font-size:clamp(22px,4vw,36px);font-weight:700;color:var(--tx);margin:0 0 8px;">Appendix K — Additional Technical Gap Audit (Third Pass)</h2>
+<p style="font-family:'DM Mono',monospace;font-size:12px;color:#64748B;margin:0 0 32px;line-height:1.7;">
+  Third-pass gap analysis of the full Naelao architecture spec (naelao_expanded_gaps_resolved.html). This pass covered sections not fully analyzed in prior passes: §04 AgentDO, §05 AssistantDO, §17 fine-tuning, §22 artifacts, §29 billing, §30 ConcurrencyDO, §31 knowledge, §35 SandboxDO, §40 LocalTunnelDO, §43 sweeper, §45 WalletDO skills, §49 MiniAGIDO, §56 bootstrap, §57 SpaceDO methods, §62 provisioner, §70–71 enterprise wallet/x402, §72 Mini-AGI, §76 canary, §77 apps, §78 admin, §79 notifications, §80 eval, §81 categorizer/feedback, §82 templates/workflows/FinetuneJobDO, §84 SpaceDO, §85 AssistantSandboxDO.
+  This pass identified 51 new gaps: 12 CRITICAL, 25 HIGH, 13 MEDIUM, 1 LOW.
+  Gaps G-K14, G-K25, and G-K29 confirm findings from G-J14, G-J09, and G-J04 respectively — same root cause, different spec sections.
+</p>
+
+<div id="G-K01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K01</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§29 — naelao-billing Worker</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">naelao-billing Uses PostgreSQL Manual Transaction Syntax That Has No Effect in SpaceDO SQLite — Non-Atomic Billing Updates</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The billing worker executes three sequential INSERT/UPDATE statements wrapped in:
+  await db.query('BEGIN');
+  // ... three INSERT/UPDATE queries ...
+  await db.query('COMMIT');
+  // catch: await db.query('ROLLBACK');
+
+On D1 or SpaceDO SQLite, multi-statement manual transactions via separate .query() calls are not supported — D1 requires db.batch([...stmts]) for atomicity, and SpaceDO SQLite uses this.ctx.storage.sql.exec() which auto-commits each statement. The BEGIN/COMMIT/ROLLBACK calls will either throw or execute as no-ops. The three statements (writing token_usage, space_usage_monthly, space_credits) run non-atomically. A crash between steps 2 and 3 deducts from the monthly total without deducting from the balance, causing silent billing inconsistency with no recovery path.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the BEGIN/COMMIT/ROLLBACK block with a single this.ctx.storage.sql.exec() invocation using multiple statements separated by semicolons. SpaceDO Durable Objects are single-threaded: all operations within a single fetch() handler are automatically serialized, providing the atomicity guarantee without explicit transaction syntax. Example:
+  this.ctx.storage.sql.exec(`
+    INSERT INTO token_usage (space_id, model, input_tokens, output_tokens, cost_usd, created_at)
+    VALUES (?,?,?,?,?,unixepoch('now')*1000);
+    INSERT INTO space_usage_monthly (space_id, month, total_tokens, total_cost_usd)
+    VALUES (?,?,?,?) ON CONFLICT (space_id, month) DO UPDATE SET
+      total_tokens = total_tokens + excluded.total_tokens,
+      total_cost_usd = total_cost_usd + excluded.total_cost_usd;
+    UPDATE spaces SET credits_usd = credits_usd - ? WHERE id = ?;
+  `, ...params);
+Remove all db.query('BEGIN'), db.query('COMMIT'), db.query('ROLLBACK') calls.</p></div>
+</div>
+<div id="G-K02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K02</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§29 — naelao-billing Worker</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">naelao-billing Uses $1 PostgreSQL Placeholders and NOW() / DATE_TRUNC() — All Five SQL Queries Throw at Runtime</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Every SQL query in the billing worker uses $1, $2... positional parameters (PostgreSQL syntax) and calls NOW() / DATE_TRUNC('month', NOW()). SQLite requires ? positional parameters and datetime('now') / strftime('%Y-%m-01', 'now'). At runtime, every single billing query will throw a SQLite syntax error. This makes ALL credit tracking, monthly usage aggregation, and credit deduction completely non-functional. No token usage is recorded, no monthly totals accumulate, and no credits are deducted — the entire billing system silently fails on every call.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Apply a systematic replacement across all five SQL queries in the billing flow:
+  • $1, $2, $N → ? (positional placeholders)
+  • NOW() → datetime('now')
+  • DATE_TRUNC('month', NOW()) → strftime('%Y-%m-01', 'now')
+  • TIMESTAMPTZ → INTEGER (store as milliseconds: unixepoch('now')*1000)
+  • RETURNING id INTO variable → not needed in SQLite; use lastInsertRowId
+
+The ON CONFLICT ... DO UPDATE SET ... excluded.column syntax IS valid SQLite and can be kept. Add a lint rule or CI check that flags $N placeholder syntax in any .sql file or SQL template string that targets SpaceDO.</p></div>
+</div>
+<div id="G-K03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K03</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§57 — SpaceDO Methods</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">All Five 'Replacement' SpaceDO Methods Are Written as PostgreSQL plpgsql Stored Functions — Section Heading Claims Migration But Body Still Contains Supabase Source</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec section is titled "SpaceDO Methods — Replacing All Stored Functions" but all five functions (get_llm_formatted_messages, get_stale_projects_for_categorization, create_space_with_defaults, get_active_assistants, deduct_space_credits) are written as CREATE OR REPLACE FUNCTION ... LANGUAGE plpgsql SECURITY DEFINER. These are PostgreSQL RPCs using auth.uid(), DECLARE v_slug TEXT; v_slug :=, SELECT ... FOR UPDATE, RAISE EXCEPTION, gen_random_uuid(), REGEXP_REPLACE(..., 'g'), TIMESTAMPTZ, INTERVAL '24 hours', and RETURNING id INTO variable — none of which are valid SQLite. The provisioner (provisionSpace) calls db.query('SELECT create_space_with_defaults($1,...)') at Step 1. This call will fail at runtime with a SQLite error, aborting every single space creation on the platform. (See also G-K22 for the provisioner call site.)</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Rewrite all five as TypeScript methods on the SpaceDO class using this.ctx.storage.sql.exec(sql, ...params) with ? placeholders, datetime('now'), lower(hex(randomblob(16))) for UUIDs, and plain string operations for slug generation. Example for create_space_with_defaults:
+  createSpaceWithDefaults(name: string, ownerId: string, spaceType: string, planTier: string) {
+    const spaceId = crypto.randomUUID();
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 50);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO spaces (id, name, slug, owner_id, space_type, plan_tier, created_at)
+       VALUES (?,?,?,?,?,?,unixepoch('now')*1000)`,
+      spaceId, name, slug, ownerId, spaceType, planTier
+    );
+    return spaceId;
+  }
+Remove all plpgsql function definitions from the spec.</p></div>
+</div>
+<div id="G-K04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K04</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§40 — LocalTunnelDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">LocalTunnelDO.pendingCalls Is an In-Memory Map Destroyed on DO Hibernation — All In-Flight Local PC Tool Calls Hang Permanently</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">LocalTunnelDO stores pending tool-call promise resolvers in:
+  private pendingCalls = new Map&lt;string, (result: ToolResult) =&gt; void&gt;();
+
+The DO uses this.ctx.acceptWebSocket(server) (hibernation API), which means the DO hibernates between WebSocket messages. When it hibernates, the entire class instance is destroyed and pendingCalls resets to an empty Map. Any in-flight execOnLocal() call whose promise resolver was in that Map is permanently unresolvable — the agent loop hangs until the 30-second setTimeout fires (but setTimeout callbacks are also destroyed on hibernation). The sweeper marks the run abandoned after 10 minutes. Every local PC tool call that spans a DO hibernation event silently hangs.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the in-memory pendingCalls Map with a SQLite table:
+  CREATE TABLE IF NOT EXISTS pending_calls (
+    call_id TEXT PRIMARY KEY,
+    tool_name TEXT NOT NULL,
+    params TEXT NOT NULL,
+    created_at INTEGER DEFAULT (unixepoch('now')*1000)
+  );
+
+On webSocketMessage (when the local PC returns a result), look up call_id in SQLite and use a response queue or alarm-based polling instead of in-memory promise resolution. Implement a dedicated GET /poll/{callId} endpoint that the agent loop calls with retries. Add a timeout cleanup: delete FROM pending_calls WHERE created_at &lt; unixepoch('now')*1000 - 30000 in the alarm() handler.</p></div>
+</div>
+<div id="G-K05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K05</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§85 — AssistantSandboxDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">AssistantSandboxDO.lastCommandAt and sandboxRef Are In-Memory — Alarm Fires with lastCommandAt=0 After Restart, Immediately Terminating Container and NPE-Crashing</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">private lastCommandAt = 0 and private sandboxRef: SandboxStub | null = null are both in-memory instance fields. After any DO eviction or restart: (1) alarm() fires with lastCommandAt = 0, so Date.now() - 0 &gt;= idleTimeoutMs is always true, meaning the alarm immediately tries to terminate the container; (2) this.sandboxRef is null, so this.sandboxRef.terminate() throws a null-pointer TypeError. The alarm handler crashes, is not retried, and the container may be orphaned (running but unreachable). Enterprise workloads with idleTimeoutMs = -1 (infinite) skip the terminate check, but sandboxRef is still null after restart, so any subsequent exec() call fails with "Container not running." This is the same class of bug as in SandboxDO (§35, confirmed by G-J03) but with an additional NPE in the alarm path.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Persist both lastCommandAt and container status in the DO's SQLite state table:
+  // On every exec() call:
+  this.ctx.storage.sql.exec(
+    `INSERT OR REPLACE INTO state (key, value) VALUES ('last_command_at', ?)`,
+    Date.now().toString()
+  );
+  // In alarm():
+  const rows = [...this.ctx.storage.sql.exec('SELECT value FROM state WHERE key = ?', 'last_command_at')];
+  const lastCommandAt = rows[0] ? parseInt(rows[0].value) : 0;
+  if (this.sandboxRef === null) {
+    const status = this.ctx.storage.sql.exec('SELECT value FROM state WHERE key = ?', 'container_status');
+    if (status[0]?.value === 'running') {
+      // Re-acquire sandbox reference before attempting terminate
+      this.sandboxRef = await this.env.SANDBOX.get(this.ctx.storage.sql.exec('SELECT value FROM state WHERE key = ?', 'container_id')[0]?.value);
+    } else return; // Nothing to terminate
+  }</p></div>
+</div>
+<div id="G-K06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K06</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§29 WalletDO / §71 — x402 Inter-Space Payments</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">x402 Three-Step Cross-DO Payment Is Non-Atomic — Debit Succeeds but Credit Can Permanently Fail, Destroying Funds</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The x402Payment() function executes three sequential, independent operations:
+  (1) companyWalletDO.fetch('http://wallet/deduct')
+  (2) workerDefDO.fetch('http://workerdef/record-earning')
+  (3) NAELAO_ANALYTICS_QUEUE.send(...)
+
+If step 1 succeeds and step 2 fails (network error, DO unavailable, timeout), the company is permanently debited amountUsd while the creator is never paid and the platform fee is never logged. There is no saga log, no idempotency key, no compensation transaction, and no retry mechanism. The txId returned comes from the debit transaction, not a coordinated payment ID, so there is no way to reconcile the half-completed state. This can be triggered under normal production load whenever the workerDefDO is briefly unavailable.
+
+Note: G-J12 documented a related non-atomic issue in §45 WalletDO. This gap documents the specific mechanism by which the three-step RPC fails non-atomically at the inter-space level.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Introduce a PaymentCoordinatorDO that logs a saga before any step executes:
+  INSERT INTO payments (saga_id, status, debit_amount, debit_wallet, credit_wallet, credit_amount, created_at)
+  VALUES (?, 'pending', ?, ?, ?, ?, unixepoch('now')*1000);
+
+After each successful step, update status: 'pending_credit' → 'pending_log' → 'complete'. The sweeper retries rows with status='pending_credit' older than 60 seconds. Add a self-payment guard: if fromSpaceId === toCreatorSpaceId, return 400 immediately to prevent the nested DO call deadlock documented in G-K07.</p></div>
+</div>
+<div id="G-K07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K07</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§29 WalletDO / §70 — Enterprise Wallet</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Nested WalletDO Calls Within the Same Request Chain Deadlock Cloudflare's Single-Threaded DO Model — Funds Lost on Self-Payment</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a Worker agent pays another Worker in the same space (self-hire, or same-space sub-agent), the orchestrator calls companyWalletDO.fetch(). Inside that DO's deductCredits(), the spec calls void this.recordCreatorEarning(amount * 0.15) which calls workerDefDO.fetch('http://workerdef/record-earning'). If workerDefDO and companyWalletDO happen to be the same DO instance (same idFromName result due to self-payment), the outer request holds the DO's single-thread lock while the inner fetch() waits for the same lock — permanent deadlock. The request times out at 30 seconds, the debit is already committed to SQLite, the credit never executes, and funds are permanently lost. CF Durable Objects do not support reentrant locking.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">In x402Payment(), add a guard before executing the three-step flow:
+  if (fromSpaceId === toCreatorSpaceId && fromWalletId === toWorkerId) {
+    return { success: false, error: 'Self-payment not allowed: same space cannot both debit and credit' };
+  }
+
+For the recordCreatorEarning call inside deductCredits(), restructure to use a fire-and-forget after the current request completes. Since DurableObjectState does not have waitUntil(), schedule the creator credit via a setAlarm(Date.now() + 1000) with the credit details persisted to SQLite, then process it in alarm(). This breaks the reentrant call chain entirely.</p></div>
+</div>
+<div id="G-K08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K08</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§78 — naelao-admin</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">naelao-admin Analytics Engine Queries Are Vulnerable to SQL Injection via Unparameterized spaceId, eventType Template Interpolation</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The admin audit route constructs the Analytics Engine SQL query by string interpolation:
+  WHERE index1 = '${spaceId}' AND blob1 = '${eventType}' ... LIMIT ${parseInt(limit)}
+
+The spaceId and eventType values come directly from query parameters. An authenticated admin can inject arbitrary SQL through these parameters (e.g., spaceId = "' OR '1'='1" or eventType = "'; DROP TABLE...") to exfiltrate data across all spaces or crash the analytics pipeline. parseInt(limit) mitigates the limit injection but not the others. Since Analytics Engine SQL is a read-only query API that does not support parameterized queries, the fix requires server-side validation.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Validate spaceId against /^[0-9a-f-]{36}$/ (UUID format) before interpolation. Reject requests with non-conforming spaceId values with a 400 error. Validate eventType against a strict allowlist of known event type strings (e.g., ['agent_run', 'token_usage', 'portal_view', ...]). Validate limit with Math.min(Math.max(parseInt(limit) || 100, 1), 1000). Never interpolate free-form user input into Analytics Engine SQL strings. Implement a shared sanitizeAEParam() helper used by all Analytics Engine query builders in the admin worker.</p></div>
+</div>
+<div id="G-K09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K09</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§04 AgentDO / §05 AssistantDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">runFiber(), fiberCtx.stash(), and onFiberRecovered() Are Not Cloudflare Platform Primitives and Do Not Exist — Every Background Agent Run Throws TypeError</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The entire background agent execution model, crash recovery, and heartbeat checkpoint system is built on this.runFiber(), fiberCtx.stash({ iteration, sessionId }), and async onFiberRecovered(ctx: FiberContext). These are described as "Project Think primitives" but are not part of the Cloudflare Durable Objects API. Cloudflare DOs have ctx.storage.setAlarm() for scheduled wakeups and CF Workflows for durable step execution, but no runFiber() method, no stash() snapshot mechanism, and no onFiberRecovered() callback. Any implementation that ships this code will throw TypeError: this.runFiber is not a function on every background agent run, making the entire async agent execution model non-functional.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Map background agent execution to CF Workflows: each step.do('iteration-N', async () => { ... }) within a Workflow provides the durability and crash-resume semantics described. Agent state (iteration count, sessionId, tool results, message history) is stored in SpaceDO SQLite as before — only the execution continuation mechanism changes. Remove all runFiber(), stash(), and onFiberRecovered() references and replace with WorkflowStep.do() calls that read/write the existing SQLite agent_runs and agent_wal schemas. Declare the agent execution Workflow class in wrangler.jsonc with [[workflows]] binding.</p></div>
+</div>
+<div id="G-K10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K10</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§06 WorkerDefinitionDO / §49 MiniAGIDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">NAELAO_AI_GATEWAY Used as a Direct DO/SDK Binding Throughout — CF AI Gateway Is a URL Proxy, Not a Binding Type</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Throughout the spec, DOs and Workers call this.env.NAELAO_AI_GATEWAY.messages.create({ model: '...', max_tokens: 200 }) as if NAELAO_AI_GATEWAY were a Workers AI binding or SDK object. Cloudflare AI Gateway is a URL-based proxy, not a binding type — it has no binding interface and exposes no messages.create() method. The correct pattern (documented in shared/ai-client.ts) is to pass a modified baseURL to the Anthropic SDK. Two different binding name variants (env.AI_GATEWAY and env.NAELAO_AI_GATEWAY) also appear in the same codebase, one of which will be undefined at runtime. Every DO or Worker that calls .messages.create() via this binding will throw TypeError: this.env.NAELAO_AI_GATEWAY.messages is undefined.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove all env.NAELAO_AI_GATEWAY.messages.create() calls from DO code. Every LLM call must go through shared/ai-client.ts's createAnthropicClient(env) which sets baseURL to the gateway URL:
+  const client = createAnthropicClient(env); // sets baseURL = env.NAELAO_AI_GATEWAY_URL
+  const response = await client.messages.create({ model: env.MODEL_ID, ... });
+
+Standardize on NAELAO_AI_GATEWAY_URL as a plain environment variable (string, not a binding) containing the gateway URL. Remove NAELAO_AI_GATEWAY from the wrangler.jsonc bindings sections entirely. Audit all sections using env.AI_GATEWAY vs env.NAELAO_AI_GATEWAY and consolidate to a single name.</p></div>
+</div>
+<div id="G-K11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K11</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§31 naelao-knowledge / §49 MiniAGIDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Vectorize Filter Uses Flat Object Syntax { spaceId, projectId } — Must Use { field: { $eq: value } } Operators — Silent Cross-Tenant Data Leakage</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The knowledge search queries Vectorize with filter: { spaceId: spaceId, projectId: projectId } (flat object). The actual Cloudflare Vectorize metadata filter API requires operator syntax: { spaceId: { $eq: spaceId }, projectId: { $eq: projectId } }. The flat syntax { field: value } is not valid and will either silently ignore the filter (returning unscoped results across all tenants) or throw a runtime error. If silently ignored, every knowledge search returns results from ALL spaces — causing cross-tenant data leakage where one tenant's knowledge base content is visible in another tenant's agent responses.
+
+This gap was previously identified for the §31 section (G-J15 covered FOR UPDATE in SQLite). This gap specifically targets the Vectorize filter API syntax used in knowledge retrieval and MiniAGI queries.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace all flat filter objects with operator syntax throughout the codebase:
+  // Before (wrong):
+  filter: { spaceId: spaceId, projectId: projectId }
+
+  // After (correct):
+  filter: {
+    spaceId: { $eq: spaceId },
+    ...(projectId ? { projectId: { $eq: projectId } } : {})
+  }
+
+Audit all Vectorize .query() calls in naelao-knowledge, MiniAGIDO, naelao-knowledge-search, and any other section that uses Vectorize metadata filters. Add a TypeScript type that enforces operator syntax for VectorizeFilter objects.</p></div>
+</div>
+<div id="G-K12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K12</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;letter-spacing:.08em;text-transform:uppercase;background:#EF444418;padding:3px 8px;border-radius:3px;white-space:nowrap;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§31 naelao-knowledge / §49 MiniAGIDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Vectorize returnMetadata:'all' Is Not a Valid API Value — Causes Runtime Error or Silent Metadata Loss on All Knowledge Queries</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The Vectorize query call uses returnMetadata: 'all' (a string). The Cloudflare Vectorize API accepts returnMetadata: true (boolean) to return all metadata, or returnMetadata: false (default). The string value 'all' is not valid. At runtime this will either throw a type error or be coerced to true in a truthy context — but the spec cannot rely on coercion behavior. If the query returns without metadata, every match.metadata?.docName, match.metadata?.text, and match.metadata?.spaceId will be undefined, producing empty knowledge base context for every agent query across the entire platform.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace returnMetadata: 'all' with returnMetadata: true in all Vectorize query calls. Add a TypeScript strict type check for VectorizeQueryOptions to catch this at compile time:
+  interface VectorizeQueryOptions {
+    returnMetadata?: boolean; // NOT string
+    topK?: number;
+    filter?: VectorizeVectorMetadataFilter;
+  }
+Apply this fix to naelao-knowledge's search() method, MiniAGIDO's federatedQuery() method, and any other section that calls env.NAELAO_VECTORS.query(...).</p></div>
+</div>
+<div id="G-K13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K13</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§04 AgentDO / §29 naelao-billing</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">NAELAO_BILLING.recordTokens() Called as a DO RPC Method — naelao-billing Is a Standard Worker, Service Bindings Expose Only .fetch()</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Inside executeAgentLoop(), the spec calls:
+  await this.env.NAELAO_BILLING.recordTokens({ spaceId, inputTokens, outputTokens, model, costUsd });
+
+This syntax implies NAELAO_BILLING is a Durable Object stub with a named RPC method recordTokens(). But naelao-billing is described as a standard Hono Worker (not a DO), and Service Bindings to Workers expose only fetch() — not named RPC methods. The call will throw TypeError: this.env.NAELAO_BILLING.recordTokens is not a function. As a result, billing is never called after any LLM response — all token usage goes unrecorded and uncharged across the entire platform.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the named RPC call with a fetch() call:
+  await this.env.NAELAO_BILLING.fetch(
+    new Request('http://billing/handleTokenUsage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ spaceId, inputTokens, outputTokens, model, costUsd })
+    })
+  );
+
+Ensure naelao-billing's Hono router registers POST /handleTokenUsage to handle this request. Alternatively, convert naelao-billing to expose a BillingDO with native DO RPC using the rpc export, but this requires changing the wrangler.jsonc binding type from service to durable_object.</p></div>
+</div>
+<div id="G-K14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K14</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§28 naelao-threads</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">void agentDO.fetch() Fire-and-Forget in Worker Without ctx.waitUntil() — Agent Run May Be Killed Before Starting</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">In POST /threads/:id/messages, foreground mode dispatches the agent with:
+  void agentDO.fetch(new Request('http://agent/run', { method: 'POST', ... }));
+
+The void keyword discards the Promise. In a Cloudflare Worker, once the Response is returned to the caller, the Worker's execution context is eligible for termination. Any in-flight promises not registered with ctx.waitUntil() may be abandoned before the agent DO fetch completes. The agent run may never start, or may be cut off mid-initialization.
+
+Note: This is the same issue documented in G-J14 from §28. Both identify the same code path — this entry confirms the pattern from a fresh read of the full section.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace void agentDO.fetch(...) with c.executionCtx.waitUntil(agentDO.fetch(...)). In Hono, the ExecutionContext is accessible via c.executionCtx. Similarly, the fire-and-forget POST http://agent/warm in POST /threads should use waitUntil:
+  c.executionCtx.waitUntil(
+    agentDO.fetch(new Request('http://agent/run', {
+      method: 'POST',
+      body: JSON.stringify({ threadId, message, spaceId, projectId })
+    }))
+  );
+Review all void promise patterns in naelao-threads, naelao-router, and naelao-portal-router for the same issue.</p></div>
+</div>
+<div id="G-K15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K15</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§02 naelao-router</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">KV-Based Rate Limiting in naelao-router Is Eventually Consistent — Allows Up to 300x Over-Limit Under Concurrent CF PoP Load</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The naelao-router rate limiting uses NAELAO_CONFIG_KV with a sliding-window counter pattern: get(key) → count + 1 → put(key, count+1). KV is eventually consistent — writes propagate within 60 seconds across regions. Under concurrent traffic from multiple CF PoPs, two requests can both read count=99, both increment to 100, and both write 100, while the true count should be 101. At Cloudflare network scale (300+ active PoPs), the effective rate limit can be exceeded by a factor proportional to the number of active PoPs. This KV-based rate limiting provides no meaningful protection and will consistently allow more requests than the declared limit, rendering it ineffective against burst attacks.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace KV-based rate limiting with a RateLimitDO using SQLite atomic operations:
+  // In RateLimitDO:
+  this.ctx.storage.sql.exec(
+    `INSERT INTO rate_counts (key, window_start, count) VALUES (?, unixepoch('now'), 1)
+     ON CONFLICT (key, window_start) DO UPDATE SET count = count + 1
+     RETURNING count`,
+    windowKey
+  );
+
+The DO's single-threaded model guarantees atomicity. The spec documents a similar pattern in BuilderAccountDO.checkRateLimit() — apply the same pattern at the router level. Route rate-limit checks through the existing ConcurrencyDO or a dedicated per-user RateLimitDO named idFromName('ratelimit:${userId}:${windowKey}').</p></div>
+</div>
+<div id="G-K16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K16</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§02 naelao-auth</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">KV Token Revocation Check Suffers 60-Second Eventual Consistency Lag — Revoked Tokens Remain Valid After Security Incidents</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The router performs a KV revocation check (revoked:userId:spaceId in NAELAO_CONFIG_KV) before forwarding requests. KV is eventually consistent with up to 60 seconds of propagation lag. A token revoked after a security incident (compromised account, user ban, emergency revocation) will still pass the KV check for up to 60 seconds at any PoP that has not yet received the write. For a platform handling enterprise customer data and financial transactions, a 60-second window after an emergency revocation is an unacceptable security gap.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Move revocation state to SpaceDO SQLite accessed via Service Binding — strongly consistent within the DO. For high-throughput paths, implement a 30-second in-memory cache in naelao-auth backed by a DO revocation check on cache miss:
+  // In naelao-auth Worker:
+  const cached = this.revocationCache.get(tokenId); // in-memory Map with TTL
+  if (cached === undefined) {
+    const result = await spaceDO.fetch(new Request('http://space/check-revocation?tokenId=' + tokenId));
+    const { revoked } = await result.json();
+    this.revocationCache.set(tokenId, { revoked, expires: Date.now() + 30_000 });
+  }
+This gives fast-path performance with strong consistency: the maximum revocation lag is 30 seconds (single-region DO), not 60 seconds across global PoPs.</p></div>
+</div>
+<div id="G-K17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K17</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§79 — naelao-notifications</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Notification Idempotency Key Written After Delivery — Failed Channel Causes Duplicate Send on Retry</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The notification consumer reads the idempotency key, then sends all channels in Promise.all([email, push, slack, discord]), then writes the idempotency key. If any channel send fails (e.g., email succeeds but push throws), the Promise.all rejects, the idempotency key is never written, and msg.retry() is called. On retry, the email is sent again (duplicate). The TOCTOU race between get(idempotencyKey) and put(idempotencyKey) also allows concurrent worker instances to both read null and both deliver. This can result in users receiving duplicate email alerts, Slack messages, or push notifications during any transient channel failure.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Restructure to write-before-deliver:
+  1. Write the idempotency key with status: 'processing' BEFORE any delivery attempt.
+  2. Track per-channel delivery status in individual KV keys: notif_lock:${id}:email, notif_lock:${id}:push, etc.
+  3. On retry: skip channels already marked complete in their per-channel KV key.
+  4. Only when all channels succeed (or exhaust their retries): write status: 'complete' and call msg.ack().
+
+  This ensures each channel is delivered at most once per notification event, regardless of partial failures.</p></div>
+</div>
+<div id="G-K18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K18</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§78 — naelao-admin DLQ</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Admin DLQ Retry: queue.send() + ACK Are Non-Atomic — ACK Failure Causes Double-Delivery into Primary Agent Queue</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The DLQ retry handler calls await NAELAO_AGENT_QUEUE.send(payload) followed by a separate POST to the CF REST API to ACK/delete the DLQ message. If send() succeeds but the ACK call fails (network error, CF API outage), the message remains in the DLQ. The next retry operation (manual or automated) will re-enqueue the same message, causing double-delivery into the primary agent queue. Since CF Queues is at-least-once delivery, duplicate agent runs may be created for the same thread message, causing visible duplicate responses to users.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Before re-enqueuing, store the messageId in a KV key (dlq-retried:${messageId}) with TTL 24h. On retry: check this key first, skip if already retried. After successful re-enqueue: immediately attempt ACK. If ACK fails, the KV check prevents a second re-enqueue on the next retry attempt. Log ACK failures to Analytics Engine for monitoring. This provides at-most-once re-enqueue semantics despite the non-atomic API.</p></div>
+</div>
+<div id="G-K19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K19</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§81 — naelao-feedback</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Feedback Log R2 Append Is a Racy Read-Modify-Write — Concurrent Feedback Events Cause Silent Data Loss</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The feedback worker appends to spaces/${spaceId}/agents/${agentId}/feedback-log.jsonl via:
+  get(key) → .text() → concatenate new entry → put(key, newContent)
+
+R2 has no native atomic append. If two feedback events for the same agent arrive concurrently, both calls read the same existing content, both append their respective entry, and one put() overwrites the other. The overwritten entry is silently lost. As the file grows unbounded, the full read-rewrite also consumes increasing amounts of memory and bandwidth per feedback event — a 10,000-entry log file is re-read and re-written on every feedback event.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use R2's onlyIf: { etagMatches: existingEtag } conditional PUT for optimistic concurrency:
+  const obj = await env.NAELAO_WORKSPACE.get(logKey);
+  const existing = obj ? await obj.text() : '';
+  const etag = obj?.etag;
+  const result = await env.NAELAO_WORKSPACE.put(logKey, existing + JSON.stringify(entry) + '
+', {
+    onlyIf: etag ? { etagMatches: etag } : { etagDoesNotMatch: '*' }
+  });
+  if (result === null) { /* 412 conflict: retry with exponential backoff */ }
+
+Alternatively, write individual feedback events to separate R2 objects keyed by ${timestamp}-${crypto.randomUUID()}.jsonl and aggregate at read time. This eliminates the read-modify-write entirely.</p></div>
+</div>
+<div id="G-K20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K20</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§80 — naelao-eval</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Eval Suite Runs Sequential for...of Loop Inside waitUntil() — Guaranteed CPU Timeout for Any Dataset Larger Than ~2 Items</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">runEvaluationSuite() runs inside c.executionCtx.waitUntil() and iterates test cases in a for...of loop: each case creates an AgentDO, calls POST http://agent/run-sync, and awaits the result sequentially. A typical GAIA Level-3 agent run takes 15–60 seconds. With a 100-item dataset, sequential execution = 1,500–6,000 seconds of CPU time. CF Workers have a 30-second CPU limit (not wall-clock) for waitUntil(). The eval suite always crashes before completion for any dataset larger than ~2 items. The CI integration shows timeout: 300 seconds but polls synchronously — both the Worker and the CI step always timeout.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement eval as a CF Workflow where each step.do('eval-case-N', ...) gets its own CPU budget and retries on failure:
+  export class EvalWorkflow extends WorkflowEntrypoint {
+    async run(event, step) {
+      const testCases = await step.do('load-dataset', async () => loadTestCases(event.params));
+      const results = await Promise.all(
+        testCases.map((tc, i) => step.do('eval-case-' + i, async () => runTestCase(tc)))
+      );
+      await step.do('aggregate-results', async () => writeResultsToR2(results));
+    }
+  }
+Use p-limit(5) to run at most 5 test cases in parallel within each Workflow step batch. Store partial results in R2 and aggregate at the end.</p></div>
+</div>
+<div id="G-K21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K21</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§80 — naelao-eval</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">naelao-eval eval_runs SQLite Schema Uses PostgreSQL-Only Types and Functions — Table Cannot Be Created in SpaceDO</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The eval_runs table schema uses:
+  • UUID PRIMARY KEY DEFAULT gen_random_uuid() — not valid SQLite
+  • JSONB column type — does not exist in SQLite
+  • TIMESTAMPTZ DEFAULT NOW() — not valid SQLite
+  • Score history query uses DATE_TRUNC('day', ...), INTERVAL '30 days', NOW(), $1/$2 placeholders
+
+None of these are valid SQLite. JSONB does not exist in SQLite; use TEXT. gen_random_uuid() does not exist; use lower(hex(randomblob(16))). DATE_TRUNC and INTERVAL do not exist; use strftime. The table cannot be created and the score history query will throw, making the entire eval tracking and trend analysis system non-functional.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Rewrite the schema for SpaceDO SQLite:
+  CREATE TABLE IF NOT EXISTS eval_runs (
+    id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+    suite_name TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    pass_rate REAL NOT NULL,
+    details TEXT NOT NULL, -- JSON string, not JSONB
+    created_at INTEGER DEFAULT (unixepoch('now') * 1000)
+  );
+
+Rewrite the score history query:
+  SELECT strftime('%Y-%m-%d', datetime(created_at/1000, 'unixepoch')) as day, AVG(pass_rate) as avg_pass
+  FROM eval_runs
+  WHERE suite_name = ? AND created_at > (unixepoch('now') - 30*86400) * 1000
+  GROUP BY day ORDER BY day DESC</p></div>
+</div>
+<div id="G-K22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K22</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§62 — SpaceTypeRegistryDO Provisioner</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Space Provisioner Step 1 Calls PostgreSQL Stored Function create_space_with_defaults() — Guaranteed Runtime Failure Aborts Every Space Creation</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The provisioner's Step 1 calls:
+  await db.query('SELECT create_space_with_defaults($1, $2, $3, $4, $5)', [...]);
+
+This is the PostgreSQL stored function from §57 that does not exist in SpaceDO SQLite (documented in G-K03). The function call throws immediately, the entire 10-step provisioning fails, and the catch block calls deprovisionSpace() with provisioned = ['space_do']. Since the space was never actually created (the function failed), the deprovisioner attempts to delete R2 prefixes and mark the space deleted — which may corrupt other spaces if spaceId collides with an existing entry. Every single space creation in the entire Naelao platform fails at Step 1.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the db.query() call with a direct POST to the SpaceDO that executes equivalent SQLite INSERT logic:
+  const spaceDO = env.NAELAO_SPACE_DO.idFromName(spaceId);
+  const stub = env.NAELAO_SPACE_DO.get(spaceDO);
+  const initResult = await stub.fetch(new Request('http://space/init', {
+    method: 'POST',
+    body: JSON.stringify({ spaceId, name, ownerId, spaceType, planTier })
+  }));
+  if (!initResult.ok) throw new Error('Space init failed: ' + await initResult.text());
+
+The SpaceDO's /init handler runs the equivalent INSERT statements using this.ctx.storage.sql.exec() with ? placeholders and datetime('now').</p></div>
+</div>
+<div id="G-K23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K23</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§62 — SpaceTypeRegistryDO Provisioner</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Provisioner Step 5 Loads SQL Migration from R2 and Runs via db.query() — PostgreSQL Incompatibility and SQL Injection Vector</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Step 5 of the provisioner loads a migration SQL file from R2 (env.NAELAO_ASSETS.get(migrationPath)), replaces {SPACE_ID} with the actual spaceId via string substitution, then calls await db.query(scopedSql). This has two critical problems: (1) db.query() is PostgreSQL/Hyperdrive syntax — not valid for SpaceDO SQLite, which uses this.ctx.storage.sql.exec(); (2) running arbitrary SQL strings from R2 objects with string interpolation of spaceId is a SQL injection vector if the space name or type ID can contain SQL metacharacters. An attacker who can write to the migration SQL template in R2 can execute arbitrary SQL against SpaceDO.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove the R2-based SQL migration pattern entirely. SpaceDO initializes schema in its TypeScript constructor using ctx.blockConcurrencyWhile(() => initSchema()). Space-type-specific tables should be declared as conditional CREATE TABLE IF NOT EXISTS statements in the SpaceDO constructor keyed on the space type ID:
+  if (spaceType === 'analytics') {
+    this.ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS analytics_events (...)`)
+  }
+This eliminates the R2 read, db.query() call, and string interpolation vulnerability entirely. Schema versioning can be implemented via a schema_version INTEGER in the state table.</p></div>
+</div>
+<div id="G-K24" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K24</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§17 — LoRA Fine-Tuning</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">LoRA Fine-Tuning Loads Entire Training File into Memory via trainingObj.text() — OOM Crash for Datasets Over ~43 MB</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">startFineTune() calls:
+  const trainingObj = await env.NAELAO_WORKSPACE.get(trainingFilePath);
+  const content = await trainingObj.text();
+
+For enterprise customers running 50k-example fine-tunes (~50 MB JSONL), the .text() call materializes the entire R2 object into a JavaScript string (UTF-16, 2 bytes/char). With 3 in-memory copies (original string, parsed array, FormData serialization), memory usage reaches ~150–300 MB, exceeding the 128 MB Worker isolate memory limit. The crash produces no error message to the user, the job is silently abandoned, and the upload to Together AI never occurs.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use the streaming API to pipe R2 directly to Together AI's multipart upload endpoint:
+  const trainingObj = await env.NAELAO_WORKSPACE.get(trainingFilePath);
+  if (!trainingObj) throw new Error('Training file not found');
+
+  const formData = new FormData();
+  formData.append('file', trainingObj.body, { filename: 'training.jsonl', type: 'application/x-jsonlines' });
+  formData.append('purpose', 'fine-tune');
+
+  const uploadResponse = await fetch('https://api.together.xyz/v1/files', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer ' + env.TOGETHER_API_KEY },
+    body: formData
+  });
+
+Together AI's file upload endpoint accepts streaming multipart uploads. This eliminates the memory issue entirely.</p></div>
+</div>
+<div id="G-K25" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K25</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§62 — SpaceTypeRegistryDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">listMarketplace() SQL Injection via Unparameterized filter.maxPrice Interpolation — Complete Marketplace Database Compromise</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The marketplace listing query appends:
+  AND price_usd &lt;= ${filter.maxPrice}
+directly into the SQL string. filter.maxPrice is a user-supplied query parameter. A caller can submit maxPrice=0 OR 1=1; DROP TABLE space_types;-- to execute arbitrary SQL against the global SpaceTypeRegistryDO. Since this is the single global DO for the entire platform marketplace, this is a complete marketplace database compromise.
+
+Note: This gap was previously identified in G-J09. This entry confirms the same vulnerability from a fresh independent read of the full §62 section.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use parameterized query with explicit type validation:
+  const maxPrice = parseFloat(filter.maxPrice);
+  if (!isFinite(maxPrice) || maxPrice &lt; 0) throw new Error('Invalid maxPrice');
+
+  this.ctx.storage.sql.exec(
+    `SELECT * FROM space_types WHERE status = ? AND visible = 1 AND price_usd &lt;= ?`,
+    'approved', maxPrice
+  );
+
+Apply this fix to all conditional WHERE clauses in listMarketplace() and any other marketplace query that accepts user-supplied filter parameters. Run a security audit of all SQL template literals in SpaceTypeRegistryDO.</p></div>
+</div>
+<div id="G-K26" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K26</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§76 — Canary Rollouts</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">processCanaryRollouts() Is Never Triggered — No Alarm, No Cron, No Caller — Canary System Is Dead Code</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The processCanaryRollouts() function queries versions with stable = 0 and advances or rolls back the canary percentage. The function is implemented in SpaceTypeRegistryDO but is never called from anywhere in the spec: there is no ctx.storage.setAlarm() that calls it, no cron trigger wired to it, and no sweeper task that invokes it. New minor versions are registered with canary_pct = 100, stable = 1 (immediately fully rolled out), bypassing the canary mechanism entirely. The entire canary rollout infrastructure exists in the schema and implementation but is a dead code path that can never execute.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">In SpaceTypeRegistryDO's registerSpaceType() for minor versions: set canary_pct = 5, stable = 0 and schedule the first alarm:
+  this.ctx.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1000); // Check in 24h
+
+In alarm(): call await this.processCanaryRollouts(), then reschedule if any versions are still in canary state (canary_pct &lt; 100):
+  const stillInCanary = [...this.ctx.storage.sql.exec('SELECT COUNT(*) as cnt FROM space_type_versions WHERE stable = 0')][0].cnt;
+  if (stillInCanary > 0) this.ctx.storage.setAlarm(Date.now() + 60 * 60 * 1000);</p></div>
+</div>
+<div id="G-K27" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K27</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§31 — naelao-knowledge</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">naelao-knowledge Calls spaceDO.query() with PostgreSQL Syntax — Method Does Not Exist on SpaceDO Service Binding, knowledge_docs Never Written</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">After chunking and vectorizing a document, the knowledge worker calls:
+  await spaceDO.query('INSERT INTO knowledge_docs ... VALUES ($1,$2,$3,$4,$5,$6,NOW())', [...]);
+
+This has three violations: (1) $1-style placeholders are PostgreSQL, not SQLite; (2) NOW() is PostgreSQL; (3) the spaceDO.query() call assumes a database-like interface on the SpaceDO stub, but SpaceDO exposes HTTP endpoints via fetch(), not a .query() method. The knowledge_docs record is never written, so document lists are empty and deletion/re-indexing operations have no metadata to work with. Every document ingested into the knowledge base is vectorized but has no accompanying metadata record.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace with an HTTP call to SpaceDO's knowledge management endpoint:
+  const result = await spaceDO.fetch(new Request('http://space/knowledge/record', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ docId, spaceId, projectId, name, r2Path, chunkCount })
+  }));
+
+SpaceDO's /knowledge/record handler internally executes:
+  this.ctx.storage.sql.exec(
+    `INSERT INTO knowledge_docs (id, space_id, project_id, name, r2_path, chunk_count, created_at)
+     VALUES (?,?,?,?,?,?,unixepoch('now')*1000)`,
+    docId, spaceId, projectId, name, r2Path, chunkCount
+  );</p></div>
+</div>
+<div id="G-K28" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K28</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§82 — Space Templates</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">space_templates Schema Contains Supabase RLS Policies, auth.users FK, and TIMESTAMPTZ — Crashes SpaceDO Initialization</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The space_templates and space_template_installs tables are declared with TIMESTAMPTZ DEFAULT NOW(), UUID NOT NULL REFERENCES auth.users(id), ON DELETE CASCADE with FK to auth.users, followed by ALTER TABLE space_templates ENABLE ROW LEVEL SECURITY and two CREATE POLICY statements using auth.uid(). SpaceDO's initSchema() calls this.ctx.storage.sql.exec(entireSchemaString). SQLite does not support TIMESTAMPTZ, auth.users FK references, ENABLE ROW LEVEL SECURITY, or CREATE POLICY. The entire schema initialization fails with a SQLite syntax error, crashing the DO and making every space that includes template functionality permanently uninitialized.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove all RLS policies, auth.users references, ENABLE ROW LEVEL SECURITY, and CREATE POLICY statements from the SpaceDO SQLite schema. Replace TIMESTAMPTZ DEFAULT NOW() with INTEGER DEFAULT (unixepoch('now') * 1000). Replace UUID NOT NULL REFERENCES auth.users(id) with TEXT NOT NULL. Enforce access control at the TypeScript method level in SpaceDO instead of database-level RLS:
+  getTemplate(templateId: string, requestingSpaceId: string) {
+    // Authorization check at the TypeScript level:
+    if (!this.isAuthorized(requestingSpaceId)) throw new Error('Unauthorized');
+    return this.ctx.storage.sql.exec('SELECT * FROM space_templates WHERE id = ?', templateId);
+  }</p></div>
+</div>
+<div id="G-K29" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K29</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§35 SandboxDO / §85 AssistantSandboxDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">node:path Module Used for Path Traversal Validation in SandboxDO — Not Available in CF Workers Runtime</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The path traversal prevention in SandboxDO and AssistantSandboxDO uses:
+  import { resolve, normalize } from 'path';
+
+The CF Workers runtime does not include the Node.js path module. The import throws ReferenceError: path is not defined at DO initialization, making the entire validateContainerPath() function non-functional. Without this validation, path traversal attacks (e.g., ../../etc/passwd) in container exec() calls are not blocked.
+
+Note: This issue was also identified in G-J04 from §25. This entry confirms the same vulnerability from a direct read of §35 and §85.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace import { resolve, normalize } from 'path' with a pure-JS WHATWG URL implementation:
+  function validateContainerPath(agentPath: string): string {
+    // Resolve against a fake base to handle relative paths and traversal
+    const resolved = new URL(agentPath, 'file:///workspace/').pathname;
+    if (!resolved.startsWith('/workspace/')) {
+      throw new Error('Path traversal detected: ' + agentPath);
+    }
+    return resolved;
+  }
+This uses the WHATWG URL API which is available in all CF Workers environments. No import needed.</p></div>
+</div>
+<div id="G-K30" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K30</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§45 — Platform Skills</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Platform Skill SHA-256 Signing Uses Node.js crypto.createHash() — Not Available in CF Workers Runtime</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">scripts/sign-platform-skills.ts uses:
+  import { createHash } from 'crypto';
+  createHash('sha256').update(content).digest('hex');
+
+This is the Node.js crypto module, not available in the CF Workers runtime. While the signing script runs in Node.js CI, the signature verification code runs inside Workers at skill load time. If the verification code also uses createHash, it will throw ReferenceError in the Worker. Any developer who ports the signing script to run in a Worker context hits the same error. Additionally, the verification code must use Web Crypto API for correctness in the CF Workers environment.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">For verification code running in Workers, use the Web Crypto API:
+  async function sha256Hex(content: string): Promise&lt;string&gt; {
+    const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(content));
+    return Array.from(new Uint8Array(hashBuffer))
+      .map(b =&gt; b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+The signing script (scripts/sign-platform-skills.ts) can remain Node.js as it runs in CI. Document this split clearly in the spec: "signing: Node.js CI only; verification: Web Crypto API in Workers."</p></div>
+</div>
+<div id="G-K31" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K31</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§82 — FinetuneJobDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">FinetuneJobDO Calls Together AI Directly, Bypassing SSRF Prevention Layer — And this.rootSpaceId Is Never Initialized</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">FinetuneJobDO.alarm() calls:
+  fetch('https://api.together.xyz/v1/fine-tunes/${jobId}')
+directly, bypassing the api-caller CF Worker which enforces SSRF prevention, URL allowlisting, and credential injection. The spec's security architecture (CVE-2026-26322) declares all outbound HTTP from agents must go through the SSRF-filtered api-caller. A compromised FinetuneJobDO (via a malformed jobId containing path traversal characters) could probe internal infrastructure. Additionally, this.rootSpaceId is never initialized in the shown FinetuneJobDO implementation, so any call to getProductDO(this.rootSpaceId, this.env) throws TypeError immediately.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add https://api.together.xyz to an explicit allowlist checked at the DO level. Validate jobId against /^ft-[a-z0-9-]+$/ before interpolating into the URL. Initialize this.rootSpaceId from persistent storage:
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.ctx.blockConcurrencyWhile(async () => {
+      this.rootSpaceId = await ctx.storage.get&lt;string&gt;('rootSpaceId') ?? '';
+    });
+  }
+
+On first POST /init: await ctx.storage.put('rootSpaceId', params.rootSpaceId); this.rootSpaceId = params.rootSpaceId;</p></div>
+</div>
+<div id="G-K32" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K32</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§82 — WorkflowRegistryDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">WorkflowRegistryDO.sweepSchedules() References this.spaceId Which Is Never Initialized — Every Scheduled Workflow Dispatch Creates a Workflow with spaceId=undefined</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">sweepSchedules() calls:
+  env.NAELAO_WORKFLOW.create({ id: '...', params: { spaceId: this.spaceId, workflowPath: wf.r2_path } });
+
+WorkflowRegistryDO is instantiated with idFromName('wfreg:${spaceId}:global'), but this.spaceId is an instance property that is never set in the shown constructor or fetch() handler. It will be undefined at runtime. Every workflow cron dispatch creates a workflow instance with spaceId: undefined, causing the workflow's security check (spaceId validation: /^[0-9a-f-]{36}$/.test(spaceId)) to immediately throw, aborting all scheduled workflows on the platform.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Parse spaceId from the DO's own name string in the constructor:
+  constructor(ctx: DurableObjectState, env: Env) {
+    this.ctx = ctx;
+    this.env = env;
+    // Extract spaceId from the DO's own ID name: 'wfreg:{spaceId}:global'
+    const nameParts = ctx.id.name?.split(':') ?? [];
+    this.spaceId = nameParts[1] ?? '';
+  }
+
+Alternatively, persist spaceId on first /init call: await ctx.storage.put('spaceId', spaceId) and retrieve via ctx.blockConcurrencyWhile(async () => { this.spaceId = await ctx.storage.get('spaceId') ?? ''; }).</p></div>
+</div>
+<div id="G-K33" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K33</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§05 AssistantDO — Sub-Agent Spawning</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">checkSubAgentStatus() Constructs AgentDO ID with Two Components — Misses projectId, Polls Wrong DO Instance</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">checkSubAgentStatus() constructs the AgentDO ID as:
+  env.NAELAO_AGENT_DO.idFromName('${this.spaceId}:${threadId}')  // two components
+
+But the AgentDO naming spec explicitly states the ID is:
+  idFromName('${spaceId}:${projectId}:${threadId}')  // three components
+
+The two-component ID resolves to a different DO instance than the one actually running the sub-agent. The GET http://agent/status call hits the wrong DO, which has no knowledge of the run and returns an empty/error response. Sub-agent completion is never detected, sub-agent results are never incorporated into the assistant's context, and sub_agents table rows remain status='running' forever, exhausting concurrency slots.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Store projectId alongside threadId in the sub_agents table when the sub-agent is spawned:
+  INSERT INTO sub_agents (thread_id, project_id, parent_thread_id, status, created_at)
+  VALUES (?, ?, ?, 'running', unixepoch('now')*1000);
+
+In checkSubAgentStatus(), read back the stored projectId and use all three components:
+  const sub = this.ctx.storage.sql.exec(
+    'SELECT thread_id, project_id FROM sub_agents WHERE thread_id = ?', threadId
+  )[0];
+  const agentDO = env.NAELAO_AGENT_DO.get(
+    env.NAELAO_AGENT_DO.idFromName('${this.spaceId}:${sub.project_id}:${sub.thread_id}')
+  );</p></div>
+</div>
+<div id="G-K34" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K34</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§05 AssistantDO — Slack Integration</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">AssistantDO Uses this.ctx.waitUntil() — waitUntil() Is on ExecutionContext, Not DurableObjectState — Slack Webhook Handler Crashes</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The Slack webhook handler calls:
+  this.ctx.waitUntil(asyncDODispatch());
+
+In a Durable Object, this.ctx is DurableObjectState, which does NOT have a waitUntil() method. waitUntil() is a method on ExecutionContext (the third argument ctx in Worker fetch handlers). Calling this.ctx.waitUntil() throws TypeError: this.ctx.waitUntil is not a function, meaning the Slack webhook handler crashes before ACKing Slack's 3-second requirement. Slack retries the webhook up to 3 times, and the DO processes duplicate messages — causing duplicate agent runs for every Slack message.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">DurableObjectState does not expose waitUntil(). Restructure the Slack handler to respond immediately and then process asynchronously using DO's natural single-threaded model:
+  async handleSlack(request: Request): Promise&lt;Response&gt; {
+    const payload = await request.json();
+    // Persist the Slack event to SQLite for async processing
+    this.ctx.storage.sql.exec(
+      'INSERT INTO slack_event_queue (event_id, payload, created_at) VALUES (?,?,unixepoch('now')*1000)',
+      payload.event_id, JSON.stringify(payload)
+    );
+    // Schedule immediate alarm to process it
+    this.ctx.storage.setAlarm(Date.now() + 100);
+    return new Response('ok', { status: 200 }); // ACK Slack immediately
+  }</p></div>
+</div>
+<div id="G-K35" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K35</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§72 — Mini-AGI Federated Query Loop</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Mini-AGI executeFederatedQueryLoop() Synthesizes Answer Before Writing Audit Log — DO Eviction Between Steps Permanently Loses Mandatory Audit Trail</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">executeFederatedQueryLoop() executes sequentially: (1) build secure query plan, (2) run Vectorize queries, (3) call Claude Opus synthesis (~800–1200ms), (4) call miniAgiDO.logQuery() for the mandatory audit log. Total wall-clock time: 2–5 seconds. If the DO is evicted between step 3 (answer synthesized) and step 4 (audit logged), the answer has already been sent to the user but the audit log is never written. For regulated industries (HR data, financial data), this missing audit trail is a compliance violation. The in-memory memoryContexts array containing sensitive HR/financial data is also silently lost with no recovery path.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Reverse the order to write-before-synthesize for audit integrity:
+  // Step 1: Write preliminary audit entry BEFORE synthesis
+  await miniAgiDO.logQuery({ queryId, status: 'in_progress', query: userQuery, timestamp: Date.now() });
+
+  // Step 2: Synthesize answer
+  const answer = await claudeClient.messages.create({ ... });
+
+  // Step 3: Update audit entry with completed result
+  await miniAgiDO.updateQueryLog({ queryId, status: 'complete', answer: answer.content });
+
+This ensures the audit trail exists even if the DO is evicted mid-synthesis. The sweeper cleans up status='in_progress' entries older than 5 minutes.</p></div>
+</div>
+<div id="G-K36" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K36</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§43 — naelao-sweeper</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Sweeper Enumerates Active Assistants via KV list() with No Pagination — All Spaces Beyond 1,000 Silently Skipped</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The sweeper's sweepAssistantHeartbeats task queries the active assistant list with:
+  const { keys } = await env.PRODUCT_DB_REGISTRY.list({ prefix: 'assistant:' });
+
+KV list() returns a maximum of 1,000 keys per call. Without cursor-based pagination, any platform with more than 1,000 active spaces silently skips their assistants during heartbeat sweeps. Skipped assistants miss their scheduled cron jobs, sub-agent status checks, and memory consolidation. The keys.truncated boolean flag from the KV response is not checked, so there is no indication that keys were missed.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement cursor pagination to process all spaces:
+  let cursor: string | undefined;
+  do {
+    const result = await env.PRODUCT_DB_REGISTRY.list({
+      prefix: 'assistant:',
+      limit: 1000,
+      cursor
+    });
+    for (const key of result.keys) {
+      await processAssistantHeartbeat(key.name);
+    }
+    cursor = result.cursor;
+  } while (!result.list_complete);
+
+Apply the same cursor pagination fix to all other KV list() calls in the sweeper (project heartbeats, space cleanup, etc.).</p></div>
+</div>
+<div id="G-K37" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K37</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;letter-spacing:.08em;text-transform:uppercase;background:#F9731618;padding:3px 8px;border-radius:3px;white-space:nowrap;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§77 — Naelao Apps / §62 SpaceTypeRegistryDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">AppRegistryDO and SpaceTypeRegistryDO Are Global Singleton DOs — Single-Threaded Bottleneck Under Concurrent Platform Load</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">AppRegistryDO uses idFromName('global-app-registry') and SpaceTypeRegistryDO uses idFromName('global-space-type-registry') — single DO instances serving all app installs and space type queries for the entire platform globally. Durable Objects are single-threaded. Every app install from any user anywhere in the world must be processed sequentially by this one DO. Under load (e.g., a popular app launch, a viral space type), all install requests queue up behind this single-threaded bottleneck, causing P99 latencies measured in seconds and timeout failures for concurrent installs. At 100+ concurrent installs/second, requests queue up faster than the DO can process them.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Shard the registry by a consistent hash of app_id or space_type_id. Use multiple AppRegistryDO instances:
+  const shardId = parseInt(appId.slice(-2), 16) % 16; // 16 shards
+  const registryDO = env.APP_REGISTRY_DO.get(
+    env.APP_REGISTRY_DO.idFromName('app-registry-shard-' + shardId)
+  );
+
+Use KV to cache read-heavy operations (per-app install counts, manifests) with a 5-minute TTL. The DO only handles write operations (installs, publishes). Reads that don't require strong consistency should bypass the DO and read from KV cache directly.</p></div>
+</div>
+<div id="G-K38" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K38</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§22 — Artifacts Dynamic Worker Loader</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">wrapArtifactCode() Template Literal Injection — ${...} Expressions in User Code Are Expanded, Leaking Worker Environment Variables</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The HTML artifact wrapper uses:
+  const html = \`${code.replace(/\`/g, '\`')}\`;
+
+The code replaces backticks but does NOT escape ${...} template literal expressions. An HTML artifact containing ${env.ANTHROPIC_API_KEY} or ${globalThis} will interpolate those values into the served HTML when the wrapper string is evaluated. The 27-pattern scanner blocks process.env. but not template literal interpolation of runtime globals. A malicious artifact author can craft content like ${''.constructor.constructor('return env')()} to exfiltrate Worker environment variables into the served HTML.
+
+Note: G-J10 identified the backtick interpolation XSS vector. This entry documents the additional ${...} expression expansion vector that remains even after backtick escaping.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use JSON serialization instead of template literal embedding to safely include user code:
+  // Before (vulnerable):
+  const html = \`${code.replace(/\`/g, '\`')}\`;
+
+  // After (safe):
+  const html = JSON.stringify(code); // produces a quoted string literal with all special chars escaped
+
+Alternatively, store the artifact code in R2 and serve it via a separate GET /artifact/{id}/content endpoint with Content-Security-Policy: default-src 'none' headers. This separates the serving boundary from the wrapper execution context entirely.</p></div>
+</div>
+<div id="G-K39" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K39</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§24 naelao-workflows / AgentDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">NaelaoAgentDO ID Constructed from Three Unsanitized Components — Colon Collisions Between spaceId:projectId:threadId Can Point to Wrong DO</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">NaelaoAgentDO is named idFromName('${spaceId}:${projectId}:${threadId}') with no separator escaping. If spaceId, projectId, or threadId ever contain colons (e.g., from legacy migration data or a validation gap), two different (spaceId, projectId, threadId) triples can produce the same concatenated string:
+  spaceId='a:b', projectId='c', threadId='d' → 'a:b:c:d'
+  spaceId='a', projectId='b:c', threadId='d' → 'a:b:c:d'
+
+Both point to the same DO, causing two different agent sessions to share the same SQLite WAL, message history, and execution state. While UUID format is validated for spaceId, it is not explicitly enforced for projectId and threadId in the shown validation code.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Validate all three components against UUID format (/^[0-9a-f-]{36}$/) before constructing the DO ID:
+  function makeAgentDOId(env: Env, spaceId: string, projectId: string, threadId: string): DurableObjectId {
+    if (!/^[0-9a-f-]{36}$/.test(spaceId)) throw new Error('Invalid spaceId');
+    if (!/^[0-9a-f-]{36}$/.test(projectId)) throw new Error('Invalid projectId');
+    if (!/^[0-9a-f-]{36}$/.test(threadId)) throw new Error('Invalid threadId');
+    return env.NAELAO_AGENT_DO.idFromName(spaceId + ':' + projectId + ':' + threadId);
+  }
+
+Document this constraint explicitly in the AgentDO naming spec section.</p></div>
+</div>
+<div id="G-K40" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K40</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§43 — naelao-sweeper DLQ</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Sweeper Reads DLQ via CF REST API with Account-Level Token — Security Anti-Pattern; DLQ Should Use Consumer Binding</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The sweeper's sweepDeadLetterQueue task calls:
+  fetch('https://api.cloudflare.com/client/v4/accounts/${env.NAELAO_ACCOUNT_ID}/queues/naelao-dlq/messages', {
+    headers: { Authorization: 'Bearer ' + env.CF_API_TOKEN }
+  });
+
+This requires an account-level CF API token stored in Worker secrets. An account-level token grants full access to ALL CF resources in the account. Exposure of this secret (via a logging mistake, error message, or spec leak) allows complete account takeover. Additionally, this is not the intended pattern for DLQ consumption — CF Queues provides consumer bindings for exactly this purpose.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Declare naelao-dlq as a second Queue consumer binding in wrangler.jsonc for the sweeper Worker:
+  [[queues.consumers]]
+  queue = "naelao-dlq"
+  binding = "NAELAO_DLQ"
+  max_retries = 0  # DLQ — no further retries
+
+DLQ messages are automatically delivered to the consumer via the queue() handler. This eliminates the need for CF_API_TOKEN entirely. Remove CF_API_TOKEN from Worker secrets. Declare naelao-dlq as the dead_letter_queue for NAELAO_AGENT_QUEUE in its producer configuration.</p></div>
+</div>
+<div id="G-K41" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K41</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§82 — WorkflowRegistryDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">WorkflowRegistryDO sweepSchedules() Has No Idempotency Guard — Concurrent Sweeper Invocations Trigger Duplicate Workflow Runs</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">sweepSchedules() queries workflows with next_run &lt;= now, creates workflow instances, then updates next_run. If two sweeper cron invocations overlap (CF Cron is at-least-once), both reads may return the same set of due workflows before either updates next_run. Both instances then call env.NAELAO_WORKFLOW.create() for the same workflow, creating duplicate runs. CF Cron Triggers can fire multiple times within a given window if previous invocations haven't completed, making this race practically guaranteed on any busy platform.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use SQLite atomic compare-and-swap in sweepSchedules():
+  // Atomic: only update if next_run hasn't changed since we read it
+  const result = this.ctx.storage.sql.exec(
+    'UPDATE workflows SET next_run = ?, last_run = ? WHERE id = ? AND next_run = ?',
+    nextRunTime, Date.now(), workflowId, readNextRun
+  );
+  // Only create workflow instance if we won the CAS
+  if (result.rowsWritten > 0) {
+    await env.NAELAO_WORKFLOW.create({ id: workflowRunId, params: { spaceId: this.spaceId, workflowPath: wf.r2_path } });
+  }
+This ensures at most one workflow instance per schedule cycle regardless of concurrent invocations.</p></div>
+</div>
+<div id="G-K42" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K42</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§79 — naelao-notifications VAPI</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">VAPI Voice Call Configuration Hardcodes Deprecated claude-3-haiku-20240307 Model ID — Voice Alerts Will Fail or Route to Stale Model</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The VAPI phone call configuration hardcodes "model": "claude-3-haiku-20240307" (an April 2024 model). The current model lineup uses claude-haiku-4-5 (consistent with the rest of the spec). The old model ID will either be rejected by Anthropic's API (returning a model-not-found error), causing all critical voice alert calls to silently fail, or it will route to a deprecated model that may be phased out without notice. During a critical production incident, failed voice alerts can delay emergency response.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace "model": "claude-3-haiku-20240307" with "model": "claude-haiku-4-5" in the VAPI assistant configuration. Consider reading the model name from an environment variable:
+  assistantConfig.model.model = env.VAPI_MODEL ?? 'claude-haiku-4-5';
+
+This allows model updates without a code deployment. Audit all hardcoded model IDs in the spec for the same staleness issue and replace them with environment variable references where appropriate.</p></div>
+</div>
+<div id="G-K43" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K43</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§84 — SpaceDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">SpaceDO.spaceId and rootSpaceId Are In-Memory Instance Properties Never Persisted — Lost on Every DO Restart</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">this.spaceId and this.rootSpaceId are used throughout SpaceDO methods (auth check, sub-space hierarchy queries, credential lookups) but are never persisted or re-initialized from storage in the shown code. After any DO eviction/restart, both properties are undefined, causing every method that references them to throw or return incorrect results. The auth cache's recursive CTE query WHERE id = $1 would use undefined as the spaceId, returning empty results and denying access to all space members. This bug silently breaks the entire SpaceDO on every cold start.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">In the SpaceDO constructor, initialize from persistent storage:
+  constructor(ctx: DurableObjectState, env: Env) {
+    this.ctx = ctx; this.env = env;
+    this.ctx.blockConcurrencyWhile(async () => {
+      const stored = await ctx.storage.get&lt;string&gt;('spaceId');
+      if (stored) this.spaceId = stored;
+    });
+  }
+On first POST /init: await ctx.storage.put('spaceId', spaceId); this.spaceId = spaceId;
+
+As a resilient fallback, extract spaceId from the DO's own name string: const match = ctx.id.name?.match(/^space:([0-9a-f-]+)/); if (match) this.spaceId = match[1];</p></div>
+</div>
+<div id="G-K44" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K44</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§43 — naelao-sweeper</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Sweeper Abandoned Agent Run Detection Uses NOW() - INTERVAL '10 minutes' PostgreSQL Syntax — Query Throws on Every Sweeper Tick</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The sweeper queries for abandoned runs with:
+  WHERE status = 'running' AND updated_at &lt; NOW() - INTERVAL '10 minutes'
+
+This is PostgreSQL syntax. SpaceDO SQLite uses datetime('now', '-10 minutes') or (unixepoch('now') - 600) * 1000 for millisecond timestamps. The query throws a SQLite syntax error on every sweeper tick. Abandoned agent runs are never cleaned up: their concurrency slots remain held in ConcurrencyDO, eventually exhausting the per-user concurrency limit and blocking all new agent runs for the affected space.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace PostgreSQL INTERVAL syntax with SQLite equivalents based on the timestamp column type:
+
+For INTEGER millisecond timestamps (recommended):
+  WHERE status = 'running' AND updated_at &lt; (unixepoch('now') - 600) * 1000
+
+For TEXT ISO timestamps:
+  WHERE status = 'running' AND updated_at &lt; datetime('now', '-10 minutes')
+
+Apply the same fix to all other INTERVAL-based queries in the sweeper, including the stale project detection and memory consolidation sweep queries.</p></div>
+</div>
+<div id="G-K45" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K45</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§56 — Bootstrap Autopilot Activation</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Bootstrap Autopilot Activation Has No Atomic Check-and-Transition — Concurrent Checkers Can Trigger Duplicate Activations</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The autopilot activation flow checks five independent criteria (R2 file count, annotation quality score, FinetuneJobDO status, admin approval flag, eval pass rate) and transitions the space to autopilot mode. These checks are not atomic — two concurrent processes (the daily QA standup fiber and the fine-tune completion handler) can both check all five criteria, both find them met, and both trigger the activation sequence. This may result in duplicate activate_autopilot workflow instances, duplicate notifications to the space admin, and duplicate billing state transitions that double-charge the space for activation.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a single-writer atomicity guard using SpaceDO SQLite:
+  const result = this.ctx.storage.sql.exec(
+    `UPDATE spaces SET status = 'autopilot', activated_at = ?
+     WHERE id = ? AND status = 'bootstrap'`,
+    Date.now(), this.spaceId
+  );
+  if (result.rowsWritten === 0) {
+    return; // Another process already activated, or not in bootstrap state — skip
+  }
+  // Only one process reaches here — proceed with activation steps
+  await triggerActivationWorkflow();
+  await sendActivationNotification();</p></div>
+</div>
+<div id="G-K46" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K46</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§78 — naelao-admin / §09 wrangler.jsonc</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">naelao-dlq Dead Letter Queue Binding Not Declared in wrangler.jsonc — Failed Messages Are Discarded, Not Routed to DLQ</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The sweeper's dead letter queue processing calls the CF REST API with queues/naelao-dlq/messages. The wrangler.jsonc bindings section shows Queue bindings for NAELAO_AGENT_QUEUE, NAELAO_ANALYTICS_QUEUE, and NAELAO_NOTIFICATIONS_QUEUE but does not declare naelao-dlq as a dead letter queue or as a consumer binding. Without dead_letter_queue: 'naelao-dlq' configured on the source queue's settings, failed messages are discarded after max_retries exhaustion. The entire DLQ infrastructure (sweeper sweep, admin retry endpoint) operates on a queue that never receives any messages.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">In wrangler.jsonc, add the DLQ declaration to the NAELAO_AGENT_QUEUE configuration:
+  [[queues.producers]]
+  binding = "NAELAO_AGENT_QUEUE"
+  queue = "naelao-agent-queue"
+  dead_letter_queue = "naelao-dlq"  // ADD THIS
+
+Create the naelao-dlq queue resource in the CF dashboard or via Terraform. Declare a consumer binding for the sweeper Worker:
+  [[queues.consumers]]
+  queue = "naelao-dlq"
+  binding = "NAELAO_DLQ"
+  max_retries = 0</p></div>
+</div>
+<div id="G-K47" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K47</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§63 — naelao-portal-router / §09 wrangler.jsonc</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Portal Router References Undeclared env.PORTAL_ROUTES KV Binding — Deploy-Time Binding Error on All Portal Routing Calls</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The portal Worker routing logic references env.PORTAL_ROUTES as a separate KV binding in some code paths. The wrangler.jsonc only declares three KV namespaces (NAELAO_CONFIG_KV, NAELAO_CIRCUIT_KV, NAELAO_ARTIFACT_KV). PORTAL_ROUTES is not declared. Workers deployed without a declared binding throw TypeError: Cannot read properties of undefined when accessing env.PORTAL_ROUTES, causing all portal routing to fail with 500 errors. The spec appears to have been partially refactored to use NAELAO_CONFIG_KV for slug lookups but left residual PORTAL_ROUTES references in other code paths.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Audit all env.PORTAL_ROUTES references in the portal router and replace them with env.NAELAO_CONFIG_KV. Use a consistent key prefix for portal slug entries: portal-slug:${slug} → spaceId. Remove PORTAL_ROUTES from any wrangler configurations where it may appear. Add a wrangler.jsonc validation step to CI that ensures all env.* references in Worker source files have corresponding binding declarations.</p></div>
+</div>
+<div id="G-K48" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K48</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§81 — naelao-categorizer</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Categorizer Cron Has No Idempotency — CF At-Least-Once Cron Fires Cause Double-Categorization and Doubled LLM Costs</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The categorizer's scheduled() handler queries up to 50 stale projects and immediately calls LLM for each. If CF Cron fires the handler twice within the same minute (at-least-once delivery), all 50 projects are double-categorized: two LLM calls per project, two UPDATE projects SET tags = ... calls (second overwrites first with potentially different LLM output), and doubled LLM costs. The stale-project query filters on last_categorized_at &lt; NOW() - 24 hours, but both invocations run before any last_categorized_at update, so both see the same 50 projects.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use a SpaceDO SQLite advisory lock at the start of scheduled():
+  try {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO categorizer_locks (id, locked_at) VALUES ('singleton', unixepoch('now')*1000)`
+    );
+  } catch {
+    return; // Lock exists — another instance is running, skip this invocation
+  }
+  try {
+    await runCategorizationBatch();
+  } finally {
+    this.ctx.storage.sql.exec(`DELETE FROM categorizer_locks WHERE id = 'singleton'`);
+  }
+The sweeper cleans up stale locks (handles crashes): DELETE FROM categorizer_locks WHERE locked_at &lt; unixepoch('now')*1000 - 300000.</p></div>
+</div>
+<div id="G-K49" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K49</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§81 — naelao-feedback Daily Standup</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">Daily Standup Clears Feedback Log After LLM Analysis — Feedback Written During 2-Second LLM Call Window Is Permanently Lost</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The daily standup fiber reads feedback-log.jsonl from R2, analyzes it with Claude (~2 seconds), writes improvement-addendum.md, then clears the log with env.NAELAO_WORKSPACE.put(logKey, ''). Any feedback event written to the log after the get() read but before the final put('') clear is permanently lost (overwritten with empty string). The window spans two LLM calls (~2 seconds each), making this race practically certain to occur in active production spaces with regular feedback activity.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use a timestamp-based snapshot approach instead of in-place clear:
+  // Rename current log to a dated snapshot before processing
+  const snapshotKey = logKey.replace('.jsonl', '-' + Date.now() + '.jsonl');
+  const existing = await env.NAELAO_WORKSPACE.get(logKey);
+  if (existing) {
+    const content = await existing.text();
+    await env.NAELAO_WORKSPACE.put(snapshotKey, content);
+    await env.NAELAO_WORKSPACE.delete(logKey); // New feedback writes to fresh logKey
+  }
+  // Process the snapshot file — new feedback goes to the fresh logKey
+  await analyzeAndWriteAddendum(snapshotKey);
+  // Sweeper archives or deletes old snapshot files after 30 days</p></div>
+</div>
+<div id="G-K50" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K50</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;letter-spacing:.08em;text-transform:uppercase;background:#3B82F618;padding:3px 8px;border-radius:3px;white-space:nowrap;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§22 — Artifacts wrapArtifactCode() React</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">React Artifact Wrapper Imports from react-dom/server — Unavailable in Tier 2 Worker Isolate Without npm Resolution</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The React artifact wrapper generates code that starts with:
+  import { renderToString } from 'react-dom/server';
+
+CF Workers do not have React in their default runtime; react-dom/server must be bundled or resolved at deploy time. The Dynamic Worker Loader uses Tier 2 (V8 isolate, no npm resolution) for artifacts. Without Tier 3 (NPM) resolution, the import statement fails with a module-not-found error when the artifact Worker is executed, making all React artifacts non-functional.
+
+Note: G-J06 identified that the React type generates renderToString(&lt;App /&gt;) with JSX. This gap confirms the additional problem: even without JSX, the react-dom/server import itself fails in Tier 2.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Route React artifacts through the Tier 3 (NPM) execution tier in the execution ladder. Update TOOL_TIERS['render_artifact'] to 'npm' instead of 'isolate' for React-type artifacts. Alternatively, add React and React-DOM to the DW Loader's pre-bundled module list (bundled at deploy time, not resolved at runtime). Document clearly in the spec that React artifacts require Tier 3 dispatch and cannot run in the default Tier 2 isolate environment.</p></div>
+</div>
+<div id="G-K51" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.08em;text-transform:uppercase;background:#E8692A18;padding:3px 8px;border-radius:3px;white-space:nowrap;">G-K51</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#10B981;letter-spacing:.08em;text-transform:uppercase;background:#10B98118;padding:3px 8px;border-radius:3px;white-space:nowrap;">LOW</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;padding:3px 8px;white-space:nowrap;">§30 — ConcurrencyDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:clamp(16px,2.5vw,22px);font-weight:600;color:var(--tx);margin:0 0 16px;">ConcurrencyDO Tier Limits Are Hardcoded Constants — Cannot Update Without Worker Redeployment; Subscription Upgrades Not Wired to ConcurrencyDO</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">const TIER_LIMITS = { free: 1, maker: 3, pro: 10, team: 25, enterprise: 100 } is a module-level constant in ConcurrencyDO. Changing a tier limit requires redeploying all Workers. Additionally, the billing_tier is read from the DO's local config table (initialized to 'free') and is never updated when a space upgrades their subscription. A space that upgrades from Free to Pro continues to be limited to 1 concurrent run until the DO is explicitly updated. The spec shows no endpoint or mechanism for the billing Worker to notify ConcurrencyDO of tier changes after subscription upgrades.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Store tier limits in KV (NAELAO_CONFIG_KV.get('tier-limits')) with a 1-hour in-memory cache in the DO:
+  const tierConfig = await env.NAELAO_CONFIG_KV.get('tier-limits', { type: 'json' })
+    ?? { free: 1, maker: 3, pro: 10, team: 25, enterprise: 100 };
+  const limit = tierConfig[currentTier];
+
+Add a POST /update-tier endpoint to ConcurrencyDO called by the billing Worker on subscription changes:
+  app.post('/update-tier', async (c) => {
+    const { spaceId, newTier } = await c.req.json();
+    this.ctx.storage.sql.exec('UPDATE config SET value = ? WHERE key = ?', newTier, 'billing_tier');
+    return c.json({ success: true });
+  });</p></div>
+</div>
+<div style="margin:32px 0 0;padding:32px;background:#0A1628;border:1px solid #1E293B;border-radius:8px;">
+  <p style="font-family:'DM Mono',monospace;font-size:11px;color:#64748B;margin:0;line-height:1.8;">
+    Appendix K complete. Combined gap audit total: A (125) + B (30) + C (22) + D (22) + E (24) + F (26) + G (26) + H (15) + I (34) + J (20) + K (51)
+    = <strong style="color:var(--or);">395 documented technical gaps</strong> with required fixes.
+  </p>
+</div>
+</section>
+
 </body>
 </html>
