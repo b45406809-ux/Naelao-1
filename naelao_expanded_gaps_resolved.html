@@ -44017,6 +44017,364 @@ This produces a structured tool error result the LLM can reason about rather tha
     = <strong style="color:var(--or);">514 documented technical gaps</strong> with required fixes.
   </p>
 </div>
+<div class="sep"></div>
+<section id="appendix-p" style="padding:60px 0 40px;">
+  <div style="max-width:860px;margin:0 auto;padding:0 24px;">
+    <span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);letter-spacing:.15em;text-transform:uppercase;">Appendix P</span>
+    <h2 style="font-family:'Fraunces',serif;font-size:36px;font-weight:700;color:var(--hd);letter-spacing:-.02em;margin:8px 0 6px;">Eighth-Pass Technical Gap Analysis</h2>
+    <p style="color:var(--tx);font-size:15px;line-height:1.7;max-width:720px;margin:0 0 48px;">35 new critical and high-severity gaps discovered in the eighth full-spectrum audit pass: hibernation state loss across AssistantDO, SandboxDO and ConcurrencyDO; non-atomic cross-DO payment flows; PostgreSQL DDL and DML syntax throughout DO SQLite tables; security vulnerabilities in APNs JWT generation, BYOK key exposure, webhook signature bypass, and Analytics Engine SQL injection; Hono framework spread export destroying the fetch handler; and Cloudflare platform API correctness issues in Vectorize filters, CF Workflows stubs, and token-usage billing.</p>
+
+  <div id="G-P01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P01</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§launchpad — NaelaoAgentDO.requestApproval() / handleApprovalDecision()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">pendingApprovals Map Lost on DO Hibernation — Agent Hangs Forever</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">this.pendingApprovals = new Map() stores {resolve, reject} Promise callbacks for human-approval pauses. When the DO hibernates between the approval request and the owner's response, all class fields are wiped. On wake, this.pendingApprovals.get(approvalId) returns undefined, the resolver is gone, and the agent run hangs permanently waiting for a callback that can never fire — no timeout, no error, just silence.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Persist approval records to DO SQLite with a status column (pending/approved/rejected). On wake, query for status='pending' rows and implement polling via a DO alarm rather than an in-memory Promise resolver. The alarm fires every N seconds, checks the SQLite record, and proceeds if the admin has updated it. Remove all in-memory Map usage for cross-request state.</p></div>
+  </div>
+  <div id="G-P02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P02</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§schema — SpaceDO.initSchema() — §22 canonical DDL block</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">SpaceDO Canonical §22 Schema Uses PostgreSQL — Incompatible with DO SQLite</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The §22 canonical schema block uses gen_random_uuid(), auth.users foreign keys, JSONB, TIMESTAMPTZ, DEFAULT NOW(), ENABLE ROW LEVEL SECURITY, CREATE POLICY, and ALTER TABLE … ADD CONSTRAINT — none of which exist in SQLite. Executing this DDL via this.ctx.storage.sql.exec() throws a parse error immediately, preventing any SpaceDO from initialising its schema on first wake.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Rewrite the entire canonical DDL to valid SQLite: replace gen_random_uuid() with crypto.randomUUID() in application code passed as a ? parameter, replace TIMESTAMPTZ DEFAULT NOW() with INTEGER DEFAULT (unixepoch()*1000), replace JSONB with TEXT (store as JSON.stringify), delete all ENABLE ROW LEVEL SECURITY and CREATE POLICY statements, and remove all auth.users references. Tenant isolation is enforced via space_id column checks in application logic, not DB-level RLS.</p></div>
+  </div>
+  <div id="G-P03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P03</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-os — createSpace() in workers/spaces/index.ts</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">createSpace() Calls spaceDO.query() Before Declaration — ReferenceError + PostgreSQL $N Placeholders</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">spaceDO.query('INSERT INTO spaces ... VALUES ($1, $2, $3, $4, $5)', [...]) is called several lines before the spaceDO variable is instantiated, producing a ReferenceError at runtime. The $1/$2/$N PostgreSQL positional placeholders are also invalid in DO SQLite which requires ? for all bound parameters. Additionally spaceDO.query() is a non-existent method — DO SQLite uses this.ctx.storage.sql.exec(sql, ...params).</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Move the spaceDO instantiation before any call to it. Replace all $N placeholders with ? and use this.ctx.storage.sql.exec(sql, ...params) spread syntax throughout. Run a global search for db.query and spaceDO.query across all Workers to find other instances of the same leftover Supabase API pattern.</p></div>
+  </div>
+  <div id="G-P04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P04</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§assistants — handleSlackWebhook() in naelao-router / naelao-assistant</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">handleSlackWebhook Double-Reads Consumed Request Body — Signature Always Fails</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">await request.json() consumes the body stream as parsed JSON. The subsequent verifySlackSignature(..., await request.text(), ...) call re-reads the already-consumed body, returning an empty string. Slack HMAC-SHA256 verification is computed over the raw request body bytes; using an empty string produces a signature that never matches, causing every legitimate Slack event to be rejected as 401 Unauthorized.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Read the body exactly once as text: const rawBody = await request.text(). Verify the Slack signature against rawBody, then parse the event with JSON.parse(rawBody) for application use. Never call both .json() and .text() on the same request — the first call to consume the body makes the stream unreadable for all subsequent reads.</p></div>
+  </div>
+  <div id="G-P05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P05</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§assistants — AssistantDO constructor and all public methods</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">AssistantDO this.spaceId and this.userId Not Persisted — Undefined After Hibernation, Cross-Tenant R2 Paths</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Every AssistantDO method references this.spaceId and this.userId (e.g., R2 path spaces/${this.spaceId}/..., DO ID lookups). The constructor and initSchema() never INSERT or SELECT these values from SQLite. After DO hibernation and wake, both fields are undefined, causing every method to construct the path spaces/undefined/... — reading from and writing to the wrong R2 prefix and potentially blending data across tenants silently.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Persist spaceId and userId to a config table in initSchema() immediately after first construction. Add an ensureLoaded() guard called at the top of every public method that reads them back from SQLite if not already set: if (!this.spaceId) { const row = this.ctx.storage.sql.exec("SELECT value FROM config WHERE key = ?", 'spaceId').one(); this.spaceId = row?.value as string; }. Add a similar guard for userId.</p></div>
+  </div>
+  <div id="G-P06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P06</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§walletdo-deep — x402Payment() in workers/billing/x402.ts</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">x402Payment Non-Atomic Two-DO Debit-Then-Credit — Money Lost If Credit Call Fails</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Step 1 debits companyWalletDO and Step 2 separately credits workerDefDO via two independent DO fetch() calls with no transaction wrapping or compensation record. If Step 2 fails (network error, DO crash, 5xx), the company is debited but the creator is never credited. The platform fee (Step 3) is also sent to a Queue independently. There is no idempotency key, no retry log, and no rollback path.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement two-phase commit: (1) write an x402_transfer record with status='pending' to a TransferLedgerDO before debiting, (2) debit with an idempotency key referencing the transfer ID, (3) credit with the same key, (4) mark status='settled' after both succeed. A sweeper alarm retries any status='pending' records older than N minutes. The idempotency key on both DOs prevents double-debit or double-credit on retry.</p></div>
+  </div>
+  <div id="G-P07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P07</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§concurrency-do — ConcurrencyDO.checkAndReserve()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">ConcurrencyDO setAlarm Replaced on Every Reservation — Zombie Slots Never Cleaned</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">checkAndReserve() calls this.ctx.storage.setAlarm(Date.now() + HEARTBEAT_WINDOW) on every invocation. CF Durable Objects support only one alarm at a time; each setAlarm() call replaces the previous one. Under concurrent reservations, the cleanup alarm is continuously pushed forward. Expired reservations are never collected because the alarm never fires, and the concurrency ceiling is permanently consumed by zombie slots.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement an alarm multiplexer: store the current earliest-deadline timestamp in SQLite. Only call setAlarm() if the newly computed deadline is earlier than the currently stored one. The alarm handler should re-schedule itself if unexpired slots still exist after cleanup, using the earliest remaining expiry as the next alarm target.</p></div>
+  </div>
+  <div id="G-P08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P08</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§analytics — AnalyticsWorker queue handler</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Analytics Queue msg.ack() Called Before writeDataPoints — Events Permanently Lost on Error</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The queue message handler calls msg.ack() before the await writeDataPoints(...) call completes. CF Queues provide at-least-once delivery only when ack() is deferred until after successful processing. Acknowledging first means any exception or transient failure in writeDataPoints() permanently silently drops the analytics event — no retry, no dead-letter, no error log. All billing, usage metering, and observability data in transit is at risk.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Move msg.ack() to after await writeDataPoints(...) succeeds. Wrap the write in try/catch; on failure, do not call ack() — the queue will redeliver automatically. Add a retry counter in the message metadata to apply exponential back-off and route persistently failing events to the dead-letter queue after max_retries is exceeded.</p></div>
+  </div>
+  <div id="G-P09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P09</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-threads-impl — POST /threads/:id/messages handler in workers/threads/index.ts</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">billingTier Never Passed to ConcurrencyDO — Paid Spaces Throttled to Free-Tier Limits</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The threads handler calls concurrencyDO.checkAndReserve() with only { spaceId, agentId } in the request body — it never reads or forwards billingTier from the space record. ConcurrencyDO applies different concurrency slot limits per billing tier; with the tier always absent, it defaults to the 'free' limit for every space regardless of subscription. Enterprise workspaces with 10-agent concurrency entitlements are incorrectly limited to 1-2 free-tier slots.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Before calling checkAndReserve(), fetch the space record from SpaceDO to extract billingTier, then include it in the request body: { spaceId, agentId, billingTier }. In ConcurrencyDO, treat a missing or unrecognised tier as an error that returns 400 rather than silently defaulting to 'free'. Add a unit test asserting that maker/business/enterprise spaces receive their correct slot allocations.</p></div>
+  </div>
+  <div id="G-P10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P10</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-admin / §naelao-admin-full — handleAdminAuditLog in naelao-admin worker</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Admin Audit Analytics Engine Query Built via String Interpolation — SQL Injection</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The audit log query builds a CF Analytics Engine SQL string via template literals: WHERE index1 = '${spaceId}' and ${eventType ? `AND blob1 = '${eventType}'` : ''}. Both spaceId and eventType are taken directly from c.req.param() / c.req.query() without sanitisation. An attacker with admin credentials can exfiltrate arbitrary Analytics Engine data by injecting SQL fragments. The LIMIT ${parseInt(limit)} coercion provides no protection against the string-based filter fields.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Parameterise all dynamic values using the CF Analytics Engine SQL binding syntax (? positional params). Replace template-literal construction with a static query string and pass [spaceId, eventType, parsedLimit] as the params array to env.ANALYTICS.query(). Validate eventType against an allowlist of known event-type strings before including it in any query context.</p></div>
+  </div>
+  <div id="G-P11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P11</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-notifications-full — generateAPNsJWT in naelao-notifications worker</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">APNs JWT Signed with DER-Encoded ECDSA Signature — iOS Push Always Rejected</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, signingKey, data) returns a DER-encoded ECDSA signature on all Web Crypto implementations. APNs requires raw P1363 format (two 32-byte big-endian integers R||S concatenated, 64 bytes total). The code immediately base64url-encodes the DER blob without conversion, producing a JWT signature that APNs always rejects with HTTP 403. Every iOS push notification silently fails.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">After obtaining the DER-encoded rawSig, parse the ASN.1 DER structure: locate the two INTEGER TLV fields in the SEQUENCE, extract the R and S integers, left-pad each to exactly 32 bytes, concatenate them into a 64-byte buffer, and base64url-encode the result. Implement a derToP1363(buf, coordSize) helper and add a test asserting the output is exactly 64 bytes when coordSize=32.</p></div>
+  </div>
+  <div id="G-P12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P12</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-notifications-full — sendPush in naelao-notifications worker</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">sendPush References spaceDO Variable Never Defined in Scope — ReferenceError on Every Call</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">sendPush calls spaceDO.getActiveDeviceTokens(payload.userId) but spaceDO is not declared or passed anywhere in the function signature or its enclosing scope. This is a ReferenceError that crashes the function on every invocation, making all push notification delivery completely non-functional at runtime. No test catches this without an end-to-end push path exercise.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add env: Env to the sendPush signature and construct the SpaceDO stub inside the function: const id = env.NAELAO_SPACE_DO.idFromName(payload.spaceId); const spaceDO = env.NAELAO_SPACE_DO.get(id);. Then call spaceDO.fetch(new Request('https://internal/devices/active', { method: 'POST', body: JSON.stringify({ userId: payload.userId }) })) using the standard Service Binding .fetch() pattern.</p></div>
+  </div>
+  <div id="G-P13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P13</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-billing-full / §naelao-together-ai-full — Worker default export in naelao-billing and naelao-together-ai</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">export default { ...app, scheduled } Spread Destroys Hono Fetch Handler</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Spreading a Hono app instance with { ...app, scheduled } copies only enumerable own properties of the app object. The fetch method is defined on Hono's prototype chain and is therefore not an enumerable own property — it is not copied by the spread. The resulting export object has a scheduled property but no callable fetch handler, causing all HTTP requests to these workers to receive an unhandled-fetch error. The scheduled handler also breaks because the spread loses the correct this binding for app.fetch.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Export an explicit object literal: export default { fetch: app.fetch.bind(app), scheduled: async (event, env, ctx) =&gt; { ctx.waitUntil(runDailyMaintenance(env)); } }. This preserves the Hono fetch handler with the correct binding and adds the scheduled handler independently. Never spread a class or framework instance — prototype methods are invisible to the spread operator.</p></div>
+  </div>
+  <div id="G-P14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P14</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§space-templates — space_templates DDL in SpaceDO / template-installer worker</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">space_templates DDL Uses PostgreSQL RLS, TIMESTAMPTZ, auth.users — SQLite Incompatible</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The space_templates schema DDL includes author_id UUID NOT NULL REFERENCES auth.users(id), created_at TIMESTAMPTZ DEFAULT NOW(), ALTER TABLE space_templates ENABLE ROW LEVEL SECURITY, and CREATE POLICY ... USING (status = 'approved'). None of these are valid SQLite syntax. Executing this DDL via this.ctx.storage.sql.exec() throws a parse error on first contact, making the entire Space Templates system inoperable from cold start.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Rewrite the DDL for SQLite: use TEXT for all UUID and timestamp columns, replace TIMESTAMPTZ DEFAULT NOW() with INTEGER DEFAULT (unixepoch()*1000), remove all REFERENCES auth.users(id) constraints, and delete the ENABLE ROW LEVEL SECURITY and CREATE POLICY statements entirely. Enforce access control in application logic by filtering on space_id and checking membership. Apply the same audit to installTemplate and every related stored function.</p></div>
+  </div>
+  <div id="G-P15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P15</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-billing-full — GET /byok/:spaceId/anthropic in naelao-billing worker</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">BYOK Endpoint Returns Decrypted API Key in Plaintext JSON Response — Secret Exposed</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The BYOK retrieval route decrypts the stored AES-GCM ciphertext and returns c.json({ hasByok: true, apiKey }) where apiKey is the fully decrypted secret. Any intermediary that can read the response body — CDN edge logs, Cloudflare dashboard request logging, client-side JavaScript — now has the plaintext key. The decrypted value is included unconditionally regardless of call context.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Return only { hasByok: true } from the GET endpoint and never include the decrypted key in any response body. If the key must be used downstream, implement a proxy pattern where the billing worker makes the LLM call on behalf of the space using the key server-side and returns only the result. If the user must see the key (e.g., for rotation UI), mask it to sk-ant-...XXXX and gate the unmasked display behind a separate admin-scoped endpoint with full audit logging.</p></div>
+  </div>
+  <div id="G-P16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P16</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-apps-registry — handleInstall in AppRegistryDO</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">AppRegistryDO.handleInstall Uses PostgreSQL db.query + $N Params — App Installation Broken</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">handleInstall executes await db.query('INSERT INTO space_app_installs ... VALUES ($1, $2, $3, $4)', [spaceId, appId, ...]) using PostgreSQL positional parameter syntax. Durable Objects use SQLite via this.ctx.storage.sql.exec(sql, ...params) which requires ? placeholders. The db variable is undefined in the DO runtime (no Postgres client exists), causing a ReferenceError that crashes every app install attempt.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace db.query(sql, paramsArray) with this.ctx.storage.sql.exec(sql, ...paramsArray) and change all $1/$2/$3/$4 placeholders to ?. Ensure the space_app_installs table DDL is created in blockConcurrencyWhile() during AppRegistryDO's first init via this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS ...').</p></div>
+  </div>
+  <div id="G-P17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P17</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§space-templates — installTemplate in template-installer worker / SpaceDO</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">installTemplate Uses gen_random_uuid() + $N Params + NOW() — SQLite Incompatible</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">installTemplate executes await db.query('INSERT INTO agent_definitions (id, ...) VALUES (gen_random_uuid(), $1, $2, ...)', [...]) and await db.query('INSERT INTO space_template_installs ... VALUES ($1, $2, NOW())', [...]). gen_random_uuid() and NOW() are PostgreSQL functions with no SQLite equivalents. The $N positional syntax is also incompatible. All three constructs throw errors when executed via this.ctx.storage.sql.exec(), making template installation completely broken.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Generate UUIDs in application code using crypto.randomUUID() and pass as a ? parameter. Replace NOW() with unixepoch()*1000 or pass Date.now() as a bind parameter. Rewrite all queries to use ? placeholders: this.ctx.storage.sql.exec('INSERT INTO agent_definitions (id, space_id, name, ...) VALUES (?, ?, ?, ...)', uuid, spaceId, agent.name, ...). Run a global search for gen_random_uuid() and NOW() across all DDL and DML in the spec.</p></div>
+  </div>
+  <div id="G-P18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P18</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-triggers — verifySignature in naelao-triggers worker</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Non-GitHub Webhook Providers Return true from verifySignature — Auth Bypass</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">verifySignature implements real HMAC-SHA256 verification only for the 'github' provider. All other providers — Stripe, Linear, Jira, and any future webhook sources — fall through to return true unconditionally. Any unauthenticated HTTP POST to a non-GitHub trigger endpoint is accepted as a valid signed webhook. An attacker can trigger arbitrary automation workflows by posting crafted payloads to any Stripe or Linear trigger URL without knowing the webhook secret.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement provider-specific HMAC verification for each supported provider before any fallback. For Stripe, verify using the Stripe-Signature header with 5-minute timestamp-tolerance validation. For Linear and Jira, verify their respective HMAC-SHA256 header signatures using the stored webhook secret. Add an explicit throw new Error(`Unsupported provider: ${provider}`) as the final fallback to prevent silent acceptance of unknown providers.</p></div>
+  </div>
+  <div id="G-P19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P19</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-spaces-full — POST /spaces/:spaceId/archive handler in naelao-spaces worker</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Duplicate const spaceDO in Archive Handler — SyntaxError Prevents Worker from Loading</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Within the same async route handler function, spaceDO is declared twice with const: first as const spaceDO = getProductDO(rootSpaceId, c.env) and then again as const spaceDO = c.env.NAELAO_SPACE_DO.get(...). In strict-mode JavaScript (all CF Workers run in strict mode) redeclaring a const in the same lexical scope throws a SyntaxError at parse time. The entire naelao-spaces worker fails to load and all space management routes return 500 errors.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Rename the second declaration to a distinct identifier (e.g., const spaceDOStub = ...) or consolidate both into a single declaration if they refer to the same object. Audit all other route handlers in naelao-spaces/index.ts for duplicate variable declarations — a single redeclared const in any handler prevents the entire worker module from loading.</p></div>
+  </div>
+  <div id="G-P20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P20</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§space-type-versioning — processCanaryRollouts in SpaceTypeRegistryDO / canary cron</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">processCanaryRollouts Standalone Function Accesses this.ctx — TypeError on Every Invocation</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">processCanaryRollouts is declared as async function processCanaryRollouts(env: Env) — a standalone function, not a class method — but its body calls this.ctx.storage.sql.exec(...) and this.ctx.storage.sql.exec(`UPDATE versions ...`). In strict-mode JS, this inside a regular function call is undefined, so this.ctx throws TypeError: Cannot read properties of undefined (reading 'ctx'). The canary rollout engine is entirely broken; no rollout percentage ever advances.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Either convert processCanaryRollouts to a method on the DO class (async processCanaryRollouts() using this.env and this.ctx stored at construction), or refactor it to accept the DO's sql storage context as an explicit parameter: async function processCanaryRollouts(sql: SqlStorage, env: Env) and replace all this.ctx.storage.sql.exec() calls with sql.exec(). If called from a cron handler, pass the DO stub explicitly.</p></div>
+  </div>
+  <div id="G-P21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P21</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-billing-deep — POST /token-usage handler in naelao-billing worker</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">naelao-billing Token-Usage Handler Uses PostgreSQL BEGIN/COMMIT + db.query — Billing Writes Never Execute</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The token-usage handler issues await db.query('BEGIN'), multiple db.query(INSERT/UPDATE ...) calls, and await db.query('COMMIT') / await db.query('ROLLBACK'). This is PostgreSQL transaction syntax via a db client that does not exist in a Cloudflare Worker. Workers have no persistent database connection and no db global. The entire billing-write path throws a ReferenceError on db, meaning token usage is never recorded and credit deduction never occurs — allowing unbounded free usage.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Move all billing state into a BillingDO where SQLite transactions are available. Inside the DO, use this.ctx.storage.sql.exec('BEGIN') / COMMIT for atomicity, or wrap all writes in a single this.ctx.blockConcurrencyWhile() block which provides DO-level serialisation. Replace all $1/$2 placeholders with ? and all db.query(sql, arr) calls with this.ctx.storage.sql.exec(sql, ...arr).</p></div>
+  </div>
+  <div id="G-P22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P22</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§ai-gateway — getAvailableModels() in workers/agents/models.ts</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">getAvailableModels() References Undeclared spaceDO and Uses Non-Existent .rows on SQLite Result</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">const fineTunedModels = await spaceDO.query(...) uses spaceDO which is never declared in that function's scope, producing a ReferenceError. Additionally, DO SQLite .exec() returns an object exposing .toArray() and .one() — not a .rows property — so result.rows.map(...) throws TypeError: Cannot read properties of undefined (reading 'map') at runtime. Both errors combine to make fine-tuned model listing completely broken.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Pass a spaceDO: DurableObjectStub parameter into getAvailableModels() or instantiate it from env inside the function. Replace all .rows with .toArray() on DO SQLite exec results. Apply a project-wide search for .rows on sql.exec() results to find and fix all other occurrences of this pattern.</p></div>
+  </div>
+  <div id="G-P23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P23</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§assistants — AssistantDO.handleChannelMessage()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">handleChannelMessage Session Scoped to Channel Type Only — Cross-User Conversation Bleed</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">SELECT id FROM sessions WHERE channel = ? finds a session by channel type alone (e.g., 'slack'). All users who message via Slack share the same session row, causing every user's messages to be concatenated into one conversation context. User B's question is answered in the context of User A's entire session history — a privacy violation and a source of incorrect LLM responses for every user after the first.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Scope the session query by both channel and user: SELECT id FROM sessions WHERE channel = ? AND user_id = ?. Extract user_id from the incoming message payload (Slack provides event.user; other providers have equivalent user identifiers). Ensure the sessions table has a UNIQUE constraint on (channel, user_id) and an index on (channel, user_id) for efficient lookup.</p></div>
+  </div>
+  <div id="G-P24" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P24</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§ai-gateway — createTogetherAIClient() in shared/ai-client.ts</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">createTogetherAIClient() Instantiates Anthropic SDK Against OpenAI-Compatible Together AI — 422 on All Calls</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">new Anthropic({ baseURL: 'https://app.naelao.dev/api/together-ai/v1', ... }) sends requests in Anthropic wire format (top-level system, max_tokens, Anthropic-specific headers). Together AI's API is OpenAI-compatible, not Anthropic-compatible. Every Together AI model call — fine-tune polling, AutoResearch, vision tasks — receives 422 Unprocessable Entity due to the format mismatch.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use the OpenAI SDK to call Together AI: new OpenAI({ baseURL: 'https://api.together.xyz/v1', apiKey: env.TOGETHER_AI_API_KEY }). All Together AI endpoints expect { model, messages, max_tokens, temperature } in OpenAI format, not Anthropic format. Alternatively, call fetch() directly with OpenAI-format JSON bodies and a Bearer token. Update the shared factory to switch SDK based on provider.</p></div>
+  </div>
+  <div id="G-P25" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P25</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§skills — loadSkillsFromR2() in shared/skill-loader.ts; list_files in file-manager handler</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">loadSkillsFromR2() and list_files Both Truncate at 1000 R2 Objects — Skills and Files Silently Lost</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Both implementations call bucket.list({ prefix, delimiter: '/' }) without checking listing.truncated or following the cursor. R2 list() returns at most 1000 objects per call. Spaces with more than 1000 installed skills or workspace files silently lose all objects beyond the first 1000 with no error, no log, and no indication to the caller that the result is incomplete.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Wrap every r2.list() call in a cursor loop: let listing = null; const results = []; do { listing = await bucket.list({ prefix, cursor: listing?.cursor, limit: 1000 }); results.push(...listing.objects); } while (listing.truncated); Apply the same pattern to VerticalFinetuneWorkflow, archiveSpace, and every other R2 list() call in the codebase.</p></div>
+  </div>
+  <div id="G-P26" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P26</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§workers-sp — WalletDO.deductCredits() / recordCreatorEarning()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">WalletDO Creator Earning Fired as Bare void in DO Handler — Silently Lost on Response Return</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">void this.recordCreatorEarning(params.amount * 0.15) inside a DO fetch() handler fires an unregistered Promise. When the DO returns its Response the runtime can cancel the in-flight Promise. DOs do not have ExecutionContext.waitUntil(). Creator earnings that represent 15% of every paid agent run are silently lost on any DO eviction or Worker recycle.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Write the creator earning record synchronously to DO SQLite inside deductCredits() before returning the Response: this.ctx.storage.sql.exec('INSERT INTO pending_earnings (id, amount, created_at) VALUES (?, ?, ?)', ...). A separate alarm-based sweeper then processes pending_earnings in bulk and credits the creator wallet. The initial record must be durable before the DO response returns.</p></div>
+  </div>
+  <div id="G-P27" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P27</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§workflows — WorkflowRegistryDO in workers/workflows/index.ts</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">WorkflowRegistryDO Calls Non-Existent instance.id() on CF Workflows Stub — Workflow Creation Throws</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">After const instance = await env.NAELAO_WORKFLOW.create({ id: workflowId, ... }), the code calls await instance.id() to register the workflow. The CF Workflows WorkflowInstance stub does not expose an .id() method. This throws TypeError: instance.id is not a function at runtime on every workflow creation, making the entire Workflows feature non-functional.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use workflowId directly — it is the value already passed to .create(). The CF Workflows API exposes .status(), .pause(), .resume(), and .abort() on the instance stub, not .id(). Immediately register the workflow ID in WorkflowRegistryDO using the workflowId local variable: await registryDO.fetch(new Request('http://registry/register', { method: 'POST', body: JSON.stringify({ workflowId }) })).</p></div>
+  </div>
+  <div id="G-P28" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P28</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-threads-impl — GET /threads Hono handler in workers/threads/index.ts</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">GET /threads Uses PostgreSQL $N Placeholders + Dead db.query Reference — ReferenceError on Every List Request</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The GET /threads implementation builds a SQL string with $1, $${params.length+1} (PostgreSQL positional syntax) and calls await db.query(query, params) where db is the removed Supabase client. The comment // SpaceDO replaces Hyperdrive appears but db.query() is used anyway. At runtime db is undefined and db.query() throws ReferenceError immediately, making thread listing completely non-functional.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace all db.query(sql, params) calls with the SpaceDO Service Binding pattern: await spaceDO.fetch(new Request('http://space/query', { method: 'POST', body: JSON.stringify({ sql, params }) })). Replace all $N placeholders with ? for SQLite compatibility. Run a project-wide search for db.query to find all other leftover Supabase call sites.</p></div>
+  </div>
+  <div id="G-P29" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P29</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-threads-impl — createSSEStream() in workers/threads/index.ts</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">createSSEStream Bare void IIFE Killed When Response Returns — Zero SSE Tokens Delivered</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The SSE stream driver uses void (async () =&gt; { ... })() — a bare unregistered Promise. When createSSEStream() returns its Response, the Workers runtime recycles the execution context and cancels the in-flight async IIFE before any tokens are forwarded to the client. The text/event-stream response closes immediately with no events, making the SSE fallback permanently broken for all clients.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use ctx.waitUntil(streamDriverPromise) on the ExecutionContext to keep the Worker alive until the stream completes. Thread the ExecutionContext down to wherever the SSE Response is constructed and ensure the entire async streaming loop is registered with waitUntil before the Response is returned.</p></div>
+  </div>
+  <div id="G-P30" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P30</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§execution-ladder — SandboxDO.alarm() in durable-objects/sandbox-do.ts</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">SandboxDO Alarm Reads this.lastActiveAt Class Field — Always 0 After Hibernation, Stops Every Container</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">private lastActiveAt: number = 0 is a class field that resets to 0 after every DO hibernation. The alarm() handler checks Date.now() - this.lastActiveAt &gt;= IDLE_TIMEOUT_MS. Since this.lastActiveAt is always 0 on wake, Date.now() - 0 always exceeds 10 minutes, and the container is stopped on every alarm regardless of actual recent activity — destroying any long-running container session.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Persist lastActiveAt to DO SQLite on every activity event: this.ctx.storage.sql.exec("UPDATE container_state SET value = ? WHERE key = 'last_active'", Date.now()). In alarm(), read it back before computing the idle delta: const lastActive = parseInt(this.ctx.storage.sql.exec("SELECT value FROM container_state WHERE key = 'last_active'").one()?.value ?? '0'). Default to Date.now() (not 0) when the key is absent to avoid false-positive idle detection.</p></div>
+  </div>
+  <div id="G-P31" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P31</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§sandbox-do — SandboxDO in durable-objects/sandbox-do.ts</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">SandboxDO sandboxRef In-Memory Field Nulled on Hibernation — Container Orphaned, All Exec Calls Fail</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">private sandboxRef = null is a class-level field never persisted to SQLite. When the DO hibernates between exec() calls, sandboxRef is wiped. On wake, ensureRunning() has no mechanism to re-attach to an already-running external container — it only starts new ones. The previously active container is silently orphaned, and subsequent exec() calls start a duplicate container or fail, leaking container resources.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Persist the container's unique identifier string to SQLite (INSERT OR REPLACE INTO container_state (key, value) VALUES ('sandbox_id', containerId)) whenever a container is started. In ensureRunning(), first query SQLite for an existing sandbox_id and attempt re-attachment before launching a new container. Gate the entire ensureRunning() body inside this.ctx.blockConcurrencyWhile() to prevent concurrent duplicate starts.</p></div>
+  </div>
+  <div id="G-P32" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P32</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-credentials — getCredentialForUrl() in workers/credentials/index.ts</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">getCredentialForUrl endsWith Domain Check — Subdomain Bypass Forwards Credentials to Attacker</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The domain validation uses domains.some(d =&gt; parsedUrl.hostname.endsWith(d)). A hostname like evilnaelao.com satisfies endsWith('naelao.com'), bypassing the allowlist entirely. The credential routing forwards matching credentials (API keys, OAuth tokens) to any domain sharing the suffix with an allowed domain, enabling SSRF and credential theft by an attacker who registers a suffix-matching domain.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the endsWith check with the correct prefix-anchored subdomain test: hostname === d || hostname.endsWith('.' + d). This ensures the match is against the domain itself or a proper subdomain, not an arbitrary suffix. Apply the same fix to every domain validation in the credentials worker and add a unit test asserting that evilnaelao.com does not match naelao.com.</p></div>
+  </div>
+  <div id="G-P33" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P33</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-knowledge — knowledge/index.ts GET /knowledge/search</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Vectorize Filter Uses Flat Object — Cross-Space Knowledge Returned, Tenant Data Leak</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The vector search query passes filter: { spaceId } — a flat key-value object. Cloudflare Vectorize requires filter expressions using explicit operator syntax: { spaceId: { $eq: spaceId } }. A flat object is not a valid filter expression and is either silently ignored or returns an API error. In the ignore case, the search returns results across all spaces rather than scoping to the requesting space, exposing cross-tenant knowledge base content.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Change the filter to { spaceId: { $eq: spaceId } } (and similarly for all other filter fields such as agentId, projectId, domainId). Verify that all filtered fields are declared as metadata indexes at Vectorize index creation time — undeclared fields silently produce unfiltered results. Add an integration test asserting that results returned by any search belong only to the authenticated space.</p></div>
+  </div>
+  <div id="G-P34" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P34</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§stored-functions — deduct_space_credits stored function</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">deduct_space_credits Uses SELECT FOR UPDATE Row Lock — Invalid Syntax in SQLite, Billing Deduction Broken</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The deduct_space_credits function uses SELECT ... FOR UPDATE to lock the credits row before the deduction. FOR UPDATE is a PostgreSQL row-level locking clause that does not exist in SQLite. Executing this statement via this.ctx.storage.sql.exec() throws a syntax error, causing every credit deduction to fail. Because this function gates all paid AI operations, the entire billing enforcement layer is inoperable.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove FOR UPDATE entirely. In Durable Objects, concurrency is serialised by the single-threaded execution model — row locks are unnecessary. Wrap the read-modify-write in this.ctx.blockConcurrencyWhile() if atomicity across awaited calls is needed within the same handler. Use a single atomic SQL UPDATE: UPDATE space_credits SET balance = balance - ? WHERE space_id = ? AND balance &gt;= ? RETURNING balance to perform the deduction atomically without a separate lock.</p></div>
+  </div>
+  <div id="G-P35" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-P35</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-notifications-full — initiateVoiceCall / VAPI webhook handler in naelao-notifications</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">VAPI Voice Escalation Has No Approval-Outcome Webhook Handler — Call Result Never Processed</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">initiateVoiceCall posts a call to VAPI and stores callId in KV, but there is no registered POST /vapi/webhook route to receive the VAPI call.ended or call.transcript callback. Without this handler the platform never learns whether the human approved or rejected the escalation, so all downstream logic gated on the call outcome (resuming paused workflows, logging approval decisions) never executes. KV entries for pending calls also accumulate indefinitely with no TTL.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Register a POST /vapi/webhook route that verifies the VAPI HMAC signature, reads callId from the payload, fetches the KV record, determines the outcome from call.status or the call transcript, and either resumes the paused workflow via WorkflowRegistryDO or logs a rejection. Set a TTL of &lt;= 24 hours on all KV entries written by initiateVoiceCall to prevent unbounded accumulation.</p></div>
+  </div>
+  </div>
 </section>
 
 </body>
