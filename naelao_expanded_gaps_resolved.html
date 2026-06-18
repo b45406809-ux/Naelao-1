@@ -43593,5 +43593,431 @@ This produces a structured tool error result the LLM can reason about rather tha
 </div>
 </section>
 
+<section id="appendix-o">
+<div style="margin:80px 0 0;padding:60px 0 0;border-top:2px solid var(--brd);">
+  <div style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.15em;text-transform:uppercase;margin-bottom:12px;">Appendix O</div>
+  <h2 style="font-family:'Fraunces',serif;font-size:36px;font-weight:700;color:var(--hd);letter-spacing:-.02em;margin:0 0 16px;">Seventh Pass — Full Three-Band Spec Re-Audit</h2>
+  <p style="font-family:'Inter',sans-serif;font-size:15px;color:var(--mt);max-width:760px;line-height:1.7;margin:0 0 40px;">41 new gaps from a fresh full sweep of the spec body (lines 1408&ndash;32367) across three independent analysis bands, each cross-referenced against the existing 473 documented gaps and confirmed distinct. This pass surfaces concrete runtime-logic defects beyond the recurring Postgres-on-SQLite theme: malformed wrangler config, DNS-rebinding SSRF, startsWith origin/path bypasses, fail-open LLM judges, invalid Hono APIs, .getTime() on string columns, a ConcurrencyDO with no fetch() handler, base64 stack overflow, zero-token billing rejection, orphaned Vectorize vectors, Promise.race timer leaks, r2_mounted state divergence, tool-result reordering breaking tool_use IDs, a SpaceDO ReferenceError on the hottest path, a day-of-month-blind cron parser, non-transactional migrations, duplicate function signatures, R2 append races, unenumerable orphan DOs, portal cache cross-serving, dollar/cent ledger corruption, quota races, undefined ctx.manifest, mismatched postMessage origins, a CI eval gate that never gets a score, and double-quoted SQLite identifiers.</p>
+</div>
+
+<div id="G-O01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O01</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§22 schema — wrangler.jsonc</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Malformed wrangler.jsonc — Orphaned Hyperdrive Remnant Breaks Config Parse</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The 'no Hyperdrive' block leaves a stray object `{ "binding": "SPACE_DO", "class_name": "SpaceDO", "localConnectionString": "postgresql://..." }` followed by `],` after a `//`-commented line, inside what should be valid JSONC. This is a dangling object/array with a DO binding that carries a Postgres connection string for a SQLite-backed DO. Wrangler fails to parse the config and the deploy never starts.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Remove the stray object and `],` entirely. SpaceDO is already declared correctly in the `durable_objects.bindings` array above — a Durable Object never has a `localConnectionString`. Delete the Hyperdrive remnant cleanly and validate wrangler.jsonc with `wrangler deploy --dry-run` in CI to catch config drift before it reaches production.</p></div>
+</div>
+<div id="G-O02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O02</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§19 security — handleApiCall SSRF</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">SSRF Filter Checks Hostname String, Not Resolved IP — DNS Rebinding Bypass</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`handleApiCall()` runs `BLOCKED_IP_RANGES` regexes against `parsedUrl.hostname` and compares the hostname to literal `BLOCKED_HOSTS`. A DNS name like `internal.attacker.com` that resolves to `169.254.169.254` (CF metadata) or an RFC1918 address passes every check because the hostname is not an IP literal. There is no DNS resolution or post-connect IP validation, so the metadata-service / internal-range protection is defeated by any attacker-controlled hostname (classic DNS rebinding).</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Validate the actual resolved IP, not the textual hostname. Resolve the host (or use a connect-time IP check) and test the resolved address against the blocked ranges; reject IPv4-mapped IPv6 forms and re-validate on every redirect hop (a 302 to an internal IP bypasses a one-time check). Combine with an explicit per-space egress allowlist so only known-good destinations are reachable, matching the section's own stated intent.</p></div>
+</div>
+<div id="G-O03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O03</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§03 AgentDO — fetch() WebSocket origin guard</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">AgentDO WebSocket Origin Check Uses startsWith — Prefix-Spoof Bypass</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The AgentDO upgrade path validates origin with `allowed.some(a =&gt; origin.startsWith(a))` against `['https://app.naelao.dev','https://naelao.dev']`. `https://app.naelao.dev.attacker.com` satisfies `startsWith('https://app.naelao.dev')`, defeating the CVE-2026-25253-class mitigation. The router copy in §19 correctly uses exact matching, so this DO-level copy is inconsistent and strictly weaker — an attacker targets the weaker path.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use exact equality against the allowlist (`allowed.includes(origin)`) to match the router implementation. Never use `startsWith` for origin validation — a suffix-attached attacker domain always passes. Factor origin validation into a single shared helper used by both the router and every DO upgrade path so the two can never diverge again.</p></div>
+</div>
+<div id="G-O04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O04</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§06 workers-sp / §09 mini-agi — LLM judge parse</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">LLM Judge Output Parsed as content[0].text — Fails Open on Privacy Gate</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`proposeLearning`, `extractSkillCandidate`, the federated-learning privacy judge, and MiniAGI all do `JSON.parse(judgment.content[0].text ?? '{"safe": false}')`. This assumes `content[0]` is always a text block and the model returns bare JSON. With prompt caching, a leading prose sentence, or a `thinking`/`tool_use` block first, `content[0].text` is undefined and the parse silently defaults — for the privacy/safety gate this can misclassify unsafe data as safe (fail-open), the worst possible direction for a security control.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Find the first block where `type === 'text'`, strip code fences, and parse defensively. Treat any parse failure or missing text block as `safe:false` for privacy/safety judges (fail-closed), never as a silent skip. Prefer structured tool-use output (a forced JSON schema tool) over free-text JSON so the response shape is guaranteed.</p></div>
+</div>
+<div id="G-O05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O05</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§12 verticals — getAnnotationTask</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">R2-Based Annotation Task Lock Has Check-Then-Act Race — Double Annotation and Double Pay</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`getAnnotationTask` does `list({prefix,limit:1})` → `get` → `put(in-progress)` → `delete(queue key)`. Two experts polling concurrently both `list` the same object, both `get` it, both `put` their own in-progress lock, and both `delete` the same queue key. The task is annotated twice and paid twice. R2 has no atomic move and `list` is eventually consistent, so the claim that this 'prevents double-annotation' is false.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Move task hand-out into a single-threaded DO that allocates task IDs atomically, or claim the in-progress key with an R2 conditional write (`onlyIf`/etag) and treat a precondition failure as 'already taken'. Never rely on list+get+delete ordering across concurrent callers for mutual exclusion.</p></div>
+</div>
+<div id="G-O06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O06</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 assistants — executeAgentLoop call site</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">executeAgentLoop Called With Wrong Arguments and a Return It Never Produces</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">In §03, `executeAgentLoop(sessionId, startMsgId, fiberCtx)` returns `void` and takes a string `startMsgId`. In §05 it is invoked as `const response = await this.executeAgentLoop(sessionId!, null, ctx)` — passing `null` for `startMsgId` (later used in an INSERT `parent_id`) and assigning a `response` that the function never returns. The code then calls `sendToChannel(channel, response, meta)`, sending `undefined` to the channel.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Give `executeAgentLoop` a defined return contract (the final assistant message) and a nullable `startMsgId` with explicit handling, or fetch the last assistant message from SQLite after the loop completes. Never send the `undefined` return value to the channel — validate the payload before dispatch.</p></div>
+</div>
+<div id="G-O07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O07</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§16 skills / §18 artifacts — BLOCKED_PATTERNS</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Stateful Global Regexes (g flag) Race Across Concurrent .test() Scans</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`BLOCKED_PATTERNS` use the global `g` flag and are iterated with `check.pattern.test(content)` then `check.pattern.lastIndex = 0`. Global-flag `RegExp.test` advances `lastIndex`, so reusing the shared regex object across concurrent scans (multiple skills loaded in parallel via `Promise.all` in `loadSkillsForAgent`) yields nondeterministic matches — a malicious skill can slip through when `lastIndex` is mid-string from a concurrent scan. The reset is also skipped on the early-return path.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Drop the `g` flag for membership tests (a non-global regex's `.test()` is stateless), or compile a fresh `new RegExp(pattern.source, flags)` per scan call. Never share global-flag regex objects across concurrent `.test()` invocations — the shared `lastIndex` is a correctness and security hazard.</p></div>
+</div>
+<div id="G-O08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O08</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§18 artifacts — wrapArtifactCode</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">HTML Artifact Wrapper Escapes Backticks But Not ${} — Template-Literal Injection</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">For `type === 'html'`, the harness builds `const html = `${code.replace(/`/g,'\`')}`;` — it escapes backticks but not `${...}` sequences. Agent- or attacker-supplied HTML containing `${...}` is interpreted as a template-literal substitution inside the generated Worker source, allowing arbitrary expression execution in the artifact isolate (and breaking benign content that legitimately contains `${`). The security scanner runs on raw code but does not neutralize template-literal metacharacters.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Do not embed user HTML inside a template literal at all. Pass it as a base64- or JSON-encoded string constant (`const html = atob("...")` or `const html = JSON.parse("...")`) so no `${}` substitution or backtick parsing can occur, then serve it. Encoding sidesteps the entire class of template-literal injection.</p></div>
+</div>
+<div id="G-O09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O09</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 assistants — handleHeartbeat</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Heartbeat Written to storage.put() But Sweeper Queries SQL — Liveness Never Detected</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`handleHeartbeat` writes `await this.ctx.storage.put('last_heartbeat', Date.now())` (the KV-style DO storage namespace), while the sweeper and §02 spec detect stale runs by querying SQLite for `heartbeat_age &gt; 10 minutes`. The timestamp lands in the `put()` namespace but the failure-detection logic reads SQL, so stale-run detection never observes the heartbeat. There is also no SQL `last_heartbeat` column on the fibers/runs table for the sweeper query to read.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Standardize liveness on one store. Persist `last_heartbeat` (and per-fiber heartbeats) into a SQLite column the sweeper actually queries, or change the sweeper to read `storage.get('last_heartbeat')`. Do not split liveness state across `put()` and `sql` — the two namespaces are invisible to each other.</p></div>
+</div>
+<div id="G-O10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O10</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#10B981;background:#10B98118;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">LOW</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§09 mini-agi — query partial-access path</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">MiniAGI Denied-Domain Names Disclosed to Unauthorized Users</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When access is partial, `MiniAGIDO.query` injects `deniedDomains.join(', ')` of domain IDs into the LLM prompt and tells the user which domains they could not access. For confidential domains this discloses the existence and names of restricted data domains to users who have no authorization for them — a metadata leak that the access-control system exists to prevent. An attacker enumerates the platform's sensitive domain taxonomy simply by asking broad questions.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">For denied domains, reveal only a generic 'some data was not accessible for this request' without enumerating confidential domain identifiers to non-authorized roles. Log the specific denied domains server-side for audit, but never echo restricted domain names into a prompt or user-facing response.</p></div>
+</div>
+<div id="G-O11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O11</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#10B981;background:#10B98118;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">LOW</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§10 spaces — middleware.ts cookie scoping</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Non-httpOnly Space Cookies Are Client-Writable — Cross-Space Access Vector</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The middleware sets `naelao_space_id` and `naelao_root_space_id` with `httpOnly:false` 'so frontend JS can read them', and the prose states 'every API call uses the space_id cookie to determine space context'. Because the cookie is JS-readable and writable, a user can set `naelao_space_id` to a sub-space they don't belong to; any Worker that trusts the cookie for scoping (rather than re-deriving from the validated JWT membership) grants cross-space access.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Treat the cookie as a non-authoritative UI hint only. Always resolve the effective spaceId from the JWT / naelao-auth membership check server-side, and reject any request whose cookie spaceId is not an authorized space for the authenticated user. Never make an access-control decision from a client-writable cookie.</p></div>
+</div>
+<div id="G-O12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O12</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§27 naelao-threads — Hono API usage</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Invalid Hono APIs — c.req.cookie?.() and c.param() Are Not Real Methods</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The threads middleware reads `c.req.cookie?.('naelao_space_id')` and handlers call `c.param('id')`. Hono exposes cookies via `getCookie(c, name)` from `hono/cookie`, not `c.req.cookie()`, and route params via `c.req.param('id')`, not `c.param('id')`. The optional chaining on `c.req.cookie?.()` silently masks the missing method (always undefined), so space context is never read; `c.param('id')` throws or returns undefined.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Import `getCookie` from `hono/cookie` and use `c.req.param('id')` for route params. Remove the optional chaining that hides the missing method — a hard failure at the call site is preferable to silently-undefined space context that defaults every request to the wrong scope.</p></div>
+</div>
+<div id="G-O13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O13</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§27 naelao-threads — GET /threads pagination</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">nextCursor Calls .getTime() on a String/Number Column — Pagination Throws</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">In `GET /threads`, the cursor is built as `threads[threads.length-1].created_at.getTime().toString()`. SQLite returns `created_at` as a number or ISO string, never a JS `Date` object, so `.getTime` is not a function. Every paginated response throws the moment `hasNextPage` is true — pagination is broken for any thread list exceeding one page.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Store `created_at` as INTEGER milliseconds and use it directly as the cursor, or wrap with `new Date(row.created_at).getTime()` when the column is an ISO string. Make the column type and the cursor logic consistent, and add a test that fetches a second page.</p></div>
+</div>
+<div id="G-O14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O14</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§28 ConcurrencyDO — fetch() routing</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">ConcurrencyDO Has No fetch() Handler But Callers Invoke It via fetch — Concurrency Gate Never Fires</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`ConcurrencyDO` exposes only RPC-style methods (`checkAndReserve`, `heartbeat`, `releaseSlot`) and no `fetch()` handler. But naelao-threads calls `concurrencyDO.fetch(new Request('http://concurrency/check'))` and the sweeper calls `http://concurrency/release`. With no `fetch()` method the request hits the default handler (500/empty), so `if (!concurrencyCheck.ok)` never actually gates anything — the concurrency limit is silently unenforced. The `/check` call also passes no `billingTier`, so tier defaults to free regardless of plan.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Either add a `fetch()` router to ConcurrencyDO that maps `/check`→`checkAndReserve` and `/release`→`releaseSlot`, or switch all callers to direct RPC method calls on the stub. Pass the real `billingTier` so per-plan concurrency limits apply. Add a test asserting that an over-limit reservation is actually rejected.</p></div>
+</div>
+<div id="G-O15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O15</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§29 file-manager — base64 read / §32 credentials</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">base64 via String.fromCharCode(...spread) — Stack Overflow on Large Buffers</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`read_file` with `encoding:'base64'` does `String.fromCharCode(...new Uint8Array(buf))`. Spreading a multi-MB array into function arguments exceeds the call-stack / argument-count limit and throws `RangeError: Maximum call stack size exceeded` for any non-trivial binary file — precisely the case base64 exists for. The identical pattern appears in the credentials `encrypt`/`decrypt` (`String.fromCharCode(...new Uint8Array(ciphertext))`).</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Convert in chunks: loop over the Uint8Array in blocks (e.g. 8 KB) building the binary string, then `btoa`, or use a streaming base64 encoder. Replace every `String.fromCharCode(...spread)` over a byte array with a chunked loop. This is a hard runtime crash, not a slow path.</p></div>
+</div>
+<div id="G-O16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O16</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§30 pricing — token validation</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">if (!inputTokens || !outputTokens) Rejects Legitimate Zero-Token Responses</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Billing input validation uses `if (!inputTokens || !outputTokens) return 400`. A response with `outputTokens === 0` (a refusal, a pure tool-stop, or a cache-only turn) is falsy and gets rejected with HTTP 400, so it is never billed and the usage is lost. Conversely, legitimate accounting for zero-output turns silently disappears. Zero is a valid token count, not a missing value.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Validate type and presence, not truthiness: `if (typeof inputTokens !== 'number' || typeof outputTokens !== 'number') return 400`. Allow zero as a valid value. Bill zero-output turns at their actual input cost so cache and refusal turns are accounted for.</p></div>
+</div>
+<div id="G-O17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O17</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§31 naelao-knowledge — upload handler</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Vectorize Upsert and Metadata Insert Not Atomic — Orphaned Vectors on Partial Failure</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">After upserting embeddings to Vectorize, the upload handler records document metadata via a separate SpaceDO write. If the metadata insert fails (or, per other gaps, references an undefined `spaceDO`/`db`), the vectors are already stored in Vectorize but no SpaceDO row exists. The result is orphaned vectors: searchable embeddings with no owning document record, which cannot be deleted, re-indexed, or attributed, and which leak into results with no metadata to scope them.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Sequence the writes so the durable metadata record is created first (or use a compensating delete). On metadata-insert failure, delete the just-upserted vectors by ID before returning an error, so Vectorize and SpaceDO never diverge. Record a reconciliation job that periodically lists vectors with no matching SpaceDO row and removes them.</p></div>
+</div>
+<div id="G-O18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O18</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§31 naelao-knowledge — searchKnowledge</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">searchKnowledge Appends projectId=undefined — String 'undefined' Filters Out All Chunks</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`searchKnowledge` always appends `&amp;projectId=${projectId}` to the search URL even when `projectId` is undefined, producing the literal query string `projectId=undefined`. The search handler then sets `filter.projectId = 'undefined'` (the string), so space-level (non-project) knowledge — whose stored `projectId` is null/absent — never matches and is never retrieved. Space-wide knowledge search returns nothing.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Only append `projectId` to the URL when it is actually present. In the search handler, treat an empty/undefined/`'undefined'` value as 'no project filter' rather than an equality match against the string. Add a test for space-level knowledge retrieval with no project context.</p></div>
+</div>
+<div id="G-O19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O19</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§33 SandboxDO — exec() timeout</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Promise.race Timeout Leaks the Timer and Never Cancels the Container exec</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`exec()` races `sandboxRef.exec(...)` against a `setTimeout` reject. On success the timer is never cleared (leaked); on timeout the underlying container exec is never cancelled — no `AbortController` is wired in — so a 'timed-out' command keeps running inside the container, accruing billing and holding the slot, while the caller is told it failed. Wall-clock billing and the reported slot state diverge.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Wire an `AbortController` (or `AbortSignal.timeout`) into `sandboxRef.exec` so the timeout actually aborts the container command, and `clearTimeout` in a `finally` block so the timer never leaks. Reconcile billing to the actual aborted duration, not the full timeout window.</p></div>
+</div>
+<div id="G-O20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O20</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§33 SandboxDO — r2_mounted state</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">r2_mounted Persisted as true But Mount Is In-Memory — Container Runs With Empty Workspace</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">After hibernation the container is destroyed and must be remounted, yet SQLite still records `r2_mounted='true'`. On the next wake, `ensureRunning` reads the persisted flag and skips `mountBucket`, so the freshly started container runs with no `/workspace` mounted. All file operations then silently hit an empty filesystem — reads return nothing, writes go to ephemeral container-local storage and vanish.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Treat mount state as a property of the live container, not durable SQLite — track it in an in-memory field tied to the current `getSandbox` session, or always call `mountBucket` after a fresh container start regardless of the persisted flag. The R2 mount must be re-established on every container (re)start.</p></div>
+</div>
+<div id="G-O21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O21</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§33b LocalTunnelDO — checkGrants path matching</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Local Path Grant Check via startsWith — Prefix Escape and No .. Normalization</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`checkGrants` permits a path if `call.params.path.startsWith(g.directory)`. A grant for `/Users/alice/Documents` matches `/Users/alice/Documents-private/secret` because there is no separator boundary, and there is no `..` normalization, so `/Users/alice/Documents/../../../etc/passwd` passes the `startsWith` check. The local-machine file-access grant is bypassable to arbitrary paths.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Normalize/resolve the path first and reject any `..` segments, then require a separator boundary: `path === dir || path.startsWith(dir + '/')`. A bare `startsWith` on directory grants is always escapable. Apply the same boundary check to every grant-scoped path comparison in LocalTunnelDO.</p></div>
+</div>
+<div id="G-O22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O22</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§36 naelao-sweeper — task signatures</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Sweeper Task Functions Declared (env) But Invoked as (db, env) — env Is Always Undefined</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`scheduled()` calls `sweepAssistantHeartbeats(db, env)`, `sweepAbandonedAgentRuns(db, env)`, etc., but the function declarations take a single parameter `(env: Env)`. The `db` argument lands in the `env` parameter slot and the real `env` is dropped, so every `env.NAELAO_*` access inside the sweep tasks reads from a non-Env object and is undefined. Combined with `db` itself being undefined in `scheduled`, the entire cron is inert.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Fix the signatures and call sites to agree — remove the `db` parameter entirely and pass only `env`. The sweeper must enumerate per-product SpaceDOs from the KV product registry and call typed DO methods, not pass a global `db` that does not exist in this architecture.</p></div>
+</div>
+<div id="G-O23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O23</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§38 test-runner — JWT signing</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">jsonwebtoken (Node-only) Imported Into workerd Tests — Fails to Load</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`tests/helpers/index.ts` does `import { sign } from 'jsonwebtoken'`. `jsonwebtoken` depends on Node's `crypto` module and `Buffer`; under `@cloudflare/vitest-pool-workers` (workerd) it fails to load even with partial `nodejs_compat`. This directly contradicts the spec's own rule that tests run in workerd, never Node.js — the test helper crashes before any test executes.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Sign test JWTs with Web Crypto (`crypto.subtle` HMAC-SHA256) or a workerd-compatible library such as `jose`. Remove the `jsonwebtoken` dependency from any code path that runs inside workerd, including test helpers.</p></div>
+</div>
+<div id="G-O24" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O24</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§40 execution-ladder — routeAndExecuteTools</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Tool Results Returned in Tier Order, Not Call Order — tool_use ID Misassociation</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`routeAndExecuteTools` pushes results in tier groups (workspace, then parallel isolate, then serial isolate, then browser, then sandbox). The returned `ToolResult[]` order no longer matches the order of the LLM's emitted `toolCalls`. Any downstream code that matches results to `tool_use` IDs by array index associates each result with the wrong tool call — the model receives tool outputs attributed to the wrong requests, corrupting its reasoning with no error.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Preserve the original tool-call index/ID on each result and re-sort (or map) results back to the emitted `toolCalls` order before returning. Never rely on concatenation order across execution tiers — always correlate by the `tool_use` id the model assigned.</p></div>
+</div>
+<div id="G-O25" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O25</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§52 naelao-mcp-hub — /execute analytics</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">mcp-hub Awaits Analytics Send in Request Path and Skips Logging on Failure</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`/execute` does `await c.env.NAELAO_ANALYTICS_QUEUE.send(...)` only on the success path, blocking the tool response on queue latency, and never logs tool failures or timeouts to analytics (the early-return error branches skip the send entirely). The platform's own rule is fire-and-forget via `ctx.waitUntil`, and failures are exactly what observability needs to capture.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use `c.executionCtx.waitUntil(queue.send(...))` so analytics never blocks the response, and emit an analytics event on both the success and failure branches (including timeout and tool-not-found). Tool failure rate is a key reliability signal that is currently invisible.</p></div>
+</div>
+<div id="G-O26" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O26</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§59 migration-guide — runCutoverChecks</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Cutover Checks Query pg_tables/auth.users — Meaningless Against DO SQLite</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`runCutoverChecks` runs `SELECT ... FROM pg_tables WHERE rowsecurity=false`, references `auth.users`, and verifies RLS state. These are Postgres/Supabase catalogs and concepts; the target architecture is per-product DO SQLite with no `pg_tables`, no RLS, and no `auth.users`. The 'SpaceDO per-product isolation verified' check always errors or returns meaningless results, so the cutover gate provides false assurance.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace catalog-based checks with SpaceDO health-check method calls (per-DO row counts, schema-version reads). Drop the RLS/`pg_tables` verification entirely — isolation in this architecture is the DO boundary, not row-level security. The cutover gate must test what actually exists in production.</p></div>
+</div>
+<div id="G-O27" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O27</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§84 SpaceDO — fetch() / authCheck</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">SpaceDO.fetch(req) Body References Undefined `request` — ReferenceError on Hottest Path</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`async fetch(req: Request)` declares the parameter as `req`, but the body does `const url = new URL(request.url)` referencing `request`, which is not in scope. Because `authCheck` runs on almost every platform request, this throws `ReferenceError: request is not defined` at the entry of the single hottest code path on the platform — effectively a total outage the moment the DO is exercised.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Rename to `const url = new URL(req.url)` (or rename the parameter to `request`) and audit the entire DO for `req`/`request` inconsistency. Add a smoke test that issues one real request through SpaceDO.fetch — a typo this load-bearing must be caught by the most basic test.</p></div>
+</div>
+<div id="G-O28" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O28</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§77 AppRegistryDO — handleInstall</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">App Install Count Incremented Non-Atomically — Inflates on Duplicate/Failed Installs</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`handleInstall` inserts into `installs` and runs `UPDATE apps SET install_count = install_count + 1`, then separately writes the space-side record. The count increment is not conditioned on a genuinely new install: a re-install or a downstream failure path can still increment the counter, and the second (cross-store) write has no compensation, so the registry can show 'installed' while the SpaceDO has no record. Install counts drift upward and the two stores diverge.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use `INSERT OR IGNORE` into `installs` and increment `install_count` only when `changes() === 1` (a real new row). Move the space-side install record into the same SpaceDO via a typed RPC within one serialized method, with rollback if it fails, so the count, the install row, and the space record commit together or not at all.</p></div>
+</div>
+<div id="G-O29" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O29</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§90 WorkflowRegistryDO — parseCronToNextTimestamp</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Cron Parser Skips Day-of-Month and Mishandles Ranges/Steps — Wrong/Duplicate Schedules</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`const [min, hour, , month, dow] = cron.split(' ')` deliberately discards the 3rd field (day-of-month), so `0 9 1 * *` (09:00 on the 1st) fires every day. It also supports only `*` or a single integer per field — `*/5`, `1-5`, and `1,15` are not handled, so `'*/5 * * * *'` does `parseInt('*/5') → NaN`, never matches, and falls back to a 24h default. Month matching compares `getUTCMonth()+1` against a possibly-NaN value.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use a real cron parser that supports all five fields plus lists, ranges, and steps, and honors day-of-month. At minimum, parse the day-of-month field and treat any unparseable field as a hard error rather than silently degrading to daily/24h. Add tests for `*/5`, day-of-month, and weekday expressions.</p></div>
+</div>
+<div id="G-O30" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O30</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§76 SpaceTypeRegistryDO — /migrate</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Major Migration Runs ALTER TABLE + R2 Move Non-Transactionally and Returns success Unconditionally</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The migration Worker fires `ALTER TABLE ... ADD COLUMN` then an R2 `/move` as two independent `fetch` calls and returns `{success:true}` regardless of either outcome — neither response's `ok` is checked. If the R2 move fails after the ALTER succeeds, the schema is half-migrated with no compensation; re-running double-applies. No `fromVersion` guard is persisted, so a retried opt-in re-runs the ALTER.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Check each response's `ok` and fail loudly on partial completion. Make the column add idempotent (it uses `ADD COLUMN IF NOT EXISTS`, but the R2 move is not idempotent — guard it). Record completion in a `schema_migrations` table keyed by `(spaceId, toVersion)` and refuse to re-run a completed migration. Surface partial failure instead of returning unconditional success.</p></div>
+</div>
+<div id="G-O31" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O31</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§80 naelao-eval — evaluateOutput</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Two evaluateOutput Definitions With Incompatible Signatures — Extended Scorers Get Wrong Arguments</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The section defines `evaluateOutput(actual, expected, type, env)` and later, under 'Extended Scorer Types', redefines `evaluateOutput(actual, testCase, env, spaceId)` with an incompatible parameter list. The caller in `runEvaluationSuite` uses the 4-arg `(actualOutput, testCase.expected, scorerType, env)` form, so the extended scorers (`file-exists`, `json-field`, `numeric-within`) that need `testCase` and `spaceId` receive `scorerType` and `env` in the wrong slots and silently misbehave. The llm-judge scorer also does an unguarded `JSON.parse(judgement.content[0].text)`.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Consolidate to a single `evaluateOutput` signature and update the call site to pass `testCase` and `spaceId` so extended scorers get their required arguments. Wrap the judge parse in try/catch returning `{passed:false}` on malformed output.</p></div>
+</div>
+<div id="G-O32" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O32</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§81 naelao-categorizer — analyzeFailure</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">feedback-log.jsonl Appended via R2 Read-Modify-Write — Concurrent Feedback Lost, Truncate Races Writers</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`analyzeFailure` appends to `feedback-log.jsonl` by `get` then `put(existing + entry)` — a read-modify-write on R2 with no concurrency control. R2 has no append, so concurrent negative-feedback events lose entries (last write wins). The daily review then `put(logKey, '')` to clear the log, racing with in-flight appends and silently dropping feedback that arrived during the review.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Write each feedback entry as its own R2 object (`feedback/{ts}-{uuid}.json`) and `list()` them at review time, or route appends through a per-agent DO that serializes writes. Never truncate a shared mutable object that concurrent writers are appending to — archive-then-delete the individual objects instead.</p></div>
+</div>
+<div id="G-O33" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O33</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§80 naelao-eval — temporary AgentDOs</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Eval Creates AgentDOs by Random idFromName and Never Destroys Them — Unenumerable Orphans</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Each test case creates `env.NAELAO_AGENT_DO.idFromName('${spaceId}:eval-project:${testThreadId}')` with a fresh UUID and runs it, but nothing calls `/destroy` afterward. The claim that 'naelao-sweeper deletes these temporary DO instances' is unworkable: DOs addressed by random `idFromName` leave no enumerable index, so a sweeper has no way to find them. Their SQLite storage persists and bills indefinitely.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Record each eval DO ID in a list/table and explicitly POST `/destroy` (which deletes the DO's storage) after the run, or reuse a single eval DO with table-per-case isolation. A sweeper cannot enumerate DOs it has no record of — cleanup must be driven by an index the eval runner maintains.</p></div>
+</div>
+<div id="G-O34" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O34</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§A6 external-portals — portal router cache</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Portal Router Caches Before Checking Method — Non-GET Responses Cached and Cross-Served</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The portal router consults `caches.default.match` before any method check and populates the cache for any response whose `Cache-Control` includes `max-age`, keyed on `route.spaceId + pathname` with the query string dropped. A cacheable response to one user's POST or authenticated request can be served to another user, and distinct query strings collide on one cache entry. There is also no WebSocket-upgrade bypass.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Only consult and populate the cache for GET requests, include the full URL (query string) in the cache key, and add `Vary`/auth awareness so authenticated responses are never shared. Detect `Upgrade: websocket` and bypass cache/dispatch for live connections.</p></div>
+</div>
+<div id="G-O35" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O35</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§A6 external-portals — attachCustomDomain</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">attachCustomDomain Spreads a Host String as if It Were a PortalRoute — Empty Route Written</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`provisionExternalPortal` writes `portal:space:${spaceId}` = a bare `platformHost` string. `attachCustomDomain` then reads that key with `get(..., 'json')`, casts the result to `PortalRoute`, and spreads `{...existingRoute}` — but the key holds a plain string, not JSON, so the parse yields null and the spread produces a route missing `spaceId`, `enabled`, and `scopedToken`. The router then 404s the custom domain or serves a route with no space context.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Read the actual route object from `portal:host:${platformHost}` (which stores the JSON `PortalRoute`), spread that, and write it under the custom hostname. Keep `portal:space:` as a pointer-only key and never spread it as a route object.</p></div>
+</div>
+<div id="G-O36" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O36</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§87 naelao-billing — /community/split</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Community Revenue Split Mixes Dollars and Cents — Ledger Amounts Corrupted</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">In `/community/split`, `amount` is treated as dollars for `creatorCents = Math.floor(amount * 0.80 * 100)`, but the ledger insert stores `gross_amount_usd = amount/100` and `platform_amount_usd = (amount - creatorCents)/100` — mixing dollars (`amount`) with cents (`creatorCents`). Gross is recorded 100× too small, and the platform amount subtracts cents from dollars, yielding a large negative number. The revenue ledger is systematically corrupt.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Pick one unit and use it consistently. If `amount` is USD: `creatorUsd = amount*0.8`, `platformUsd = amount*0.2`, store those directly, and convert to cents only for the Stripe transfer field (`Math.round(amount*0.8*100)`). Add an invariant test that gross == creator + platform.</p></div>
+</div>
+<div id="G-O37" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O37</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§88 naelao-spaces — quota enforcement</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Sub-Space / Member Quota Is Check-Then-Insert in the Worker — Race Exceeds Plan Limits</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`/spaces` and `/members/invite` read `SELECT COUNT(*) ... WHERE parent_space_id=?` (or a member count), compare to the plan quota, then later `INSERT`. Between the count and the insert, concurrent requests both pass the check and both insert, exceeding `maxSubSpaces`/`maxMembers`. The §88 narrative claims the DO 'prevents concurrent provisioning from racing past the limit', but the shown code does the count in the Worker against the DB, not atomically in a DO.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Enforce the limit inside SpaceDO with `blockConcurrencyWhile` so the count and insert run in one serialized method, or use a conditional `INSERT ... WHERE (SELECT COUNT(*)...) &lt; limit` backed by a unique/trigger guard. A Worker-side count-then-insert cannot be made race-safe across concurrent requests.</p></div>
+</div>
+<div id="G-O38" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O38</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§75 remoteloop — dispatchRemoteLoop</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">dispatchRemoteLoop Reads ctx.manifest That Was Never Assigned — TypeError on Delegation</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`dispatchTurn` resolves `const manifest = await ctx.spaceTypeRegistry.getManifest(ctx.spaceTypeId)` into a local variable and passes `manifest.customLoopWorker` onward, but inside `dispatchRemoteLoop` the token issuance reads `ctx.manifest.agentEnvironment.agentPermissions` and the request body reads `ctx.toolManifest` — neither of which was ever assigned on `ctx`. `ctx.manifest` is undefined, so reading `.agentEnvironment` throws.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Pass the resolved `manifest` into `dispatchRemoteLoop` as an argument (or assign `ctx.manifest = manifest` before delegating) and read permissions/tools from that object. Ensure `ctx.toolManifest` is populated before the remote loop is dispatched.</p></div>
+</div>
+<div id="G-O39" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O39</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§A7 operator-shell — postMessage origins</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Shell and Panel postMessage Origin Constants Disagree — Cross-Frame Messages Silently Dropped</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The app panel pins `shellOrigin = 'https://app.naelao.dev'` and only accepts messages whose `e.origin` matches it, while the shell listener accepts only `event.origin === 'https://ui.naelao.app'`, and the prose says panels run on `ui.naelao.app`. The two sides whitelist different origins, so at least one direction of CONTEXT/THEME messaging is silently dropped — panels never receive context, or the shell ignores panel events, with no error surfaced.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define exactly one shell-origin constant and one panel-origin constant, shared by both sides, and verify the shell actually sends from the origin the panel whitelists (and vice versa). Reconcile `app.naelao.dev` vs `ui.naelao.app` everywhere so the allowlists are provably symmetric.</p></div>
+</div>
+<div id="G-O40" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O40</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§80 naelao-eval — /eval/run CI gate</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">/eval/run Returns Immediately via waitUntil But CI Expects a Synchronous Score</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">`app.post('/eval/run')` fires `c.executionCtx.waitUntil(runEvaluationSuite(...))` and returns `{status:'started'}` with no `score`, ignoring the request's `waitForCompletion:true` and `timeoutSeconds` flags. The GitHub Actions gate does `SCORE=$(echo $RESULT | jq '.score')` and compares `null &lt; 70` — so the score is always null and the deploy gate either always blocks or errors on `bc`.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Honor `waitForCompletion`: when set, `await runEvaluationSuite()` (within Worker time limits) and return the final `score`; otherwise expose an `/eval/status` endpoint for CI to poll until the run completes. Do not advertise a flag the handler silently drops — the deploy gate depends on a real score.</p></div>
+</div>
+<div id="G-O41" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-O41</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#10B981;background:#10B98118;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">LOW</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§83 WorkflowRegistryDO — sweepSchedules SQL</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">WHERE status = "active" Uses Double Quotes — Identifier, Not String Literal, in SQLite</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The §83 `sweepSchedules` query is `SELECT * FROM workflows WHERE status = "active" AND schedule IS NOT NULL AND next_run &lt;= ?`. In SQLite, double quotes denote an identifier (a column name), not a string literal. `"active"` is interpreted as a column reference and only resolves to the string by SQLite's legacy fallback quirk — fragile, and it breaks outright under strict/`PRAGMA` modes. The §90 complete version correctly uses single quotes.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use single quotes for the string literal: `WHERE status = 'active'`. Standardize on single-quoted string literals throughout all DO SQL, and enable strict-quoting in tests so the identifier-vs-literal confusion is caught rather than silently tolerated.</p></div>
+</div>
+
+<div style="margin:32px 0 0;padding:32px;background:#0A1628;border:1px solid #1E293B;border-radius:8px;">
+  <p style="font-family:'DM Mono',monospace;font-size:11px;color:#64748B;margin:0;line-height:1.8;">
+    Appendix O complete &mdash; seventh pass, full three-band spec re-audit. Combined gap audit total: A (125) + B (30) + C (22) + D (22) + E (24) + F (26) + G (26) + H (15) + I (34) + J (20) + K (51) + L (23) + M (31) + N (24) + O (41)
+    = <strong style="color:var(--or);">514 documented technical gaps</strong> with required fixes.
+  </p>
+</div>
+</section>
+
 </body>
 </html>
