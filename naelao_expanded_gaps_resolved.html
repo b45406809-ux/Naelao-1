@@ -44375,6 +44375,345 @@ This produces a structured tool error result the LLM can reason about rather tha
     <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Register a POST /vapi/webhook route that verifies the VAPI HMAC signature, reads callId from the payload, fetches the KV record, determines the outcome from call.status or the call transcript, and either resumes the paused workflow via WorkflowRegistryDO or logs a rejection. Set a TTL of &lt;= 24 hours on all KV entries written by initiateVoiceCall to prevent unbounded accumulation.</p></div>
   </div>
   </div>
+
+
+<div class="sep"></div>
+<section id="appendix-q" style="padding:60px 0 40px;">
+  <div style="max-width:860px;margin:0 auto;padding:0 24px;">
+    <span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);letter-spacing:.15em;text-transform:uppercase;">Appendix Q</span>
+    <h2 style="font-family:'Fraunces',serif;font-size:36px;font-weight:700;color:var(--hd);letter-spacing:-.02em;margin:8px 0 6px;">Ninth-Pass: CF Think / Workspace / OpenClaw / Hermes Gap Analysis</h2>
+    <p style="font-family:'Inter',sans-serif;font-size:15px;color:var(--tx);line-height:1.7;margin:0 0 40px;">30 new gaps focusing on missing @cloudflare/think base class integration, @cloudflare/workspace virtual filesystem, CF Agents lifecycle hooks, extended thinking persistence, OpenClaw-pattern tool policy enforcement, Hermes-style skill learning, sub-agent streaming, and prompt cache optimisation for the Space Assistant architecture.</p>
+
+  <div id="G-Q01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q01</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">AssistantDO Does Not Extend @cloudflare/think Think Class — Hand-Rolled Loop Misses Stream Resumption and Lifecycle Hooks</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">AssistantDO is a raw DurableObject with a hand-rolled agentic loop. The CF Agents SDK ships @cloudflare/think — class Think&lt;Env,State,Props&gt; extends Agent — which provides: full agentic loop with configurable maxSteps, automatic message persistence in DO SQLite, stream resumption when a WebSocket client reconnects mid-tool-call, lifecycle hooks (beforeTurn, beforeStep, beforeToolCall, afterToolCall, onStepFinish, onChatEnd, onChatError), and a built-in this.workspace virtual filesystem. When a WebSocket client disconnects and reconnects during a long-running tool call, the spec starts a fresh completion — the in-flight tool result is lost, the conversation diverges from the persisted message list, and the client sees duplicate assistant messages.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Refactor AssistantDO to extend Think&lt;Env, AssistantState, AssistantProps&gt; from @cloudflare/think. Remove the hand-rolled while(continueLoop) loop — the SDK replaces it. Implement abstract getModel(): LanguageModel and the lifecycle hooks. Message persistence, tool execution routing, and stream resumption come from the base class at no cost. Existing DO SQLite schema for messages/sessions can co-exist via this.ctx.storage.sql alongside the Think SDK tables.</p></div>
+  </div>
+
+  <div id="G-Q02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q02</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO.runAgentLoop()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Extended Thinking Signature Never Captured — Multi-Turn Chain-of-Thought Broken at Turn 2</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Anthropic extended thinking requires persisting each thinking block's `signature` field across turns. The signature lives at reasoning-end.providerMetadata.anthropic.signature. When the agent continues in the next turn it must re-include the accumulated thinking blocks with their signatures — the API returns a 400 error otherwise. The spec stores assistant messages but never extracts or persists this signature. Result: every turn starts fresh reasoning from scratch; multi-turn chain-of-thought is impossible; enabling extended thinking causes a 400 on turn 2.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">After each AI call extract thinking block signatures: const thinkingBlocks = response.steps.flatMap(s =&gt; s.experimental_providerMetadata?.anthropic?.thinking ?? []). Persist thinkingBlocks as a JSON column on the assistant message row in DO SQLite. On the next turn, prepend persisted thinking blocks (with signatures) to the messages array before calling streamText. The CF Think SDK handles this automatically when you extend Think.</p></div>
+  </div>
+
+  <div id="G-Q03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q03</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO tool execution</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No beforeToolCall() Hook — Malicious Skill Tool Invocations Cannot Be Intercepted or Blocked</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec's loop executes every tool call the LLM produces with no interception layer. The Think SDK's beforeToolCall(toolName, args) fires between "LLM decides to call tool X" and "tool X executes", enabling allow/modify/block/substitute. Without this hook, a tier-3 agent-created skill that passes the 27-pattern scanner at install time but contains a prompt-injection payload can instruct the LLM to call write() with path ../../spaces/otherSpaceId/config.json — and the agent will execute it. There is no runtime policy enforcement layer between LLM decision and side-effect.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement beforeToolCall(toolName, args): ToolCallDecision on AssistantDO. Check: (1) toolName is in agent's allowedTools set, (2) for filesystem tools, path is within spaces/{spaceId}/workspace/ (path traversal guard), (3) for exec tools on tier-3 skills, sandbox_only flag is enforced by requiring SandboxDO routing. Block the call and return a structured error to the LLM when any check fails. If using Think SDK, register this as the beforeToolCall lifecycle hook.</p></div>
+  </div>
+
+  <div id="G-Q04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q04</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO.spawnSubAgent()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Sub-Agents Dispatched via Raw HTTP fetch() — No Abort Propagation, No Typed Streaming RPC, Orphaned Agents</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec dispatches sub-agents by calling fetch() on NaelaoAgentDO's HTTP endpoint and polling for results. The CF Think SDK provides subAgent(id, props) for typed streaming RPC, abortSubAgent(id) to propagate cancellation, and deleteSubAgent(id) for cleanup. With raw HTTP fetch: (1) if the parent agent is aborted (credits exhausted, user cancels), the sub-agent continues running and consuming credits indefinitely — no abort signal reaches it; (2) the parent must wait for the full HTTP response before seeing any result — no incremental streaming; (3) dead sub-agents from crashed parents are never cleaned up.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use this.subAgent() from the Think SDK for sub-agent spawning to get typed streaming RPC, automatic abort propagation, and resource tracking. If retaining custom HTTP dispatch, at minimum: (1) persist the sub-agent DO id in the parent's sub_agents SQLite table, (2) pass an AbortController signal with timeout to fetch(), (3) have a cleanup alarm terminate sub-agents whose parent_id has no recent heartbeat. Never hold a live HTTP connection to a sub-agent for operations that may take minutes.</p></div>
+  </div>
+
+  <div id="G-Q05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q05</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§16 — skills — SkillLoader / AssistantDO</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Skill Executor Component Missing — SKILL.md Instructions Injected as Markdown with No Runtime Enforcement</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Skills inject SKILL.md instructions into the system prompt as XML and rely entirely on the LLM to interpret the markdown and generate correct tool calls. There is no executor that: (a) validates the LLM's tool call matches the skill's declared scripts array and resource_type, (b) routes execution to the correct tier (bash/python/cf-worker/cf-dynamic-worker), (c) enforces required_bins/required_env constraints before attempting execution. An agent invoking a Python-typed script will use the bash tool and try python3 — failing silently in a tier that lacks Python, or succeeding unsandboxed where it should not.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement a SkillExecutor that intercepts execute_script(skillName, scriptName, args) tool calls: (1) look up the skill in the loaded registry, (2) verify scripts[scriptName].type matches the target tier, (3) check required_bins are available (cached at skill-load time), (4) route to the correct executor: bash→WorkspaceDO.runBash(), python→SandboxDO.runPython(), cf-worker→deployDynamicWorker(). Return structured {stdout, stderr, exitCode}. Reject cross-tier escalation attempts (workspace-typed script calling browser APIs).</p></div>
+  </div>
+
+  <div id="G-Q06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q06</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — runFiber() / AssistantDO</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Fiber Result Delivery Mechanism Undefined — runFiber() Returns Workflow ID with No Callback Path</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">runFiber(task) starts a CF Workflow asynchronously and returns the workflow ID immediately. The spec never defines how the eventual result is delivered back to the AssistantDO. There is no polling endpoint, no callback webhook the workflow calls on completion, no Queue message, and no DO alarm triggered on fiber completion. The fiber pattern creates fire-and-forget workflows whose results are permanently lost — the agent never learns the outcome of async tasks it dispatches.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement fiber result delivery via CF Queues: (1) the Workflow's final step sends a Queue message to naelao-fiber-results with {fiberJobId, result, status}, (2) AssistantDO has a Queue consumer that matches fiberJobId to a pending fiber in the sub_agents SQLite table, (3) on match, deliver the result to the agent's conversation as a tool-result message, resuming the paused generation. Track fiber state in sub_agents: (pending|running|complete|failed) with result_json column.</p></div>
+  </div>
+
+  <div id="G-Q07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q07</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§27 — execution-ladder — SpaceR2 / Tier 1 workspace tools</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Workspace R2 Writes Are Non-Transactional — Concurrent Batch File Operations Can Partially Succeed</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec's Tier 1 tools (write_file, copy_file, move_file, delete_file) call R2 directly via SpaceR2. R2 has no native transaction support: if an agent issues write A, write B, write C and B fails, write A is committed and C never runs — the workspace is left in a partially written, internally inconsistent state. The @cloudflare/shell virtual filesystem provides transactional batch writes with auto-rollback on failure. The spec provides no equivalent atomicity for multi-file agent operations such as refactors or schema migrations.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace direct R2 multi-write sequences with @cloudflare/shell batch transactions: import { Shell } from "@cloudflare/shell"; const shell = new Shell({ sql: this.ctx.storage.sql, r2: env.WORKSPACE_BUCKET }). Wrap multi-file operations in shell.batch([...writes]) for atomicity. If using the Think SDK, this.workspace already uses this abstraction. Document which operations require batch transactions (multi-file refactors, schema migrations) vs. single-file ops that can call R2 directly.</p></div>
+  </div>
+
+  <div id="G-Q08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q08</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO architecture</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">AssistantDO Conflates MCP Server and AIChatAgent — Violates CF Think SDK Protocol Separation</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">AssistantDO handles both AI chat completion (agentic loop, streaming responses) and MCP tool exposure (providing tools to other agents via MCP protocol) in a single class. The CF Agents SDK distinguishes Think/AIChatAgent (consumes tools, manages conversation) from McpAgent (exposes resources/tools over MCP to other agents). Mixing both means: the WebSocket handler must serve two different protocol handshakes, tools exposed via MCP cannot be independently versioned, and the MCP server cannot be composed with different chat agents.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Separate into AssistantDO (extends Think for chat) and AssistantMcpDO (extends McpAgent for tool exposure): class AssistantMcpDO extends McpAgent { server = new McpServer({name: "naelao-assistant", version: "1.0.0"}); init() { this.server.tool("searchMemory", ..., this.searchMemory.bind(this)); } }. AssistantDO connects to AssistantMcpDO as an MCP client, consuming its tools alongside other platform tools. This allows AssistantMcpDO to serve NaelaoAgentDO sub-agents without going through the chat loop.</p></div>
+  </div>
+
+  <div id="G-Q09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q09</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — Memory OS / AssistantDO</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Agent Cannot Self-Manage Its Own Memory — No memory Tool Exposed to LLM (Hermes Pattern Missing)</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec's Memory OS stores facts in DO SQLite but memory management is only callable server-side (triggered by the extraction pipeline). The LLM has no tool to add, replace, or remove its own memory entries — it can only read them via system prompt injection. Hermes agents self-manage memory via a memory({action, key, value}) tool. Without this, the agent cannot correct a stale belief it discovers is wrong, add a new learning from a solved task, or remove a conflicting fact — all memory updates require explicit server-side code paths that may never fire.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Expose a memory tool to the agent: registerTool("memory", { description: "Add, replace, or remove entries in your persistent memory", parameters: { action: z.enum(["add","replace","remove"]), key: z.string(), value: z.string().optional() }, execute: async ({action, key, value}) =&gt; { if (action !== "remove") await this.upsertMemory(key, value, {confidence: 1.0, source: "agent-self"}); else await this.deleteMemory(key); return `Memory ${action} complete`; } }). Cap total memory entries per agent at 500; require removing an entry before adding when at capacity.</p></div>
+  </div>
+
+  <div id="G-Q10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q10</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO.loadConfig()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Runtime Agent Config Stored in KV — Up to 60-Second Stale Config After Tool Revocation or Model Change</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec stores AssistantDO runtime configuration (model name, persona, allowed tools, billing tier) in Cloudflare KV, read at turn start. KV has eventual consistency with up to ~60 seconds of propagation lag. A space admin revoking a dangerous tool permission after a security incident will not take effect for up to a minute — the agent continues using the old tool allowlist. The CF Think SDK's configure&lt;T&gt;(config)/getConfig&lt;T&gt;() stores typed config in DO SQLite with immediate consistency within the DO.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Migrate agent runtime config from KV to DO SQLite using Think SDK's configure/getConfig: async updateConfig(newConfig) { await this.configure(newConfig); } and async getAgentConfig() { return this.getConfig&lt;AgentConfig&gt;() ?? defaultConfig; }. For cross-space config broadcast (platform-wide model change), send a CF Queue message to all AssistantDOs; the Queue consumer calls this.configure() on receipt — immediate within the DO. Retain KV only for the DO namespace registry lookup (routing spaceId to stub) where eventual consistency is acceptable.</p></div>
+  </div>
+
+  <div id="G-Q11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q11</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§16 — skills — SkillSystem / AssistantDO</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Hermes-Style Skill Learning Absent — Agent Never Crystallizes Solved Workflows into Reusable Skills</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Hermes agents automatically convert successfully solved multi-step workflows into reusable tier-3 skills: after task completion the agent generates a SKILL.md capturing the approach, tool sequence, and gotchas. The spec defines tier-3 as "agent-created" but never specifies when or how the agent creates skills. The agent repeats the same planning steps for identical tasks, never builds institutional knowledge, and the tier-3 skill directory remains empty unless a human explicitly creates skills. This negates the core self-improvement capability cited as the Hermes inspiration.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">After each successfully completed multi-turn task (outcome=success, turn_count&gt;3), trigger skill crystallization: (1) call the LLM with the task transcript and a classifier prompt ("Is this workflow generalizable?"), (2) if yes, generate a SKILL.md and save to spaces/{spaceId}/agents/{agentId}/skills/{id}/ in R2, (3) run the 27-pattern security scanner on the generated skill before activating, (4) reload skills on the next turn. Track crystallizations in a skill_crystallizations SQLite table. Cap auto-skills at 50 per agent to prevent unbounded growth.</p></div>
+  </div>
+
+  <div id="G-Q12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q12</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO.beforeTurn()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No beforeTurn() Hook — Per-Turn Model/System-Prompt Override Impossible for Multi-Model Routing</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">AssistantDO uses a single fixed model for all turns. For a production assistant, different turns need different models: simple queries → haiku (cheap, fast), code generation → sonnet, complex multi-step planning → opus with extended thinking. The CF Think SDK's beforeTurn(config): TurnConfig fires before each turn and can return overrides for model, system prompt, messages, tools, activeTools, toolChoice, maxSteps, and providerOptions. Without it, all turns run the same model regardless of task complexity, wasting cost on simple turns and underserving complex ones.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement beforeTurn(config: TurnConfig): TurnConfig on AssistantDO (or override in the Think subclass). Classify the incoming message with a lightweight heuristic (no LLM call needed): if simple → return {...config, model: haiku}; if code → return {...config, model: sonnet, maxSteps: 10}; if deep → return {...config, model: opus, providerOptions: {anthropic: {thinking: {type: "enabled", budgetTokens: 8000}}}}. This enables cost optimization without changing the user-facing API.</p></div>
+  </div>
+
+  <div id="G-Q13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q13</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO.runAgentLoop()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No maxSteps Guard in Agentic Loop — Runaway Agent Exhausts Credits and CPU Without Bound</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec's while(continueLoop) agentic loop has no hard ceiling on tool-call iterations. A malicious prompt-injection payload or a skill in an infinite retry loop can trigger hundreds of sequential tool calls. Each call consumes tokens billed against space credits, occupies DO CPU, and triggers downstream side effects (R2 writes, sub-agent spawns, Queue messages). Credit exhaustion is a lagging signal — thousands of dollars of compute can be consumed before it fires.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add maxSteps to the loop: const MAX_STEPS = config.maxSteps ?? 25; let steps = 0; while (continueLoop &amp;&amp; steps &lt; MAX_STEPS) { steps++; ... }. When MAX_STEPS is hit, append a system message: "Maximum tool call depth reached. Summarize progress and ask the user for guidance." and break. Expose maxSteps as a per-turn configurable via beforeTurn(). Also track accumulated tokens per turn and break on budget exhaustion. Emit both conditions to Analytics Engine.</p></div>
+  </div>
+
+  <div id="G-Q14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q14</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO observability</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Agent Decisions Invisible to Tail Workers — CF Agents Observability Channels Not Wired</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The CF Agents SDK emits structured events for every agent decision point via observability channels (import { subscribe } from "agents/observability"): agentTool (tool invocations), agentSchedule (cron/alarm executions), agentState (state mutations), agentRpc (inter-agent calls), agentMcp (MCP connections). These auto-forward to Tail Workers with zero overhead when no subscriber is present. The spec's AssistantDO emits no structured telemetry for these events — only high-level Analytics Engine writes for billing. Debugging a misbehaving agent requires reading raw SQLite message history.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Wire observability channels in AssistantDO's lifecycle hooks: subscribe("agentTool", (event) =&gt; { env.ANALYTICS.writeDataPoint({ blobs: [event.payload.toolName, event.payload.status, spaceId], doubles: [event.payload.durationMs], indexes: [agentId] }); }). Add a naelao-agent-tail Tail Worker that receives these events and routes them to: (1) Analytics Engine for dashboards, (2) a DEBUG queue for forensic replay, (3) real-time alerts when tool error rates spike. Zero hot-path latency cost.</p></div>
+  </div>
+
+  <div id="G-Q15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q15</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO WebSocket handler</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">WebSocket Reconnect Creates Fresh Completion — In-Flight Tool Results Lost During Long-Running Tools</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a WebSocket client disconnects and reconnects mid-turn (network hiccup, mobile app backgrounded), the spec creates a new completion context. If the agent was 10 steps into a 20-step tool chain, the reconnect causes: in-progress tool calls are duplicated (file writes and API calls run twice), and the client receives duplicate or inconsistent assistant messages. The CF Think SDK's AIChatAgent handles this with stream resumption: the in-flight stream is stored in DO state and replayed to the reconnecting client.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Buffer streamed chunks in DO SQLite: (1) on turn start, write stream_state={status:"streaming", turn_id, started_at} to storage, (2) buffer chunks in stream_buffer(chunk_index, content, turn_id), (3) on WebSocket reconnect, detect stream_state.status==="streaming" and replay buffered chunks to the new connection while continuing the live stream, (4) on turn completion delete stream_buffer rows for the turn_id. If adopting Think SDK, AIChatAgent provides this automatically.</p></div>
+  </div>
+
+  <div id="G-Q16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q16</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO scheduling</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Global 5-Minute Cron Fires All Assistants Simultaneously — Thundering Herd on KV Registry</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">A single CF Cron Trigger (*/5 * * * *) wakes all AssistantDOs simultaneously. For N active assistants this creates N concurrent DO activations with correlated KV reads at the same second. At 10,000 active assistants, the correlated spike causes KV read latency spikes affecting all heartbeats simultaneously. The CF Agents SDK provides this.schedule(cronExpression, taskName) within each DO, enabling independent per-DO heartbeats staggered by creation time.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the global cron with per-DO scheduling: in AssistantDO.initialize(), call this.schedule("*/5 * * * *", "heartbeat") if not already scheduled. Each DO manages its own independent alarm, naturally staggered. The global cron trigger is only needed for the platform-level sweeper (stalled-DO detection, billing reconciliation). Migrate the heartbeat logic from the Worker's scheduled() export into a named task: async heartbeat() { await this.processScheduledJobs(); await this.checkSubAgents(); await this.processChannelMessages(); }.</p></div>
+  </div>
+
+  <div id="G-Q17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q17</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§27 — execution-ladder — SpaceR2 workspace</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Versioned Workspace Storage — File Overwrites Are Permanent with No Diff or Rollback</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec's R2 workspace stores files with no version history. When an agent calls write_file(path, content), the previous content is permanently overwritten with no recovery path. For a coding assistant rewriting source files: a bad rewrite is irreversible, there's no way to diff before-vs-after, and the agent cannot undo its own changes if a test fails. Cloudflare's ArtifactFS (cloudflare/artifact-fs) provides git-based versioned storage for agent workspaces with commit history, branch-based experimentation, and rollback.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Integrate ArtifactFS as the backing store for Tier 1 workspace operations. For write_file: instead of r2.put(path, content), call artifactFS.write(path, content, {message: "agent: updated " + path}). Expose undo_last_write(path) calling artifactFS.revert(path, "HEAD~1") and diff_file(path) returning unified diff. If full ArtifactFS is too heavyweight, implement a lightweight versioning layer: before overwriting, copy current content to spaces/{spaceId}/workspace/.history/{path}/{timestamp} and keep the 10 most recent versions per file.</p></div>
+  </div>
+
+  <div id="G-Q18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q18</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§27 — execution-ladder — Tier 1 workspace tools</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Structured edit() Tool Missing from Tier 1 — LLM Reads Entire File and Writes Entire File Back</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec's Tier 1 tools include read_file and write_file but no structured patch/edit tool. For large files (&gt;1000 lines), the LLM must read all N lines (O(N) context tokens), compute the diff mentally, then produce the entire modified file in write_file (O(N) output tokens). This wastes tokens quadratically with file size. The @cloudflare/workspace provides edit(path, edits[]) where edits is an array of {lineStart, lineEnd, newContent} patches applied atomically server-side.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add edit_file(path, edits[]) to Tier 1: type Edit = {startLine: number; endLine: number; newContent: string}. Sort edits by startLine descending (bottom-to-top to preserve line numbers), apply each patch to R2 content, return {linesChanged, hunks, newLineCount}. Also add replace_in_file(path, pattern, replacement, flags) for regex replacements, and grep_workspace(pattern, glob) for project-wide search. These reduce token cost for large file edits from O(N) to O(edit_size).</p></div>
+  </div>
+
+  <div id="G-Q19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q19</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§27 — execution-ladder — SandboxDO / Tier 5</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Tier 5 Sandbox Is Custom Implementation — Misses CF Sandboxes GA Product (Ephemeral Micro-VMs with FUSE Workspace)</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec's Tier 5 SandboxDO implements custom resource management on top of a Dynamic Worker, which shares the same V8 isolate pool — not a separate VM. Cloudflare Sandboxes (GA 2026) provide ephemeral micro-VMs with: full POSIX filesystem, FUSE-mounted R2 workspace (writes auto-persist without explicit upload), configurable network isolation, pre-installed language runtimes (Python 3.11, Node.js 20, Ruby), and exec() API returning {stdout, stderr, exitCode}. The custom SandboxDO has weaker process isolation and requires explicit R2.put() for every file write.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Bind CF Sandboxes in wrangler.toml: [[sandboxes]] binding = "SANDBOX". Refactor SandboxDO to manage a CF Sandbox lifecycle: const sb = await env.SANDBOX.create({ network: "restricted", mounts: [{r2: env.WORKSPACE_BUCKET, path: "/workspace", prefix: `spaces/${spaceId}/workspace/`}] }). Persist sandbox ID in DO SQLite via this.configure({sandboxId: sb.id}). For exec: const result = await sb.exec({cmd: [...], timeoutMs: 30_000}). Set a DO alarm to call sb.terminate() after idle timeout. FUSE mount eliminates explicit file-upload bookkeeping.</p></div>
+  </div>
+
+  <div id="G-Q20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q20</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO.runStep()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No beforeStep() Hook — Per-Step Tool Narrowing and Token Budget Injection Impossible</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec's agentic loop runs all steps identically with the same tool set and model parameters. The CF Think SDK's beforeStep(stepIndex, context) hook fires before each streamText call in the loop and can modify active tools, model override, and providerOptions for that step. This enables: narrowing available tools as the task progresses (disable write tools in the verification step), upgrading to a more capable model for the final synthesis step, and injecting remaining token budget into the step's system prompt to prevent overruns.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement beforeStep(stepIndex, context): StepOverride on AssistantDO. Track task phase in DO state (planning/implementing/verifying). For each phase narrow tools: planning→all tools; implementation→execution tools only (disable create_plan); verification→read/test tools only (disable write tools). Inject budget: const remaining = tokenBudget - context.usedTokens; if (remaining &lt; 1000) add a system message warning. This prevents the agent from calling write tools when it should only be reading, reducing accidental overwrites in verification steps.</p></div>
+  </div>
+
+  <div id="G-Q21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q21</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO.getModel()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">AI Model Hardcoded at Module Level — No Per-Agent or Per-Space Model Override, No Billing-Tier Enforcement</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec initializes the AI model as a constant (anthropic("claude-3-5-sonnet-20241022")) at module or constructor level. The Think SDK requires implementing abstract getModel(): LanguageModel called once per turn. Without it: space admins cannot configure different models for different spaces (code-focused vs. customer-support space have different optimal models), and the platform cannot enforce billing-tier allowlists (free tier → haiku only, pro → sonnet, enterprise → opus).</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement getModel(): LanguageModel on AssistantDO: const config = await this.getAgentConfig(); const modelId = config.modelOverride ?? BILLING_TIER_DEFAULT[this.billingTier]; const allowed = BILLING_TIER_MODELS[this.billingTier]; if (allowed !== "*" &amp;&amp; !allowed.includes(modelId)) throw new Error(`Model ${modelId} not allowed on ${this.billingTier} tier`); return createAnthropic({apiKey: await this.getAnthropicKey()})(modelId). Store modelOverride in DO SQLite via configure&lt;T&gt;() for immediate consistency.</p></div>
+  </div>
+
+  <div id="G-Q22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q22</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO.spawnSubAgent()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Sub-Agent Results Block Parent — No Incremental Streaming of Sub-Agent Progress</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec's sub-agent dispatch via fetch() requires the parent to hold a live HTTP connection until the sub-agent's complete HTTP response arrives. For a sub-agent doing a 10-step research task (minutes of execution), the parent is blocked the entire time. The Think SDK's WebSocket-based this.subAgent() streams results incrementally: the parent receives partial text, tool call events, and step completions in real-time. Without streaming, the parent cannot relay sub-agent progress to the user or detect and abort a stalled sub-agent early.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Upgrade sub-agent communication to WebSocket: (1) parent opens a WebSocket to the sub-agent DO endpoint, (2) sub-agent sends events: {type:"text",delta:"..."}, {type:"tool_call",name:"..",args:{}}, {type:"done",result:{}}, (3) parent forwards text deltas to the end-user's WebSocket in real-time. For abort, parent sends WS close(1000,"parent_abort") which the sub-agent's close handler uses to abort its own agentic loop. If adopting Think SDK, this.subAgent() provides this natively.</p></div>
+  </div>
+
+  <div id="G-Q23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q23</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — Memory OS / AssistantDO.buildSystemPrompt()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Memory OS Grows Without Bound — No Pruning Causes System Prompt Bloat and Context Window Exhaustion</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec injects all facts from the memory SQLite table into the system prompt each turn. With no upper bound and no pruning (decay_rate is defined but never applied per G-N40), a long-running assistant accumulates thousands of entries. The total character count can exceed 50,000 tokens, causing API errors when the full context exceeds the model's context window and burying critical instructions in noise. Hermes solves this with a bounded snapshot (fixed max entries, agent self-manages via the memory tool from G-Q09).</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Enforce a memory budget at prompt construction: const MAX_MEMORY_TOKENS = 4096; const MAX_ENTRIES = 200. At buildSystemPrompt(): (1) query memory ORDER BY (confidence * exp(-decay_rate * age_days)) DESC LIMIT 200, (2) estimate token count of the rendered XML, (3) if over budget, drop lowest-scored entries until under limit. Run a weekly DO alarm trim: DELETE FROM memory WHERE (confidence * exp(-decay_rate * (julianday("now") - julianday(created_at)))) &lt; 0.1. This keeps prompt size bounded while preserving the most relevant recent facts.</p></div>
+  </div>
+
+  <div id="G-Q24" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q24</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§16 — skills — SkillLoader / MCP integration</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No MCP Tool Auto-Discovery — All Skills Hand-Registered, Cannot Leverage External MCP Catalogs</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec's skill system reads SKILL.md files from R2 and injects their descriptions into the system prompt. Adding a new integration (e.g., Jira search) requires writing a SKILL.md, an execution script, and uploading both to R2. OpenClaw and Hermes agents instead discover tools dynamically via MCP: connect to a Composio MCP server, call tools/list, and automatically gain access to hundreds of pre-built integrations (GitHub, Jira, Slack, Notion) without writing skill files. The spec's AssistantDO has no MCP client for dynamic tool discovery.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add MCP client support to AssistantDO: store MCP server URLs in the agent's DO SQLite config (per-space MCP catalog configuration). In beforeTurn(), connect to configured MCP servers via the Think SDK's built-in McpClient (Agent base class supports McpClient), call tools/list, and merge discovered tools into the turn's tools object alongside static skill tools. Cache discovered tools in DO SQLite with a 5-minute TTL to avoid per-turn latency. This allows spaces to add MCP server URLs and instantly gain new capabilities without deploying skill files.</p></div>
+  </div>
+
+  <div id="G-Q25" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q25</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO turn lifecycle</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No onChatEnd() or onChatError() Hooks — No Guaranteed Post-Turn Cleanup or Error Reporting</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec's agentic loop has no defined post-turn lifecycle boundary. When a turn completes or errors, no cleanup callback fires. This means: (1) temporary file write locks acquired during tool execution may not be released if the turn errors mid-flight, (2) sub-agents spawned during the turn that are no longer needed are not cleaned up, (3) billing events (deduct tokens used this turn) are best-effort inline rather than guaranteed post-turn, (4) metrics (turn duration, tool count, token usage) are not reliably emitted on error paths.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement onChatEnd(turn) and onChatError(error, turn) as explicit lifecycle boundaries. Use try/finally wrapping the agentic loop: finally { await this.releaseLocks(turn.locksAcquired); await this.cleanupOrphanSubAgents(turn.subAgentIds, turn.completedIds); await this.billTurn(turn.tokensUsed); await this.emitTurnMetrics(turn); }. On error: await this.abortSubAgents(turn.subAgentIds ?? []); await this.emitErrorMetric(error, turn). This guarantees cleanup even on WebSocket disconnects or DO evictions.</p></div>
+  </div>
+
+  <div id="G-Q26" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q26</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§16 — skills — SkillLoader</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Skill Version Pinning Absent — Skill Updated in R2 Mid-Task Causes Tool Signature Mismatch</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Skills are loaded at the start of an agent session (or DO wake) by reading SKILL.md from R2. The spec provides no version pinning: if a space admin updates a tier-2 skill's SKILL.md (renaming a parameter or removing a tool) while an agent is mid-task using that skill, the agent's in-memory registry references the old interface but the executor may use the new one on next access. There's no ETag or version field checked at load time and no mechanism to detect a skill changed mid-session.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add version pinning to the skill loading flow: each SKILL.md must declare version: semver in YAML frontmatter. At session start, record the loaded ETag/version for each skill in DO SQLite (skill_versions: skill_id, version, etag, loaded_at). Before each tool call that invokes a skill, check if the current R2 ETag matches the loaded one. On mismatch: abort the task with "skill updated mid-task, restart required". Tier-1 platform skills must follow semver breaking-change policy (no tool renames in patch releases). Tier-2/3 skills are immutable during a session — version locked at load time for the DO instance's lifetime.</p></div>
+  </div>
+
+  <div id="G-Q27" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q27</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO tool execution</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No afterToolCall() Hook — Tool Results Not Sanitized or Audited Before Being Sent Back to LLM</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">After a tool executes, the spec forwards the raw tool output directly to the next streamText call with no interception point. This means: (1) a read_file result beginning with "Ignore all previous instructions..." is fed verbatim to the LLM (prompt injection via file content), (2) a list_directory on a 10,000-file directory returns a result that blows the context window, (3) tool results are never logged for audit/forensic purposes. The CF Think SDK's afterToolCall(toolName, args, result) fires after tool execution and before the result is appended to messages.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement afterToolCall(toolName, args, result): ProcessedResult: (1) prompt injection sanitization: if INJECTION_PATTERNS.some(p =&gt; p.test(result.content)) return {content: "[Result sanitized: potential prompt injection]"}; (2) size truncation: if result.content.length &gt; 50_000 return {content: result.content.slice(0, 50_000) + "\n[...truncated]"}; (3) audit logging: INSERT INTO tool_audit_log(turn_id, tool_name, args_hash, result_size, executed_at). If using Think SDK, register as the afterToolCall hook.</p></div>
+  </div>
+
+  <div id="G-Q28" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q28</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO.initialize()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">AssistantDO Schema Initialization Missing blockConcurrencyWhile() — First-Wake Race Corrupts Tables</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">AssistantDO.initialize() creates SQLite tables (sessions, messages, memory, channels, sub_agents, etc.) via this.ctx.storage.sql.exec(). If two concurrent requests reach the DO on its first wake (a user message and the heartbeat cron firing simultaneously), both callers enter initialize() in parallel. Without blockConcurrencyWhile(), both execute the initialization sequence concurrently: CREATE TABLE IF NOT EXISTS prevents duplicate tables, but subsequent INSERTs or ALTER TABLEs in the init sequence can run twice — causing duplicate seed rows, double column additions (SQLite errors on duplicate column names), and inconsistent initial state.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Wrap AssistantDO initialization in blockConcurrencyWhile() to serialize first-wake setup: await this.ctx.blockConcurrencyWhile(async () =&gt; { const initialized = await this.ctx.storage.get("schema_initialized"); if (initialized) return; this.ctx.storage.sql.exec(CREATE_TABLES_DDL); this.ctx.storage.sql.exec(SEED_DATA_SQL); await this.ctx.storage.put("schema_initialized", true); }). Note: blockConcurrencyWhile() is on this.ctx (DurableObjectState) not this.ctx.waitUntil (which is on ExecutionContext). All request handlers that depend on the schema must call a guarded ensureInitialized() before proceeding.</p></div>
+  </div>
+
+  <div id="G-Q29" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q29</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO.heartbeat()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Heartbeat Handler Calls runFiber() as Bare void — Fire-and-Forget Jobs Killed When Alarm Returns</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec's heartbeat handler calls void runFiber(job) for each scheduled job that is due. In a Durable Object alarm handler, the DO request lifecycle ends when the alarm handler's Promise resolves — any background promises not awaited are killed by the runtime. DurableObjectState does NOT have a waitUntil() method (only ExecutionContext does). So void runFiber() inside the alarm handler creates CF Workflow instances (incurring cost) but the DO may be evicted before the Workflow fully starts, leaving orphaned workflow instances in limbo.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">For DO alarm handlers, all async work must be awaited or delegated. Fire workflows from the alarm via CF Queues: (1) in the alarm handler, enqueue all pending jobs to naelao-fiber-queue (Queue writes are guaranteed even if the DO is subsequently evicted), (2) a separate Worker consumes the Queue and calls workflow.create() using ctx.waitUntil() to keep execution alive. Queue delivery is guaranteed independent of DO lifecycle — this ensures all jobs are dispatched even if the alarm handler returns quickly. Never use bare void promise() inside a DO alarm handler for operations that must complete.</p></div>
+  </div>
+
+  <div id="G-Q30" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Q30</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — space-assistants — AssistantDO.buildSystemPrompt()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">System Prompt Fully Rebuilt Every Turn — No CF AI Gateway Prompt Cache Anchor for Memory OS Injection</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">AssistantDO rebuilds the entire system prompt every turn: base persona, skill XML, channel configs, memory facts, cron schedules — all reconstructed from SQLite. Anthropic's prompt caching requires the system prompt to start with a static cacheable prefix. Because the Memory OS injection (potentially thousands of tokens) is included in the single system prompt string, the cache sees a MISS on every turn where any memory fact changed. At 4,000 tokens of memory per turn billed at full input price, a busy assistant accumulates 10x cost vs. a cached equivalent.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Split the system prompt into a static cached prefix and a dynamic suffix. Pass them as separate array entries in the system messages parameter: messages: [{role:"system", content: STATIC_PREFIX, experimental_providerMetadata: {anthropic: {cacheControl: {type: "ephemeral"}}}}, {role:"system", content: dynamicMemorySuffix}]. The static prefix contains: base persona, platform rules, skill instructions (rarely change), channel configs (change infrequently). The dynamic suffix contains: current memory facts, today's date, current task context. This makes 80-90% of the system prompt cacheable, reducing input token cost by 50-80% for long-running agents.</p></div>
+  </div>
+  </div>
 </section>
 
 </body>
