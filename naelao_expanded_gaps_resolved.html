@@ -45502,6 +45502,1351 @@ This produces a structured tool error result the LLM can reason about rather tha
     <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement a multi-agent team pattern using CF facets: async orchestrateTask(task: ComplexTask) { const [researcher, coder, reviewer] = await Promise.all([this.subAgent(ResearcherDO, `research-${task.id}`), this.subAgent(CoderDO, `code-${task.id}`), this.subAgent(ReviewerDO, `review-${task.id}`)]); const [research, code] = await Promise.all([researcher.research(task.context), coder.draft(task.spec)]); const review = await reviewer.review({research, code, requirements: task.requirements}); return {research, code, review}; }. Each specialist DO has its own: tool set (ResearcherDO has web search + knowledge tools, CoderDO has workspace tools, ReviewerDO has read-only tools), memory (separate SQLite in each DO), and system prompt. The parallel execution collapses what would be a sequential 30-step loop into 3 concurrent 10-step tasks, reducing total latency by ~3x.</p></div>
   </div>
   </div>
+
+
+<div class="sep"></div>
+<section id="appendix-t" style="padding:60px 0 40px;">
+  <div style="max-width:860px;margin:0 auto;padding:0 24px;">
+    <span style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);letter-spacing:.15em;text-transform:uppercase;">Appendix T</span>
+    <h2 style="font-family:'Fraunces',serif;font-size:36px;font-weight:700;color:var(--hd);letter-spacing:-.02em;margin:8px 0 6px;">Twelfth-Pass: Space Assistant Completeness — OpenClaw Feature Parity, MCP Apps, Multi-Container, Skills Self-Improvement</h2>
+    <p style="font-family:'Inter',sans-serif;font-size:15px;color:var(--tx);line-height:1.7;margin:0 0 40px;">35 architectural gaps covering: OpenClaw feature parity (continuous background loop, fiber concurrency, proactive trigger types, tool chaining, skill marketplace, inline sub-agent delegation, channel hub normalization, delegation chain), MCP Apps ecosystem (App Store, installed app persistence, tool approval flow, scope model, McpAgent/AIChatAgent separation, OAuth callback), Skills self-improvement via Hermes pattern (crystallization loop, versioning, test suite, within-session cache, conflict resolution), multi-container coordination (pool management, container specialization, filesystem sync, pre-warming, network policy), shared agent user data isolation (memory namespace, Vectorize filter, session isolation, R2 path divergence), instance management (atomic limit enforcement, hibernation flush, spaceId/userId restoration, observability), and missing CF primitive usage (Vectorize write path, decay_rate application, ctx.waitUntil() crash).</p>
+
+  <div id="G-T01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T01</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / keepAlive</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Continuous Background Loop — Heartbeat Driven by External Sweeper Instead of Native this.schedule() + this.keepAliveWhile()</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec drives AssistantDO heartbeats from an external naelao-sweeper Worker running every 5 minutes via CF Cron Trigger. This creates a distributed coordination problem: the sweeper must maintain a KV registry of all active assistants, wake each DO individually via HTTP fetch, and handle failures across potentially thousands of DOs simultaneously. The CF Agents SDK provides this.keepAliveWhile(condition) and this.keepAlive() to prevent DO hibernation without any external coordination, and this.schedule(delay, callback, payload) for self-scheduling the next heartbeat iteration. These primitives were designed exactly for this continuous-background-loop pattern and eliminate the sweeper Worker entirely.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace the external sweeper with internal DO scheduling:
+```typescript
+async onStart() {
+  // Self-schedule first heartbeat immediately
+  await this.schedule(300_000, "heartbeat", {});
+}
+
+async heartbeat(payload: unknown) {
+  await this.runHeartbeatTasks();
+  // Re-schedule next heartbeat
+  await this.schedule(300_000, "heartbeat", {});
+}
+
+async runLongFiberTask(fiber: Fiber) {
+  // Prevent hibernation while fiber is running
+  return await this.keepAliveWhile(async () =&gt; {
+    return await executeFiber(fiber);
+  });
+}
+```
+Remove the naelao-sweeper Worker and its KV registry entirely. Each DO manages its own wakeup cycle independently with zero cross-DO coordination overhead.</p></div>
+  </div>
+
+  <div id="G-T02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T02</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / fiber concurrency</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Fiber Concurrency Model Incomplete — Fibers Stored in SQLite but Executed Sequentially, Not in Parallel</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec stores "fibers" in DO SQLite as a queue and processes them one at a time in the heartbeat loop. The OpenClaw architecture the spec claims to implement runs multiple fibers concurrently using Promise.allSettled() so that a long-running Python execution fiber does not block a quick Slack reply fiber. In a Durable Object, concurrent JavaScript execution is safe within a single turn because DOs are single-threaded per I/O boundary — multiple awaited operations can run in parallel with Promise.all. The spec's sequential fiber drain loop serialises all work, causing a blocked long-running task to delay time-sensitive user-facing responses.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace sequential fiber drain with concurrent execution:
+```typescript
+async heartbeat() {
+  const pendingFibers = this.sql&lt;Fiber[]&gt;`
+    SELECT * FROM fibers
+    WHERE status = 'pending'
+    ORDER BY priority DESC, created_at ASC
+    LIMIT 10
+  `;
+  const results = await Promise.allSettled(
+    pendingFibers.map(f =&gt; this.executeFiber(f))
+  );
+  results.forEach((r, i) =&gt; {
+    if (r.status === 'rejected') {
+      this.markFiberFailed(pendingFibers[i].id, r.reason);
+    }
+  });
+}
+```
+Use ctx.waitUntil() via the Worker's ExecutionContext (passed in fetch, not DurableObjectState) to extend fiber execution beyond the heartbeat request boundary. Cap concurrent fibers at a configurable limit (default 5) to avoid memory pressure.</p></div>
+  </div>
+
+  <div id="G-T03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T03</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / proactive triggers</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Proactive Trigger Types Limited to Time-Based Cron — Event-Based, State-Change, and Threshold Triggers Absent</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec implements proactive agent triggers exclusively as time-based cron schedules stored in cron-jobs.json. The OpenClaw architecture defines four trigger types: (1) time-based (cron), (2) event-based (incoming webhook payload matching a filter), (3) state-change-based (a watched value in DO SQLite crosses a boundary), and (4) threshold-based (a metric — e.g., unread Slack messages &gt; 20). The spec has no mechanism for the agent to react to an incoming Stripe webhook, no way to watch for a DB column crossing a threshold, and no event filter engine. This limits proactive behavior to scheduled tasks only.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a trigger registry table and evaluation engine:
+```typescript
+// In onStart() schema init
+this.sql`CREATE TABLE IF NOT EXISTS triggers (
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL CHECK(type IN ('cron','event','state_change','threshold')),
+  filter_json TEXT NOT NULL,
+  action_json TEXT NOT NULL,
+  last_fired_at INTEGER
+)`;
+
+// Event-based trigger evaluation (called from webhook handler)
+async evaluateTriggers(event: WebhookEvent) {
+  const triggers = this.sql&lt;Trigger[]&gt;`
+    SELECT * FROM triggers WHERE type = 'event'
+  `;
+  for (const t of triggers) {
+    const filter = JSON.parse(t.filter_json);
+    if (matchesFilter(event, filter)) {
+      await this.spawnFiber(JSON.parse(t.action_json), event);
+    }
+  }
+}
+```
+Evaluate threshold triggers in the heartbeat loop by querying watched metrics. Route incoming webhooks (Stripe, GitHub, Slack events) through a shared /webhooks/{spaceId} endpoint that calls evaluateTriggers on the target AssistantDO.</p></div>
+  </div>
+
+  <div id="G-T04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T04</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / tool execution</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Tool Chaining Dependency Graph Absent — Tools Run Sequentially With No DAG-Based Composition</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec runs LLM-selected tools sequentially in a simple loop: call tool, get result, append to messages, call LLM again. OpenClaw's tool composition model allows defining a dependency graph (DAG) where tool A's output is declared as input to tool B, enabling parallel execution of independent branches and typed data flow between tools. For example: (fetch_user_profile, fetch_account_history) run in parallel; their results feed summarize_customer_context; that feeds both draft_response and check_policy simultaneously. The spec's sequential loop cannot express this structure, adding unnecessary latency on multi-tool tasks.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Introduce a tool pipeline definition: tools can declare outputSchema and inputFrom fields:
+```typescript
+const tools = {
+  fetchProfile: tool({
+    outputSchema: userProfileSchema,
+    execute: ({userId}) =&gt; fetchUserProfile(userId)
+  }),
+  fetchHistory: tool({
+    outputSchema: historySchema,
+    execute: ({userId}) =&gt; fetchHistory(userId)
+  }),
+  summarize: tool({
+    inputFrom: ['fetchProfile', 'fetchHistory'],
+    execute: ({fetchProfile, fetchHistory}) =&gt;
+      summarizeContext(fetchProfile, fetchHistory)
+  })
+};
+```
+Implement a DAG executor: topological sort the tool call graph, execute independent nodes with Promise.all(), pass resolved outputs to dependent nodes. Log the full DAG execution trace to DO SQLite for debugging. This collapses three sequential LLM round-trips into a single parallel fan-out + join.</p></div>
+  </div>
+
+  <div id="G-T05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T05</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — Skills / marketplace</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Skill Marketplace Absent — Platform Skills Are Static; No User-Installable Skill Packs</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec defines three skill tiers (Platform, Space-level, Personal) but Tier 1 Platform skills are static files in R2 maintained by the Naelao team. There is no mechanism for users or space admins to browse and install pre-built skill packs from a marketplace (e.g., "HubSpot CRM Skills", "GitHub Code Review Skills", "Notion Writing Skills"). The OpenClaw architecture includes an agent marketplace where skill packs are versioned bundles of tools + instructions that can be installed into an agent with one click. Without this, the skill ecosystem is closed to Naelao-authored content only.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Create a skill marketplace data model and installation flow:
+```typescript
+// In naelao-marketplace Worker / DO
+interface SkillPack {
+  id: string;
+  name: string;
+  version: string;
+  tier: 'platform' | 'community' | 'private';
+  skills: Skill[];
+  tools: ToolDefinition[];
+  r2_key: string; // bundled skill pack in global R2
+}
+
+// In AssistantDO: install a skill pack
+async installSkillPack(packId: string) {
+  const pack = await this.env.MARKETPLACE_DO
+    .get(packId).getMetadata();
+  // Write skills to personal tier in assistant R2
+  await this.env.R2.put(
+    `spaces/${this.spaceId}/assistants/${this.userId}/skills/packs/${packId}.json`,
+    JSON.stringify(pack)
+  );
+  await this.sql`INSERT OR REPLACE INTO installed_packs
+    (pack_id, version, installed_at)
+    VALUES (${packId}, ${pack.version}, unixepoch('now')*1000)`;
+}
+```
+Expose a /marketplace endpoint in the operator shell listing available packs by category, rating, and install count.</p></div>
+  </div>
+
+  <div id="G-T06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T06</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / sub-agent delegation</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Inline Sub-Agent Delegation — Parent Always Fire-and-Forgets; Cannot Await Child Result Synchronously</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec's sub-agent dispatch is always fire-and-forget: the parent AssistantDO POSTs a task to a child agent and moves on. When the child completes, it writes results to a shared SQLite table. The parent only learns of completion on its next heartbeat poll (up to 5 minutes later). OpenClaw's agent delegation model allows a parent to await a child inline — blocking the parent fiber until the child returns a result — enabling complex multi-step workflows where intermediate results feed subsequent LLM calls. The spec has no spawnSubAgent() that returns a Promise resolving to the child's output.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement inline delegation using CF sub-agent RPC:
+```typescript
+// In AssistantDO
+async delegateResearch(topic: string): Promise&lt;string&gt; {
+  // this.subAgent() returns a typed RPC stub
+  const researcher = await this.subAgent(
+    ResearcherDO,
+    `researcher-${this.userId}-${Date.now()}`
+  );
+  // Awaits child completion inline — parent fiber blocks here
+  const result = await researcher.research(topic);
+  return result;
+}
+
+// Usage in agent turn
+const research = await this.delegateResearch(userQuery);
+const answer = await this.llm([...context, research]);
+```
+For fire-and-forget tasks (background indexing, non-blocking notifications), retain the current pattern. For tasks where the parent needs the result before continuing the user-facing turn, use inline delegation. Document the distinction in the spec: inline vs. background delegation patterns.</p></div>
+  </div>
+
+  <div id="G-T07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T07</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — Channel hub / InboxMessage</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Channel Hub Normalization Missing — Slack, Discord, Telegram Have Separate Handlers With No Unified Message Format</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec has separate handler classes for each channel: SlackHandler, DiscordHandler, TelegramHandler, EmailHandler. Each handler parses the channel-native payload format, extracts the message text and user ID, and calls into the agent with channel-specific parameters. When adding a new channel (e.g., WhatsApp, Microsoft Teams), a developer must write a new handler from scratch and integrate it with AssistantDO separately. The OpenClaw channel hub normalizes all incoming messages to a single InboxMessage format before they reach the agent, so the agent never deals with channel-specific payload structures.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define a canonical InboxMessage format and normalize at handler boundaries:
+```typescript
+interface InboxMessage {
+  id: string;
+  channelType: 'slack' | 'discord' | 'telegram' | 'email' | 'sms' | 'web';
+  channelId: string; // e.g. Slack channel ID
+  userId: string; // platform user ID
+  displayName: string;
+  text: string;
+  attachments: Attachment[];
+  replyTo?: string; // thread/message ID for replies
+  timestamp: number;
+  raw: unknown; // original payload for audit
+}
+
+// Each handler converts to InboxMessage
+class SlackHandler {
+  normalize(payload: SlackEvent): InboxMessage {
+    return {
+      channelType: 'slack',
+      channelId: payload.event.channel,
+      userId: payload.event.user,
+      text: payload.event.text,
+      // ...
+    };
+  }
+}
+
+// AssistantDO receives only InboxMessage
+async onInboxMessage(msg: InboxMessage) { ... }
+```
+Store InboxMessages in a unified inbox table in AssistantDO SQLite for full conversation history across channels.</p></div>
+  </div>
+
+  <div id="G-T08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T08</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / sub-agent result delivery</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Agent Delegation Chain — Sub-Agent Results Returned via Polling, Not Synchronous Parent Notification</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a sub-agent finishes its task, it writes results to a shared KV or SQLite table and exits. The parent AssistantDO discovers the result on the next heartbeat poll (5-minute cycle). This polling model introduces up to 5 minutes of latency between task completion and the parent acting on the result — unacceptable for user-facing workflows where the agent is waiting for a research result before drafting a response. The CF parentAgent() RPC call allows a child to push its result directly to the parent's onSubAgentComplete() method, eliminating the polling delay.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace result polling with push notification via parentAgent():
+```typescript
+// In child ResearcherDO
+async research(topic: string) {
+  const result = await doResearch(topic);
+  // Push result to parent immediately on completion
+  const parent = await this.parentAgent(AssistantDO);
+  await parent.onSubAgentComplete({
+    taskId: this.taskId,
+    result,
+    completedAt: Date.now()
+  });
+  return result;
+}
+
+// In parent AssistantDO
+async onSubAgentComplete(
+  payload: {taskId: string; result: string; completedAt: number}
+) {
+  // Resume the waiting fiber immediately
+  await this.resumeFiber(payload.taskId, payload.result);
+  await this.sql`
+    UPDATE fibers SET status='complete', result=${payload.result}
+    WHERE id = ${payload.taskId}
+  `;
+}
+```
+The parent fiber that was awaiting child completion is resumed within milliseconds of child completion. Remove the result polling loop from the heartbeat — it is only needed as a fallback for crashed children.</p></div>
+  </div>
+
+  <div id="G-T09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T09</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / MCP App Store</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No MCP App Store Concept — Users Cannot Browse, Install, or Manage MCP Apps That Extend AssistantDO</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec defines AssistantDO as an MCP server but provides no mechanism for users to install third-party MCP servers (MCP Apps) into their assistant to extend its tool set. In the OpenAI/OpenClaw model, MCP Apps are remote MCP servers that users can install via an OAuth flow — the agent then has access to their tools automatically. Without an App Store concept, the Naelao platform is locked to only the tools the Naelao team ships, preventing the ecosystem growth that makes agent platforms valuable. CF natively supports remote MCP servers via the McpAgent class and can serve as an MCP proxy.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define the MCP App Store architecture:
+1. Create a naelao-app-store Worker/DO that maintains a registry of available MCP Apps (name, description, OAuth endpoints, tool manifest, scopes).
+2. Add an /app-store endpoint in the operator shell for browsing apps.
+3. On install click, initiate OAuth flow: redirect user to MCP server's OAuth URL with redirect_uri=https://app.naelao.dev/mcp-oauth-callback.
+4. On callback, store the access token and installed app metadata in AssistantDO SQLite (see G-T10).
+5. On each agent turn, load installed app tools by fetching the MCP server's /tools endpoint using the stored access token.
+
+Store the App Store registry in a global DO: appStoreStub.registerApp(appManifest). Space admins can publish private apps only visible within their space.</p></div>
+  </div>
+
+  <div id="G-T10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T10</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / mcp_apps table</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Installed MCP App State Not Persisted — No mcp_apps Table in AssistantDO SQLite</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Even if an MCP App install flow is implemented, the spec has no SQLite table to store installed app metadata (OAuth tokens, scopes, app ID, installation date). Without persistent storage, installed apps are lost on DO hibernation. The agent would need to re-authenticate every time it wakes, breaking any MCP App integration. Additionally, there is no mechanism to list which apps a user has installed, revoke an app's access, or refresh expired OAuth tokens.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add the mcp_apps table in AssistantDO onStart():
+```typescript
+this.sql`CREATE TABLE IF NOT EXISTS mcp_apps (
+  app_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  mcp_server_url TEXT NOT NULL,
+  access_token TEXT NOT NULL,
+  refresh_token TEXT,
+  token_expires_at INTEGER,
+  scopes_json TEXT NOT NULL DEFAULT '[]',
+  installed_at INTEGER NOT NULL DEFAULT (unixepoch('now')*1000),
+  last_used_at INTEGER,
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK(status IN ('active','revoked','error'))
+)`;
+
+// Token refresh logic
+async getAppToken(appId: string): Promise&lt;string&gt; {
+  const app = this.sql&lt;McpApp[]&gt;`
+    SELECT * FROM mcp_apps WHERE app_id = ${appId}
+      AND status = 'active'
+  `[0];
+  if (!app) throw new Error('App not installed');
+  if (app.token_expires_at &amp;&amp; app.token_expires_at &lt; Date.now()) {
+    return await this.refreshAppToken(app);
+  }
+  return app.access_token;
+}
+```
+Store OAuth tokens encrypted using the space's encryption key (env.ENCRYPTION_KEY). Never log access tokens in Analytics Engine or console.</p></div>
+  </div>
+
+  <div id="G-T11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T11</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / MCP tool approval</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">MCP App Tool Approval Flow Missing — Installed MCP App Tools Bypass needsApproval Requirement on First Use</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a user installs an MCP App, its tools immediately become available to the agent with no human approval required on first execution. If a malicious or misconfigured MCP App exposes a "delete_all_files" tool, the agent could invoke it without the user ever seeing an approval prompt. The CF Agents SDK's needsApproval: true flag should be automatically applied to all tools from installed MCP Apps until the user has explicitly approved each tool at least once. First-use approval creates a trust baseline for the installed app's tool set.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement first-use approval for MCP app tools:
+```typescript
+async callMcpAppTool(
+  appId: string, toolName: string, args: unknown
+) {
+  const approval = this.sql&lt;ApprovalRecord[]&gt;`
+    SELECT * FROM mcp_tool_approvals
+    WHERE app_id = ${appId} AND tool_name = ${toolName}
+  `[0];
+
+  if (!approval) {
+    // First use: require explicit approval
+    return await this.requestHumanApproval({
+      type: 'mcp_tool_first_use',
+      appId, toolName, args,
+      message: `MCP App "${appId}" wants to run "${toolName}" for the first time.`
+    });
+  }
+
+  // Approved: execute the tool
+  return await this.invokeMcpTool(appId, toolName, args);
+}
+```
+Add a mcp_tool_approvals table: (app_id, tool_name, approved_at, approved_by_user_id). After first approval, subsequent calls execute without prompting. Revocation of an app (mcp_apps.status = 'revoked') also clears its tool approvals.</p></div>
+  </div>
+
+  <div id="G-T12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T12</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / MCP app scopes</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No MCP App Scopes/Permissions Model — App Installation Grants All Tools With No Per-Tool Scope Manifest</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec has no concept of per-tool scopes for MCP Apps. In the OpenAI plugin/MCP App model, each app publishes a scope manifest listing which tools require which permission levels (read-only, write, destructive). The user approves a scope manifest at install time, not individual tool calls. An MCP App that has only read scopes approved cannot execute write or destructive tools even if the agent tries to call them. Without scopes, all installed app tools have equal access, making it impossible to install a "read-only analytics" MCP App without also granting its incidentally available write tools.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add scope enforcement to MCP app tool dispatch:
+```typescript
+interface McpAppScope {
+  toolName: string;
+  level: 'read' | 'write' | 'destructive';
+  description: string;
+}
+
+// At install time, user approves specific scopes
+async installMcpApp(
+  appId: string,
+  approvedScopes: McpAppScope[]
+) {
+  const scopeJson = JSON.stringify(approvedScopes);
+  await this.sql`INSERT INTO mcp_apps
+    (app_id, scopes_json, ...)
+    VALUES (${appId}, ${scopeJson}, ...)`;
+}
+
+// At tool call time, enforce scopes
+async callMcpAppTool(
+  appId: string, toolName: string, args: unknown
+) {
+  const app = await this.getMcpApp(appId);
+  const scopes: McpAppScope[] = JSON.parse(app.scopes_json);
+  const allowed = scopes.find(s =&gt; s.toolName === toolName);
+  if (!allowed) {
+    throw new Error(
+      `Tool "${toolName}" not in approved scopes for app "${appId}"
+    `);
+  }
+  return await this.invokeMcpTool(appId, toolName, args);
+}
+```
+Display the scope manifest in the App Store install UI so users understand what they are approving.</p></div>
+  </div>
+
+  <div id="G-T13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T13</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / McpAgent vs AIChatAgent</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">AssistantDO Conflates MCP Server and AIChatAgent Roles — Violates CF SDK Class Hierarchy</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec has AssistantDO simultaneously acting as: (1) an MCP server (exposing tools to external MCP clients via the MCP protocol), and (2) an AIChatAgent (running the inner LLM loop, managing conversation history, handling WebSocket chat sessions). The CF Agents SDK separates these: McpAgent extends Agent and handles MCP protocol (tool listing, tool execution over MCP JSON-RPC), while AIChatAgent extends Think and handles the conversational AI loop. Conflating both in one DO means MCP protocol messages and WebSocket chat messages share the same handler, creating routing ambiguity and preventing independent scaling of MCP serving vs. chat serving.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Separate AssistantDO into two distinct classes:
+```typescript
+// MCP server: exposes tools to external MCP clients
+class AssistantMcpDO extends McpAgent&lt;Env&gt; {
+  server = new McpServer({name: 'Naelao Assistant'});
+
+  async init() {
+    this.server.tool('search_memory', searchMemorySchema,
+      (args) =&gt; this.searchMemory(args));
+    this.server.tool('create_task', createTaskSchema,
+      (args) =&gt; this.createTask(args));
+  }
+}
+
+// Chat agent: handles user-facing conversation
+class AssistantDO extends AIChatAgent&lt;Env, AssistantState&gt; {
+  async onChatMessage(message: ChatMessage) {
+    return await this.think(message.content);
+  }
+}
+```
+Route /mcp/* requests to AssistantMcpDO and /agents/assistant-do/* requests to AssistantDO. This is the pattern CF's moltworker reference implementation uses. The McpDO can delegate tool execution back to the main AssistantDO via service binding RPC.</p></div>
+  </div>
+
+  <div id="G-T14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T14</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / MCP OAuth callback</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Remote MCP Server OAuth Callback Handling — MCP App Installation Flow Has No Redirect URI Handler</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">MCP App installation via OAuth requires a redirect URI: after the user grants access on the MCP server's OAuth page, the browser redirects to https://app.naelao.dev/mcp-oauth-callback?code=...&amp;state=... The naelao-assistant Worker has no handler for this path. The OAuth code cannot be exchanged for an access token, so the installation flow never completes. This is a blocking gap for any MCP App ecosystem: without a callback handler, zero MCP apps can be installed.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add an OAuth callback handler to naelao-assistant (or naelao-router) Worker:
+```typescript
+// In naelao-router fetch handler
+if (url.pathname === '/mcp-oauth-callback') {
+  const code = url.searchParams.get('code');
+  const state = url.searchParams.get('state');
+  if (!code || !state) {
+    return new Response('Bad Request', {status: 400});
+  }
+  // Decode state: {spaceId, userId, appId, codeVerifier}
+  const stateData = await verifyAndDecodeOAuthState(
+    state, env.JWT_SECRET
+  );
+  // Exchange code for token
+  const app = await getAppManifest(stateData.appId);
+  const tokenResponse = await fetch(app.tokenEndpoint, {
+    method: 'POST',
+    body: new URLSearchParams({
+      grant_type: 'authorization_code', code,
+      code_verifier: stateData.codeVerifier,
+      redirect_uri: 'https://app.naelao.dev/mcp-oauth-callback',
+      client_id: env.MCP_CLIENT_ID
+    })
+  });
+  const token = await tokenResponse.json();
+  // Store token in AssistantDO
+  const assistantDO = getAssistantDO(
+    stateData.spaceId, stateData.userId, env
+  );
+  await assistantDO.storeMcpAppToken(stateData.appId, token);
+  return Response.redirect('/app-store?installed=' + stateData.appId);
+}
+```
+Use PKCE (code_verifier/code_challenge) for security. Store the OAuth state JWT in a short-lived KV entry (TTL: 10 minutes) to prevent CSRF and replay attacks.</p></div>
+  </div>
+
+  <div id="G-T15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T15</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — Skills / Hermes self-improvement</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Skills Never Self-Improve — No Post-Task Skill Crystallization Loop (Hermes Pattern)</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec defines skills as static instruction files stored in R2, written once by users or the Naelao team. After an agent successfully completes a complex task, the specific tool call sequence and reasoning chain that worked are discarded. The Hermes self-improvement pattern defines: after each successful agentic task completion, extract the successful tool call sequence as a reusable skill, store it in the agent's personal skill tier, and use it automatically next time a similar task appears. This transforms each agent from a static instruction-follower into a continuously improving system that gets better at tasks it has done before.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement post-task skill crystallization:
+```typescript
+async onTaskComplete(task: CompletedTask) {
+  if (!task.success || task.turnCount &lt; 3) return;
+
+  // Extract the successful tool call sequence
+  const toolSequence = task.messages
+    .filter(m =&gt; m.role === 'assistant' &amp;&amp; m.tool_calls)
+    .map(m =&gt; m.tool_calls);
+
+  if (toolSequence.length === 0) return;
+
+  // Ask the LLM to crystallize a skill from this run
+  const skillDef = await this.llm([{
+    role: 'system',
+    content: 'Extract a reusable skill from this successful task run.'
+  }, {
+    role: 'user',
+    content: JSON.stringify({task: task.description, toolSequence})
+  }]);
+
+  // Store as a new personal-tier skill
+  await this.addSkill({
+    id: `crystallized-${Date.now()}`,
+    name: skillDef.name,
+    description: skillDef.description,
+    instructions: skillDef.instructions,
+    sourceTask: task.id,
+    version: 1
+  });
+}
+```
+Gate crystallization on task success (no human corrections after completion) and minimum complexity (&gt;= 3 tool calls). Log crystallization events to Analytics Engine for observability.</p></div>
+  </div>
+
+  <div id="G-T16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T16</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — Skills / versioning</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Skill Versioning — Self-Modified Skills Overwrite Previous Version With No Rollback Capability</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a skill is self-improved (G-T15) or manually edited by a user, the new version overwrites the old R2 object. If the new version causes the agent to perform worse (more errors, user complaints, lower task completion rate), there is no way to rollback to the previous version. The spec has no version history for skills, no comparison between skill versions, and no automatic rollback trigger if a new version degrades performance metrics.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add skill versioning:
+```typescript
+// R2 key pattern with version
+const skillKey = (skillId: string, version: number) =&gt;
+  `spaces/${spaceId}/assistants/${userId}/skills/${skillId}/v${version}.json`;
+
+async addSkill(skill: Skill) {
+  const existing = await this.getLatestSkill(skill.id);
+  const version = existing ? existing.version + 1 : 1;
+  const key = skillKey(skill.id, version);
+  await this.env.R2.put(key, JSON.stringify({...skill, version}));
+
+  // Update skill index
+  await this.sql`INSERT OR REPLACE INTO skill_versions
+    (skill_id, version, r2_key, created_at)
+    VALUES (${skill.id}, ${version}, ${key}, unixepoch('now')*1000)`;
+  await this.sql`UPDATE skills SET current_version = ${version}
+    WHERE id = ${skill.id}`;
+}
+
+async rollbackSkill(skillId: string, toVersion: number) {
+  await this.sql`UPDATE skills
+    SET current_version = ${toVersion}
+    WHERE id = ${skillId}`;
+}
+```
+Expose rollback in the operator shell skill management UI. Retain last 10 versions per skill in R2; prune older versions automatically. Track per-version task success rate to enable data-driven rollback decisions.</p></div>
+  </div>
+
+  <div id="G-T17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T17</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — Skills / test suite</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Skill Test Suite — Self-Modified Skills Have No Automated Validation After Modification</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When the Hermes skill crystallization loop (G-T15) or a user edit modifies a skill, the new version is immediately live with no automated validation. A poorly crystallized skill could instruct the agent to always use a deprecated tool, include incorrect parameter names, or contradict the base system prompt. Without test cases, the only signal that a skill version is broken is user complaints after the damage is done. The OpenClaw framework defines per-skill test cases: a set of input/expected-output pairs that are auto-run after any skill modification.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a skill test framework:
+```typescript
+interface SkillTest {
+  id: string;
+  skill_id: string;
+  input_message: string;
+  expected_tool_calls: string[]; // tool names that must appear
+  forbidden_tool_calls: string[]; // tools that must NOT appear
+  expected_output_contains: string[];
+}
+
+async runSkillTests(skillId: string): Promise&lt;TestResult[]&gt; {
+  const tests = this.sql&lt;SkillTest[]&gt;`
+    SELECT * FROM skill_tests WHERE skill_id = ${skillId}
+  `;
+  const results = await Promise.all(tests.map(async t =&gt; {
+    const run = await this.testRun(t.input_message, skillId);
+    const passed =
+      t.expected_tool_calls.every(tc =&gt;
+        run.toolCalls.includes(tc)) &amp;&amp;
+      t.forbidden_tool_calls.every(tc =&gt;
+        !run.toolCalls.includes(tc));
+    return {testId: t.id, passed, run};
+  }));
+  // Auto-rollback if any test fails
+  if (results.some(r =&gt; !r.passed)) {
+    await this.rollbackSkill(skillId);
+  }
+  return results;
+}
+```
+Run tests asynchronously after skill modification using this.queue('runSkillTests', {skillId}). Alert the space admin if a skill auto-rolled back.</p></div>
+  </div>
+
+  <div id="G-T18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T18</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — Skills / caching</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Skill Loading Not Cached Within Session — All Three Tiers Re-Read From R2 on Every Agent Turn</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec loads skills by reading R2 objects for all three tiers (Platform, Space, Personal) on each agent turn to compose the system prompt. A single turn may load 10-30 skill files across three R2 prefixes. With R2 read latency of 20-40ms per object and no within-session cache, a turn that activates 5 skills incurs 100-200ms of R2 read overhead on top of LLM latency. Skills rarely change during an active session (they change between sessions when a user edits them). An in-memory cache keyed by skill version avoids redundant R2 reads within the same DO activation.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add an in-memory skill cache with version-based invalidation:
+```typescript
+class AssistantDO extends AIChatAgent&lt;Env&gt; {
+  // In-memory cache: survives multiple turns within same activation
+  private skillCache = new Map&lt;string, {version: number; skill: Skill}&gt;();
+
+  async loadSkills(): Promise&lt;Skill[]&gt; {
+    const index = this.sql&lt;SkillIndex[]&gt;`
+      SELECT id, current_version FROM skills WHERE active = 1
+    `;
+    const skills = await Promise.all(index.map(async ({id, current_version}) =&gt; {
+      const cached = this.skillCache.get(id);
+      if (cached?.version === current_version) return cached.skill;
+
+      // Cache miss: read from R2
+      const obj = await this.env.R2.get(
+        skillKey(id, current_version)
+      );
+      const skill = await obj!.json&lt;Skill&gt;();
+      this.skillCache.set(id, {version: current_version, skill});
+      return skill;
+    }));
+    return skills;
+  }
+}
+```
+The cache is invalidated on hibernation (in-memory state is lost) but rebuilt from SQLite index on the next activation. Cache size is bounded by the number of active skills (typically &lt;50) — no eviction policy needed.</p></div>
+  </div>
+
+  <div id="G-T19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T19</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — Skills / conflict resolution</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Skill Conflict Resolution — Tier 3 Override of Tier 1/2 Is Silent With No Precedence Logging</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec loads skills from three tiers and concatenates their instructions into the system prompt with Tier 3 (Personal) taking precedence over Tier 2 (Space) which takes precedence over Tier 1 (Platform). If a Personal skill says "always respond in French" but a Platform skill says "always respond in the user's detected language", the conflict is silently resolved by instruction ordering — the last instruction wins, but no one knows why the agent is behaving oddly. Conflicting skill instructions produce unpredictable LLM behavior because the model tries to satisfy contradictory constraints.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add conflict detection and precedence logging:
+```typescript
+async detectSkillConflicts(skills: Skill[]): Promise&lt;Conflict[]&gt; {
+  // Use a lightweight LLM call to detect instruction conflicts
+  const conflicts = await this.llm([{
+    role: 'system',
+    content: 'Identify conflicting instructions in this skill set. Output JSON: [{skill1, skill2, conflict_description}]'
+  }, {
+    role: 'user',
+    content: skills.map(s =&gt; `${s.id} (Tier ${s.tier}): ${s.instructions}`).join('\n---\n')
+  }]);
+  return JSON.parse(conflicts);
+}
+
+async buildSystemPrompt(skills: Skill[]): Promise&lt;string&gt; {
+  const conflicts = await this.detectSkillConflicts(skills);
+  if (conflicts.length &gt; 0) {
+    // Log to Analytics Engine for admin review
+    this.env.ANALYTICS.writeDataPoint({
+      blobs: [JSON.stringify(conflicts), this.spaceId],
+      indexes: ['skill_conflict']
+    });
+  }
+  // Apply tier precedence explicitly in prompt
+  return buildPromptWithPrecedenceComments(skills, conflicts);
+}
+```
+Surface conflicts in the operator shell skill management view so admins can resolve them intentionally rather than discovering them through agent misbehavior.</p></div>
+  </div>
+
+  <div id="G-T20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T20</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantSandboxDO / multi-container</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Single Container Assumption — AssistantSandboxDO Manages One Container; Concurrent Tasks Compete on Same Sandbox</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">AssistantSandboxDO creates a single CF Container per assistant and routes all sandbox tasks (Python execution, bash scripts, browser automation, Node.js code) through it sequentially. When a long-running Python data analysis fiber is executing, it blocks bash command execution, browser screenshot tasks, and all other sandbox work for that assistant. The Moltworker architecture defines a multi-container pool: multiple specialized containers per agent with independent execution, sharing a single R2 workspace as the source of truth. The spec never defines container pool management, container type specialization, or cross-container task routing.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Redesign AssistantSandboxDO to manage a container pool:
+```typescript
+interface ContainerSlot {
+  id: string;
+  type: 'python' | 'node' | 'browser' | 'bash';
+  status: 'idle' | 'busy' | 'starting';
+  containerRef: DurableObjectStub | null;
+  lastUsedAt: number;
+}
+
+class AssistantSandboxDO extends DurableObject {
+  private pool: ContainerSlot[] = [];
+  private maxContainers = 3; // configurable per space plan
+
+  async executeTask(task: SandboxTask): Promise&lt;TaskResult&gt; {
+    const slot = await this.acquireContainer(task.type);
+    try {
+      return await slot.containerRef!.execute(task);
+    } finally {
+      this.releaseContainer(slot.id);
+    }
+  }
+
+  async acquireContainer(type: ContainerSlot['type']) {
+    // Find idle container of matching type, or create new one
+    let slot = this.pool.find(
+      s =&gt; s.type === type &amp;&amp; s.status === 'idle'
+    );
+    if (!slot &amp;&amp; this.pool.length &lt; this.maxContainers) {
+      slot = await this.createContainer(type);
+    }
+    if (!slot) throw new Error('Container pool exhausted');
+    slot.status = 'busy';
+    return slot;
+  }
+}
+```
+Expose pool status in AssistantDO.getHealth() for observability.</p></div>
+  </div>
+
+  <div id="G-T21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T21</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantSandboxDO / container types</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Container Type Specialization Absent — All Tasks Run in a Single Generic Container</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec creates one generic CF Container per assistant and runs all workloads in it: Python scripts, bash commands, Node.js code, and browser automation (Playwright). A generic container must include Python runtime, Node.js, and a Chromium browser, making its image large and its startup time slow (~3 seconds cold start for a full-featured image). Moltworker's multi-container model uses specialized containers: a slim Python container (~1.2s start), a Node.js container (~0.8s start), and a heavier browser container (~4s start). Tasks are routed to the appropriate specialized container, reducing average cold start by ~60%.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define container type manifests in the spec:
+```typescript
+const CONTAINER_TYPES = {
+  python: {
+    image: 'naelao/sandbox-python:latest', // Python 3.12 + common libs
+    memoryMb: 512,
+    cpuMilli: 1000,
+    diskMb: 1024
+  },
+  node: {
+    image: 'naelao/sandbox-node:latest', // Node.js 22 + npm
+    memoryMb: 256,
+    cpuMilli: 500,
+    diskMb: 512
+  },
+  browser: {
+    image: 'naelao/sandbox-browser:latest', // Chromium + Playwright
+    memoryMb: 2048,
+    cpuMilli: 2000,
+    diskMb: 4096
+  },
+  bash: {
+    image: 'naelao/sandbox-bash:latest', // Alpine + common CLI tools
+    memoryMb: 128,
+    cpuMilli: 250,
+    diskMb: 256
+  }
+} as const;
+```
+Publish these container images to the Cloudflare Container Registry and reference them in wrangler.toml container bindings. The task router in AssistantSandboxDO selects container type based on task.type from the fiber definition.</p></div>
+  </div>
+
+  <div id="G-T22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T22</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantSandboxDO / filesystem sync</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Container Filesystem Sync Undefined — Concurrent Container Writes to Same R2 Prefix Cause Undefined Behavior</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec mentions FUSE-mounted R2 as the container workspace but never specifies: (1) which R2 bucket prefix each container mounts, (2) how FUSE write-back is triggered (write-through vs. write-behind), (3) how a second container reading a file written by the first container avoids a stale cache read, and (4) what happens when two containers write to the same file concurrently. In the Moltworker model, R2 is the source of truth: containers use FUSE write-through (every write is immediately PUT to R2), and cache invalidation uses R2 event notifications (R2 PUT fires an event that all containers with the affected key in their FUSE cache must invalidate).</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define the filesystem sync protocol in the spec:
+```
+Write path:
+  Container write → FUSE driver → R2.put(key, data) (synchronous)
+  On R2.put success → FUSE confirms write to container
+  On R2.put failure → FUSE returns EIO to container
+
+Read/cache invalidation path:
+  Container read → FUSE checks local cache → cache miss: R2.get(key)
+  R2 PUT event → naelao-r2-notifier Worker →
+    AssistantSandboxDO.onR2Event(key) →
+    broadcast invalidation to all active containers via
+    container.invalidateCache(key)
+
+Conflict resolution:
+  R2 object versioning enabled on workspace bucket
+  Concurrent writes: last-writer-wins (R2 conditional PUT not used)
+  Conflict detection: container can opt-in to R2 conditional
+  PUT (If-Match: etag) for critical files
+```
+Document this explicitly in the Moltworker integration spec section. Add a conflict_log table in AssistantSandboxDO SQLite to record R2 write conflicts for debugging.</p></div>
+  </div>
+
+  <div id="G-T23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T23</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantSandboxDO / pre-warming</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Container Pre-Warming Pool — First Sandbox Task After Idle Incurs 3+ Second Cold Start Latency</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">CF Containers have a cold start time of 1.5-4 seconds depending on image size. AssistantSandboxDO creates containers on demand when the first sandbox task arrives. After the DO has been idle (e.g., overnight), the next morning's first task — often a simple bash command — waits 3 seconds before executing. For interactive agents, this latency is jarring. The Moltworker model defines a container pre-warm pool: when the AssistantDO heartbeat detects an upcoming scheduled task or the user has been actively chatting recently (signals the agent may soon need a container), it pre-warms a container in the background.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add pre-warming to AssistantSandboxDO:
+```typescript
+async preWarmIfNeeded() {
+  const idleSlot = this.pool.find(s =&gt; s.status === 'idle');
+  if (idleSlot) return; // already warm
+  if (this.pool.length &gt;= this.maxContainers) return; // pool full
+
+  // Pre-warm the most common container type for this assistant
+  const mostUsed = await this.getMostUsedContainerType();
+  const slot = await this.createContainer(mostUsed);
+  slot.status = 'idle';
+  this.pool.push(slot);
+  console.log(`Pre-warmed ${mostUsed} container for ${this.agentId}`);
+}
+```
+Call preWarmIfNeeded() from AssistantDO heartbeat when: (1) user has sent a message in the last 5 minutes, (2) a scheduled task is due in the next 60 seconds, or (3) the DO has just woken from hibernation. Configure pre-warm as a DO alarm set 30 seconds before a known upcoming task. Pre-warm only if the space plan includes container access (avoid wasting resources for text-only assistants).</p></div>
+  </div>
+
+  <div id="G-T24" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T24</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantSandboxDO / network policy</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Container Network Policy Not Configured — Containers Get Full Network Access by Default; Untrusted Code Runs Unrestricted</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">env.SANDBOX.create() is called in the spec without a network policy option. CF Containers support configurable network policies: full (default, internet access), restricted (only egress to allowlisted hostnames), or none (no network). Agent-executed user code (Python scripts, bash commands from LLM tool calls) runs in a container with full internet access by default. A prompt-injected agent could exfiltrate secrets, make unexpected external API calls, or participate in a DDoS attack from within the container.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add network policy to container creation:
+```typescript
+async createContainer(
+  type: ContainerSlot['type'],
+  taskContext: TaskContext
+): Promise&lt;ContainerSlot&gt; {
+  const networkPolicy = this.resolveNetworkPolicy(
+    type, taskContext
+  );
+  const container = await this.env.SANDBOX.create({
+    image: CONTAINER_TYPES[type].image,
+    network: networkPolicy,
+    memory: CONTAINER_TYPES[type].memoryMb * 1024 * 1024,
+    cpu: CONTAINER_TYPES[type].cpuMilli
+  });
+  return {id: crypto.randomUUID(), type, containerRef: container, status: 'idle', lastUsedAt: 0};
+}
+
+resolveNetworkPolicy(
+  type: ContainerSlot['type'],
+  ctx: TaskContext
+): NetworkPolicy {
+  if (ctx.userProvided) {
+    // User-submitted code: restricted egress only
+    return {
+      type: 'restricted',
+      allowedHostnames: this.spaceConfig.sandboxAllowedHosts ?? []
+    };
+  }
+  // Agent-generated code: allow access to declared tools only
+  return { type: 'restricted', allowedHostnames: ctx.requiredHosts };
+}
+```
+Allow space admins to configure sandboxAllowedHosts in space settings for legitimate external API access from containers.</p></div>
+  </div>
+
+  <div id="G-T25" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T25</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / shared agent memory</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Shared Agent Mode Memory Namespace Collision — memory Table Has No user_id Column; All Users' Memories Merge</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a Space admin enables shared assistant mode (one AssistantDO instance serving all space members), the current memory table schema has no user_id column. All users' extracted facts, conversation summaries, and structured memories write to the same namespace. User A's personal information (address, payment method, preferences) is retrievable during User B's conversation. This is a data isolation failure with potential GDPR implications: User B's agent may reference User A's personal data in its responses.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add user_id to all memory tables and enforce isolation at query time:
+```typescript
+// Schema (in onStart):
+this.sql`ALTER TABLE memories ADD COLUMN user_id TEXT`;
+this.sql`CREATE INDEX IF NOT EXISTS idx_memories_user
+  ON memories(user_id, space_id)`;
+
+// Write path — always include user_id:
+async storeMemory(key: string, value: string, userId: string) {
+  const memKey = this.isSharedMode
+    ? `${userId}:${key}` // namespace with userId in shared mode
+    : key;
+  await this.sql`INSERT OR REPLACE INTO memories
+    (key, value, user_id, space_id, updated_at)
+    VALUES (
+      ${memKey}, ${value}, ${userId},
+      ${this.spaceId}, unixepoch('now')*1000
+    )`;
+}
+
+// Read path — always filter by user_id:
+async recallMemory(key: string, userId: string) {
+  const memKey = this.isSharedMode ? `${userId}:${key}` : key;
+  return this.sql&lt;Memory[]&gt;`
+    SELECT * FROM memories
+    WHERE key = ${memKey} AND user_id = ${userId}
+  `[0];
+}
+```
+Apply the same user_id isolation to structured_facts, sessions, and all other per-user tables when in shared mode.</p></div>
+  </div>
+
+  <div id="G-T26" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T26</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / Vectorize isolation</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Shared Agent Vectorize Namespace Collision — Vector Search Has No user_id Filter; User A's Memories Appear in User B's Recall</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">In shared agent mode, all users' memories are inserted into the same Vectorize index (Layer 5 of the Memory OS) with no user_id metadata. A vector similarity search for User B's question may return embedding neighbors from User A's stored memories. Because vector similarity is semantic (not syntactic), the leakage is invisible: User B's agent may surface personal facts about User A without any obvious indicator that the data came from a different user.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add user_id to all Vectorize inserts and filter on all queries:
+```typescript
+// Write path:
+async storeVectorMemory(
+  text: string, userId: string, metadata: Record&lt;string, string&gt;
+) {
+  const embedding = await this.env.AI.run(
+    '@cf/baai/bge-small-en-v1.5', {text}
+  );
+  await this.env.VECTORIZE.upsert([{
+    id: `${userId}-${crypto.randomUUID()}`,
+    values: embedding.data[0],
+    metadata: {
+      userId, // REQUIRED for isolation
+      spaceId: this.spaceId,
+      ...metadata
+    }
+  }]);
+}
+
+// Read path — ALWAYS include userId filter:
+async recallVectorMemory(query: string, userId: string) {
+  const embedding = await this.env.AI.run(
+    '@cf/baai/bge-small-en-v1.5', {text: query}
+  );
+  return await this.env.VECTORIZE.query(
+    embedding.data[0],
+    {
+      topK: 10,
+      filter: {userId, spaceId: this.spaceId} // user isolation filter
+    }
+  );
+}
+```
+Audit all existing Vectorize query call sites in the spec to ensure none omit the userId filter. In non-shared mode, the userId filter is still recommended as defense-in-depth.</p></div>
+  </div>
+
+  <div id="G-T27" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T27</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / shared sessions</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Shared Agent Channel Sessions Not Per-User — sessions Table Has No user_id Column; All Users Share One Session Per Channel</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">In shared agent mode, the sessions table tracks active sessions by channel type (Slack, Discord, etc.) but has no user_id column. When User A and User B both send Slack messages in the same channel, the agent creates one session for the Slack channel. Both users' messages are appended to the same session, interleaving their conversations. The agent responds to User B's message with context from User A's conversation and vice versa — complete conversation isolation failure.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add user_id to the sessions table and use channel+user as the session key:
+```typescript
+// Updated schema:
+this.sql`CREATE TABLE IF NOT EXISTS sessions (
+  id TEXT PRIMARY KEY,
+  space_id TEXT NOT NULL,
+  user_id TEXT NOT NULL, -- required, even in non-shared mode
+  channel_type TEXT,
+  channel_id TEXT, -- Slack channel ID, Discord guild ID, etc.
+  created_at INTEGER NOT NULL DEFAULT (unixepoch('now')*1000),
+  last_message_at INTEGER
+)`;
+this.sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_channel_user
+  ON sessions(channel_type, channel_id, user_id)`;
+
+// Session lookup: unique per channel+user combination
+async getOrCreateSession(
+  channelType: string, channelId: string, userId: string
+): Promise&lt;Session&gt; {
+  return this.sql&lt;Session[]&gt;`
+    INSERT OR IGNORE INTO sessions
+      (id, space_id, user_id, channel_type, channel_id)
+    VALUES (
+      ${crypto.randomUUID()}, ${this.spaceId},
+      ${userId}, ${channelType}, ${channelId}
+    )
+    RETURNING *
+  `[0] ?? this.sql&lt;Session[]&gt;`
+    SELECT * FROM sessions
+    WHERE channel_type=${channelType}
+      AND channel_id=${channelId}
+      AND user_id=${userId}
+  `[0];
+}
+```</p></div>
+  </div>
+
+  <div id="G-T28" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T28</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / shared R2 paths</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Shared Agent R2 Paths Identical to Per-User Paths — Skill Writes From One User Can Overwrite Another's Personal Skills</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">In shared agent mode, the spec uses the same R2 path structure as per-user mode: spaces/{spaceId}/assistants/{userId}/skills/. However, because the DO is shared, skill writes from any user go through the same AssistantDO instance. If the path is constructed incorrectly (missing userId segment due to a bug), one user's personal skill write can overwrite another user's skill at the same path. The Moltworker reference uses divergent R2 paths for shared vs. per-user mode to make path collisions structurally impossible.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use distinct R2 path schemes for shared vs. per-user mode:
+```typescript
+get r2BasePath(): string {
+  return this.isSharedMode
+    // Shared mode: userId is ALWAYS in the path, never omitted
+    ? `spaces/${this.spaceId}/shared-assistant/${this.currentUserId}/`
+    // Per-user mode: DO is already scoped to one user
+    : `spaces/${this.spaceId}/assistants/${this.userId}/`;
+}
+
+// Usage:
+async savePersonalSkill(skill: Skill, userId: string) {
+  if (this.isSharedMode &amp;&amp; !userId) {
+    throw new Error('userId required in shared mode');
+  }
+  const path = this.isSharedMode
+    ? `spaces/${this.spaceId}/shared-assistant/${userId}/skills/${skill.id}.json`
+    : `spaces/${this.spaceId}/assistants/${this.userId}/skills/${skill.id}.json`;
+  await this.env.R2.put(path, JSON.stringify(skill));
+}
+```
+Add a userId assertion guard at the top of any R2 write method in AssistantDO that runs in shared mode: if (this.isSharedMode &amp;&amp; !userId) throw new Error('...'); to catch bugs early.</p></div>
+  </div>
+
+  <div id="G-T29" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T29</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / instance limit</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Max-Instances Enforcement Race Condition — Concurrent Creation Requests Both Pass Limit Check Before Either Commits</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec enforces the per-user max-5-instances limit by reading the current count from DO SQLite and comparing it to the limit. If two concurrent creation requests both read count=4 (under the limit of 5), both pass the check, and both proceed to create a new instance. The user ends up with 6 instances. This is a classic read-check-write race condition. Durable Objects are single-threaded per I/O boundary, but two independent HTTP requests to the SpaceDO can interleave: Request A reads count, Request B reads count, Request A writes, Request B writes — both see count=4.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use an atomic INSERT to enforce the limit:
+```typescript
+async createAssistantInstance(
+  spaceId: string, userId: string, config: AssistantConfig
+): Promise&lt;string&gt; {
+  // Atomic: the INSERT fails if count &gt;= 5
+  try {
+    const result = this.sql&lt;{id: string}[]&gt;`
+      WITH check_limit AS (
+        SELECT COUNT(*) as cnt FROM assistant_instances
+        WHERE space_id = ${spaceId} AND user_id = ${userId}
+          AND status != 'deleted'
+      )
+      INSERT INTO assistant_instances
+        (id, space_id, user_id, config_json, created_at)
+      SELECT
+        ${crypto.randomUUID()}, ${spaceId}, ${userId},
+        ${JSON.stringify(config)}, unixepoch('now')*1000
+      FROM check_limit
+      WHERE cnt &lt; ${MAX_INSTANCES_PER_USER}
+      RETURNING id
+    `;
+    if (result.length === 0) {
+      throw new Error('Max instances reached');
+    }
+    return result[0].id;
+  } catch (e: unknown) {
+    if (e instanceof Error &amp;&amp; e.message === 'Max instances reached') {
+      throw new Error(`Max ${MAX_INSTANCES_PER_USER} assistant instances per user`);
+    }
+    throw e;
+  }
+}
+```
+The CTE + INSERT WHERE cnt &lt; N is atomic within SQLite; no external lock needed.</p></div>
+  </div>
+
+  <div id="G-T30" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T30</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / hibernation flush</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Graceful State Flush on DO Hibernation — In-Flight Fiber State Lost When DO Is Evicted</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a Durable Object is hibernated (evicted after 70-140 seconds of inactivity), any in-memory state not written to SQLite is lost. AssistantDO holds in-memory: active fiber execution context, the current LLM streaming state, pending approval Map entries, and the skill cache. If the DO is evicted mid-fiber (e.g., while awaiting a slow tool call), the fiber is silently lost — the user never receives a response and the task is never retried. The spec has no alarm-based pre-eviction flush pattern to checkpoint fiber state before hibernation.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use DO alarms as a pre-eviction checkpoint:
+```typescript
+// When a fiber starts, set an alarm to flush its state
+async startFiber(fiber: Fiber) {
+  await this.sql`UPDATE fibers
+    SET status = 'running', started_at = unixepoch('now')*1000
+    WHERE id = ${fiber.id}`;
+  // Set alarm 60s from now to checkpoint (hibernation starts at ~70s)
+  await this.ctx.storage.setAlarm(
+    Date.now() + 60_000,
+    {type: 'fiber_checkpoint', fiberId: fiber.id}
+  );
+}
+
+async alarm() {
+  const meta = await this.ctx.storage.get&lt;{type: string; fiberId: string}&gt;('alarmMeta');
+  if (meta?.type === 'fiber_checkpoint') {
+    await this.checkpointFiber(meta.fiberId);
+    // Reschedule while fiber is still running
+    const fiber = await this.getFiber(meta.fiberId);
+    if (fiber?.status === 'running') {
+      await this.ctx.storage.setAlarm(Date.now() + 60_000, meta);
+    }
+  }
+}
+```
+On wake after hibernation, onStart() checks for fibers with status='running' and restarts them from their last checkpoint.</p></div>
+  </div>
+
+  <div id="G-T31" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T31</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / spaceId/userId restoration</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">AssistantDO spaceId/userId Instance Variables Lost After Hibernation — Cold Wake Has No Context; Cross-Tenant R2 Path Corruption Risk</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">AssistantDO sets this.spaceId and this.userId in the constructor from the DO's name (parsed from assistant:{spaceId}:{userId}). If this parsing logic has a bug after hibernation (e.g., the constructor is called differently on cold wake), these instance variables could be undefined, empty strings, or stale values. All R2 paths use these variables: a corrupted this.spaceId causes the DO to read/write another space's R2 prefix — cross-tenant data leakage. The spec never defines how instance variables are validated after hibernation or what happens if DO naming conventions change during a migration.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Validate and restore spaceId/userId on every wake, not just construction:
+```typescript
+class AssistantDO extends AIChatAgent&lt;Env, AssistantState&gt; {
+  private _spaceId: string | null = null;
+  private _userId: string | null = null;
+
+  get spaceId(): string {
+    if (!this._spaceId) throw new Error('spaceId not initialized');
+    return this._spaceId;
+  }
+
+  async onStart() {
+    // Parse from DO name (format: assistant:{spaceId}:{userId})
+    const name = this.ctx.id.name;
+    if (!name) throw new Error('AssistantDO must be created with idFromName');
+    const parts = name.split(':');
+    if (parts.length !== 3 || parts[0] !== 'assistant') {
+      throw new Error(`Invalid AssistantDO name format: ${name}`);
+    }
+    this._spaceId = parts[1];
+    this._userId = parts[2];
+    if (!this._spaceId || !this._userId) {
+      throw new Error(`Empty spaceId/userId in DO name: ${name}`);
+    }
+    // Cross-check against SQLite if previously initialized
+    const stored = this.sql&lt;{space_id: string}[]&gt;`
+      SELECT space_id FROM assistant_meta LIMIT 1
+    `[0];
+    if (stored &amp;&amp; stored.space_id !== this._spaceId) {
+      throw new Error('spaceId mismatch between DO name and stored metadata');
+    }
+    // ... rest of schema init
+  }
+}
+```
+Never use this.spaceId before onStart() completes.</p></div>
+  </div>
+
+  <div id="G-T32" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T32</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / observability</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Assistant Health Metrics — No Analytics Engine Writes for Turn Latency, Memory Layer Hit Rates, or Skill Invocations</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec mentions CF Analytics Engine as a platform-level capability but AssistantDO writes no telemetry data points. There is no visibility into: per-assistant turn latency percentiles, which memory layers are being hit (cache hit rate for each of the 6 layers), which skills are being invoked most frequently, how often human approval is required, or how many fibers fail. Without this telemetry, the Naelao team cannot identify slow assistants, tune the memory OS, identify skill conflicts, or bill accurately for Memory OS operations.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add Analytics Engine instrumentation to AssistantDO:
+```typescript
+async onTurnComplete(turn: CompletedTurn) {
+  this.env.ANALYTICS.writeDataPoint({
+    blobs: [
+      this.spaceId,
+      this.agentId,
+      turn.model,
+      turn.terminationReason
+    ],
+    doubles: [
+      turn.latencyMs,
+      turn.inputTokens,
+      turn.outputTokens,
+      turn.toolCallCount,
+      turn.memoryLayerHits.reduce((a, b) =&gt; a + b, 0)
+    ],
+    indexes: ['assistant_turn']
+  });
+
+  // Per memory-layer hit rates
+  turn.memoryLayerHits.forEach((hits, layerIdx) =&gt; {
+    this.env.ANALYTICS.writeDataPoint({
+      blobs: [this.spaceId, `layer_${layerIdx}`],
+      doubles: [hits],
+      indexes: ['memory_layer_hits']
+    });
+  });
+}
+```
+Create a Grafana/CF Analytics dashboard query that shows p50/p95/p99 turn latency by space, memory layer hit rates by layer, and skill invocation frequency. Alert if p95 turn latency exceeds 30 seconds for any space for &gt; 5 minutes.</p></div>
+  </div>
+
+  <div id="G-T33" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T33</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — Memory OS Layer 5 / Vectorize</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Memory OS Layer 5 Vectorize Write Path Undefined — No Code Defines When or How Memories Are Written to Vectorize; Layer 5 Is Effectively Read-Only</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec defines Layer 5 (Vectorize) as long-term semantic memory that can be searched by embedding similarity. The retrieval path is described (embed the query, search Vectorize, return top-K results). The write path is never defined: when does a memory get written to Vectorize? After every message? After every turn? Only for certain memory types (facts, not session summaries)? What chunk size? What embedding model? What Vectorize namespace? Without a defined write path, vectors are never inserted and Layer 5 returns empty results on every query — silently degraded to a broken layer.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define the Vectorize write path explicitly:
+```typescript
+async extractAndStoreMemories(
+  turn: CompletedTurn, userId: string
+) {
+  // Extract memorable facts from the turn using LLM
+  const facts = await this.llm([{
+    role: 'system',
+    content: 'Extract 0-5 durable facts worth remembering long-term. Return JSON: [{fact, importance: 1-5}]'
+  }, {
+    role: 'user',
+    content: JSON.stringify(turn.messages)
+  }]);
+
+  const parsedFacts: {fact: string; importance: number}[] =
+    JSON.parse(facts);
+
+  // Only store high-importance facts (importance &gt;= 3) in Vectorize
+  const important = parsedFacts.filter(f =&gt; f.importance &gt;= 3);
+
+  for (const {fact, importance} of important) {
+    const embedding = await this.env.AI.run(
+      '@cf/baai/bge-small-en-v1.5', {text: fact}
+    );
+    await this.env.VECTORIZE.upsert([{
+      id: `${userId}-${crypto.randomUUID()}`,
+      values: embedding.data[0],
+      metadata: {userId, spaceId: this.spaceId, fact, importance, turnId: turn.id}
+    }]);
+  }
+}
+```
+Call extractAndStoreMemories() after each turn via this.queue('extractMemories', turnData) to avoid blocking the response.</p></div>
+  </div>
+
+  <div id="G-T34" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T34</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — Memory OS / decay_rate</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Memory OS decay_rate Field Defined But Never Applied — Stale Structured Facts Are Never Aged Out</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The structured_facts table in AssistantDO SQLite has a decay_rate column (a float between 0 and 1, intended to represent how quickly a fact becomes less relevant over time). The spec never applies this decay rate in any query. Retrieval queries return all matching structured facts regardless of age, and no background job reduces the relevance score based on elapsed time and decay_rate. Over time, the structured_facts table accumulates stale facts (old addresses, outdated preferences, resolved issues) that degrade the quality of the agent's context injection.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Apply decay in retrieval scoring and implement periodic cleanup:
+```typescript
+// Decayed relevance score at retrieval time
+async getStructuredFacts(
+  userId: string, category?: string
+): Promise&lt;StructuredFact[]&gt; {
+  return this.sql&lt;StructuredFact[]&gt;`
+    SELECT *,
+      -- Exponential decay: score * exp(-decay_rate * days_old)
+      confidence * EXP(
+        -decay_rate *
+        (unixepoch('now') - updated_at/1000) / 86400.0
+      ) AS effective_score
+    FROM structured_facts
+    WHERE user_id = ${userId}
+      AND (${category ?? null} IS NULL OR category = ${category ?? null})
+      AND confidence * EXP(
+        -decay_rate *
+        (unixepoch('now') - updated_at/1000) / 86400.0
+      ) &gt; 0.1 -- prune near-zero relevance
+    ORDER BY effective_score DESC
+    LIMIT 50
+  `;
+}
+
+// Weekly cleanup job: delete fully decayed facts
+async pruneDecayedFacts() {
+  await this.sql`
+    DELETE FROM structured_facts
+    WHERE confidence * EXP(
+      -decay_rate * (unixepoch('now') - updated_at/1000) / 86400.0
+    ) &lt; 0.05
+  `;
+}
+```
+Schedule pruneDecayedFacts() via this.scheduleEvery(604800, 'pruneDecayedFacts', {}).</p></div>
+  </div>
+
+  <div id="G-T35" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+    <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-T35</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+      <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§05 — Space Assistant — AssistantDO / ctx.waitUntil()</span>
+    </div>
+    <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">ctx.waitUntil() Called on DurableObjectState — DurableObjectState Does Not Expose waitUntil(); Crashes at Runtime</h3>
+    <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec calls this.ctx.waitUntil(promise) inside the Slack webhook handler to defer post-response processing. In a Cloudflare Worker fetch handler, ctx (ExecutionContext) exposes waitUntil(). However, inside a Durable Object, this.ctx is a DurableObjectState, which does NOT have a waitUntil() method — this method only exists on ExecutionContext (the second argument to Worker fetch). Calling this.ctx.waitUntil(promise) in a DO throws "TypeError: this.ctx.waitUntil is not a function" at runtime, crashing the DO's request handler and returning a 500 error to the Slack webhook endpoint, causing Slack to retry the webhook up to 3 times and potentially triggering duplicate processing.</p></div>
+    <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace this.ctx.waitUntil() with the correct pattern for Durable Objects:
+
+Option 1 — Pass the Worker ctx into the DO method:
+```typescript
+// In naelao-router Worker fetch handler:
+const doStub = env.ASSISTANT_DO.get(doId);
+await doStub.handleSlackWebhook(payload, ctx); // pass ctx
+
+// In AssistantDO:
+async handleSlackWebhook(payload: SlackPayload, ctx: ExecutionContext) {
+  // ctx here is the Worker's ExecutionContext — has waitUntil()
+  ctx.waitUntil(this.processSlackEvent(payload));
+  return new Response(null, {status: 200});
+}
+```
+
+Option 2 — Use a background Set of promises (no ctx needed):
+```typescript
+class AssistantDO extends AIChatAgent&lt;Env&gt; {
+  private backgroundWork = new Set&lt;Promise&lt;unknown&gt;&gt;();
+
+  addBackgroundWork(p: Promise&lt;unknown&gt;) {
+    const tracked = p.finally(() =&gt; this.backgroundWork.delete(tracked));
+    this.backgroundWork.add(tracked);
+  }
+
+  async fetch(request: Request): Promise&lt;Response&gt; {
+    // ... handle request ...
+    this.addBackgroundWork(this.processSlackEvent(payload));
+    return new Response(null, {status: 200});
+    // Background promises run until DO hibernates
+  }
+}
+```
+Option 2 is simpler but background work may be cut short by hibernation. Option 1 extends the Worker invocation's lifetime guarantee. Use Option 1 for critical post-webhook processing (memory extraction, analytics writes).</p></div>
+  </div>
+  </div>
 </section>
 
 </body>
