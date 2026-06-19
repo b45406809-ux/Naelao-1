@@ -46847,6 +46847,1155 @@ class AssistantDO extends AIChatAgent&lt;Env&gt; {
 Option 2 is simpler but background work may be cut short by hibernation. Option 1 extends the Worker invocation's lifetime guarantee. Use Option 1 for critical post-webhook processing (memory extraction, analytics writes).</p></div>
   </div>
   </div>
+
+
+<section id="appendix-u" style="margin-top:80px;">
+<h2 style="font-family:'Fraunces',serif;font-size:32px;font-weight:700;color:var(--hd);letter-spacing:-.02em;margin:0 0 6px;">Appendix U — Thirteenth Pass</h2>
+<p style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);letter-spacing:.1em;text-transform:uppercase;margin:0 0 32px;">Financial Integrity · Auth Hardening · Skill System Reliability · Notification Delivery</p>
+<div id="G-U01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U01</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§WalletDO — Financial — WalletDO / schema</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">WalletDO balance stored as REAL float — financial rounding errors compound at scale</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">WalletDO declares `balance_usd REAL` and every transaction amount as `amount_usd REAL`. IEEE-754 double-precision arithmetic cannot represent most decimal fractions exactly: 0.1 + 0.2 = 0.30000000000000004. Across millions of micro-transactions (token billing, x402 micropayments, tip distributions), these errors accumulate into visible cent-level discrepancies. A platform processing $1M/month in transactions will show systematic rounding errors of hundreds of dollars that cannot be reconciled against bank statements. This is a violation of financial systems fundamentals.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Store all monetary values as INTEGER cents (or micro-cents for sub-cent precision):
+```sql
+CREATE TABLE wallet (
+  id           TEXT PRIMARY KEY,
+  balance_cents INTEGER NOT NULL DEFAULT 0,
+  currency      TEXT NOT NULL DEFAULT 'USD'
+);
+CREATE TABLE transactions (
+  id            TEXT PRIMARY KEY,
+  wallet_id     TEXT NOT NULL,
+  amount_cents  INTEGER NOT NULL,  -- negative = debit
+  reason        TEXT NOT NULL,
+  created_at    INTEGER DEFAULT (unixepoch('now')*1000)
+);
+```
+All arithmetic uses integer ops. Convert to dollars only for display: `(balance_cents / 100).toFixed(2)`. For sub-cent token billing use micro-cents (INTEGER, divide by 1_000_000 for display).</p></div>
+</div>
+<div id="G-U02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U02</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§WalletDO — Financial — WalletDO / Stripe webhooks</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Stripe webhook topUp() has no idempotency key — single retry causes double credit grant</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">When Stripe delivers a `checkout.session.completed` event, Naelao calls `walletDO.topUp(credits)`. If the webhook handler returns a 5xx (e.g., DO cold-start timeout, transient error), Stripe retries the same event up to 72 hours later with the same `event.id`. The second delivery calls `topUp()` again, granting double credits. This is trivially exploitable: an attacker on a slow network connection can manufacture a timeout while the credit has already been applied, then let the retry deliver a second grant. There is no `processed_events` deduplication table in WalletDO.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Add event deduplication to WalletDO:
+```typescript
+async topUp(credits: number, stripeEventId: string) {
+  // Idempotency check — same transaction in same SQL batch
+  const existing = [...this.ctx.storage.sql.exec(
+    "SELECT id FROM processed_stripe_events WHERE id = ?", stripeEventId
+  )];
+  if (existing.length &gt; 0) return { alreadyProcessed: true };
+  this.ctx.storage.sql.exec(
+    "INSERT INTO processed_stripe_events (id, processed_at) VALUES (?, ?)",
+    stripeEventId, Date.now()
+  );
+  this.ctx.storage.sql.exec(
+    "UPDATE wallet SET balance_cents = balance_cents + ? WHERE id = ?",
+    credits * 100, this.walletId
+  );
+  return { success: true };
+}
+```
+Both the dedup insert and the balance update must be in the same synchronous sequence within a single DO request (no concurrent access possible within a DO request).</p></div>
+</div>
+<div id="G-U03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U03</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-auth — Authentication — naelao-auth / JWT verification</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">JWT `alg` field not pinned — `none` algorithm and algorithm confusion attacks accepted</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The JWT verification code checks signature validity but does not explicitly pin the accepted algorithm. An attacker can forge a JWT with `"alg": "none"` (removing the signature entirely) and pass verification on libraries that accept the none algorithm. Alternatively, if the server expects HS256 but an attacker sends RS256 with the public key as the HMAC secret, verification passes on misconfigured libraries. Neither the `iss` (issuer) claim nor `aud` (audience) claim are validated against expected values, allowing tokens issued for other services to be replayed here.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Pin algorithm and validate all security-relevant claims:
+```typescript
+import { jwtVerify } from "jose";
+const secret = new TextEncoder().encode(env.JWT_SECRET);
+try {
+  const { payload } = await jwtVerify(token, secret, {
+    algorithms: ["HS256"],          // pin — reject none, RS256, etc.
+    issuer: "naelao-auth",          // must match exactly
+    audience: "naelao-api",         // must match exactly
+    clockTolerance: 30,             // 30s leeway for clock skew
+  });
+} catch (e) {
+  return new Response("Unauthorized", { status: 401 });
+}
+```
+For CF Access JWTs use the CF-provided public key endpoint and pin `alg: ["RS256"]`.</p></div>
+</div>
+<div id="G-U04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U04</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-auth — Authentication — CF Access / admin routes</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">CF Access JWT audience and issuer claims not validated on admin routes — forged tokens accepted</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The naelao-router checks for the presence of a `CF-Access-Jwt-Assertion` header on admin routes (`/_admin/`, `/_assistant/admin/`) but the code only verifies the token's signature. It does not validate the `aud` (audience) claim against the CF Access application's team domain, nor the `iss` (issuer) against `https://&lt;team&gt;.cloudflareaccess.com`. A valid CF Access JWT issued for a different CF Access application (e.g., an internal staging environment) would pass validation and grant admin access to production. This is a standard confused deputy vulnerability in CF Access integrations.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Validate audience and issuer from CF Access JWT:
+```typescript
+const CF_TEAM_DOMAIN = "https://naelao.cloudflareaccess.com";
+const APP_AUD = env.CF_ACCESS_AUD; // audience tag from CF Access app
+const certs = await fetch(`${CF_TEAM_DOMAIN}/cdn-cgi/access/certs`).then(r =&gt; r.json());
+// Use jose to verify with JWKS
+const JWKS = createRemoteJWKSet(new URL(`${CF_TEAM_DOMAIN}/cdn-cgi/access/certs`));
+const { payload } = await jwtVerify(token, JWKS, {
+  issuer: CF_TEAM_DOMAIN,
+  audience: APP_AUD,
+});
+```
+Cache the JWKS for 5 minutes; re-fetch on verification failure to handle key rotation.</p></div>
+</div>
+<div id="G-U05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U05</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-notifications — Queues — CF Queues / DLQ</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Dead-letter queue consumer never implemented — failed messages accumulate with zero recovery</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The wrangler.jsonc declares a `naelao-dlq` binding and routes persistently-failing queue messages to it, but no Worker exports a `queue` handler that consumes `naelao-dlq`. Failed notification messages (APNs failures, Slack rate limits, Stripe webhook retries) flow into the DLQ and stay there indefinitely. There is no alerting, no retry backoff, no operator dashboard, and no way to replay messages. Critical events — run-complete notifications, human-in-the-loop approval requests, billing alerts — silently disappear.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Add a DLQ consumer to naelao-notifications:
+```typescript
+// In naelao-notifications/index.ts
+export default {
+  async queue(batch: MessageBatch, env: Env): Promise&lt;void&gt; {
+    if (batch.queue === "naelao-dlq") {
+      for (const msg of batch.messages) {
+        // Log to Analytics Engine for alerting
+        env.NAELAO_ANALYTICS.writeDataPoint({
+          blobs: ["dlq_message", msg.body.type ?? "unknown", JSON.stringify(msg.body).slice(0, 255)],
+          doubles: [1],
+          indexes: ["dlq"],
+        });
+        // Attempt one final delivery
+        try {
+          await deliverNotification(msg.body, env);
+          msg.ack();
+        } catch {
+          msg.ack(); // accept loss after 3 total attempts
+        }
+      }
+    }
+  }
+};
+```
+Also add a CF Workers analytics alert: if `SELECT count() FROM analytics WHERE index1='dlq' AND timestamp &gt; now()-3600` &gt; 0, page on-call.</p></div>
+</div>
+<div id="G-U06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U06</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§WalletDO — Financial — x402 / saga pattern</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">x402 debit-credit saga not atomic — company debited while creator receives nothing</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The x402 payment flow executes in two sequential steps: (1) debit the buyer's WalletDO `balance_cents`, (2) credit the creator's WalletDO `balance_cents`. These are two separate HTTP requests to two separate Durable Object instances. If step 1 succeeds but the creator's DO is evicted, the network fails, or the target space is deleted between the two requests, the buyer loses money while the creator receives nothing. There is no rollback, no saga coordinator tracking in-progress transactions, and no reconciliation job to detect split-brain states. The `refund-saga` endpoint referenced in comments is unimplemented.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Implement a saga coordinator in a dedicated `PaymentSagaDO`:
+```typescript
+// PaymentSagaDO tracks each payment through states: PENDING → DEBITED → CREDITED → COMPLETE
+async executeSaga(sagaId: string, from: string, to: string, amountCents: number) {
+  this.ctx.storage.sql.exec(
+    "INSERT INTO sagas (id, from_wallet, to_wallet, amount_cents, state) VALUES (?,?,?,?,'PENDING')",
+    sagaId, from, to, amountCents
+  );
+  try {
+    await debitWallet(from, amountCents, sagaId, env);
+    this.ctx.storage.sql.exec("UPDATE sagas SET state='DEBITED' WHERE id=?", sagaId);
+    await creditWallet(to, amountCents, sagaId, env);
+    this.ctx.storage.sql.exec("UPDATE sagas SET state='COMPLETE' WHERE id=?", sagaId);
+  } catch (e) {
+    await rollbackDebit(from, amountCents, sagaId, env);
+    this.ctx.storage.sql.exec("UPDATE sagas SET state='ROLLED_BACK' WHERE id=?", sagaId);
+  }
+}
+```
+A reconciliation alarm runs every hour scanning sagas stuck in DEBITED state for &gt; 10 minutes and triggers rollback.</p></div>
+</div>
+<div id="G-U07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U07</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-auth — Authentication — CF Access / JWK rotation</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">CF Access public key cached indefinitely — admin routes inaccessible during CF key rotation</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The naelao-router fetches CF Access's JWK set from `https://&lt;team&gt;.cloudflareaccess.com/cdn-cgi/access/certs` once at Worker initialization and caches it in module-scope memory. CF Access periodically rotates signing keys (approximately every 6 weeks). During the rotation window, new JWTs are signed with the new key while the Worker's cache still holds the old key. All `jwtVerify()` calls fail with `JWSSignatureVerificationFailed`, locking all admins out of the system until the Worker is redeployed or the module-scope cache expires (which never happens — Workers are long-lived).</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Implement stale-on-failure key refresh:
+```typescript
+let jwks: ReturnType&lt;typeof createRemoteJWKSet&gt; | null = null;
+let jwksLastFetched = 0;
+
+function getJWKS(teamDomain: string) {
+  if (!jwks || Date.now() - jwksLastFetched &gt; 5 * 60_000) {
+    jwks = createRemoteJWKSet(new URL(`${teamDomain}/cdn-cgi/access/certs`));
+    jwksLastFetched = Date.now();
+  }
+  return jwks;
+}
+
+async function verifyCFAccessJWT(token: string, env: Env) {
+  try {
+    return await jwtVerify(token, getJWKS(env.CF_TEAM_DOMAIN), { audience: env.CF_ACCESS_AUD });
+  } catch (e) {
+    // Force refresh on signature failure (possible key rotation)
+    jwks = null;
+    return await jwtVerify(token, getJWKS(env.CF_TEAM_DOMAIN), { audience: env.CF_ACCESS_AUD });
+  }
+}
+```</p></div>
+</div>
+<div id="G-U08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U08</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§WalletDO — Financial — WalletDO / sub-agent billing</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Sub-agent spend check is post-execution — users can spawn unlimited sub-agents with zero balance</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Sub-agent spawning calls `walletDO.deductCredits(estimatedCost)` AFTER the sub-agent completes and returns a result. The check that triggers rejection happens at billing time, not at dispatch time. A user with $0 balance can call `spawnSubAgent()` in rapid succession, launching dozens of parallel compute-intensive sub-agents before any billing check fires. Each sub-agent runs to completion, incurs real compute cost on Cloudflare, and the WalletDO deduction simply fails silently — leaving the platform absorbing the cost.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Pre-reserve credits before spawning:
+```typescript
+async spawnSubAgent(task: SubAgentTask): Promise&lt;{ subAgentId: string }&gt; {
+  const ESTIMATED_COST_CENTS = 50; // 50 cents per sub-agent run, configurable
+  // Reserve BEFORE spawning — throws if insufficient balance
+  const reservationId = await walletDO.reserveCredits(ESTIMATED_COST_CENTS);
+  try {
+    const subAgentId = await dispatchSubAgent(task);
+    // Track reservation with sub-agent for settlement on completion
+    this.ctx.storage.sql.exec(
+      "UPDATE sub_agents SET reservation_id=? WHERE id=?",
+      reservationId, subAgentId
+    );
+    return { subAgentId };
+  } catch (e) {
+    await walletDO.releaseReservation(reservationId);
+    throw e;
+  }
+}
+// On completion: settle reservation with actual cost
+async settleSubAgent(subAgentId: string, actualCostCents: number) {
+  const { reservation_id } = getSingleSubAgent(subAgentId);
+  await walletDO.settleReservation(reservation_id, actualCostCents);
+}
+```</p></div>
+</div>
+<div id="G-U09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U09</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§WalletDO — Financial — WalletDO / policy parsing</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">`parseFloat()` on policy values stored in SQLite — cascading precision loss on budget checks</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Policy values (monthly_budget, max_single_spend, spend_per_agent) are stored in the `policies` table as `TEXT` and read back with `parseFloat(row.value ?? "10.0")`. This introduces two layers of precision loss: the float representation error of the value itself, plus the float representation error of the comparison operand. A budget of $99.99 stored as "99.99" becomes 99.98999999999999 as a float, so a spend of exactly $99.99 may incorrectly pass the `spend &gt; budget` check. These discrepancies are invisible in normal operation but cause audit failures.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Store policies as INTEGER cents in SQLite and parse with `parseInt()`:
+```typescript
+// Schema
+CREATE TABLE policies (
+  key        TEXT PRIMARY KEY,
+  value_cents INTEGER NOT NULL,   -- store as cents, never floats
+  updated_at INTEGER DEFAULT (unixepoch('now')*1000)
+);
+// Read
+const limitCents = parseInt(row.value_cents);
+const spendCents = amountDollars * 100 | 0;  // truncate to cents
+if (spendCents &gt; limitCents) throw new Error("budget_exceeded");
+```
+Migrate existing TEXT values: `UPDATE policies SET value_cents = CAST(ROUND(CAST(value AS REAL) * 100) AS INTEGER)`.</p></div>
+</div>
+<div id="G-U10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U10</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§WalletDO — Financial — WalletDO / refund-saga</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">`refund-saga` endpoint referenced throughout spec but unimplemented in WalletDO</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Fourteen places in the spec call `walletDO.fetch("http://wallet/refund-saga", ...)` to reverse a failed payment: on sub-agent crash, on workflow abort, on x402 partial failure, on annotation rejection. The WalletDO HTTP handler has routes for `/debit`, `/credit`, `/balance`, and `/topup` but no `/refund-saga` route. Every call to `/refund-saga` returns HTTP 404. Failed transactions are never reversed, meaning: failed sub-agents still consume credits, failed workflows still charge for compute, rejected annotations still debit bootstrap funds.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Implement the `/refund-saga` handler in WalletDO:
+```typescript
+case "/refund-saga": {
+  const { sagaId, amountCents, reason } = await request.json();
+  // Idempotency — only refund once per sagaId
+  const existing = [...this.ctx.storage.sql.exec(
+    "SELECT id FROM refunds WHERE saga_id = ?", sagaId
+  )];
+  if (existing.length &gt; 0) return Response.json({ alreadyRefunded: true });
+  const refundId = crypto.randomUUID();
+  this.ctx.storage.sql.exec(
+    "INSERT INTO refunds (id, saga_id, amount_cents, reason, created_at) VALUES (?,?,?,?,?)",
+    refundId, sagaId, amountCents, reason, Date.now()
+  );
+  this.ctx.storage.sql.exec(
+    "UPDATE wallet SET balance_cents = balance_cents + ? WHERE id = ?",
+    amountCents, this.walletId
+  );
+  return Response.json({ refundId, success: true });
+}
+```</p></div>
+</div>
+<div id="G-U11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U11</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§MCP Hub — Tool Dispatch — naelao-mcp-hub / idempotency</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">MCP tool calls have no idempotency key — payment tools and email tools execute twice on retry</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">When AgentDO calls an MCP tool via naelao-mcp-hub and receives a timeout or 5xx, the agent's retry loop re-invokes the same tool with no `X-Idempotency-Key` header. MCP has no built-in idempotency mechanism. Downstream App MCP servers receive two identical requests and execute both: payment tools charge twice, email tools send duplicate messages, database insert tools create duplicate records. The MCP spec does not address idempotency and relies on callers to implement it.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Assign a stable idempotency key per tool call per agent turn:
+```typescript
+// In AgentDO, when building the MCP request
+const toolCallKey = `${this.threadId}:${turnIndex}:${toolName}:${toolCallIndex}`;
+const response = await fetch(mcpEndpoint, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "X-Naelao-Idempotency-Key": toolCallKey,
+    "X-Naelao-Idempotency-TTL": "86400",
+  },
+  body: JSON.stringify(toolPayload),
+});
+```
+Require all App MCP server developers to implement idempotency via KV dedup:
+```typescript
+// In App MCP server tool handler
+const key = request.headers.get("X-Naelao-Idempotency-Key");
+if (key) {
+  const cached = await env.KV.get(key);
+  if (cached) return Response.json(JSON.parse(cached));
+}
+// ... execute tool ...
+await env.KV.put(key, JSON.stringify(result), { expirationTtl: 86400 });
+```</p></div>
+</div>
+<div id="G-U12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U12</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§WalletDO — Financial — WalletDO / token billing</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Token cost calculation uses JS float arithmetic — billing errors accumulate into hundreds of dollars</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Token cost is computed as `const cost = (inputTokens / 1_000_000) * 3.00 + (outputTokens / 1_000_000) * 15.00` using native JavaScript float division and multiplication. Each individual calculation may introduce a rounding error of up to 1e-15. Multiplied across 10M API calls per month, the accumulated error can reach several dollars of unaccountable revenue. Auditors cannot reconcile platform revenue against Anthropic invoices because the per-call errors sum differently depending on JS engine and CPU architecture.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Use integer micro-cents arithmetic:
+```typescript
+// Prices in micro-cents per token (avoid all float ops)
+const INPUT_PRICE_MICRO_CENTS_PER_TOKEN = 300n;   // $3.00 per 1M = 0.000300 cents
+const OUTPUT_PRICE_MICRO_CENTS_PER_TOKEN = 1500n;  // $15.00 per 1M
+
+function calculateCostMicroCents(
+  inputTokens: number,
+  outputTokens: number
+): bigint {
+  return (
+    BigInt(inputTokens) * INPUT_PRICE_MICRO_CENTS_PER_TOKEN +
+    BigInt(outputTokens) * OUTPUT_PRICE_MICRO_CENTS_PER_TOKEN
+  );
+}
+// Convert to cents for storage: microCents / 1_000_000n (integer division)
+// Convert to dollars for display: Number(cents) / 100
+```
+Store in WalletDO as `cost_micro_cents INTEGER`. Ledger entries are exact; rounding only happens at display time.</p></div>
+</div>
+<div id="G-U13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U13</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§SkillRegistryDO — Skills — SkillRegistryDO / cache invalidation</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Skill updates not broadcast to running agents — agents use stale tool list for remainder of session</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">When `addSkill()` or `addDynamicTool()` writes a new skill to R2 and updates SkillRegistryDO, the AssistantDO's in-session skill cache is never invalidated. The spec's `invalidates skills cache: await ctx.storage.delete("skills_cache")` call clears the AssistantDO's own storage, but only if that DO is the one calling `addSkill()`. If the skill update happens via admin API (different request path) while an agent turn is mid-flight, the running turn completes with the old tool schema. The new skill is only visible to the next fresh turn that re-reads from R2.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Add a `skills_version` counter to SkillRegistryDO and check it at turn start:
+```typescript
+// SkillRegistryDO: increment on every skill write
+async registerSkill(skill: Skill) {
+  // ... write to R2 ...
+  this.ctx.storage.sql.exec(
+    "UPDATE registry SET skills_version = skills_version + 1 WHERE space_id = ?",
+    this.spaceId
+  );
+}
+
+// AssistantDO: check version before each turn
+async beforeTurn(context: TurnContext) {
+  const remoteVersion = await skillRegistryDO.getSkillsVersion(this.spaceId);
+  const cachedVersion = await this.ctx.storage.get("skills_version");
+  if (remoteVersion !== cachedVersion) {
+    await this.ctx.storage.delete("skills_cache");
+    await this.ctx.storage.put("skills_version", remoteVersion);
+  }
+}
+```</p></div>
+</div>
+<div id="G-U14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U14</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Dynamic Workflow — Execution — DynamicWorkflowLoader / cache</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Workflow R2 code cache uses TTL only — stale compiled code executes after in-place R2 update</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Dynamic workflow TypeScript is fetched from R2, compiled to a Worker isolate, and cached with a 5-minute TTL. The cache key is the R2 path (e.g., `spaces/{spaceId}/workflows/{workflowId}.ts`) with no content hash. When an agent updates a workflow file in R2 and re-triggers execution within the 5-minute window, the old compiled code runs silently. This is especially dangerous for self-modifying agents that update their own workflow code as part of a task: the modification appears to succeed (R2 write confirmed) but the new behaviour is invisible for up to 5 minutes.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Include a content hash or R2 ETag in the cache key:
+```typescript
+async loadWorkflow(r2Path: string): Promise&lt;CompiledWorkflow&gt; {
+  const obj = await env.NAELAO_WORKSPACE.get(r2Path);
+  if (!obj) throw new Error(`Workflow not found: ${r2Path}`);
+  const etag = obj.httpEtag; // R2 provides ETag per object version
+  const cacheKey = `${r2Path}:${etag}`;
+  const cached = workflowCache.get(cacheKey);
+  if (cached) return cached;
+  const code = await obj.text();
+  const compiled = await compileWorkflow(code);
+  // Cache keyed by content — stale entries become unreachable on update
+  workflowCache.set(cacheKey, compiled);
+  return compiled;
+}
+```
+Old cache entries for the same path but different ETags are naturally evicted by LRU pressure.</p></div>
+</div>
+<div id="G-U15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U15</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§SkillRegistryDO — Skills — skill loader / tier precedence</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Skill tier merge uses `Promise.all()` — load latency determines precedence, not tier hierarchy</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The skill loader fetches all three tiers in parallel with `Promise.all([loadPlatform(), loadSpace(), loadAgent()])` and then calls `mergeSkillsByPrecedence(skills)`. The merge function zips the results array positionally: `[0]` = platform, `[1]` = space, `[2]` = agent. However, `Promise.all()` resolves in insertion order — it does NOT resolve in call-completion order — so the positional assumption is correct. The actual bug is that if any `loadSkillsFromR2` call rejects (R2 outage, missing prefix), `Promise.all()` rejects entirely, killing ALL skills for the agent turn. A Tier 1 platform R2 failure silently strips the agent of all capabilities.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Use `Promise.allSettled()` and fall back gracefully per tier:
+```typescript
+const [platform, space, agent] = await Promise.allSettled([
+  loadSkillsFromR2(env.NAELAO_ASSETS, "platform/skills/"),
+  loadSkillsFromR2(env.NAELAO_WORKSPACE, `spaces/${spaceId}/.skills/`),
+  loadSkillsFromR2(env.NAELAO_WORKSPACE, `spaces/${spaceId}/assistants/${agentId}/skills/`),
+]);
+const platformSkills = platform.status === "fulfilled" ? platform.value : [];
+const spaceSkills    = space.status    === "fulfilled" ? space.value    : [];
+const agentSkills    = agent.status    === "fulfilled" ? agent.value    : [];
+if (platform.status === "rejected") {
+  console.error("Platform skills unavailable:", platform.reason);
+  // Alert but continue — space and agent skills still usable
+}
+return mergeSkillsByPrecedence([platformSkills, spaceSkills, agentSkills]);
+```</p></div>
+</div>
+<div id="G-U16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U16</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§AssistantDO — Prompt Assembly — system prompt / cache</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">System prompt cache key not content-hashed — stale prompt served after skill or memory update</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The system prompt is assembled from: base instructions + skills list + memory workspace files + user preferences. It is cached in DO storage under the key `"system_prompt_cache"` with a TTL of 10 minutes. The cache key does not include any hash of the assembled content. When a skill is added, a memory fact is updated, or a user preference changes — all of which happen asynchronously — the cached prompt continues to be served for up to 10 minutes with outdated content. An agent that just added a new skill cannot use it in the same conversation until the cache expires.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Include content-derived version in cache key and invalidate on known writes:
+```typescript
+// Derive a version token from all volatile inputs
+const promptVersion = await getPromptVersion(spaceId, userId);
+const cacheKey = `system_prompt:${promptVersion}`;
+
+const cached = await this.ctx.storage.get&lt;string&gt;(cacheKey);
+if (cached) return cached;
+
+const prompt = await assembleSystemPrompt(spaceId, userId);
+await this.ctx.storage.put(cacheKey, prompt, { expirationTtl: 600 });
+return prompt;
+
+// On skill/memory update: increment the version counter
+async function invalidatePromptCache(spaceId: string, userId: string) {
+  const v = (await ctx.storage.get&lt;number&gt;("prompt_version") ?? 0) + 1;
+  await ctx.storage.put("prompt_version", v);
+}
+```</p></div>
+</div>
+<div id="G-U17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U17</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-auth — Authentication — naelao-auth / Service Binding per-request</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">JWT verified via Service Binding round-trip on every request — 10ms latency tax, single SPOF</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Every authenticated request to naelao-router makes a Service Binding call to naelao-auth Worker (`env.NAELAO_AUTH.fetch(authRequest)`) to verify the JWT. This is a full network hop: the request serialises, crosses from the router isolate to the auth isolate, deserialises, verifies the HMAC, serialises the response, and crosses back. This adds ~10ms to every request. With 1000 req/s, that is 10s of latency budget per second consumed purely on JWT verification. Additionally, if naelao-auth is deployed incorrectly or the binding is missing, 100% of requests fail.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Verify HS256 JWTs inline in naelao-router using Web Crypto — zero external calls:
+```typescript
+import { jwtVerify, importKey } from "your-jose-equivalent";
+// Module-scope: import once, reuse across requests
+let verifyKey: CryptoKey | null = null;
+async function getVerifyKey(env: Env): Promise&lt;CryptoKey&gt; {
+  if (!verifyKey) {
+    verifyKey = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(env.JWT_SECRET),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+  }
+  return verifyKey;
+}
+```
+Reserve naelao-auth Service Binding ONLY for login/logout endpoints that need to write to storage. Stateless JWT verification needs zero service calls.</p></div>
+</div>
+<div id="G-U18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U18</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-analytics — Queues — naelao-analytics / queue ACK</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Analytics queue ACKs all messages before `writeDataPoints()` — billing and security events lost on engine outage</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The naelao-analytics Worker's queue handler iterates the batch and calls `msg.ack()` inside the loop before awaiting `env.NAELAO_ANALYTICS.writeDataPoints(...)`. If the Analytics Engine returns an error or the Worker hits its CPU limit after some messages are acked, those messages are permanently lost — there is no way to retry already-acked messages. Billing events, security audit events, and run-completion metrics all flow through this queue. An Analytics Engine outage silently drops financial-grade audit data.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Ack only after successful write, and handle per-message failures:
+```typescript
+async queue(batch: MessageBatch&lt;AnalyticsEvent&gt;, env: Env) {
+  const points = batch.messages.map(msg =&gt; toDataPoint(msg.body));
+  try {
+    await env.NAELAO_ANALYTICS.writeDataPoints(points);
+    // Only ack AFTER successful write
+    batch.ackAll();
+  } catch (err) {
+    // Do NOT ack — messages will be redelivered
+    console.error("Analytics write failed, will retry:", err);
+    // Optionally: write critical subset to KV as fallback
+    const critical = batch.messages.filter(m =&gt; m.body.critical);
+    for (const msg of critical) {
+      await env.NAELAO_CONFIG_KV.put(
+        `analytics-fallback:${crypto.randomUUID()}`,
+        JSON.stringify(msg.body),
+        { expirationTtl: 86400 }
+      );
+    }
+  }
+}
+```</p></div>
+</div>
+<div id="G-U19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U19</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-notifications — Push — naelao-notifications / APNs tokens</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">APNs device tokens not rotated on push failure — persistent silent failures for iOS users</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">When an APNs push returns HTTP 410 (`BadDeviceToken`) or 410 (`Unregistered`), the spec's notification handler logs the error but does not remove or rotate the stale token. On the next notification to the same user, the same invalid token is used again, returning 410 again. This loop continues indefinitely. iOS users who uninstall and reinstall Naelao get a new APNs token; the old one remains in the DO's `push_subscriptions` table forever. Over months, the majority of stored tokens become stale, causing near-100% push failure rates for the affected users.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Handle APNs error codes with token lifecycle management:
+```typescript
+async function sendAPNsPush(token: string, payload: object, env: Env, userId: string) {
+  const res = await fetch(`https://api.push.apple.com/3/device/${token}`, {
+    method: "POST",
+    headers: { /* JWT auth headers */ },
+    body: JSON.stringify(payload),
+  });
+  if (res.status === 410 || res.status === 400) {
+    const body = await res.json();
+    if (body.reason === "BadDeviceToken" || body.reason === "Unregistered") {
+      // Remove stale token — user must re-register on next app open
+      await notificationsDO.removeToken(userId, token);
+      return { delivered: false, tokenRemoved: true };
+    }
+  }
+  return { delivered: res.ok };
+}
+```
+For FCM, handle `UNREGISTERED` and `INVALID_ARGUMENT` registration errors identically.</p></div>
+</div>
+<div id="G-U20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U20</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-notifications — Queues — naelao-notifications / idempotency race</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Notification idempotency KV lock written after delivery — duplicate notification on concurrent retry</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The notification idempotency check reads the KV lock (`await env.KV.get(idempotencyKey)`) at the start of the handler, then delivers the notification, then writes the lock (`await env.KV.put(idempotencyKey, "1")`). In at-least-once delivery, a CF Queues retry can arrive before the first delivery's KV write completes — both deliveries see no lock, both proceed, and the user receives two notifications. This race window is narrow but real, especially under high load when KV write latency exceeds the inter-delivery gap.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Use a write-first idempotency pattern with conditional KV write:
+```typescript
+async function deliverWithIdempotency(notifId: string, payload: Notification, env: Env) {
+  // Write lock FIRST with short TTL — if this races, one writer wins
+  const existing = await env.KV.get(notifId);
+  if (existing) return { duplicate: true };
+  
+  // Write before delivery (not after) — "at most once" semantics
+  await env.KV.put(notifId, "pending", { expirationTtl: 300 });
+  
+  try {
+    await deliverNotification(payload, env);
+    // Update to "delivered" for diagnostics
+    await env.KV.put(notifId, "delivered", { expirationTtl: 86400 });
+  } catch (e) {
+    // Remove lock on failure so retry can proceed
+    await env.KV.delete(notifId);
+    throw e;
+  }
+}
+```
+Note: KV eventual consistency means this is best-effort, not guaranteed. For exact-once delivery, use a Durable Object as the idempotency store.</p></div>
+</div>
+<div id="G-U21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U21</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-notifications — Queues — naelao-notifications / KV TTL</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Notification idempotency KV lock has no TTL — legitimate admin resends blocked forever</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">When a notification is delivered, the idempotency key is written to KV with `await env.KV.put(idempotencyKey, "1")` — no `expirationTtl`. The lock never expires. If a Space admin wants to resend a notification (e.g., a user missed an important alert), the resend attempt reads the stale lock and returns `{ duplicate: true }` immediately without delivery. After 7 days the lock is still present; after 30 days, still present. Admins have no way to force-resend without manually deleting KV keys.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Add appropriate TTL to all idempotency locks:
+```typescript
+// Transient notifications (run-complete, heartbeat): 24h TTL
+await env.KV.put(notifId, "1", { expirationTtl: 86400 });
+
+// Critical alerts (billing threshold, security event): 7-day TTL
+await env.KV.put(notifId, "1", { expirationTtl: 7 * 86400 });
+
+// Admin resend: provide a force-resend endpoint that deletes the lock
+// POST /api/notifications/{notifId}/resend
+async function adminResend(notifId: string, env: Env) {
+  await env.KV.delete(notifId);
+  await env.NAELAO_NOTIFICATIONS_QUEUE.send({ ...originalPayload, notifId });
+}
+```
+Document TTL choices per notification type so admins understand the resend window.</p></div>
+</div>
+<div id="G-U22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U22</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-router — Rate Limiting — naelao-router / rate limiting primitive</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Rate limiting described as KV-based in prose — KV eventual consistency makes it ineffective</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Section describing naelao-router's abuse protection states "rate limiting via KV counter increment" for per-IP and per-user request throttling. KV's eventually-consistent replication has up to ~60 seconds of propagation delay across Cloudflare's network. A rate limit counter written by one edge node is not visible to another edge node for up to 60 seconds. An attacker bursting from a single IP can issue hundreds of requests per second while each edge sees a counter of 1. KV counters are documented as unsuitable for rate limiting in Cloudflare's own KV documentation.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Replace KV rate limiting with one of two correct primitives:
+
+**Option A — CF Rate Limiting (recommended for simple limits):**
+```toml
+# wrangler.jsonc
+[[rules]]
+binding = "RATE_LIMITER"
+namespace = "naelao-api-rl"
+simple = { limit = 100, period = 60 }
+```
+```typescript
+const { success } = await env.RATE_LIMITER.limit({ key: clientIp });
+if (!success) return new Response("Too Many Requests", { status: 429 });
+```
+
+**Option B — Durable Object counter (for complex per-user limits across tiers):**
+```typescript
+const rateLimiterId = env.RATE_LIMITER_DO.idFromName(`user:${userId}`);
+const limiter = env.RATE_LIMITER_DO.get(rateLimiterId);
+const { allowed } = await limiter.check(100, 60); // 100 req/min
+```
+DO requests are serialised — counter increments are atomic and globally consistent for that user.</p></div>
+</div>
+<div id="G-U23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U23</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Deployment — wrangler.jsonc — wrangler.jsonc / binding validation</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No startup binding validation — Workers crash on first use of missing binding, not at startup</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">All Naelao Workers access 15–25 bindings (DO namespaces, R2 buckets, KV namespaces, Queues, AI, Vectorize, Service Bindings). None of the Workers validate that required bindings exist at startup. When a wrangler.jsonc binding is accidentally renamed, removed, or misconfigured for a specific environment (dev/staging/prod), the Worker deploys successfully and all requests appear healthy until the first code path that touches the missing binding — which throws an untyped runtime error. In production this means silent partial failures: some API routes work, others crash with 500.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Add a startup binding validator to every Worker's `fetch` handler:
+```typescript
+const REQUIRED_BINDINGS: (keyof Env)[] = [
+  "NAELAO_CONFIG_KV",
+  "NAELAO_WORKSPACE",
+  "NAELAO_AGENTS_DO",
+  "NAELAO_ASSISTANT_DO",
+  "NAELAO_VECTORIZE",
+  "AI",
+  "NAELAO_NOTIFICATIONS_QUEUE",
+];
+
+function validateEnv(env: Env): void {
+  for (const key of REQUIRED_BINDINGS) {
+    if (!env[key]) {
+      throw new Error(`Missing required binding: ${key}. Check wrangler.jsonc.`);
+    }
+  }
+}
+
+export default {
+  fetch(req: Request, env: Env, ctx: ExecutionContext) {
+    validateEnv(env); // Fails fast at request time with clear error
+    return router.handle(req, env, ctx);
+  }
+};
+```
+This surfaces binding drift immediately on first request in any environment rather than deep in a specific code path.</p></div>
+</div>
+<div id="G-U24" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U24</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§SpaceDO — Lifecycle — SpaceDO / cascade deletes</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Space deletion does not terminate or clean up orphaned Durable Objects — billing continues indefinitely</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">When a Space is deleted (soft-deleted via `deleted_at` timestamp in SpaceDO), no cleanup is performed on child Durable Objects: AssistantDOs, AgentDOs, AssistantSandboxDOs, WalletDOs, SkillRegistryDOs, and ProjectDOs for every project in the space remain active in Cloudflare's billing system. CF bills for DO storage by active SQLite bytes. A space with 50 users, each with an AssistantDO holding 50MB of conversation history, continues to incur ~$0.25/month in DO storage fees after deletion — forever. Over thousands of deleted spaces, this becomes a significant cost leak.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Implement cascading cleanup on space deletion:
+```typescript
+async deleteSpace(spaceId: string) {
+  // Mark deleted
+  this.ctx.storage.sql.exec(
+    "UPDATE spaces SET deleted_at = ? WHERE id = ?", Date.now(), spaceId
+  );
+  // Queue cleanup job — runs async so deletion response is fast
+  await env.NAELAO_CLEANUP_QUEUE.send({
+    type: "space_cleanup",
+    spaceId,
+    components: ["assistants", "agents", "wallets", "projects", "vectorize"],
+  });
+}
+
+// Cleanup Worker handler
+async function cleanupSpace(spaceId: string, env: Env) {
+  // 1. Purge Vectorize vectors with spaceId filter
+  const vectors = await env.NAELAO_VECTORIZE.query([0], {
+    filter: { spaceId: { $eq: spaceId } }, topK: 1000
+  });
+  await env.NAELAO_VECTORIZE.deleteByIds(vectors.matches.map(m =&gt; m.id));
+  // 2. Delete R2 prefix
+  // 3. Terminate all active sandboxes
+  // 4. Clear DO storage for each child DO
+}
+```</p></div>
+</div>
+<div id="G-U25" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U25</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§AssistantDO — Billing — AssistantDO / annotation payments</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Bootstrap annotations paid before quality score — up to 20% of bootstrap fund wasted on rejected work</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The bootstrap annotation flow calls `payAnnotator(userId, amountCents)` immediately when an annotation is submitted, before the LLM quality judge scores it. If the quality score falls below the acceptance threshold, the annotation is rejected but the payment has already been issued. With a typical rejection rate of 15–25% for crowdsourced annotation tasks, this wastes a significant fraction of the bootstrap fund. There is no payment hold, no escrow, and no mechanism to reclaim funds from rejected annotations.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Implement a hold-and-settle pattern:
+```typescript
+async submitAnnotation(userId: string, taskId: string, annotation: object) {
+  const holdId = crypto.randomUUID();
+  // 1. Hold payment — reserve without delivering
+  await walletDO.holdPayment(holdId, { userId, amountCents: ANNOTATION_RATE_CENTS });
+  // 2. Store annotation with hold reference
+  this.ctx.storage.sql.exec(
+    "INSERT INTO annotations (id, task_id, user_id, data, hold_id, status) VALUES (?,?,?,?,?,'pending')",
+    crypto.randomUUID(), taskId, userId, JSON.stringify(annotation), holdId
+  );
+  // 3. Queue for async scoring (returns immediately)
+  await env.ANNOTATION_SCORE_QUEUE.send({ holdId, taskId, userId, annotation });
+  return { holdId, status: "pending_review" };
+}
+
+// After scoring:
+async settleAnnotation(holdId: string, score: number) {
+  if (score &gt;= ACCEPTANCE_THRESHOLD) {
+    await walletDO.releaseHold(holdId); // pay annotator
+  } else {
+    await walletDO.cancelHold(holdId);  // refund bootstrap fund
+  }
+}
+```</p></div>
+</div>
+<div id="G-U26" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U26</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§SpaceDO — Billing — SpaceDO / sub-space rollup</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Sub-space billing rollup has a day-boundary race condition — usage events misattributed between billing periods</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The daily billing cron reads sub-space usage from Analytics Engine with a query bounded by `toStartOfDay(now())`, then rolls it up to the parent space's WalletDO. Concurrent AgentDO runs can be writing new usage events to Analytics Engine during the rollup window. The Analytics Engine has up to 10-second ingestion delay. Events written within the last 10 seconds of the billing day fall into the next day's Analytics Engine window but are logically part of the current day. This systematically misattributes end-of-day compute costs by up to $0.10 per sub-space per day.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Use event-streaming billing instead of daily batch rollup:
+```typescript
+// Every AgentDO run: write billing event to queue immediately on completion
+await env.NAELAO_BILLING_QUEUE.send({
+  type: "run_complete",
+  spaceId,
+  subSpaceId,
+  costMicroCents: calculateCostMicroCents(inputTokens, outputTokens),
+  timestamp: Date.now(),
+});
+
+// Billing queue consumer: credit parent WalletDO immediately
+async queue(batch: MessageBatch) {
+  for (const msg of batch.messages) {
+    const { spaceId, costMicroCents } = msg.body;
+    await walletDO.deductMicroCents(spaceId, costMicroCents);
+    msg.ack();
+  }
+}
+```
+Eliminate the daily cron rollup entirely. Real-time billing events remove the day-boundary race and enable live budget dashboards.</p></div>
+</div>
+<div id="G-U27" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U27</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Dynamic Tools — Execution — DynamicWorkerLoader / timeouts</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Dynamic tool execution has no per-tool timeout — hanging tools block agent turn indefinitely</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Dynamic Worker Loader executes user-defined TypeScript tools in V8 isolates. There is a 30-second Worker request timeout, but this is the GLOBAL timeout for the entire agent turn, not a per-tool timeout. A dynamic tool that makes a slow external HTTP call, enters an infinite loop, or waits for a resource that never responds will consume the full 30-second budget, leaving zero time for the agent's LLM reasoning, other tool calls, and response streaming. No partial result is salvageable; the entire turn fails with a 504.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Wrap each dynamic tool execution in a `Promise.race()` with a configurable per-tool deadline:
+```typescript
+const TOOL_TIMEOUT_MS = {
+  default: 10_000,
+  web_search: 15_000,
+  exec_script: 25_000,
+};
+
+async function executeToolWithTimeout(
+  toolName: string,
+  toolFn: () =&gt; Promise&lt;unknown&gt;
+): Promise&lt;unknown&gt; {
+  const timeoutMs = TOOL_TIMEOUT_MS[toolName] ?? TOOL_TIMEOUT_MS.default;
+  const timeoutPromise = new Promise((_, reject) =&gt;
+    setTimeout(() =&gt; reject(new Error(`Tool ${toolName} timed out after ${timeoutMs}ms`)), timeoutMs)
+  );
+  return Promise.race([toolFn(), timeoutPromise]);
+}
+```
+Return a structured error to the LLM on timeout: `{ error: "tool_timeout", toolName, timeoutMs }` — the agent can retry with different parameters or skip the tool call.</p></div>
+</div>
+<div id="G-U28" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U28</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§SkillRegistryDO — Skills — SkillRegistryDO / override audit</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Tier 3 skill silently overrides Tier 1 platform skill — no audit log, admins cannot detect shadowing</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">When an AssistantDO's personal skill (Tier 3) has the same name as a platform skill (Tier 1), `mergeSkillsByPrecedence()` silently uses the Tier 3 version. No log entry is created, no admin alert is raised, and the SkillRegistryDO has no record of the override. A malicious or buggy self-modified skill that shadows a security-sensitive platform skill (e.g., `check-permissions`, `validate-payment`) will run in place of the audited platform version for all future turns, with zero visibility to space admins or the platform team.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Log all tier-override decisions and expose them in the admin dashboard:
+```typescript
+function mergeSkillsByPrecedence(
+  [platform, space, agent]: Skill[][],
+  spaceId: string,
+  userId: string
+): Skill[] {
+  const merged = new Map&lt;string, Skill&gt;();
+  for (const skill of platform) merged.set(skill.name, { ...skill, tier: 1 });
+  for (const skill of space) {
+    const existing = merged.get(skill.name);
+    if (existing) {
+      logSkillOverride({ skill, overrides: existing, by: "space", spaceId });
+    }
+    merged.set(skill.name, { ...skill, tier: 2 });
+  }
+  for (const skill of agent) {
+    const existing = merged.get(skill.name);
+    if (existing) {
+      logSkillOverride({ skill, overrides: existing, by: "agent", spaceId, userId });
+    }
+    merged.set(skill.name, { ...skill, tier: 3 });
+  }
+  return [...merged.values()];
+}
+
+// Store overrides in SkillRegistryDO for admin review
+function logSkillOverride(event: SkillOverrideEvent) {
+  ctx.storage.sql.exec(
+    "INSERT INTO skill_overrides (skill_name, tier, overridden_tier, space_id, user_id, logged_at) VALUES (?,?,?,?,?,?)",
+    event.skill.name, event.by, event.overrides.tier, event.spaceId, event.userId ?? null, Date.now()
+  );
+}
+```</p></div>
+</div>
+<div id="G-U29" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U29</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§CF Queues — Configuration — CF Queues / maxConcurrency</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">`maxConcurrency` not set on any queue consumer — burst traffic causes unbounded parallel processing and rate limit spikes</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">None of the wrangler.jsonc queue consumer definitions set `max_concurrency`. When a burst of messages arrives (e.g., 500 run-complete notifications from a parallel workflow), CF Queues spawns up to 250 concurrent Worker invocations by default. Each invocation makes calls to APNs, FCM, Slack webhooks, and Analytics Engine. APNs rate-limits at 300 requests/second per certificate. FCM limits at 500/second. The burst from unbounded queue consumers hits these limits immediately, triggering 429 errors, causing messages to be retried, causing more burst, in a cascading failure loop.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Set appropriate concurrency limits per queue consumer in wrangler.jsonc:
+```json
+{
+  "queues": {
+    "consumers": [
+      {
+        "queue": "naelao-notifications",
+        "max_concurrency": 10,     // APNs/FCM rate limit headroom
+        "max_batch_size": 25,
+        "max_batch_timeout": 2,
+        "max_retries": 3,
+        "dead_letter_queue": "naelao-dlq"
+      },
+      {
+        "queue": "naelao-billing",
+        "max_concurrency": 5,      // WalletDO serialized by DO, low concurrency fine
+        "max_batch_size": 50,
+        "max_retries": 5
+      },
+      {
+        "queue": "naelao-analytics",
+        "max_concurrency": 20,     // Analytics Engine has high throughput
+        "max_batch_size": 100
+      }
+    ]
+  }
+}
+```</p></div>
+</div>
+<div id="G-U30" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U30</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§AssistantDO — Bootstrap — AssistantDO / bootstrap fund</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No pre-flight balance check before accepting annotation — bootstrap fund depletes mid-campaign silently</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The bootstrap annotation acceptance flow does not verify that the bootstrap WalletDO has sufficient balance before accepting a new annotation submission. When the fund reaches zero, `payAnnotator()` throws an error, but the annotation has already been added to the `annotations` table with `status = "accepted"`. The annotator receives an error but has already done the work. The annotation sits in a broken state: accepted but unpaid. Subsequent attempts by the same annotator fail with confusing errors. Space admins have no alert that the campaign paused due to insufficient funds.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Check balance before accepting annotation and expose fund status:
+```typescript
+async acceptAnnotationTask(taskId: string): Promise&lt;AnnotationResponse&gt; {
+  const balance = await bootstrapWallet.getBalanceCents();
+  const taskCost = await getTaskCostCents(taskId);
+  if (balance &lt; taskCost) {
+    return {
+      accepted: false,
+      reason: "insufficient_bootstrap_funds",
+      fundStatus: { balance_cents: balance, required_cents: taskCost },
+    };
+  }
+  // Proceed with acceptance + payment hold
+  const holdId = await bootstrapWallet.holdPayment(taskCost);
+  // ... rest of acceptance flow
+}
+// Also: send Space admin notification when balance drops below 2x average task cost
+```</p></div>
+</div>
+<div id="G-U31" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U31</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§SpaceDO — Multi-tenancy — SpaceDO / PRAGMA foreign_keys</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">DO SQLite foreign key enforcement never enabled — referential integrity silently broken</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">SQLite disables foreign key enforcement by default and requires `PRAGMA foreign_keys = ON` per connection. Durable Object SQLite contexts do not enable this pragma automatically. The SpaceDO schema defines foreign keys (`FOREIGN KEY (space_id) REFERENCES spaces(id) ON DELETE CASCADE`, etc.) but since the pragma is never set, these constraints are completely ignored. Child records (projects, members, agents) are never cascade-deleted when their parent space is deleted. Orphaned records accumulate over time and are never cleaned up by any other mechanism.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Enable foreign key enforcement at DO initialization:
+```typescript
+async initialize() {
+  await this.ctx.blockConcurrencyWhile(async () =&gt; {
+    // Must be first SQL operation after DO creation
+    this.ctx.storage.sql.exec("PRAGMA foreign_keys = ON");
+    // Then create schema
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS spaces (
+        id TEXT PRIMARY KEY,
+        ...
+      );
+      CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+        ...
+      );
+    `);
+  });
+}
+```
+Note: `PRAGMA foreign_keys = ON` must be re-executed after every connection reset. In DO context this means calling it in every request handler that may write, or once in `blockConcurrencyWhile()` if the connection persists for the DO's lifetime.</p></div>
+</div>
+<div id="G-U32" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U32</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§naelao-notifications — Channels — naelao-notifications / channel circuit breaker</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Notification Worker attempts all channels even when one fails — no circuit breaker for persistently-failing providers</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The notification delivery loop iterates all configured channels for a user (APNs, FCM, Slack, email) and attempts each sequentially. If APNs is experiencing an outage and returning 503 for every request, every notification to every iOS user blocks for up to 10 seconds on the APNs timeout before moving to FCM and other channels. With 10,000 iOS users and notifications arriving in bursts, this creates a notification delivery bottleneck where other channels (FCM, Slack) are delayed by APNs timeouts. There is no circuit breaker that skips a failing provider temporarily.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Implement per-provider circuit breaker state in a DO:
+```typescript
+class CircuitBreakerDO extends DurableObject {
+  // States: CLOSED (normal) | OPEN (failing, skip) | HALF_OPEN (testing)
+  async canAttempt(provider: string): Promise&lt;boolean&gt; {
+    const state = await this.ctx.storage.get&lt;CircuitState&gt;(`cb:${provider}`);
+    if (!state || state.status === "CLOSED") return true;
+    if (state.status === "OPEN") {
+      // Auto-reset after 60 seconds
+      if (Date.now() - state.openedAt &gt; 60_000) {
+        await this.ctx.storage.put(`cb:${provider}`, { status: "HALF_OPEN", openedAt: Date.now() });
+        return true;
+      }
+      return false;
+    }
+    return true; // HALF_OPEN: allow one test request
+  }
+  async recordFailure(provider: string) {
+    const failures = (await this.ctx.storage.get&lt;number&gt;(`failures:${provider}`) ?? 0) + 1;
+    if (failures &gt;= 5) {
+      await this.ctx.storage.put(`cb:${provider}`, { status: "OPEN", openedAt: Date.now() });
+    }
+    await this.ctx.storage.put(`failures:${provider}`, failures);
+  }
+}
+```</p></div>
+</div>
+<div id="G-U33" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U33</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Vectorize — Multi-tenancy — Vectorize / per-space isolation</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">All spaces share a single Vectorize index with only metadata filter isolation — filter bypass leaks cross-tenant vectors</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">All Naelao spaces store their memory vectors in the same Vectorize index, distinguished only by a `spaceId` metadata filter. If any query path omits or misconstructs the `spaceId` filter (using `{spaceId: value}` shorthand instead of `{spaceId: {$eq: value}}`), vectors from other tenants are returned in the similarity search results. A single filter bug anywhere in the codebase leaks cross-tenant memory data. This is especially sensitive for the Space Assistant's Layer 5 memory search, which returns personal facts and conversation history.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Use Vectorize's namespace/index-per-tenant model for strong isolation:
+```typescript
+// Option A: One Vectorize index per space (strongest isolation, higher cost)
+// Dynamically selected at query time:
+const indexName = `naelao-space-${spaceId}`;
+const results = await env[indexName]?.query(queryVector, { topK: 10 })
+  ?? { matches: [] };
+
+// Option B: Shared index + mandatory filter via middleware wrapper
+class TenantVectorize {
+  constructor(private index: VectorizeIndex, private spaceId: string) {}
+  async query(vector: number[], opts: VectorizeQueryOptions) {
+    return this.index.query(vector, {
+      ...opts,
+      // Mandatory filter injected — callers cannot omit it
+      filter: { spaceId: { $eq: this.spaceId } },
+    });
+  }
+}
+// All code uses TenantVectorize wrapper, never raw env.NAELAO_VECTORIZE
+const vectorize = new TenantVectorize(env.NAELAO_VECTORIZE, spaceId);
+```</p></div>
+</div>
+<div id="G-U34" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U34</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§AssistantDO — Proactive — AssistantDO / trigger types</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Proactive triggers limited to cron schedule — missing event-based, state-change, and threshold triggers</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">AssistantDO only fires proactive tasks via time-based cron schedule (from `cron-jobs.json`). OpenClaw and modern agent platforms support four trigger types: (1) time-based (cron), (2) event-based (a webhook payload arrives from GitHub/Stripe/Jira), (3) state-change-based (a project status transitions from "in-progress" to "blocked"), and (4) threshold-based (wallet balance drops below $10, or error rate exceeds 5%). The spec implements only type 1. Types 2–4 require the heartbeat to check conditions, which introduces up to 5-minute latency between the triggering event and the assistant's response.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Implement an event-driven trigger system alongside cron:
+```typescript
+// Add to AssistantDO:
+async handleExternalEvent(event: NaelaoEvent) {
+  const triggers = [...this.ctx.storage.sql.exec(
+    "SELECT * FROM triggers WHERE event_type = ? AND enabled = 1",
+    event.type
+  )];
+  for (const trigger of triggers) {
+    // Evaluate condition: "project.status == blocked"
+    if (evaluateCondition(trigger.condition, event.payload)) {
+      await this.runFiber(`trigger-${trigger.id}-${Date.now()}`, async () =&gt; {
+        await this.runAgentTask(trigger.task_description, event.payload);
+      });
+    }
+  }
+}
+
+// naelao-router: on incoming webhook events, also fan out to AssistantDO
+async routeWebhookEvent(event: NaelaoEvent, spaceId: string) {
+  const assistant = env.NAELAO_ASSISTANT_DO.get(
+    env.NAELAO_ASSISTANT_DO.idFromName(`assistant:${spaceId}:${event.userId}`)
+  );
+  // Fire-and-forget: assistant processes asynchronously
+  ctx.waitUntil(assistant.fetch("http://assistant/event", { method:"POST", body: JSON.stringify(event) }));
+}
+```</p></div>
+</div>
+<div id="G-U35" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-U35</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§CF Queues — Configuration — CF Queues / message TTL</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No message TTL on notification and run-complete queues — stale messages delivered days after events</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">CF Queues has no native message TTL (messages expire after 4 days by default). Run-complete notifications queued during an outage are delivered up to 4 days later — long after the user has moved on. A "your agent finished" notification arriving 3 days late is confusing and noisy. More critically, human-in-the-loop approval requests delivered after the agent has already timed out the approval window (e.g., the agent moved on after 30 minutes) cause users to click "approve" on a decision that has already been made, potentially re-triggering a cancelled action.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Implement message-level TTL checks in queue consumers:
+```typescript
+async queue(batch: MessageBatch&lt;NotificationPayload&gt;, env: Env) {
+  const TTL_MS: Record&lt;string, number&gt; = {
+    "run_complete":    30 * 60 * 1000,      // 30 minutes
+    "hitl_approval":  10 * 60 * 1000,      // 10 minutes (matches approval window)
+    "billing_alert":  24 * 60 * 60 * 1000, // 24 hours
+    "default":         4 * 60 * 60 * 1000, // 4 hours
+  };
+  for (const msg of batch.messages) {
+    const ttl = TTL_MS[msg.body.type] ?? TTL_MS.default;
+    const age = Date.now() - msg.body.enqueuedAt;
+    if (age &gt; ttl) {
+      msg.ack(); // Drop stale message
+      env.NAELAO_ANALYTICS.writeDataPoint({
+        blobs: ["stale_notification_dropped", msg.body.type],
+        doubles: [age / 1000],
+        indexes: ["notifications"],
+      });
+      continue;
+    }
+    await deliverNotification(msg.body, env);
+    msg.ack();
+  }
+}
+```
+Require all queue producers to stamp `enqueuedAt: Date.now()` in the message body.</p></div>
+</div>
+
 </section>
 
 </body>
