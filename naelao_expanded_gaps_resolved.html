@@ -51013,6 +51013,452 @@ When bumping the date, bump it everywhere in one change and re-run the full test
   <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Model a Template as a publishable, versioned partial manifest bound to a Space Type, validated by the constraint engine on both publish and apply. Add a marketplace where users discover and one-click-apply templates, with the deterministic merge (G-Y05) producing a reproducible product. This turns every successful configuration into reusable inventory and compounds platform value.</p></div>
 </div>
 
+
+
+<section id="appendix-z" style="margin-top:80px;">
+<h2 style="font-family:'Fraunces',serif;font-size:32px;font-weight:700;color:var(--hd);letter-spacing:-.02em;margin:0 0 6px;">Appendix Z — Eighteenth Pass</h2>
+<p style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);letter-spacing:.1em;text-transform:uppercase;margin:0 0 32px;">Database Topology &amp; Alternatives (Turso · D1 · Sharded DO · ContainerDB) · LLM Token Accounting · Notification Delivery · Data Pipeline · API Versioning · Operations &amp; Compliance</p>
+
+<div id="G-Z01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z01</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Storage — DB topology — tenancy → DB selection</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Single-SpaceDO-Per-Product Is the Only Data Topology — Multi-Tenant SaaS Exceeds 10GB and Has No Path</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec specifies "one SpaceDO per product with space_id column isolation" as the sole data topology. This works for small teams but a public multi-tenant SaaS with thousands of active end-users will exceed the 10GB DO SQLite ceiling with no migration path. There is no documented topology selection process, no per-tenant isolation topology, and no scaling story beyond the R2 cold-archive pattern which only offloads old messages, not live relational data.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Promote storageTopology to a required manifest dimension (single-do | sharded-do | d1-per-tenant | turso-per-tenant | container-db) auto-selected from tenancy + plan. The constraint engine maps tenancy: "saas" → d1-per-tenant or turso-per-tenant by default. Each topology definition specifies its isolation guarantee, ceiling, and provisioning hook so the correct infrastructure is created automatically at space-creation time.</p></div>
+</div>
+
+<div id="G-Z02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z02</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Storage — D1 per-tenant — D1 REST provisioning API</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">D1 Per-Tenant Never Wired to Space Lifecycle — No Automatic DB Provisioning or Deprovisioning</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Cloudflare D1 supports creating one database per tenant via the REST provisioning API, which gives structural isolation (each user/space has their own DB file, their own 10GB ceiling) while staying 100% on Cloudflare with native Workers binding latency. The spec never provisions D1 databases programmatically; it rejected D1 globally due to missing RLS, a concern that does not apply when each tenant has their own database.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Wire D1 database provisioning to the space-creation path for tenancy modes that select d1-per-tenant topology. On space create: call CF API → create D1 DB → store databaseId in SpaceDO registry → run schema migrations on the new DB. On space delete: deprovision DB as part of the deletion saga. The RLS objection is void; the database boundary is the isolation boundary.</p></div>
+</div>
+
+<div id="G-Z03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z03</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Storage — Turso/libSQL — @libsql/client / per-tenant DBs</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Turso (libSQL) Not Considered — Best-in-Class Option for Hundreds of Thousands of Per-User DBs</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Turso is a globally-distributed libSQL (SQLite-compatible) database that supports creating one isolated DB per tenant via an API call, is accessible over HTTP from CF Workers via @libsql/client (no TCP), runs on Cloudflare infrastructure for 5–20ms edge latency, costs ~$100–200/month at 10k tenants, and supports unlimited DBs per account. This is the ideal back-end for the "one DB per end-user in a SaaS" pattern and the only option with no per-account DB-count ceiling, yet it is absent from the spec.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Offer Turso as the recommended storageTopology for tenancy: "saas" at scale. Wire space creation to the Turso Management API (create database, store endpoint + auth-token in a secrets store), and use @libsql/client in Workers for all data operations on that tenant's DB. Provide a migration guide from DO SQLite (dump via storage.sql.exec → import into libSQL) and document the Turso pricing model so builders can factor it into their product cost.</p></div>
+</div>
+
+<div id="G-Z04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z04</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Storage — Sharded DO topology — coordinator DO / child facets</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Sharded DO Topology (Coordinator + Per-Tenant Child DOs) Not Specified — Staying 100% CF Has No Documented Path</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">For builders who want to stay entirely on Cloudflare and avoid third-party databases, a sharded DO topology is the correct architecture: a lightweight root coordinator DO holds the user registry and routing table, while per-tenant child DOs each get their own isolated 10GB SQLite. This is the CF-native equivalent of per-tenant Turso but requires a complete cross-shard architecture the spec does not define.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Specify the sharded DO pattern: root SpaceDO becomes a coordinator (registry, auth, billing, routing only); per-tenant leaf DOs (keyed by spaceId:tenantId) hold relational data. HybridQueryDO federates reads across shards for admin views. Document the routing table structure, the child-DO naming convention, and how migrations propagate to all child DOs. This topology scales to hundreds of thousands of tenants while remaining 100% CF.</p></div>
+</div>
+
+<div id="G-Z05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z05</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Storage — Cross-shard analytics — HybridQueryDO / federation</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Cross-Shard Query Federation — Per-Tenant DBs Make Admin Analytics and Reporting Impossible</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Any per-tenant DB topology (D1, Turso, sharded DOs) shards data across isolated stores. Admin reports, space-level analytics, and billing reconciliation require querying across all tenants simultaneously — a pattern impossible with isolated databases unless a federation layer exists. The spec has no such layer.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement HybridQueryDO as a read-only federation coordinator: it receives analytic queries, fans out to each tenant's DB asynchronously via subrequests (capped at CF limit of 1000), aggregates results, and streams back a unified response. For billing and compliance, maintain a platform-level summary ledger in a separate analytics-only DB that receives append-only write events from every tenant DB, enabling fast aggregate queries without cross-shard fan-out.</p></div>
+</div>
+
+<div id="G-Z06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z06</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Storage — Backup &amp; restore — DO snapshot / litestream</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Managed Backup or Point-in-Time Restore Strategy — Data Loss Risk With No Recovery Path</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Durable Object SQLite has no snapshot API or point-in-time restore. The spec archives cold messages to R2 but that is not a full backup — it is a partial offload. If a DO's SQLite becomes corrupt (known edge case after storage failures), there is no WAL-based recovery, no litestream equivalent, and no restore procedure documented.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement continuous SQLite replication to R2 using litestream-style WAL shipping: after each DO write-batch, serialize the WAL segment to R2 under spaces/{spaceId}/wal/{timestamp}.wal. Keep 7 days of WAL history. Provide a recovery procedure that reconstructs the DB from the base snapshot + WAL segments. For Turso/D1 tenants, use their managed backup APIs instead. Document the RTO and RPO targets.</p></div>
+</div>
+
+<div id="G-Z07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z07</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Storage — ContainerDB — SQLite/DuckDB on FUSE-R2</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Heavy-Data Capability — Analytics and Large Dataset Products Have No Viable Store</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Some builder products (business intelligence tools, data-heavy analysis agents) need query capabilities and data volumes beyond DO or D1 (OLAP queries, columnar formats, &gt;10GB analytical datasets). There is no option for these workloads; R2 is object storage, not queryable, and DO SQLite is limited to 10GB transactional SQLite.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a ContainerDB capability: run DuckDB (for analytics) or SQLite (for transactional) inside a CF Container on an R2-FUSE-mounted filesystem with litestream continuous replication to R2 for durability. The DO remains the hot coordinator; ContainerDB handles cold/analytical reads. Document the trade-offs: 2–3s container cold-start, higher cost, and recommend only when data volume or query complexity justifies it.</p></div>
+</div>
+
+<div id="G-Z08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z08</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Storage — Migration path — DO SQLite → D1/Turso</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Migration Path From DO SQLite to External DB — Existing Spaces Are Stranded on Old Topology</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Once a space is created on DO SQLite, the spec provides no migration path to a better topology (D1, Turso, sharded DO). Builders who outgrow the single-DO model have no documented procedure to move their data without downtime or data loss, and no storageTopology change flow through the configurator.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Specify a topology migration saga in the configurator: (1) provision the new DB, (2) take a DO SQLite snapshot and import it, (3) replay WAL events that arrived during import, (4) switch the routing table to the new DB atomically, (5) deprovision the old DO. Gate the migration as a destructive config change requiring the builder's explicit confirmation and impact preview (G-Y09). Provide a dry-run that estimates downtime and data volume.</p></div>
+</div>
+
+<div id="G-Z09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z09</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Storage — DB lifecycle — provisioning / deprovisioning hooks</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">DB Provisioning Not Wired to Space Lifecycle — Deleted Spaces Leave Orphaned Databases</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">If per-tenant D1 or Turso databases are provisioned at space creation, they must be deprovisioned at space deletion. The space deletion path (space lifecycle events, sweeper jobs) makes no mention of calling external DB APIs, so deleted spaces accumulate abandoned databases incurring ongoing cost.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a database deprovisioning step to the space-deletion saga: after data export and vector cleanup, call the appropriate API (CF D1 REST delete, Turso Management API delete) to remove the tenant DB. Record the deprovisioning result in the deletion audit log. For safety, retain the DB for 30 days in a tombstoned state before final deletion, matching the space recovery window (G-Z10 below).</p></div>
+</div>
+
+<div id="G-Z10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z10</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Storage — Query latency — edge cache / connection warm-up</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Query-Result Cache or Connection Warm-Up — Cold D1/Turso Queries Add 50–150ms to Every Turn</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">D1 queries via HTTP API and Turso queries via @libsql/client both incur a round-trip on every cold call (50–150ms from CF edge). For interactive agent turns where every millisecond counts, this cold-query latency stacks on top of LLM generation time. The spec has no caching layer between the Worker and the external DB.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement a KV-backed query-result cache for frequently read, low-churn data (space config, user entitlements, skill registry) with a short TTL (30–60 s). For hot transactional paths that cannot be cached, pre-warm DB connections at DO initialization using blockConcurrencyWhile(), holding the connection open for the DO lifetime. Log cache hit/miss ratios to Analytics Engine for TTL tuning.</p></div>
+</div>
+
+<div id="G-Z11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z11</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Billing — Extended thinking — thinking_tokens / cost model</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Extended Thinking Tokens Not Tracked Separately — Billing Undercharges claude-opus Reasoning Runs</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Claude claude-opus-4-8 with extended thinking returns a thinking block alongside the text response. Thinking tokens are billed at the model's output token rate, but Naelao's billing handler reads only response.usage.input_tokens and response.usage.output_tokens. The thinking_tokens field in providerMetadata is ignored, causing systematic under-billing on all extended-thinking runs and incorrect cost attribution to model and space.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Extend the billing event schema: add thinking_tokens INT and charge at the output token rate. Modify the AI Gateway response parser to read response.usage.cache_read_input_tokens, response.usage.cache_creation_input_tokens, and providerMetadata.anthropic.usage.thinking_tokens. Update cost calculation: total_cost = (input_tokens * input_rate) + (thinking_tokens * output_rate) + (output_tokens * output_rate). Log all four token fields to Analytics Engine.</p></div>
+</div>
+
+<div id="G-Z12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z12</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§LLM — Context window — MAX_MESSAGE_CONTEXT / adaptive sizing</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Context Window Size Is a Static Constant — No Adaptive Resizing Based on Available Token Budget</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">MAX_MESSAGE_CONTEXT = 50 is a compile-time constant applied to every agent turn regardless of message length, model context window, remaining credit budget, or task type. Document-analysis runs waste budget on irrelevant message history; long multi-turn reasoning runs truncate too aggressively. Neither error is observable because token counts are not measured before window sizing.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Make the context window dynamic: measure total_tokens = sum of token estimates for candidate messages, then select the largest N messages that fit within min(model.context_window * 0.6, remaining_budget_tokens). Store preferred context size as a per-agent config (default 50, range 10–200). Log the chosen window size and truncation count per turn to run telemetry for tuning.</p></div>
+</div>
+
+<div id="G-Z13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z13</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Billing — Output cap — max_tokens vs remaining budget</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">max_tokens Passed to LLM Without Budget Check — Agent Can Request Tokens Beyond Remaining Credit</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">AgentDO passes max_tokens: 4096 on every LLM call without first checking how many tokens remain in the space's credit balance. If the space has only 1000 tokens of credit left, the call succeeds, the API charges the full usage, and the space balance goes negative. Combined with the async billing lag (G-X04), this can result in hundreds of dollars of overspend before the billing event closes the account.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Before every LLM invocation, resolve remaining_budget_tokens from the pre-reserved run balance (G-X04). Pass max_tokens = Math.min(requested_max_tokens, remaining_budget_tokens - safety_buffer_200). If remaining budget &lt; safety_buffer, abort the invocation with a typed quota error. Log the actual and requested max_tokens to run telemetry for cost debugging.</p></div>
+</div>
+
+<div id="G-Z14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z14</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Billing — Model fallback — model_used vs model_requested</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">AI Gateway Fallback Uses Primary Model for Cost Attribution — Billing Is Wrong on Every Fallback</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">AI Gateway can fall back from claude-sonnet-4-5 to claude-haiku-4-5 or an open-source model on 429/503. Each model has a different per-token price. The billing worker reads model from the original request metadata, not the model that actually processed the request. Every fallback-served request is overbilled (if it fell back to a cheaper model) or underbilled (if a more expensive fallback was used), corrupting both builder-facing cost reports and platform-level margin tracking.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Extend the AI Gateway cf-aig-metadata response header to include model_used. The billing worker must read model_used (not model_requested) to look up the cost rate. Log both fields to Analytics Engine: { model_requested, model_used, was_fallback: model_used !== model_requested }. Alert when fallback rate exceeds 1% of requests, indicating a structural capacity problem.</p></div>
+</div>
+
+<div id="G-Z15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z15</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Billing — Streaming disconnect — mid-stream token accounting</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Token Count Lost on Client Disconnect During Streaming — Credits Not Charged for Partial Responses</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Together AI and Anthropic streaming responses report the definitive token count only in the final SSE chunk's usage field. If a client disconnects mid-stream, the stream is aborted, the final chunk is never received, and the billing event is never enqueued. The model completed its computation and the platform incurred the API cost, but no credits are deducted from the space.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Accumulate a running token estimate from the streaming chunks (counting streamed tokens as they arrive, using approximate tokenization). On stream abort, enqueue a billing event using the accumulated count. On normal completion, the final chunk's authoritative count supersedes the estimate. This guarantees credit deduction even on disconnect; the small estimation error (±5%) resolves to zero on normal completion.</p></div>
+</div>
+
+<div id="G-Z16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z16</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§LLM — Context compaction — summarization quality guard</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Context Compaction Has No Preference Ranking or Depth Guard — Repeated Summarization Degrades Quality</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Context compaction summarizes old messages to save tokens, but the spec provides no heuristic for which messages to summarize. Oldest-first selection discards foundational context; random selection is unpredictable. More critically, the compaction can summarize already-summarized blocks, applying lossy compression repeatedly and degrading information through an unbounded compaction chain.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement a recency-biased compaction policy: always preserve the last 10 messages verbatim; summarize older message blocks once and tag them summarization_depth: 1; never re-summarize a block with depth &gt;= 2. Store the summarization depth in message metadata. Add a quality check: if the summary is shorter than 20% of the original, flag it for human review and fall back to hard truncation instead.</p></div>
+</div>
+
+<div id="G-Z17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z17</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§LLM — Tool results — partial output / streaming tools</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Tool Timeout Returns Null Result — No Partial Output Recovery for Long-Running Tool Calls</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">MCP tool calls with a 30-second timeout return a null or empty result on timeout. The agent treats this as a failed tool call with no data, cannot recover partial work, and must retry the entire operation from scratch. For tools that generate intermediate results (e.g., a multi-stage web scraper), all progress is lost.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Extend the tool result schema to support partial: true responses: { partial: true, data: { ...partial... }, status: "timeout" }. Tool adapters emit their current state before the timeout fires. The agent receives the partial result, appends it to the conversation, and can decide whether to retry the remainder or accept the partial answer. Pair with the async MCP tool pattern (G-X28) for tools that regularly exceed 10 seconds.</p></div>
+</div>
+
+<div id="G-Z18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z18</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Orchestration — Sub-agent budget — child token reservation</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Sub-Agent Token Budget Not Isolated From Parent — Parent Exhaustion Starves Child Agents</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a parent agent spawns a sub-agent, the child draws from the same run-level credit balance. If the parent makes expensive LLM calls first, the child receives an already-exhausted budget and fails mid-task. There is no per-child budget allocation, no pre-reservation before spawn, and no refund of unused child budget back to the parent.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Before spawning, reserve estimatedChildTokens from the run balance in SpaceDO (using the same pre-reservation pattern as G-X04). Store the child's allocated budget as subAgentBudget_{childId} in SpaceDO. Enforce the child's LLM calls against its isolated budget. On child completion, refund unused tokens back to the parent's run balance. Reject spawn if the parent's remaining balance &lt; minChildReservation.</p></div>
+</div>
+
+<div id="G-Z19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z19</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Notifications — Rate limiting — per-space push throttle</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Per-Space Outbound Push Notification Rate Limit — Buggy Agent Can Exhaust FCM/APNs Quota</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The naelao-notifications queue consumer dispatches push notifications to FCM and APNs with no per-space throttle. A buggy agent sending 10,000 push notifications in one minute can exhaust the platform's FCM quota and deny notification delivery to every other space on the account for the remainder of the quota window. The queue's maxConcurrency gap (G-X02) compounds this: all 10,000 fire in parallel.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement per-space push rate limiting in the naelao-notifications consumer: maximum 1,000 push notifications per space per hour, enforced via a RateLimitDO keyed by spaceId. When exceeded, enqueue excess notifications to a low-priority queue with exponential backoff. Log over-limit events to Analytics Engine and alert the space admin. Platform-wide quota is protected; no single space can exhaust it.</p></div>
+</div>
+
+<div id="G-Z20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z20</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Notifications — Token cleanup — FCM invalid token / idempotent deactivation</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">FCM NOT_FOUND Token Deactivation Not Idempotent — Failed Deactivation Leaves Invalid Tokens Active Forever</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When FCM returns NOT_FOUND for an invalid device token, the spec calls deactivateDeviceToken(), but if that DO call fails (network error, DO timeout), the token remains active in SpaceDO. On the next notification to that user, the same invalid token is attempted again, accumulating FCM errors and wasting quota. There is no retry or garbage-collection path for confirmed-invalid tokens.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Maintain an invalid_tokens KV set (keyed spaceId:token, TTL 24 hours). Before dispatching to FCM, check the set and skip known-invalid tokens without a network call. After any FCM NOT_FOUND response, write the token to the KV set unconditionally (this write is idempotent even if DO deactivation fails). Run a nightly reconciliation job that purges all KV-flagged tokens from SpaceDO permanently.</p></div>
+</div>
+
+<div id="G-Z21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z21</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Notifications — Inbound webhooks — agent webhook / signature verification</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Inbound Agent Webhook Triggers Have No Signature Verification — Forged Events Trigger Unauthorized Agent Runs</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">If an agent is configured to trigger on inbound webhooks from external systems (GitHub push, Stripe event, Zapier), there is no HMAC signature verification on the inbound request. An attacker who knows a webhook URL can POST arbitrary payloads that trigger real agent runs, consuming credits and potentially taking harmful actions in the user's space.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define a webhookSecret field in agent definitions. Every inbound webhook endpoint computes HMAC-SHA256(secret, body) and compares it to the X-Webhook-Signature header using a constant-time comparison. Reject requests with missing or invalid signatures with a 401 before enqueueing any work. Enforce per-agent webhook rate limiting (100 events/minute) via a WebhookRateLimitDO. Rotate webhook secrets on a configurable schedule.</p></div>
+</div>
+
+<div id="G-Z22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z22</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Billing — Stripe idempotency — charge.succeeded duplicate / topUp</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Stripe Webhook topUp() Has No Duplicate-Delivery Guard — Network Retries Can Double-Credit Accounts</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Stripe retries failed webhook deliveries up to 24 hours. If the charge.succeeded handler acknowledges the webhook but crashes before fully crediting the account, or if Stripe delivers the event twice due to a timeout, topUp() is called twice and the space receives double credits. The idempotency key format documented in a prior gap is incomplete (missing api_version component) and the check happens after the billing query rather than before.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Use the composite key stripe:{event.id}:{event.api_version} in KV with TTL 48 hours. Write the key BEFORE processing any billing logic (optimistic locking), checking for an existing key first and short-circuiting to a 200 OK if found. Use this same pattern for all Stripe webhook event types (customer.subscription.updated, invoice.payment_failed). Log duplicates to Analytics Engine for Stripe support escalation.</p></div>
+</div>
+
+<div id="G-Z23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z23</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Notifications — Critical delivery — delivery attestation / escalation</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Critical Notifications Have No Delivery Attestation — Billing Alerts and Approval Timeouts Silently Drop</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Billing threshold alerts, approval timeout warnings, and security events are routed through the same fire-and-forget push notification path as routine notifications. If the user's device is offline, the push is silently lost. There is no retry, no read-receipt tracking, and no escalation to email or dashboard for undelivered critical notifications.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Tag notifications with priority: "critical" | "normal". Critical notifications are persisted in SpaceDO (pending_critical_notifications table) until a read receipt is confirmed. If undelivered after 5 minutes, escalate: send an email via naelao-mailer, post an in-app banner on next session, and optionally send an SMS for billing events. Clear the pending record on receipt confirmation. Expose a critical-notification delivery report in the admin console.</p></div>
+</div>
+
+<div id="G-Z24" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z24</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Data — Export pipeline — paginated export / cursor</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Space Data Export Iterates All Rows Without Pagination — Times Out on Spaces With Large Data</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a space requests a full data export (conversations, agent runs, artifacts), the export job queries all rows from SpaceDO SQLite in one pass. A space with 100,000 agent runs or 1 million messages produces a query result too large to hold in a single Worker execution (128MB memory limit) and times out after 30 seconds, leaving the builder with no export.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement cursor-based streaming exports: an export_jobs table tracks { jobId, cursor, status, r2_path }. A DO alarm fires every 60 seconds, reads the next 500 rows from the cursor, appends them as JSONL to R2 under exports/{jobId}/part-{n}.jsonl, and advances the cursor. When exhausted, mark the job complete and notify the builder with a signed R2 URL. Exports resume automatically on alarm retry if interrupted.</p></div>
+</div>
+
+<div id="G-Z25" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z25</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Data — External integrations — ConnectionHealthDO / heartbeat</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">External Data Source Integrations Have No Health Monitoring — Silently Failing Syncs Mislead Agents</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Agents that sync from external CRMs, APIs, or data sources (Salesforce, HubSpot, custom APIs) continue attempting syncs after the source goes offline, returning stale or empty results with no alert to the space admin. The agent operates on outdated information and the builder has no visibility into whether syncs are succeeding.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement a ConnectionHealthDO per external integration: it pings the integration's health endpoint every 5 minutes, tracks consecutive_failures, and after 3 failures emits a { type: "integration_unhealthy", integration_id } event, disables the sync, and sends a notification to the space admin. Re-enable automatically when the next health check succeeds. Surface connection health in the builder console alongside the integration configuration.</p></div>
+</div>
+
+<div id="G-Z26" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z26</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Data — Export schema — schema_version / consumer compatibility</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Agent Result and Export Schema Has No Version — Downstream Consumers Cannot Handle Breaking Changes</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When agents export structured results or conversation history to external systems, there is no schema_version field and no compatibility contract. When the platform changes the export format (new fields, renamed fields, restructured nesting), downstream consumers (data warehouses, BI tools, external APIs) silently break with no way to detect the incompatibility.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add schema_version to all agent result exports and API responses that include structured data. Maintain a SchemaRegistry in SpaceDO that maps each version to its field manifest. Consumers include an Accept-Schema-Version header; the API responds with the requested version using a compatibility adapter if available, or a 406 with available versions. Publish schema changelogs and bump major version on any breaking change.</p></div>
+</div>
+
+<div id="G-Z27" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z27</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§API — Versioning strategy — /v1 endpoints / expand-then-contract</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No API Versioning Strategy — v1 Endpoints Exist But There Is No v2 Migration Path or Contract</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec uses /v1/ URL prefixes on API endpoints but documents no versioning strategy: no criteria for when to introduce v2, no migration window, no deprecation notices, no versioned client SDKs. When breaking changes are needed, the platform has no path except breaking all existing callers simultaneously.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Adopt an explicit URL-versioning strategy: /v1/ is current; new breaking changes introduce /v2/ with both coexisting for a defined migration window (e.g., 6 months). Document the API lifecycle: draft → stable → deprecated → retired. Emit a Deprecation header on deprecated endpoints. Generate an OpenAPI spec from the Worker route definitions and publish it as the canonical API contract for third-party builders.</p></div>
+</div>
+
+<div id="G-Z28" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z28</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Deployment — Space deletion saga — transactional space teardown</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Space Deletion Not a Transactional Saga — Partial Failure Leaves Orphaned DOs and Data</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Space deletion touches multiple independent systems (SpaceDO SQLite, R2 files, Vectorize vectors, KV entries, Analytics Engine records, external DB if provisioned, sub-agent DOs). The spec's deletion logic is not a durable saga: if the process crashes between steps, some systems are cleaned and some are not, leaving orphaned data with no reconciliation path and no way to retry just the failed steps.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Model space deletion as a durable CF Workflow saga: each step (mark-deleted, export-data, delete-vectors, delete-r2, delete-kv, deprovision-db, delete-sub-dos, audit-log) is a separate workflow step.do() with idempotent retry. The workflow persists its progress; on resume it skips completed steps. A nightly reconciliation job queries the deletion_log table and re-triggers any saga stuck in a partial state.</p></div>
+</div>
+
+<div id="G-Z29" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z29</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Lifecycle — Space recovery — soft-delete / recovery window</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Soft-Delete or Recovery Window — A Space Deleted in Error Cannot Be Restored</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Space deletion is immediate and permanent. If a builder accidentally deletes a space, or a billing suspension triggers auto-deletion, all data is permanently lost with no recovery path. Enterprise products typically offer a 30-day recovery window.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement soft-delete: on deletion request, mark the space deleted_at and suspend access, but retain all data for 30 days. During this window, a builder can restore the space via the admin console (reverting deleted_at). After 30 days, the deletion saga (G-Z28) runs for final cleanup. Provide a clear UI countdown and email reminder at 7 days and 1 day remaining. Charge storage cost during the retention period.</p></div>
+</div>
+
+<div id="G-Z30" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z30</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§API — Pagination — cursor-based / offset fallback</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Not All List Endpoints Use Cursor-Based Pagination — Offset Pagination Fails at Scale</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Some list endpoints use cursor-based pagination (before parameter) but others use offset (page=N&amp;limit=M). Offset pagination is O(N) in the database — fetching page 1000 requires scanning 999,000 rows first — and produces incorrect results when rows are inserted between page fetches. At scale this makes these endpoints unusably slow and returns duplicate or missing rows.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Standardize all paginated list endpoints on cursor-based pagination: return next_cursor (opaque, keyed on sort-stable id + timestamp), items, and has_more. Add a lint rule that rejects new endpoints using offset-based pagination. Migrate existing offset endpoints to cursor in the next API minor version with backward-compatible fallback during the transition window.</p></div>
+</div>
+
+<div id="G-Z31" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z31</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Developer Experience — Local dev — wrangler dev mesh / inter-service calls</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">wrangler dev Runs Workers in Isolation — Inter-Service Binding Calls Fail During Local Development</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Naelao's 22 Workers rely heavily on Service Bindings for inter-service calls (naelao-api → naelao-agents → naelao-ai etc.). wrangler dev runs a single Worker in isolation; Service Binding targets do not resolve to the locally-running equivalents, so inter-service calls fail or hit the remote production Workers during local development, making realistic local testing impossible.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define a local development mesh configuration in wrangler.jsonc using wrangler dev --services (available since Wrangler 3). Each Worker runs as a named service in the mesh; Service Bindings resolve to sibling local processes. Provide a start-dev.sh script that launches all 22 Workers in the mesh, and a seed-dev-data.ts fixture that populates local DO SQLite with representative test data including users, spaces, and skills.</p></div>
+</div>
+
+<div id="G-Z32" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z32</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Developer Experience — Testing — integration test harness</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Integration Test Harness for Service Binding Chains — Testing Is Unit-Only</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec has no integration test harness that exercises real Service Binding call chains end-to-end. Tests either mock Service Bindings (hiding integration bugs) or hit production (unsafe). Without a test environment that runs the real Worker chain against test DOs, regressions in inter-service contracts are only caught in production.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Build an integration test harness using Vitest + Miniflare with multi-Worker support: each test suite spins up the relevant Worker chain in a dedicated Miniflare instance with in-memory DOs, executes real HTTP requests through the chain, and asserts end-to-end behaviour. Provide fixture factories for common test scenarios (authenticated user, space with knowledge, active agent run). Run the harness in CI on every PR.</p></div>
+</div>
+
+<div id="G-Z33" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z33</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Developer Experience — OpenAPI — spec generation / client SDKs</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No OpenAPI Spec Generated From Worker Routes — Third-Party Builders Have No Typed API Contract</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The platform aims to let builders integrate with Naelao APIs (agent triggers, space management, billing webhooks) but provides no machine-readable API spec. Builders must reverse-engineer endpoints from documentation prose, and client SDKs cannot be auto-generated. Every breaking API change is invisible until runtime.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Generate an OpenAPI 3.1 spec from Worker route definitions using a type-safe router (Hono or itty-router with schema definitions). Publish it at /openapi.json for each versioned API surface. Auto-generate TypeScript and Python client SDKs from the spec on release. Include in CI a spec-diff step that flags breaking changes as PR failures if no API version bump is present.</p></div>
+</div>
+
+<div id="G-Z34" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z34</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Operations — Maintenance mode — graceful drain / global circuit breaker</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Platform-Wide Maintenance Mode — No Way to Gracefully Drain and Pause All Requests</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The platform has no maintenance mode. When a critical update requires temporary downtime (e.g., a schema migration across all DOs, a secrets rotation, a breaking dependency upgrade), there is no mechanism to: stop new requests, drain in-flight runs, notify users, perform the operation, and then resume — without simply returning errors to all users.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement a maintenance mode flag in NAELAO_CONFIG_KV: maintenance: { enabled: bool, message: string, estimated_end: ISO8601 }. The naelao-api Worker checks this flag at the request gate and returns 503 with a Retry-After header if enabled. In-flight agent runs detect the flag via a DO alarm and checkpoint before the maintenance window. Surface the flag in the admin console with a broadcast notification to all active WebSocket clients.</p></div>
+</div>
+
+<div id="G-Z35" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z35</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Operations — Feature entitlements — entitlement cache</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Entitlement Cache — Every Request Hits Billing Service to Check Plan Features</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Plan-based feature checks (model access, max concurrency, capability gating) call the billing service or check ConcurrencyDO state on every request. Under high concurrency this creates a hot path on billing infrastructure, and latency from billing checks adds to every agent turn's first-token time.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Cache resolved entitlements per (spaceId, plan) in KV with a 5-minute TTL. On plan change (subscription webhook), immediately invalidate the cache for that space. ConcurrencyDO reads the cached entitlement on slot acquisition. Billing checks at the API gate read from cache for non-critical paths, falling back to the live billing service only on cache miss or for financial operations.</p></div>
+</div>
+
+<div id="G-Z36" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z36</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Operations — Timezone handling — cron / UTC vs local time</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Cron Jobs Scheduled in UTC But Space Configs May Specify Local Time — Silent Schedule Drift</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Cron trigger times in wrangler.jsonc and scheduled workflows are defined in UTC. Space-level configurations for scheduled tasks (daily report at 9am, weekly summary on Monday) are presumably entered in the user's local timezone. There is no timezone conversion layer; a user who schedules 9am EST gets a 9am UTC job, firing at 4am their time.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Store scheduled task times in UTC internally, converted from the user's configured timezone at schedule-creation time using the Temporal API (or Intl.DateTimeFormat). Re-compute the next UTC execution time at each job completion accounting for DST transitions, since a fixed UTC offset breaks after a clock change. Display scheduled times to users in their configured timezone in the admin console and notification messages.</p></div>
+</div>
+
+<div id="G-Z37" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z37</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Compliance — GDPR Art 20 — data portability export</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">GDPR Article 20 Data Portability Not Implemented — No Structured Export of User Data</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">GDPR Article 20 grants users the right to receive their personal data in a machine-readable format for portability to another platform. The spec addresses Art 17 right-to-erasure but not Art 20. Users have no endpoint to request a structured export of all their conversations, agent outputs, knowledge base documents, and settings in a portable format.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement a data portability export endpoint: POST /privacy/export triggers the cursor-paginated export saga (G-Z24) scoped to the requesting user's data. The export produces a structured ZIP containing conversations.jsonl, agent_runs.jsonl, knowledge_docs.jsonl, settings.json, and artifacts/ with all R2 files. Deliver via signed R2 URL by email within 30 days. Log the request and completion in the GDPR audit table.</p></div>
+</div>
+
+<div id="G-Z38" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z38</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Scale — Canary deploys — manifest / capability canary</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Canary or Gradual Rollout for Capability Manifest Changes — All Spaces Get New Config Simultaneously</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a capability module is updated or a new Space Type manifest is published, the change takes effect for all products simultaneously on next space wake. There is no canary deployment: 100% of spaces receive the new behaviour with no gradual rollout, no percentage-based ring, and no per-space opt-out window to catch regressions before full rollout.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement a manifest-release ring model: ring 0 (internal test spaces), ring 1 (beta spaces), ring 2 (5% random), ring 3 (50%), ring 4 (100%). Each ring gate requires a dwell time (e.g., 24 hours) with error-rate monitoring. A single error-rate spike above threshold pauses the rollout and alerts the platform team. Spaces can opt into the beta ring via a setting in the builder console.</p></div>
+</div>
+
+<div id="G-Z39" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z39</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Security — Secret scanning — CI / pre-commit</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Secret Scanning in CI — Developer Could Commit API Keys or Tokens to the Repo</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec documents NAELAO_INTERNAL_TOKEN, Stripe keys, R2 credentials, and other secrets managed via CF secrets. There is no mention of a pre-commit hook or CI step that scans commits for accidentally committed secrets (regex patterns for known key formats). A single committed secret in a PR could expose production credentials.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add gitleaks or cf-secret-detect to the CI pipeline and as a pre-commit hook in .husky/pre-commit. Define patterns for all known secret formats used by Naelao (CF API tokens, Stripe sk_live, Anthropic keys). Fail the pipeline immediately on detection and notify the security team. Document the secret-rotation procedure for each credential type in the ops runbook.</p></div>
+</div>
+
+<div id="G-Z40" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Z40</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Compliance — Audit query performance — AE timestamp indexing</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Audit Log Queries Have No Indexed Timestamp — Admin Audit Scans Are Full-Table on Analytics Engine</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Analytics Engine audit queries must scan the full event table and filter by time range in the query (WHERE timestamp BETWEEN ? AND ?). Analytics Engine's only indexed field is index1; timestamp is stored in blobs and is not natively queryable with index acceleration. Admin audit reports over long time ranges (90-day compliance reports) will scan billions of rows, returning in minutes rather than milliseconds.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Write the Unix timestamp (seconds) into index1 (the sole indexed field) on every audit event, enabling range queries: WHERE index1 BETWEEN start_ts AND end_ts. Use toStartOfDay()/toStartOfHour() for bucket aggregations. For compliance reports over long periods, pre-aggregate into a summary table daily via the sweeper cron and serve reports from the summary rather than scanning raw events.</p></div>
+</div>
+
 </section>
 
 </body>
