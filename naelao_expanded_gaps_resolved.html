@@ -50567,6 +50567,452 @@ When bumping the date, bump it everywhere in one change and re-run the full test
   <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Write only pseudonymous identifiers to Analytics Engine: hash user IDs via HMAC-SHA256 with a per-space erasure key stored in SpaceDO SQLite. On erasure request, delete the erasure key — all prior AE entries become permanently unresolvable (crypto-shredding). Document this approach in the privacy policy and DPA. Test that post-erasure AE queries for the hashed ID return zero matching events.</p></div>
 </div>
 
+
+
+<section id="appendix-y" style="margin-top:80px;">
+<h2 style="font-family:'Fraunces',serif;font-size:32px;font-weight:700;color:var(--hd);letter-spacing:-.02em;margin:0 0 6px;">Appendix Y — Seventeenth Pass</h2>
+<p style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);letter-spacing:.1em;text-transform:uppercase;margin:0 0 32px;">The Configurable Product Platform · Capability Kernel &amp; Manifests · No-Code Configurator &amp; Constraint Engine · Tenancy / Product-Admin / Billing Strategy · Account-Scale Concurrency · Storage Topology Beyond 10GB · Dynamic Orchestration</p>
+
+<div id="G-Y01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y01</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§07 Naelao OS — Space Type model — CapabilityRegistry / manifest engine</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Formal Capability Kernel — Space Types Risk Forking Into Separate Codebases</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec loads a NaelaoSpaceTypeManifest per type from R2, which is the right instinct, but there is no formal shared capability kernel that all Space Types compose from. Without it, Workers, MiniAGI, Verticals, Launchpad and future types drift toward bespoke code paths, and the stated goal — a company space that combines Workers agents + space assistants + Naelao agents by configuration — becomes a custom build each time instead of a manifest selection.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define a versioned CapabilityRegistry: every building block (naelao-agents, space-assistants, channels, tools, mcp, memory, rag, voice, project-think, workflows, wallet, sub-spaces, bootstrap, billing, tenancy) is a self-contained module with a typed config schema. A Space Type is purely a manifest that enables and parametrizes capabilities. The hypothetical "one giant Space Type" is simply a manifest with every capability enabled; a MiniAGI type is the same kernel with a narrower selection. No capability is ever reimplemented per type.</p></div>
+</div>
+
+<div id="G-Y02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y02</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§07 Naelao OS — Space Type model — manifest inheritance</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Base/Standard Space Type or Manifest Inheritance — Every Manifest Re-declares Everything</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">There is no "Standard" base Space Type, and manifests cannot inherit from one another. Verticals, Launchpad and enterprise manifests must each restate common defaults, so a change to shared behaviour requires editing every manifest. This duplicates configuration and makes the platform brittle as the number of Space Types grows.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Introduce manifest inheritance: a base "standard" manifest declares platform defaults; specialized types declare extends: "standard" and override only deltas. Resolve manifests at create time by deep-merging the inheritance chain. This makes a new Space Type a small overlay rather than a full re-declaration, and lets platform-wide defaults propagate to all derived types.</p></div>
+</div>
+
+<div id="G-Y03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y03</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§07 Naelao OS — capability versioning — semver / compatibility</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Capability Modules Have No Versioning — Upgrading a Block Silently Breaks Live Products</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Capabilities have no version identity. When the memory, RAG or channels module changes behaviour, every product that composed the old behaviour can break with no compatibility signal. A product manifest references capabilities by name only, so an upgrade is an uncontrolled, fleet-wide change.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Assign semver to every capability module. Product manifests pin the capability major version they were configured against (e.g., rag@2). The platform runs old and new majors side by side during an expand-then-contract migration window and provides a per-product migration path. Breaking changes require a major bump and an explicit, audited product re-configuration before the old major is retired.</p></div>
+</div>
+
+<div id="G-Y04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y04</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§07 Naelao OS — manifest validation — Zod schema / CI guard</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Manifest Schema Not Statically Validated — Malformed Manifests Can Reach Production</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Manifests are JSON loaded from R2 with no enforced schema. A malformed or internally inconsistent manifest (unknown capability, missing required parameter, invalid enum) is only discovered at runtime when a space fails to initialize, potentially after creation has been billed.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define the manifest as a Zod schema and validate it in CI before any manifest is published to naelao-assets R2, and again at runtime before a space is created. Reject unknown capability keys, missing required parameters, and type mismatches with a precise error. Treat the manifest schema as the single source of truth for what is configurable.</p></div>
+</div>
+
+<div id="G-Y05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y05</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§MP Community — Templates vs Space Types — template overlay / merge precedence</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Blueprint vs Preset Boundary Unclear — Template/Space-Type Merge Order Undefined</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">You distinguished Space Types (blueprints) from Templates (presets a user selects/configures), but the data model conflates them and never defines how a template combines with its Space Type. If both set the same capability parameter, the resulting value is undefined, so two users selecting the same template can get different products depending on load order.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Model a Template as a partial manifest overlay scoped to exactly one Space Type. Define a deterministic merge: Space Type base manifest → Template overlay → product-admin configuration → user selection, with later layers overriding earlier ones field-by-field. Persist the fully-resolved manifest snapshot on the space so the product is reproducible regardless of load timing.</p></div>
+</div>
+
+<div id="G-Y06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y06</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§07 Naelao OS — config drift — space_manifest snapshot / reconcile</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Per-Space Manifest Snapshot — Reconfiguring a Type Drifts Existing Spaces</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">A space is created from a manifest but the spec does not snapshot which manifest version produced it. When the Space Type manifest is later edited, existing spaces silently diverge from both the old and new definitions, and there is no reconcile path to bring a live space to a new configuration.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Persist a versioned space_manifest snapshot (the fully-resolved manifest) on each space at creation. Configuration changes produce a new snapshot version and a reconcile plan describing what is added, removed, or migrated. Apply reconciliation explicitly (with the diff/impact preview from G-Y09), never implicitly, so a space never silently drifts.</p></div>
+</div>
+
+<div id="G-Y07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y07</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Builder Console — Configuration — Configurator service</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No No-Code Configurator Specified — Configuration Implies Code, Violating the Security Goal</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The platform requires that builders configure products by selecting features, never by writing code, explicitly for security. Yet there is no Configurator service that turns selections into a validated manifest; the spec exposes low-level tables and Worker endpoints instead. Without a constrained configurator, builders are pushed toward code or raw API calls, reintroducing the security risk the design exists to avoid.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Specify a Configurator service whose only output is a schema-validated manifest JSON. It never accepts or executes user code; every option maps to a pre-built capability parameter. All product behaviour is therefore the composition of audited platform code, and the attack surface is the (validated) manifest, not arbitrary user logic.</p></div>
+</div>
+
+<div id="G-Y08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y08</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Builder Console — AI Configurator — NL-to-manifest agent</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">AI Product-Builder Agent Unspecified — NL-to-Manifest Could Emit Invalid or Unsafe Config</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The vision includes an AI agent a builder describes their product to in natural language, which then configures it. This is unspecified. A naive implementation could emit a manifest that is invalid, violates compatibility constraints, or enables capabilities the builder is not entitled to.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Constrain the AI configurator to emit only manifest JSON conforming to the Zod schema, then pass it through the constraint engine (G-Y11) and entitlement checks before anything is applied. Present the resolved configuration to the builder as a human-readable summary plus diff for explicit confirmation. The agent proposes; the validated pipeline and the human dispose.</p></div>
+</div>
+
+<div id="G-Y09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y09</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Builder Console — Config changes — dry-run diff / impact analysis</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Preview/Impact Analysis for Config Changes — Disabling a Capability Can Silently Delete Data</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Reconfiguring a live product (e.g., turning off a capability, switching tenancy) can be destructive — disabling RAG may orphan vectors, disabling sub-spaces may strand data. The spec has no dry-run or impact analysis before a change is applied, so a builder cannot see consequences in advance.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Every configuration change runs a dry-run that computes a structured diff and an impact report: which data stores are affected, what will be deleted, archived, or migrated, and the estimated cost/credit effect. Destructive changes require explicit confirmation and create a reversible migration job. Surface this preview in both the manual configurator and the AI configurator path.</p></div>
+</div>
+
+<div id="G-Y10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y10</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Builder Console — Config governance — config_versions / rollback</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Configuration Versioning or Rollback — A Bad Config Cannot Be Reverted</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Product configuration is mutable with no version history. If a builder or product-admin makes a change that degrades the product, there is no audit trail of who changed what, and no way to roll back to a known-good configuration.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Store every applied configuration as an immutable row in a config_versions table with actor, timestamp, and the resolved manifest snapshot. Provide one-click rollback that re-applies a prior snapshot through the same reconcile/impact pipeline. Expose the configuration history in the admin console for audit and incident response.</p></div>
+</div>
+
+<div id="G-Y11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y11</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Configurator — Compatibility — constraint DSL / solver</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Formal Configuration Constraint Graph — Incompatible Options Can Be Selected Together</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">You require that some configurations cannot coexist, some require others, and some are unsuitable for certain Space Types, with the UI blocking invalid options based on prior selections. The spec only has ad-hoc gates (minimumTier, allowedChildTypes). There is no constraint graph, so nothing prevents a manifest that enables mutually exclusive or unsupported capability combinations.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define a declarative constraint DSL on capabilities: requires, conflictsWith, requiredBy, suitableFor: [spaceType], and parameter-level rules. A solver evaluates the partial selection live and returns which options are forced, forbidden, or still free, so the configurator UI can grey out invalid choices as the user selects. Encode domain rules (e.g., MiniAGI requires the orchestration capability; bootstrapping requires the vertical capability) as data in the registry, never hardcoded in the UI.</p></div>
+</div>
+
+<div id="G-Y12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y12</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Configurator — Compatibility — server-side validateManifest()</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Constraint Enforcement Only in UI — API Callers Can Bypass Compatibility Rules</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">If compatibility is enforced only by greying out options in the configurator UI, any caller hitting the manifest API directly can submit an invalid combination, exactly as paid-feature gating is currently UI-only (Gap D-12). The constraint graph must be authoritative on the server.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Run the same constraint solver server-side in validateManifest() on every create and reconfigure request, rejecting non-compliant manifests with the specific violated rule. The UI greying is a convenience layer; the server check is the security boundary. Reuse one constraint definition for both so they cannot diverge.</p></div>
+</div>
+
+<div id="G-Y13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y13</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Configurator — Domain rules — capability rule encoding</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Domain Compatibility Rules Not Encoded — Adding a Space Type Requires Editing Core Logic</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Rules like "MiniAGI is standalone but composes into a company type", "bootstrapping needs a vertical", or "agency_shell is a narrow exception" live as scattered conditionals rather than declarative capability metadata. Adding a new Space Type or capability therefore means editing core code and risking regressions in unrelated types.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Move all domain compatibility rules into the capability and Space Type registry as declarative metadata consumed by the solver. Adding a capability or Space Type becomes a data change plus tests, not a code change to the engine. This keeps the "configure, don't code" promise true for the platform team as well as builders.</p></div>
+</div>
+
+<div id="G-Y14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y14</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Configurator — Transitions — transition validation</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Validation of Configuration Transitions — Upgrades/Downgrades Can Strand State</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Even if start and end configurations are individually valid, the transition between them may be unsafe (downgrading tenancy from SaaS to single-user when many end-users exist, or disabling a capability with live dependents). The spec validates states, not transitions.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Extend the constraint engine with transition rules that evaluate the delta against current runtime state (user counts, data presence, active runs). Block or require a migration plan for unsafe transitions, and surface the reason. Pair this with the impact preview (G-Y09) so transitions are never applied blindly.</p></div>
+</div>
+
+<div id="G-Y15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y15</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Tenancy — Product model — tenancy enum / DO topology</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Tenancy Model Not a First-Class Configurable Dimension — SaaS vs Team vs Single-User Undefined</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">A builder must be able to choose whether a product is single-user, a team product, or a multi-tenant SaaS (Claude/ChatGPT-style) where end-users join. The spec has a three-tier platform model and a per-space billing_mode (independent/parent) but no explicit product-level tenancy selector mapping to a data topology and isolation strategy. The same primitives cannot correctly serve a single-user app and a public multi-tenant SaaS without an explicit tenancy contract.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Make tenancy a required manifest dimension: tenancy: "single" | "team" | "saas". Each value maps to a defined DO topology, user/identity model, data-isolation strategy, and default billing model. Single = one space, one owner; team = one space, shared members; saas = product root plus per-end-user isolation. The constraint engine then enables only the configurations valid for the chosen tenancy.</p></div>
+</div>
+
+<div id="G-Y16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y16</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Tenancy — SaaS isolation — per-user child DO / facet</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Multi-Tenant SaaS Has No Per-End-User Isolation — Shared SpaceDO Risks Data Mixing</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">For a SaaS product where many strangers join one product, the "one SpaceDO per product with a space_id column" model puts all end-users in one shared database. This is acceptable for a team but weak for an open SaaS: a single missing filter leaks one user's data to another, and a single 10GB DO cannot hold a large public user base.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">For tenancy: "saas", provision a per-end-user child Durable Object (facet) under the product root, each with its own SQLite and 10GB budget; the root DO holds only the user registry, auth, and billing. Per-user DOs make isolation structural (separate databases) rather than dependent on a correct WHERE clause, and the storage ceiling scales with users instead of being capped per product.</p></div>
+</div>
+
+<div id="G-Y17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y17</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Tenancy — Shared assistant — shared DO namespace / ACL</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Shared-Assistant Mode Has No Per-User Partition — Admin Sharing Mixes User Data</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">You want an admin option to let multiple users share one assistant while keeping their data unmixed. The spec models one AssistantDO per (space, user) and has no shared-assistant mode, so naively sharing one DO would commingle every user's memory and history.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a sharedAssistant configuration where a single AssistantDO serves multiple users but partitions all state by user namespace with per-user ACLs, so shared instructions/knowledge are common while conversations, memory, and outputs remain isolated. The constraint engine offers this only when the admin explicitly enables sharing, and the impact preview explains the isolation guarantees.</p></div>
+</div>
+
+<div id="G-Y18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y18</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Tenancy — Assistant entitlement — assistantsPerUser config</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Assistant-Per-User Count Hardcoded — Admin Cannot Configure It Within Plan Limits</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The rule "one assistant per user per space unless the admin changes it to X" is a stated requirement, but the spec hardcodes a cap (up to 5). Product admins cannot raise or lower the count, and it is not bounded by the billing plan.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Expose assistantsPerUser as a product-admin-configurable entitlement, defaulting to 1, with an upper bound derived from the product's plan. AssistantDO acquisition checks the live entitlement. Changing the value flows through the configurator and is recorded in the config version history.</p></div>
+</div>
+
+<div id="G-Y19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y19</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Tenancy — White-label — brandConfig / delegated admin</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No White-Label / Delegated User Management — A Company Cannot Own Its Own Product</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">A company should be able to run its own branded product on Naelao, managing its own users, without the SaaS owner (or the original builder) managing those users. The spec has no white-label brand configuration and no delegated user-management model scoped to a product, so end-user administration cannot be cleanly handed to the product owner.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a brandConfig capability (logo, palette, domain, copy) and a delegated administration model where product-admins manage only their product's users, plans, and admin-configurable features. The platform owner and builder retain platform-level control but do not appear in or manage the white-labelled product's user base. Scope every admin endpoint to the actor's product boundary.</p></div>
+</div>
+
+<div id="G-Y20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y20</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Roles — product-admin — permission matrix</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Product-Admin Permissions Undefined Beyond "Full Visibility"</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The schema defines a product-admin role (product_users.role) distinct from the platform owner and the builder, but its permissions are only described as "full visibility across sub-spaces." It is unclear whether a product-admin can manage users, set seats, adjust credits, configure features, export data, or suspend accounts.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define an explicit product-admin permission matrix: manage end-users, set/seat allocation, adjust per-user credits within the product budget, toggle only the manifest options flagged admin-configurable, export product data, and suspend users. Every permission is bounded by what the builder's manifest exposes, so a product-admin can never exceed the product's configured surface.</p></div>
+</div>
+
+<div id="G-Y21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y21</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Roles — privilege bounds — capability allowlist per role</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Product-Admin Could Reach Platform-Security Config — No Privilege Ceiling Defined</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Without an explicit ceiling, a product-admin configuring "things" might reach security-sensitive settings (encryption, internal tokens, tenancy topology) that must remain platform-controlled. Configuration freedom must stop at the security boundary.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Tag each manifest option with the minimum role allowed to change it (platform-owner, builder, product-admin). The configurator and server validation expose to a product-admin only the subset flagged product-admin-configurable. Security-critical options (encryption, internal auth, tenancy topology, capability versions) are never product-admin-editable.</p></div>
+</div>
+
+<div id="G-Y22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y22</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Roles — hierarchy — canonical actor model</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Four Actor Layers Not Canonically Modeled — Role Confusion Across Endpoints</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">There are at least four distinct actors — platform owner, builder, product-admin, end-user — but the spec defines them piecemeal across sections, risking inconsistent scope checks where, for example, an end-user action is mistakenly authorized at builder scope.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Establish a canonical role hierarchy with explicit scopes (platform &gt; builder &gt; product &gt; end-user) and a single authorization helper that every endpoint calls with the required scope. Document the matrix once and reference it everywhere. Add tests asserting that each actor is rejected at every endpoint above its scope.</p></div>
+</div>
+
+<div id="G-Y23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y23</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Billing — Strategy config — BillingStrategy manifest section</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Per-Product Billing Strategy Not Configurable — Only Fixed Platform Tiers Exist</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Builders need to choose their product's billing strategy — flat subscription, usage-based credits, per-seat, or a team plan inside a SaaS. The spec offers only fixed platform tiers (free–enterprise) and a credit model, with no per-product strategy configuration, so a builder cannot price their product the way their market expects.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a BillingStrategy object to the product manifest: model (flat | usage | per-seat | hybrid), price points, included quotas, and overage behaviour. The platform enforces wholesale cost to the builder; the builder configures retail pricing on top. Selectable strategies are filtered by the constraint engine against the chosen tenancy.</p></div>
+</div>
+
+<div id="G-Y24" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y24</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Billing — Wholesale/retail — two-sided ledger</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Wholesale vs Retail Billing Flow Undocumented — Builder Margin and Reconciliation Unclear</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">A builder pays Naelao (wholesale) while their end-users pay the builder (retail), but the spec does not document this two-sided flow. There is no clear separation between builder-facing wholesale credits and end-user-facing retail credits, nor a reconciliation between them.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Model two ledgers: a wholesale ledger (builder ↔ Naelao, actual infra/model cost) and a retail ledger (end-user ↔ builder, configured pricing/markup). Every chargeable event posts to both with the same trace ID. Provide the builder a reconciliation view (retail revenue, wholesale cost, margin) and alerts on negative-margin configurations.</p></div>
+</div>
+
+<div id="G-Y25" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y25</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Billing — Tenancy coupling — constraint rules</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Billing Strategy and Tenancy Not Constrained Together — Invalid Combinations Possible</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Some billing strategies only make sense for certain tenancies — per-seat suits teams, per-user usage suits SaaS, flat suits single-user. Nothing prevents an incoherent pairing such as per-seat pricing on a single-user product.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Encode billing-strategy/tenancy compatibility in the constraint engine so the configurator only offers coherent combinations and the server rejects the rest. Document the valid matrix. This keeps pricing configuration self-consistent without manual review.</p></div>
+</div>
+
+<div id="G-Y26" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y26</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Billing — Mid-run exhaustion — pre-reservation in SaaS</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Credit Exhaustion Mid-Run Undefined in Multi-Tenant Context — Whose Balance, What Degradation</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The existing mid-run credit-exhaustion gap (D-13) is sharper under SaaS tenancy: when an end-user runs out mid-run, it is unclear whose balance is checked (end-user retail vs builder wholesale) and whether the run aborts, degrades, or completes.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Pre-reserve credits at run start against the correct ledger for the tenancy (end-user retail balance for SaaS, space budget for team/single), reusing the reservation mechanism in G-X04. On exhaustion, fail gracefully with a typed quota error and a partial-result checkpoint rather than crashing. Refund the unused reservation at run end.</p></div>
+</div>
+
+<div id="G-Y27" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y27</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Scale — Account governance — global AdmissionController</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Account-Level Admission Control — One Tenant Can Exhaust the Whole CF Account</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">All products run inside one Cloudflare account with account-wide ceilings (concurrent Container instances, subrequests, DO counts). The spec governs per-(space,user) concurrency via ConcurrencyDO but has no account-level admission controller, so a single busy tenant can consume the global Container/sandbox budget and starve every other product on the platform.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a global AdmissionController Durable Object that tracks account-wide resource usage (active sandboxes, concurrent runs) and enforces both per-tenant fair-share and an account safety ceiling. Requests beyond fair-share queue; requests beyond the account ceiling shed gracefully with backpressure. This protects platform-wide availability independent of per-tenant limits.</p></div>
+</div>
+
+<div id="G-Y28" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y28</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Scale — Entitlements — live plan → ConcurrencyDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Concurrency Limits Hardcoded and Not Wired to Live Billing</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">ConcurrencyDO tier limits are compile-time constants and are not updated when a subscription changes (Gaps K-51, G-DUR-04). A user who upgrades does not get more concurrency until redeploy, and a downgrade is not enforced, so entitlements and billing diverge.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Introduce an entitlements service that resolves a plan into concrete limits (concurrent runs, sandboxes, agents-per-user, DO-hours). ConcurrencyDO reads entitlements live and is invalidated on subscription-change webhooks. Limits become data, not constants, and track billing in real time.</p></div>
+</div>
+
+<div id="G-Y29" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y29</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Scale — Sandbox quotas — maxConcurrentSandboxes per plan</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Sandbox Concurrency Count Not Plan-Gated — Only Per-Sandbox Size Is Defined</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec proposes per-sandbox resource sizes by tier (OPE-11) but not a limit on the number of concurrent sandboxes a space/user may hold. A lower-paying tenant could hold many sandboxes simultaneously, consuming account capacity disproportionately to their plan.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define maxConcurrentSandboxes (and maxConcurrentBrowsers) per plan in the entitlements service, enforced at SandboxDO acquisition: requests beyond the limit queue or are rejected with a typed error. Combine with the account-level ceiling (G-Y27) so both per-tenant and global limits hold.</p></div>
+</div>
+
+<div id="G-Y30" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y30</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Scale — Admission UX — fair queue / waitlist</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Admission Queue — Concurrency-Limited Requests Hard-Fail Instead of Waiting</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a concurrency limit is hit, requests fail immediately. For interactive products this is a poor experience; a brief wait is often preferable to an error, and there is no fairness between competing users of the same space.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a fair admission queue per (space, user) with bounded wait and position feedback for interactive runs, falling back to a typed error on timeout. Use FIFO with per-user fairness to prevent one user monopolizing a shared space's slots. Background runs may queue longer than interactive ones.</p></div>
+</div>
+
+<div id="G-Y31" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y31</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Storage — DO limit — sharded DO topology</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">10GB-Per-DO Limit vs One-SpaceDO-Per-Product — Busy SaaS Products Will Hit the Ceiling</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Durable Object SQLite is capped at 10GB per object, yet the data plane is "one SpaceDO per product" with all sub-spaces and end-users sharing that database. A successful multi-tenant SaaS product will exceed 10GB, and the R2 archival pattern (G-DUR-01 / HybridQueryDO) only offloads cold messages — it does not raise the ceiling for live relational data.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Adopt a sharded DO topology: the product root SpaceDO becomes a coordinator/registry (users, routing, billing), while live data is partitioned into child DOs (per sub-space for team/single, per end-user for SaaS), each with its own 10GB budget. HybridQueryDO federates reads across shards plus R2 archive. Total capacity then scales with shards instead of being capped per product.</p></div>
+</div>
+
+<div id="G-Y32" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y32</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Storage — Topology config — storageTopology dimension</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Storage Topology Not Tied to Tenancy/Plan — No Selectable Data-Plane Strategy</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The correct storage layout depends on tenancy and scale: a single-user app is fine on one DO + R2, while a SaaS needs per-tenant sharding. The spec offers only one fixed layout, so the platform cannot serve both efficiently.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Make storageTopology a manifest dimension (single-do | sharded-do | container-db | per-tenant-d1), defaulted automatically from the chosen tenancy and plan but overridable for large products. The constraint engine validates the choice against tenancy. This lets a hobby product stay cheap on one DO while a SaaS scales horizontally.</p></div>
+</div>
+
+<div id="G-Y33" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y33</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Storage — Filesystem DB — Container SQLite on R2</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Filesystem-Backed Database Option for Heavy Data Planes</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">You asked whether a Cloudflare filesystem can back a database for workloads larger than a DO. The spec has no such option, so analytics-heavy or very large per-product datasets have nowhere to live beyond the 10GB DO ceiling and R2 blobs.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Offer an optional ContainerDB capability: run SQLite (or DuckDB for analytics) inside a CF Container/Sandbox on an R2-backed FUSE filesystem with litestream-style continuous replication to R2 for durability. The DO remains the hot coordinator; the container hosts the large/cold/analytical store. Document the trade-offs (seconds of cold-boot latency, higher cost) so it is used only where the data justifies it.</p></div>
+</div>
+
+<div id="G-Y34" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y34</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Storage — Per-tenant D1 — D1 as alternative data plane</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">D1 Rejected Globally — Per-Tenant D1 Was Not Reconsidered for Large Isolated Datasets</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec rejects D1 platform-wide because it lacks row-level security, but that reasoning assumes a shared multi-tenant database. For per-tenant data, a dedicated D1 database per tenant makes the database boundary the isolation boundary — the same argument the spec uses to justify per-product DOs — at 10GB per database with many databases allowed.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Allow per-tenant D1 as an alternative storageTopology for append-heavy or large isolated datasets where DO sharding is awkward. Isolation is structural (one D1 per tenant), so the RLS objection does not apply. Keep DO SQLite as the default for hot transactional state; use D1 only where its query model and per-DB ceiling fit better.</p></div>
+</div>
+
+<div id="G-Y35" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y35</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Orchestration — Depth/fan-out — OrchestrationController limits</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Uncontrolled Sub-Agent Recursion — Dynamic Orchestration Makes the Blast Radius Unbounded</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Sub-agent spawning has no enforced depth or fan-out limit (Gap G-MIS-11), and adding runtime dynamic orchestration multiplies the risk: an agent that decides to spawn agents can recurse or fan out without bound, exhausting concurrency, credits, and account capacity.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Introduce an OrchestrationController that enforces plan-gated maxDepth, maxFanout, and a global concurrent-agent budget per run, rejecting or queuing spawns beyond the limits. Track the live agent tree per run so limits are enforced across the whole tree, not per parent. Tie the budgets to the entitlements service (G-Y28) so higher plans get larger trees.</p></div>
+</div>
+
+<div id="G-Y36" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y36</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Orchestration — Dynamic plans — DynamicOrchestrator capability</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No True Dynamic Orchestration — Workflows Are Runtime-Authored but Statically Registered</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Claude-style dynamic workflows let an agent decide at inference time what steps and sub-agents to create. Naelao's dynamic workflows (§17) are runtime-authored TypeScript but still statically registered and cron-scheduled — the agent does not expand an agent tree on the fly. The capability you want (and the analogue to the "16-agent" pattern) is missing.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a DynamicOrchestrator capability: the LLM proposes a plan as a DAG of agent tasks; the plan is validated against the constraint engine and orchestration limits (G-Y35); then executed durably with a CF Workflow as the durability spine and Naelao agents (NaelaoAgentDO.spawnSubAgent) as the execution units. This uses Naelao agents rather than the raw SDK while delivering on-the-fly fan-out.</p></div>
+</div>
+
+<div id="G-Y37" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y37</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Agent — Capability profile — AgentCapabilityProfile / voice + vision</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Unified Composable Agent Profile — Channels/Tools/MCP/Memory/Voice/RAG Not a Selector</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The Cloudflare agents model shows an agent surrounded by composable blocks — channels, tools, MCP, memory, voice, project-think, RAG. Naelao has the pieces but no unified, user-selectable profile, and voice and vision are absent. A builder cannot simply check the boxes for what an agent should have.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define an AgentCapabilityProfile section in the manifest: each block (channels, tools, MCP, memory, RAG, project-think, voice, vision) is a pre-built, pre-wired capability the user toggles and parametrizes — no code. Add voice and vision as first-class capabilities. The constraint engine governs which blocks are valid for the agent type and plan.</p></div>
+</div>
+
+<div id="G-Y38" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y38</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Agent — Ladder selection — maxLadderTier config</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Execution Ladder Tier Not User-Selectable Per Agent — Only Tool-Pinned</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Execution tiers (workspace/isolate/browser/sandbox) are pinned to tools by the platform, but there is no user-facing "max ladder tier" per agent. A builder cannot constrain a cheap agent to lightweight tiers or grant a powerful agent the full ladder, even though you want this configurable.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add maxLadderTier to the agent configuration (plan-bounded), controlling which execution tiers the agent may reach. The dispatcher refuses tool calls above the agent's ceiling. This lets builders trade capability for cost/safety per agent, configured by selection rather than code.</p></div>
+</div>
+
+<div id="G-Y39" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y39</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Agent — Type catalog — AgentTypeRegistry</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Agent Types Are Not a Versioned Selectable Catalog — New Types Require Bespoke Builds</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">You plan to add more Naelao agent types over time and let users choose the type they want. Today an agent is defined ad hoc (model, resource_tier, skills) with no concept of a selectable, versioned agent-type catalog, so each new type risks being a bespoke build instead of a registry entry.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Create an AgentTypeRegistry of versioned agent types; users select a type and then configure it via its AgentCapabilityProfile and ladder/tier settings. New agent types are added as registry entries (data + tests), not platform forks. The catalog is filtered per Space Type and plan by the constraint engine.</p></div>
+</div>
+
+<div id="G-Y40" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-Y40</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Templates — Marketplace loop — publishable partial manifests</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Template-on-Space-Type Marketplace Loop — Users Cannot Publish Reusable Presets</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Once a Space Type exists, users should be able to build templates on top of it that others select and run, creating the network effect that powers the platform. The spec has templates as initial-state JSON but not the publish-discover-apply loop layered on a configurable Space Type.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Model a Template as a publishable, versioned partial manifest bound to a Space Type, validated by the constraint engine on both publish and apply. Add a marketplace where users discover and one-click-apply templates, with the deterministic merge (G-Y05) producing a reproducible product. This turns every successful configuration into reusable inventory and compounds platform value.</p></div>
+</div>
+
 </section>
 
 </body>
