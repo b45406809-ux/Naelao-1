@@ -53524,7 +53524,833 @@ When bumping the date, bump it everywhere in one change and re-run the full test
   <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The platform depends on many subsystems (Vectorize for RAG, Analytics Engine for metering, Stripe for billing, MCP servers for tools, the embedding API, the LLM gateway). The spec has fallback for the LLM gateway (model fallback chain) but no systematic degradation map for the others. When Vectorize is down, does the agent fail the whole turn or proceed without RAG? When Analytics Engine is down, are turns blocked or do they proceed with deferred billing? Without a defined degradation policy, any single dependency outage causes total turn failures instead of degraded-but-functional service.</p></div>
   <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define a per-dependency degradation policy: (1) Vectorize down → proceed without RAG, inform the agent context "knowledge base temporarily unavailable," do not fail the turn. (2) Analytics Engine down → proceed (billing is durable via WalletDO + Queue, per G-AC30); defer the analytics write. (3) Embedding API down → queue ingestion for later; serve chat from existing index. (4) MCP server down → fast-fail that tool with a circuit breaker (G-AD30), let the agent adapt. (5) Stripe down → allow service to continue on existing balance; queue billing operations. (6) Encode each policy as { dependency, onFailure: "fail" | "degrade" | "defer", userMessage }. Surface current degradation state on the status page (G-AA43) and the builder dashboard so degraded mode is visible, not silent.</p></div>
 </div>
+<section id="appendix-ae" style="margin-top:80px;">
+<h2 style="font-family:'Fraunces',serif;font-size:32px;font-weight:700;color:var(--hd);letter-spacing:-.02em;margin:0 0 6px;">Appendix AE — Twenty-Third Pass</h2>
+<p style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);letter-spacing:.1em;text-transform:uppercase;margin:0 0 32px;">Frontend &amp; Widget · Channel Integrations · Orchestration Internals · Marketplace Discovery · Multi-Region &amp; Deployment · System Completeness</p>
+<div id="G-AE01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE01</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§frontend — builder dashboard</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Builder Dashboard Has No Architecture — Framework, State Management, and Real-Time Updates Are Undefined</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec references dashboard.naelao.app extensively (builders configure agents, branding, billing, team) but never specifies how the dashboard is actually built: the framework, the state-management approach, how it reflects real-time backend changes (agent run status, credit balance, deployment progress), or how it talks to the 22 Workers. Without this, the entire builder-facing surface — the product's primary interface — is undefined and unbuildable.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define the dashboard architecture: a Next.js 14 (App Router) application deployed on Cloudflare Pages. Use a typed data layer from the generated client SDK (G-AD48). State: React Query (TanStack Query) for server state with optimistic updates; Zustand for local UI state. Real-time: a single multiplexed WebSocket to naelao-ws-gateway (G-AC37) feeding live updates (run status, credits, deploy progress) into the query cache. Auth: short-lived access token in memory + refresh flow (G-AD01). Document the route map, the component hierarchy, and the data-fetching pattern (server components for initial load, client hooks for live data).</p></div>
+</div>
+<div id="G-AE02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE02</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§frontend — no-code config UI</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">The No-Code Configuration UI Is Not Specified — Builders Have No Visual Way to Toggle Capabilities</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The platform's core premise is that builders configure products by selecting features, not writing code. Yet the spec defines the manifest schema and the constraint engine (Appendix Y/AC) but never specifies the UI that renders those choices: how capability toggles, parameter inputs (e.g., assistants-per-user slider), and tenancy selection are presented; how the constraint engine's conflicts are surfaced live as the builder toggles; or how the form is generated from the manifest schema. The no-code promise has no no-code UI.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Build a schema-driven configuration UI: (1) Render the config form automatically from the Space Type manifest Zod schema + field metadata (minRole G-AC02, suitableFor, help text) — a JSON-schema-to-form generator. (2) On every toggle, call validateManifest (G-AC10) live and surface constraint violations inline ("Enabling per-seat billing requires team tenancy"). (3) Disable/grey options that conflictsWith current selections. (4) Show a live preview of the resulting product. (5) Gate fields by the viewer's role. This keeps the UI automatically in sync with the manifest schema — new capabilities appear in the UI with no UI code change.</p></div>
+</div>
+<div id="G-AE03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE03</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§frontend — embeddable widget</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Embeddable Space-Assistant Widget Has No Embed Spec — Script Tag, iframe, CSP, and Isolation Undefined</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">A core distribution channel is embedding the assistant into a builder's own website. The spec mentions an "embeddable widget" but provides no embed mechanism: no script-tag snippet, no iframe sandbox model, no Content-Security-Policy guidance for host sites, no isolation of the widget's storage/cookies from the host page, and no load-performance strategy. End-user products cannot integrate the assistant.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Specify the widget embed: (1) A lightweight loader script (&lt;script src="https://cdn.naelao.com/widget.js" data-product-id="..."&gt;) that injects a sandboxed iframe (sandbox="allow-scripts allow-same-origin allow-forms") pointing at the product portal. (2) The iframe isolates the widget's storage, cookies, and JS from the host page (no host DOM access). (3) Communication via postMessage with strict origin checks (G-AE04). (4) Publish CSP guidance for host sites (frame-src, connect-src). (5) The loader is &lt;15KB, lazy-loads the full widget on open, and exposes a JS API (window.Naelao.open(), .identify(user), .setContext()).</p></div>
+</div>
+<div id="G-AE04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE04</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§frontend — widget postMessage protocol</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Widget ↔ Host postMessage Protocol Is Unspecified — Cross-Origin Identity and Event Bridging Have No Contract</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">An embedded widget must communicate with its host page: pass the host's authenticated user identity into the widget (so the assistant knows who the user is), receive context (current page, cart contents), and emit events back (conversation started, goal completed, handoff requested). The spec defines no postMessage protocol, no origin-verification model, and no identity-passing mechanism, so host integration is impossible and any naive implementation is an XSS/identity-spoofing hole.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define a versioned postMessage protocol: (1) Host → widget: { type: "naelao:identify", payload: { userJwt } } where userJwt is a short-lived token signed by the builder's backend (verified by Naelao against the builder's configured JWKS, G-AD05) — never trust raw user IDs from the page. (2) Host → widget: "naelao:context" for page/cart context. (3) Widget → host: "naelao:event" (conversation_started, goal_completed, handoff). (4) Both sides verify event.origin against an allowlist configured per product. (5) Document the protocol and ship helpers in the client SDK.</p></div>
+</div>
+<div id="G-AE05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE05</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§frontend — client streaming</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Client-Side Streaming Has No Reconnect, Mid-Stream Token Refresh, or Backpressure Handling</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The server supports WebSocket hibernation and a token replay buffer, but the spec never defines the client side of streaming: how the browser reconnects after a drop and resumes from the last received token (without duplicating or losing content), how an access token that expires mid-stream is refreshed without tearing down the connection, and how a slow client handles backpressure. Without this, streamed agent responses are unreliable in real network conditions.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Specify the client streaming contract: (1) Each streamed token carries a monotonic seq; the client tracks lastSeq and on reconnect sends resumeFrom: lastSeq so the server replays only the gap from its buffer (pairs with G-AC39/G-AC41). (2) Mid-stream token refresh: when the access token nears expiry, the client refreshes (G-AD01) and sends the new token over the existing WebSocket via a "reauth" frame — no reconnect. (3) Backpressure: the client acks batches; if it falls behind, the server coalesces deltas. (4) Render incrementally with a bounded buffer. Ship all of this in the client SDK so builders get reliable streaming for free.</p></div>
+</div>
+<div id="G-AE06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE06</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§frontend — white-label theming</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">White-Label Theming Has No Design-Token System — Builders Cannot Apply Custom Branding to Their Product</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec mentions white-label portals and "set brand color / upload logo" but defines no theming system: no design-token schema, no mechanism to inject a builder's theme into the product portal and widget, no storage/retrieval of brand assets, and no preview. A white-label product cannot actually look like the builder's brand — it remains Naelao-branded.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement a design-token theming system: (1) A theme manifest per product: { logoUrl, faviconUrl, colors: { primary, surface, text, ... }, font, radius, customCss? }. (2) Store brand assets in R2/CF Images; store tokens in the product config. (3) The portal/widget loads the theme at runtime and applies it via CSS custom properties (--color-primary, etc.) — no rebuild needed. (4) A constrained customCss escape hatch (sanitized, scoped) for advanced builders. (5) Live theme preview in the dashboard. (6) Enforce contrast/accessibility checks (WCAG, per G-AA45) on chosen colors. (7) "Remove Naelao branding" is a plan-gated entitlement.</p></div>
+</div>
+<div id="G-AE07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE07</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§frontend — build &amp; deploy pipeline</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Frontend Build/Deploy Pipeline Is Undefined — No CF Pages Config, Env Injection, or Preview Deploys</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec names "Next.js on CF Pages" but specifies no frontend build/deploy pipeline: no build configuration, no per-environment variable injection (API base URL, product ID, feature flags), no preview deployments for PRs, no asset versioning/cache-busting, and no rollback. The frontend deployment story is undefined, making the UI unshippable and unmaintainable.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define the frontend pipeline: (1) CF Pages projects per app (dashboard, product-portal, marketplace, admin) built via the monorepo (Turborepo) so shared packages are versioned together. (2) Environment config injected at build via CF Pages environment variables (staging vs production), with public runtime config served from a /config endpoint for values that must vary per product/tenant. (3) Preview deployments on every PR (CF Pages preview URLs) for review. (4) Immutable hashed asset filenames + long cache TTL for cache-busting. (5) Instant rollback via CF Pages deployment history. (6) Source maps uploaded to Sentry (G-AA10) on each deploy.</p></div>
+</div>
+<div id="G-AE08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE08</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§frontend — client error handling</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Client-Side Error Boundaries, Retry Strategy, or Frontend Error Reporting</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec defines server-side resilience but nothing client-side: no React error boundaries (a single component crash white-screens the app), no client retry policy with backoff for failed API calls, no offline/degraded UI states, and no frontend error reporting so the team learns about client crashes. Production users will hit blank screens with no telemetry reaching the team.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a client resilience layer: (1) Error boundaries at the route and major-section level with graceful fallback UIs and a "reload" action. (2) A shared API client (in the SDK) with retry + exponential backoff + jitter (G-AD50) for idempotent calls, surfacing user-friendly errors for the rest. (3) Explicit UI states for loading / empty / error / offline. (4) Frontend error + performance monitoring via Sentry browser SDK (capturing stack traces with uploaded source maps, breadcrumbs, and the trace_id so client errors link to backend traces, G-AD36). (5) A global toast/notification system for transient failures.</p></div>
+</div>
+<div id="G-AE09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE09</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§frontend — mobile &amp; PWA</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Responsive/Mobile Strategy or PWA Offline Support for End-User Products</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">A large share of end-users access products on mobile, but the spec defers mobile ("React Native unchanged") and specifies no responsive design system, no PWA installability, and no offline support. Products built on Naelao would be desktop-web only, and any network blip loses in-progress messages with no client-side queue.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define the mobile/PWA strategy: (1) The product portal and widget are mobile-first responsive (the UI kit ships responsive components and touch targets meeting accessibility guidance). (2) Ship a PWA manifest + service worker for installability and basic offline: cache the app shell, queue outbound messages in IndexedDB when offline, and flush via Background Sync on reconnect (idempotent via client message IDs, G-AD34). (3) Show clear offline/reconnecting indicators. (4) For native apps, provide a thin React Native wrapper around the client SDK + a WebView for the product portal, sharing the same streaming/auth logic.</p></div>
+</div>
+<div id="G-AE10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE10</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§frontend — optimistic state sync</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Client/Server State Sync Model — Optimistic Updates and DO State Reconciliation Are Undefined</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The dashboard and product UI display state that lives in DOs (agent config, conversation, credits). The spec does not define how the client reconciles its local view with authoritative DO state: whether updates are optimistic (instant UI, reconcile on server confirm) or pessimistic (wait for round-trip), how conflicts are resolved when the server rejects an optimistic change, and how the delta-patch broadcasts (G-AC41) are applied client-side.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define the state-sync model: (1) Mutations are optimistic — apply locally immediately, mark "pending," and reconcile against the server response; on rejection, roll back the optimistic change and surface the error. (2) Live state arrives as JSON-Patch deltas (G-AC41) over the WebSocket, applied to the query cache keyed by a version/seq so out-of-order or duplicate patches are handled. (3) On reconnect, request a full snapshot if the seq gap is too large. (4) Implement this once in the client SDK (a useNaelaoResource hook) so every builder UI gets consistent optimistic + live behavior.</p></div>
+</div>
+<div id="G-AE11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE11</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§channels — formatting layer</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Channel Formatting Layer — Rich Output Cannot Render as Slack Blocks, Discord Embeds, or WhatsApp Templates</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Agents produce rich output (headings, lists, buttons, cards, images) but each channel renders differently: Slack uses Block Kit, Discord uses embeds, WhatsApp uses approved HSM templates with interactive buttons, web chat uses Markdown/HTML. The spec sends plain text to channels with no formatting-translation layer, so output is either lowest-common-denominator plain text or broken per-channel markup.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a channel formatting layer: (1) Agents emit output in a canonical rich format (a small block model: text, list, button, card, image, quick_replies). (2) Per-channel renderers translate the canonical blocks to the channel's native format (Block Kit, Discord embeds, WhatsApp template params, Markdown for web). (3) Unsupported elements degrade gracefully (buttons → numbered text options on SMS). (4) For WhatsApp, map to pre-approved templates and validate parameter counts before send. (5) Renderers are part of the channel-adapter package so a new channel implements one renderer interface.</p></div>
+</div>
+<div id="G-AE12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE12</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§channels — cross-channel identity</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Cross-Channel Identity Resolution — The Same Person on Slack, Email, and Web Is Treated as Three Strangers</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">A single end-user may reach a product via multiple channels (Slack, then email, then the web widget). The spec keys sessions by channel-native IDs with no identity-resolution layer, so the same human is treated as separate users with separate memory and conversation history. The agent cannot recognize "this is the same person who emailed yesterday," fragmenting context and breaking continuity.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add an identity-resolution layer: (1) A canonical end-user record per product with linked channel identities: identities(user_id, channel, external_id, verified). (2) Auto-link when a strong signal matches (same verified email across channels, an explicit login, or a magic-link confirmation). (3) Never auto-merge on weak signals (display name) — require verification to avoid cross-account leakage. (4) Conversation history and memory are keyed by the canonical user_id, so context follows the person across channels. (5) Expose a merge/unmerge admin action and an audit trail of identity links.</p></div>
+</div>
+<div id="G-AE13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE13</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§channels — per-channel rate limits</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Channel-Specific API Rate Limits Are Not Modeled — Outbound Sends Hit Slack/Discord/WhatsApp Limits and Get Dropped</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Each messaging platform enforces its own API limits (Slack ~1 msg/sec per channel + tier limits, Discord per-route buckets, WhatsApp daily HSM caps and per-number throughput, SMS carrier throughput). The spec dispatches channel replies with no awareness of these limits, so at volume the platform gets 429s, messages are dropped or delayed, and the integration's API access can be throttled or revoked.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement per-channel rate-limit-aware dispatch: (1) A ChannelDispatchDO per (product, channel) enforcing the channel's known limits with a token bucket. (2) Respect 429 Retry-After and platform rate-limit headers (Discord X-RateLimit-*), backing off per route/bucket. (3) Queue and pace outbound messages rather than dropping; surface queue depth. (4) For WhatsApp, track daily HSM quota and warn before exhaustion. (5) Per-recipient throttling to avoid spamming a single user. (6) Encode each channel's limits in the channel-adapter so they are enforced uniformly.</p></div>
+</div>
+<div id="G-AE14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE14</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§channels — token lifecycle</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Channel Bot Tokens Have No Refresh, Rotation, or Revocation Handling — Integrations Silently Die</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Channel integrations store bot/OAuth tokens (Slack, Discord, Telegram, WhatsApp). The spec stores them but does not handle their lifecycle: tokens that expire or are rotated by the platform are not refreshed, and when a workspace admin revokes the integration, the agent keeps trying to use a dead token, producing silent failures with no builder notification.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Manage channel token lifecycle: (1) Store token_expires_at and refresh_token where the platform supports refresh (Slack token rotation, etc.); proactively refresh before expiry. (2) On a 401/invalid_auth from a channel, mark the integration degraded, stop retrying, and notify the builder to reconnect. (3) Detect revocation events (Slack app_uninstalled, etc.) via the channel's event APIs and immediately disable the integration. (4) Surface integration health (connected / expiring / revoked) in the dashboard. (5) Encrypt tokens with the space DEK and rotate per the credential policy (G-AD17).</p></div>
+</div>
+<div id="G-AE15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE15</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§channels — message ordering</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Per-Conversation Message Ordering Guarantee Across Channel Delivery</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Inbound and outbound channel messages flow through queues and async handlers with no ordering guarantee per conversation. Two rapid user messages can be processed out of order, or two agent replies can arrive reversed, producing confusing conversations ("answer before question"). The spec acknowledges interleaving for internal threads but not for channel delivery.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Guarantee per-conversation ordering: (1) Route all messages for a given conversation through a single ordered processor (the conversation's DO, which is single-threaded) so inbound handling and outbound dispatch are serialized per conversation. (2) Assign a per-conversation monotonic sequence to outbound messages; the channel dispatcher sends in sequence and does not send message N+1 until N is accepted (or after a bounded timeout, with reordering protection). (3) For channels without native ordering, include a visible/threaded reference. (4) Drop or merge duplicate inbound deliveries (channels deliver at-least-once) using channel message IDs.</p></div>
+</div>
+<div id="G-AE16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE16</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§channels — media normalization</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Inbound/Outbound Media and Attachments Are Not Normalized Across Channels</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Users send images, audio, documents, and video through channels; agents produce files and images to send back. Each channel handles media differently (Slack file API, Discord attachments, WhatsApp media IDs with download tokens, email attachments). The spec has no media normalization, so inbound media may be ignored and outbound media may fail or be sent in an unsupported way per channel.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a media normalization layer: (1) Inbound: download channel media (handling channel-specific auth/expiry for media URLs), store in R2, virus/type scan, and present to the agent as canonical attachments with metadata. (2) Outbound: accept canonical attachments from the agent and upload/format per channel (Slack files.upload, WhatsApp media upload → media ID, email MIME attachment). (3) Enforce per-channel size/type limits and transcode where needed (e.g., audio formats). (4) Strip EXIF/metadata for privacy. (5) Implement in the channel-adapter so each new channel provides upload/download functions.</p></div>
+</div>
+<div id="G-AE17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE17</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§channels — adapter abstraction</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Channel Adapter Interface — Adding a New Channel Requires Hand-Coding a Bespoke Handler From Scratch</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Each channel (Slack, Discord, Telegram, email) is implemented as a separate bespoke handler with duplicated logic for verification, normalization, identity, formatting, and dispatch. Adding WhatsApp, Microsoft Teams, Instagram DM, or a new channel means rewriting all of this with inconsistent behavior and repeated bugs. There is no adapter abstraction.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define a ChannelAdapter interface that every channel implements: { verifyInbound(req), normalizeInbound(payload): InboxMessage, resolveIdentity(payload), render(blocks): nativePayload, dispatch(message), refreshToken(), healthCheck() }. The core message pipeline (auth → normalize → identity-resolve → route to agent → render → rate-limited dispatch) is channel-agnostic and consumes adapters. New channels implement one interface and register in a channel registry. Ship adapters for Slack, Discord, Telegram, WhatsApp, email, SMS (Twilio), and the web widget. This makes the channel layer extensible and uniformly correct.</p></div>
+</div>
+<div id="G-AE18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE18</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§channels — web widget persistence</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Web Chat Widget Conversations Are Not Persisted or Resumable Across Sessions/Devices</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The web widget conversation is tied to a browser session. The spec does not define how an anonymous visitor's conversation persists across page reloads, how it resumes if they return later, or how it merges into their identified account once they log in. Visitors lose their conversation on refresh and start over, and there is no continuity when an anonymous visitor becomes a known user.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Persist widget conversations: (1) On first load, assign a stable anonymous visitor ID stored in the widget's isolated storage (within the sandboxed iframe). (2) Conversation history is persisted server-side keyed by visitor ID and restored on return. (3) When the visitor identifies/logs in (G-AE04), link the anonymous visitor ID to the canonical user (G-AE12) and migrate the conversation + any learned context. (4) Support resume across devices once identified. (5) Respect retention/consent: anonymous conversations expire per policy; provide a "clear conversation" control and honor cookie/consent settings (G-AA48).</p></div>
+</div>
+<div id="G-AE19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE19</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§orchestration — DAG partial failure</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Multi-Agent DAG Has No Partial-Failure Handling — One Failed Sub-Agent Has Undefined Effect on the Whole Plan</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When the DynamicOrchestrator runs a DAG of sub-agents, the spec does not define what happens when one node fails: are downstream nodes that depend on it skipped, is the whole orchestration aborted, are successful siblings' results preserved, and is there any compensation for side effects already performed (emails sent, payments made) by completed nodes? Partial failure in a multi-agent plan is the common case and is entirely unspecified.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define DAG failure semantics: (1) Each node declares onFailure: "abort" | "skip-downstream" | "continue" | "retry(n)" and whether it has compensatable side effects. (2) On node failure, the orchestrator: retries per policy, then for non-recoverable failures marks downstream-dependent nodes skipped while letting independent branches complete. (3) Successful nodes' results are always preserved and returned (partial success is a valid outcome). (4) Nodes with side effects register compensation handlers (saga pattern); on abort, compensations run in reverse order. (5) The final result reports per-node status (succeeded/failed/skipped/compensated) so the agent and builder see exactly what completed.</p></div>
+</div>
+<div id="G-AE20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE20</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§orchestration — result aggregation</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Concurrent Sub-Agent Result Aggregation Is Unspecified — Merged Context Is Lossy or Incorrect</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When multiple sub-agents run in parallel and return results, the spec polls for completion but never specifies how the results are merged back into a coherent context for the parent: ordering, deduplication, conflict resolution when two sub-agents return contradictory findings, and handling of oversized results (which exceed the 128KB queue/message limits). Naive concatenation produces incoherent or truncated context.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Specify result aggregation: (1) Results are written to a results store (DO SQLite or R2 for large payloads) keyed by node ID, not passed through size-limited queues (avoids the 128KB drop). (2) The aggregator assembles results in a deterministic order (DAG topological order) with clear provenance labels per sub-agent. (3) For large results, summarize each before merging into the parent context (map-reduce pattern) to fit the context window. (4) Conflicting findings are presented as such ("Agent A found X; Agent B found Y") rather than silently picking one. (5) The aggregation strategy (concat / summarize / reduce / vote) is declared per orchestration.</p></div>
+</div>
+<div id="G-AE21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE21</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§orchestration — human-in-the-loop</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Human-in-the-Loop Approval Mid-Orchestration Has No Pause/Resume Semantics for the Whole DAG</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Some orchestration steps require human approval (send customer email, execute payment, publish content). The spec has per-action approval flags but does not define how approval works inside a running multi-agent DAG: does the entire orchestration pause or only the blocked node, what happens to in-flight parallel branches, how long does it wait, and how does it durably resume after approval that may come hours or days later?</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define HITL-in-DAG semantics: (1) An approval gate pauses only the gated node; independent parallel branches continue. (2) The gated node's state is durably checkpointed (the CF Workflow step suspends via step.waitForEvent or an alarm-polled approval flag) so it survives DO eviction and waits indefinitely without consuming compute. (3) An approval request is delivered to the approver (notification + dashboard task) with a deadline; on timeout, apply the node's onApprovalTimeout policy (auto-approve / auto-reject / escalate). (4) On approval, the node resumes from its checkpoint. (5) The orchestration status shows which nodes are awaiting approval and from whom.</p></div>
+</div>
+<div id="G-AE22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE22</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§orchestration — cascading cancellation</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Cancelling an Orchestration Does Not Cascade to Spawned Sub-Agents — Orphaned Runs Keep Burning Credits</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">A POST /cancel marks a single agent run cancelled, but the spec does not define cascading cancellation across an agent tree. Cancelling a parent orchestration leaves its spawned sub-agents (and their sub-agents) running — orphaned, consuming credits and possibly producing side effects, with no parent to receive their results. There is also no graceful-vs-forceful cancellation distinction.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement cascading cancellation: (1) Maintain the parent→child spawn tree (each sub-agent records its parent orchestration ID and the CF Workflow instance ID, fixing the "instance ID never stored" gap). (2) Cancellation propagates depth-first: signal each descendant to cancel. (3) Graceful cancel lets a node finish its current atomic step and run compensations (G-AE19) before stopping; forceful cancel terminates immediately. (4) On cancel, release reserved credits (G-AC36) and admission slots (G-AC44). (5) Mark the whole subtree cancelled with reasons, and ensure no orphaned Workflow instances remain (sweeper reconciles tree state against active instances).</p></div>
+</div>
+<div id="G-AE23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE23</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§orchestration — pause &amp; resume</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Orchestrations Cannot Be Paused and Resumed — Long Plans Have No Suspend State</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Beyond cancellation, there is no way to pause a running orchestration (e.g., the builder wants to inspect intermediate results, the space hit a budget cap, or a dependency is temporarily down) and resume it later. The spec has no suspend state, no checkpoint of the full DAG execution position, and no resume entrypoint, so a long-running plan is all-or-nothing.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add pause/resume: (1) POST /orchestrations/{id}/pause sets the orchestration to paused — running nodes finish their current atomic step and then halt; queued nodes do not start. (2) The full DAG execution state (completed nodes, results, pending nodes, in-flight checkpoints) is durably persisted. (3) POST /orchestrations/{id}/resume continues from the saved position. (4) Auto-pause triggers: budget cap reached (resume after top-up), dependency circuit open (resume on recovery). (5) Paused orchestrations consume no compute (Workflow steps suspended). Surface paused state and remaining work in the dashboard.</p></div>
+</div>
+<div id="G-AE24" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE24</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§orchestration — long-running continuation</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Tasks Exceeding the 1000-Step Workflow Limit Have No Transparent Continuation Chaining</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">CF Workflows cap at 1000 steps per instance. A long-running agent (multi-day research, a monitoring loop, a months-long automation) exceeds this and is silently terminated. The spec notes the limit but does not specify how the orchestration layer transparently chains continuation instances so a logically long-running task survives across the step ceiling without the agent author having to manage it.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement transparent continuation chaining: (1) The Workflow runtime tracks step count; approaching the limit (e.g., step 900), it serializes the orchestration's durable state to R2/DO and spawns a continuation Workflow instance that resumes from that state, linking continuation IDs into the tree (G-AE22). (2) Continuations are invisible to the agent author — logically one task. (3) For idle waits (polling, scheduled checks), use step.sleep/alarms so waiting consumes no steps. (4) Cap total continuations and total wall-clock per plan tier to bound runaway tasks. (5) Persist a stable task ID across continuations so status, cancellation, and results address the logical task, not a single instance.</p></div>
+</div>
+<div id="G-AE25" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE25</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§orchestration — cost preview</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Pre-Execution Cost/Resource Estimate for a Proposed DAG — Builders and Users Approve Blindly</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When the DynamicOrchestrator proposes a plan (a DAG of N sub-agents, each with tool calls), there is no cost or resource estimate before execution. The user/builder approves a plan with no idea whether it will cost 100 credits or 100,000, or whether it fits within remaining budget. Expensive runaway plans are only discovered after the credits are spent.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a cost/resource preview: (1) Before executing, estimate the plan's cost from per-node heuristics (expected LLM calls × avg tokens × model price + expected tool/API costs + sub-agent fan-out). (2) Check the estimate against the space's remaining budget; if it would exceed, require explicit confirmation or block. (3) Present the estimate (credits, est. duration, sub-agent count, external calls) for approval on high-cost plans (over a threshold). (4) Enforce a hard budget cap during execution (auto-pause at the cap, G-AE23). (5) After execution, compare actual vs estimated cost and feed the delta back to improve future estimates.</p></div>
+</div>
+<div id="G-AE26" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE26</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§marketplace — search infrastructure</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Marketplace Has No Search Infrastructure — Users Cannot Find Agents, Templates, Skills, or Containers</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The marketplace lists publishable assets (agents, templates, skills, containers, MCP apps) but the spec defines no search infrastructure: no full-text search, no semantic search, no faceted filtering (by category, capability, price, rating, tenancy fit), and no pagination strategy at scale. With thousands of listings, users cannot discover anything, killing the marketplace flywheel that is core to the monopoly strategy.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Build marketplace search: (1) Index every listing (title, description, tags, capabilities, category) in both a full-text index (SQLite FTS5 / Turso) and a vector index (Vectorize) for semantic queries. (2) Hybrid search with RRF (per G-AD09) over both. (3) Faceted filters: category, price model, rating, tenancy compatibility, required capabilities, last-updated. (4) Cursor-based pagination + result caching. (5) Rank by a relevance + quality score (G-AE27). (6) A dedicated search Worker backed by the indexes, with sub-100ms p95. Re-index on listing publish/update via a queue.</p></div>
+</div>
+<div id="G-AE27" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE27</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§marketplace — ranking &amp; recommendations</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Ranking or Recommendation Algorithm — Listing Order Is Arbitrary and There Are No "You Might Like" Surfaces</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Beyond raw search matching, the marketplace has no ranking signal (what makes one agent rank above another?) and no recommendation engine (similar listings, "builders who installed X also installed Y," personalized suggestions). Discovery is flat and arbitrary, so quality listings are not surfaced and the catalog does not drive installs.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add ranking and recommendations: (1) A composite ranking score per listing: install count (time-decayed), rating (provenance-weighted per G-AB24), retention of installs (do users keep it?), recency, and editorial boost. (2) "Similar listings" via vector similarity on the listing embedding. (3) Collaborative-filtering "also installed" from co-install patterns (privacy-preserving, aggregated). (4) Personalized recommendations from the builder's space type and installed capabilities. (5) Cold-start: new high-quality listings get a temporary boost to gather signal. (6) Expose ranking inputs to publishers so they understand how to improve placement.</p></div>
+</div>
+<div id="G-AE28" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE28</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§marketplace — install dependency resolution</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Installing a Template or Agent Has No Dependency Resolution — Missing Capabilities/Skills Cause Broken Installs</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">A marketplace asset often depends on other things: a template requires certain capabilities enabled, an agent requires specific skills or MCP integrations, a skill requires a capability version. The spec's install flow does not resolve these dependencies, so installing an asset into a space that lacks its prerequisites produces a silently broken install (the agent references a skill that isn't there).</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement install dependency resolution: (1) Each listing declares dependencies: { requiresCapabilities: [...], requiresSkills: [{name, version}], requiresMcp: [...], minSpaceTypeVersion }. (2) On install, resolve against the target space: enable missing capabilities (subject to constraint engine G-AC01 and plan limits), install required skills at compatible versions (G-AB05), and prompt to connect required MCP integrations. (3) If a dependency cannot be satisfied (plan-gated capability, conflicting config), block the install with a clear explanation and remediation. (4) Record the resolved dependency set so uninstall can clean up what it added. (5) Detect version conflicts and surface them before install.</p></div>
+</div>
+<div id="G-AE29" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE29</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§marketplace — install/uninstall lifecycle</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Install/Uninstall Lifecycle Is Undefined — No Clean Uninstall, Update, or Rollback of Marketplace Assets</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec mentions installing assets but does not define the full lifecycle: how an installed asset is updated when the publisher ships a new version, how it is cleanly uninstalled (removing what it added without breaking unrelated config), and how a bad update is rolled back. Installed assets accrete and orphan state over time.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define the asset lifecycle: (1) Install records an installation manifest (what was added: agents, skills, capabilities, config, dependencies G-AE28). (2) Update: notify on new versions; updates go through the same dependency resolution and a preview/diff of changes; support pinned versions and opt-in upgrades (per G-AB50). (3) Uninstall: reverse the installation manifest, removing only what the install added and warning about data that would be orphaned (per G-AC06 impact analysis). (4) Rollback: restore the previously-installed version from history. (5) Track installed-version per space so publishers see version adoption.</p></div>
+</div>
+<div id="G-AE30" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE30</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§marketplace — public SEO pages</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Public, SEO-Indexable Marketplace Listing Pages — Zero Organic Discovery</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The marketplace appears to live behind authentication, with no public, crawlable, SEO-optimized listing pages. This forfeits organic discovery: a search for "AI invoice agent" should surface a Naelao marketplace listing. Without public pages with proper metadata, structured data, and fast SSR, the marketplace cannot drive top-of-funnel growth — critical for the network-effect strategy.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Ship public marketplace pages: (1) Server-rendered (Next.js SSR/SSG on CF Pages) public listing pages at naelao.com/marketplace/{slug} with full descriptions, screenshots, ratings, and "install" CTAs. (2) SEO: per-listing meta tags, OpenGraph/Twitter cards, JSON-LD structured data (SoftwareApplication), canonical URLs, and a generated sitemap.xml updated on publish. (3) Category and search landing pages for long-tail queries. (4) Fast TTFB via edge SSR + caching. (5) Public pages expose only public listings (never space-private assets, guarding the G-AB? cross-tenant leak). (6) Track organic → install conversion.</p></div>
+</div>
+<div id="G-AE31" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE31</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#10B981;background:#10B98118;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">LOW</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§marketplace — curation &amp; featuring</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Editorial Curation, Featuring, or Collections Mechanism for the Marketplace</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec has no way for the Naelao team to curate the marketplace: feature high-quality listings, create themed collections ("Best agents for e-commerce"), highlight new/trending assets, or editorially promote during launches. Curation is a key trust and discovery lever; without it, the marketplace is an undifferentiated list.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a curation system: (1) Editorial fields per listing: featured flag, badges (verified, staff pick, trending), and collection membership. (2) Curated collections (ordered lists of listings) managed via the admin UI, rendered on the marketplace home and category pages. (3) Automated "trending" computed from install velocity. (4) A submission → review → feature pipeline for publishers to request featuring. (5) Time-boxed promotions (launch spotlights). (6) Editorial placement is clearly distinguished from organic ranking for transparency.</p></div>
+</div>
+<div id="G-AE32" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE32</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§marketplace — publisher analytics</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Publishers Have No Listing Analytics — Impressions, Installs, Conversion, and Churn Are Invisible</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Builders who publish to the marketplace get no analytics on their listings: how many people viewed it, the view→install conversion rate, how many installs are retained vs uninstalled, ratings over time, or search terms that surfaced it. Without this, publishers cannot improve their listings or understand their funnel — reducing the incentive to publish quality assets.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Provide publisher analytics: (1) Track listing events (impression, detail-view, install, uninstall, rating) to Analytics Engine keyed by listing ID. (2) Expose GET /publisher/listings/{id}/analytics: impressions, views, install conversion, install retention curve, rating trend, and top search terms that led to the listing. (3) Revenue analytics for paid listings (gross, payouts, refunds — ties to G-AC35). (4) Cohort retention of installs. (5) Alerts on anomalies (sudden uninstall spike, rating drop). This closes the loop so publishers iterate on quality.</p></div>
+</div>
+<div id="G-AE33" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE33</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§scale — multi-region read replicas</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Multi-Region Read-Replica Strategy — Global Reads Pay Full Cross-Region Latency to a Single-Region DO</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">A DO and its SQLite live in one region. Read-heavy global access (dashboards, conversation history, marketplace, knowledge lookups) from distant users pays full cross-region latency on every read. The spec addresses DO placement (Smart Placement, locationHint) but not read replication — there is no read-replica or edge-cache layer so a Tokyo user reading a US-pinned space's data waits 200ms+ per read.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add a multi-region read path: (1) For cacheable reads (space config, published content, marketplace, knowledge metadata), serve from a regional cache (KV with short TTL, or CF Cache API) populated from the canonical DO — reads hit the edge, not the cross-region DO. (2) For per-user data where staleness is tolerable, use regional read replicas (Turso embedded replicas, which replicate to edge regions automatically, fit this well per the Turso topology G-AC21). (3) Writes always go to the canonical primary; reads prefer the nearest replica with read-your-writes consistency for the writer (route the writer's reads to the primary briefly after a write). (4) Document the per-resource consistency model (strong vs eventual).</p></div>
+</div>
+<div id="G-AE34" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE34</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§deploy — monorepo deploy ordering</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Deploy-Order/Dependency-Graph Management for 22 Interdependent Workers</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The Workers depend on each other via Service Bindings (router → everything; agents → spaces/auth/billing/...). Deploying them in the wrong order, or deploying a worker that calls a not-yet-deployed binding target, breaks the mesh. The spec lists a deploy order in prose but provides no automated dependency-graph-driven deployment, so deploys are fragile and manual.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Automate dependency-ordered deploys: (1) Declare each worker's Service Binding dependencies in its config; build a dependency graph. (2) The deploy pipeline (Turborepo + a deploy orchestrator) topologically sorts and deploys in order, leaf dependencies first. (3) Deploy each worker with gradual rollout (G-AB10) and health-gate (G-AB13) before proceeding to dependents. (4) Handle binding bootstrapping (a new binding target must exist before its caller references it). (5) On any worker's deploy failure, halt the cascade and report. (6) Support per-worker independent deploys when no binding contract changed (detected via the OpenAPI/contract diff).</p></div>
+</div>
+<div id="G-AE35" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE35</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§deploy — environment promotion</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Environment Promotion or Config-Drift Detection Between Staging and Production</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec mentions staging and production environments but defines no promotion process (how a validated staging build is promoted to prod with identical artifacts) and no config-drift detection (staging and prod silently diverge in bindings, env vars, resource configs, and secrets, causing "works in staging, breaks in prod" incidents).</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define environment promotion + drift control: (1) Build immutable artifacts once; promote the exact same artifact from staging to production (no rebuild). (2) Manage per-environment configuration declaratively (wrangler environments + a config repo) so differences are explicit and reviewed. (3) A drift-detection check compares deployed config (bindings, vars, resource IDs, cron schedules) against the declared config and fails CI on undeclared drift. (4) Secrets are managed per environment via a secrets manager (G-AA13) with the same key set enforced across environments. (5) A pre-prod smoke test (synthetic journey) gates promotion.</p></div>
+</div>
+<div id="G-AE36" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE36</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§ops — maintenance mode</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Platform-Wide Maintenance Mode or Graceful Degradation Switch</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">There is an emergency agent kill switch, but no platform-wide maintenance mode: a controlled way to put the platform (or a single space, or a subsystem) into read-only/maintenance state during migrations, incidents, or upstream outages, with a user-facing message instead of raw errors. Operators have no graceful big-red-button between "fully up" and "hard down."</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement maintenance mode: (1) A MaintenanceConfigDO (or a strongly-consistent flag) with scopes: global, per-subsystem, per-space. (2) Modes: read-only (mutations rejected with a clear 503 + message), maintenance (a branded maintenance page/response), and degraded (specific features disabled per the degradation map G-AD50). (3) The router checks maintenance state (cached, fast) and short-circuits with a friendly message + Retry-After. (4) In-flight operations are allowed to drain (configurable grace). (5) Scheduled maintenance windows publish to the status page (G-AA43) in advance. (6) Per-space maintenance lets one tenant be paused (e.g., during their migration) without affecting others.</p></div>
+</div>
+<div id="G-AE37" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE37</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§deploy — worker bundle size</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Worker Bundle Size Budget Management — Workers Will Hit the Size Limit as Features Accrete</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Cloudflare Workers have a compressed bundle size limit (1MB free / 10MB paid). As workers (especially naelao-agents and naelao-router) accumulate dependencies, tool definitions, and shared code, they will approach this limit and deploys will start failing. The spec has no bundle-size budgeting, monitoring, or code-splitting strategy.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Manage bundle size: (1) Track each worker's compressed bundle size in CI; fail the build if it exceeds a budget (e.g., 80% of the limit) with a report of the largest modules. (2) Externalize large/rarely-used code: move heavy tool implementations behind dynamic imports or into separate workers called via Service Binding. (3) Avoid bundling large dependencies into hot-path workers; prefer lightweight alternatives (Web Crypto over crypto libs, as the spec already mandates). (4) Share common code via packages without duplicating it into every bundle. (5) Monitor bundle-size trend over time and alert on regressions.</p></div>
+</div>
+<div id="G-AE38" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE38</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§security — secret rotation fleet</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Coordinated Secret Rotation Across 22 Workers — Rotating a Shared Secret Requires Risky Manual Coordination</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Many secrets are shared across workers (the internal service token, signing keys, provider API keys, encryption keys). The spec has no coordinated rotation: rotating a shared secret means updating it in many workers near-simultaneously, and any window where some workers have the old value and others the new breaks inter-service calls. There is no overlap-window rotation mechanism.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement coordinated secret rotation: (1) Source all shared secrets from a central secrets manager (G-AA13: Doppler/Infisical/Vault or CF Secrets Store), not per-worker copies. (2) Support dual-secret (current + previous) validation during rotation windows so a secret can be rotated with both values accepted until all workers pick up the new one (applies to the internal service token → per-caller JWTs, signing keys G-AD04, webhook secrets). (3) A rotation runbook + automation rotates, verifies propagation across all workers (via a /_secretversion health field), then retires the old value. (4) Alert on secrets nearing expiry. (5) Audit every rotation.</p></div>
+</div>
+<div id="G-AE39" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE39</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§deploy — infrastructure as code</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">CF Resources (KV, R2, Queues, Vectorize, DOs) Are Not Provisioned via Infrastructure-as-Code</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The platform uses many CF resources (multiple KV namespaces, R2 buckets, Queues with DLQs, a Vectorize index, Analytics Engine datasets, DO namespaces). The spec does not define how these are provisioned reproducibly. Manual dashboard creation leads to environment drift, un-versioned resource config, and inability to stand up a fresh environment (disaster recovery, new region, ephemeral test env) deterministically.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Provision all infrastructure as code: (1) Declare every CF resource (KV, R2, Queues + DLQs, Vectorize, Analytics Engine, DO migrations, cron triggers, Pages projects) in versioned config — wrangler resource declarations + Terraform (the cloudflare provider) for account-level resources. (2) A single provision-resources script stands up a complete environment from scratch, used for staging, production, DR, and ephemeral CI environments. (3) Resource IDs flow into worker bindings via the IaC outputs (no hand-copied IDs). (4) Drift detection (G-AE35) covers resources too. (5) This makes a new-region or DR bring-up a one-command, deterministic operation.</p></div>
+</div>
+<div id="G-AE40" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE40</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§deploy — cross-worker version skew</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Cross-Worker Version Compatibility Handling — Deploy Skew Breaks Service-Binding Contracts Mid-Rollout</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">During a gradual rollout, worker A v2 (new request shape) may call worker B still on v1 (old handler), or vice versa. The spec has no contract-versioning between workers, so any change to a Service Binding's request/response shape risks breaking calls during the rollout window when versions are mixed. This is the internal analog of public API versioning (G-AD37) and is unaddressed.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Make inter-worker contracts version-tolerant: (1) Treat Service Binding request/response shapes as versioned contracts; changes must be backward-compatible within a major version (additive only) — enforced by a contract diff in CI. (2) For unavoidable breaking changes, deploy in two phases: first deploy the callee to accept both old and new shapes, then deploy the caller to use the new shape, then remove old-shape support. (3) Include a contract version field in inter-worker calls so the callee can branch if needed. (4) The deploy orchestrator (G-AE34) sequences callee-before-caller for contract changes. (5) Integration tests run against mixed-version combinations.</p></div>
+</div>
+<div id="G-AE41" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE41</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§ops — cron registry</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Cron/Scheduled-Task Registry or Observability — Scheduled Jobs Fail Silently</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The platform runs scheduled work (sweeper every 5 min, categorizer hourly, billing/canary/archive jobs, DO alarms). There is no central registry of scheduled tasks, no record of last-run/next-run/duration/outcome, and no alerting when a scheduled job stops running or starts failing. A silently-dead sweeper (e.g., DLQ reprocessing) degrades the platform invisibly.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add scheduled-task observability: (1) A registry of all cron jobs and recurring DO alarms with their schedule and purpose. (2) Each run records job_runs(job, started_at, finished_at, status, items_processed, error) to Analytics Engine / a job-runs store. (3) A watchdog alerts if a job has not run within its expected interval (missed execution) or if its failure rate or duration exceeds thresholds. (4) An ops dashboard shows each job's health, last run, and recent outcomes. (5) Jobs are idempotent and overlap-guarded (per G-AA42) so a slow run does not double-execute. This makes the entire background-work layer observable.</p></div>
+</div>
+<div id="G-AE42" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE42</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§ops — fair job scheduling</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Background Job Queues Have No Fair Scheduling — One Heavy Tenant Starves All Others' Jobs</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Shared queues (analytics, knowledge indexing, notifications, agent runs) process work FIFO. A single tenant that floods a queue (bulk-ingesting 100K documents, a runaway agent) monopolizes the consumer and starves every other tenant's jobs, which back up behind the heavy tenant with no fairness guarantee. This is the queue analog of the admission-control gap (G-AC44) for async work.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Implement fair scheduling for background work: (1) Partition queue consumption by tenant using per-tenant concurrency caps (a semaphore per space) so no tenant occupies more than its share of consumer capacity. (2) Use weighted fair queuing: round-robin across tenants with pending work rather than strict FIFO, optionally weighted by plan tier. (3) For very large jobs (bulk ingestion), chunk and interleave so they yield between chunks (cooperative scheduling). (4) Per-tenant rate caps on enqueue for abusive patterns. (5) Surface per-tenant queue depth and wait time; alert when fairness SLOs are breached.</p></div>
+</div>
+<div id="G-AE43" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE43</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§ops — resource quota dashboard</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Per-Space Resource Quota Visibility or Enforcement Across All Stores</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">A space consumes multiple metered resources: DO SQLite storage (10GB), KV entries, R2 storage, Vectorize vectors (G-AB49), Analytics Engine events, container minutes, concurrent agents. The spec enforces some limits in isolation but there is no unified per-space quota model, no dashboard showing consumption vs limit per resource, and no consistent enforcement, so a space can silently exhaust a resource and hit confusing failures.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Unify resource quotas: (1) Define per-plan quotas for every metered resource in one place (the plan manifest). (2) Track consumption per space per resource (storage bytes, vector count, KV keys, container minutes, concurrent agents, monthly events). (3) A QuotaService checks/enforces consistently across stores before allowing growth, returning a uniform 402/429 with the specific resource and upgrade path. (4) A builder-facing usage dashboard shows each resource: used / limit, with 80%/95% warnings (per G-AB42). (5) Ops dashboard shows top consumers per resource for capacity planning. (6) Quotas tie into the infrastructure cost model (G-AC20).</p></div>
+</div>
+<div id="G-AE44" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE44</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§data — large export streaming</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Large Data Exports Buffer in Worker Memory — Exports for Big Spaces Hit the 128MB Memory Limit and Fail</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Data exports (GDPR portability G-AB32, space config bundles, analytics dumps) appear to assemble the full payload in memory before returning. For a large space (millions of messages, large knowledge bases), this exceeds the Worker 128MB memory limit and the export fails or times out — precisely for the customers (big spaces) where export matters most.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Stream large exports instead of buffering: (1) Run exports as a CF Workflow that writes incrementally to an R2 object (multipart), paging through source data in bounded chunks (e.g., 10K rows at a time) so memory stays flat regardless of total size. (2) The export produces a downloadable R2 artifact (signed URL, expiring) rather than an inline response. (3) Report progress (rows exported / total) for long exports. (4) Use streaming serialization (JSONL/NDJSON) so each chunk is appended without holding the whole document. (5) Apply the same pattern to large imports (G-AB30) and analytics dumps. (6) Rate-limit concurrent large exports per account.</p></div>
+</div>
+<div id="G-AE45" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE45</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§entitlements — plan enforcement consistency</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Plan Entitlements Are Not Enforced Consistently — Capabilities Gated in the UI But Reachable via the API</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Plan-gated features (capabilities, limits, white-label, SSO, advanced models) are described, but the spec does not define a single authoritative entitlement-enforcement layer. If gating happens only in the UI or per-handler ad hoc, a user can bypass it by calling the API directly, or different workers disagree on what a plan allows, leading to revenue leakage and inconsistent behavior.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Centralize entitlement enforcement: (1) Define entitlements declaratively per plan (capabilities allowed, resource limits, feature flags). (2) A single EntitlementService (backed by the space's plan in the strongly-consistent store) answers can(space, entitlement) and is called by every worker at the point of action — never only in the UI. (3) The UI uses the same entitlement data to hide/disable gated features, but the backend is the source of truth. (4) Entitlement checks are cached briefly with revocation on plan change. (5) Log entitlement denials for upsell analytics. (6) Changing a plan instantly and consistently changes effective entitlements everywhere.</p></div>
+</div>
+<div id="G-AE46" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE46</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§ops — recovery runbook matrix</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Per-Store Backup/Restore Runbook With RTO/RPO Targets — Recovery Is Improvised During an Incident</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The platform spans many data stores (DO SQLite, Turso, R2, Vectorize, KV, Analytics Engine, external provider state). The spec lacks a recovery runbook mapping each store to its backup mechanism, recovery procedure, RTO (recovery time objective), and RPO (recovery point objective). In a real data-loss incident, the team would improvise per store, with no rehearsed procedure or known recovery guarantees.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Produce a recovery matrix + runbook: for each data store, document the backup mechanism (WAL streaming G-AB31, Turso PITR G-AC26, R2 versioning, KV re-derivation, Analytics retention), the restore procedure (step-by-step), the RTO and RPO targets, and the owner. (2) Define dependency order for a full-platform restore (which stores first). (3) Rehearse quarterly: restore each store into a staging environment from real backups and verify integrity (ties to G-AE39 IaC for spinning up the target). (4) Keep the runbook in the repo and link it from the incident process. (5) Track actual vs target RTO/RPO from drills and close gaps.</p></div>
+</div>
+<div id="G-AE47" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE47</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§ops — synthetic journey monitoring</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No End-to-End Synthetic Journey Monitoring — Outages Are Detected by Users, Not the Platform</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Component health checks (G-AB13) confirm individual workers are up, but nothing continuously exercises the full critical user journey (sign in → create/open space → send a message → receive a streamed agent reply → see it billed). A broken integration between healthy components (e.g., the agent worker is up but billing rejects all turns) is invisible to component checks and only surfaces via user complaints.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add synthetic journey monitoring: (1) A scheduled synthetic test (Checkly or a dedicated monitor worker) runs the full critical journey end-to-end every few minutes from multiple regions against production (using a dedicated synthetic test account). (2) It asserts each step succeeds within latency budgets (auth, space load, message send, first token, completion, billing recorded). (3) Failures page on-call (G-AA43) with the failing step and trace_id. (4) Track journey success rate and step latencies as top-line SLO dashboards. (5) Additional synthetics for other key journeys (marketplace install, channel message round-trip, voice call). This catches integration outages before users do.</p></div>
+</div>
+<div id="G-AE48" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE48</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§testing — integration test harness</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Integration Test Harness for the Full Service-Binding Mesh — Only Unit Tests or Prod</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Tests run per-worker in isolation (vitest-pool-workers) or against production. There is no harness that stands up the full mesh of workers + their bindings + DOs + local resource emulations so that multi-worker flows (a request traversing router → auth → agents → billing → DOs) can be tested together before deploy. Cross-worker regressions are only caught in production.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Build an integration test harness: (1) A local/CI environment that runs all workers together with Service Bindings wired (wrangler multi-worker dev / Miniflare) plus local emulations of KV, R2, Queues, and DOs. (2) Seed deterministic fixtures (a test space, users, plans). (3) Integration test suites exercise full flows across worker boundaries and assert end-to-end outcomes (message → streamed reply → credits debited → analytics event written). (4) Run in CI on every PR before deploy. (5) Include contract tests that verify each worker honors its Service Binding contract (pairs with G-AE40). (6) A start-dev script reproduces the same mesh locally for developers.</p></div>
+</div>
+<div id="G-AE49" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE49</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§data — tenant isolation verification</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Automated Tenant-Isolation Verification — Cross-Tenant Leakage Regressions Can Ship Undetected</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Tenant isolation (one space never reads another's data) is enforced by spaceId scoping on every query, Vectorize filters, R2 prefixes, and DO addressing. The spec relies on developers getting this right everywhere, with no automated test that systematically attempts cross-tenant access and asserts it fails. A single missing filter (the kind already found in earlier gaps) silently leaks one tenant's data to another.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add continuous tenant-isolation verification: (1) An automated test suite that, for every data-access endpoint and store, creates two tenants, writes data as tenant A, and asserts tenant B cannot read/list/search/address it (SQLite rows, Vectorize vectors, R2 objects, KV keys, DO state). (2) Run a "fuzzing" pass that mutates spaceId/credentials and confirms denials. (3) Static analysis/lint that flags any DO SQLite query or Vectorize query lacking a spaceId predicate. (4) Run in CI on every PR and as a periodic production canary against synthetic tenants. (5) Treat any leakage as a release-blocking severity. This makes isolation a verified invariant, not a hope.</p></div>
+</div>
+<div id="G-AE50" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-AE50</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§ops — config &amp; feature-flag store</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Unified Configuration / Feature-Flag Store With Safe, Consistent Propagation</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Operational config and feature flags are scattered (KV with 60s eventual consistency, per-worker constants, env vars). There is no unified, strongly-consistent, audited flag system for: gradual feature rollout, per-plan/per-space overrides, kill switches, and operational tuning (timeouts, limits). KV's eventual consistency (per G-AC11) makes it unsafe for anything security- or correctness-sensitive.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Adopt a unified flag/config layer: (1) Use a managed feature-flag service (LaunchDarkly/Statsig per G-AA11) or a strongly-consistent ConfigDO for flags that must be consistent (kill switches, security toggles). (2) Support targeting: global, per-plan, per-space, and percentage rollouts (consistent hashing). (3) Changes are audited (who/when/old→new) and instantly + consistently propagated (no 60s window for critical flags). (4) Workers read flags via a thin SDK with a short in-memory cache + change subscription. (5) Provide an ops UI to view/flip flags and see current targeting. (6) Document which flags are safe in eventually-consistent KV vs which require the consistent store.</p></div>
+</div>
+<section id="appendix-filetree" style="margin-top:80px;">
+<h2 style="font-family:'Fraunces',serif;font-size:32px;font-weight:700;color:var(--hd);letter-spacing:-.02em;margin:0 0 6px;">Appendix AF — Full System File-Tree Map</h2>
+<p style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);letter-spacing:.1em;text-transform:uppercase;margin:0 0 24px;">Complete functional monorepo · every worker, durable object, package, frontend, container, infra &amp; test — nothing left out</p>
+<p style="margin:0 0 24px;">A buildable monorepo layout for the entire platform: pnpm workspaces + Turborepo. Every Cloudflare Worker is a self-contained package (own <code>wrangler.toml</code>, <code>src/</code>, <code>migrations/</code>, <code>test/</code>); Durable Objects live in the owning worker's <code>src/do/</code>; shared logic lives in <code>packages/*</code>; <code>infra/</code> provisions all Cloudflare resources as code. Gap references (e.g. <code>G-AC11</code>) point to the appendix entry whose fix that file implements.</p>
+<div class="box box-rd" style="overflow:auto;">
+<div class="box-lbl">Monorepo Tree</div>
+<pre style="white-space:pre;overflow-x:auto;font-family:'DM Mono',monospace;font-size:11px;line-height:1.55;color:var(--hd);margin:0;">naelao/
+├── README.md
+├── LICENSE
+├── package.json                      # pnpm workspace root + scripts
+├── pnpm-workspace.yaml               # packages/*, workers/*, apps/*
+├── turbo.json                        # build/test/deploy task graph (dependency-ordered, G-AE34)
+├── tsconfig.base.json                # shared strict TS config
+├── .editorconfig
+├── .gitignore
+├── .nvmrc
+├── biome.json | .eslintrc + .prettierrc   # lint/format
+├── vitest.workspace.ts               # workspace-wide test config (@cloudflare/vitest-pool-workers)
+├── .changeset/                       # versioning of shared packages
+│
+├── .github/
+│   └── workflows/
+│       ├── ci.yml                    # typecheck + lint + unit + integration (G-AE48)
+│       ├── deploy-staging.yml        # dependency-ordered staging deploy (G-AE34)
+│       ├── deploy-production.yml     # gradual rollout + health gates (G-AB10, G-AB46)
+│       ├── secret-scan.yml           # gitleaks/trufflehog (G-Z39, G-AD23)
+│       ├── api-diff.yml              # OpenAPI breaking-change gate (G-AD37)
+│       ├── contract-diff.yml         # inter-worker Service Binding contract gate (G-AE40)
+│       ├── bundle-size.yml           # per-worker bundle budget (G-AE37)
+│       ├── tenant-isolation.yml      # cross-tenant leakage suite (G-AE49)
+│       └── load-test.yml             # k6 SLO gate (G-AB14)
+│
+├── infra/                            # Infrastructure as Code (G-AE39)
+│   ├── terraform/
+│   │   ├── main.tf                   # cloudflare provider, account-level resources
+│   │   ├── kv.tf                     # all KV namespaces
+│   │   ├── r2.tf                     # all R2 buckets
+│   │   ├── queues.tf                 # queues + DLQs
+│   │   ├── vectorize.tf              # shared multi-tenant index (G-AB49, G-AC49)
+│   │   ├── analytics_engine.tf       # datasets
+│   │   ├── pages.tf                  # CF Pages projects (dashboard/portal/marketplace/admin)
+│   │   ├── containers.tf             # container registry + image bindings
+│   │   ├── access.tf                 # CF Access (admin routes)
+│   │   ├── environments/{staging,production,dr}.tfvars
+│   │   └── outputs.tf                # resource IDs → wrangler bindings
+│   ├── wrangler.shared.toml          # shared binding fragments
+│   ├── secrets/
+│   │   ├── doppler.config.yaml       # central secret source (G-AA13, G-AE38)
+│   │   └── secret-manifest.json      # required secret keys per env (drift check, G-AE35)
+│   └── scripts/
+│       ├── provision-resources.sh    # stand up a full environment from scratch (DR/CI)
+│       ├── start-dev.sh              # local multi-worker mesh + emulated resources (G-AE48)
+│       ├── deploy.ts                 # topological deploy orchestrator (G-AE34, G-AE40)
+│       ├── rotate-secrets.ts         # coordinated fleet secret rotation (G-AE38)
+│       ├── drift-check.ts            # config/resource drift detector (G-AE35)
+│       └── restore-drill.ts          # quarterly recovery rehearsal (G-AE46)
+│
+├── packages/                         # ── shared libraries ──────────────────────
+│   ├── types/                        # @naelao/types
+│   │   └── src/{env.ts,api.ts,do-state.ts,manifest.ts,events.ts,index.ts}
+│   ├── config/                       # @naelao/config — typed env + runtime config loader
+│   │   └── src/{schema.ts,load.ts}
+│   ├── http/                         # @naelao/http — Hono base app, error envelope, /v1 router
+│   │   └── src/{app.ts,errors.ts,middleware.ts,cors.ts}
+│   ├── auth/                         # @naelao/auth — JWT issue/verify, JWKS, RBAC
+│   │   └── src/{jwt.ts,jwks.ts,refresh.ts,revocation.ts,rbac.ts,session.ts}   # G-AD01..AD08
+│   ├── crypto/                       # @naelao/crypto — AES-GCM, envelope enc, HKDF, DEK
+│   │   └── src/{aesgcm.ts,envelope.ts,dek.ts,iv-registry.ts,hash-chain.ts}    # G-AD17,AD18,AD20,W12
+│   ├── db/                           # @naelao/db — DO SQLite helpers + migration runner
+│   │   └── src/{sql.ts,migrate.ts,user-version.ts,outbox.ts}                  # G-AD32,AD33,F20,AD49
+│   ├── analytics-schema/             # @naelao/analytics-schema — positional slot registry
+│   │   └── src/{schema.ts,slots.ts,sampler.ts}                                # G-AC15,AD35
+│   ├── tracing/                      # @naelao/tracing — W3C trace context propagation
+│   │   └── src/{context.ts,propagate.ts,span.ts}                              # G-AD36
+│   ├── logger/                       # @naelao/logger — structured logging
+│   │   └── src/{logger.ts,fields.ts}                                         # G-AD35
+│   ├── idempotency/                  # @naelao/idempotency — Idempotency-Key middleware
+│   │   └── src/{middleware.ts,store.ts}                                       # G-AD34
+│   ├── ratelimit/                    # @naelao/ratelimit — sharded DO token bucket
+│   │   └── src/{rate-limit-do.ts,sharded.ts,client.ts}                        # G-AC11,AC17
+│   ├── entitlements/                 # @naelao/entitlements — plan → capability gating
+│   │   └── src/{service.ts,plans.ts}                                          # G-AE45
+│   ├── manifest/                     # @naelao/manifest — Space Type/template schema + validator
+│   │   └── src/{schema.ts,validate.ts,transition.ts,impact.ts,propagate.ts}   # G-AC01..AC10
+│   ├── constraint-engine/            # @naelao/constraint-engine — requires/conflictsWith solver
+│   │   └── src/{registry.json,solver.ts}                                      # G-AC01,AC07
+│   ├── billing-core/                 # @naelao/billing-core — ledger, reservations, two-sided
+│   │   └── src/{ledger.ts,reservation.ts,correlation.ts,proration.ts}         # G-AC29,AC33,AC36,AB38
+│   ├── billing-providers/            # @naelao/billing-providers — Stripe/LemonSqueezy/RevenueCat
+│   │   └── src/{stripe.ts,lemonsqueezy.ts,revenuecat.ts,meters.ts,connect.ts} # G-AC31,AA04,AA08
+│   ├── rag/                          # @naelao/rag — chunking, embedding, hybrid search, rerank
+│   │   └── src/{chunk.ts,embed.ts,hybrid.ts,rerank.ts,reindex.ts,cost.ts}     # G-AD09..AD13,D03,D04
+│   ├── tool-runtime/                 # @naelao/tool-runtime — tool exec, beforeToolCall, sanitizer
+│   │   └── src/{registry.ts,before-tool-call.ts,result-sanitizer.ts,ssrf.ts}  # G-AB20,AB21,AA27
+│   ├── orchestration/                # @naelao/orchestration — DAG planner + executor
+│   │   └── src/{planner.ts,executor.ts,aggregate.ts,hitl.ts,cancel.ts,continuation.ts,cost-preview.ts} # G-AE19..AE25,AC44
+│   ├── channel-adapters/             # @naelao/channel-adapters — unified channel interface
+│   │   └── src/
+│   │       ├── adapter.ts            # ChannelAdapter interface (G-AE17)
+│   │       ├── pipeline.ts           # auth→normalize→identity→render→dispatch
+│   │       ├── identity.ts           # cross-channel identity resolution (G-AE12)
+│   │       ├── format/{blocks.ts,slack.ts,discord.ts,whatsapp.ts,markdown.ts} # G-AE11
+│   │       ├── media.ts              # inbound/outbound media normalization (G-AE16)
+│   │       ├── dispatch-do.ts        # per-channel rate-limited dispatch (G-AE13,AE15)
+│   │       └── providers/{slack.ts,discord.ts,telegram.ts,whatsapp.ts,email.ts,sms.ts,web-widget.ts}
+│   ├── moderation/                   # @naelao/moderation — output content safety
+│   │   └── src/{moderate.ts,llama-guard.ts,csam-hash.ts}                      # G-AB19
+│   ├── webhooks/                     # @naelao/webhooks — outbound delivery + verification
+│   │   └── src/{deliver.ts,sign.ts,verify-endpoint.ts,dlq.ts}                 # G-AD38,AD39
+│   ├── degradation/                  # @naelao/degradation — per-dependency fallback map
+│   │   └── src/{policy.ts,circuit-breaker.ts}                                 # G-AD50,AD30
+│   ├── agent-sdk/                    # @naelao/agent-sdk — AgentPress: tools, context, memory
+│   │   └── src/{agent.ts,tools.ts,context.ts,memory.ts,prompt.ts}             # G-AD46,41§
+│   ├── client-sdk/                   # @naelao/client — browser + node SDK (generated + hand)
+│   │   └── src/{client.ts,stream.ts,auth.ts,webhooks.ts,react/{hooks.ts}}     # G-AD48,AE05,AE10
+│   ├── ui-kit/                       # @naelao/ui-kit — shared React components + design tokens
+│   │   └── src/{components/,tokens.ts,theme.ts}                               # G-AE06
+│   └── testing/                      # @naelao/testing — fixtures, mesh harness, isolation probes
+│       └── src/{fixtures.ts,mesh.ts,isolation.ts}                             # G-AE48,AE49
+│
+├── workers/                          # ── Cloudflare Workers (each deployable) ──
+│   │                                 #    common per-worker shape shown for `router`; others mirror it
+│   ├── router/                       # naelao-router — public origin, CORS, auth, WS routing, dispatch
+│   │   ├── wrangler.toml             # service bindings to all workers, KV/rate-limit bindings
+│   │   ├── package.json
+│   │   ├── src/
+│   │   │   ├── index.ts              # fetch + WebSocket upgrade entrypoint
+│   │   │   ├── routes/               # /v1 route handlers, reverse-proxy to services
+│   │   │   ├── middleware/{auth.ts,ratelimit.ts,trace.ts,maintenance.ts}      # G-AC11,AD07,AD36,AE36
+│   │   │   └── dispatch.ts           # service-binding dispatch table
+│   │   ├── test/{router.test.ts}
+│   │   └── README.md
+│   │
+│   ├── ws-gateway/                   # naelao-ws-gateway — connection mgmt, fan-out, per-conn ratelimit (G-AC37)
+│   │   └── src/{index.ts,session.ts,fanout.ts,reconnect.ts}                   # G-AC39,AC40,AC41
+│   │
+│   ├── auth/                         # naelao-auth — login, refresh, sessions, SSO, password reset
+│   │   ├── src/{index.ts,login.ts,refresh.ts,reset.ts,providers/{oauth.ts,saml.ts,magic-link.ts,byo-jwt.ts}}  # G-AD05,AD06
+│   │   └── src/do/{RefreshTokenDO.ts,SigningKeyDO.ts}                         # G-AD01,AD04
+│   │
+│   ├── spaces/                       # naelao-spaces — space/sub-space CRUD, members, registry
+│   │   ├── src/{index.ts,spaces.ts,members.ts,clone.ts}                       # G-AB29,AB30
+│   │   └── src/do/
+│   │       ├── SpaceDO.ts            # per-product master SQLite (G-AC12 sharding hooks)
+│   │       ├── SpaceMetaDO.ts        # cacheable config (G-AC16)
+│   │       ├── UserRegistryDO.ts     # SaaS end-user registry, sharded (G-AC19)
+│   │       ├── ConversationShardDO.ts# sharded conversation store (G-AC12,AC14)
+│   │       ├── ShardRouterDO.ts      # thread→shard routing (G-AC14)
+│   │       ├── ChildUserDO.ts        # per-end-user DO for SaaS tenancy (G-AC13)
+│   │       └── migrations/           # versioned schema migrations (G-AD32)
+│   │
+│   ├── provisioner/                  # naelao-provisioner — space lifecycle saga, seeding, status
+│   │   ├── src/{index.ts,create.ts,delete-saga.ts,seed.ts,status.ts,bulk.ts} # G-AD42,AD43,Z28,AC48
+│   │   └── workflows/{provision.workflow.ts,erasure.workflow.ts}             # G-AD14 erasure saga
+│   │
+│   ├── credentials/                  # naelao-credentials — encrypted secret store + access audit
+│   │   ├── src/{index.ts,store.ts,decrypt.ts,access-log.ts}                   # G-AD19,W11
+│   │   └── src/do/{TursoRegistryDO.ts}                                        # G-AC22,AC27
+│   │
+│   ├── threads/                      # naelao-threads — thread/message CRUD, streaming forward
+│   │   └── src/{index.ts,threads.ts,messages.ts,archive.ts}                   # G-AC28,AC46
+│   │
+│   ├── agents/                       # naelao-agents — agent defs, run lifecycle, pre-flight
+│   │   ├── src/
+│   │   │   ├── index.ts
+│   │   │   ├── definitions.ts        # CRUD + versioning + rollback (G-AB01)
+│   │   │   ├── experiments.ts        # A/B harness (G-AB02), prompt experiments (G-AB07)
+│   │   │   ├── tests.ts              # per-agent regression suites (G-AB03)
+│   │   │   ├── deploy-pipeline.ts    # canary + quality gate (G-AB04,AB16)
+│   │   │   └── trace.ts              # execution trace / replay (G-AB11,AB12)
+│   │   └── src/do/
+│   │       ├── NaelaoAgentDO.ts      # agent brain: sessions, WAL, fibers, memory, token buffer
+│   │       ├── ConcurrencyDO.ts      # run concurrency limiter
+│   │       ├── WalletDO.ts           # credit ledger, reservations (G-AC29,AC36)
+│   │       ├── OrchestrationBudgetDO.ts # sub-agent fan-out budget (G-AC44)
+│   │       └── AlarmSchedulerDO.ts   # multi-alarm scheduling (G-AA34)
+│   │
+│   ├── assistant/                    # naelao-assistant — Space Assistant entry + channels
+│   │   ├── src/{index.ts,chat.ts,channels.ts}
+│   │   └── src/do/{AssistantDO.ts,AssistantSandboxDO.ts}                      # G-AA20 voice, G-AD40,AD41
+│   │
+│   ├── knowledge/                    # naelao-knowledge — KB CRUD, ingestion, search
+│   │   ├── src/{index.ts,documents.ts,search.ts,reconcile.ts}                 # G-AD49 cross-store
+│   │   ├── workflows/{ingest.workflow.ts}                                     # batch embed (G-AD11)
+│   │   └── src/do/{HybridQueryDO.ts}                                          # G-Z05 federation
+│   │
+│   ├── billing/                      # naelao-billing — webhooks, invoicing, payouts, reconcile
+│   │   ├── src/{index.ts,webhooks.ts,invoices.ts,refunds.ts,subscriptions.ts} # G-AB41,AB38,AB43
+│   │   ├── workflows/{payout.workflow.ts,reconciliation.workflow.ts,dunning.workflow.ts} # G-AC35,AC32,AA03
+│   │   └── src/do/{StripeRateLimiterDO.ts,BuilderWalletDO.ts}                 # G-AC31,AC33
+│   │
+│   ├── mcp-hub/                      # naelao-mcp-hub — MCP proxy, OAuth, pooling, transports
+│   │   ├── src/{index.ts,oauth.ts,pool.ts,health.ts,schema-cache.ts}         # G-AD28,AD29,AD30
+│   │   └── src/transports/{http.ts,sse.ts,stdio.ts}                          # G-AD31
+│   │
+│   ├── triggers/                     # naelao-triggers — inbound webhook ingestion + verification
+│   │   └── src/{index.ts,verify/{slack.ts,discord.ts,telegram.ts,whatsapp.ts,stripe.ts,generic.ts}}  # G-G09
+│   │
+│   ├── channels/                     # naelao-channels — inbound channel → agent routing
+│   │   └── src/{index.ts,inbound.ts}    # consumes @naelao/channel-adapters (G-AE17)
+│   │
+│   ├── workflows/                    # naelao-workflows — dynamic workflow loader + registry
+│   │   ├── src/{index.ts,loader.ts,run.ts}
+│   │   └── src/do/{WorkflowRegistryDO.ts,WorkerDefinitionDO.ts}
+│   │
+│   ├── artifact/                     # naelao-artifact — dynamic worker loader, artifact security
+│   │   └── src/{index.ts,scan.ts,serve.ts}                                    # 27-pattern scan, CSP G-AA30
+│   │
+│   ├── browser/                      # naelao-browser — CF Browser Rendering CDP proxy
+│   │   └── src/{index.ts,navigate.ts,robots.ts,sanitize.ts,session-isolation.ts}  # G-AB33,AB35,AB36
+│   │
+│   ├── mini-agi/                     # naelao-mini-agi — cross-space intelligence + access matrix
+│   │   └── src/{index.ts,access-matrix.ts}  &amp; src/do/{MiniAGIDO.ts}
+│   │
+│   ├── together-ai/                  # naelao-together-ai — LoRA fine-tuning proxy
+│   │   └── src/{index.ts,finetune.ts}  &amp; src/do/{FinetuneJobDO.ts}
+│   │
+│   ├── eval/                         # naelao-eval — GAIA/benchmark pipeline, judge calibration
+│   │   └── src/{index.ts,run.ts,judge.ts,calibrate.ts}                        # G-AB08
+│   │
+│   ├── analytics/                    # naelao-analytics — queue consumer, conversation insights
+│   │   └── src/{index.ts,consume.ts,insights.ts,cohorts.ts,funnels.ts}        # G-AB26,AB27,AC15
+│   │
+│   ├── notifications/                # naelao-notifications — multi-channel delivery
+│   │   └── src/{index.ts,consume.ts,channels/{apns.ts,fcm.ts,email.ts,slack.ts,sms.ts},escalation.ts}  # G-AD44,AD45
+│   │
+│   ├── feedback/                     # naelao-feedback — ratings, sentiment, quality signals
+│   │   └── src/{index.ts,collect.ts}
+│   │
+│   ├── marketplace/                  # naelao-marketplace — listings, search, install, payouts
+│   │   ├── src/
+│   │   │   ├── index.ts
+│   │   │   ├── listings.ts           # publish/version/curation (G-AE31)
+│   │   │   ├── search.ts             # hybrid search + facets (G-AE26)
+│   │   │   ├── ranking.ts            # ranking + recommendations (G-AE27)
+│   │   │   ├── install.ts            # dependency resolution + lifecycle (G-AE28,AE29)
+│   │   │   ├── ratings.ts            # provenance, Sybil defense (G-AB24)
+│   │   │   └── analytics.ts          # publisher analytics (G-AE32)
+│   │   └── workflows/{install.workflow.ts}
+│   │
+│   ├── portal-router/                # naelao-portal-router — custom domain/slug → space
+│   │   └── src/{index.ts,resolve.ts}  # CF for SaaS custom hostnames (G-AC47)
+│   │
+│   ├── apps-registry/                # naelao-apps-registry — Naelao Apps / MCP app store
+│   │   └── src/{index.ts}  &amp; src/do/{AppRegistryDO.ts,SpaceTypeRegistryDO.ts}
+│   │
+│   ├── admin/                        # naelao-admin — CF Access protected ops surface
+│   │   └── src/{index.ts,users.ts,credits.ts,dlq.ts,maintenance.ts,platform-analytics.ts}  # G-AE36,AC49
+│   │
+│   ├── sweeper/                      # naelao-sweeper — cron: heartbeat, cleanup, DLQ, drift
+│   │   └── src/{index.ts,heartbeat.ts,dlq.ts,job-registry.ts}                 # G-AE41,AA42
+│   │
+│   ├── categorizer/                  # naelao-categorizer — cron: project categorization
+│   │   └── src/{index.ts}
+│   │
+│   ├── search/                       # naelao-search — marketplace + knowledge search backend (G-AE26)
+│   │   └── src/{index.ts,index-builder.ts}
+│   │
+│   └── synthetics/                   # naelao-synthetics — end-to-end journey monitors (G-AE47)
+│       └── src/{index.ts,journeys/{chat.ts,install.ts,channel.ts,voice.ts}}
+│
+├── apps/                             # ── Frontends (CF Pages) ─────────────────
+│   ├── dashboard/                    # Builder Dashboard — Next.js 14 App Router (G-AE01)
+│   │   ├── app/                      # routes: spaces, agents, knowledge, billing, team, config
+│   │   ├── components/               # config UI (schema-driven, G-AE02)
+│   │   ├── lib/{api.ts,query.ts,ws.ts,auth.ts}  # client SDK, React Query, live WS (G-AE10)
+│   │   ├── error-boundary.tsx        # G-AE08
+│   │   ├── next.config.js  &amp; wrangler.toml (Pages)
+│   │   └── test/
+│   ├── product-portal/               # End-user product UI (white-label, G-AE06)
+│   │   ├── app/  &amp; theme/{tokens.ts,apply.ts}    # design-token theming
+│   │   ├── public/{manifest.webmanifest,sw.ts}   # PWA/offline (G-AE09)
+│   │   └── ...
+│   ├── widget/                       # Embeddable assistant widget (G-AE03)
+│   │   ├── loader/loader.ts          # &lt;15KB script-tag loader → sandboxed iframe
+│   │   ├── app/                      # widget UI (runs in iframe)
+│   │   ├── protocol/postmessage.ts   # host↔widget protocol (G-AE04)
+│   │   └── persistence.ts            # anonymous conversation persistence (G-AE18)
+│   ├── marketplace-web/              # Public SEO marketplace (Next.js SSR/SSG, G-AE30)
+│   │   ├── app/marketplace/[slug]/   # listing pages + JSON-LD + sitemap
+│   │   └── ...
+│   └── admin-ui/                     # Internal admin console (G-AE36, AC49)
+│       └── app/
+│
+├── mobile/                           # React Native app (thin wrapper on client-sdk, G-AE09)
+│   └── src/{App.tsx,screens/,native/}
+│
+├── containers/                       # ── Container images (CF Containers) ─────
+│   ├── sandbox-base/                 # base image: FUSE-R2 mount + workspace tooling
+│   │   ├── Dockerfile  &amp; fuse/{mount.ts,commit.ts,lock.ts}                    # G-AD24,AD25
+│   ├── code-exec/                    # code execution sandbox (Dockerfile + entrypoint)
+│   ├── gpu-media/                    # GPU image: transcode/extract/merge
+│   ├── mcp-stdio-host/               # hosts stdio MCP servers (G-AD31)
+│   └── pipeline/
+│       ├── build.ts                  # reproducible build (G-AD22)
+│       ├── scan.ts                   # Trivy/Grype + secret scan gate (G-AD23)
+│       └── publish.ts                # registry publish + provenance
+│
+├── tests/                            # ── Cross-cutting test suites ────────────
+│   ├── integration/                  # full service-binding mesh flows (G-AE48)
+│   ├── e2e/                          # browser e2e (Playwright) across dashboard/portal/widget
+│   ├── contract/                     # inter-worker contract tests (G-AE40)
+│   ├── isolation/                    # tenant-isolation verification (G-AE49)
+│   ├── load/                         # k6 scripts + SLO thresholds (G-AB14)
+│   └── chaos/                        # fault injection (R2/Vectorize/queue/DO eviction, G-AB15)
+│
+├── docs/                             # ── Documentation &amp; contracts ────────────
+│   ├── architecture.md               # system overview + diagrams
+│   ├── openapi.yaml                  # source-of-truth public API (G-AD37, AD48)
+│   ├── data-stores.md                # per-store model, consistency, residency
+│   ├── deployment.md                 # deploy order, environments, rollback
+│   ├── security.md                   # auth, crypto, key mgmt, isolation invariants
+│   ├── billing.md                    # two-sided ledger, metering, reconciliation
+│   ├── runbooks/
+│   │   ├── incident-response.md
+│   │   ├── recovery-matrix.md        # per-store RTO/RPO + restore (G-AE46)
+│   │   ├── secret-rotation.md        # G-AE38
+│   │   └── maintenance-mode.md       # G-AE36
+│   └── status-page.md                # SLA + status page config (G-AA43)
+│
+└── naelao_expanded_gaps_resolved.html  # the full spec + 1169 gap appendices (A–AE)</pre>
+</div>
 </section>
+
 
 </body>
 </html>
