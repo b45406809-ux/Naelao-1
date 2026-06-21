@@ -50121,6 +50121,452 @@ for (const cfg of globSync("workers/**/wrangler.jsonc")) {
 When bumping the date, bump it everywhere in one change and re-run the full test suite against the new date.</p></div>
 </div>
 
+
+
+<section id="appendix-x" style="margin-top:80px;">
+<h2 style="font-family:'Fraunces',serif;font-size:32px;font-weight:700;color:var(--hd);letter-spacing:-.02em;margin:0 0 6px;">Appendix X — Sixteenth Pass</h2>
+<p style="font-family:'DM Mono',monospace;font-size:11px;color:var(--or);letter-spacing:.1em;text-transform:uppercase;margin:0 0 32px;">Rate Limiting &amp; Abuse · RAG Pipeline · WebSocket Protocol · Observability · Skills Security · Multi-Tenancy Isolation</p>
+
+<div id="G-X01" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X01</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Agent Runtime — Tool Execution — AgentDO / tool dispatch</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Per-Tool-Call Rate Limit Missing — Unbounded Recursive Tool Loops Drain Credits</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec defines agent tiers and allowed tools but places no ceiling on how many times an agent may call a single tool within one run. A misbehaving agent can issue web_search 10,000 times recursively before the run is manually cancelled, consuming the entire space credit balance in minutes. The MAX_ITERATIONS guard exists for agentic reasoning loops but is never applied to individual tool invocation counts.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add maxToolCallsPerTool (default 100) and maxToolCallsPerRun (default 500) counters to AgentDO per-run state, enforced in the tool dispatch layer before each invocation. Return a structured error and mark the run failed-rate-exceeded when exceeded. Log the event to Analytics Engine for billing reconciliation and admin alerting.</p></div>
+</div>
+
+<div id="G-X02" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X02</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Queue Consumers — naelao-notifications — CF Queues / maxConcurrency</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Queue Consumer Unbounded Parallelism — Burst Traffic Causes Thundering Herd on Downstream APIs</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">CF Queues dispatches all messages in a batch to the consumer Worker in parallel when maxConcurrency is unset. A space completing a large batch job can enqueue 10,000 notification events simultaneously, triggering 10,000 concurrent downstream API calls (APNs, FCM, Slack) and immediately rate-limiting those services. The cascade affects all spaces sharing the consumer Worker, not just the offending space.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Set maxConcurrency: 50 and maxBatchSize: 100 on every queue consumer binding in wrangler.jsonc. Implement a per-space semaphore inside the consumer: allow at most 10 concurrent deliveries per spaceId. Log consumer queue depth to Analytics Engine every minute as a capacity-alerting metric.</p></div>
+</div>
+
+<div id="G-X03" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X03</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§AI Gateway — Model Invocation — callAIGateway / retry logic</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">AI Gateway 429 Response Not Caught at Worker Level — No Per-Space Exponential Backoff</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a space exhausts its AI Gateway token-per-minute quota the gateway returns HTTP 429 with a Retry-After header. The agent Workers do not inspect this header; they either surface the error immediately to the user or retry in a tight synchronous loop, burning the remaining quota and locking the space out for the entire minute. No backoff is stored across requests.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Wrap all callAIGateway() calls in a retry helper that detects status 429, reads the Retry-After header (default 60 s), and stores a per-space backoff timestamp in KV (TTL = backoff seconds). Reject subsequent calls for that space until the backoff expires. Surface a structured error to clients: { type: "quota_exceeded", retry_after_ms }.</p></div>
+</div>
+
+<div id="G-X04" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X04</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Billing — Credit Enforcement — SpaceDO / billing queue</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Pre-Run Credit Reservation — Asynchronous Billing Enables Unbounded Overspend</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Credit checks occur after each LLM call via the billing event queue, which is processed asynchronously. Between the first LLM call and the billing event being consumed by naelao-billing, dozens more LLM calls can be issued. Under high concurrency a space with zero remaining credits can accumulate a large negative balance before the first billing event closes the account, incurring real API cost with no immediate enforcement.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Pre-reserve credits synchronously at run start: deduct a worst-case reservation (e.g., 10,000 tokens x tier rate) from the SpaceDO SQLite credit ledger before the first LLM call. Refund the unused portion at run end. Reject run start with a user-facing quota error if available_credits &lt; minimum_reservation.</p></div>
+</div>
+
+<div id="G-X05" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X05</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Personalisation — Apps Economy — KV TTL / cache expiry</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Personalisation Cache TTL Has No Jitter — Simultaneous Expiry Causes Hourly Rate-Limit Spike</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">UI personalisation profiles are cached with a fixed 3600-second TTL set at first authentication. All users who authenticated around the same time expire their caches simultaneously, issuing hundreds of synchronous LLM personalisation calls to the AI Gateway at the same clock second. This spikes per-space token consumption and triggers quota limits, degrading experience for all concurrent users.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Apply jitter at cache-write time: ttl = 3600 + Math.floor(Math.random() * 600). Store next_regen_at = Date.now() + ttl * 1000 in the cached KV value. Derive TTL from last cache write rather than user login time, so rolling updates spread expirations uniformly across a 10-minute window.</p></div>
+</div>
+
+<div id="G-X06" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X06</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Billing — naelao-billing queue consumer — Analytics Engine / SpaceDO ledger</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Billing Events Lost on Analytics Engine Unavailability — No Durable Fallback Ledger</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The billing pipeline writes credit deduction events to Analytics Engine via the naelao-billing queue consumer. If Analytics Engine is unavailable the consumer nacks the message; after maxRetries is exhausted the message is dead-lettered. The credit ledger in SpaceDO SQLite is never updated, leaving the space with phantom credits — balances that were spent but never deducted.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Make SpaceDO SQLite the authoritative billing ledger: subtract credits synchronously from SQLite at the moment of LLM call, before enqueuing to Analytics Engine. AE receives analytics-only copies; AE loss is cosmetic. Reconcile monthly by querying AE against SpaceDO and alerting on divergence above a threshold.</p></div>
+</div>
+
+<div id="G-X07" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X07</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Knowledge — naelao-knowledge — chunker / embedding pipeline</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Chunker Uses Word Count Not BPE Token Count — Chunks Overflow Embedding Model Context Window</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The chunker splits documents at 512 "tokens" measured as whitespace-separated words. One word averages 1.3–1.8 BPE subword tokens for the @cf/baai/bge-base-en-v1.5 model, whose maximum context is 512 subword tokens. A 512-word chunk routinely exceeds 700 subword tokens, causing the embedding call to silently truncate the tail of each chunk and losing the last ~30% of information before indexing.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Replace word-count splitting with a BPE tokenizer matching the embedding model (e.g., gpt-tokenizer, ~20 kB WASM). Target 400 subword tokens per chunk with 50-token overlap. Validate chunk.tokenCount &lt;= 512 before calling ai.run(); log a warning and split further if exceeded. This applies to all content types including code and non-Latin documents.</p></div>
+</div>
+
+<div id="G-X08" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X08</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Knowledge — Vectorize — embedding model metadata</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Embedding Model Version Tracked in Vectorize — Upgrade Causes Silent Vector Space Drift</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Vectors are upserted to Vectorize with no embedding_model metadata field. When the platform upgrades from bge-base-en-v1.5 to a newer model, new document embeddings occupy a different vector space than existing ones. Cosine similarity between old and new vectors is meaningless noise; semantic search quality degrades silently across all spaces that contain pre-upgrade knowledge documents.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add embedding_model TEXT NOT NULL to the knowledge_chunks SQLite table and to every Vectorize vector's metadata. On model upgrade, run a background migration job that re-embeds all chunks with the new model, upserts to Vectorize, and deletes old vectors. Gate query paths to compare only vectors whose model version matches the query embedding's model.</p></div>
+</div>
+
+<div id="G-X09" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X09</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Knowledge — Vectorize — document update / vector cleanup</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Stale Vectors Accumulate on Document Updates — Old Chunk Versions Permanently Indexed</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a knowledge document is edited, new chunks are upserted by ID but if the new version produces fewer chunks than the old version, surplus old-version vector IDs are never deleted. After ten edits, up to ten versions of the same document are simultaneously indexed, causing semantic search to return duplicates, outdated content, and potentially confidential draft material that has since been revised or deleted.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Maintain a vector_ids JSON column in knowledge_chunks SQLite. On each document update, read the old vector IDs, call vectorize.deleteByIds(oldIds) before upserting new chunks, then write the new IDs back in the same SQLite transaction so a partial failure does not orphan vectors. Schedule a nightly reconciliation job to detect and remove any orphaned vectors.</p></div>
+</div>
+
+<div id="G-X10" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X10</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Knowledge — RAG Pipeline — retrieval quality / re-ranking</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Relevance Score Threshold or Re-ranking — Low-Quality Chunks Injected into Prompt</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The RAG pipeline queries Vectorize for top-K results and injects all K into the system prompt regardless of similarity scores. A weak semantic match at 0.55 is injected alongside a strong match at 0.95, diluting answer quality with irrelevant context. For large knowledge bases the true answer may rank beyond the hardcoded retrieval window, making it invisible to the agent.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Set a minimum relevance threshold (default 0.72, configurable per space). After Vectorize returns topK=20 candidates, filter out scores below the threshold. Optionally pass the shortlist to a cross-encoder re-ranker for final scoring before injection. Log retrieved chunk IDs, scores, and the injected count in run telemetry to enable quality debugging.</p></div>
+</div>
+
+<div id="G-X11" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X11</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Knowledge — ContextManager — system prompt / context assembly</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Knowledge Block Has No Token Budget — Context Overflow Crashes Turn With Unspecified Error</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The ContextManager inserts retrieved knowledge chunks into the system prompt with no declared token budget. If five chunks total 12,000 tokens and the model's context window is 32,000 tokens, the combined system prompt plus conversation history overflows and the model API returns a context-length error that surfaces as an opaque run failure with no user-visible explanation about what happened.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define max_knowledge_tokens (default 4,000, configurable in space settings) for the knowledge block. ContextManager sorts chunks by relevance DESC, appends chunks until the budget is exhausted, then stops. Log { chunks_available, chunks_injected, tokens_used } per turn and surface a user-visible notice when knowledge was truncated due to context limits.</p></div>
+</div>
+
+<div id="G-X12" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X12</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#EF4444;background:#EF444418;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">CRITICAL</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Knowledge — GDPR / Vectorize — right-to-erasure / deleteByIds</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Deleted Knowledge Documents Leave Vectors in Vectorize — GDPR Article 17 Violation</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The knowledge deletion endpoint removes rows from SpaceDO SQLite and the R2 object but never calls vectorize.deleteByIds(). Deleted documents' chunk vectors remain indexed and searchable indefinitely. Semantic queries against the space may return content from legally erased records, violating GDPR Article 17 right to erasure and exposing the platform to regulatory liability.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">On knowledge document deletion, retrieve all vector IDs from the knowledge_chunks.vector_ids column and call await env.VECTORIZE.deleteByIds(vectorIds) before returning 200. Confirm deletion in the response. Add a nightly reconciliation job that cross-checks Vectorize metadata against SpaceDO knowledge_chunks and deletes any orphaned vectors with no matching document record.</p></div>
+</div>
+
+<div id="G-X13" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X13</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Knowledge — Vectorize — topK / retrieval configuration</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">topK Hardcoded at 5 — Builders Cannot Tune Retrieval Depth for Larger Knowledge Bases</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The knowledge search endpoint reads topK from the query string but falls back to 5 with no upper-bound cap or builder-level configuration. Vectorize supports up to 100 results. Builders debugging why their agent misses known information have no way to increase retrieval depth without modifying platform code, and the default of 5 frequently misses relevant chunks in knowledge bases larger than 500 documents.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add knowledge.retrieval_top_k (range 5–50, default 10) to space configuration in SpaceDO. Expose it in the builder dashboard. The knowledge search endpoint reads this config and clamps topK: Math.min(requested, space.retrieval_top_k). Document the trade-off in the builder docs: higher topK increases retrieved tokens and context cost per turn.</p></div>
+</div>
+
+<div id="G-X14" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X14</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§WebSocket — AgentDO streaming — token broadcast / message envelope</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Token Stream Has No Sequence Numbers — Clients Cannot Detect Dropped or Duplicate Messages</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Token streaming broadcasts { type: "token", delta, runId } with no sequence counter. If a client loses connectivity for 200 ms and reconnects, it receives a replay from the token_buffer but has no way to determine whether replayed messages overlap with ones already received. Duplicate tokens silently render twice in the UI; dropped tokens create invisible gaps in the streamed response with no way for the client to detect them.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Maintain a per-run seqId counter (auto-incrementing integer) in AgentDO state. Include seqId in every outbound message: { type: "token", delta, runId, seqId }. On reconnect the client sends its lastSeqId; the server replays only messages with seqId &gt; lastSeqId. The client detects gaps when incoming seqId !== lastSeqId + 1 and requests explicit re-sync from the server.</p></div>
+</div>
+
+<div id="G-X15" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X15</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§WebSocket — AgentDO broadcast — ws.send / backpressure</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Broadcast Blocks on Slow Socket — One Lagging Client Stalls Token Delivery for All Others</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The token broadcast loop calls ws.send() synchronously for each connected WebSocket via getWebSockets(). If one client is on a throttled connection, its TCP send buffer fills and ws.send() blocks the Durable Object thread. While the LLM continues generating tokens, other clients stop receiving updates until the slow client drains or disconnects, potentially timing out the entire agent run.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Wrap each ws.send() in a non-blocking check: if the socket's bufferedAmount exceeds 65,536 bytes, skip that socket for the current batch and log a slow-client event. After three consecutive skips, close the socket with code 4002 and notify it to reconnect. Store unsent messages in a per-socket ring buffer (max 200 messages) so they are available on immediate reconnect.</p></div>
+</div>
+
+<div id="G-X16" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X16</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§WebSocket — DO eviction recovery — reconnect / subrequest limits</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Reconnect Storm After DO Eviction — Simultaneous Reconnects Exhaust CF Subrequest Limit</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a Durable Object is evicted from memory, all connected WebSockets receive close events simultaneously and all clients attempt reconnection within the same millisecond. A space with 200 connected clients triggers 200 simultaneous DO hydration requests, each performing SQLite reads and potentially KV reads, exceeding Cloudflare's subrequest limits and returning 429 errors for the majority of clients.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Clients must reconnect with full jitter: delay = Math.random() * 10000 ms. The server sets a retry hint in the WebSocket close reason: { code: 4003, retryAfterMs: Math.floor(Math.random() * 10000) }. Cap concurrent DO instantiations per space to 5 using a KV-based semaphore so the hydration load is throttled even if all clients ignore the retry hint.</p></div>
+</div>
+
+<div id="G-X17" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X17</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§WebSocket — Auth / DO hibernation — JWT / session token refresh</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">JWT Expires During Hibernated Long-Lived WebSocket — No Re-Auth Path for Service Bindings</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The WebSocket upgrade validates a JWT from the query string but the token is not stored in DO state. If the DO hibernates and wakes hours later (while CF Hibernation holds the WebSocket open), outgoing calls to other Workers via Service Bindings require a valid access token; the DO has no valid token to present. Authenticated context is stale; downstream Workers reject the calls silently.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Store the decoded JWT payload and its exp in SpaceDO SQLite on WebSocket accept. Define a { type: "auth_refresh", jwt: newToken } client-to-server message type that clients send proactively 30 s before token expiry. The DO validates the new token, updates stored claims in SQLite, and uses the refreshed token for all subsequent Service Binding calls.</p></div>
+</div>
+
+<div id="G-X18" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X18</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§WebSocket — Network reliability — ping/pong / keepalive</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Ping/Pong Keepalive — Network Proxies Drop Idle WebSocket Connections After 60 s</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The spec does not implement WebSocket ping frames. HTTP proxies, CDNs, and mobile network gateways commonly close idle TCP connections after 60–90 seconds of inactivity. During a long agent tool execution where no tokens are streamed for 2+ minutes, intermediary proxies silently close the socket. The client is unaware until it next tries to send and discovers the connection is dead, having missed the entire tool result.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Send a WebSocket ping frame every 20 seconds from the DO: ctx.getWebSockets().forEach(ws =&gt; ws.ping()). Track last-pong timestamp per socket in DO memory. If a socket has not ponged within 30 seconds of the last ping, close it with code 4004 (keepalive timeout), log to Analytics Engine, and let clients auto-reconnect.</p></div>
+</div>
+
+<div id="G-X19" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X19</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§WebSocket — Message framing — onMessage / frame type guard</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Binary WebSocket Frame Silently Coerced to String — Causes Spurious Client Disconnects</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The onMessage handler casts the incoming frame as string: const data = message as string; JSON.parse(data). If a client sends a binary frame (opcode 0x82), ArrayBuffer coercion produces "[object ArrayBuffer]", which throws a JSON parse error. The catch block sends a JSON error response, but some clients interpret a server-sent message during a binary send as a framing error and close the connection, causing spurious disconnects.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add an explicit type guard before parsing: if (message instanceof ArrayBuffer || message instanceof Uint8Array) { ws.send(JSON.stringify({ type: "error", code: "BINARY_NOT_SUPPORTED" })); return; }. Place this check before the try/catch to prevent ArrayBuffer coercion. Document in the client SDK that only UTF-8 text frames are accepted.</p></div>
+</div>
+
+<div id="G-X20" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X20</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#10B981;background:#10B98118;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">LOW</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§WebSocket — Protocol versioning — Sec-WebSocket-Protocol header</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No WebSocket Subprotocol Negotiation — Clients Cannot Detect Incompatible Message Types</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The WebSocket upgrade does not negotiate a subprotocol via the Sec-WebSocket-Protocol header. When new message types are added to the wire protocol, existing clients receive unknown types they cannot handle gracefully. There is no versioned handshake; both new and old clients connect on the same endpoint with no compatibility signal, making it impossible to introduce breaking protocol changes safely.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define named subprotocols: naelao.agent.v1 (current), naelao.agent.v2 (next). Clients include supported versions in the Upgrade request. The server selects the highest mutually supported version and responds with it in the Sec-WebSocket-Protocol header. The server sends only message types defined in the negotiated version. Increment version on any new message type.</p></div>
+</div>
+
+<div id="G-X21" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X21</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Observability — Distributed Tracing — Service Bindings / X-Trace-Id</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Trace ID Propagated Across 22 Workers — Cross-Service Errors Cannot Be Correlated</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">A single user request routes through multiple Workers (naelao-api → naelao-agents → naelao-ai → naelao-knowledge). No trace ID is generated at the edge and propagated via headers (X-Trace-Id or W3C traceparent). When an error occurs in a downstream Worker there is no way to link it to the originating request; debugging requires guessing by timestamp across Worker logs in different Cloudflare accounts.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Generate a UUID trace ID at the CF edge entry point and propagate it in every Service Binding call via X-Naelao-Trace-Id. Each Worker logs { trace_id, span_id, service, duration_ms, status } to Analytics Engine. Provide an admin trace viewer: SELECT * FROM events WHERE trace_id = ? ORDER BY timestamp to reconstruct the full execution path of any request.</p></div>
+</div>
+
+<div id="G-X22" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X22</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Observability — Logging — console.log / log schema</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">No Standard Structured Log Schema — Worker Logs Are Ad-Hoc Text Prefixes Unqueryable at Scale</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Worker logging uses ad-hoc console.log calls with text prefixes: [NAELAO], [SWEEPER], [model-fallback]. These are queryable only via substring matching in Cloudflare Workers Logs. There is no consistent JSON structure with fields like service, level, trace_id, and timestamp, making cross-Worker log aggregation and automated alerting practically impossible without expensive text parsing pipelines.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define a log utility: log({ level, service, trace_id, event, ...context }) emitting structured JSON to stdout. All Workers import this utility instead of calling console.log directly. Require fields: level (debug|info|warn|error), service, trace_id. Provide a dashboard template for log exploration via Cloudflare Workers Analytics or an external SIEM.</p></div>
+</div>
+
+<div id="G-X23" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X23</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Observability — Dead-Letter Queue — sweeper / DLQ retry trace</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">DLQ Retry Requeue Loses Original Failure Context — No Parent-Message Correlation</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The sweeper fetches failed messages from the dead-letter queue and requeues them via CF Queues REST API. The requeued message receives a new message ID with no reference to its original ID, failure reason, or attempt count. When the retry also fails, the second DLQ entry has no parent-message link. Operations cannot distinguish retries from new failures, making root-cause analysis for recurring failures impossible.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Enrich messages with retry metadata before requeue: { original_message_id, attempt_count, first_failure_at, last_failure_reason, dlq_ingress_at }. Log each requeue to Analytics Engine. Expose GET /admin/dlq/history?original_message_id=X returning the full retry chain. Alert when attempt_count &gt;= 3 for the same original message.</p></div>
+</div>
+
+<div id="G-X24" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X24</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Observability — Cron Monitoring — sweeper / cron_jobs table</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Cron Job Skip Accumulation Has No SLO Threshold or Alert — Silent Starvation of Background Jobs</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When a cron job's previous run is still active, the sweeper logs a skip and returns. No counter tracks consecutive skips. A cron job that consistently exceeds its interval (e.g., a billing reconciliation that runs 70 minutes on a 60-minute schedule) is skipped indefinitely with no alert, silently accumulating billing drift, missed cleanups, or stale state with no operational visibility.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add consecutive_skips INT and last_successful_run_at TIMESTAMP columns to the cron_jobs SQLite table. Increment on each skip; reset to 0 on successful completion. Write an Analytics Engine alert event when consecutive_skips &gt;= 3. Expose GET /admin/crons returning { jobId, lastRun, consecutiveSkips, status } for each registered job.</p></div>
+</div>
+
+<div id="G-X25" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X25</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Observability — Skill Integrity — SkillRegistryDO / SHA256 verification</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Skill SKILL.md Hash Verified Only at Load Time — Post-Load Tampering in R2 Goes Undetected</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The skills loader computes a SHA256 hash of SKILL.md at startup and caches it. If the R2 object is subsequently overwritten via a compromised API token or insider threat, the cached skill continues executing with its original definition and the tampered version is never detected until the DO restarts or the cache expires. A tampered skill could silently exfiltrate conversation data or issue unauthorized tool calls.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Re-verify the SKILL.md SHA256 hash on each execution, not only at load. If the hash does not match the value stored in SkillRegistryDO, immediately suspend the skill, log { type: "skill_tamper_detected", skill_id, expected_hash, actual_hash } to an immutable append-only audit table, and alert the space admin. Limit hash verification cache to 5 minutes maximum.</p></div>
+</div>
+
+<div id="G-X26" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X26</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Observability — Analytics Engine Schema — blob field positions / versioning</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Analytics Engine Blob Positions Not Versioned — Inserting a Field Silently Corrupts All Queries</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Analytics Engine events use positional arrays: blobs[0] = eventType, blobs[1] = userId, blobs[2] = agentId, etc. If a new field is inserted in the middle, all downstream queries and dashboards relying on positional indexes silently read the wrong data. There is no schema registry, migration plan, or query compatibility layer for evolving Analytics Engine event schemas across the 22 Workers.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Treat Analytics Engine blob arrays as strictly append-only: never insert a field in the middle, only append at the end. Maintain an analytics-schema.ts manifest committed to the repo documenting the exact field positions. Include schema_version (blobs[19]) in every event. On any breaking change bump the version and provide a query adapter that re-maps old field positions.</p></div>
+</div>
+
+<div id="G-X27" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X27</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Skills — Marketplace Security — npm integrity / SkillRegistryDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Community Skills Reference npm Packages Without Version Pin — Supply Chain Attack Vector</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Community skills reference npm packages without pinning to an exact version or cryptographic hash. A compromised npm account can publish a malicious patch version (e.g., 1.2.4 over 1.2.3) that is automatically pulled on next cache miss by any space using that skill. The SkillRegistryDO's SHA256 covers only the cached SKILL.md, not the npm package artifact itself, so the attack is undetected.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Require exact version strings (1.2.3, not ^1.2 or latest) in community skill manifests. Store the npm package's integrity hash from package-lock.json in SkillRegistryDO at install time. Verify the hash on each fetch. Introduce a community skill review queue: flag new versions as pending-review until a platform reviewer approves before the new version goes live to spaces.</p></div>
+</div>
+
+<div id="G-X28" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X28</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Skills — MCP Integration — naelao-mcp-hub / CF Worker CPU limit</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">MCP Tool Calls via naelao-mcp-hub Hit 30 s Worker CPU Limit — Long Tools Return Truncated Results</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">naelao-mcp-hub proxies MCP tool calls over HTTP. CF Workers have a 30-second wall-clock CPU limit. Long-running MCP tools (web scrapers, LLM-backed tools, file converters) that take 45+ seconds cause the hub Worker to time out, returning a partial or empty response. The agent receives a truncated tool result and may hallucinate, retry in a loop, or report a false completion.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Introduce an async MCP tool pattern: if the tool declares estimated_duration &gt; 10 s in its schema, the hub returns { callId, status: "pending" } immediately and streams results to an R2 staging path. The agent polls GET /mcp/calls/{callId}/result with exponential backoff (1 s, 2 s, 4 s, max 30 s). Tools must declare estimated_duration or default to the async path for safety.</p></div>
+</div>
+
+<div id="G-X29" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X29</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Skills — Loading — Promise.all / tier merge order</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Skill Loader Tier Merge Uses Promise.all — Non-Deterministic Resolution Breaks Precedence</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">The skill loader fetches platform, space, and agent skills in parallel via Promise.all and merges them. When multiple tiers define a skill with the same name, the merge result depends on Promise resolution order, which varies based on R2 list latency. The intended precedence (agent &gt; space &gt; platform) is maintained only if promises resolve in the correct order, which is not guaranteed under load.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Await all tier fetches in parallel for speed but merge deterministically by iterating tiers in explicit precedence order: const merged = { ...platform, ...space, ...agent }. Write a unit test that shuffles resolution order and asserts the merged result is identical regardless of timing. Log the precedence decision for each overridden skill name to the run's audit trace.</p></div>
+</div>
+
+<div id="G-X30" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X30</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Skills — Runtime Contract — SKILL.md / execution reliability</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Skills Are Markdown Documents With No Formal Execution Contract — Reliability Depends on LLM Interpretation</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Platform and community skills are SKILL.md markdown files describing what the skill does and what tools to call. There is no executable schema: no typed input/output contract, no parameter validation, no deterministic dispatch. The LLM reads the markdown and generates tool calls that may or may not match the skill's intent, depending on prompt formatting, context length, and model temperature. Skill reliability cannot be unit-tested without a live LLM call.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Define skills as typed Worker endpoints with a manifest: { name, version, tools: [{ name, inputSchema: ZodSchema, handler: (input) =&gt; Promise&lt;output&gt; }] }. Register dispatch namespace entries that execute deterministically. Keep SKILL.md as human-readable documentation only; the authoritative contract is the TypeScript handler. This enables unit testing of skill behavior without any LLM call.</p></div>
+</div>
+
+<div id="G-X31" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X31</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Skills — Audit Trail — skill override logging / SkillRegistryDO</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Agent-Tier Skill Overrides Have No Audit Trail — Malicious Shadowing Is Invisible to Admins</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Agent-tier skills silently shadow same-named space-tier skills with no log entry at load time. A compromised agent definition or an accidental builder override can replace a security-critical space skill with a modified version. Space admins have no way to discover which agents have overridden which skills, when those overrides were introduced, or whether the shadowed skill was security-relevant.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Log every skill override at load time: { type: "skill_override", agent_id, skill_name, overriding_tier: "agent", shadowed_tier: "space", timestamp } to Analytics Engine. Expose GET /admin/spaces/{spaceId}/skill-overrides returning active overrides with agent ID and effective-since date. Alert admins when a security-tagged skill is overridden by any agent.</p></div>
+</div>
+
+<div id="G-X32" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X32</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Skills — MCP Tool Caching — naelao-mcp-hub / KV schema TTL</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">MCP Tool Schemas Cached 1 Hour in KV — App Updates Invisible to Running Agents</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">naelao-mcp-hub caches MCP tool schemas (name, description, inputSchema) in KV with a 1-hour TTL. When an MCP app developer updates a tool's parameter schema (e.g., renames a required field), running agents use the stale schema for up to one hour, generating tool calls that the app rejects with a validation error. There is no cache invalidation mechanism or developer-facing flush endpoint.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Add schema_version to MCP app manifests. On app update, increment schema_version to trigger automatic KV cache invalidation (key includes version hash). Expose POST /admin/apps/{appId}/invalidate-schemas for manual clearing. Return schema_version and cached_at in tool list responses so agents and builders can verify schema freshness.</p></div>
+</div>
+
+<div id="G-X33" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X33</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Skills — Marketplace — community skill fetch() / domain allowlist</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Community Skill External Fetch URLs Unchecked at Runtime — Skills Can Exfiltrate Conversation Data</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Platform validation checks for external URLs in skill metadata at submission time but does not prevent the LLM from following skill instructions to call arbitrary URLs at runtime. A malicious skill can direct the LLM to POST { user_message, conversation_history } to an attacker-controlled endpoint. The skill sandbox has no network egress restriction to enforce the declared allowed_domains list at execution time.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Maintain a per-skill allowed_domains allowlist in the skill manifest. Wrap all fetch() calls inside skill execution with a domain-check interceptor that rejects requests to undeclared domains. At submission require explicit declaration of all external domains. Platform reviewers approve the allowlist for community skills. Write tests that assert fetch() to an undeclared domain throws before the request is sent.</p></div>
+</div>
+
+<div id="G-X34" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X34</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Multi-tenancy — DO Identity — idFromName / spaceId format</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">DO Name Contains Raw spaceId — Colon in spaceId Enables Cross-Space Namespace Collision</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Durable Objects are named with patterns like ${spaceId}:${agentId}:${threadId}. If spaceId is generated from user-provided input without strict UUID enforcement, an attacker can supply a spaceId containing a colon (e.g., victim-space-id:agent-x) to collide with another space's DO namespace, potentially routing requests to the wrong DO and exposing its SQLite state to an unauthorized caller.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Validate and enforce that spaceId is a v4 UUID at all API entry points using a strict regex. Never embed raw spaceId in DO name strings without sanitization; strip all colon characters as a defense-in-depth measure. Add an integration test asserting that two crafted space IDs designed to collide produce distinct DO identifiers when used as name components.</p></div>
+</div>
+
+<div id="G-X35" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X35</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Multi-tenancy — Auth / RBAC — JWT / role revocation</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Admin Role Cached in Session JWT — Downgraded Admin Retains Privileges for Full Token Lifetime</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Space admin privileges are embedded in the JWT at authentication time. When a space admin is removed or downgraded to viewer, the change is written to SpaceDO SQLite but the existing JWT remains valid and unchecked against the updated role for its full TTL. The former admin retains the ability to call admin-gated API endpoints for up to one hour after demotion, enabling destructive actions on the space they no longer control.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">On role change, write a revocation record to KV: key = revoked-session:{userId}:{spaceId}, value = { newRole, revokedAt }, TTL = tokenMaxLifetime. Auth middleware checks this KV key on every request to admin-gated endpoints. Additionally, broadcast { type: "role.changed", newRole } via WebSocket to close the former admin's active connections and force immediate re-authentication.</p></div>
+</div>
+
+<div id="G-X36" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X36</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Multi-tenancy — KV Isolation — shared KV namespace / prefix enforcement</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">KV Namespaces Shared Across All Spaces — Prefix-Only Isolation Breakable by Application Bug</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">All spaces share NAELAO_CONFIG_KV, NAELAO_ARTIFACT_KV, and NAELAO_CIRCUIT_KV namespaces, isolated only by key prefixes (spaces:{spaceId}:...). A Worker bug constructing KV keys without the spaceId prefix can read or overwrite another space's configuration. There is no KV-level ACL or prefix enforcement; isolation is entirely dependent on every Worker correctly applying the prefix in every code path.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Create a namespaced KV helper: const kv = scopedKV(env.NAELAO_CONFIG_KV, spaceId) that auto-prefixes all keys and prevents raw namespace access. Add an ESLint rule prohibiting direct env.NAELAO_CONFIG_KV.get/put calls outside the scoped helper. For enterprise spaces, provision dedicated KV namespaces to achieve hardware-level isolation independent of application correctness.</p></div>
+</div>
+
+<div id="G-X37" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X37</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Multi-tenancy — Audit Integrity — Analytics Engine / HMAC signing</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Audit Log Has No Integrity Guarantee — Compromised Worker Can Insert False Audit Entries</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">Audit events are written to Analytics Engine, which is append-only at the infrastructure level. However, the application layer performs no signing or integrity verification of audit entries. A compromised Worker with Analytics Engine write access can insert falsified audit records. Future read-modify-write paths added for GDPR redaction could silently alter historical entries with no tamper detection.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Sign each audit event batch with HMAC-SHA256 using a dedicated audit signing key separate from NAELAO_INTERNAL_TOKEN. Store the batch signature in a reserved blob field. Provide a verification endpoint: GET /admin/audit/verify?from=&amp;to= that recomputes signatures and reports mismatches. Treat any verification failure as a security incident requiring immediate investigation.</p></div>
+</div>
+
+<div id="G-X38" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X38</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Multi-tenancy — Cross-Space Grants — grant validation / TOCTOU</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Cross-Space Grant Validated at Auth Time Not Data-Access Time — TOCTOU Window Allows Post-Revocation Access</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">When Space A grants Space B's user read access to a shared resource, the grant is validated at WebSocket authentication and its result cached for the session duration. Between authentication and the actual data fetch, the grant may expire or be explicitly revoked. The TOCTOU (time-of-check-time-of-use) window permits data access to proceed after the grant becomes invalid, violating the access control contract.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Re-validate grants at data-access time, not only at authentication time. On every cross-space read operation, call await grantDO.checkGrant(spaceA, spaceB, userId) synchronously before returning data. Cache positive results for at most 60 seconds with the grant's expires_at as the hard upper bound. Log every grant check with its outcome for audit and anomaly detection.</p></div>
+</div>
+
+<div id="G-X39" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X39</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#F97316;background:#F9731618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">HIGH</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Multi-tenancy — R2 Storage — SpaceR2 / path traversal</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">R2 Path Traversal via Crafted File Key — SpaceR2 Prefix Enforcement Bypassable by .. Sequences</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">SpaceR2 prepends spaces/{spaceId}/ to all keys. If a file key supplied by the user or agent contains path traversal sequences (../../other-space-id/secret.txt), the concatenated key resolves to a different space's prefix. R2 treats the key as a literal string and does not normalize separators or reject traversal sequences, so a crafted key can read or overwrite another space's files.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Validate file keys before prefix concatenation: reject any key containing .., //, or beginning with /. Implement assertSafeKey(key) called in every SpaceR2 method and throw a 400 error on violation. Add integration tests asserting keys with traversal sequences are rejected. Normalize the final composed R2 path and assert it begins with the expected spaces/{spaceId}/ prefix after normalization.</p></div>
+</div>
+
+<div id="G-X40" style="margin:40px 0 0;padding:28px 0 0;border-top:1px solid var(--brd);">
+  <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;">
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--or);letter-spacing:.12em;text-transform:uppercase;">G-X40</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#3B82F6;background:#3B82F618;padding:2px 8px;border-radius:4px;letter-spacing:.08em;">MEDIUM</span>
+    <span style="font-family:'DM Mono',monospace;font-size:10px;color:#64748B;letter-spacing:.06em;">§Multi-tenancy — GDPR / Analytics Engine — right-to-erasure / crypto-shredding</span>
+  </div>
+  <h3 style="font-family:'Fraunces',serif;font-size:22px;font-weight:600;color:var(--hd);letter-spacing:-.01em;margin:0 0 18px;">Analytics Engine Has No Per-Space Erasure Path — GDPR Article 17 Compliance Gap for Event Stores</h3>
+  <div class="box box-rd"><div class="box-lbl">The Gap</div><p style="white-space:pre-wrap;">GDPR Article 17 right-to-erasure requires deleting all personal data on request. Analytics Engine is ClickHouse-backed and does not support row-level deletion. The spec acknowledges this limitation for naelao-analytics but does not define a compliant alternative. Events containing PII (user IDs, message excerpts in blobs) remain in Analytics Engine indefinitely after a space deletion or user erasure request.</p></div>
+  <div class="box box-gr"><div class="box-lbl">Required Fix</div><p style="white-space:pre-wrap;">Write only pseudonymous identifiers to Analytics Engine: hash user IDs via HMAC-SHA256 with a per-space erasure key stored in SpaceDO SQLite. On erasure request, delete the erasure key — all prior AE entries become permanently unresolvable (crypto-shredding). Document this approach in the privacy policy and DPA. Test that post-erasure AE queries for the hashed ID return zero matching events.</p></div>
+</div>
+
 </section>
 
 </body>
