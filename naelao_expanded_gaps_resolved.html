@@ -61216,6 +61216,460 @@ When bumping the date, bump it everywhere in one change and re-run the full test
     <em>Required Fix:</em> Define SpaceBlueprint format: ZIP archive containing: manifest.json (Space metadata, SpaceType reference, schema version), config.json (full Space configuration), prompts/ (all prompt versions as .txt), kb/ (all KB documents as .md/.pdf), theme.json (ThemeConfig), components/ (all ComponentConfig JSON files), README.md (builder notes). Export via POST /api/spaces/{id}/export/blueprint → async job → download link. Import via POST /api/spaces/import/blueprint (validates manifest schema, checks SpaceType availability). Blueprint is portable: import into any Naelao account. GDPR: blueprint export excludes end-user data (conversations, profiles) — separate conversation export (AU30).
   </div>
 </div>
+
+<section id="appendix-ax">
+<h2>Appendix AX — Agent Orchestration, Feature Flags, Rate Limiting, KB Advanced, API Security, Multimodal, i18n, Monetization</h2>
+
+<div id="G-AX01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX01 [HIGH] — DAG-Based Multi-Step Agent Workflow Engine</strong><br>
+    <em>The Gap:</em> Complex agent tasks requiring multiple dependent steps (research → draft → review → publish) must be hard-coded as sequential LLM calls. No directed acyclic graph (DAG) workflow engine exists for builders to visually design multi-step agent pipelines with branching and parallel execution.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build WorkflowEngine in SpaceDO: builder defines DAG in JSON: nodes (step_id, type: llm|tool|condition|parallel), edges (input_from, output_to). Execution engine uses CF Workflows for durability. Parallel nodes: Promise.all() on independent branches. Condition nodes: LLM-evaluated or rule-based routing. Max DAG depth: 10 levels. Max parallel branches: 5. Visual DAG editor in UI Builder (canvas-based, drag-and-drop nodes). Export/import workflow JSON. Pre-built workflow templates: "Research + Draft + Review", "Extract + Validate + Store". Track workflow_execution_time, workflow_step_failures per workflow_id.
+  </div>
+</div>
+<div id="G-AX02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX02 [HIGH] — Agent Subagent Spawning with Result Aggregation</strong><br>
+    <em>The Gap:</em> A primary agent cannot spawn specialized subagents and aggregate their results. For tasks requiring parallel research across multiple domains (e.g., competitive analysis: spawn one agent per competitor), the architecture has no built-in fan-out/fan-in pattern.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SubagentDO: primary agent invokes spawn_subagent(task, subagent_config) tool. SubagentDO processes task independently (own LLM calls, own KB queries). Result returned to primary agent via DO RPC. Fan-out: spawn up to 5 subagents in parallel. Fan-in: primary agent receives array of results, aggregates into final response. Subagent isolation: cannot access primary session context (prevents context pollution). Resource accounting: subagent token usage debited from same Space budget. Track subagent_spawn_count, subagent_completion_time, subagent_failure_rate. Max recursion: subagents cannot spawn further subagents (depth limit = 1).
+  </div>
+</div>
+<div id="G-AX03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX03 [HIGH] — Agent Feedback Loop with Self-Correction</strong><br>
+    <em>The Gap:</em> Agents produce an initial response and stop. No feedback loop exists where the agent evaluates its own output, identifies shortcomings, and self-corrects before responding to the end-user. A single pass produces lower-quality results than an iterative refinement loop.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SelfCorrectionLoop: after initial agent response, run critique step: "Evaluate this response for: completeness, accuracy, actionability. List specific improvements needed." If critique identifies issues, run revision step with critique as input. Max iterations: 3. Convergence: stop when critique scores response 8+/10 on all dimensions. Cost guard: only run self-correction for agent types where builder enables it (costs 3× tokens). Track correction_iterations_count and quality_improvement_score (pre vs post correction, using faithfulness scorer from AT09). A/B test: correction-enabled vs disabled on same queries.
+  </div>
+</div>
+<div id="G-AX04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX04 [HIGH] — Agent Long-Running Task Status and Polling</strong><br>
+    <em>The Gap:</em> Long-running agent tasks (document analysis, batch processing, deep research) execute synchronously. End-users must wait with the connection open for potentially minutes. No asynchronous task system with status polling or callback notification exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement AsyncAgentTask: client sends POST /api/spaces/{id}/run with prefer: respond-async header. Server: creates TaskDO with task_id, runs agent via CF Workflow (AT01 pattern). Returns 202 Accepted + { task_id, status_url }. Client polls GET /api/spaces/{id}/tasks/{task_id} → { status: queued|processing|complete|failed, result: ... }. Long-poll option: GET with timeout=30s blocks up to 30s if task not complete. Webhook callback: client provides callback_url in initial request; TaskDO calls URL on completion. Task expiry: results retained 24 hours. WebSocket push: if client has active session, push task_complete event directly.
+  </div>
+</div>
+<div id="G-AX05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX05 [HIGH] — Agent Memory Context Window Management Strategy</strong><br>
+    <em>The Gap:</em> As multi-turn conversations grow, injecting all message history into the context window eventually hits the model's context limit. No strategy exists for selective memory compression or history summarization that preserves the most relevant conversation history without losing critical details.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ContextWindowManager: track running token count of conversation history. When history exceeds 60% of model's context window: (1) Compress oldest N messages via LLM summary: "Summarize this conversation segment in 100 words preserving key facts, decisions, and open items." (2) Replace original messages with compressed summary. (3) Keep last 5 messages verbatim (recency bias). (4) Bookmark critical messages (user explicitly marks as important) — always include verbatim. Compression quality validation: after compression, check that pinned facts from summary are still accurate. Track compression_ratio and summary_quality_score per compression event.
+  </div>
+</div>
+<div id="G-AX06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX06 [MEDIUM] — Agent Conversation Branching and Rollback</strong><br>
+    <em>The Gap:</em> Once an agent conversation takes a wrong path (e.g., misunderstood the user's intent and went down wrong solution branch), there is no way to branch from an earlier point. End-users must start a new conversation and re-provide all context.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ConversationBranching: each message in conversation_history has message_id and parent_message_id (tree structure). End-user can click "Branch from here" on any previous message to start a new branch from that point. BranchDO creates new conversation rooted at the selected message_id, inheriting full context up to that point. End-user can switch between branches (like git branches). Branch list shown in conversation sidebar. Max 5 active branches per session. Builder can disable branching feature per Space. Track branch_created_count and branch_vs_linear_satisfaction (compare CSAT scores).
+  </div>
+</div>
+<div id="G-AX07" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX07 [HIGH] — Agent Interrupt and Pause Mid-Execution</strong><br>
+    <em>The Gap:</em> Once an agent starts executing a multi-step workflow, there is no mechanism for the end-user to interrupt it mid-execution (e.g., "stop, I changed my mind") or for the agent to pause at a decision point and request clarification before proceeding with an irreversible action.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement agent interrupt via WebSocket: client sends { type: "interrupt", session_id } message. SpaceDO sets interrupt_requested flag on active workflow. Workflow checks flag between steps; on interrupt: gracefully complete current step, then return partial results with status: interrupted. Pause-for-approval: agent can emit { type: "requires_approval", action_description: "Send email to {user}?", action_id } event. Client must respond { type: "approve" | "reject", action_id } before agent proceeds. Timeout on pending approval: 30 seconds → auto-reject. Builder configures which tool calls require approval.
+  </div>
+</div>
+<div id="G-AX08" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX08 [HIGH] — Platform Feature Flag System for Gradual Rollouts</strong><br>
+    <em>The Gap:</em> Naelao has no feature flag system. New features ship to all builders simultaneously on deploy, making it impossible to do: percentage rollouts, A/B tests of new features, per-account feature gating, or instant kill-switch if a new feature causes issues.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement FeatureFlagDO: flags stored as { flag_id, enabled_pct, targeting_rules: [{attribute, operator, value}], state: on|off|rollout }. Targeting rules: per-account (account_id in list), plan-based (plan_tier = enterprise), percentage (HMAC(account_id + flag_id) % 100 &lt; enabled_pct). Flag evaluation: O(1) per request, cached in Worker memory for 30s. Flag management UI in admin dashboard. Instant kill-switch: set flag to 0% without deploy. New features wrapped in if (flags.isEnabled("new_feature", accountId)). Track feature_flag_evaluation per flag per account. Emergency disable: CLI command to disable any flag globally within 10s.
+  </div>
+</div>
+<div id="G-AX09" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX09 [HIGH] — Per-Space Feature Flag Gating</strong><br>
+    <em>The Gap:</em> Builders cannot control which features are available within their Space via feature flags. A builder testing a beta feature (new component type, experimental agent mode) must enable it for all end-users of their Space simultaneously with no gradual rollout or A/B testing capability.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Extend FeatureFlagDO to Space-level: builder creates Space-level flags in dashboard: { flag_name, rollout_pct, targeting: by_user_segment }. Space flags evaluated per session based on session user attributes (user.plan, user.created_at, random sampling). Inject active flags into session context: agent and UI can conditionally show features based on flag state. Builder flag dashboard: shows flag state, % of sessions seeing feature, conversion metrics. Pre-built flag types: percentage rollout (10% users get new UI), user segment (only premium users see feature), date-gated (feature visible after 2026-07-01).
+  </div>
+</div>
+<div id="G-AX10" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX10 [HIGH] — A/B Testing Framework for Space Features</strong><br>
+    <em>The Gap:</em> Builders want to A/B test different agent behaviors, prompt variations, or UI layouts to find what drives best end-user outcomes. No A/B testing framework exists integrated with the Space platform — the AT40 pricing A/B was platform-level only.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build SpaceExperimentDO: builder creates experiment { experiment_id, variants: [{variant_id, config_delta, traffic_split}], metric: conversion_rate|session_length|csat_score, min_sample_size }. Traffic split: session assigned to variant via hash(user_id + experiment_id). Config delta applied on top of base Space config (e.g., variant B uses different system_prompt). Metric collection: track metric events per variant. Statistical significance: two-proportion z-test, auto-declare winner at p &lt; 0.05 with min_sample_size reached. Dashboard: show experiment progress, confidence intervals. Auto-promote winning variant to 100% traffic. Only one experiment per Space at a time.
+  </div>
+</div>
+<div id="G-AX11" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX11 [CRITICAL] — Kill Switch for Emergency Feature Disablement</strong><br>
+    <em>The Gap:</em> If a newly deployed feature causes a critical incident (data corruption, security vulnerability, platform instability), there is no fast kill switch to disable just that feature without rolling back the entire deployment. Full rollback takes 5-10 minutes; a kill switch would take seconds.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement KillSwitchDO: every new feature wrapped in feature flag (AX08). Kill switch UI in admin dashboard: one-click disable for any live feature. Kill switch propagation: updates flag state in KV with 10s TTL, pushes WebSocket event to all active Workers via CF Durable Object broadcast. Workers receive kill switch event and immediately stop serving feature within 10s (KV cache expiry). Kill switch audit log: who activated, when, reason (required field), duration. Auto-expire kill switch after 24h (requires explicit re-activation). Runbook: kill switch activation procedure documented in runbook library (AW12).
+  </div>
+</div>
+<div id="G-AX12" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX12 [HIGH] — Token Bucket Rate Limiting with Burst Allowance</strong><br>
+    <em>The Gap:</em> Current rate limiting uses a fixed window counter (N requests per minute). Fixed window allows burst at window boundary (double the limit by sending N at end of window N and N at start of window N+1). Token bucket algorithm with burst allowance provides smoother rate limiting without boundary bursts.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Replace fixed-window rate limiting with token bucket: RateLimitDO maintains tokens balance per API key. Tokens replenish at rate = limit/60 per second. Max tokens = burst_size (e.g., 2× per-second rate for short bursts). On each request: if tokens &gt;= cost, deduct cost; else 429. Replenishment: add tokens since last_request_at × replenishment_rate. Caps at burst_size. This allows short bursts (up to burst_size requests instantly) while enforcing long-term average rate. Token bucket state persisted in DO SQLite (last_tokens, last_refill_at). Update X-RateLimit-Remaining header (AV24) to reflect current token balance.
+  </div>
+</div>
+<div id="G-AX13" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX13 [HIGH] — Per-User Rate Limits Within a Space</strong><br>
+    <em>The Gap:</em> Rate limits are enforced per API key (builder-level) but not per end-user within a Space. A single abusive end-user sending 1000 rapid-fire messages consumes the entire Space's rate limit, degrading service for all other end-users. No per-user rate limiting within a Space exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement per-user rate limiting in SpaceDO: maintain per-user token bucket in SpaceDO SQLite user_rate_limits(user_id, tokens, last_refill_at). Default limits: 10 messages/minute per user, 100 messages/hour. Configurable per Space by builder. On each session message: deduct from user's bucket; if empty, return 429 with Retry-After. Admin users (builders testing their own Space) exempt from end-user rate limits. Track per-user rate limit hits in Analytics Engine; alert builder if single user exceeds 50% of Space's daily message budget (potential abuse). Combine with IP-based rate limiting for unauthenticated Spaces.
+  </div>
+</div>
+<div id="G-AX14" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX14 [MEDIUM] — Adaptive Rate Limiting Based on System Load</strong><br>
+    <em>The Gap:</em> Rate limits are static thresholds independent of system load. During a CF incident, LLM provider slowdown, or DO throughput reduction, static rate limits allow the same traffic volume that exceeds degraded system capacity, causing cascading failures.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement AdaptiveRateLimiter: SystemLoadDO monitors platform health metrics (p99 latency, error rate, queue depth) via Analytics Engine polling every 30s. Derives load_factor: 0.0 (nominal) to 1.0 (critically degraded). Rate limits dynamically reduced: effective_limit = base_limit × (1 - 0.7 × load_factor). At load_factor 0.5: 35% rate reduction. At load_factor 1.0: 70% reduction (emergency). Load factor computed from: (latency_percentile_ratio + error_rate + queue_depth_ratio) / 3. Changes propagated to all RateLimitDOs via KV update. Builders informed of temporary limit reduction via X-RateLimit-Reason: system_load_shedding header.
+  </div>
+</div>
+<div id="G-AX15" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX15 [HIGH] — Rate Limit Bypass Tokens for Trusted Internal Services</strong><br>
+    <em>The Gap:</em> Internal Naelao services (billing processor, export worker, eval runner) must call Space APIs but should not be subject to builder-facing rate limits. Currently internal services compete with external clients for the same rate limit bucket, causing internal job failures during high traffic periods.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement rate limit bypass for internal service accounts: generate INTERNAL_SERVICE_TOKEN stored in Secrets (different from builder API keys). Rate limit middleware checks for service token: if present + valid HMAC signature, bypass rate limit entirely. Service tokens scoped to specific operations (billing_service: only /billing endpoints, export_service: only /export endpoints). Audit all internal service calls with service_identity in Analytics Engine. Rotate service tokens quarterly (AS05 automation). Track internal vs external request ratio per endpoint. Rate limit does apply to internal services for DoS protection at 100× the external limit.
+  </div>
+</div>
+<div id="G-AX16" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX16 [HIGH] — KB Version Snapshots and Full Rollback</strong><br>
+    <em>The Gap:</em> Individual KB document versions are not tracked holistically. If a bulk update corrupts the entire KB (all documents accidentally deleted, wrong content uploaded), there is no KB snapshot to roll back to. Only individual document-level operations, not KB-state snapshots, are possible.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement KBSnapshotDO: before any bulk KB operation (bulk upload, bulk delete, crawler run), take a snapshot of current KB state: list of (doc_id, content_hash, chunk_ids) stored in SpaceDO SQLite kb_snapshots table. Keep last 10 snapshots. Builder can roll back to any snapshot: (1) identify doc_ids in snapshot not in current KB → re-fetch from R2 backup and re-index, (2) identify doc_ids in current KB not in snapshot → delete from Vectorize and SpaceDO. Rollback via CF Workflow for durability. Surface snapshot history in builder dashboard: "KB State on June 20 — 150 documents" with restore button.
+  </div>
+</div>
+<div id="G-AX17" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX17 [HIGH] — Knowledge Base Access Logging for GDPR Compliance</strong><br>
+    <em>The Gap:</em> No comprehensive log exists of which KB documents were retrieved in response to which end-user queries. For GDPR compliance (Art. 22 — automated decision-making transparency) and for debugging wrong answers, builders need a trace of the knowledge used in each response.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Log KB retrievals in SpaceDO SQLite kb_access_log(session_id, message_id, query_text_hash, retrieved_doc_ids, similarity_scores, context_used_yn). Store last 1000 entries per Space. Builder dashboard: "What knowledge was used?" panel for any conversation — shows source documents with relevance scores. GDPR: on end-user Art.15 data access request (AO30), include KB retrieval log showing what automated knowledge retrieval influenced their conversation. Retention: kb_access_log purged per analytics retention policy (AU29). Export included in conversation bulk export (AU30). Track kb_access_log_row_count per Space to manage SQLite space.
+  </div>
+</div>
+<div id="G-AX18" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX18 [MEDIUM] — Proactive Knowledge Surfacing During Chat</strong><br>
+    <em>The Gap:</em> Agents reactively answer questions based on what end-users ask. No mechanism exists for agents to proactively surface relevant KB articles or resources during a conversation when they detect the end-user is struggling or when there is directly applicable knowledge the user hasn't asked about.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ProactiveKnowledgeSurface: after every end-user message, SpaceDO runs a background retrieval query (async, does not block response). If retrieved_chunk similarity &gt; 0.85 AND chunk not already used in conversation AND relates to predicted next user need: inject proactive suggestion: "You might also find this relevant: [Article Title] — [preview]. View full article?" Builder configures: proactive suggestions on/off, max per session (default 3), similarity threshold. Track proactive_suggestion_shown, proactive_suggestion_clicked, proactive_suggestion_engagement_rate per Space. A/B test: sessions with proactive surfacing vs without, measuring resolution rate and session length.
+  </div>
+</div>
+<div id="G-AX19" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX19 [MEDIUM] — KB Document Relationship Graph for Navigation</strong><br>
+    <em>The Gap:</em> KB documents are stored as independent chunks with no explicit relationship structure. End-users asking a question related to Doc A cannot be easily guided to related Doc B (prerequisite, follow-up, alternative). No cross-document navigation layer exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build DocRelationshipEngine: on KB upload, LLM extracts relationships between documents: (parent_doc, EXPLAINS, child_doc), (doc_a, REQUIRES, doc_b), (doc_a, RELATED_TO, doc_b), (doc_a, SUPERSEDES, doc_b). Store in SpaceDO SQLite doc_relationships table. On retrieval: when Doc A is cited in a response, also surface related documents: "See also: [Doc B] (prerequisite), [Doc C] (related)." Builder can manually add/edit relationships in KB manager. Surface relationship graph visualization in builder KB dashboard. Track related_doc_clicked vs primary_doc_clicked to measure navigation value.
+  </div>
+</div>
+<div id="G-AX20" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX20 [MEDIUM] — Federated KB Search Across Multiple Spaces</strong><br>
+    <em>The Gap:</em> A builder with 10 Spaces (one per product line) cannot perform a unified knowledge search across all their Spaces' KBs simultaneously. End-users experience fragmented knowledge silos — a support agent in Space A cannot access knowledge from Space B even when relevant.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement FederatedKBSearch: builder creates KB federation by selecting multiple Spaces to include. FederationDO performs parallel Vectorize queries across all federated Spaces' indexes, collects top-K per Space, merges via Reciprocal Rank Fusion (AV33 pattern). Requires cross-Space data sharing grant (AT29) for non-owned Spaces. Result attribution: each chunk labeled with source Space. Agent system prompt clarifies which Space's knowledge is being used. Cache federated search results by query hash (5-minute TTL). Enforce data residency (AW48): all federated Spaces must be in same jurisdiction for EU compliance.
+  </div>
+</div>
+<div id="G-AX21" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX21 [HIGH] — KB Analytics: Most-Retrieved Documents and Knowledge Gaps</strong><br>
+    <em>The Gap:</em> Builders have no analytics on which KB documents are retrieved most frequently, which queries return zero relevant results (knowledge gaps), or which documents are retrieved but not cited in final responses (potentially irrelevant documents consuming tokens).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build KBAnalyticsDO: track per-doc retrieval counts, citation counts (doc retrieved AND included in final response), zero-result query count. Weekly CF Workflow aggregates into SpaceDO SQLite kb_analytics table. Builder dashboard KB Analytics panel shows: Top 10 most retrieved docs (confirms valuable content), Top 10 never-retrieved docs (dead content to remove or improve), Top 10 queries with zero relevant results (knowledge gaps to fill), citation_rate per doc (retrieved but not cited = low relevance). Alert builder: "20 queries this week returned zero results — consider adding documentation for: {common topics}." Extracted from retrieved_query patterns via LLM clustering.
+  </div>
+</div>
+<div id="G-AX22" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX22 [HIGH] — OAuth 2.0 Scopes for Builder API Keys</strong><br>
+    <em>The Gap:</em> Builder API keys grant full access to all Naelao APIs. There is no scope system allowing a builder to issue a read-only key (for analytics dashboard), a Space-specific key (for a specific Space only), or a webhook-only key. Principle of least privilege cannot be applied to API keys.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement API key scopes: builder creates key with selected scopes from: spaces:read, spaces:write, spaces:run, kb:read, kb:write, analytics:read, billing:read, webhooks:manage. Each API key stored with scopes JSON in AccountDO SQLite api_keys table. Entry Worker validates: requested operation in allowed scopes; else 403 Forbidden with X-Required-Scope header. Scope definitions documented in OpenAPI spec. Builder can create multiple keys with different scopes: one for CI/CD (spaces:write), one for monitoring (analytics:read), one for agent run integration (spaces:run). Key scope shown in API key management UI.
+  </div>
+</div>
+<div id="G-AX23" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX23 [HIGH] — API Key Abuse Detection and Automatic Suspension</strong><br>
+    <em>The Gap:</em> Compromised builder API keys can be used indefinitely until manually revoked. No automated anomaly detection exists for unusual API key usage patterns (sudden spike in requests, requests from new geographies, unusual endpoint access patterns) that would indicate key compromise.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ApiKeyAnomalyDetector: for each API key, maintain usage baseline (rolling 7-day average: requests/hour, unique IPs, endpoint distribution). On each request, check against baseline: if requests/hour &gt; 3× baseline OR new country/continent detected OR sudden endpoint distribution shift, flag as SUSPICIOUS. SUSPICIOUS state: send email to builder "Unusual activity detected on your API key" + require MFA re-confirmation to continue. CRITICAL anomaly (requests/hour &gt; 10× baseline): auto-suspend key immediately, email builder + require account owner confirmation to reinstate. Track key_anomaly_detected, key_auto_suspended events in immutable audit log.
+  </div>
+</div>
+<div id="G-AX24" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX24 [HIGH] — Google / GitHub / Apple SSO for Builder Platform</strong><br>
+    <em>The Gap:</em> Builder platform authentication supports only email+password and TOTP. Social login (Google, GitHub, Apple) is not supported. Most builders have Google or GitHub accounts and expect one-click signup/login without creating a new password, reducing onboarding friction.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement OAuth 2.0 social login: integrate Google Identity Platform, GitHub OAuth App, and Apple Sign In. On first social login: check if email matches existing account (link accounts), else create new account with social identity. Store social_connections(provider, provider_user_id, email, linked_at) in AccountDO. Multiple providers can be linked to one account. Security: social login still requires MFA if builder has MFA enabled (prompt post-OAuth). Delink provider option in account settings. Track signup_source (email vs google vs github vs apple) in Analytics Engine for acquisition attribution. Builder can require specific provider (enterprise: require Google Workspace SSO).
+  </div>
+</div>
+<div id="G-AX25" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX25 [HIGH] — Builder Account Lockout and Brute Force Protection</strong><br>
+    <em>The Gap:</em> Builder login has no protection against brute force password attacks. An attacker can attempt unlimited password guesses without account lockout or progressive delays. Account enumeration is possible via different error messages for "email not found" vs "wrong password."
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement LoginProtectionDO: track failed_attempts per email per 15-minute window in KV. Progressive lockout: after 5 failures → 15-minute lockout; after 10 failures → 1-hour lockout; after 20 failures → account locked (email unlock required). All lockout events logged. Uniform error messages: "Invalid email or password" (never distinguish). CAPTCHA on 3rd failed attempt (hCaptcha — CF-native). IP-based rate limit: max 50 login attempts per IP per hour. Notify builder via email on account lockout: "Your account was temporarily locked due to multiple failed login attempts." Track failed_login_attempts, account_lockout events in security audit log.
+  </div>
+</div>
+<div id="G-AX26" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX26 [HIGH] — End-User Authentication with Magic Link</strong><br>
+    <em>The Gap:</em> End-user authentication for Spaces currently supports password and social login. Magic link authentication (passwordless login via email link) is a common pattern for consumer-facing apps that reduces friction but is not available as a built-in Space authentication option.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add magic_link to Space authentication options: builder enables in Space auth settings. On end-user login: POST /api/spaces/{id}/auth/magic-link with email → SpaceDO generates one-time token (32-byte random, 15-minute expiry), stores in SpaceDO SQLite magic_links table, sends email via AW30/AW32 template. End-user clicks link: GET /api/spaces/{id}/auth/magic-link?token={token} → validate token (check expiry, single-use), create session, redirect to Space. Token is one-time: invalidated immediately after use. Rate limit: max 3 magic link requests per email per hour (prevent email flooding). Track magic_link_sent, magic_link_used, magic_link_expired events.
+  </div>
+</div>
+<div id="G-AX27" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX27 [HIGH] — API Request Replay Attack Prevention</strong><br>
+    <em>The Gap:</em> Naelao API requests lack a replay prevention mechanism. An attacker who captures a valid signed request (e.g., via MITM) can re-send it indefinitely. Without timestamp validation or nonce-based replay prevention, captured requests are replayable.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement request replay prevention for API key authentication: require X-Naelao-Timestamp (unix epoch) header on all authenticated requests. Reject requests where |current_time - request_timestamp| &gt; 300s (5-minute tolerance). Require X-Naelao-Nonce (unique random value per request) for state-modifying requests. NonceDO tracks recent nonces (5-minute window) in KV with TTL=300s; reject duplicate nonces. Return 400 with X-Naelao-Error: replay_detected if duplicate. Document in API reference that clients must include fresh timestamps and unique nonces. SDK auto-generates timestamp and nonce headers. Only applies to API key auth; JWT sessions use their own exp claim for replay prevention.
+  </div>
+</div>
+<div id="G-AX28" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX28 [HIGH] — Vision-Augmented Agent (Image Understanding in Chat)</strong><br>
+    <em>The Gap:</em> End-users often want to share screenshots, product images, or documents visually in chat. Spaces have no native vision capability — end-users cannot upload images to the chat and have the agent analyze, describe, or extract data from them.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement VisionAgent: add image upload to Space chat UI (drag-drop or paste). On image upload: store in R2 (temp path, 24h expiry), generate signed URL. Inject into LLM call as vision message: { role: "user", content: [{ type: "image_url", url: signed_r2_url }, { type: "text", text: user_message }] }. Provider routing: vision-capable models only (GPT-4o, Claude claude-sonnet-4-6, Gemini Pro Vision). Image types: PNG, JPEG, WEBP, GIF (first frame). Size limit: 20MB. Builder configures: vision_enabled (boolean), max_images_per_message (default 3). GDPR: images not stored beyond session unless builder explicitly configures retention. Track vision_message_count per Space.
+  </div>
+</div>
+<div id="G-AX29" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX29 [HIGH] — Structured Data Extraction from Documents (LLM-Powered)</strong><br>
+    <em>The Gap:</em> Builders who need to extract structured data from uploaded documents (invoices → line items, forms → field values, contracts → key clauses) must build custom extraction pipelines. No built-in document-to-structured-data extraction tool exists in the agent tool library.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add extract_structured_data tool to agent library: { document_type: "invoice", schema: { invoice_number: "string", total_amount: "number", line_items: [{description, quantity, price}] }, source_doc_id: "..." }. Implementation: fetch doc from R2, pass to LLM with structured extraction prompt + JSON schema, parse response via StructuredOutputWrapper (AU34), validate against schema. Return structured JSON. For multi-page documents: AW13 PDF parser provides text; extraction LLM processes page-by-page if needed. Builder configures extraction schemas in dashboard (visual form builder). Track extraction_accuracy by schema type via builder-provided ground truth samples.
+  </div>
+</div>
+<div id="G-AX30" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX30 [HIGH] — Audio Transcription Pipeline for Voice Messages</strong><br>
+    <em>The Gap:</em> Spaces with voice input (AS08 — voice latency) accept audio but need a transcription pipeline before text-based agent processing. No audio transcription service (Whisper / Assembly AI) integration exists in the Space processing pipeline.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement AudioTranscriptionPipeline: on audio message receive, store audio in R2 (temp 24h). TranscriptionWorker calls CF AI Whisper model (or Whisper API via provider) with audio URL. Returns: { transcript, language_detected, confidence, word_timestamps }. Pipeline: raw audio → noise reduction (optional, via CF AI) → Whisper transcription → text passed to agent as user message with "Transcribed from audio:" prefix. Language detection feeds into multilingual KB filter (AU48). Transcription confidence &lt; 0.7 → ask end-user to repeat or type. Track transcription_latency_ms, transcription_confidence per session. Builder configures: allowed audio formats (mp3/wav/webm), max duration (default 60s).
+  </div>
+</div>
+<div id="G-AX31" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX31 [HIGH] — Agent-Generated Document and Report Creation</strong><br>
+    <em>The Gap:</em> Agents can produce text responses but cannot create downloadable documents (PDF reports, Word documents, Excel spreadsheets). Use cases requiring agent-generated formatted documents (financial reports, legal summaries, data exports) have no supported path.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add generate_document tool to agent library: { format: "pdf"|"docx"|"xlsx", template_id, data }. PDF generation: Puppeteer in CF Container (or HTMLtoPDF Worker) renders Handlebars template to PDF. DOCX: use docxtemplater in Worker. XLSX: ExcelJS in Worker. Store generated doc in R2 with signed download URL (24h expiry). Return { document_url, expires_at } to end-user in chat. Builder creates document templates in dashboard (HTML/DOCX template upload with {{merge_tags}}). Track document_generated_count, document_format per Space. Size limits: PDF 10MB, XLSX 5MB. Queue heavy document generation via CF Workflow (avoids CPU time limit).
+  </div>
+</div>
+<div id="G-AX32" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX32 [MEDIUM] — Agent Screen Share and Remote Assistance Mode</strong><br>
+    <em>The Gap:</em> For customer support use cases, agents cannot see what the end-user sees on their screen. Screen sharing would enable agents to provide contextual help ("I can see you're on the payment page — click the blue button in the top right"). No screen share or screen capture capability exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ScreenShare via WebRTC: builder enables screen_share feature in Space settings. End-user clicks "Share Screen" → browser requestDisplayMedia() captures screen stream. Client sends periodic screenshots (1 fps) as base64 PNG messages via WebSocket. SpaceDO injects screenshots as vision messages (AX28) into agent context with "Current screen:" prefix. Agent can reference what it sees: "I can see you're on the checkout page. The button you need is in the top right corner." Privacy controls: end-user must explicitly grant and can stop sharing anytime. No screenshots stored server-side beyond active session. Builder dashboard shows screen_share_enabled sessions count.
+  </div>
+</div>
+<div id="G-AX33" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX33 [MEDIUM] — Multi-File Batch Processing Agent Mode</strong><br>
+    <em>The Gap:</em> End-users wanting to process multiple files (analyze 20 contracts, classify 100 customer emails) must upload and process them one-by-one in chat. No batch mode exists where an agent processes a collection of files and aggregates results.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement BatchProcessingDO: end-user uploads files as a batch (ZIP or multi-file select). BatchDO creates processing jobs for each file. CF Workflow processes files in parallel (up to 10 at a time, respecting token budget). For each file: extract text (AW13/AX14), run agent with batch_system_prompt (builder-defined), collect structured output. Aggregate results: run final LLM pass to synthesize across all file results. Return: { processed: 20, summary, individual_results_url (R2 JSON), errors: [] }. Progress: WebSocket events file_processed(count/total) for real-time progress bar in Space UI. Token budget guard: estimate tokens before starting; warn if batch exceeds 50% of monthly budget.
+  </div>
+</div>
+<div id="G-AX34" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX34 [HIGH] — Naelao Builder Dashboard Internationalization</strong><br>
+    <em>The Gap:</em> The Naelao builder dashboard is English-only. Non-English-speaking builders (Japanese, Portuguese, German, French builders) face a high language barrier that limits international growth. Platform UI, error messages, documentation links, and onboarding content are all English-only.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement i18n in builder dashboard using i18next: externalize all UI strings to locale files (en.json, ja.json, pt-BR.json, de.json, fr.json). Auto-detect browser locale; allow manual override in account settings. RTL layout support for Arabic/Hebrew future expansion (use logical CSS properties). Machine translate initial locales via DeepL API, human review for marketing copy. Prioritize locales by builder signup geography (Analytics Engine: top 5 non-English countries). Builder dashboard locale stored in AccountDO. Date/number/currency formatting per locale using Intl APIs. Track dashboard_locale distribution monthly.
+  </div>
+</div>
+<div id="G-AX35" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX35 [HIGH] — Space Shell Internationalization (End-User UI)</strong><br>
+    <em>The Gap:</em> Space shells (the UI container wrapping the agent chat) contain UI strings (placeholder text, button labels, error messages) that are English-only. Builders serving non-English end-users cannot localize the Space shell without modifying the platform code.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add i18n configuration to SpaceType config: builder specifies supported_locales: ["en", "fr", "de"] and uploads translation files (locale/{lang}.json). Space shell detects end-user browser language (navigator.language), matches to supported locales, falls back to Space default_locale. All UI strings (chat placeholder: "Ask me anything...", send button: "Send", error: "Something went wrong") sourced from locale file. Naelao provides base translations for standard UI strings in 10 languages; builder can override. Dynamic agent messages (not template strings) already handled by LLM language capabilities (AU48). Track locale_distribution per Space.
+  </div>
+</div>
+<div id="G-AX36" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX36 [MEDIUM] — Right-to-Left (RTL) Layout Support for Arabic/Hebrew Spaces</strong><br>
+    <em>The Gap:</em> Builders serving Arabic or Hebrew end-users need RTL text direction for their Space UI. No RTL layout support exists in the Space shell or UI Builder — all components are designed for LTR text flow only, producing visually broken layouts for RTL languages.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement RTL support in Space shell: detect RTL locale (ar, he, fa, ur) and set &lt;html dir="rtl"&gt;. Use CSS logical properties throughout: margin-inline-start instead of margin-left, border-inline-start instead of border-left. Component library audit: flip icon positions, chat bubble alignment, scrollbar position for RTL. RTL layout preview in UI Builder (toggle button). ThemeConfig adds text_direction: "ltr"|"rtl"|"auto" option. LLM language detection (AU48) sets text_direction for dynamic content. Test all UI components in both LTR and RTL with automated screenshot comparison in CI.
+  </div>
+</div>
+<div id="G-AX37" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX37 [MEDIUM] — Timezone-Aware Scheduling and Date Display</strong><br>
+    <em>The Gap:</em> Platform timestamps (conversation histories, analytics, billing dates) are stored in UTC but displayed without timezone conversion. End-users in Japan see "14:23 UTC" instead of "23:23 JST." Scheduling features (maintenance windows, report generation, notification delivery) do not account for end-user timezones.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement timezone-aware date display: store all timestamps as UTC in DB. Display layer: convert to user's timezone using Intl.DateTimeFormat with timezone: user_timezone. Source timezone: (1) end-user profile preference, (2) CF-Timezone header (CF provides user timezone in Workers), (3) browser Intl.DateTimeFormat().resolvedOptions().timeZone. Builder dashboard: all timestamps in builder's timezone (stored in AccountDO). Scheduled operations (maintenance mode, export schedules, notification digests) accept timezone string in schedule config. Validate timezone strings against IANA timezone database. Track timezone_distribution per Space for UX optimization.
+  </div>
+</div>
+<div id="G-AX38" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX38 [HIGH] — Builder Revenue Share (Marketplace Revenue Splits)</strong><br>
+    <em>The Gap:</em> SpaceType publishers earn revenue when builders install their SpaceType but the revenue split mechanics, payout schedule, minimum threshold, and tax handling for international publishers are not specified. Publishers cannot plan their business on an unclear revenue model.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define SpaceType revenue share: builder installs paid SpaceType → Naelao collects payment → split 70% publisher / 30% Naelao (Stripe Connect Express). Publisher onboarding: Stripe Connect Express KYC (identity verification, bank account). Payout schedule: monthly payouts on the 15th, minimum $50 threshold. Tax: Naelao issues 1099-K (US) or local equivalent; publisher responsible for their taxes. Publishers with annual earnings &gt; $600 USD: collect W-9/W-8BEN. SpaceType pricing: publisher sets price in dashboard; Naelao enforces minimum ($5/month) and maximum ($500/month) for standard listings. Premium SpaceTypes: negotiated revenue share for high-volume publishers.
+  </div>
+</div>
+<div id="G-AX39" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX39 [LOW] — Builder Tipping / Gratuity System for Spaces</strong><br>
+    <em>The Gap:</em> End-users who love a Space and want to support the builder have no way to express appreciation financially within the platform. No voluntary contribution, tip, or donation mechanism exists for builder-created Spaces.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement optional tip button in Space UI: builder enables tipping in Space settings with optional suggested amounts ($1, $5, $10, custom). On tip: Stripe Payment Intent for one-time payment to builder's Stripe Connect account (AX38). Naelao takes 5% platform fee. "Thank the creator" message shown after tip. Tip recipients shown on Space profile (total tips received, optional). Builder can display tip widget in any Space via TipJar UI component. For free-tier Spaces: tips are primary monetization option. Track tip_amount, tip_count per Space in Analytics Engine. Tax: treat as personal income for builder; Naelao 1099-K threshold applies.
+  </div>
+</div>
+<div id="G-AX40" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX40 [MEDIUM] — End-User Loyalty and Credits System Within Space</strong><br>
+    <em>The Gap:</em> Builders want to reward loyal end-users (frequent users, power users) with credits, rewards, or premium access within their Space. No loyalty program framework exists for builders to implement gamification and reward mechanics without custom code.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build LoyaltyEngine for Space builders: builder configures loyalty rules in dashboard: { action: "message_sent", points: 1 }, { action: "session_completed", points: 5 }, { action: "subscription_month", points: 100 }. Points tracked in SpaceDO SQLite user_loyalty(user_id, points_balance, lifetime_points). Reward tiers: builder defines tier thresholds and benefits: Bronze (100pts) → extra 10 agent runs/day, Silver (500pts) → access premium KB, Gold (2000pts) → priority queue. User sees point balance and tier in Space profile. Points expire per builder config (default: 12 months). Redemption: points exchanged for credits (Space-internal currency) or unlock features. Track points_earned, tier_upgrades per Space.
+  </div>
+</div>
+<div id="G-AX41" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX41 [MEDIUM] — Space Subscription Pause (Builder-Side)</strong><br>
+    <em>The Gap:</em> Builders who want to temporarily suspend their Space subscription (e.g., seasonal product, planned leave) must fully cancel and re-subscribe later, losing their plan and potentially their Space configuration. No subscription pause mechanism exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement subscription pause: builder clicks "Pause Subscription" in billing settings. Stripe subscription enters paused state (Stripe Billing Pause Collection). While paused: Space frozen (maintenance mode auto-enabled, end-users see "temporarily unavailable"), builder retains access to dashboard in read-only mode. Credit balance not deducted during pause. Maximum pause duration: 3 months (configurable). Pause fee: $0 for first month, small reactivation fee thereafter (builder-facing, not platform-level for Naelao). Resume: builder clicks "Resume" → Stripe resumes collection at next billing date. Auto-resume: if ends_at reached without manual resume, Stripe auto-resumes. Track pause_duration, pause_count per builder cohort.
+  </div>
+</div>
+<div id="G-AX42" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX42 [MEDIUM] — Platform Gift Cards and Promotional Credits</strong><br>
+    <em>The Gap:</em> No gift card or promotional credit system exists for Naelao. Marketing campaigns (hackathon prizes, partner referrals, influencer promotions) cannot easily distribute platform credits. Manual credit issuance requires engineering intervention.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement GiftCardDO: admin generates batch of gift card codes (CODE format: NAELAO-XXXX-XXXX-XXXX). Each code has: value_usd, valid_until, restrictions (plan_tier_upgrade only | credits_only | any). Builder redeems via /settings/billing/redeem: code validated against GiftCardDO, credited to AccountDO balance, code marked REDEEMED. Promotional credit campaigns: admin creates campaign with bulk code generation, CSV export for distribution. Track redemption_rate per campaign. Single-use per account. Expiry reminder email 30 days before valid_until. Usage analytics: redemption_rate, time_to_first_subscription per cohort who redeemed. Fraud prevention: max 3 codes per email address per month.
+  </div>
+</div>
+<div id="G-AX43" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX43 [MEDIUM] — Agent Deterministic Mode (Reproducible Outputs)</strong><br>
+    <em>The Gap:</em> Agent responses are non-deterministic (temperature &gt; 0) by default. For use cases requiring reproducible outputs (automated report generation, regression testing, audit trails), there is no way to run the agent in deterministic mode with guaranteed reproducible outputs.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add deterministic_mode option to Space config and per-run request parameter. When enabled: set temperature=0, seed=hash(input + date) for supported providers. For providers without seed parameter (Anthropic): temperature=0 produces near-deterministic output. Cache deterministic outputs: same (input, temperature=0, model, prompt_version) hash → cache response in SpaceDO SQLite deterministic_cache(input_hash, response, model_version, created_at). Cache TTL: 7 days or until model/prompt version changes. Return cache hit indicator in response. Track deterministic_mode_usage, cache_hit_rate per Space. Note in documentation: determinism is best-effort; provider changes may affect reproducibility.
+  </div>
+</div>
+<div id="G-AX44" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX44 [HIGH] — Conversation Summary Export for CRM Integration</strong><br>
+    <em>The Gap:</em> After support or sales conversations, builders want to automatically sync conversation summaries to their CRM (Salesforce, HubSpot). No automatic conversation summary export or CRM sync feature exists, requiring builders to manually copy conversation notes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement CRMSyncWorkflow: on session_end event, trigger LLM summary generation: "Summarize this conversation in 100 words including: customer issue, resolution, next steps, sentiment." Store summary in SpaceDO session record. Builder configures CRM integration (AT27): { crm: "salesforce", object: "Case", field_mapping: { summary: "Description", user_email: "ContactEmail" } }. CRMSyncWorker creates/updates CRM record via connector (AT27). Builder can configure sync trigger: on_session_end, on_explicit_export (end-user clicks "Save to CRM"), or manual. Track crm_sync_success, crm_sync_failure per integration. Support Salesforce, HubSpot, Pipedrive, and generic REST webhook.
+  </div>
+</div>
+<div id="G-AX45" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX45 [HIGH] — End-User Profile Enrichment and Personalization</strong><br>
+    <em>The Gap:</em> Agent personalization relies on user-provided profile data only. No automatic profile enrichment exists (e.g., detecting returning user's expertise level from conversation history, inferring preferences from interaction patterns) to progressively improve personalization over time.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ProfileEnrichmentEngine: after each session, LLM extracts insights about the end-user from the conversation: { expertise_level: "beginner|intermediate|expert", topics_of_interest: [], preferred_communication_style: "concise|detailed", frustration_signals: [] }. Merge insights into EpisodicMemoryDO (AV04) user profile. Agent system prompt injection: "User profile: expertise=intermediate, prefers detailed explanations, interested in Python and DevOps." Builder can view aggregated insights in end-user management panel. GDPR: profile enrichment data included in Art.15 export; deletable on Art.17 request. Builder must disclose profile enrichment in Space privacy notice (AW24).
+  </div>
+</div>
+<div id="G-AX46" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX46 [MEDIUM] — Agent Response Formatting and Template System</strong><br>
+    <em>The Gap:</em> Agents return plain text responses rendered as markdown. No response formatting templates exist for rich structured outputs (HTML cards, tables, action buttons, image galleries) that would greatly improve the end-user experience for certain use cases (product catalog, appointment booking, report display).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ResponseTemplateEngine: agent returns structured response { type: "template", template_id: "product_card", data: { title, price, image_url, cta_url } }. Space UI library renders template as rich component. Builder creates templates in dashboard (visual template builder with available fields). Built-in templates: product_card, appointment_slot_picker, satisfaction_rating, info_card, action_buttons. Template renderer in Space UI resolves template_id to component, binds data fields. LLM instructed to use templates when appropriate via system prompt. Fallback: if template rendering fails, serialize data as markdown table. Track template_usage_rate per template type per Space.
+  </div>
+</div>
+<div id="G-AX47" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX47 [MEDIUM] — Real-Time Presence and Activity Indicators</strong><br>
+    <em>The Gap:</em> When multiple end-users are in the same Space simultaneously, there are no presence indicators ("15 people online now") or activity signals (someone is currently typing). For community-style Spaces, real-time presence creates engagement and social proof.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement PresenceDO: shared DO tracking active_sessions per Space. On WebSocket connect: SpaceDO broadcasts presence_update { online_count, typing_users: [] }. "Is typing" indicator: client sends typing_start / typing_stop WebSocket events when user is composing a message (debounce: stop event 3s after last keystroke). SpaceDO broadcasts to other sessions in same room (if multi-user room feature enabled). Online count displayed in Space header (optional, builder-configurable). High-traffic Spaces (&gt;1000 concurrent): aggregate presence updates to max 1/second to avoid broadcast storm. Track peak_concurrent_users per Space in Analytics Engine.
+  </div>
+</div>
+<div id="G-AX48" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX48 [MEDIUM] — Space Component Lazy Loading and Code Splitting</strong><br>
+    <em>The Gap:</em> Space shells currently bundle all UI components into a single JavaScript file loaded at startup. Spaces with many components (50+ components) produce large initial bundles (500KB+) that degrade Time to Interactive, especially on slow mobile connections.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement code splitting for Space shell: each UI component compiled as separate JavaScript module with content-hash filename. On Space load: only load components visible in initial viewport. Remaining components loaded on-demand as user scrolls or navigates. Dynamic import(): UI Builder generates { type: "lazy", component_id, import: () =&gt; import("/components/{hash}.js") }. Service Worker (AU07) pre-fetches likely next components in background after initial load. Bundle analyzer: CI reports bundle size per component; alert if any component &gt; 50KB. Track component_load_time_ms and lazy_load_triggered_count per Space. Target: initial bundle &lt; 100KB, total page interactive &lt; 2s on 4G.
+  </div>
+</div>
+<div id="G-AX49" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX49 [HIGH] — Agent Tool Library Versioning and Deprecation</strong><br>
+    <em>The Gap:</em> Naelao's built-in agent tool library (send_email, kb_search, generate_document, etc.) ships as a monolith. When a tool's interface changes, all Spaces using that tool are affected simultaneously. No per-Space tool library version pinning or deprecation window exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Version agent tool library: tool_library@v1.0, @v1.1, @v2.0. Each Space config pins to a library version: { tool_library_version: "1.2.3" }. Breaking tool changes increment major version. ToolLibraryRegistry resolves tool definitions per Space by pinned version. Deploy new tool library version → auto-notify builders using prior version (AV19) with migration guide and sunset date (6 months). Auto-migration: if breaking change is mechanical (field rename), offer one-click migration. Spaces on EOL tool library version: warn on every dashboard visit 30 days before EOL. After EOL: Space degraded mode (tools still function but flagged deprecated).
+  </div>
+</div>
+<div id="G-AX50" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AX50 [HIGH] — Real-Time Agent Response Streaming Quality Metrics</strong><br>
+    <em>The Gap:</em> Streaming agent responses lack any quality telemetry. Time to First Token (TTFT), streaming throughput (tokens/second), stream interruption rate, and perceived latency are not measured. Without these metrics, optimization efforts are directionless.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Instrument streaming pipeline: on stream start, record stream_start_at. On first token received from LLM, record ttft_ms = now - stream_start_at. Count tokens as they stream, record throughput_tokens_per_sec. On stream end: record stream_complete_at, total_tokens, stream_duration_ms. On stream error/abort: record stream_interrupted = true. Write all metrics to Analytics Engine per session. Builder dashboard: TTFT histogram (P50/P95/P99), throughput chart, interruption rate. Surface per-model TTFT comparison to inform model selection. Alert when P95 TTFT &gt; 3s (SLA threshold). Track TTFT improvement over time as optimization initiatives are implemented. Goal: P95 TTFT &lt; 800ms.
+  </div>
+</div>
 </section>
 
 
