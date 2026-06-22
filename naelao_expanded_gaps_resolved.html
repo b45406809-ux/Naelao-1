@@ -60308,6 +60308,460 @@ When bumping the date, bump it everywhere in one change and re-run the full test
     <em>Required Fix:</em> Build NotificationPreferencesDO per builder: stores { category: string, channels: email|slack|webhook, frequency: immediate|daily_digest|weekly, enabled: boolean }. Categories: billing_alerts, space_health_alerts, platform_updates, marketing, security_alerts (cannot disable). Builder manages preferences at /settings/notifications. Slack integration: builder provides Slack webhook URL; notifications fan-out to email + Slack. Webhook option: POST to builder-specified URL with notification payload. Daily digest: aggregate notifications into single email (BuildDigestWorker runs at 9am builder timezone). CAN-SPAM compliance: all marketing emails include unsubscribe link updating preference DO.
   </div>
 </div>
+
+<section id="appendix-av">
+<h2>Appendix AV — SpaceType Composition, Billing Analytics, Multi-Tenancy, Webhooks, RAG Quality &amp; CF Platform</h2>
+
+<div id="G-AV01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV01 [HIGH] — SpaceType Composition and Inheritance</strong><br>
+    <em>The Gap:</em> SpaceTypes are monolithic — a publisher cannot build a specialized SpaceType on top of a base SpaceType, inheriting its tools, prompts, and KB structure while overriding specific properties. Every SpaceType must be built from scratch, causing massive duplication across similar products.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SpaceType extends field: { "extends": "base-customer-support-v1.0" }. On install, RegistryDO resolves parent chain and merges config: child properties override parent, tool arrays are merged (child additions + parent tools), system prompt uses parent as template with child overrides. Circular inheritance detection via graph traversal. Version pinning on parent reference. Child SpaceType publisher must own or have explicit license to extend parent. Surface inheritance chain in marketplace listing. Limit inheritance depth to 3 levels.
+  </div>
+</div>
+<div id="G-AV02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV02 [CRITICAL] — SpaceType Config Schema Validation</strong><br>
+    <em>The Gap:</em> When a builder installs a SpaceType and fills in the configuration form, the submitted config JSON is not validated against the SpaceType's declared config schema. Malformed configs (missing required fields, wrong types, invalid enum values) are stored and silently break the agent at runtime.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> SpaceType publisher declares config_schema as JSON Schema (draft-07). On builder config submission, SpaceConfigDO runs JSON Schema validation via ajv library compiled at Worker startup. Return structured validation errors: { field: "api_key", error: "required field missing", schema_path: "$.properties.api_key" }. Surface field-level errors in builder UI config form. Prevent Space activation if config fails validation. On SpaceType version upgrade: validate existing config against new schema; surface migration warnings if new required fields added.
+  </div>
+</div>
+<div id="G-AV03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV03 [HIGH] — SpaceType Hot-Reload Without DO Eviction</strong><br>
+    <em>The Gap:</em> Updating a Space's SpaceType configuration (e.g., changing system prompt, adding a KB, modifying a tool definition) currently requires the Durable Object to process a full re-initialization. During high-traffic periods, this causes a brief service interruption for active end-user sessions.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement hot-reload protocol: POST /api/spaces/{id}/config with If-Match: version header triggers ConfigReloadRPC on SpaceDO. SpaceDO atomically updates in-memory config cache and increments config_version without evicting existing WebSocket sessions. Active sessions continue with prior config through their current conversation; new sessions start with new config. Large changes (tool additions requiring re-embedding) queued as async tasks. Surface reload success/failure in builder dashboard with affected session count.
+  </div>
+</div>
+<div id="G-AV04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV04 [HIGH] — Agent Episodic Memory System</strong><br>
+    <em>The Gap:</em> Agents can only access KB documents and the current conversation context. No episodic memory exists for storing and retrieving specific past events (e.g., "User X mentioned they're a developer on March 5th"; "User Y had an issue with feature Z last week"). Agents greet returning users as strangers.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement EpisodicMemoryDO per Space per end-user: on each conversation completion, extract key facts/events via LLM summary ("user_role: developer", "past_issue: feature_z", "preference: detailed explanations"). Store as memory_entries(user_id, fact_text, fact_embedding, created_at, relevance_score). On new session: query top-5 relevant memories by embedding similarity to opening message, inject as "What you know about this user:" block in system prompt. Memory entry TTL configurable by builder (default 90 days). GDPR: include in user data export; purge on erasure request.
+  </div>
+</div>
+<div id="G-AV05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV05 [MEDIUM] — Agent Procedural Memory (Learned How-To Workflows)</strong><br>
+    <em>The Gap:</em> Agents must re-derive solutions to recurring workflow challenges on each session. No procedural memory stores successful multi-step solutions (e.g., "to resolve billing issue: 1. check subscription status 2. verify payment method 3. offer extension"). Agents reinvent the wheel every session.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ProceduralMemoryStore in SpaceDO SQLite: procedures(procedure_id, trigger_pattern, steps_json, success_rate, usage_count). Populate via two paths: (1) builder-defined playbooks uploaded in dashboard, (2) agent-learned: when a multi-step resolution receives positive end-user feedback, LLM extracts the procedure and stores it. On session: match query against procedure trigger patterns (embedding similarity); if match &gt; 0.85, inject procedure steps into context. Track procedure usage and success rate; prune procedures with success_rate &lt; 0.3 after 20 uses.
+  </div>
+</div>
+<div id="G-AV06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV06 [HIGH] — Real-Time Context Injection into Agent System Prompt</strong><br>
+    <em>The Gap:</em> System prompts are static strings stored in SpaceDO. Agents have no access to real-time dynamic data that should inform their behavior: current datetime, user's local timezone, session origin (web/mobile/embedded), user's geographic location, or live Space metadata. Agents give temporally incorrect responses (e.g., "tomorrow is Monday" when it is not).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ContextInjector middleware: before every LLM call, enrich system prompt with dynamic block: "Current UTC time: {ISO8601}. User timezone: {tz from Accept-Language or user profile}. User country: {CF-IPCountry}. Session channel: {web|mobile|embed}. Space name: {space_name}. User plan: {user.metadata.plan}." Builder marks fields to include/exclude in Space settings. Timezone detected from CF request headers or user profile preference. Injected block appended after static system prompt and before conversation history.
+  </div>
+</div>
+<div id="G-AV07" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV07 [HIGH] — Tool Definition Schema Versioning and Backwards Compatibility</strong><br>
+    <em>The Gap:</em> Agent tool definitions (function calling schemas) are deployed as atomic updates with no version tracking. When a tool's input schema changes (field renamed, new required parameter), active conversations that have already emitted tool_call tokens with the old schema produce malformed tool calls that fail at dispatch.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement tool schema versioning: each tool has version field incremented on any schema change. SpaceDO stores all tool versions in tool_versions table. Tool dispatcher resolves version by checking the schema_version field embedded in each tool_call. For major version bumps (breaking): run parallel for 1 deploy cycle (dispatch old schema to old handler, new schema to new handler). Define semver policy: PATCH (add optional field) is always backwards-compatible; MINOR (add required field) requires migration; MAJOR (remove/rename field) requires parallel run period.
+  </div>
+</div>
+<div id="G-AV08" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV08 [MEDIUM] — Dynamic Agent Capability Discovery at Runtime</strong><br>
+    <em>The Gap:</em> An agent's available tools are fixed at Space configuration time. There is no mechanism for an agent to dynamically discover which tools are currently available (e.g., a connector is temporarily unavailable, a Space plan was downgraded removing premium tools) or adjust its behavior based on runtime capability state.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement CapabilityRegistry in SpaceDO: on each session init, compute available_tools list by filtering configured tools against: (1) connector health checks (is external API reachable?), (2) plan entitlements (does current plan include this tool?), (3) feature flags (is this tool in beta for this Space?). Inject available_tools list into LLM tool_choice parameter. If a tool becomes unavailable mid-session (connector goes down), SpaceDO pushes tool_unavailable WebSocket event to session; agent receives "Tool X is currently unavailable, use alternative Y."
+  </div>
+</div>
+<div id="G-AV09" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV09 [HIGH] — MRR Decomposition Analytics (New / Expansion / Churn)</strong><br>
+    <em>The Gap:</em> Naelao tracks total MRR as a single number but does not decompose it into: new MRR (first-time subscriptions), expansion MRR (upgrades), contraction MRR (downgrades), churned MRR (cancellations), and reactivation MRR (returning customers). Without decomposition, growth vs churn signals are invisible.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build MRRDecompositionDO: on each Stripe subscription event (created/updated/deleted), classify MRR delta as: new (first subscription), expansion (plan upgrade), contraction (plan downgrade), churn (cancellation), reactivation (churned customer re-subscribing). Store daily_mrr_movements(date, type, amount_usd, subscription_id). Aggregate weekly/monthly in D1. Build internal finance dashboard showing MRR waterfall chart. Alert on churn MRR exceeding new+expansion MRR for 2 consecutive weeks (net negative growth signal).
+  </div>
+</div>
+<div id="G-AV10" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV10 [HIGH] — Net Revenue Retention (NRR) Measurement</strong><br>
+    <em>The Gap:</em> Net Revenue Retention (NRR = (beginning_MRR + expansion - contraction - churn) / beginning_MRR × 100%) is not calculated. NRR above 100% indicates that existing customers are growing faster than they are churning — the primary SaaS health metric — but it is not tracked anywhere in the platform.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Compute monthly NRR in CohortAnalyticsDO (AT38): for each monthly cohort, track beginning_MRR (cohort's MRR at month 0) and current_MRR (cohort's MRR at month N). NRR = current_MRR / beginning_MRR. Store as cohort_nrr(cohort_month, measurement_month, nrr_pct). Build NRR trend chart in finance dashboard. Alert leadership when platform NRR drops below 100% (absolute revenue shrinkage). Segment NRR by plan tier (free→paid NRR, pro NRR, enterprise NRR) to identify where expansion is strongest.
+  </div>
+</div>
+<div id="G-AV11" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV11 [HIGH] — Builder Cohort Retention Curves</strong><br>
+    <em>The Gap:</em> No cohort-based retention analysis exists for Naelao's builder base. Without retention curves (what % of Jan-2026 signups are still active in Feb, March, April...), the team cannot identify when in the builder journey churn spikes, nor validate whether product improvements increase retention.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement CohortRetentionDO: define "active" as: logged into dashboard OR made API call within the period. On each builder activity event, update last_active_at in AccountDO. Monthly CF Workflow computes: for each cohort (by signup_month), what % of builders had any activity in subsequent month N. Store cohort_retention(cohort_month, months_since_signup, active_count, original_cohort_size, retention_pct). Visualize as retention heatmap table in internal analytics. Alert when any cohort's month-1 retention drops below platform average — early signal of onboarding regression.
+  </div>
+</div>
+<div id="G-AV12" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV12 [HIGH] — Billing Dispute Resolution Workflow</strong><br>
+    <em>The Gap:</em> Builders who dispute a charge (unexpected overage, billing error, double charge) have no formal dispute workflow. Without a structured process backed by usage audit data, disputes devolve into ad-hoc email exchanges with no SLA and no data-driven resolution path.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement DisputeWorkflow: builder opens dispute via /settings/billing/disputes with reason (incorrect_charge, service_outage, unauthorized_charge) and date range. System auto-queries Analytics Engine for builder's usage data matching disputed period, generates usage report PDF. Support agent reviews: if usage supports charge, provide evidence to builder; if not, issue Stripe refund/credit via Stripe Credit API. Track dispute_opened, dispute_evidence_generated, dispute_resolved, refund_issued events. SLA: initial response within 2 business days. Integrate dispute data with dunning logic to pause retries during open dispute.
+  </div>
+</div>
+<div id="G-AV13" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV13 [HIGH] — Prorated Billing on Mid-Cycle Plan Changes</strong><br>
+    <em>The Gap:</em> When a builder upgrades or downgrades their subscription mid-billing-period, Stripe proration behavior is not explicitly configured. Default Stripe behavior may charge the full new plan price without crediting unused days on the old plan, or defer the change to the next cycle — neither behavior is intentionally specified.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Explicitly configure Stripe proration: on upgrade mid-cycle, use proration_behavior: "create_prorations" — builder charged prorated difference immediately. On downgrade, use proration_behavior: "always_invoice" with credit for remaining period applied to next invoice. Preview prorated amount before confirming via Stripe.subscriptions.retrieveUpcomingInvoice(). Show preview in upgrade/downgrade confirmation UI: "You will be charged $X now for the remainder of this billing period." For enterprise annual plans: handle mid-year upgrade with single proration invoice.
+  </div>
+</div>
+<div id="G-AV14" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV14 [HIGH] — End-User Subscription Lifecycle Within Space</strong><br>
+    <em>The Gap:</em> Builders who charge their end-users for Space access (monthly subscription tiers, pay-per-session) have no native UI for end-users to manage their own subscription within the Space. End-users cannot upgrade, downgrade, view invoices, or cancel their subscription without leaving the Space.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build SubscriptionPortal component for Space UI library: shows current plan, next billing date, usage this cycle, and action buttons (Upgrade, Downgrade, Cancel, View Invoices). On action, calls Naelao API which proxies to Stripe Customer Portal (or Stripe Billing Portal session). Builder configures which plans end-users can switch between. Cancel flow: show retention offer (1-month discount) before confirming cancellation. Invoice history: list of past invoices with download link (Stripe-hosted). Accessible at Space URL /billing or via builder-placed SubscriptionPortal component in Space UI.
+  </div>
+</div>
+<div id="G-AV15" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV15 [CRITICAL] — Noisy Neighbor Isolation Between Spaces</strong><br>
+    <em>The Gap:</em> Multiple Spaces share CF Worker instances (V8 isolates on the same machine). A CPU-intensive Space (heavy LLM post-processing, large context manipulation) can consume isolate CPU budget, causing other Spaces' requests to be queued. No per-Space CPU budget or priority scheduling exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement per-Space CPU isolation via CF Workers for Platforms (AT10): each Space runs in its own WfP tenant Worker script with isolated CPU time budget. Heavy compute tasks (embedding, bulk export) routed to separate Unbound Workers with dedicated CPU time. Implement request priority queue in DispatcherWorker: classify request priority (interactive session = high, batch export = low). Monitor per-Space CPU time via Analytics Engine; alert on Spaces consuming &gt;5× average CPU per request. Rate-limit CPU-intensive operations (bulk processing) to off-peak hours with configurable scheduling.
+  </div>
+</div>
+<div id="G-AV16" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV16 [HIGH] — Per-Space CPU Time Limit Enforcement</strong><br>
+    <em>The Gap:</em> CF Workers have a 30ms CPU time limit (free tier) or 30s (paid Unbound Workers). Heavy operations in a Space Worker (complex in-memory data processing, large JSON serialization) can hit CPU time limit and throw CPUTimeExceeded errors with no per-Space enforcement policy or graceful degradation.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define per-Space CPU budget policy: interactive requests (chat, config fetch) use Standard Workers (30ms CPU, fast); background tasks (export, re-indexing, eval) use Unbound Workers (up to 30s CPU). For standard requests approaching CPU limit: implement work-chunking — split large operations (context assembly, response post-processing) into sub-operations that each complete within 10ms. Instrument CPU usage via performance.now() boundaries. Monitor CPU_time_used per space_id in Analytics Engine. Alert when a Space consistently uses &gt;80% of CPU budget per request.
+  </div>
+</div>
+<div id="G-AV17" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV17 [HIGH] — Builder Guided Onboarding Wizard</strong><br>
+    <em>The Gap:</em> New builders face a blank dashboard with no guided onboarding flow. They must discover: how to choose a SpaceType, configure it, add KB content, customize the UI, test the agent, and publish the Space — all without guided context. High early drop-off reflects this friction.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build OnboardingWizard component in builder dashboard: 6-step checklist (1. Choose SpaceType, 2. Configure Space, 3. Add Knowledge, 4. Preview &amp; Test, 5. Customize Look, 6. Publish &amp; Share). Each step has inline help text and a 30-second demo video. Persist completion state in AccountDO onboarding_progress JSON. Step completion auto-detected (KB docs &gt; 0 = step 3 done). Show progress bar and step count. "Skip tour" option but re-accessible from /onboarding. Track step_completion_rate per step in Analytics Engine for onboarding funnel analysis. Trigger celebration animation on final publish step.
+  </div>
+</div>
+<div id="G-AV18" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV18 [HIGH] — Builder Configuration Draft Save and Resume</strong><br>
+    <em>The Gap:</em> Builder Space configurations are all-or-nothing publishes. If a builder starts configuring a complex SpaceType (long system prompt, multiple tool configurations) and navigates away, their work is lost. No draft save mechanism exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ConfigDraftDO per builder per Space: auto-save draft every 30 seconds of UI inactivity. Draft stored as draft_config JSON in SpaceDO SQLite draft_configs table. On return to config editor: detect pending draft and offer "Resume draft" or "Discard." Draft includes full editor state (open panels, cursor position, active tab). Published config and draft are independent; publishing creates new entry in changelog (AU41). Expire drafts after 30 days of no editing. Show "Unsaved changes" indicator in editor. Allow multiple named draft versions for A/B testing different configs.
+  </div>
+</div>
+<div id="G-AV19" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV19 [HIGH] — Proactive Platform Changelog Notifications to Builders</strong><br>
+    <em>The Gap:</em> When Naelao changes platform behavior (deprecates an API endpoint, changes rate limits, requires config schema updates), builders are not proactively notified. They discover changes when their Space breaks in production, not in advance.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ChangelogNotificationDO: each platform change classified as: breaking (immediate email + in-dashboard banner + 90-day migration window), deprecation (email + banner + sunset date), enhancement (optional email digest). Builder configures notification preferences (AU50). Breaking changes trigger: (1) email to all affected builders (those using deprecated endpoint), (2) red banner in dashboard until acknowledged, (3) API response header X-Deprecation-Warning on affected endpoints, (4) SDK console.warn() for deprecated methods. Track notification_delivered, notification_acknowledged per builder per change.
+  </div>
+</div>
+<div id="G-AV20" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV20 [HIGH] — Builder Actionable Error Message Quality</strong><br>
+    <em>The Gap:</em> Builder-facing API and dashboard error messages are often raw internal errors (HTTP 500, "Internal Server Error", CF Worker unhandled exception messages). These provide no actionable guidance and expose internal implementation details, creating poor DX and security concerns.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ErrorMapper layer in all public-facing Workers: catch all unhandled errors before they reach the response. Map to user-facing error schema: { error_code: "SPACE_CONFIG_INVALID", message: "Your Space config is missing a required field: api_key", docs_url: "docs.naelao.com/errors/SPACE_CONFIG_INVALID", support_ticket_url, request_id }. Error codes are enumerated and documented. Never expose stack traces or internal error messages to builders. For 500 errors: log full error to Logpush + PagerDuty; return generic "An unexpected error occurred. Request ID: {req_id}" to builder. Surface request_id in builder dashboard error history for support reference.
+  </div>
+</div>
+<div id="G-AV21" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV21 [HIGH] — Pre-Limit Usage Warning Alerts (80%/90% Thresholds)</strong><br>
+    <em>The Gap:</em> Builders have no advance warning before they hit plan limits (token quota, storage, active sessions). They discover the limit when operations start failing (HTTP 429), creating bad UX for their end-users with no time to upgrade beforehand.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement UsageAlertDO: track resource utilization ratios (used/limit) for all quota dimensions. Thresholds: at 80% send in-dashboard yellow warning banner + email. At 90% send red banner + urgent email with upgrade CTA. At 100% (hit) send immediate email + automatic upgrade prompt modal in dashboard. Alert preferences configurable (AU50). Compute utilization daily via scheduled Worker querying SpaceDO and AccountDO. For token quota: real-time check via token_deductions_this_month / monthly_token_limit. Surface utilization gauges on builder dashboard home page (mini progress bars per resource).
+  </div>
+</div>
+<div id="G-AV22" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV22 [CRITICAL] — Outbound Webhook HMAC-SHA256 Signing with Replay Prevention</strong><br>
+    <em>The Gap:</em> Naelao sends outbound webhooks (agent run completed, Space event) but does not sign the webhook payload with HMAC-SHA256. Webhook receivers cannot verify that the request originates from Naelao and has not been tampered with. No timestamp-based replay attack prevention exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement webhook signing: for each outbound webhook, compute signature = HMAC-SHA256(secret, "v1:" + unix_timestamp + "." + request_body). Send headers: X-Naelao-Signature: v1={hex_signature}, X-Naelao-Timestamp: {unix_epoch}. Builder retrieves webhook_secret from dashboard (stored encrypted in SpaceDO). Receiver validates: recompute signature, compare; reject if timestamp &gt; 5 minutes old (replay prevention). Provide verification code snippets for Node, Python, Go in docs. Rotate webhook secret in dashboard (zero-downtime: accept both old and new secret for 60s transition).
+  </div>
+</div>
+<div id="G-AV23" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV23 [HIGH] — Webhook Delivery Log and Self-Serve Replay UI</strong><br>
+    <em>The Gap:</em> There is no log of outbound webhook deliveries. When a webhook-consuming service was down (e.g., 2am outage), builders cannot see which webhooks failed, inspect their payloads, or replay them. Failed events are permanently lost with no recovery path.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement WebhookDeliveryLog in SpaceDO SQLite: webhook_deliveries(delivery_id, event_type, payload_hash, attempt_count, last_status_code, response_body_preview, delivered_at, created_at). Retain last 1000 deliveries per Space. Builder dashboard shows webhook log with status (success/failed/pending), HTTP status code, and response preview. "Replay" button re-submits specific delivery with original payload. Bulk replay: select date range and re-send all failures. Export log as CSV. Alert builder via notification (AU50) when &gt;10 consecutive deliveries fail to the same endpoint.
+  </div>
+</div>
+<div id="G-AV24" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV24 [HIGH] — Per-Endpoint API Rate Limit Configuration</strong><br>
+    <em>The Gap:</em> All Naelao API endpoints share the same global rate limit bucket per API key. High-frequency low-cost endpoints (GET /api/spaces/{id}/config) and low-frequency high-cost endpoints (POST /api/spaces/{id}/run) compete for the same bucket. Builders hitting limits on cheap endpoints are blocked from expensive ones.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define endpoint cost tiers: Tier 1 (read operations: 1 unit), Tier 2 (config writes: 5 units), Tier 3 (agent runs: 20 units), Tier 4 (bulk operations: 100 units). Rate limit bucket: 1000 units/minute. Each request deducts its tier cost from bucket. Return X-RateLimit-Cost: {units} header showing cost of each request. Builder API keys can configure per-endpoint overrides: raise Tier 1 limit for high-frequency read cases. Enterprise: custom tier costs and bucket sizes. Surface endpoint-level rate limit consumption in builder analytics (AU21).
+  </div>
+</div>
+<div id="G-AV25" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV25 [HIGH] — X-Request-Id Correlation ID Propagation</strong><br>
+    <em>The Gap:</em> Internal Naelao requests across Workers (SpaceWorker → SpaceDO → BillingDO → VectorizeDO) do not carry a shared correlation ID. Debugging a failed agent run requires manually correlating logs across multiple systems with no shared identifier, making distributed tracing nearly impossible.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Generate X-Request-Id (UUID v4) at entry Worker for every inbound request. Propagate via: (1) DO RPC calls: pass requestId as first parameter to all DO methods, (2) service-to-service calls: X-Request-Id header on all fetch() calls, (3) CF Queue messages: requestId field in message JSON, (4) Analytics Engine writes: request_id field on all events. Entry Worker includes Request-Id in response header. Builder API responses always include X-Naelao-Request-Id. Logpush output includes requestId for Splunk correlation. Implement opentelemetry-compatible trace ID format for future tracing integration.
+  </div>
+</div>
+<div id="G-AV26" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV26 [HIGH] — SSE Keepalive for Proxy and Load Balancer Timeout Prevention</strong><br>
+    <em>The Gap:</em> Server-Sent Events (SSE) connections for streaming agent responses are silently terminated by intermediate proxies and load balancers that have 60-90 second idle timeouts. If an LLM takes &gt;60s to produce the first token, the SSE connection closes and the response is lost.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SSE keepalive: every 15 seconds of no data, send SSE comment line ": keepalive\n\n" over the stream. SSE spec defines comments (lines starting with ": ") as valid but ignored by clients. This resets proxy idle timeout counters. Additionally, send structured keepalive events: "data: {type:\"keepalive\", timestamp: epoch}\n\n" so client-side code can detect connection liveness. Client-side: implement reconnection logic (EventSource auto-reconnects; set Last-Event-ID header from last received event ID for resumption). Document maximum expected TTFF (Time To First Byte) so builders can set appropriate client timeouts.
+  </div>
+</div>
+<div id="G-AV27" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV27 [HIGH] — Streaming Response Abort and LLM Connection Cleanup</strong><br>
+    <em>The Gap:</em> When a client disconnects mid-stream (user navigates away, browser tab closes), the Worker continues consuming LLM API tokens and streaming to a dead connection. No abort signal handler or LLM API connection cancellation exists, wasting compute and incurring unnecessary token costs.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement stream abort handling: in SSE Worker, attach AbortController to LLM API fetch call. On client disconnect (detected via request.signal.aborted or write error on response stream), call abortController.abort() to cancel the LLM API request. For OpenAI: streaming fetch abort automatically closes the connection. For other providers: use provider-specific cancel API if available. Log stream_aborted events with tokens_consumed_before_abort in Analytics Engine for cost attribution. Deduct only actually consumed tokens from credit balance (not estimated). SpaceDO cleans up partial message records on abort.
+  </div>
+</div>
+<div id="G-AV28" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV28 [MEDIUM] — Builder-Configurable Custom Error Pages for Spaces</strong><br>
+    <em>The Gap:</em> When a Space is unavailable (over quota, maintenance mode, agent error), end-users see generic browser error pages or raw JSON error responses. Builders cannot customize these error experiences with branded, helpful messaging.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add error page configuration to Space settings: builder provides HTML/text template for error scenarios: quota_exceeded, maintenance, service_error, not_found. Templates support merge tags: {{space_name}}, {{support_email}}, {{retry_after}}. Templates stored in SpaceDO SQLite. SpaceEntryWorker intercepts error conditions before responding: if error matches configured template, render template as HTML response with appropriate HTTP status code. Default templates provided (styled to Space theme). Builder can also configure redirect URLs for each error type. Track custom_error_shown events to monitor error frequency.
+  </div>
+</div>
+<div id="G-AV29" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV29 [HIGH] — Space Maintenance Mode with Custom Message</strong><br>
+    <em>The Gap:</em> Builders have no way to put their Space in a controlled maintenance state while making breaking configuration changes. Any config change is applied live to active end-users, potentially causing degraded experience during the change window.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add maintenance_mode toggle to Space config: { enabled: true, message: "We're updating our AI — back in 5 minutes!", ends_at: "2026-06-22T14:00:00Z" }. When maintenance_mode is enabled, SpaceEntryWorker returns 503 with custom message to all end-user requests. Builder dashboard shows maintenance mode indicator. Active WebSocket sessions receive maintenance_started event and should disconnect gracefully. Builder can schedule maintenance windows in advance (recurring or one-time). Maintenance mode bypass: builder and admin tokens bypass maintenance check (to test during maintenance). Auto-disable maintenance_mode when ends_at passes via scheduled Worker.
+  </div>
+</div>
+<div id="G-AV30" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV30 [HIGH] — RAG Retrieval Quality Metrics (Precision@K / Recall@K / NDCG)</strong><br>
+    <em>The Gap:</em> No metrics exist for evaluating the quality of KB retrieval. When an agent gives a wrong answer citing a KB source, it is unknown whether the problem was retrieval (wrong chunks returned) or generation (right chunks, wrong reasoning). Without retrieval metrics, optimization is directionless.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement RetrievalEvalFramework: builder uploads golden_retrieval_dataset.jsonl (query, expected_chunk_ids). RetrievalEvalWorker runs each query through Vectorize, computes Precision@K (fraction of top-K results that are relevant), Recall@K (fraction of relevant results in top-K), and NDCG@K (normalized discounted cumulative gain accounting for ranking). Run eval on KB changes and embedding model changes. Store results in SpaceDO evals table alongside model evals (AT07). Surface retrieval quality dashboard in builder analytics showing metrics trend over time. Alert when Precision@5 drops below 0.6.
+  </div>
+</div>
+<div id="G-AV31" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV31 [MEDIUM] — Per-Query Retrieval Relevance Scoring at Runtime</strong><br>
+    <em>The Gap:</em> Retrieved KB chunks are injected into context without evaluating whether they are actually relevant to the current query. Irrelevant chunks waste context tokens, degrade response quality, and increase costs. No relevance gating exists between Vectorize retrieval and context injection.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement relevance gating: after Vectorize returns top-K chunks (with similarity scores), filter out chunks with similarity &lt; relevance_threshold (default 0.65, builder-configurable). For remaining chunks, optionally run lightweight cross-encoder relevance check (fast bi-encoder model via CF AI). Only inject chunks passing both filters. If zero chunks pass: do not inject KB context; agent responds from training knowledge with "I don't have specific documentation on this." Track filter_retention_rate (% of retrieved chunks that pass filter) and no_relevant_chunks_rate per query in Analytics Engine.
+  </div>
+</div>
+<div id="G-AV32" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV32 [HIGH] — KB Chunk Quality Assessment and Deduplication</strong><br>
+    <em>The Gap:</em> Knowledge base documents are chunked and indexed without quality assessment. Low-quality chunks (too short to be meaningful, near-duplicate of another chunk, garbled OCR text, off-topic content) pollute the vector index, degrading retrieval quality for all queries.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ChunkQualityFilter on KB upload: (1) Length filter: reject chunks &lt; 50 tokens or &gt; 2000 tokens; (2) Duplicate detection: compute MinHash fingerprint per chunk, reject if Jaccard similarity &gt; 0.85 vs existing chunks; (3) Language coherence: detect garbled text via perplexity score (high perplexity = low quality text); (4) Relevance-to-Space filter: compare chunk embedding to Space's topic description embedding, warn if similarity &lt; 0.5. Surface quality report to builder after upload: "8 chunks rejected (3 too short, 5 near-duplicates)." Allow builder to override rejections. Track kb_chunk_quality_score per Space in Analytics Engine.
+  </div>
+</div>
+<div id="G-AV33" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV33 [HIGH] — Multi-Vector Hybrid Retrieval (Dense + Sparse / BM25)</strong><br>
+    <em>The Gap:</em> Current retrieval uses only dense vector (semantic) search via Vectorize. Dense-only retrieval misses exact keyword matches that are critical for precise queries (product codes, error messages, proper nouns). Hybrid retrieval combining dense + sparse (BM25/keyword) significantly outperforms either alone.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement hybrid retrieval: (1) Dense path: Vectorize similarity search (existing), (2) Sparse path: BM25 keyword index stored in SpaceDO SQLite as inverted index (term → [chunk_id, tf_idf_score]). For each query: run both paths in parallel via Promise.all(), collect top-K from each. Merge results via Reciprocal Rank Fusion (RRF): RRF_score = 1/(k + dense_rank) + 1/(k + sparse_rank). Return top-K merged results. Builder configures dense_weight vs sparse_weight (default: 60/40). Sparse index updated incrementally on KB changes. Track hybrid vs dense-only retrieval quality improvement in evals.
+  </div>
+</div>
+<div id="G-AV34" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV34 [MEDIUM] — Query Expansion for Improved Semantic Search</strong><br>
+    <em>The Gap:</em> Short or ambiguous end-user queries (e.g., "pricing") produce poor semantic search results because the query embedding doesn't capture related concepts (cost, plan, subscription, billing). No query expansion mechanism generates alternative phrasings to improve retrieval coverage.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement QueryExpander: for queries &lt; 5 tokens, use LLM to generate 3 alternative phrasings ("how much does it cost", "what are the pricing plans", "subscription tiers"). Embed original query + alternatives. Retrieve top-K/4 results for each embedding, merge via Reciprocal Rank Fusion. Cost control: use fast model (Haiku) for expansion to minimize latency impact. Cache expansion results for identical queries (SpaceDO KV cache, 1-hour TTL). Track query_expanded events and compare retrieval quality (expansion-on vs expansion-off A/B experiment). Default: on for queries &lt; 5 tokens; builder can disable.
+  </div>
+</div>
+<div id="G-AV35" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV35 [MEDIUM] — HyDE (Hypothetical Document Embeddings) for Retrieval</strong><br>
+    <em>The Gap:</em> Standard retrieval embeds the user's question and searches for similar document chunks. HyDE generates a hypothetical ideal answer to the question, embeds that hypothetical answer, and uses it for search — this typically outperforms question-based retrieval by 15-30% on BEIR benchmarks.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement HyDERetriever: for agent queries, call fast LLM (Haiku) with "Write a 3-sentence answer to: {question}" to generate a hypothetical document. Embed the hypothetical document. Use its embedding as the Vectorize query vector instead of the question embedding. Return top-K results. Blend with standard retrieval (question embedding): merge via RRF for robustness. Add 100-150ms latency; trade-off: run HyDE only for queries where standard retrieval returned 0 high-confidence results (as fallback). A/B test HyDE-on vs HyDE-off via ExperimentDO. Builder can enable in Space settings.
+  </div>
+</div>
+<div id="G-AV36" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV36 [MEDIUM] — Contextual Chunk Compression Before LLM Injection</strong><br>
+    <em>The Gap:</em> Retrieved KB chunks are injected verbatim into context, including surrounding text irrelevant to the specific query. A 500-token chunk may contain only 50 tokens relevant to the question, wasting 450 tokens of context window and inflating costs.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ContextualCompressor: after retrieval, for each chunk run LLM prompt "Given this question: {query}. Extract only the sentences from the following passage that are directly relevant: {chunk_text}. If no sentences are relevant, output: IRRELEVANT." Inject compressed excerpt instead of full chunk. Skip compression if chunk &lt; 100 tokens (already short). Use cheap model (Haiku) for compression to keep cost low. Track compression_ratio (tokens_after/tokens_before) in Analytics Engine; target &gt; 40% reduction. A/B test: measure faithfulness scores (AT09) with vs without compression. Builder configures compression threshold.
+  </div>
+</div>
+<div id="G-AV37" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV37 [HIGH] — Cross-Encoder Re-Ranking of Retrieved KB Chunks</strong><br>
+    <em>The Gap:</em> Vectorize bi-encoder retrieval has high recall but mediocre precision — it returns roughly relevant chunks but cannot precisely rank them by relevance to the specific query. A cross-encoder model scores query-chunk pairs jointly, significantly improving ranking quality at the cost of additional compute.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement CrossEncoderReranker: after Vectorize returns top-20 chunks, call CF AI cross-encoder model (cross-encoder/ms-marco-MiniLM-L-6-v2 or equivalent) with {query, chunk} pairs in parallel (max 20 calls). Cross-encoder returns relevance score 0-1 for each pair. Sort chunks by cross-encoder score; inject top-K (default K=5) into context. Cache cross-encoder results for 5 minutes (identical query+chunk pairs). Track reranker_latency_ms and precision_improvement (eval comparison) in Analytics Engine. Default enabled for RAG-primary Spaces; builder can disable for latency-sensitive use cases.
+  </div>
+</div>
+<div id="G-AV38" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV38 [HIGH] — CF Workers CPU Time Limit Mitigation Strategy</strong><br>
+    <em>The Gap:</em> CF Standard Workers have a 30ms CPU time limit. Complex operations in Space Workers (large JSON serialization, markdown parsing, context assembly for long conversations) can approach or exceed this limit, causing CPUTimeExceededError and dropped requests with no fallback.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Audit all Worker code paths for CPU-expensive operations. Mitigation strategies: (1) Move heavy computation to Unbound Workers (up to 30s CPU, higher cost): batch processing, eval runs, bulk exports. (2) Precompute expensive artifacts: serialize component configs at deploy time rather than per-request. (3) Lazy loading: use dynamic import() to defer large module initialization. (4) Stream processing: process responses in TransformStream chunks rather than buffering entire response. (5) Monitor CPU time via performance.now() instrumentation. (6) Track cpu_time_ms per operation type in Analytics Engine; alert on P99 &gt; 20ms for standard Workers.
+  </div>
+</div>
+<div id="G-AV39" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV39 [CRITICAL] — CF Durable Object Class Migration Without Data Loss</strong><br>
+    <em>The Gap:</em> When Naelao needs to migrate a Durable Object class to a new implementation (rename class, change serialization format, restructure SQLite schema), CF requires the new class to share the same ID namespace. No migration path exists for transforming existing DO state to the new format without data loss or service interruption.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Follow CF DO class migration protocol: (1) Create new DO class (e.g., SpaceDOv2) alongside old class in the same Worker. (2) Deploy dual-write phase: requests routed to new class; on first access, SpaceDOv2 reads from old SpaceDO via RPC, migrates data to new schema, marks migration_complete flag. (3) Monitor migration_complete coverage (all active Spaces migrated = target 99.9%). (4) After full coverage, remove old DO class. (5) Each step deployed and validated separately. Test migration in staging with production data snapshot. Never rename DO class without migration protocol — CF cannot automatically map old IDs to new class names.
+  </div>
+</div>
+<div id="G-AV40" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV40 [HIGH] — CF Workers Subrequest Limit (1000/Request) Batching</strong><br>
+    <em>The Gap:</em> CF Workers are limited to 1000 subrequests per invocation (fetch() calls, DO RPC calls, service bindings). Complex agent orchestration (tool calls to multiple external APIs + DO storage + Vectorize + Analytics Engine writes) can approach or exceed this limit in a single request, causing OperationExceededLimit errors.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Audit high-subrequest paths in Space Workers. Mitigation: (1) Batch Analytics Engine writes: accumulate multiple events and write in a single multi-row batch call. (2) Batch external tool calls: if agent invokes multiple external APIs, fan out via single fetch with parallel sub-streams rather than N sequential fetches. (3) Cache DO reads: cache SpaceDO config reads in Worker memory for request duration to avoid repeated DO RPC calls. (4) Instrument subrequest counting via proxy wrapper on fetch(). (5) Alert when any request path exceeds 500 subrequests (50% threshold). Track max_subrequests_per_request in Analytics Engine.
+  </div>
+</div>
+<div id="G-AV41" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV41 [HIGH] — CF Workers Bundle Size and Cold Start Optimization</strong><br>
+    <em>The Gap:</em> Large Space Worker bundles (importing heavy libraries for markdown parsing, schema validation, crypto) increase V8 isolate cold start time from ~5ms to &gt;50ms. Cold starts impact the first request after a Worker idle period, creating latency spikes that degrade end-user experience.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement bundle size optimization strategy: (1) Tree-shake all imports — use named imports not wildcard (import {ajv} not import * as ajv). (2) Move heavy libraries (pdfjs, puppeteer) to separate Unbound Workers invoked only when needed. (3) Use dynamic import() for conditional features (only load crypto library if BYOK feature enabled for this Space). (4) Set up esbuild bundle analyzer in CI — alert if bundle grows &gt; 10% vs baseline. (5) Target bundle size &lt; 1MB compressed. Track cold_start_latency_ms in Analytics Engine with worker_was_cold flag. (6) Use CF Workers warmup strategy: scheduled Worker pings to keep isolates warm during business hours.
+  </div>
+</div>
+<div id="G-AV42" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV42 [HIGH] — Space Uptime and Latency SLA Definition</strong><br>
+    <em>The Gap:</em> Naelao does not publish formal uptime or latency SLAs to builders. Builders cannot negotiate contracts requiring uptime guarantees, and Naelao has no contractual obligation to maintain any specific reliability level. Enterprise builders cannot get SLA commitments for their end-users.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define and publish tiered SLAs: Free (best-effort, no SLA), Pro (99.5% uptime/month, P99 &lt; 2s agent response), Enterprise (99.9% uptime/month, P99 &lt; 1s agent response, dedicated support). SLA measurement: monthly uptime = (minutes - downtime_minutes) / minutes. Downtime = any period where &gt;1% of requests return 5xx for &gt;5 consecutive minutes. Track via synthetic monitoring (AU39). SLA breach: Pro receives 1-week credit; Enterprise receives 1-month credit. Publish SLA metrics at status.naelao.com (AA43). Enterprise SLA contractually binding via Naelao Master Service Agreement.
+  </div>
+</div>
+<div id="G-AV43" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV43 [HIGH] — WebSocket Client Reconnection with Session Continuity</strong><br>
+    <em>The Gap:</em> The WebSocket client SDK reconnects on disconnect but has no exponential backoff, no session continuity (messages sent during disconnect are queued but their delivery is not guaranteed to the reconnected client), and no cap on reconnection attempts.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement client-side ReconnectionManager: on WebSocket close event, attempt reconnection with exponential backoff: delays = [1s, 2s, 4s, 8s, 16s, 30s, 30s...] capped at 30s. Max attempts: 20 (10-minute window). On reconnect, send reconnect message: { type: "reconnect", session_id, last_received_message_id }. Server-side: SpaceDO holds message queue per session (last 50 messages, 5-minute TTL). On reconnect RPC: return messages after last_received_message_id. Client replays them. Show "Reconnecting..." indicator in Space UI. After 20 failed attempts: show "Connection lost — please refresh" with manual reconnect button.
+  </div>
+</div>
+<div id="G-AV44" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV44 [HIGH] — DO Hibernation Cold Start Latency Mitigation</strong><br>
+    <em>The Gap:</em> Cold-starting a hibernated SpaceDO (loading SQLite from storage, re-initializing in-memory state, re-establishing connections) adds 200-400ms to the first request after a period of inactivity. For Spaces used sporadically, every user interaction may incur this penalty.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement cold start mitigation: (1) Lazy initialization: load only the minimum required state synchronously (space_id, plan_tier, config_version); defer full config deserialization to first actual operation. (2) State caching: pre-warm critical DOs via scheduled Worker pings every 60s during business hours (builder-configurable: always-warm option on paid plans). (3) Progressive hydration: return immediately with cached config from KV (5s TTL) while DO warms up in background. (4) DO locality: ensure SpaceDO is co-located with its most common callers via Smart Placement (AT14). Track cold_start_latency_ms and cold_start_rate in Analytics Engine.
+  </div>
+</div>
+<div id="G-AV45" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV45 [MEDIUM] — Parent-Document Retrieval Pattern for KB Chunks</strong><br>
+    <em>The Gap:</em> KB documents are chunked into small segments (200-500 tokens) for indexing precision, but these small chunks often lack the surrounding context needed for a coherent answer. Injecting only the matched chunk misses the broader document context that makes the chunk meaningful.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement parent-document retrieval: store two representations per KB document: (1) child chunks (200-500 tokens) in Vectorize for fine-grained retrieval, (2) parent documents (full doc or 2000-token parent sections) in SpaceDO SQLite. Each child chunk stores parent_id. Retrieval flow: Vectorize returns child chunks → look up parent_ids → fetch parent documents from SQLite → inject parent text into context (deduped if multiple children from same parent). Net effect: precise retrieval (via small chunks) with rich context (via large parents). Track context_length_with_vs_without_parent in Analytics Engine to measure token cost trade-off.
+  </div>
+</div>
+<div id="G-AV46" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV46 [HIGH] — API Response Pagination Standards (Cursor-Based)</strong><br>
+    <em>The Gap:</em> Naelao list APIs (GET /api/spaces, GET /api/spaces/{id}/sessions, GET /api/spaces/{id}/kb/docs) return all results without pagination or return offset-based pagination. At scale (millions of Spaces, thousands of sessions), offset-based pagination causes full table scans and returns inconsistent results during concurrent writes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Standardize all list APIs on cursor-based pagination: response = { data: [...], next_cursor: "opaque_base64_cursor", has_more: bool }. Cursor encodes: last_seen_id + sort_direction. Next request: GET /api/spaces?cursor={next_cursor}&amp;limit=100 (max 100). Server decodes cursor to: SELECT * FROM spaces WHERE id &gt; last_seen_id ORDER BY id ASC LIMIT 101. Return has_more: true if 101 results found (omit 101st from response). Cursor is opaque to clients. Document pagination in OpenAPI spec (AU18). SDK auto-pagination helpers auto-follow cursors. Ensure consistent ordering for stable cursors (use immutable ID, not updated_at).
+  </div>
+</div>
+<div id="G-AV47" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV47 [MEDIUM] — Trial Extension Policy and Manual Override</strong><br>
+    <em>The Gap:</em> Naelao trials expire after a fixed period with no mechanism for the sales team to manually extend a trial for a promising prospect, A/B test different trial lengths, or grant permanent free access to select accounts (investors, design partners, press).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement TrialExtensionDO: admin API POST /admin/accounts/{id}/trial with { extend_days: 14, reason: "enterprise_prospect", authorized_by: "sales_rep_id" }. AccountDO updates trial_ends_at and logs extension in audit trail. Support special account types: INVESTOR (no expiry, free plan), DESIGN_PARTNER (Pro plan features, no charge), PRESS (Pro plan, watermark-free). Trial length A/B test: assign 30% of new signups to 21-day trial vs 14-day control; measure conversion rate delta. Admin dashboard: list of accounts with extended trials, authorization details, conversion outcome tracking.
+  </div>
+</div>
+<div id="G-AV48" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV48 [HIGH] — Builder API Key Zero-Downtime Rotation</strong><br>
+    <em>The Gap:</em> Builder API key rotation requires deleting the current key and creating a new one, creating a gap where neither key is valid and any automation using the old key breaks. No overlap/transition period or zero-downtime rotation flow exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement API key rotation: builder clicks "Rotate Key" in dashboard. System issues new_key immediately (both old_key and new_key valid simultaneously). Old key marked as rotating (state: ROTATING) in AccountDO. ROTATING keys: remain valid for 24 hours with X-Key-Expiry response header warning. After 24h: old key transitions to REVOKED state. Builder dashboard shows countdown to old key expiry. Automated rotation option: builder provides webhook; Naelao calls webhook with new key before revoking old. Track key_rotation events in immutable audit log. Alert if ROTATING key is still being used within 1 hour of expiry.
+  </div>
+</div>
+<div id="G-AV49" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV49 [HIGH] — Negative Feedback Loop for KB Retrieval Improvement</strong><br>
+    <em>The Gap:</em> End-user thumbs-down on an agent response contains valuable signal that the retrieval was poor (wrong sources) or the generation was wrong (right sources, bad answer). Neither signal is captured for KB improvement. Builder cannot identify which KB documents are causing poor responses.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement FeedbackCapture: on thumbs-down, capture: session_id, message_id, retrieved_chunk_ids, user_feedback_type (wrong_info/not_helpful/off_topic). Store in SpaceDO SQLite feedback table. Aggregate: per chunk_id, count negative_feedback_count / total_retrievals = retrieval_failure_rate. Surface to builder: KB document quality report showing "Document X has been retrieved 50 times but received thumbs-down 30 times (60% failure rate)." Suggest actions: "Consider revising or removing this document." Optional: use feedback to fine-tune embedding model (AT01) for retrieval improvement. Track feedback_to_action_rate as builder engagement metric.
+  </div>
+</div>
+<div id="G-AV50" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AV50 [HIGH] — Space Configuration Version History and Point-in-Time Restore</strong><br>
+    <em>The Gap:</em> Space configuration changes (AU41 captures who/what/when) but does not support point-in-time restore of the entire Space configuration to a past state. A builder who makes 5 bad changes cannot restore to "the working config from yesterday" — they must manually undo each change.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ConfigVersionHistory: each published Space config snapshot stored in SpaceDO SQLite config_snapshots table with snapshot_id, config_json, published_at, published_by, changelog_id. Keep last 90 snapshots. Builder dashboard: Config History tab shows timeline of snapshots with diff summary. "Restore to this version" button: sets current config to selected snapshot's config_json, creates new changelog entry (restored_from: snapshot_id). Compare any two snapshots side-by-side (unified diff view). Export any historical config snapshot as JSON. Weekly config backup to R2 as additional safety net beyond DO storage.
+  </div>
+</div>
 </section>
 
 
