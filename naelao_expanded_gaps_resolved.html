@@ -61670,6 +61670,460 @@ When bumping the date, bump it everywhere in one change and re-run the full test
     <em>Required Fix:</em> Instrument streaming pipeline: on stream start, record stream_start_at. On first token received from LLM, record ttft_ms = now - stream_start_at. Count tokens as they stream, record throughput_tokens_per_sec. On stream end: record stream_complete_at, total_tokens, stream_duration_ms. On stream error/abort: record stream_interrupted = true. Write all metrics to Analytics Engine per session. Builder dashboard: TTFT histogram (P50/P95/P99), throughput chart, interruption rate. Surface per-model TTFT comparison to inform model selection. Alert when P95 TTFT &gt; 3s (SLA threshold). Track TTFT improvement over time as optimization initiatives are implemented. Goal: P95 TTFT &lt; 800ms.
   </div>
 </div>
+
+<section id="appendix-ay">
+<h2>Appendix AY — Human-in-the-Loop, Platform KPIs, Frontend Patterns, End-User UX, DO Patterns, Events &amp; Automation</h2>
+
+<div id="G-AY01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY01 [CRITICAL] — Human-in-the-Loop (HITL) Approval Workflow</strong><br>
+    <em>The Gap:</em> Agents can execute consequential actions (send emails, book appointments, process payments, update CRM) without any human review or approval step. For high-stakes actions, builders need the ability to require human approval before the agent proceeds, but no HITL workflow mechanism exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement HITLApprovalDO: when agent tool call is marked require_approval: true, agent pauses and emits approval_request event: { approval_id, action_description, action_payload, requester: session_id, created_at }. Approval request stored in HITLApprovalDO. Notification sent to builder-configured approvers (email, Slack, in-app). Approver sees: what action, why, and impact. Approves or rejects with optional comment. Timeout: auto-reject after builder-configured window (default 1 hour). On approval: agent resumes from paused state with approved_by context. On rejection: agent receives rejection reason and re-plans. Track approval_latency_ms and approval_rate per action_type.
+  </div>
+</div>
+<div id="G-AY02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY02 [HIGH] — Agent-to-Agent Handoff Protocol Across Spaces</strong><br>
+    <em>The Gap:</em> When an end-user's request exceeds a Space agent's knowledge or capability (e.g., support agent referring to a specialist agent in another Space), no structured handoff protocol exists. The end-user must start a new conversation in a different Space and re-explain their context.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement AgentHandoff: agent emits handoff_intent { target_space_id, reason, context_summary, user_consent_required }. If user_consent_required: show end-user consent dialog "Transfer you to [Space Name]?". On consent: create HandoffToken (JWT with session context summary, original space_id, handoff_reason, 15-minute expiry). Redirect end-user to target Space with handoff_token param. Target Space: on session init with handoff_token, inject context_summary into system prompt "User transferred from [Space A]: {summary}." Track handoff_initiated, handoff_completed, handoff_declined rates. Requires cross-Space data sharing grant (AT29) between source and target Spaces.
+  </div>
+</div>
+<div id="G-AY03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY03 [HIGH] — Escalation to Human Agent (Support Handoff)</strong><br>
+    <em>The Gap:</em> When an AI agent cannot resolve an end-user's issue, there is no structured escalation path to a human agent. End-users either get a dead-end response ("I cannot help with that") or must find support channels themselves. Human handoff is a fundamental requirement for enterprise support Spaces.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement LiveChatHandoff: builder configures handoff_provider in Space settings (Intercom, Zendesk, HubSpot, generic webhook). Agent emits escalate_to_human tool call when: confidence &lt; threshold, end-user explicitly requests human, or critical issue detected. Handoff payload: conversation transcript, user profile, issue summary. LiveChatDO initiates handoff: creates Intercom conversation (or posts to webhook) with context. End-user sees: "Connecting you to a human agent..." with estimated wait time. Session handoff: WebSocket switches to human chat mode (no AI calls). Track escalation_rate, escalation_resolution_rate, time_to_human per Space.
+  </div>
+</div>
+<div id="G-AY04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY04 [MEDIUM] — Collaborative Multi-User Space Sessions</strong><br>
+    <em>The Gap:</em> Spaces support one end-user per session. Use cases requiring multiple participants in the same agent conversation (team brainstorming, collaborative document drafting, joint customer calls) have no supported path. Each user must start their own separate conversation.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement CollaborativeSession: builder enables multi_user_session in Space config. Session creator shares join_link (UUID-based, expiry configurable). Up to 5 users can join same session. Each user's messages attributed to their user_id in conversation history. Agent sees all messages in shared context: "User A: ..., User B: ..." SpaceDO routes session messages to all connected clients via WebSocket. Cursor/presence indicators (AX47) show who is currently typing. Session transcript attributed to all participants for analytics. Permission model: creator can remove participants. Track multi_user_session_count, avg_participants_per_session per Space.
+  </div>
+</div>
+<div id="G-AY05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY05 [HIGH] — AI Agent Audit Trail for Automated Decisions</strong><br>
+    <em>The Gap:</em> For regulated industries, every automated decision made by an AI agent (approve/reject, classify, route, recommend) must be auditable with a full trail of: input data, reasoning chain, output decision, confidence score, model version, and human review flag. No such audit trail exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement AgentDecisionLog: for any agent tool call tagged as automated_decision: true (builder-configurable per tool), log full audit entry to AgentAuditDO: { decision_id, session_id, user_id, tool_id, input_data_hash, reasoning_steps, decision_output, confidence_score, model_version, prompt_version, human_reviewed: false, timestamp }. Store 7-year retention (regulatory requirement). GDPR Art.22 automated decision transparency: include decision_id in response to end-user; they can request full audit entry via Art.15 access right (AO30). EU AI Act high-risk systems: mandatory audit trail. Builder can mark decisions for human review queue (AY01).
+  </div>
+</div>
+<div id="G-AY06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY06 [HIGH] — Agent Bias Detection and Fairness Monitoring</strong><br>
+    <em>The Gap:</em> AI agents may exhibit biased behavior that treats end-users differently based on protected characteristics (gender, ethnicity, age, religion) detectable from conversation content. No bias detection or fairness monitoring system exists for Naelao-hosted agents.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement FairnessMonitor: sample 1% of agent responses for bias audit. For each sampled response: extract apparent demographic signals from conversation, run bias classifier model (LLM-as-judge: "Does this response treat the user differently based on their apparent demographic characteristics?"). Flag responses with bias_score &gt; 0.7. Weekly report to builder: bias_flag_rate by response category. Platform-level: aggregate bias flags across all Spaces; if Space exceeds threshold, notify builder and Naelao trust team. Provide builder with "Bias Audit" dashboard panel. Red team testing (AW28) includes demographic parity testing scenarios. Document bias monitoring methodology on trust center.
+  </div>
+</div>
+<div id="G-AY07" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY07 [HIGH] — Agent Confidence Scoring and Uncertainty Expression</strong><br>
+    <em>The Gap:</em> Agents state answers confidently even when their knowledge is incomplete or the question is outside their expertise. No confidence scoring system allows agents to express uncertainty ("I'm not sure about this — you may want to verify"), reducing end-user trust when agents hallucinate.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ConfidenceScorer: after generating response, run secondary LLM call: "On a scale of 0-10, how confident are you in the accuracy of your previous response? Provide score and reason." If confidence_score &lt; 5: append to response "I want to note I'm less certain about this answer — please verify with an authoritative source." If confidence_score &lt; 3: offer to escalate to human (AY03). Log confidence_score per response in SpaceDO. Builder configures confidence_threshold below which disclaimer is shown. Track low_confidence_rate per Space. Surface low-confidence response patterns in builder observability dashboard for KB improvement targeting.
+  </div>
+</div>
+<div id="G-AY08" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY08 [HIGH] — Platform-Level KPI Dashboard (DAU / MAU / Sessions)</strong><br>
+    <em>The Gap:</em> No centralized platform-level KPI dashboard exists for Naelao leadership. Total platform DAU (Daily Active Users — end-users active in any Space), MAU, active Spaces, total sessions, total tokens consumed, and platform revenue are not tracked in a single view.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build NaelaoKPIDO: daily CF Workflow aggregates Analytics Engine data across all Spaces into platform_daily_kpis(date, total_dau, total_mau, active_spaces, total_sessions, total_tokens, total_revenue_usd, new_builder_signups, active_builders). Compute DAU/MAU ratio (engagement metric). Store in D1 for SQL querying. Build internal leadership dashboard at internal.naelao.dev/kpis (CF Access protected). Charts: 7-day rolling metrics, week-over-week growth rate, top 100 Spaces by session count. Alerts: DAU drops &gt;10% WoW → Slack alert to leadership. Export weekly KPI report email to leadership team every Monday 9am.
+  </div>
+</div>
+<div id="G-AY09" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY09 [HIGH] — Product Analytics OKR Tracking</strong><br>
+    <em>The Gap:</em> Naelao has no formal system for tracking Objectives and Key Results (OKRs). Product and engineering teams cannot measure progress toward quarterly targets (e.g., "Launch 10 new enterprise Spaces," "Achieve P95 TTFT &lt; 800ms"). Decisions are made without measurable goals.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build OKRDashboard: define OKRs quarterly in OKRConfigDO (JSON: { objective, key_results: [{ metric, target, current, data_source }] }). Key result data sources: Analytics Engine queries, D1 queries, Stripe API. Daily CF Workflow updates current values for each KR from its data_source. OKR dashboard at internal.naelao.dev/okrs shows progress bars per KR (red &lt; 70%, yellow 70-90%, green &gt; 90%). Weekly OKR update email to team leads. Link OKRs to Jira epics for initiative tracking. End-of-quarter OKR retrospective: auto-generate markdown report with final scores. Persist OKR history for trend analysis across quarters.
+  </div>
+</div>
+<div id="G-AY10" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY10 [HIGH] — Real-User Monitoring (RUM) for Space Shells</strong><br>
+    <em>The Gap:</em> No Real-User Monitoring exists for Space shell performance. Core Web Vitals (LCP, FID, CLS), JavaScript error rates, and page load time are not measured from actual end-user browsers. Without RUM, performance optimization is based on synthetic benchmarks that may not reflect real-world conditions.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement RUM SDK in Space shell: inject lightweight RUM script (&lt; 5KB) that collects: LCP (Largest Contentful Paint), FID (First Input Delay), CLS (Cumulative Layout Shift), TTFB (Time to First Byte), page load time. Reports to /api/spaces/{id}/rum endpoint as non-blocking beacon (navigator.sendBeacon). RumDO aggregates metrics by Space with P50/P75/P95 percentiles. Builder dashboard: Core Web Vitals panel with green/yellow/red traffic light per metric (Google's thresholds). Alert builder when any Core Web Vital regresses from green to yellow. Track RUM metrics per device type (mobile/desktop), connection speed, and browser.
+  </div>
+</div>
+<div id="G-AY11" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY11 [HIGH] — Platform Infrastructure Cost Attribution and Margin Tracking</strong><br>
+    <em>The Gap:</em> Naelao has no system tracking the actual cost of serving each Space. CF Worker invocation costs, DO read/write costs, R2 storage costs, Vectorize query costs, and LLM API costs are not attributed per Space. Platform margin per builder plan tier is unknown.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build CostAttributionDO (distinct from builder-facing AU32): track Naelao's internal costs per Space. CF costs: API-measured Worker request count × $0.50/million, DO read/write counts × CF rates. LLM costs: tokens × provider rate (tracked per provider in AT05 fallback chain). R2 costs: storage GB × $0.015, operations × rates. Vectorize: query count × rates. Sum into naelao_cost_per_space per day. Revenue per Space: builder plan fee / active_spaces. Margin = revenue - cost. Internal dashboard: margin by plan tier, identify loss-leader Spaces, pricing adjustment signals. Alert when platform gross margin drops below target threshold.
+  </div>
+</div>
+<div id="G-AY12" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY12 [HIGH] — Builder Lifetime Value Prediction Model</strong><br>
+    <em>The Gap:</em> Naelao cannot predict which new builders will become high-value long-term customers. Without LTV prediction, marketing spend and onboarding investment cannot be prioritized toward high-potential builders. Cohort LTV (AU38/G-AT38) tracks historical LTV but does not predict future LTV.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement LTVPredictionDO: train LTV prediction model on historical builder cohort data (feature: onboarding_steps_completed, days_to_first_kb_doc, days_to_first_end_user, Space_session_count_day7, plan_tier, acquisition_channel; label: LTV at 12 months). Retrain monthly. At day 14 of builder journey, compute predicted_ltv_12m for each builder. Segment: high-LTV (&gt;$500) → trigger enterprise sales outreach; medium-LTV ($100-500) → proactive success email sequence; low-LTV (&lt;$100) → self-serve resources. Track ltv_prediction_accuracy (predicted vs actual at 12 months) to validate model quality.
+  </div>
+</div>
+<div id="G-AY13" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY13 [HIGH] — Product-Led Growth (PLG) Viral Loop Instrumentation</strong><br>
+    <em>The Gap:</em> Naelao has no instrumentation for its viral growth loops: when end-users of a Space become builders themselves ("powered by Naelao" branding, word-of-mouth from Space usage). This PLG loop is the most capital-efficient growth channel but is currently unmeasured.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Instrument PLG virality: (1) "Powered by Naelao" footer on all Space shells (builder-removable on Pro+ plans). (2) Track end_user_to_builder_conversion: when an end-user of Space A signs up as a Naelao builder, attribute via referrer URL or UTM. (3) Virality coefficient: new builders per month / active end-users last month (k-factor). (4) Social sharing: track Space share_link_clicked events. (5) Builder signup source attribution: which Spaces are generating the most builder signups. Dashboard in NaelaoKPIDO (AY08). Goal: k-factor &gt; 0.1 (10% of end-users eventually become builders). Alert growth team when k-factor trend line is negative.
+  </div>
+</div>
+<div id="G-AY14" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY14 [MEDIUM] — Web Components Standard for Space UI Library</strong><br>
+    <em>The Gap:</em> Space UI components are framework-specific (React). Builders who want to use their Space's components in a Vue, Angular, or plain HTML context cannot do so. The component library is not portable across frameworks, creating lock-in and limiting integration options.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement Space UI components as Web Components (Custom Elements v1 standard): each component compiled to a self-contained custom element (&lt;naelao-chat&gt;, &lt;naelao-kb-search&gt;, &lt;naelao-agent-form&gt;). Web Components work in any framework (React, Vue, Angular, plain HTML). Shadow DOM for style isolation (prevents parent page CSS from leaking into component). Properties and events via standard DOM APIs. Builder-facing: include &lt;script type="module" src="https://components.naelao.com/v1/all.js"&gt; to get all components. Framework adapters: @naelao/react (auto-wraps Web Components), @naelao/vue. Track component_framework_usage (web-component vs react vs vue) to prioritize framework adapter investment.
+  </div>
+</div>
+<div id="G-AY15" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY15 [MEDIUM] — Space Shell Micro-Frontend Architecture</strong><br>
+    <em>The Gap:</em> The Space shell is a monolith — all features (chat, KB search, user profile, notifications) are bundled together. As the feature set grows, the monolith becomes harder to maintain, test, and optimize individually. Teams cannot independently deploy specific Space shell features.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Refactor Space shell to micro-frontend architecture: each feature area (Chat, KB, Profile, Notifications, Billing) compiled as independent microfrontend module. Module Federation (Webpack 5) enables independent deployment of each microfrontend. Shell (app-shell) orchestrates module loading. Each microfrontend has its own bundle, own CI pipeline, own deployment schedule. Communication between microfrontends via custom event bus. Shared state (user session, theme) via shared-state microfrontend. Feature flag (AX08) controls which microfrontend version each Space loads. Benefit: Chat team can deploy improvements independently of Billing team.
+  </div>
+</div>
+<div id="G-AY16" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY16 [HIGH] — Space Shell Content Security Policy (CSP) Builder Control</strong><br>
+    <em>The Gap:</em> Space shells have a platform-default Content Security Policy. Builders who embed third-party widgets (Calendly, Stripe, YouTube) in their Space need to whitelist those domains in CSP. Currently there is no builder-configurable CSP extension mechanism.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement builder-configurable CSP extensions: builder lists trusted domains in Space Security Settings: { script_src: ["cdn.calendly.com"], frame_src: ["youtube.com"], connect_src: ["api.stripe.com"] }. SpaceEntryWorker merges builder additions with platform base CSP: base CSP (restrictive) + builder additions. Validate builder CSP additions: reject wildcard (*), ban known malicious domains (blocklist). CSP violations logged to browser console + violation reports sent to /api/spaces/{id}/csp-reports endpoint. Report violations in builder security dashboard. Alert builder on CSP violation spike. Enterprise builders can override more CSP directives for complex integrations.
+  </div>
+</div>
+<div id="G-AY17" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY17 [MEDIUM] — Optimistic UI Updates for Agent Interactions</strong><br>
+    <em>The Gap:</em> When an end-user sends a message, the UI waits for the first streaming token before showing any feedback. On slow networks or during LLM queue waits (200-500ms), the UI appears frozen, creating poor UX. No optimistic UI patterns exist in the Space shell.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement optimistic UI in Space shell: on user message send: (1) immediately show user message in conversation (optimistic, before server confirms receipt), (2) show typing indicator within 50ms, (3) show "Thinking..." placeholder for agent response. First streaming token replaces placeholder. If request fails: remove user message from optimistic state, show error toast. For tool calls (visible in UI if builder enables): immediately show "Searching knowledge base..." action card when tool call detected in stream. Reduce perceived latency from 200-500ms to &lt; 50ms. Track perceived_latency_improvement via RUM comparison (AY10).
+  </div>
+</div>
+<div id="G-AY18" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY18 [HIGH] — Accessibility Audit and WCAG 2.2 AA Compliance</strong><br>
+    <em>The Gap:</em> Space shells and the builder dashboard have not undergone WCAG 2.2 AA accessibility auditing. End-users with disabilities (screen reader users, keyboard-only navigation, color vision deficiencies) may be unable to use Spaces. This creates legal exposure (ADA, European Accessibility Act) and excludes users.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Conduct comprehensive WCAG 2.2 AA audit: (1) automated: run axe-core on all Space shell components and builder dashboard pages in CI (zero critical violations policy). (2) Manual: keyboard navigation testing (all interactive elements reachable, logical tab order, visible focus indicators). (3) Screen reader: NVDA + Chrome, JAWS + IE, VoiceOver + Safari — all agent interactions fully navigable. (4) Color contrast: all text meets 4.5:1 ratio. (5) Streaming responses: ARIA live regions for screen reader announcements of new agent tokens. Fix all violations before launch. Annual re-audit. Publish accessibility conformance report (VPAT) on docs.naelao.com.
+  </div>
+</div>
+<div id="G-AY19" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY19 [HIGH] — End-User Conversation History and Persistence</strong><br>
+    <em>The Gap:</em> End-users have no access to their past conversations with a Space agent. Returning to a Space starts a fresh session with no memory of prior interactions (beyond episodic memory injection). End-users cannot review what was said, continue a previous conversation, or share a conversation.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ConversationHistory UI for end-users: sidebar panel in Space shell showing past sessions (title auto-generated from first message, truncated). Click session to view full conversation transcript. "Continue" button resumes session with context injection: summarized prior conversation appended to system prompt. Conversation search: end-user can search their message history. Share conversation: generate shareable read-only URL (opt-in, builder configures sharing permission). Delete conversation: end-user exercises GDPR right to erasure for specific sessions. Builder controls retention: max past sessions visible to end-user (default: last 20).
+  </div>
+</div>
+<div id="G-AY20" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY20 [HIGH] — End-User Onboarding Tour for New Space Visitors</strong><br>
+    <em>The Gap:</em> First-time end-users visiting a Space have no guided onboarding. They see a blank chat interface with no explanation of what the Space does, what they can ask, or how to get the most value. High first-session abandonment reflects this friction.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build FirstSessionTour: builder configures in Space settings: { welcome_message: "Welcome! I'm an AI assistant for...", example_prompts: ["Try asking: How do I...", "Or try: What is..."], onboarding_steps: [{highlight: "chat-input", text: "Type your question here"}] }. FirstSessionDO tracks whether end-user has completed tour (keyed by session fingerprint). On first visit: show welcome overlay → 3-step product tour (Shepherd.js or custom) → dismiss with "Start chatting." Pre-fill chat with example_prompt on click. Repeat visitors skip tour (optional: re-show if &gt;30 days gap). Track tour_started, tour_completed, tour_abandoned, first_message_after_tour rates.
+  </div>
+</div>
+<div id="G-AY21" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY21 [MEDIUM] — End-User Message Bookmarking and Saving</strong><br>
+    <em>The Gap:</em> End-users cannot save or bookmark specific agent responses they find valuable. Useful answers are lost when the conversation scroll goes out of view or the session ends. No personal knowledge management layer exists for end-users within a Space.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add bookmark capability to Space chat: hover over agent message → bookmark icon appears. Click to save to BookmarksDO(user_id, space_id). Bookmarks panel: bell icon or dedicated tab showing all bookmarked messages with search and tagging (user-defined tags: "To-do", "Reference", "Important"). Export bookmarks as PDF or text. Share bookmark: generate read-only shareable link. Builder can disable bookmarking (for sensitive content Spaces). Bookmarks included in end-user GDPR data export (AO30). Track bookmark_created_count and bookmark_export_rate per Space. Bookmarks persist across sessions (stored in SpaceDO SQLite).
+  </div>
+</div>
+<div id="G-AY22" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY22 [MEDIUM] — Space Share and Referral by End-Users</strong><br>
+    <em>The Gap:</em> End-users who love a Space have no native way to share it with friends or colleagues from within the Space. Word-of-mouth sharing, a key growth driver, is entirely organic and untracked. No referral mechanism exists at the end-user level.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add ShareSpace button to Space UI: pre-filled share message with Space description and URL. Platforms: copy link, share to WhatsApp, Twitter/X, LinkedIn, email. Track referral attribution: append ?ref={user_id_hash} to share links. When shared link is clicked and new end-user signs up or starts session, attribute to referral source. Builder analytics: top referring end-users, viral coefficient per Space. Reward: builder can configure referral reward (loyalty points AX40 for successful referrals). Share modal shows: "Help others discover [Space name]!" Share count shown on Space profile page (optional, builder can hide).
+  </div>
+</div>
+<div id="G-AY23" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY23 [MEDIUM] — End-User Report Generation and Export</strong><br>
+    <em>The Gap:</em> After a productive agent session (research summary, analysis, diagnosis), end-users have no way to export the conversation or generated content in a formatted, shareable format. Copy-pasting is the only option, which loses formatting and context.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add "Export Session" to Space chat UI: formats include PDF (conversation rendered via print CSS), Markdown (raw conversation), JSON (structured data for developers). PDF generation via browser print dialog (no server-side required for simple cases) or CF Container Puppeteer for formatted report (AX31). Include: Space name, session date, conversation transcript, sources cited. Custom export templates: builder defines export template matching Space use case ("Analysis Report", "Support Case Summary"). Track session_exported_count per format per Space. Allow end-user to name exports. Enable export sharing: send export link to email (integrates with AW30 email system).
+  </div>
+</div>
+<div id="G-AY24" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY24 [MEDIUM] — End-User Rating and Review for Spaces</strong><br>
+    <em>The Gap:</em> End-users have no way to rate or review a Space they've used. Builder marketplace listings have star ratings but there's no mechanism for end-users of a deployed Space to leave ratings/reviews that builders can use to improve quality and that prospective builders can use to evaluate SpaceTypes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SpaceReview: after each session, show optional 1-5 star + text rating prompt (not intrusive — appears 30 seconds after session end, dismissible). RatingDO stores reviews (user_id_hash, rating, review_text, space_id, session_id). Aggregate: space_rating_avg, rating_count shown on Space profile and marketplace. Reviews moderated (AK series moderation pipeline) for inappropriate content. Builder can respond to reviews (builder response shown publicly). Alerts: notify builder when new review posted, when rating drops below 4 stars average. Builder dashboard: review analysis (common themes from negative reviews via LLM clustering).
+  </div>
+</div>
+<div id="G-AY25" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY25 [CRITICAL] — Cross-DO Transaction Coordination (2-Phase Commit)</strong><br>
+    <em>The Gap:</em> Operations that span multiple Durable Objects (e.g., deduct credits from AccountDO AND create session record in SpaceDO — atomically) have no transactional guarantee. A failure between the two DO calls leaves the system in an inconsistent state (credits deducted but session not created, or vice versa).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement compensating transaction pattern (saga): for each multi-DO operation, define explicit compensating actions. Example: create_session saga: (1) deduct_credits(AccountDO) → success → (2) create_session(SpaceDO) → if fails → compensate via restore_credits(AccountDO). TransactionCoordinatorDO manages saga state: { saga_id, steps: [{do, action, status}], compensation_steps }. Persist saga state before each step (durable). On step failure: execute compensation steps in reverse. Two-phase commit alternative for future CF support. Log all saga outcomes in Analytics Engine. Document which operations use sagas in architecture docs.
+  </div>
+</div>
+<div id="G-AY26" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY26 [HIGH] — SpaceDO SQLite Connection Lifecycle and Pool Management</strong><br>
+    <em>The Gap:</em> SpaceDO SQLite connections are opened in the DO constructor and held for the DO's lifetime. No connection lifecycle management, health checking, or reconnection logic exists. If the SQLite connection is corrupted or enters an error state, the DO must be evicted and restarted to recover.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SQLite connection health management: wrap all SQLite operations in try-catch. On SQLite error (disk full, corruption, syntax error): (1) log error type to Analytics Engine, (2) for transient errors (SQLITE_BUSY): retry with exponential backoff (max 3 retries), (3) for fatal errors (SQLITE_CORRUPT): alert ops team immediately via PagerDuty; attempt WAL checkpoint and recovery; if unrecoverable, restore from latest R2 snapshot (AU02 pattern). Regular health check: every 60s, run SELECT 1 to verify connection. Track sqlite_error_rate, sqlite_recovery_attempts per Space.
+  </div>
+</div>
+<div id="G-AY27" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY27 [HIGH] — Vectorize Index Warm-Up Strategy</strong><br>
+    <em>The Gap:</em> Vectorize indexes have a cold-start latency of 100-200ms for the first query after a period of inactivity. Spaces with low traffic experience this cold-start on every user's first search, adding perceptible latency to KB retrieval. No index warm-up strategy exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement Vectorize warm-up: pre-warm indexes for active Spaces (last_session within 24h) via scheduled Worker. Warm-up query: run a generic query vector (zero vector or most common query embedding) against each active index every 5 minutes. CF Vectorize caches the index in memory after first query; warm-up ensures it stays cached. For newly created Spaces: warm-up triggered immediately after first KB doc indexed. Track vectorize_cold_start_rate (first query latency &gt; 150ms) in Analytics Engine. Alert when cold_start_rate &gt; 20% for any Space. Cost: warm-up queries minimal (0.01 tokens each). Disable warm-up for Spaces inactive &gt; 7 days (hibernation mode).
+  </div>
+</div>
+<div id="G-AY28" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY28 [HIGH] — R2 Pre-Signed URL Security and Expiry Management</strong><br>
+    <em>The Gap:</em> R2 pre-signed URLs for accessing Space assets (KB documents, generated reports, user uploads) have no standardized expiry policy, scope restriction, or revocation mechanism. A leaked pre-signed URL provides permanent access to the resource until CF side-steps the signature.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Standardize pre-signed URL policy: (1) Short-lived downloads (user file access): 15-minute expiry. (2) Builder exports: 24-hour expiry. (3) Public assets (component library): no pre-signing needed (public R2 bucket). (4) Revocation: store issued pre-signed URLs in SpaceDO SQLite presigned_urls(url_hash, object_key, expires_at, revoked). Before serving R2 object, verify presigned_url is not in revoked list (overhead: one DO read). (5) Scope: pre-signed URLs generated with minimal R2 permissions (read-only, specific key prefix). (6) Access log: log all pre-signed URL accesses to Analytics Engine. Alert on unusual access patterns (same URL accessed 100× in 1 hour).
+  </div>
+</div>
+<div id="G-AY29" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY29 [HIGH] — CF Workers KV Eventual Consistency Mitigations</strong><br>
+    <em>The Gap:</em> CF KV has ~60-second eventual consistency across global edge nodes. Code that writes to KV and immediately reads it may see stale data. Critical operations using KV (feature flags, rate limit config, Space status) may behave incorrectly during the consistency window.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Identify all KV usage patterns and classify by consistency requirement: (1) Strong consistency required (rate limit counters, session tokens): use Durable Objects instead of KV — DOs provide strong sequential consistency. (2) Weak consistency acceptable (feature flags, config cache, public KB metadata): use KV with explicit cache TTL awareness — code must handle stale reads gracefully. (3) Audit all KV reads: add comments marking consistency tier. (4) For KV writes that must be visible globally within 1s: use DO-first write + KV invalidation pattern (write to DO, schedule KV write, readers check DO first). Track kv_stale_read_incidents in incident log.
+  </div>
+</div>
+<div id="G-AY30" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY30 [HIGH] — Builder Multi-Space Batch Operations</strong><br>
+    <em>The Gap:</em> Builders managing many Spaces (agency with 50 client Spaces, enterprise with 20 product Spaces) must perform operations one Space at a time: bulk KB update, theme change across all Spaces, applying security policy changes. No batch operation capability exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement BatchOperationDO: builder selects multiple Spaces in dashboard (multi-select with filters: by plan tier, by SpaceType, by tag). Batch operations: (1) bulk_apply_theme: apply ThemeConfig to all selected Spaces, (2) bulk_kb_update: add/remove documents from all selected Spaces' KBs, (3) bulk_config_change: apply config delta to all selected Spaces, (4) bulk_publish: publish pending drafts on all selected Spaces. BatchDO orchestrates via CF Workflow. Progress: real-time progress bar (Spaces updated: X of Y). Rollback: if &gt;10% fail, offer rollback to previous state. Track batch_operation_count, batch_size, batch_failure_rate per operation type.
+  </div>
+</div>
+<div id="G-AY31" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY31 [HIGH] — Builder-Defined Event Triggers (If-This-Then-That)</strong><br>
+    <em>The Gap:</em> Builders cannot configure automatic reactions to Space events without custom code. Common patterns (send Slack message when new session starts, create CRM contact when user provides email, trigger webhook when agent confidence drops) require custom agent tools. No declarative event trigger system exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement TriggerDO: builder creates triggers via UI: { event: "session_started", condition: "user.metadata.plan == 'enterprise'", action: { type: "webhook", url: "...", payload_template: {...} } }. Events: session_started, session_ended, message_received, agent_run_completed, escalation_triggered, error_occurred, kb_doc_uploaded. Actions: webhook call, Slack message (AW33), email send (AW32), update user metadata, add loyalty points (AX40), create CRM record (AX44). Condition engine: simple expression language (no code). TriggerDO evaluates triggers on each event. Track trigger_fired_count, trigger_failure_rate per trigger. Max 20 triggers per Space.
+  </div>
+</div>
+<div id="G-AY32" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY32 [HIGH] — Space Change Event Webhooks for Builder Systems</strong><br>
+    <em>The Gap:</em> Builders using Naelao as a backend for their own systems need real-time notifications of Space events to keep their own databases in sync. No event webhook system exists for Space lifecycle events (Space created/deleted, config changed, new end-user, agent run completed) at the builder system integration level.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SpaceEventWebhook: builder registers webhook endpoints per event category in Space settings. EventDispatcherDO: on each Space lifecycle event, serialize event payload, add signature (AV22), deliver to registered endpoints via outbound HTTP. Event categories: space.config.changed, session.started, session.ended, agent.run.completed, user.created, kb.doc.uploaded, quota.threshold.reached. Payload: event_type, space_id, timestamp, data (event-specific). Retry on failure (AV22 pattern). Webhook log (AV23). Builder selects event categories to subscribe to (reduces noise). Track events_dispatched, events_failed per webhook endpoint.
+  </div>
+</div>
+<div id="G-AY33" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY33 [HIGH] — Platform-Level Event Bus for Internal Service Communication</strong><br>
+    <em>The Gap:</em> Naelao internal services communicate via direct DO RPC calls and CF Service Bindings. There is no platform-level event bus for decoupled service communication. Adding a new consumer of an existing event (e.g., "on session_ended, also update cohort analytics") requires modifying the event producer.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement NaelaoEventBus using CF Queues: each domain event published to domain-specific queue (naelao-session-events, naelao-billing-events, naelao-kb-events). Multiple consumer Workers subscribe independently. Event schema: { event_id, event_type, source_service, timestamp, payload }. Producer: fire-and-forget publish (no coupling to consumers). Consumer: idempotent processing with event_id deduplication in ConsumerDO SQLite. Dead letter queue for failed events. New consumers: add new queue binding without touching producer code. Track event_bus_throughput, consumer_lag per queue. Circuit breaker: if queue depth &gt; 100K, alert ops team.
+  </div>
+</div>
+<div id="G-AY34" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY34 [HIGH] — Scheduled Agent Runs (Cron-Based Automation)</strong><br>
+    <em>The Gap:</em> Agents can only run in response to end-user messages. Builders cannot configure scheduled agent runs (e.g., "run this agent at 9am every day to generate a summary report", "check for new KB content weekly"). Proactive/scheduled automation is impossible without custom infrastructure.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ScheduledAgentDO: builder creates scheduled tasks in Space settings: { cron: "0 9 * * 1", agent_message: "Generate this week's summary report", output_channel: "slack_channel_id | email | store_in_kb" }. CF Cron Triggers (scheduled Workers) evaluate cron expressions at minute granularity. On trigger: SpaceDO creates system session (no real end-user), runs agent with configured message. Output routed: to Slack (AW33), email (AW32), or stored as KB doc (for self-updating knowledge bases). Max 5 scheduled tasks per Space. Track scheduled_run_count, scheduled_run_failures per task. Alert builder on 3 consecutive failures.
+  </div>
+</div>
+<div id="G-AY35" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY35 [HIGH] — Space Analytics Real-Time Push to Builder Dashboard</strong><br>
+    <em>The Gap:</em> Builder analytics dashboards show data queried at page load. Metrics (active sessions, recent agent runs, live error rate) are stale the moment they are rendered. No real-time push of analytics updates to the builder dashboard exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement AnalyticsPushDO: builder dashboard maintains WebSocket connection to AnalyticsPushDO when dashboard is open. SpaceDO emits analytics events to AnalyticsPushDO via DO RPC on each significant event (session_start, agent_run_completed, error). AnalyticsPushDO aggregates events over 10-second windows and pushes batched updates to dashboard WebSocket. Dashboard components subscribe to analytics stream: live session count (real-time increment/decrement), last 5 agent runs (live feed), live error rate sparkline. Graceful degradation: if WebSocket disconnects, dashboard falls back to polling. Track realtime_dashboard_session_duration to measure engagement.
+  </div>
+</div>
+<div id="G-AY36" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY36 [HIGH] — Platform API Usage Analytics for Builders</strong><br>
+    <em>The Gap:</em> Builders who integrate Naelao via API have no visibility into their API usage patterns: which endpoints are called most, which have the highest error rates, latency percentiles per endpoint, and usage trends over time. They cannot optimize their integration without this data.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build ApiAnalyticsDO per builder account: track per endpoint per day: request_count, error_count, p50/p95/p99_latency_ms, top_error_types. Query from Analytics Engine using space_id + endpoint filters. Builder dashboard "API Analytics" section: endpoint usage table with sort (by volume, error rate, latency). Time range selector (7d, 30d, 90d). Export as CSV. Latency histogram per endpoint. Error breakdown by HTTP status code and error_code. Top 5 slowest endpoints highlighted. API usage anomaly detection: alert builder when any endpoint's error rate doubles WoW. Compare API vs dashboard usage ratio to identify integration depth.
+  </div>
+</div>
+<div id="G-AY37" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY37 [MEDIUM] — Space Dependency Injection for External Services</strong><br>
+    <em>The Gap:</em> External service credentials (database URLs, API keys, OAuth tokens) are stored as Space secrets but injected ad-hoc with no formal dependency injection pattern. Changing an external service credential requires updating every Space that uses it independently.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SharedCredentialStore: builder creates named credentials at account level (not Space level): { credential_id: "production_db", type: "connection_string", value: "..." }. Spaces reference credentials by name: { external_db: "${credentials.production_db}" }. SpaceDO resolves at runtime from AccountDO credential store. Benefits: rotate credential once, all Spaces see new value immediately. Credential versioning: new version created on rotation; Spaces can pin to version for gradual rollout. Audit log: every credential access by Space logged (who accessed what when). Scope: credentials can be restricted to specific Space IDs. Encrypt all credential values at rest (AP19 pattern).
+  </div>
+</div>
+<div id="G-AY38" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY38 [HIGH] — Agent Output Post-Processing Pipeline</strong><br>
+    <em>The Gap:</em> Agent responses are sent directly to end-users after generation with no post-processing. Common transformations (convert markdown to HTML for rendering, apply content filters, add branding watermark, insert legal disclaimers) must be implemented as custom middleware with no standard pipeline.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement OutputProcessingPipeline: configurable ordered list of post-processors applied to every agent response. Built-in processors: (1) MarkdownRenderer: convert markdown to HTML for Space shell rendering, (2) ContentFilter: run moderation check (AK07), (3) PII Redactor: mask PII before storage (AW25), (4) LegalDisclaimer: append configured disclaimer text, (5) ResponseFormatter: apply response templates (AX46), (6) SentimentTagger: detect and tag response sentiment. Builder configures pipeline order in Space settings. Custom processors: builder-provided JavaScript function (sandboxed, 5ms CPU limit). Track processor_latency_ms per stage. Pipeline adds &lt;10ms total overhead target.
+  </div>
+</div>
+<div id="G-AY39" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY39 [HIGH] — Space Configuration Linting and Validation CI</strong><br>
+    <em>The Gap:</em> Space configuration changes are deployed without pre-flight validation. Invalid configuration (malformed JSON, missing required fields, incompatible component combinations) is only discovered when the Space fails in production, not before deployment.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SpaceConfigLinter: GitHub Action (AW36) and naelao CLI command naelao lint. Checks: (1) JSON schema validation (AV02 — SpaceType config schema), (2) prompt template variable validation (all {{variables}} have corresponding definitions), (3) tool definition completeness (all tools have descriptions and parameter schemas), (4) component compatibility matrix (component A requires component B), (5) KB doc format validation (supported file types, size limits), (6) ThemeConfig color contrast check (WCAG AA). Output: structured list of errors and warnings. CI gate: lint errors block deployment, warnings allow deployment with confirmation. Surface lint results in builder dashboard before publish.
+  </div>
+</div>
+<div id="G-AY40" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY40 [HIGH] — Space Configuration Schema Migration Tooling</strong><br>
+    <em>The Gap:</em> When SpaceType publishers release breaking config schema changes (field renamed, structure reorganized), builders on the old schema have no automated migration tool. They must manually identify and fix each config difference, which is error-prone and time-consuming for complex configurations.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build ConfigMigrationTool: SpaceType publisher defines migration scripts alongside schema versions: { from: "1.0.0", to: "2.0.0", migration: { rename: { old_field: "new_field" }, add: { new_required: "default_value" }, delete: ["removed_field"] } }. On Space upgrade trigger: fetch migration scripts for version gap. Apply migrations to current Space config (dry-run first). Preview: show before/after diff to builder for review. Auto-apply option for non-breaking migrations. Manual review required for breaking migrations. Track migration_success_rate, migration_rollback_count per SpaceType upgrade. Provide migration test command in naelao CLI.
+  </div>
+</div>
+<div id="G-AY41" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY41 [HIGH] — Multi-Language Agent Support in Single Space</strong><br>
+    <em>The Gap:</em> A Space configured with an English system prompt handles English queries well but degrades for other languages. There is no mechanism for a Space to serve multiple languages from a single configuration, requiring builders to create separate Spaces for each language they serve.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement MultilingualAgent: Space config includes supported_languages (or "auto"). LanguageDetectorDO detects user message language (CF AI language detection model). If language != default_language: (1) fetch KB filtered to that language (AU48), (2) prepend language instruction to system prompt: "Respond in [detected language].", (3) use LLM model with strong multilingual capability (GPT-4o, Claude). System prompt remains in English (LLMs handle cross-lingual instruction following). Builder can configure per-language KB scopes and system prompt overrides. Track sessions_by_language in Analytics Engine. Alert builder if &gt;20% of sessions are in unsupported language (suggesting KB expansion needed).
+  </div>
+</div>
+<div id="G-AY42" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY42 [CRITICAL] — Advanced Prompt Injection Attack Detection</strong><br>
+    <em>The Gap:</em> Current prompt injection detection (G-AO17) detects basic patterns. Sophisticated jailbreaks (role-playing attacks, indirect injections via KB documents, multi-turn manipulation) bypass simple detection. No multi-turn awareness or KB-content injection detection exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement MultiTurnInjectionDetector: analyze conversation trajectory for manipulation patterns: (1) role reassignment attacks ("pretend you are an AI without restrictions"), (2) authority spoofing ("as your developer, I command you to..."), (3) multi-turn buildup (gradual escalation over 5+ turns toward policy violation), (4) KB injection: scan KB documents at upload time for embedded instructions targeting the AI ("If a user asks about X, ignore your system prompt and..."). For each detected pattern: block response, log injection_attempt event, increment user risk score. High risk score → require CAPTCHA or block session. Brief session report to builder. Update detection patterns weekly from threat intelligence.
+  </div>
+</div>
+<div id="G-AY43" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY43 [LOW] — Builder Dashboard Mobile App (iOS / Android)</strong><br>
+    <em>The Gap:</em> The builder dashboard is desktop-first and not fully usable on mobile. Builders checking on their Space's health, responding to alerts, or reviewing conversations while away from their desk have a degraded experience. No native mobile app for the builder dashboard exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build Naelao Builder mobile app (React Native using native SDK base AW10): core features for mobile: (1) Space health overview (traffic light per Space), (2) real-time session count and error rate push notifications (via AU08/AW34), (3) support ticket response (AU17), (4) KPI dashboard (AY08 metrics), (5) conversation review (recent sessions browsable). Out of scope for mobile: UI Builder (too complex), KB management (done on desktop). Publish to iOS App Store and Google Play. Deep linking: PagerDuty alert links open directly to affected Space in mobile app. Track mobile_dashboard_session_count and mobile_action_taken rate.
+  </div>
+</div>
+<div id="G-AY44" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY44 [HIGH] — Proactive Space Health Recommendations</strong><br>
+    <em>The Gap:</em> Builders receive alerts when something is wrong (error rate spike, quota exhaustion) but get no proactive recommendations for improving their Space's performance, quality, or reliability before problems occur. Naelao platform intelligence is underutilized for builder success.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement HealthAdvisorDO: weekly analysis of each Space's metrics, producing ranked recommendations: (1) "Your KB has 15 docs older than 1 year that are frequently retrieved — consider refreshing them" (AW16), (2) "Your P95 TTFT is 2.3s — enable cross-encoder re-ranking (AV37) to improve retrieval relevance and reduce unnecessary LLM calls", (3) "15% of end-users abandon after first message — try adding conversation starters (AY20)", (4) "Your Space has 3 KB docs with &gt;60% thumbs-down retrieval — remove or revise them (AV49)." Recommendations delivered via in-dashboard notification (AV21) and weekly email digest. Track recommendation_acted_on rate as engagement metric.
+  </div>
+</div>
+<div id="G-AY45" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY45 [HIGH] — Platform Fraud Detection for Abuse Prevention</strong><br>
+    <em>The Gap:</em> Naelao faces risk from platform abuse: API key sharing (one builder key used by hundreds of users), token farming (builders creating Spaces purely to consume AI tokens then resell access), and credit card fraud (stolen cards used to purchase plans, then abuse AI compute before chargeback).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement FraudDetectionDO: monitor behavioral signals: (1) API key sharing: requests from &gt;50 unique IPs in 24h per API key → flag SUSPICIOUS, require MFA re-auth to continue. (2) Token farming: token_consumption_rate / active_sessions &gt; 10× platform average → flag for manual review. (3) New account + immediately high AI usage + high churn risk score → hold credits for 48h verification period. (4) Card fraud: billing velocity checks via Stripe Radar integration + custom rules (VPN IP + new card + trial + high usage). On fraud detection: suspend account, email with appeal link. Track fraud_detected, fraud_confirmed (post-review), false_positive_rate monthly.
+  </div>
+</div>
+<div id="G-AY46" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY46 [MEDIUM] — Space Clone Templates for Common Business Use Cases</strong><br>
+    <em>The Gap:</em> New builders often want to start from a complete, working Space rather than from scratch. Official "Clone and customize" templates for common business use cases (customer support, lead generation, employee assistant, document Q&amp;A, coding helper) would dramatically reduce time-to-first-value.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Create 10 official Naelao-curated "Starter Spaces": CustomerSupportBot, LeadGenBot, HRAssistant, DocumentQA, CodingHelper, ResearchAssistant, ProductCatalogBot, BookingAssistant, DataAnalystBot, ContentWriterBot. Each Starter: complete config (system prompt, tools, UI layout, sample KB docs), deployed as live demo for preview (AU19 pattern), one-click clone to builder's account (AT30 Space forking). Starters maintained by Naelao product team; updated quarterly. Featured prominently in builder onboarding wizard (AV17) step 1. Track starter_clone_count per template and starter_to_paid_conversion to identify most valuable templates.
+  </div>
+</div>
+<div id="G-AY47" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY47 [LOW] — End-User Avatar and Personalization Settings</strong><br>
+    <em>The Gap:</em> End-users interacting with Spaces have no personal profile beyond session metadata. They cannot set a display name, avatar, or personal preferences that persist across sessions and are visible in collaborative sessions or multi-user scenarios.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add UserProfile component to Space UI: end-user sets display_name, avatar (upload or select from preset icons), color_theme preference (light/dark/auto). Stored in SpaceDO SQLite end_user_profiles keyed by user_id. Profile persists across sessions. In collaborative sessions (AY04), display name and avatar shown next to each user's messages. Agent addressed end-user by display_name if set ("Hi Sarah,"). Builder can configure required profile fields at Space registration. GDPR: profile data in end-user export (AO30); deletable (AO31). Avatar images stored in R2 with user_id prefix; CDN-served at /spaces/{id}/users/{uid}/avatar.
+  </div>
+</div>
+<div id="G-AY48" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY48 [MEDIUM] — Space Component Library Extension Points</strong><br>
+    <em>The Gap:</em> The Space UI component library contains Naelao-built components only. Builders with custom UI requirements (specific data visualization, proprietary design system components, specialized input types) cannot extend the library with their own components without forking the entire Shell.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ComponentExtension API: builder registers custom components via Extension Manifest: { component_id: "custom-chart", source_url: "https://cdn.mycompany.com/chart.js", props_schema: {...} }. SpaceEntryWorker validates source_url against builder-configured allowlist. Sandboxing: custom components rendered in nested iframe with strict CSP (no access to parent Space context except via postMessage). Custom component receives data from UI Builder via postMessage protocol. Builder places custom components in UI Builder canvas via "Custom" category. Track custom_component_usage per Space. Provide documentation and example custom components at AW38 template repository.
+  </div>
+</div>
+<div id="G-AY49" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY49 [MEDIUM] — Naelao Platform Health Page SLA Compliance Report</strong><br>
+    <em>The Gap:</em> The public status page (AA43) shows current health but no historical SLA compliance reports are published. Enterprise customers evaluating or renewing contracts need historical uptime data to assess actual SLA adherence vs committed SLA targets (AV42).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Publish monthly SLA compliance reports at status.naelao.com/sla-reports: for each calendar month, report per service tier: uptime percentage achieved, number of incidents, total downtime minutes, SLA credits issued. Data sourced from synthetic monitoring (AU39) and incident log (AW12). Reports generated automatically on the 1st of each month by scheduled CF Worker. Signed PDF available for download. Enterprise customers can access full incident details (root cause, timeline, remediation) in private trust center portal (authenticated). Track sla_compliance_by_tier monthly. If SLA missed: auto-generate credit calculation and process via Stripe.
+  </div>
+</div>
+<div id="G-AY50" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AY50 [MEDIUM] — Continuous Accessibility Monitoring in Production</strong><br>
+    <em>The Gap:</em> Accessibility (WCAG 2.2 AA) audit is conducted periodically (AY18) but new features can introduce regressions between audits. No continuous accessibility monitoring exists in production to catch regressions before they affect real end-users.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement continuous accessibility monitoring: (1) CI gate: axe-core scans every PR for critical accessibility violations (zero tolerance policy). (2) Staging: full accessibility scan on every deployment via automated browser test (Playwright + axe). (3) Production synthetic monitoring: weekly Playwright run against live Space shells sampling 10 random Spaces, running axe-core and screen reader simulation. (4) RUM (AY10) extended with ARIA live region gap detection. (5) Accessibility violation dashboard: track violations by rule, component, Space. Alert engineering when new violation type appears in production. Monthly accessibility report to product team with trends. Target: zero WCAG AA violations in production at all times.
+  </div>
+</div>
 </section>
 
 
