@@ -62124,6 +62124,460 @@ When bumping the date, bump it everywhere in one change and re-run the full test
     <em>Required Fix:</em> Implement continuous accessibility monitoring: (1) CI gate: axe-core scans every PR for critical accessibility violations (zero tolerance policy). (2) Staging: full accessibility scan on every deployment via automated browser test (Playwright + axe). (3) Production synthetic monitoring: weekly Playwright run against live Space shells sampling 10 random Spaces, running axe-core and screen reader simulation. (4) RUM (AY10) extended with ARIA live region gap detection. (5) Accessibility violation dashboard: track violations by rule, component, Space. Alert engineering when new violation type appears in production. Monthly accessibility report to product team with trends. Target: zero WCAG AA violations in production at all times.
   </div>
 </div>
+
+<section id="appendix-az">
+<h2>Appendix AZ — Agent State Machines, Cost Modeling, Recommendations, Caching, Marketplace, Performance, Compliance, Integrations, Moderation, DevEx</h2>
+
+<div id="G-AZ01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ01 [CRITICAL] — Agent Finite State Machine (FSM) Lifecycle</strong><br>
+    <em>The Gap:</em> Agents have no formal FSM definition for lifecycle states (idle, thinking, tool-calling, waiting-human, error, terminated). Without explicit state transitions, agents can get stuck, loop, or produce inconsistent behaviour after DO hibernation restores state mid-execution.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define agent FSM: states=[IDLE, PLANNING, TOOL_CALL, AWAITING_TOOL, AWAITING_HUMAN, SUMMARIZING, DONE, ERROR]. Persist current_state in DO SQLite. On wake, resume from persisted state. Validate transitions: PLANNING→TOOL_CALL, TOOL_CALL→AWAITING_TOOL, AWAITING_TOOL→PLANNING|DONE|ERROR. Illegal transitions throw and alert.
+  </div>
+</div>
+<div id="G-AZ02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ02 [HIGH] — Agent Goal Stack and Sub-goal Management</strong><br>
+    <em>The Gap:</em> Complex agent tasks require hierarchical goal decomposition, but no goal stack is specified. Without a persistent goal stack, agents abandon sub-goals when context resets, and cannot backtrack to parent goals when sub-goals complete or fail.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement goal stack persisted in DO SQLite: table agent_goals(id, parent_id, description, status, created_at). Agent pushes sub-goals, pops on completion, marks FAILED with reason on error. Parent goal resumes after all children resolve. Stack depth limit of 20 guards against infinite decomposition.
+  </div>
+</div>
+<div id="G-AZ03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ03 [HIGH] — Agent Timeout Cascade and Partial-Result Handling</strong><br>
+    <em>The Gap:</em> When a multi-step agent task times out (CF Worker 30s CPU, Workflow step 30s), there is no specification for handling partial results — completed steps are silently discarded, leaving users with no output and no retry path.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> On timeout: persist completed steps to DO SQLite with status=PARTIAL. Return partial_result payload to user with message "Task partially complete — N of M steps done." Expose /tasks/{id}/resume endpoint. CF Workflow retry from last completed step using stored checkpoint JSON.
+  </div>
+</div>
+<div id="G-AZ04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ04 [MEDIUM] — Agent Memory Consolidation Scheduler</strong><br>
+    <em>The Gap:</em> Episodic memories accumulate indefinitely in DO SQLite (10GB limit per DO). No consolidation process merges redundant memories or promotes important ones to long-term semantic memory, causing degraded retrieval quality as memory volume grows.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Background CF Workflow runs nightly per active SpaceDO: groups episodic memories by topic embedding cluster, uses LLM to write consolidated summary per cluster, stores in semantic_memory table, marks originals as consolidated=TRUE. Keeps last 90 days raw; purges older consolidated originals. Tracks memory_size metric.
+  </div>
+</div>
+<div id="G-AZ05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ05 [MEDIUM] — Agent Decision Explanation (XAI)</strong><br>
+    <em>The Gap:</em> Agents produce outputs but provide no explanation of WHY a particular tool was selected, what evidence was considered, or how confidence was derived. Builders and enterprise end-users require audit-grade decision provenance.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> For each agent turn, record decision_trace JSON: {reasoning_summary, tools_considered:[{name,score,reason}], tool_selected, context_chunks_used:[{chunk_id,relevance}], confidence}. Store in DO SQLite. Expose GET /spaces/{id}/sessions/{id}/trace/{turn_id}. Builder can enable show_reasoning flag to surface simplified explanation in Space UI.
+  </div>
+</div>
+<div id="G-AZ06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ06 [MEDIUM] — Agent Capability Negotiation Protocol</strong><br>
+    <em>The Gap:</em> When a SpaceType specifies required agent capabilities (e.g., code_execution, web_search, image_analysis), there is no runtime negotiation to verify the deployed agent model actually supports them. Mismatches cause silent failures or degraded responses.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> At Space boot, agent capability manifest is fetched from model metadata endpoint. Required capabilities listed in SpaceType config are checked against manifest. Missing capabilities trigger WARN alert to builder and surface degraded_mode flag. UI shows "Feature X limited: model does not support Y." Builder can override with alternative model in config.
+  </div>
+</div>
+<div id="G-AZ07" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ07 [HIGH] — Agent Prompt Caching Strategy</strong><br>
+    <em>The Gap:</em> LLM providers (Anthropic Claude) support prompt caching for repeated system prompt prefixes, which can reduce cost by 90% and latency by 85%. The spec does not define a caching strategy — every request sends full system prompt, wasting tokens and budget.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Structure system prompts with stable prefix (SpaceType config, persona, tools schema) followed by dynamic suffix (session context, recent memories). Use Anthropic cache_control: {type: "ephemeral"} on stable prefix block. Track cache_hit_rate in Analytics Engine. Expose cache savings metrics to builder dashboard cost tab.
+  </div>
+</div>
+<div id="G-AZ08" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ08 [HIGH] — Agent Tool Call Parallelism Spec</strong><br>
+    <em>The Gap:</em> Agents often need to call multiple independent tools simultaneously (search KB while fetching user profile while checking inventory). The spec does not define how parallel tool calls are orchestrated, leading to sequential execution and 3-5x unnecessary latency.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define parallel tool call protocol: agent returns tool_calls array (not single call) when independence is detected. Worker dispatches all tool calls concurrently via Promise.all(). Results returned as tool_results array keyed by call_id. Implement dependency detection: if tool B requires output of tool A, sequence; otherwise parallelize. Max 5 concurrent tool calls per turn.
+  </div>
+</div>
+<div id="G-AZ09" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ09 [CRITICAL] — Unit Economics Model per Request</strong><br>
+    <em>The Gap:</em> No per-request cost model exists. Platform cannot determine if a given Space is profitable at current usage patterns. LLM token costs, DO invocation costs, Vectorize query costs, R2 egress costs are not aggregated per-request, making pricing decisions uninformed.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Instrument each request with cost_components: {llm_input_tokens, llm_output_tokens, llm_cached_tokens, do_reads, do_writes, vectorize_queries, r2_egress_bytes, worker_cpu_ms}. Write to Analytics Engine. Compute per_request_cost_usd using current CF/LLM pricing tables (stored in KV, refreshed weekly). Builder dashboard shows gross_margin_pct = (revenue - cost) / revenue per Space.
+  </div>
+</div>
+<div id="G-AZ10" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ10 [HIGH] — Cost Anomaly Detection and Alerting</strong><br>
+    <em>The Gap:</em> Runaway agent loops or misconfigured Spaces can incur thousands of dollars of LLM costs within minutes. No anomaly detection monitors cost velocity — builders discover issues only on monthly invoices.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Compute rolling 1-hour cost per Space. If cost_1h &gt; 10x moving_avg_1h OR cost_1h &gt; builder_alert_threshold (configurable, default $10), pause Space (set status=COST_PAUSED), notify builder via email + webhook. Auto-resume after builder acknowledgment. Store cost_anomaly events in Analytics Engine for audit.
+  </div>
+</div>
+<div id="G-AZ11" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ11 [MEDIUM] — Infrastructure Cost Forecasting</strong><br>
+    <em>The Gap:</em> Platform ops team has no forecast of CF bill for next 30/90 days. Without forecasting, budget overruns are discovered post-fact. Growth projections cannot be validated against infrastructure cost model.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Weekly CF Workflow queries Analytics Engine for usage trends (Workers invocations, DO storage, R2 egress, KV reads) over last 90 days. Fits linear+seasonal model per metric. Projects 30/90/180-day usage. Computes estimated CF bill using pricing tiers. Stores forecast in R2 as infrastructure_forecast_{date}.json. Triggers alert if projected_bill &gt; budget_threshold.
+  </div>
+</div>
+<div id="G-AZ12" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ12 [MEDIUM] — Per-Tenant Cost Chargeback Model</strong><br>
+    <em>The Gap:</em> Platform hosts multiple builders with wildly different usage profiles. No chargeback model allocates shared infrastructure costs (Vectorize indexes, Workers scripts) to specific tenants, making it impossible to identify loss-making accounts.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define cost allocation model: direct costs (DO storage, R2 egress, LLM tokens) attributed 100% to tenant. Shared costs (Workers runtime, Vectorize, KV) allocated by usage_share = tenant_usage / total_usage for billing period. Compute fully_loaded_cost_per_tenant monthly. Compare to revenue. Flag accounts where loaded_cost &gt; revenue * 1.2 for pricing review.
+  </div>
+</div>
+<div id="G-AZ13" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ13 [MEDIUM] — SpaceType Economic Validation</strong><br>
+    <em>The Gap:</em> Builders can publish SpaceTypes with any configuration — including ones that are economically unviable (e.g., unlimited LLM calls on free tier). No economic validation gate prevents publishing SpaceTypes that guarantee platform losses.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> At SpaceType publish time, run economic simulation: estimate cost_per_1000_sessions based on config (tool count, expected turns, model tier, KB size). Compare to minimum viable price from pricing plan. If estimated_cost_per_1000_sessions &gt; 0.8 * plan_revenue_per_1000_sessions, warn builder with breakdown and suggest config adjustments (token limits, caching, model downgrade).
+  </div>
+</div>
+<div id="G-AZ14" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ14 [HIGH] — SpaceType Recommendation Engine</strong><br>
+    <em>The Gap:</em> The marketplace presents SpaceTypes without personalization — new builders see the same list regardless of their industry, prior usage, or stated goals. No recommendation system drives discovery of relevant SpaceTypes, reducing activation rates.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build recommendation engine: at signup, collect builder_profile (industry, use_case, team_size). Embed profile via Vectorize. At marketplace load, query: top-10 similar builders by profile vector → their installed SpaceTypes → rank by install_count * recency_weight. Supplement with collaborative filtering (builders who installed X also installed Y). Store recommendation_impressions and click_through_rate in Analytics Engine.
+  </div>
+</div>
+<div id="G-AZ15" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ15 [HIGH] — End-User Proactive Suggestion Engine</strong><br>
+    <em>The Gap:</em> Agents respond reactively to user messages. No system proactively suggests next actions, relevant knowledge, or follow-up questions based on conversation context and user history, missing opportunities to drive engagement and reduce abandonment.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> After each agent response, run background suggestion pipeline (CF Queue job): embed conversation summary, query KB for related uncovered topics, check user_history for previously helpful resource types, generate 2-3 suggested_next_questions. Return as suggestions field in response. Track suggestion_click_rate in Analytics Engine. A/B test suggestion display patterns.
+  </div>
+</div>
+<div id="G-AZ16" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ16 [HIGH] — Knowledge Gap Detection from Conversation Analytics</strong><br>
+    <em>The Gap:</em> When agents consistently fail to answer questions on a topic (low relevance scores, fallback responses), this signals KB gaps — but no system detects this pattern and alerts builders to add content.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Aggregate per-topic answer_quality metrics from Analytics Engine. If topic_T has avg_relevance &lt; 0.4 AND fallback_rate &gt; 30% over 7-day window, create knowledge_gap_alert: {topic, example_questions:[], suggested_kb_articles:[]}. Deliver to builder dashboard as "KB improvement opportunities" card. Track resolution: gap closed when metrics improve above threshold after content addition.
+  </div>
+</div>
+<div id="G-AZ17" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ17 [MEDIUM] — Trending Topic Detection for KB Maintenance</strong><br>
+    <em>The Gap:</em> User queries shift over time as product features change or external events occur. No trending topic detection alerts builders when new query patterns emerge that the KB does not cover well.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Weekly CF Workflow: cluster last 7-day query embeddings (k-means, k=50). Compare cluster sizes to previous week. Clusters with &gt;50% growth AND avg_relevance &lt; 0.5 flagged as trending_gaps. LLM generates suggested_article_title for each. Notify builder: "3 trending topics need KB coverage." Link to pre-filled KB editor.
+  </div>
+</div>
+<div id="G-AZ18" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ18 [LOW] — Personalized Response Style Adaptation</strong><br>
+    <em>The Gap:</em> Agents use a fixed response style configured in SpaceType system prompt. No system adapts verbosity, technicality, or tone based on observed end-user preferences (e.g., a user who consistently ignores verbose answers prefers concise ones).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Track per-user response_style signals: message_length_ratio (user message length / agent response length), re-ask_rate (user rephrases same question), engagement_time. After 5 sessions, build user_style_profile: {prefers_concise, prefers_technical, preferred_format}. Inject style hints into system prompt: "User prefers concise bullet-point responses." Builder can enable/disable per SpaceType.
+  </div>
+</div>
+<div id="G-AZ19" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ19 [HIGH] — Semantic Response Caching</strong><br>
+    <em>The Gap:</em> Identical or near-identical questions asked by different users trigger full LLM calls each time. No semantic cache layer deduplicates similar queries, wasting 30-70% of LLM spend on common questions in high-traffic Spaces.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> For each query: compute embedding, query Vectorize semantic cache index (threshold 0.97 cosine similarity). Cache hit: return cached response with cache_hit=true header (no LLM call). Cache miss: execute full pipeline, write response + embedding to cache with TTL 24h. Cache invalidated on KB update. Track cache_hit_rate and estimated_tokens_saved in Analytics Engine. Target &gt;40% hit rate for FAQ-heavy Spaces.
+  </div>
+</div>
+<div id="G-AZ20" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ20 [HIGH] — CF CDN Cache Strategy for Space Shell Assets</strong><br>
+    <em>The Gap:</em> Space shell HTML/CSS/JS assets are served without explicit Cache-Control headers or asset fingerprinting. Every page load hits CF Workers origin, causing unnecessary latency and compute cost when assets have not changed.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement asset pipeline: hash-append filenames (shell.{hash}.js). Serve static assets with Cache-Control: public, max-age=31536000, immutable. Space shell HTML served with Cache-Control: no-cache, ETag based on Space config version. CF CDN caches assets at edge — cache hit rate target &gt;95%. On Space config update, invalidate shell HTML cache only (not hashed assets).
+  </div>
+</div>
+<div id="G-AZ21" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ21 [MEDIUM] — Stale-While-Revalidate for KB Responses</strong><br>
+    <em>The Gap:</em> KB document retrieval results are not cached — every request re-queries Vectorize and fetches R2 documents. For frequently accessed documents with low update frequency, this causes unnecessary latency.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement stale-while-revalidate cache in CF KV: cache Vectorize query results (key: hash(query+filters), value: {chunks, retrieved_at}). On request: return cached chunks immediately, background-trigger revalidation if age &gt; 5min. Cache TTL: 1h. Invalidate on KB document update (R2 event → Queue → KV delete). Track stale_served_rate and p99_cache_retrieval_latency.
+  </div>
+</div>
+<div id="G-AZ22" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ22 [HIGH] — DO Instance Warm Pool</strong><br>
+    <em>The Gap:</em> DO cold starts (first request to a new DO) take 50-200ms for SQLite initialization and state hydration. For time-sensitive Spaces (customer support, real-time agents), this cold start latency degrades first-message experience.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Maintain warm pool of pre-initialized SpaceDOs (5-20 per active SpaceType) using DO pre-warming pattern: CF Cron Trigger sends synthetic PING request to DOs that have been inactive &gt;10min but are expected to receive traffic (based on traffic schedule). DO responds and stays warm. Track cold_start_rate; alert when &gt;5% of sessions hit cold start.
+  </div>
+</div>
+<div id="G-AZ23" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ23 [MEDIUM] — Query Result Pagination Cache Consistency</strong><br>
+    <em>The Gap:</em> Paginated API responses (cursor-based pagination for conversations, sessions, KB articles) can return inconsistent results if underlying data changes between page fetches. No snapshot isolation ensures users see consistent paginated views.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> For paginated list endpoints, create pagination_snapshot: on first page request, write sorted ID list to KV with TTL 5min (key: pagination_{resource}_{filter_hash}_{user_id}). Subsequent pages read from snapshot, ensuring consistent ordering. Include snapshot_age in response; warn client if snapshot_expired and offer refresh. Prevents "items jumping pages" during concurrent writes.
+  </div>
+</div>
+<div id="G-AZ24" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ24 [HIGH] — SpaceType Social Proof Signals</strong><br>
+    <em>The Gap:</em> Marketplace listings show basic metadata but lack social proof signals (installs, active users, ratings, reviews, builder reputation). Without trust signals, new builders hesitate to adopt unfamiliar SpaceTypes, slowing ecosystem growth.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add social_proof to SpaceType listing: {total_installs, active_spaces_30d, avg_rating(1-5), review_count, builder_reputation_score, featured_badge, verified_badge}. builder_reputation_score computed from: total_published_spacetypes * avg_rating * recency_weight. Display "Trusted by 1,200 businesses" style social proof. Track listing_conversion_rate (views→installs) per SpaceType.
+  </div>
+</div>
+<div id="G-AZ25" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ25 [MEDIUM] — SpaceType Launch Mechanics (Waitlist + Early Access)</strong><br>
+    <em>The Gap:</em> Builders have no structured way to build anticipation before launching a SpaceType, nor can they run early-access programs with selected beta users. This leaves growth levers unused.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add SpaceType lifecycle states: DRAFT → WAITLIST → EARLY_ACCESS → PUBLIC. In WAITLIST state: landing page collects emails, shows waitlist_count. Builder configures early_access_quota (e.g., 100 slots). In EARLY_ACCESS: builder invites from waitlist, collects feedback. At PUBLIC: full marketplace listing. Track waitlist_to_install_conversion. Email sequence: waitlist confirmation, launch announcement, early-access invite.
+  </div>
+</div>
+<div id="G-AZ26" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ26 [HIGH] — Marketplace Search and Discovery Optimization</strong><br>
+    <em>The Gap:</em> SpaceType marketplace search is not specified beyond basic filtering. No full-text search, semantic search, faceted filtering, or relevance ranking exists — builders browse large catalogs ineffectively.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build marketplace search: Vectorize index over SpaceType {name, description, use_cases, category}. Query combines keyword BM25 + semantic vector search (reciprocal rank fusion). Faceted filters: category, price_range, rating_min, install_count_min, features (voice/multimodal/integration). Sort: relevance, popularity, newest, highest_rated. Track search_success_rate (search→install within session). Feed zero-result queries to gap detector.
+  </div>
+</div>
+<div id="G-AZ27" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ27 [CRITICAL] — Builder Revenue Share and Payout System</strong><br>
+    <em>The Gap:</em> SpaceType marketplace enables builders to monetize their creations, but no revenue share or payout system is defined. Builders cannot withdraw earnings, creating a broken marketplace promise.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define revenue share: platform takes 30%, builder gets 70% of SpaceType subscription/usage fees. Accrue builder_balance in platform DB. Monthly payout via Stripe Connect (preferred) or bank transfer for balances &gt;$50. Builders complete KYC/AML during payout setup. Issue 1099-K for US builders earning &gt;$600/year. Provide payout history and tax document export. Track payout_processing_time SLA (&lt;3 business days).
+  </div>
+</div>
+<div id="G-AZ28" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ28 [MEDIUM] — SpaceType Bundle and Collection System</strong><br>
+    <em>The Gap:</em> Builders cannot group related SpaceTypes into bundles or themed collections (e.g., "Complete E-commerce Stack: Product Advisor + Support Bot + Upsell Agent"). Bundles drive higher average order value and simplify discovery.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add Bundle entity: {id, name, description, spacetype_ids[], bundle_price, individual_price_sum, discount_pct}. Bundle listing in marketplace with "Save 20%" badge. Single install action installs all SpaceTypes in bundle. Bundle analytics: bundle_conversion_rate vs individual. Builder dashboard: create bundle, set pricing, track bundle revenue.
+  </div>
+</div>
+<div id="G-AZ29" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ29 [CRITICAL] — End-to-End Request Tracing with Span Attribution</strong><br>
+    <em>The Gap:</em> Distributed tracing is partially covered (AW07 OpenTelemetry), but no span attribution model defines which subsystem (routing, DO dispatch, LLM call, KB retrieval, tool execution) owns each latency slice. Engineers cannot identify bottlenecks.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define trace span taxonomy: root_span(request_id) → [auth_span, routing_span, space_dispatch_span → [do_wake_span, llm_span → [prompt_build_span, llm_api_span, token_count_span], tool_spans[], kb_retrieval_span → [vectorize_span, r2_fetch_span]], response_span]. Each span records: start_ms, duration_ms, status. Export to Logpush. P99 latency breakdown dashboard by span type.
+  </div>
+</div>
+<div id="G-AZ30" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ30 [HIGH] — Continuous Performance Baseline and Regression Budget</strong><br>
+    <em>The Gap:</em> No performance budget enforces that new deployments do not regress latency. Teams can ship code that silently increases p99 by 50% with no automated detection before it reaches production.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define performance budgets: p50_ttft &lt; 800ms, p99_ttft &lt; 3000ms, p50_total_response &lt; 5s, error_rate &lt; 0.1%. Each deploy triggers canary (AX47 pattern): compare canary vs baseline across these metrics. If canary p99_ttft &gt; baseline * 1.2, block deploy, alert engineer. Store perf_baseline snapshot per deploy tag. Weekly trend report: 30-day latency trajectory.
+  </div>
+</div>
+<div id="G-AZ31" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ31 [HIGH] — LLM Provider Latency SLA Monitoring</strong><br>
+    <em>The Gap:</em> Platform depends on external LLM APIs (Anthropic, OpenAI, etc.) but does not monitor their latency SLAs independently. Provider degradation is detected only via user complaints, not proactive measurement.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement synthetic LLM health probes: CF Cron every 60s sends minimal test prompt to each configured provider. Records response_time_ms, status, token_count. Stores in Analytics Engine. If provider p95_latency &gt; 5s OR error_rate &gt; 1% over 5-min window, trigger provider_degraded alert. Automatically route traffic to backup provider (AV38 fallback chain). Track provider_uptime_pct monthly.
+  </div>
+</div>
+<div id="G-AZ32" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ32 [MEDIUM] — Memory and Storage Growth Rate Monitoring</strong><br>
+    <em>The Gap:</em> DO SQLite storage grows with each session without monitoring. No alert fires when a SpaceDO approaches the 10GB limit — the platform discovers it only when writes fail.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Weekly CF Workflow queries CF API for DO storage metrics per namespace. Computes growth_rate_gb_per_week per DO class. Alerts: WARNING at 7GB (70%), CRITICAL at 9GB (90%). At CRITICAL: pause new session creation, notify builder, recommend archiving old sessions. Expose storage_used_gb in builder dashboard Space health panel. Include projection: "At current rate, storage full in N days."
+  </div>
+</div>
+<div id="G-AZ33" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ33 [CRITICAL] — HIPAA Technical Safeguards for Health-Adjacent Spaces</strong><br>
+    <em>The Gap:</em> Builders in healthcare-adjacent verticals (wellness, mental health support, medical information) may process PHI. No HIPAA-aligned technical safeguards (encryption at rest, audit logging, BAA capability) are specified.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define HIPAA tier: builders self-attest PHI processing. For HIPAA-tier Spaces: encrypt DO SQLite content with AES-256 (CF at-rest encryption + application-layer for sensitive fields), enable comprehensive audit logging of all data access (who, what, when), enforce 6-month session retention maximum with auto-delete, support BAA execution in contract flow. Document technical safeguards in security whitepaper.
+  </div>
+</div>
+<div id="G-AZ34" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ34 [CRITICAL] — GDPR Right-to-Erasure Implementation (Full Stack)</strong><br>
+    <em>The Gap:</em> While GDPR data deletion is mentioned, no complete implementation covers all storage systems: DO SQLite, R2 conversation exports, Vectorize embeddings (which may encode PII), Analytics Engine records, CF KV cached responses, and Logpush exports.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement erasure cascade: DELETE request → queue erasure_job → (1) DO SQLite: delete all records for user_id, (2) R2: delete conversation export files, (3) Vectorize: delete vectors with metadata.user_id filter, (4) CF KV: delete cached responses for user, (5) Analytics Engine: cannot delete rows — anonymize by writing null_user_id correction record, (6) Notify Logpush downstream systems via webhook. Complete within 30 days, confirm via email.
+  </div>
+</div>
+<div id="G-AZ35" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ35 [HIGH] — CCPA / US State Privacy Law Compliance</strong><br>
+    <em>The Gap:</em> GDPR coverage does not extend to CCPA (California) or other US state privacy laws (Virginia CDPA, Colorado CPA, etc.). These laws have distinct requirements: opt-out of sale, sensitive data handling, and disclosure obligations.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement CCPA controls: "Do Not Sell My Personal Information" link in Space shell footer (for CA users detected by geo-header). Data inventory mapping: categorize all collected data fields per CCPA categories. Opt-out propagates to all downstream processors (analytics, LLM providers where possible). Annual privacy report for builders with large CA user bases. State privacy law matrix document maintained in legal KB.
+  </div>
+</div>
+<div id="G-AZ36" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ36 [HIGH] — Data Residency Enforcement and Geo-Routing</strong><br>
+    <em>The Gap:</em> Enterprise customers in EU, Germany, or regulated markets require data to remain within their jurisdiction. CF Workers run globally by default — DO placement is not constrained to a specific region unless explicitly configured.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement data residency tiers: EU (DO jurisdiction hint "eu"), US (DO hint "us"), Custom (builder-specified CF region code). At Space creation, apply DO location hint: new cf.DurableObjectNamespace with locationHint. All R2 buckets created in matching region. Vectorize index regional routing. Display data_residency_region in Space settings. Verify actual DO placement via CF API; alert if placement != requested region.
+  </div>
+</div>
+<div id="G-AZ37" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ37 [MEDIUM] — AI-Generated Content Disclosure</strong><br>
+    <em>The Gap:</em> Several jurisdictions (EU AI Act, FTC guidelines) require disclosure when users interact with AI systems. Spaces may not display required AI disclosure, exposing builders and the platform to regulatory risk.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Mandate AI disclosure in Space shell: "Powered by AI — responses may be inaccurate" notice displayed prominently on first visit (dismissible after acknowledgment, preference stored in localStorage). Builder can customize disclosure text but cannot remove it. Include disclosure in Space embed metadata. Log disclosure_shown events for compliance audit. Provide builders template disclosure text reviewed by legal.
+  </div>
+</div>
+<div id="G-AZ38" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ38 [HIGH] — Bi-Directional CRM Integration (Read + Write)</strong><br>
+    <em>The Gap:</em> CRM sync (AX44) covers reading customer data into agent context. No write-back path exists — agents cannot update CRM records, log activities, create follow-up tasks, or update opportunity stages based on conversation outcomes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add CRM write-back capability: builder configures crm_write_rules: [{trigger: "conversation_end", action: "log_activity", mapping: {subject: "AI Chat", body: "$summary", outcome: "$sentiment"}}]. Agent-generated structured data (contact updates, deal stage changes) routed through CRM connector write API. Write operations logged in audit trail. Builder can require human approval for writes above a risk threshold.
+  </div>
+</div>
+<div id="G-AZ39" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ39 [HIGH] — ERP / Inventory System Integration</strong><br>
+    <em>The Gap:</em> Commerce and operations Spaces need real-time inventory, order status, and pricing data from ERP systems (SAP, NetSuite, Odoo). No ERP integration pattern is specified, forcing builders to build custom connectors from scratch.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define ERP connector framework: abstract interface {getInventory(sku), getOrderStatus(order_id), getPrice(product_id, customer_tier), createOrder(cart), updateInventory(sku, delta)}. Pre-built adapters for REST-based ERPs. OAuth or API-key credential vault. Response caching in CF KV (30s TTL for inventory, 5min for pricing). Fallback: return cached_value with cache_age_warning. Track ERP_api_latency and error_rate.
+  </div>
+</div>
+<div id="G-AZ40" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ40 [MEDIUM] — Calendar and Scheduling Integration</strong><br>
+    <em>The Gap:</em> Booking and scheduling Spaces require calendar integration (Google Calendar, Outlook, Calendly) to check availability and create appointments. No calendar integration pattern exists — a critical gap for scheduling-focused SpaceTypes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define calendar connector: OAuth 2.0 flow for Google/Outlook. Agent tools: check_availability(attendees, duration, timerange), create_event(title, attendees, time, description), update_event(id, changes), cancel_event(id, reason). CF Workers OAuth proxy stores tokens in DO with refresh logic. Availability check uses freebusy API. Confirm booking via email. Track booking_success_rate and cancellation_rate.
+  </div>
+</div>
+<div id="G-AZ41" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ41 [HIGH] — Payment Processing Integration</strong><br>
+    <em>The Gap:</em> E-commerce and service Spaces may need to process payments. No payment integration pattern (Stripe, PayPal) is specified for agent-initiated or assisted transactions, creating a critical gap for monetized Space interactions.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define payment connector: Stripe integration via server-side API (keys in Secret Store, never client-side). Agent can generate payment_intent (amount, currency, metadata) → returns checkout_url (Stripe hosted page). Webhook receives payment.succeeded → triggers fulfillment workflow. PCI DSS compliance: no card data touches platform (Stripe handles). Track conversion_rate, average_order_value, refund_rate per Space.
+  </div>
+</div>
+<div id="G-AZ42" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ42 [CRITICAL] — Input Content Moderation Pipeline</strong><br>
+    <em>The Gap:</em> Users can send any content to Spaces including hate speech, CSAM descriptions, self-harm content, and jailbreak attempts. No input moderation pipeline screens messages before reaching the LLM or agent, creating legal liability and brand risk.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement input moderation: before each LLM call, run message through CF Worker moderation pipeline: (1) LLM moderation API (Anthropic built-in or OpenAI Moderation), (2) regex-based jailbreak pattern detection, (3) PII detection for HIPAA Spaces. BLOCKED messages: return 400 with user-visible reason (e.g., "This message violates community guidelines"), log moderation_event with content_hash (not content), increment block_count. Builder can configure strictness: standard/strict/custom.
+  </div>
+</div>
+<div id="G-AZ43" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ43 [CRITICAL] — Output Content Safety Filter</strong><br>
+    <em>The Gap:</em> LLMs can generate harmful outputs despite safety training, especially when given adversarial inputs. No output safety filter validates agent responses before delivery to end-users.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement output safety layer: post-LLM, pre-response: (1) run output through moderation check (async, &lt;100ms), (2) check for PII leakage (regex: SSN, credit card patterns), (3) check for prompt injection echo (response contains system prompt fragments). BLOCKED responses: substitute safe fallback message, alert builder, log output_blocked_event. Track output_block_rate; spikes indicate adversarial attacks requiring investigation.
+  </div>
+</div>
+<div id="G-AZ44" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ44 [MEDIUM] — User Reputation and Trust Scoring</strong><br>
+    <em>The Gap:</em> No user reputation system distinguishes trusted users from abuse-risk users. All users receive identical rate limits and permissions regardless of behavior history, creating an exploitable attack surface.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build user_trust_score (0-100): starts at 50. Increases: positive session outcomes, long engagement, repeat sessions. Decreases: moderation blocks, abuse reports, unusual patterns (rapid-fire requests, long inputs). Trust score gates: score &lt; 20 requires CAPTCHA, score &lt; 10 triggers shadow-ban (requests processed but responses hidden). Builder can see trust score distribution for their Space. Score resets after 90 days of positive behavior.
+  </div>
+</div>
+<div id="G-AZ45" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ45 [HIGH] — Automated Abuse Report Processing</strong><br>
+    <em>The Gap:</em> End-users can be harassed by agent responses (jailbroken builder Spaces). No abuse reporting mechanism exists, and no process handles reports — exposing platform to regulatory scrutiny for hosting harmful AI interactions.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add "Report this response" button to Space shell. Report submits: {session_id, message_id, category, description}. Reports stored in abuse_reports table. Automated triage: if report_count for Space &gt; 5 in 24h, flag for human review. Reviewed reports: substantiated → builder warning → Space suspension. Unsubstantiated → dismiss. Publish Trust &amp; Safety transparency report quarterly. Maintain response SLA: &lt;48h acknowledgment.
+  </div>
+</div>
+<div id="G-AZ46" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ46 [HIGH] — SpaceType SDK and CLI Tooling</strong><br>
+    <em>The Gap:</em> Builders configure SpaceTypes via dashboard UI only. No CLI tooling or SDK enables programmatic SpaceType management, version control integration, or CI/CD pipeline deployment of SpaceType configs.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Publish @naelao/cli npm package: commands: naelao spacetype create, push, pull, diff, deploy, rollback. Auth via API key. SpaceType config represented as YAML file (spacetype.yaml) with full schema. naelao diff shows config diff before deploy. naelao deploy --env=prod applies config. GitHub Action: naelao/deploy-action@v1 for CI/CD. Track CLI adoption rate and most-used commands.
+  </div>
+</div>
+<div id="G-AZ47" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ47 [HIGH] — Local Development Environment with CF Miniflare</strong><br>
+    <em>The Gap:</em> Builders developing custom integrations or platform engineers extending the platform have no local dev environment. All development requires deploying to CF, creating slow iteration cycles and costly experimentation.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define local dev setup using Cloudflare Miniflare (v3): wrangler dev command runs Workers locally with DO, KV, R2, Queues emulation. Docker Compose: wrangler dev + local LLM proxy (LiteLLM) + local vector DB (Chroma). .env.local for API keys. Hot-reload on file save. Dev seed scripts: load sample SpaceTypes, create test user accounts, populate test KB. Document in Getting Started guide. CLI: naelao dev starts full local stack.
+  </div>
+</div>
+<div id="G-AZ48" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ48 [MEDIUM] — API Changelog and Deprecation Policy</strong><br>
+    <em>The Gap:</em> As the platform evolves, API endpoints and SpaceType schema fields change. No formal deprecation policy or changelog mechanism warns builders about upcoming breaking changes with sufficient notice to migrate.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define API versioning policy: (1) Breaking changes require new API version (v1→v2), old version maintained 12 months, (2) Non-breaking additions are backward compatible, (3) Deprecated fields get Sunset response header (RFC 8594) with date, (4) 30/60/90-day warning emails before deprecation. Maintain public API changelog at /api/changelog. Builder dashboard shows "APIs you use that are deprecated" warning card.
+  </div>
+</div>
+<div id="G-AZ49" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ49 [HIGH] — Integration Test Suite for Platform APIs</strong><br>
+    <em>The Gap:</em> No integration test suite validates that platform APIs behave correctly across the full request lifecycle (auth → routing → DO dispatch → LLM → response). Unit tests cannot catch cross-component regressions.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build integration test suite in Vitest: test scenarios cover: (1) successful conversation flow end-to-end, (2) rate limit enforcement, (3) DO hibernation/wake state consistency, (4) KB retrieval accuracy (golden set), (5) billing event emission, (6) webhook delivery. Tests run against Miniflare (local) in CI and against staging environment on every deploy. Required: &gt;80% pass rate before production deploy. Failures block deploy and alert on-call.
+  </div>
+</div>
+<div id="G-AZ50" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AZ50 [HIGH] — Platform Runbook and Incident Response Playbook</strong><br>
+    <em>The Gap:</em> No runbook library covers the operational procedures for common failure scenarios: DO storage full, LLM provider outage, billing system failure, security incident, data loss event. Ops team must improvise under pressure during incidents.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Create runbook library (stored in internal KB + git): runbooks for: DO_storage_full (archive + shard procedure), LLM_provider_outage (failover steps), billing_failure (grace period policy, manual recovery), security_incident (IR checklist, escalation tree, external notification templates), data_loss (recovery steps per storage tier). Each runbook: trigger_condition, immediate_actions, verification_steps, escalation_path, post-mortem template. Quarterly runbook drill required.
+  </div>
+</div>
 </section>
 
 
