@@ -59400,6 +59400,460 @@ When bumping the date, bump it everywhere in one change and re-run the full test
   <div style="background:#fef3c7;border-left:4px solid #d97706;padding:8px 12px;margin:4px 0;border-radius:4px;"><strong>The Gap:</strong> No formal public API SLA exists for Naelao's platform APIs. Builders building critical business integrations (payment processing, customer-facing AI products) need a guaranteed uptime SLA to plan their own SLA commitments to customers. Without a public SLA, enterprise deals are impossible.</div>
   <div style="background:#f0fdf4;border-left:4px solid #16a34a;padding:8px 12px;margin:4px 0;border-radius:4px;"><strong>Required Fix:</strong> Publish Naelao Platform SLA at <code>naelao.com/legal/sla</code>: (1) API uptime: 99.9% monthly (starter/pro), 99.95% (enterprise); (2) Latency: P99 API response <2s; (3) Exclusions: maintenance windows (announced 24h in advance), Force Majeure, CF platform outages; (4) Remedies: service credit of 10% of monthly fee per 0.1% below SLA (capped at 30% monthly fee); (5) Measurement: monthly uptime computed from synthetic monitoring (G-AQ48) + status page (G-AP46) data; (6) Credit request: builder submits within 30 days of month-end via dashboard. SLA terms reviewed annually. Separate SLA tiers per plan reflected in pricing page.</div>
 </div>
+
+<section id="appendix-at">
+<h2>Appendix AT — Advanced AI/ML Ops, CF Platform, API Ecosystem, Space Architecture, Security &amp; Platform Economics</h2>
+
+<div id="G-AT01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT01 [HIGH] — Fine-Tuning Workflow Orchestration</strong><br>
+    <em>The Gap:</em> No end-to-end fine-tuning pipeline exists for builders who want to train custom models on their Space data: dataset curation UI, job submission to Together AI / Replicate, training progress streaming, and result promotion to SpaceDO are all unspecified.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define a FineTuningJobDO that manages lifecycle: dataset upload → R2 staging → provider API submission → progress polling via CF Workflow → model artifact storage in R2 → model registry registration. Expose builder UI in dashboard showing job status, loss curve, and one-click promotion to active model.
+  </div>
+</div>
+<div id="G-AT02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT02 [HIGH] — Fine-Tuned Model Versioning and Rollback</strong><br>
+    <em>The Gap:</em> When a builder publishes a new fine-tuned model version, the previous version is silently replaced with no rollback path. A quality regression (e.g., post-fine-tune toxicity spike) requires manual re-submission of the old training job.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Store each fine-tuned model artifact reference in SpaceDO SQLite as model_versions table with version_id, provider_model_id, created_at, eval_score, status. Implement active_version pointer; rollback = UPDATE model_versions SET status='active' WHERE version_id=? after setting current to 'retired'. Auto-revert if post-deploy eval score drops &gt;10% vs baseline.
+  </div>
+</div>
+<div id="G-AT03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT03 [HIGH] — Prompt Version Control System</strong><br>
+    <em>The Gap:</em> System prompts and tool definitions are deployed all-or-nothing with no version history. A single bad prompt change can break all active agent conversations with no ability to roll back to the last known-good prompt version.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Store prompts in SpaceDO SQLite as prompt_versions(version_id, prompt_text, tool_defs_json, deployed_at, deployed_by, is_active). On publish, insert new row and flip is_active flag transactionally. Provide builder dashboard prompt diff view and one-click rollback. Canary deploy option: route N% of new sessions to new prompt version while monitoring error rate before full promotion.
+  </div>
+</div>
+<div id="G-AT04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT04 [CRITICAL] — Embedding Model Migration Job</strong><br>
+    <em>The Gap:</em> When a Space switches its embedding model (e.g., text-embedding-3-small → text-embedding-3-large), existing vectors in Vectorize become incompatible due to different dimensions. No migration job exists, causing silent semantic search degradation.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement an EmbeddingMigrationWorkflow: (1) create new Vectorize index with new dimensions, (2) batch-re-embed all existing KB chunks via CF Workflow steps (1000-step limit; paginate across steps), (3) swap index reference in SpaceDO config atomically, (4) delete old index. Surface migration status in builder dashboard. Block simultaneous search during swap via SpaceDO mutex.
+  </div>
+</div>
+<div id="G-AT05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT05 [HIGH] — LLM Provider Fallback Chain Ordering</strong><br>
+    <em>The Gap:</em> The circuit breaker (G-AO11) trips individual providers, but no priority fallback chain defines which provider to try next. Without an ordered list, the routing logic picks arbitrarily, potentially routing latency-sensitive tasks to a slow fallback provider.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define per-Space fallback_chain JSON config: [{provider: "openai", models: ["gpt-4o"]}, {provider: "anthropic", models: ["claude-3-5-sonnet"]}, {provider: "together", models: ["meta-llama/Llama-3-70b"]}]. RoutingDO consults chain in order, skipping providers whose circuit is OPEN. Expose chain editor in builder dashboard. Enforce latency SLA per step: if provider exceeds timeout_ms, skip to next without waiting for full timeout.
+  </div>
+</div>
+<div id="G-AT06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT06 [HIGH] — Token Budget Mid-Call Exhaustion Handling</strong><br>
+    <em>The Gap:</em> When a Space's monthly token budget is exhausted mid-conversation, the agent call fails with a raw 402 error returned to the end-user. No graceful truncation, queuing, or builder-configured overage policy exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> In deductCredits, before making the LLM call check remaining_tokens. If &lt; estimated_tokens_for_request, trigger overage policy: (1) BLOCK — return structured { error: "budget_exhausted", retry_after: epoch_of_next_billing_cycle }, (2) OVERAGE — charge at per-token overage rate with builder pre-authorization, (3) DOWNGRADE — route to cheaper model. Builder configures policy in dashboard. Surface remaining budget in real-time to builders via Analytics Engine query.
+  </div>
+</div>
+<div id="G-AT07" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT07 [HIGH] — Model Evaluation Harness with Golden Datasets</strong><br>
+    <em>The Gap:</em> No offline evaluation framework exists for testing agent quality against a curated golden dataset before deploying a new model or prompt version. Builders have no regression baseline, so quality changes are only detected via user complaints.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build EvalHarness: builder uploads golden_dataset.jsonl (input/expected_output pairs) to R2. On each model/prompt change, run EvalWorkflow: for each row call agent with input, score output against expected using LLM-as-judge + exact-match metrics, compute aggregate pass@1 and semantic_similarity. Store results in SpaceDO evals table. Block promotion if score drops below builder-configured threshold. Show eval report in builder dashboard pre-deploy.
+  </div>
+</div>
+<div id="G-AT08" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT08 [MEDIUM] — Long-Context Hierarchical Summarization Chain</strong><br>
+    <em>The Gap:</em> For documents exceeding 128K tokens, context overflow handling (G-AP23) only truncates. No hierarchical summarization chain exists to cost-efficiently process long documents (legal contracts, research papers) while retaining full semantic content.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement MapReduceSummarizer: (1) chunk document into 8K-token segments with 200-token overlap, (2) map: summarize each chunk via LLM call (cheap model), (3) reduce: concatenate summaries and summarize again if still &gt;context_limit, (4) final: use reduced summary as context injection. Implement as CF Workflow for durability. Track cost per stage in Analytics Engine. Cap recursion depth at 3 levels; surface warning if content still exceeds limit.
+  </div>
+</div>
+<div id="G-AT09" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT09 [MEDIUM] — Hallucination/Faithfulness Scoring Per Response</strong><br>
+    <em>The Gap:</em> Per-claim grounding (G-AN36) checks individual claims against KB, but no aggregate faithfulness score exists per response. Builders cannot set a minimum faithfulness threshold or automatically flag low-confidence responses for human review.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> After each agent response, run async faithfulness scorer: extract claims from response via LLM, check each claim against cited KB chunks using entailment model, compute response_faithfulness_score = (grounded_claims / total_claims). Store score in Analytics Engine. If score &lt; builder-configured threshold (e.g., 0.7), append disclaimer to response and flag in builder observability dashboard. Track faithfulness trend per model/prompt version.
+  </div>
+</div>
+<div id="G-AT10" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT10 [HIGH] — CF Workers for Platforms Tenant Dispatch</strong><br>
+    <em>The Gap:</em> The architecture mentions Workers for Platforms for tenant isolation but provides no dispatch implementation: no dynamic dispatch namespace management, no per-tenant script upload lifecycle, no isolation guarantees between tenant Workers, and no cost accounting per dispatch.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define WfP namespace naelao-spaces. On Space creation, upload tenant Worker script to namespace with space_id binding. DispatcherWorker.fetch() calls namespace.get(space_id).fetch(request) to route to isolated tenant script. Implement namespace quota monitoring (100 scripts per namespace limit with paid plan). Add cost accounting: track dispatch_count per space_id in Analytics Engine. Define script update lifecycle: new version → canary → promote.
+  </div>
+</div>
+<div id="G-AT11" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT11 [HIGH] — CF D1 Database Lifecycle and Cold-Query Latency</strong><br>
+    <em>The Gap:</em> The architecture uses DO SQLite for tenant data but has no strategy for CF D1 as a cross-Space relational query layer. D1 cold queries incur 50-150ms latency via HTTP each time a DO wakes; no mitigation, backup schedule, or point-in-time recovery (PITR) is defined.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define D1 usage boundary: cross-Space reporting queries (SpaceType analytics, platform-wide metrics) use D1 while per-Space transactional data stays in DO SQLite. Implement D1 PITR: export snapshots to R2 every 6 hours via scheduled Worker. Warm D1 connection via Hyperdrive-equivalent connection pooling (one persistent D1 connection per region cached in global Workers state). Document backup restoration procedure.
+  </div>
+</div>
+<div id="G-AT12" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT12 [HIGH] — CF R2 Event Notification Pipeline</strong><br>
+    <em>The Gap:</em> The architecture mentions an r2-notifier Worker but lacks: S3-compatible event hook configuration (which buckets, which prefixes, which event types), fan-out to CF Queues for downstream processing, delivery guarantees, and dead-letter handling for failed notification deliveries.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Configure R2 event notifications via Workers API: r2_bucket.on("object:create", {prefix: "spaces/", worker: "r2-notifier"}). r2-notifier Worker publishes to naelao-r2-events Queue. Queue consumer Workers process events with at-least-once semantics. Define DLQ naelao-r2-dlq with 4-day retention. Expose R2 event webhook registration UI for builders to subscribe to their Space's file events. Implement deduplication via event_id in DO SQLite.
+  </div>
+</div>
+<div id="G-AT13" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT13 [MEDIUM] — CF Logpush Builder-Accessible Log Exports</strong><br>
+    <em>The Gap:</em> CF Logpush streams platform Worker logs to Naelao's SIEM but no mechanism exists for builders to access their own Space's logs via Logpush exports. Field mapping, retention policies, sampling rates, and cost allocation per builder are unspecified.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Create per-Space Logpush job filtering by cf.worker.name = "space-{space_id}". Export to builder-owned R2 bucket or external destination (Datadog, S3) with builder-provided credentials stored encrypted in SpaceDO SQLite. Field mapping: include request_id, space_id, duration_ms, status_code, ai_tokens_used. Retention: 30 days default, configurable up to 365 days on enterprise plan. Charge per GB exported at cost. Surface log streaming UI in builder dashboard.
+  </div>
+</div>
+<div id="G-AT14" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT14 [HIGH] — CF Smart Placement for Durable Object Co-location</strong><br>
+    <em>The Gap:</em> Durable Objects are pinned at their first-access location with no ongoing optimization. For Spaces with users concentrated in a specific region, the DO may be in a distant CF data center, adding 100-200ms round-trip on every request with no mechanism to migrate.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Enable CF Smart Placement on all DOs: add placement: { mode: "smart" } to DO class bindings. Smart Placement automatically moves DO to the region with lowest average latency to its callers. Monitor placement decisions via DO analytics. For explicit placement (GDPR data residency), override with jurisdiction: "eu" on DO creation. Document migration procedure when placement changes: in-flight request draining, SQLite state migration via export/import.
+  </div>
+</div>
+<div id="G-AT15" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT15 [HIGH] — CF mTLS for B2B API Integrations</strong><br>
+    <em>The Gap:</em> Enterprise B2B customers requiring mutual TLS for API integrations have no supported path. CF Access uses JWT/OIDC for human users but no client certificate authentication exists for machine-to-machine API access from enterprise backend systems.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Enable CF mTLS via Access: create mTLS certificate authority per enterprise account in CF Access. Issue client certificates to enterprise customer systems. Configure API route /api/enterprise/* to require mTLS via CF Access policy. Validate client certificate CN against enterprise_account_id in request handler. Provide certificate lifecycle management UI: issue, revoke, rotate with 30-day renewal reminders. Store certificate fingerprints in AccountDO SQLite for audit logging.
+  </div>
+</div>
+<div id="G-AT16" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT16 [MEDIUM] — CF Argo Smart Routing and Tiered Cache Configuration</strong><br>
+    <em>The Gap:</em> No Argo Smart Routing or Tiered Cache is configured for Naelao's global traffic. Without Tiered Cache, every CF edge node independently fetches from origin Workers, doubling upstream load. Without Argo, WAN routing uses BGP best-path which may be 2-3x slower than Argo's private backbone.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Enable Argo Smart Routing on Naelao's CF zone for ~30ms average latency improvement on WAN paths. Configure Tiered Cache with regional tiers (upper: IAD, FRA, SIN) to aggregate cache fills. Set cache TTLs for static Space assets (components, themes) to 1 hour with stale-while-revalidate=60. Implement cache-control headers in Space asset Workers. Monitor cache hit ratio via CF Analytics; target &gt;80% hit rate for static assets.
+  </div>
+</div>
+<div id="G-AT17" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT17 [MEDIUM] — CF Zaraz for Consent Management in Embedded Spaces</strong><br>
+    <em>The Gap:</em> Embedded Spaces load in third-party contexts where GDPR ePrivacy requires explicit consent before analytics/tracking scripts fire. No CF Zaraz integration or consent management UI exists, exposing Naelao and Space builders to ePrivacy directive violations.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Integrate CF Zaraz as consent management layer for embedded Spaces. Define consent categories: analytics (Plausible), support (Intercom), payments (Stripe). Implement consent UI component (CookieBanner) in Space shell, rendered before any third-party scripts load. Zaraz's server-side tag manager fires only consented tools. Store per-user consent choices in KV keyed by space_id + user_fingerprint. Provide builder UI to configure which Zaraz tools are active per Space.
+  </div>
+</div>
+<div id="G-AT18" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT18 [HIGH] — OpenAPI 3.1 Spec Auto-Generation</strong><br>
+    <em>The Gap:</em> No OpenAPI specification is auto-generated from Worker route definitions. Builders must reverse-engineer API endpoints, breaking changes are invisible until runtime, and third-party integrations cannot use typed clients. The spec must stay in sync with the live API.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement route registry: each Worker route handler is decorated with @api({ method, path, requestSchema, responseSchema, tags }) metadata. At build time, route scanner traverses all handlers and emits openapi.json following OAS 3.1. Host spec at /api/openapi.json with Swagger UI at /api/docs. CI validates spec hasn't broken existing schema contracts. Publish versioned specs to CDN at /api/v1/openapi.json. Automate changelog generation diffing successive spec versions.
+  </div>
+</div>
+<div id="G-AT19" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT19 [MEDIUM] — SDK Auto-Generation from OpenAPI Spec</strong><br>
+    <em>The Gap:</em> Only a JavaScript/TypeScript SDK exists. Python, Go, and Ruby builders cannot access typed API clients, must write raw HTTP calls, and lose type safety. Without auto-generation, SDK updates lag API changes by release cycles.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Integrate openapi-generator-cli into CI pipeline. On each spec change, generate TypeScript, Python, and Go SDKs. Publish TypeScript to npm (@naelao/sdk), Python to PyPI (naelao), Go to pkg.go.dev. Version SDKs in lockstep with API versions. Include auto-pagination helpers, retry logic with exponential backoff, and typed error classes. Provide SDK usage examples in builder documentation auto-generated from OpenAPI operation descriptions.
+  </div>
+</div>
+<div id="G-AT20" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT20 [MEDIUM] — RFC 6585 Rate Limit Response Headers</strong><br>
+    <em>The Gap:</em> Rate-limited API responses lack standard X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset headers defined in RFC 6585. Builders and end-user clients cannot implement intelligent backoff without knowing their current quota consumption.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> In all rate-limiting middleware (WorkerEntrypoint and DO handlers), read current window count from RateLimitDO and inject response headers: X-RateLimit-Limit: {limit}, X-RateLimit-Remaining: {limit - used}, X-RateLimit-Reset: {unix_epoch_of_window_reset}, Retry-After: {seconds} on 429. For streaming responses, include headers before body starts. Add rate-limit headers to OpenAPI spec as response headers on all endpoints. Surface quota consumption chart in builder dashboard.
+  </div>
+</div>
+<div id="G-AT21" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT21 [MEDIUM] — Rate Limit Observability Dashboard</strong><br>
+    <em>The Gap:</em> Builders have no visibility into which of their API endpoints are being rate-limited, which end-users are hitting limits, or when their Space is approaching quota exhaustion. Rate limit events are silently dropped with no alerting.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Write rate_limit_hit events to Analytics Engine with: space_id, endpoint, client_ip_hash, window_count, limit, timestamp. Build builder dashboard panel showing: top rate-limited endpoints (last 24h), rate limit hit rate over time, top rate-limited end-users. Alert builder via notification channel when aggregate rate_limit_hit_rate &gt; 10% of requests in any 5-minute window. Provide self-service quota increase request UI.
+  </div>
+</div>
+<div id="G-AT22" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT22 [HIGH] — CDN Cache Invalidation on Space Config Change</strong><br>
+    <em>The Gap:</em> When a builder publishes a Space configuration change (new component layout, updated theme), cached versions of the Space at CF edge nodes continue serving stale content to end-users until TTL expiry (potentially hours). No tag-based purge mechanism is wired.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> On Space publish, call CF Cache API: cf.cache.purgeByTag([`space-${space_id}`]). All Space asset Workers set Cache-Tag: space-{space_id} response header. For component library assets, use immutable cache with content-hash in URL (/assets/button-a1b2c3.js) so they never need purging. For dynamic Space config (SpaceConfigWorker responses), set Cache-Control: public, max-age=300, stale-while-revalidate=60 with tag-based invalidation on publish.
+  </div>
+</div>
+<div id="G-AT23" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT23 [MEDIUM] — Image Optimization Pipeline</strong><br>
+    <em>The Gap:</em> User-uploaded images in Spaces are served as-is from R2 without format conversion, responsive sizing, or lazy-loading. JPEG images may be 3-5x larger than WebP equivalents, degrading Space load times especially on mobile connections.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ImageWorker: on R2 upload, create CF Images transform variants (thumbnail 150x150, medium 800px, full original). Serve via CF Images URL (/cdn-cgi/image/width=800,format=auto/{r2_key}) which auto-converts to WebP/AVIF based on Accept header. Generate responsive srcset: &lt;img srcset="...800w, ...400w" sizes="(max-width: 600px) 400px, 800px"&gt;. Cache processed images at CF edge. Enforce image upload size limit (10MB) and scan for malware via CSAM pipeline.
+  </div>
+</div>
+<div id="G-AT24" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT24 [MEDIUM] — Video Transcoding Pipeline</strong><br>
+    <em>The Gap:</em> Spaces with video content (tutorials, product demos) have no video transcoding support. Builders must upload pre-encoded videos; no HLS adaptive streaming, thumbnail generation, or player component exists in the Space UI.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Integrate CF Stream: on video upload to R2, trigger TranscodeWorkflow — upload to CF Stream API, poll for ready status via CF Workflow steps, extract thumbnail at t=5s, store CF Stream playback_url in SpaceDO SQLite. Provide VideoPlayer component in Space UI library that wraps CF Stream HLS player with subtitle/caption support. Enforce video storage quota per plan (1GB free, 50GB paid). Track video bandwidth consumption in Analytics Engine.
+  </div>
+</div>
+<div id="G-AT25" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT25 [HIGH] — Resumable File Upload with R2 Multipart</strong><br>
+    <em>The Gap:</em> Large file uploads to Space (KB documents, media) use simple PUT requests that fail silently on network interruption, requiring full re-upload. No chunked upload, resumption token, or progress tracking exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement R2 multipart upload flow: client requests upload_id via POST /api/spaces/{id}/uploads/initiate, server calls r2.createMultipartUpload(). Client uploads 5MB chunks as PUT /api/spaces/{id}/uploads/{upload_id}/parts/{part_number}. Server calls r2.uploadPart(). On completion, POST /api/spaces/{id}/uploads/{upload_id}/complete triggers r2.completeMultipartUpload(). Store upload state (uploaded parts, ETags) in SpaceDO SQLite for resumption. Client-side progress: track uploaded bytes / total bytes.
+  </div>
+</div>
+<div id="G-AT26" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT26 [MEDIUM] — Scheduled Data Export to External Analytics</strong><br>
+    <em>The Gap:</em> Builders with BI requirements (Tableau, Looker, Metabase) cannot extract Space analytics data to external data warehouses. No scheduled export to BigQuery/Snowflake/S3, no dbt transformation layer, and no cross-Space aggregation pipeline exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ExportScheduler: builder configures export destination (S3 ARN, BigQuery dataset, Snowflake connection string) and schedule (daily, weekly). Scheduled CF Worker queries Analytics Engine for space_id, formats as Parquet/CSV, uploads to builder-specified destination. For BigQuery, use Storage Write API for efficient streaming. Provide pre-built dbt models for common metrics (DAU, token usage, KB hit rate). Require explicit builder consent for cross-Space export; enforce space_id isolation strictly.
+  </div>
+</div>
+<div id="G-AT27" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT27 [HIGH] — External API Connector Framework for Builders</strong><br>
+    <em>The Gap:</em> Builders wanting to integrate their Space with external SaaS (Salesforce, HubSpot, Notion, custom REST APIs) must write custom agent tools from scratch. No builder-configurable connector framework exists for common integration patterns.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build ConnectorRegistry: catalog of pre-built connectors (Salesforce, HubSpot, Notion, Airtable, Slack, custom REST). Each connector defines: auth_type (OAuth2/API key), credential_fields, endpoint_templates, and action_schemas. Builder configures connector credentials in dashboard (stored encrypted in SpaceDO SQLite). Agent tool dispatcher resolves connector actions at runtime. Implement OAuth2 PKCE flow for connectors requiring it. Sandbox connector calls behind outbound allow-list to prevent SSRF.
+  </div>
+</div>
+<div id="G-AT28" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT28 [HIGH] — Space-in-Space Embedding (Nested Spaces)</strong><br>
+    <em>The Gap:</em> No mechanism exists for a builder to embed another Space as a panel or widget within their own Space. Each Space is an isolated product; cross-Space composition requires custom frontend code outside the UI Builder, breaking the no-code guarantee.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SpaceEmbed component in UI library: &lt;SpaceEmbed spaceId="xyz" height="400px" /&gt;. On render, fetch Space shell for embedded Space via /embed/{space_id}?parent_space={current_space_id}. Embedded Space runs in sandboxed iframe with CSP child-src 'self'. Establish cross-iframe postMessage protocol for parent ↔ embedded Space communication (typed message schema). Require embedded Space owner to whitelist parent Space domain. Track cross-Space embed analytics. Enforce max 3 levels of nesting.
+  </div>
+</div>
+<div id="G-AT29" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT29 [HIGH] — Cross-Space Data Sharing Consent Model</strong><br>
+    <em>The Gap:</em> Space isolation enforces strict space_id filtering on all queries, but no consent model exists for Space A to legitimately access KB documents or user profile data from Space B (e.g., enterprise with multiple Spaces sharing a user directory).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement DataSharingGrant: Space A owner requests read access to specific data_types (kb_documents, user_profiles) from Space B owner. Space B owner approves via signed consent record stored in AccountDO SQLite. DataAccessProxy checks grant before cross-Space query. Grant scoped by: grantor_space_id, grantee_space_id, data_type, expires_at, purpose_description. Audit all cross-Space data accesses in immutable log. GDPR: include cross-Space grants in end-user data export.
+  </div>
+</div>
+<div id="G-AT30" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT30 [MEDIUM] — Space Forking — Clone Existing Space</strong><br>
+    <em>The Gap:</em> Builders wanting to use an existing Space as a starting point for a new product must manually recreate all configuration. No Space fork/clone mechanism exists to copy a Space's config, SpaceType binding, component layouts, and theme to a new Space instance.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement POST /api/spaces/{source_id}/fork endpoint. ForkWorkflow: (1) copy SpaceConfigDO SQLite snapshot to new SpaceDO, (2) duplicate SpaceType binding with new space_id, (3) copy component_configs, theme_config, prompt_versions tables with new PKs, (4) deep-copy R2 assets with new path prefix, (5) clear end-user data (users, sessions, message history). Return new space_id. Surface "Fork this Space" in marketplace for published SpaceType templates. Fork inherits source's SpaceType version at fork time.
+  </div>
+</div>
+<div id="G-AT31" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT31 [MEDIUM] — Space Hibernation Policy for Inactive Spaces</strong><br>
+    <em>The Gap:</em> Idle Spaces continue consuming DO resources (memory while warm, storage fees) indefinitely. On the free plan with millions of Spaces, persistent resource consumption from inactive Spaces is unsustainable with no hibernation or archival lifecycle.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define hibernation tiers: WARM (active last 7 days — full DO access), COOL (8-30 days — DO hibernated, instant wake), COLD (31-90 days — SQLite snapshot to R2, DO deleted, 5s cold start), ARCHIVED (&gt;90 days — snapshot only, no wake without explicit builder action). Implement HibernationScheduler as daily CF Workflow scanning last_activity_at. Wake-on-demand: first request to COLD Space triggers restore from R2 snapshot. Notify builder before COLD transition. Always-warm option on paid plans.
+  </div>
+</div>
+<div id="G-AT32" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT32 [HIGH] — Space Migration Between Subscription Plans</strong><br>
+    <em>The Gap:</em> When a builder upgrades from free to paid plan (or downgrades), no Space migration procedure exists for quota changes: KV limits, Vectorize index limits, max active sessions, and DO storage are reconfigured without any migration path or rollback for quota violations.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement PlanMigrationWorkflow: on Stripe subscription upgrade event, (1) update plan_tier in AccountDO, (2) provision new resources matching new plan (larger Vectorize index if tier increases), (3) for downgrades: check current usage vs new limits, block downgrade if over-quota with usage report showing what must be reduced, (4) migrate data to new resource tiers (re-index to new Vectorize if changing index size), (5) emit plan_migrated event to Analytics Engine. Show migration status in builder dashboard.
+  </div>
+</div>
+<div id="G-AT33" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT33 [HIGH] — Space Federation for Enterprise Multi-Space Topology</strong><br>
+    <em>The Gap:</em> Large enterprise customers may need multiple Spaces (one per department/product line) acting as a cohesive product with shared user directory, unified billing, and cross-Space agent collaboration. No federation model exists; each Space is fully isolated.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SpaceFederation: enterprise account creates federation with federation_id. Member Spaces join federation with explicit consent. FederationDO manages: shared user directory (federated identity), unified credit pool (shared billing bucket), cross-Space agent invocation protocol. FederatedSessionToken carries space_id list for cross-Space API access. Federation admin can set cross-Space data sharing policies. Audit all cross-Space actions in FederationDO immutable log. GDPR: single data export covers all federation member Spaces.
+  </div>
+</div>
+<div id="G-AT34" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT34 [MEDIUM] — Space Dependency Graph and Version Locking</strong><br>
+    <em>The Gap:</em> Spaces depend on SpaceType versions but have no explicit dependency graph or version lock file. When a SpaceType publisher releases a breaking change, dependent Spaces auto-update silently (or are broken by deprecation) with no resolution path.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement space.lock file concept: SpaceDO stores spacetype_id, pinned_version, last_compatible_version per dependency. SpaceType publisher must increment major version on breaking changes and keep prior major version available for 90 days. DependencyResolver on Space load: check pinned_version still available; if deprecated, surface builder alert with migration guide. Builder can pin to specific version or set semver range (^1.2.0). Platform enforces no Space can run on EOL SpaceType version after 90-day grace.
+  </div>
+</div>
+<div id="G-AT35" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT35 [HIGH] — Service Mesh and Internal mTLS Between Workers</strong><br>
+    <em>The Gap:</em> Naelao internal Worker-to-Worker calls use CF Service Bindings which bypass the public internet but carry no mutual authentication. A compromised internal Worker could impersonate any other service with no cryptographic identity verification.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement internal service identity via CF Service Tokens (CF Access service auth tokens). Each internal Worker is assigned a service identity with a scoped CF Service Token. Service-to-service calls include CF-Access-Client-Id / CF-Access-Client-Secret headers validated by the callee's CF Access policy. For high-security paths (billing, auth), require mTLS client certificates. Rotate service tokens quarterly via automated secret rotation. Log all internal service calls with caller identity in Analytics Engine.
+  </div>
+</div>
+<div id="G-AT36" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT36 [HIGH] — Just-in-Time Privileged Access Management</strong><br>
+    <em>The Gap:</em> Naelao platform engineers have standing production access with no time-bounding or session recording. A compromised engineer account has persistent access to all customer data. No break-glass procedure with approval workflow exists for emergency production access.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement JIT PAM via CF Access: production access requires Okta MFA + manager approval workflow. Access grants expire in 4 hours; extend requires re-approval. All privileged sessions recorded via session recording (CF Access feature). Break-glass: emergency access requires 2-person approval stored in immutable log. Post-access: automated anomaly detection compares accessed resources vs declared purpose. Quarterly access reviews: all standing production permissions reviewed and reaffirmed or revoked.
+  </div>
+</div>
+<div id="G-AT37" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT37 [HIGH] — Zero-Trust Internal Network Architecture</strong><br>
+    <em>The Gap:</em> Internal Naelao services implicitly trust co-located Workers. No zero-trust boundary enforcement, lateral movement prevention, or service-to-service authentication matrix defines which services may call which. A single compromised Worker could reach all internal APIs.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define service communication matrix: explicit allow-list of which Worker may call which (e.g., space-worker → billing-do ALLOWED; space-worker → admin-api DENIED). Enforce via CF Access service token validation at each internal service boundary. Implement network segmentation via CF Teams tunnel policies. Deploy zero-trust policy: default-deny all internal service calls, explicit allows in policy engine. Audit matrix changes via git-controlled policy-as-code with CF Access API sync. Alert on policy violations in real-time.
+  </div>
+</div>
+<div id="G-AT38" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT38 [HIGH] — Unit Economics Measurement (CAC / LTV / Payback)</strong><br>
+    <em>The Gap:</em> No system tracks builder-level unit economics: customer acquisition cost (CAC) per marketing channel, lifetime value (LTV) per builder cohort, or payback period. Naelao cannot identify which acquisition channels are profitable or when to reduce CAC spend.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement CohortAnalyticsDO: on builder signup, record acquisition_channel (UTM params), plan_tier, signup_date. Monthly CF Workflow computes per-cohort MRR, churn, LTV (MRR × avg_lifetime_months). CAC from marketing spend imported via admin API (Google Ads, Meta spend). Payback = CAC / (MRR × gross_margin). Store cohort analytics in D1 for cross-cohort SQL queries. Build internal dashboard showing LTV:CAC ratio by channel, plan tier. Alert finance team when LTV:CAC &lt; 3:1.
+  </div>
+</div>
+<div id="G-AT39" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT39 [HIGH] — Freemium Conversion Funnel Analytics</strong><br>
+    <em>The Gap:</em> No instrumentation tracks builder conversion from free → paid plan. Upgrade trigger events (which features builders tried before upgrading), conversion rate by cohort, and time-to-conversion are invisible. Freemium funnel optimization is guesswork.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Instrument upgrade trigger events in Analytics Engine: feature_gate_hit (builder tried paid feature), upgrade_modal_shown, upgrade_clicked, plan_selected, payment_completed. Store builder_id, plan_from, plan_to, trigger_feature, session_duration. Build conversion funnel in builder analytics dashboard. Compute cohort conversion rates (free → paid within 30/60/90 days). A/B test upgrade modal copy/pricing display. Alert growth team when 30-day cohort conversion drops &gt;20% vs prior month.
+  </div>
+</div>
+<div id="G-AT40" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT40 [MEDIUM] — Pricing Elasticity A/B Testing</strong><br>
+    <em>The Gap:</em> Naelao has no mechanism to test different price points for subscription plans or add-ons. Without pricing A/B tests, the team cannot measure demand sensitivity, identify optimal price points, or quantify the revenue impact of pricing changes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement PricingExperimentDO: assign new builders to pricing variants (e.g., 20% see $29/mo Starter vs $39/mo control). Track conversion_rate and ARPU per variant. Statistical significance via two-proportion z-test; auto-promote winner at p&lt;0.05 with 95% confidence. Integrate with Stripe Products API to dynamically assign price_id per variant. Ensure experiment integrity: once assigned variant, builder always sees same price. GDPR: pricing variants count as automated decision-making — disclose in privacy notice.
+  </div>
+</div>
+<div id="G-AT41" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT41 [HIGH] — Builder Space Edit Changelog (Who/What/When)</strong><br>
+    <em>The Gap:</em> Every change a builder makes to their Space config (component additions, prompt edits, SpaceType upgrades) is applied immediately with no audit trail of who changed what and when. A team account with 5 members has no history of which member made a breaking change.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ChangelogDO per Space: every mutating API call (PUT /spaces/{id}/config, POST /spaces/{id}/prompts, etc.) appends a changelog entry: { change_id, user_id, action_type, diff_json, timestamp, ip_address }. Store last 1000 entries in DO SQLite; archive older entries to R2. Surface Space changelog in builder dashboard with diff view (before/after JSON). Implement one-click revert to any changelog entry. Export changelog as audit CSV. Include changelog in builder data export.
+  </div>
+</div>
+<div id="G-AT42" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT42 [HIGH] — End-User Segmentation Engine</strong><br>
+    <em>The Gap:</em> Builders cannot define segments of their end-users (e.g., "paid subscribers", "trial users", "enterprise accounts") to customize agent behavior, feature access, or pricing per segment. All end-users receive identical Space behavior regardless of their attributes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SegmentationEngine in SpaceDO: builder defines segments via UI (no-code rule builder): {name: "paid_users", rules: [{field: "user.metadata.plan", operator: "eq", value: "paid"}]}. Segments stored as segment_rules JSON in SpaceDO SQLite. On each end-user session init, evaluate segments against user metadata; store matched segment_ids in session token. Agent dispatch and feature gates check session segment_ids. Builder can configure per-segment prompt variations, KB access scopes, and usage limits.
+  </div>
+</div>
+<div id="G-AT43" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT43 [HIGH] — Builder Collaboration with Conflict Resolution</strong><br>
+    <em>The Gap:</em> Multi-member builder teams editing a Space configuration concurrently will silently overwrite each other's changes. The last writer wins with no merge conflict detection, no locking, and no change attribution. This causes data loss in team environments.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement optimistic concurrency via config_version counter in SpaceDO SQLite. Every config read returns current version_number. Writes include If-Match: version_number header; server rejects with 409 Conflict if version mismatch. Conflict response includes server-side version for client-side merge UI. For concurrent UI Builder sessions, implement presence system (WebSocket broadcasting who is editing which component). Implement per-section locking (builder A owns Prompt section, builder B owns Layout section) to reduce conflicts.
+  </div>
+</div>
+<div id="G-AT44" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT44 [MEDIUM] — Space Health Composite Score</strong><br>
+    <em>The Gap:</em> No composite health metric exists combining uptime, p99 latency, error rate, and end-user satisfaction into a single Space health score. Builders and Naelao support teams cannot triage degraded Spaces without cross-referencing multiple disparate metrics.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement HealthScorer: daily CF Workflow queries Analytics Engine for each Space and computes weighted composite score: uptime_weight×0.3 + latency_score×0.3 + error_rate_score×0.2 + csat_score×0.2. Normalize each dimension to 0-100. Store daily health_score in SpaceDO SQLite health_history table (30 days). Surface traffic-light indicator (green/yellow/red) in builder dashboard. Naelao support dashboard shows bottom-10% health Spaces for proactive outreach. Alert builder when health score drops &gt;20 points in 24h.
+  </div>
+</div>
+<div id="G-AT45" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT45 [MEDIUM] — Event Streaming to External Systems (Kafka / Pub/Sub)</strong><br>
+    <em>The Gap:</em> Builders wanting to stream Space events (agent_run_completed, user_message, kb_doc_retrieved) to their own data infrastructure (Kafka, Google Pub/Sub, AWS EventBridge) have no supported integration. Events are only available via Naelao's Analytics Engine, creating data lock-in.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build EventStreamConnector: builder configures outbound stream destination (Kafka topic + bootstrap servers, Pub/Sub topic, EventBridge event bus ARN, webhook URL). CF Queue consumer workers fan out each event to configured destinations. Event schema: { event_type, space_id, session_id, timestamp, payload }. Delivery: at-least-once with exponential retry. Builder-configurable event filter (only forward agent_run_completed events, not all). Encrypt stream credentials at rest in SpaceDO SQLite. Track stream lag and errors in builder dashboard.
+  </div>
+</div>
+<div id="G-AT46" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT46 [HIGH] — ETL Pipeline for Cross-Space Analytics</strong><br>
+    <em>The Gap:</em> Naelao has no data warehouse or ETL pipeline for cross-Space analytical queries. Platform-level metrics (total platform DAU, aggregate token usage, platform MRR) require ad-hoc queries across all SpaceDOs and cannot be efficiently computed at query time.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement NaelaoWarehouseETL: hourly CF Workflow aggregates Analytics Engine data per dimension into D1 summary tables: platform_daily_stats(date, total_dau, total_token_usage, total_revenue), space_daily_stats(space_id, date, dau, token_usage, revenue). Monthly, export to BigQuery (Naelao internal analytics). Build internal analytics dashboard on D1 queries. Ensure ETL is idempotent (upsert by date key). Separate pipeline for per-builder billing ETL (feeds billing reconciliation). Data retention in D1: 2 years; archive to BigQuery beyond.
+  </div>
+</div>
+<div id="G-AT47" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT47 [MEDIUM] — R2 Cold Storage Tiering and Lifecycle Policies</strong><br>
+    <em>The Gap:</em> All R2 objects are stored in the same hot tier regardless of access frequency. Old KB document versions, archived session transcripts, and historical backups accumulate indefinitely with no cost-optimizing lifecycle policies or Glacier-equivalent cold tier.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement R2 object lifecycle rules via R2 API: objects with prefix backups/ transition to Infrequent Access after 30 days; objects with prefix archive/ deleted after 90 days. For Space-level assets: keep last 3 component versions, delete older. Implement LifecycleWorker (daily scheduled CF Worker) that queries R2 list with last-modified filter and applies policies via r2.delete() / r2.copy(). Track storage cost savings in Analytics Engine. Expose retention policy configuration UI in builder Space settings (GDPR-compliant data retention).
+  </div>
+</div>
+<div id="G-AT48" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT48 [LOW] — Global Space Registry for Cross-Space Discovery</strong><br>
+    <em>The Gap:</em> No catalog of publicly discoverable Spaces exists beyond the SpaceType marketplace. Builders and end-users cannot discover public Spaces by category, use case, or SpaceType. Cross-Space linking requires knowing the exact Space URL.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build SpaceRegistry: builders can opt-in to list their Space in the public registry. RegistryDO maintains catalog of opted-in Spaces with: space_id, name, description, category, spaceType_id, star_count, active_users_count. Search index via Vectorize embedding of Space descriptions. REST API: GET /api/registry/spaces?q=&amp;category=&amp;page=. Render registry at naelao.com/explore. Implement Space rating/review system. Builder can un-list at any time (GDPR right to erasure for Space metadata). Moderate listings for policy violations.
+  </div>
+</div>
+<div id="G-AT49" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT49 [HIGH] — Space Capacity Runtime Enforcement</strong><br>
+    <em>The Gap:</em> Plan-level quotas (max end-users, max KB docs, max agent runs/day) are defined conceptually but enforcement at runtime is not fully implemented. A free-plan Space can exceed limits without hard stops, creating fairness and cost issues at scale.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement CapacityGuard in SpaceDO: on each session_init, check active_users_count vs plan_max_users; reject with 429 + upgrade prompt if over. On KB doc upload, check kb_doc_count vs plan_max_kb_docs; reject with 400 + upgrade prompt. On agent_run, check daily_runs_count (reset at UTC midnight) vs plan_max_daily_runs; return { error: "daily_limit_reached", limit: N, resets_at: epoch }. All checks against plan_limits fetched from AccountDO (cached 60s in SpaceDO memory). Surface quota gauges in builder dashboard.
+  </div>
+</div>
+<div id="G-AT50" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AT50 [MEDIUM] — R2 Event Notification Dead-Letter Queue Handling</strong><br>
+    <em>The Gap:</em> The R2 event notification pipeline (Worker receiving object create/delete events) has no dead-letter queue for failed event processing. If the downstream consumer Worker fails (e.g., Vectorize timeout during KB doc indexing), the event is silently lost and the KB doc is never indexed.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Configure naelao-r2-dlq Queue with maxRetries=3 and deadLetterQueue binding. R2 consumer Worker: on processing failure, throws RetryableError to trigger Queue retry with exponential backoff (30s, 90s, 270s). After 3 failures, message routes to DLQ. DLQ monitor Worker: alerts on-call via PagerDuty webhook when DLQ depth &gt; 10. Provides /admin/dlq endpoint to list, inspect, and replay DLQ messages. Track retry counts and failure reasons in Analytics Engine per event_type.
+  </div>
+</div>
 </section>
 
 
