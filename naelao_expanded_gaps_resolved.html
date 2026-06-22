@@ -62578,6 +62578,460 @@ When bumping the date, bump it everywhere in one change and re-run the full test
     <em>Required Fix:</em> Create runbook library (stored in internal KB + git): runbooks for: DO_storage_full (archive + shard procedure), LLM_provider_outage (failover steps), billing_failure (grace period policy, manual recovery), security_incident (IR checklist, escalation tree, external notification templates), data_loss (recovery steps per storage tier). Each runbook: trigger_condition, immediate_actions, verification_steps, escalation_path, post-mortem template. Quarterly runbook drill required.
   </div>
 </div>
+
+<section id="appendix-ba">
+<h2>Appendix BA — Multi-Tenancy Hardening, Real-Time Collaboration, SpaceType Patterns, Operational Excellence, End-User Advanced, Security Hardening, Extensibility, Analytics, Networking, Observability</h2>
+
+<div id="G-BA01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA01 [CRITICAL] — Cross-Tenant Data Leak Prevention at DO Layer</strong><br>
+    <em>The Gap:</em> DO naming scheme must guarantee per-tenant isolation. If DO names are predictable or based on guessable identifiers, a tenant could craft requests that resolve to another tenant's DO, accessing their SQLite data. No formal namespace isolation guarantee is specified.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Enforce DO naming convention: {tenant_hash}:{resource_type}:{resource_id} where tenant_hash = HMAC-SHA256(tenant_id, platform_secret). Route all DO stubs through a routing Worker that validates the requesting JWT tenant_id matches the DO namespace prefix before forwarding. Log cross-tenant probe attempts to security Analytics Engine table. Automated alert on &gt;3 cross-tenant probes in 5min.
+  </div>
+</div>
+<div id="G-BA02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA02 [HIGH] — Tenant Resource Quota Enforcement at Ingress</strong><br>
+    <em>The Gap:</em> Resource quotas (DO storage, KV keys, Vectorize vectors, R2 storage) are monitored but not enforced at request ingress. A tenant that exceeds their quota continues to accumulate resources until the next monitoring cycle detects the breach.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement quota enforcement middleware in routing Worker: before processing, check tenant quota cache (CF KV, refreshed every 60s). If any quota exceeded: reject request with 429 + quota_exceeded detail. Quota check KV key: quota:{tenant_id}:{resource}, value: {used, limit, last_updated}. Quota usage incremented atomically in DO SQLite, synced to KV on writes. Grace: 5% overage allowed before hard block.
+  </div>
+</div>
+<div id="G-BA03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA03 [CRITICAL] — Tenant Secret and Credential Isolation</strong><br>
+    <em>The Gap:</em> Builder API keys, LLM provider credentials, CRM tokens, and webhook secrets must be stored with per-tenant encryption keys. A single platform-wide encryption key means a key compromise exposes all tenant credentials.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement per-tenant credential vault: each tenant has derived encryption key = HKDF(platform_master_key, tenant_id). All credentials encrypted with tenant key before storage in D1/DO SQLite. Key rotation: platform_master_key rotation re-encrypts all tenant keys without changing tenant key derivation inputs. Tenant credential access requires both auth JWT and correct tenant_id for key derivation. Audit log every credential read.
+  </div>
+</div>
+<div id="G-BA04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA04 [HIGH] — Space-to-Space Isolation in Embedded Contexts</strong><br>
+    <em>The Gap:</em> When multiple Spaces are embedded on the same page (Space-in-Space, AT36), they share the same browser origin. Without isolation, Space A's JavaScript can read Space B's DOM, intercept events, or exfiltrate conversation data.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Mandate iframe sandbox for all embedded Spaces: sandbox="allow-scripts allow-forms allow-same-origin" with allow-same-origin restricted to Space's own subdomain only. Use postMessage with strict origin validation for Space-to-parent communication. CSP on Space shell: frame-ancestors 'none' except whitelisted builder domains. Report CSP violations to analytics endpoint. No shared localStorage keys across Spaces.
+  </div>
+</div>
+<div id="G-BA05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA05 [HIGH] — Noisy Neighbor CPU Isolation</strong><br>
+    <em>The Gap:</em> CF Workers have per-request CPU limits but no tenant-level CPU quota across multiple requests. A noisy tenant making 10,000 concurrent requests consumes disproportionate CF compute budget, degrading latency for other tenants on the same CF account.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement tenant-level request throttling: CF Durable Object maintains per-tenant request_rate counter (token bucket, 1000 req/min default). Requests over limit queued in CF Queue (max queue depth 10,000; older requests dropped). Priority queuing: paid tiers get higher priority. Track tenant_throttle_events in Analytics Engine. Ops alert if any tenant consistently hits throttle (&gt;10% of requests) — trigger capacity review.
+  </div>
+</div>
+<div id="G-BA06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA06 [HIGH] — Collaborative Space Builder (Multi-User Config Editing)</strong><br>
+    <em>The Gap:</em> Builder teams cannot collaborate on SpaceType configuration simultaneously. No multi-user editing support means one person works at a time, with no conflict detection if two people edit the same config concurrently.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement OT (Operational Transform) or CRDT-based collaborative config editor: SpaceType config stored as CRDT document in DO SQLite. Each builder edit is an operation (op) that applies to the document. Ops broadcast via WebSocket to co-editors. Presence cursors show who is editing what field. Conflict-free merge for simple field edits; flag conflicts for complex structural changes. Track collaboration_session_count.
+  </div>
+</div>
+<div id="G-BA07" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA07 [HIGH] — Real-Time Space Analytics Dashboard (Live View)</strong><br>
+    <em>The Gap:</em> Builder analytics dashboard shows historical data only. No live view shows currently active sessions, messages per minute, error rate in real-time. Builders launching a new Space have no visibility into real-time performance.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Builder dashboard "Live" tab: WebSocket connection from browser to analytics DO (one per builder). Analytics DO subscribes to Space activity events via internal pub/sub. Pushes live metrics: active_sessions_count, messages_per_minute, error_rate_1min, p50_latency_1min, top_queries_live. Refresh every 2s. Connection limit: 100 concurrent live dashboard connections per builder. Graceful degradation to 30s polling if WebSocket unavailable.
+  </div>
+</div>
+<div id="G-BA08" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA08 [HIGH] — Team Workspace and Permission Management</strong><br>
+    <em>The Gap:</em> Builders operate as individual accounts with no team workspace concept. Organizations cannot add multiple team members, assign roles (admin/editor/viewer), or share SpaceType access — blocking enterprise adoption.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add Organization entity: {id, name, owner_id, plan, members:[{user_id, role, invited_at, joined_at}]}. Roles: OWNER (full access), ADMIN (all except billing), EDITOR (create/edit SpaceTypes, cannot publish), VIEWER (read-only). SpaceTypes owned by Organization. Member invitation via email. SSO provisioning auto-joins org. Audit log for all org actions. Billing consolidated at org level. Track team_size distribution.
+  </div>
+</div>
+<div id="G-BA09" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA09 [MEDIUM] — Shared Builder Asset Library</strong><br>
+    <em>The Gap:</em> Builders in the same organization re-create identical KB documents, prompt templates, tool configurations, and system prompts across multiple SpaceTypes. No shared asset library enables reuse across SpaceTypes within an org.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add Asset Library: organization-scoped store of reusable assets: {prompt_templates, kb_document_sets, tool_configs, persona_definitions, system_prompt_snippets}. SpaceType config references assets by ID. Asset updated once → all SpaceTypes using it pick up change at next deploy. Asset versioning: SpaceType pins asset_version or tracks latest. Track asset_reuse_rate (assets with &gt;1 SpaceType reference).
+  </div>
+</div>
+<div id="G-BA10" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA10 [MEDIUM] — Builder Activity Feed and Notifications</strong><br>
+    <em>The Gap:</em> Builders have no activity feed showing what happened to their Spaces: new user sessions, error spikes, KB updates, billing events, teammate actions. No notification system surfaces time-sensitive events.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Builder notification center: activity_feed table (builder_id, event_type, title, detail, created_at, read_at). Event sources: session_milestone (100th user), error_spike, billing_threshold, teammate_action, KB_update_needed, SpaceType_review_approved. Delivery: in-app bell icon + badge, email digest (configurable: instant/daily/weekly), Slack webhook (optional). Mark-as-read tracking. Track notification_open_rate by event_type.
+  </div>
+</div>
+<div id="G-BA11" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA11 [HIGH] — SpaceType Runtime Version Pinning</strong><br>
+    <em>The Gap:</em> Platform runtime (agent framework version, tool schema version, model defaults) evolves over time. SpaceTypes deployed against one runtime version may break when platform runtime upgrades. No version pinning mechanism protects stable SpaceTypes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define runtime_version as platform-level semver (e.g., "2.3.0"). Each SpaceType pins minimum_runtime_version in manifest. On platform upgrade: run compatibility check against all published SpaceTypes. Breaking changes increment major version. SpaceTypes pinned to old major version continue running on that runtime. Builder receives deprecation notice: "Upgrade to runtime 3.0 by [date] to access new features." Track runtime_version_distribution.
+  </div>
+</div>
+<div id="G-BA12" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA12 [HIGH] — SpaceType Input Validation Schema (Zod/JSONSchema)</strong><br>
+    <em>The Gap:</em> SpaceType configurations accept arbitrary user inputs (form fields, config values). Without schema validation, malformed configurations reach agent execution layer, causing cryptic errors rather than helpful validation messages.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define SpaceType input schema using JSON Schema (Draft 7): each configurable field has type, format, minLength, maxLength, enum, pattern constraints. Validated at config save time with detailed error messages: "API Key must be 32-64 characters." Runtime validation guards tool inputs. Use AJV (compiled validators) for &lt;1ms validation overhead. Schema auto-generates form UI in builder dashboard. Schema exported in SpaceType manifest for SDK consumers.
+  </div>
+</div>
+<div id="G-BA13" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA13 [HIGH] — SpaceType Dependency Resolution and Conflict Detection</strong><br>
+    <em>The Gap:</em> SpaceTypes that depend on other SpaceTypes (composition, AV01) or external services may have incompatible version requirements. No dependency resolution system detects conflicts before deployment.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define SpaceType dependency manifest: {depends_on: [{spacetype_id, min_version, max_version}], external_services: [{name, required_capabilities}]}. At deploy time: resolve dependency graph, check version constraints, detect conflicts (A requires tool_schema &gt;= 2.0, B requires tool_schema &lt; 2.0). Report conflicts with resolution suggestions. Lockfile pattern: spacetype.lock.json records exact resolved versions for reproducible deploys.
+  </div>
+</div>
+<div id="G-BA14" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA14 [MEDIUM] — SpaceType Configuration Inheritance and Overrides</strong><br>
+    <em>The Gap:</em> Builder organizations use the same base SpaceType across multiple Spaces with slight variations (different personas, different KB subsets, different tone). No inheritance mechanism allows defining a base config and overriding specific fields per Space.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SpaceType config inheritance: Space config has base_spacetype_id + overrides: {field: value}. At runtime, config = merge(base_spacetype_config, overrides). Override precedence: Space-level &gt; SpaceType-level &gt; platform defaults. Inheritance depth max 3 levels. Builder UI shows "inherited from [SpaceType]" labels for non-overridden fields. Track override_depth distribution.
+  </div>
+</div>
+<div id="G-BA15" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA15 [HIGH] — SpaceType Rollback and Blue-Green Deployment</strong><br>
+    <em>The Gap:</em> When a SpaceType config update causes degradation (error spike, user complaints), builders have no instant rollback path. Manual rollback requires re-entering previous config values.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SpaceType version history: every deploy creates immutable version record (version_id, config_snapshot, deployed_at, deployed_by). Builder can rollback to any previous version with one click. Blue-green: new version deployed to 10% of traffic for 15min before full rollout (configurable). Auto-rollback: if error_rate increases &gt;3x during canary, auto-revert to previous version, alert builder. Track rollback_frequency per SpaceType.
+  </div>
+</div>
+<div id="G-BA16" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA16 [HIGH] — SLO Error Budget Tracking and Burn Rate Alerts</strong><br>
+    <em>The Gap:</em> SLOs are defined (AW45 Space SLA definition) but error budget consumption is not tracked in real-time. Teams discover SLO breaches at end-of-month reviews rather than when burn rate indicates an imminent breach.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement error budget tracking: for each SLO (e.g., p99_ttft &lt; 3s, 99.9% availability), compute: error_budget_total = (1 - SLO_target) * window_minutes. error_budget_consumed = actual_bad_minutes. burn_rate = consumed / (elapsed_time / total_window). Alert thresholds: burn_rate &gt; 14.4x = page (budget exhausted in 1h), burn_rate &gt; 6x = ticket (exhausted in 1 day). Dashboard shows error budget gauge per SLO.
+  </div>
+</div>
+<div id="G-BA17" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA17 [HIGH] — On-Call Rotation and Escalation Policy</strong><br>
+    <em>The Gap:</em> Platform alerts exist but no on-call rotation or escalation policy is defined. When critical alerts fire, there is no defined responder, paging mechanism, or escalation path — incidents go unacknowledged.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define on-call structure: primary + secondary + escalation (manager). PagerDuty/OpsGenie integration: CF Worker sends alert payload to paging service. Escalation: if no ack within 5min, page secondary; 15min no ack, page manager. On-call schedule: weekly rotation. Runbook link in every alert. Post-incident: 5-why root cause within 48h. Track MTTR (Mean Time To Resolve) and MTTA (Mean Time To Acknowledge) per alert type.
+  </div>
+</div>
+<div id="G-BA18" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA18 [HIGH] — Capacity Planning and Scaling Signals</strong><br>
+    <em>The Gap:</em> Platform operates on CF serverless (auto-scales) but CF account limits (script count, DO count, KV namespace count, Vectorize index count) are finite. No capacity planning process monitors approach to these limits.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Monthly capacity review CF Workflow: query CF API for account-level usage vs limits (scripts, DOs, KV namespaces, R2 buckets, Vectorize indexes). Compute utilization_pct per resource. Alert: WARNING at 70%, CRITICAL at 90%. Projected: at current growth rate, which limits will be hit in 30/90 days. Actions: pre-request limit increases at 70%, activate namespace sharding at 90%. Publish capacity headroom dashboard for ops team.
+  </div>
+</div>
+<div id="G-BA19" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA19 [HIGH] — Graceful Degradation Under Partial Outage</strong><br>
+    <em>The Gap:</em> When a subsystem fails (LLM provider down, Vectorize unavailable, R2 unreachable), agents fail completely rather than degrading gracefully. No degraded-mode operation serves partial responses.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define degradation tiers: FULL (all subsystems OK), DEGRADED_KB (Vectorize/R2 down — agent responds without KB context, discloses limitation), DEGRADED_LLM (fallback to simpler model or cached responses), DEGRADED_AUTH (serve cached session tokens, block new auth), EMERGENCY (static maintenance page). Each tier has automatic trigger conditions and recovery checks. Space shell displays "Some features temporarily limited" banner in DEGRADED mode.
+  </div>
+</div>
+<div id="G-BA20" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA20 [HIGH] — Synthetic Transaction Monitoring</strong><br>
+    <em>The Gap:</em> Platform health is measured reactively (real user errors). No synthetic monitoring runs representative user journeys on a schedule to proactively detect degradation before users experience it.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement synthetic monitor: CF Cron every 5min runs synthetic transaction: (1) auth as test user, (2) POST /sessions to test Space, (3) send test message, (4) validate response latency &lt; 5s and response not empty, (5) verify KB retrieval returned result. On failure: alert on-call, mark synthetic_check_failed in status page. Success: record latency in Analytics Engine. Track synthetic_success_rate as primary availability signal.
+  </div>
+</div>
+<div id="G-BA21" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA21 [HIGH] — End-User Conversation Continuity Across Devices</strong><br>
+    <em>The Gap:</em> End-users who start a conversation on mobile and switch to desktop encounter a new session with no history. Cross-device conversation continuity is not specified — breaking the user experience for multi-device users.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement cross-device session sync: end-user sessions keyed by user_id (not device_id). On login, fetch active_sessions for user. If existing session found with recent activity (&lt;7 days), offer "Continue your conversation" prompt. Session state (messages, context) stored in SpaceDO keyed by user_id. WebSocket reconnect by session_id from any device. Track cross_device_continuation_rate.
+  </div>
+</div>
+<div id="G-BA22" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA22 [MEDIUM] — End-User Saved Responses and Knowledge Snippets</strong><br>
+    <em>The Gap:</em> End-users receive valuable information from agents but have no way to save or bookmark individual responses for later reference. Valuable answers are lost when the conversation window is closed or the history expires.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add "Save response" button to each agent message in Space shell. Saved responses stored in user_saved_responses DO SQLite table: {id, session_id, message_id, content_snapshot, title, tags, saved_at}. Accessible via "My Saved Items" panel in Space shell. Export as PDF or copy to clipboard. Builder can disable this feature per SpaceType. Track save_rate (saved responses / total agent responses).
+  </div>
+</div>
+<div id="G-BA23" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA23 [MEDIUM] — End-User Conversation Search</strong><br>
+    <em>The Gap:</em> End-users with long conversation histories (AY19) cannot search through past interactions. Finding a previously discussed topic requires manual scrolling through hundreds of messages.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement client-side conversation search for active session and server-side search for archived sessions. Client-side: debounced filter on rendered messages. Server-side: full-text search over user_conversation_history using DO SQLite FTS5 extension. Search API: GET /users/{id}/conversations/search?q=term&amp;space_id=. Returns: [{session_id, message_id, excerpt, timestamp}]. Highlight matches in results. Track search_usage_rate and search_success_rate.
+  </div>
+</div>
+<div id="G-BA24" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA24 [HIGH] — End-User Feedback Loop to Builder</strong><br>
+    <em>The Gap:</em> End-users can rate individual responses (AX49 streaming quality metrics) but no mechanism aggregates and surfaces this feedback to builders in actionable form. Builders cannot identify which types of questions the Space handles poorly.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build feedback aggregation pipeline: end-user thumbs up/down on responses → CF Queue → Analytics Engine. Builder dashboard "Feedback" tab: feedback_rate (% of responses rated), positive_rate, negative_rate_by_topic (clustered by query embedding). Weekly digest email to builder: "Your Space received 23 negative ratings this week — common theme: [cluster summary]." Flag sessions with &gt;3 consecutive negative ratings for manual review.
+  </div>
+</div>
+<div id="G-BA25" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA25 [HIGH] — End-User Data Export (GDPR / Portability)</strong><br>
+    <em>The Gap:</em> GDPR Article 20 grants right to data portability. End-users must be able to export all their data (conversation history, saved items, profile) in machine-readable format. No export mechanism is specified.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add "Export my data" in Space shell user settings. On request: CF Workflow collects all user data across Space: conversation history (JSON), saved responses (JSON), profile (JSON), analytics events (anonymized). Packages into ZIP in R2. Sends secure download link via email (expires 24h). Process within 72h (GDPR requirement). Log export_request in audit trail. Track export_request_rate.
+  </div>
+</div>
+<div id="G-BA26" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA26 [HIGH] — JWT Token Binding and Device Fingerprinting</strong><br>
+    <em>The Gap:</em> JWTs are bearer tokens — stolen tokens work from any device. No token binding ties a JWT to the issuing device, allowing credential theft attacks to succeed silently.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement token binding: at JWT issuance, compute device_fingerprint = hash(user_agent + CF-IPCountry + CF-Device-Type + DPoP_public_key). Embed fingerprint in JWT claims. At each request, recompute fingerprint and compare. Mismatch: reject token with 401, log token_binding_mismatch event, alert user via email. DPoP (RFC 9449) support for cryptographic token binding in OAuth flows. Track token_binding_failure_rate.
+  </div>
+</div>
+<div id="G-BA27" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA27 [HIGH] — Supply Chain Security for CF Worker Scripts</strong><br>
+    <em>The Gap:</em> CF Worker scripts may import npm packages (via bundler). Compromised npm packages are a primary supply chain attack vector. No software supply chain controls are specified beyond basic CVE scanning (AW29).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement supply chain controls: (1) Lock all dependencies in package-lock.json, pin exact versions, (2) npm audit in CI — block deploy on CRITICAL CVEs, (3) Generate SBOM (Software Bill of Materials) as CycloneDX JSON on every build, store in R2, (4) Sigstore Cosign: sign every Worker bundle artifact, verify signature at deploy time, (5) Dependency review: weekly automated PR for patch-level updates via Dependabot, (6) Approved dependency list — new deps require security review.
+  </div>
+</div>
+<div id="G-BA28" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA28 [HIGH] — Runtime Secret Scanning in Worker Code</strong><br>
+    <em>The Gap:</em> Developers may accidentally hardcode secrets (API keys, connection strings) in CF Worker source code. No runtime secret scanning detects hardcoded secrets in deployed bundles.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> CI pipeline step: run trufflesecurity/trufflehog on every git push, scanning for 700+ credential patterns. Block deploy if secrets found. Worker bundle analysis: post-build, scan compiled JS bundle with custom regex patterns for common secret formats. CF Wrangler secrets-check hook: prevents wrangler deploy if known-bad patterns detected in source. Alert security team on any detection. Track secret_detection_count (should always be 0 in prod).
+  </div>
+</div>
+<div id="G-BA29" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA29 [CRITICAL] — API Key Scope Enforcement at Runtime</strong><br>
+    <em>The Gap:</em> API keys have defined scopes (AX22) but scope enforcement is only checked at the routing layer. If the routing layer is bypassed or has a bug, scoped keys could access resources outside their intended scope.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement defense-in-depth scope enforcement: (1) Routing layer checks scopes (first line), (2) Each DO verifies requestor scope before executing any method — DO-level scope check is independent and cannot be bypassed, (3) Resource ownership validation: DO confirms resource belongs to the authenticated tenant_id before responding, (4) Scope enforcement audit: weekly automated test verifies that scoped keys cannot access out-of-scope resources. Log scope_violation_attempt.
+  </div>
+</div>
+<div id="G-BA30" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA30 [HIGH] — Automated Penetration Testing Schedule</strong><br>
+    <em>The Gap:</em> Manual red team exercises (AW28) are periodic but no automated pentest schedule ensures continuous security validation. New features deployed between manual pentests may introduce vulnerabilities that go undetected for months.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Schedule automated pentest pipeline: quarterly DAST scan using OWASP ZAP against staging environment covering all API endpoints. Monthly automated: nuclei templates scan for known CVEs on all exposed endpoints. Continuous: fuzzing of API inputs using RestTestGen or RESTler in pre-prod environment. Results: severity-triaged report, CRITICAL findings block next deploy, HIGH findings require fix within 30 days. Track vulnerability_backlog_age.
+  </div>
+</div>
+<div id="G-BA31" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA31 [HIGH] — Plugin / Extension System for Platform Features</strong><br>
+    <em>The Gap:</em> The platform core supports defined SpaceType features, but builders with unique requirements cannot extend the platform with custom functionality. No plugin architecture allows trusted partners to add new tools, integrations, or UI components.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define plugin manifest: {plugin_id, name, version, permissions:[], entry_worker_url, tool_definitions:[], ui_components:[]}. Platform Partner Program: vetted builders can submit plugins. Plugin review: security audit, permissions review, sandbox testing. Installed plugins: loaded at Space runtime via CF Workers for Platforms dispatch. Plugin isolation: each plugin runs in own Worker with scoped permissions. Plugin marketplace tab. Track plugin_install_count and usage_rate.
+  </div>
+</div>
+<div id="G-BA32" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA32 [HIGH] — Custom Domain Support for Spaces</strong><br>
+    <em>The Gap:</em> Spaces are accessed via platform subdomain (e.g., spaces.naelao.com/my-space). Builders cannot map their own custom domain (e.g., assistant.mybrand.com) to their Space, limiting white-label use cases.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement custom domain support: builder adds CNAME record pointing to platform edge endpoint. Builder provides domain in dashboard. CF Workers Custom Domains API: associate domain with Space routing Worker. TLS certificate auto-provisioned via CF Universal SSL. Domain verification: check CNAME propagation before activating. SNI-based routing: incoming request on custom domain routes to correct Space. Track custom_domain_count and setup_success_rate.
+  </div>
+</div>
+<div id="G-BA33" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA33 [HIGH] — White-Label Platform Branding</strong><br>
+    <em>The Gap:</em> Enterprise builders need fully white-labeled Spaces — no Naelao branding visible to their end-users. Current platform displays platform name/logo in Space shell and in emails.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> White-label tier: custom_branding config: {logo_url, primary_color, secondary_color, font_family, platform_name, support_email, footer_text, email_from_name, email_from_address}. Apply to: Space shell CSS variables, email templates, PDF exports, error pages. Remove all "Powered by Naelao" unless explicitly kept by builder. White-label requires Enterprise plan. Verify custom_branding completeness at activation — incomplete branding shows default platform brand.
+  </div>
+</div>
+<div id="G-BA34" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA34 [MEDIUM] — Embed SDK for Third-Party Integration</strong><br>
+    <em>The Gap:</em> Builders want to embed Spaces in their existing web applications, mobile apps, or SaaS products. No official embed SDK exists — builders cobble together iframes without proper auth, event handling, or responsive sizing.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Publish @naelao/embed-sdk: JavaScript library for embedding Spaces. Features: (1) naelao.Space({spaceId, container, userToken}) — renders Space in div, handles iframe/postMessage, (2) Event callbacks: onMessage, onSessionStart, onSessionEnd, onError, (3) Methods: sendMessage(text), endSession(), updateContext({key:val}), (4) Responsive: auto-resize iframe to content height, (5) SSO passthrough: forward user auth token to Space, (6) React/Vue/Angular wrappers. NPM + CDN distribution.
+  </div>
+</div>
+<div id="G-BA35" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA35 [MEDIUM] — Webhook Event Schema Versioning</strong><br>
+    <em>The Gap:</em> Webhooks deliver platform events to builder endpoints. As the platform evolves, webhook payloads change — new fields added, old fields removed. No versioning on webhook schemas means payload changes silently break builder integrations.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add webhook schema versioning: webhook subscription includes schema_version (e.g., "2024-01"). Payloads include schema_version field. Breaking changes (field removal, type change) increment schema version. Old schema version maintained for 12 months. Builder receives deprecation warning 90 days before old schema retired. Provide schema migration guide and diff viewer. Webhook logs show schema_version of each delivery for debugging.
+  </div>
+</div>
+<div id="G-BA36" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA36 [HIGH] — Real-Time Streaming Analytics Pipeline</strong><br>
+    <em>The Gap:</em> Analytics Engine (Analytics Engine append-only events) provides batch query access but no real-time streaming. Builder dashboards refresh every 30s — insufficient for detecting active incidents or live campaign monitoring.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build real-time analytics layer using DO as streaming aggregator: session_start/message/error events written to DO counter (in-memory, flushed to Analytics Engine every 30s). Builder live dashboard subscribes to DO via WebSocket. DO pushes incremental updates: {event_type, count_delta, ts}. Browser accumulates for real-time chart rendering. Latency target: event visible in dashboard within 2s of occurrence. Gracefully fall back to 30s polling if WebSocket fails.
+  </div>
+</div>
+<div id="G-BA37" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA37 [HIGH] — Data Warehouse Export for Analytics</strong><br>
+    <em>The Gap:</em> Analytics Engine (25M row/day limit) is suitable for operational dashboards but not for deep data science analysis or ML training. No export path moves Analytics Engine data to external data warehouses (Snowflake, BigQuery).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement analytics export pipeline: daily CF Workflow exports Analytics Engine data for prior day to R2 as Parquet files partitioned by date/event_type. Builder can configure export to their external data warehouse: (1) BigQuery: provide service account, GCS bucket, pipeline uses R2 → GCS → BigQuery load job, (2) Snowflake: provide stage config, S3-compatible R2 stage. Export manifest JSON with row counts and schema. Track export_lag_hours and export_success_rate.
+  </div>
+</div>
+<div id="G-BA38" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA38 [MEDIUM] — Cohort Analysis and Retention Analytics</strong><br>
+    <em>The Gap:</em> Builder analytics tracks aggregate metrics but no cohort analysis shows how user behavior differs by acquisition week, plan tier, or feature adoption. No retention curve by cohort is available.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build cohort analysis in Analytics Engine: weekly CF Workflow computes cohort retention: group users by first_session_week, for each cohort compute week_N_retention = users_active_in_week_N / cohort_size. Store as cohort_retention_matrix in Analytics Engine (weeks 0-12). Builder dashboard "Cohorts" tab: retention heatmap, "Cohort of week 2024-W32 had 65% week-4 retention." Compare cohorts: plan tier cohort vs feature-adoption cohort.
+  </div>
+</div>
+<div id="G-BA39" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA39 [LOW] — Business Intelligence (BI) Connector</strong><br>
+    <em>The Gap:</em> Builders using BI tools (Tableau, Looker, Metabase) cannot connect them directly to platform analytics. No SQL-accessible analytics endpoint allows self-service reporting beyond the built-in dashboard.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Expose Analytics Engine via SQL HTTP API: GraphQL or REST endpoint that translates SQL queries to Analytics Engine ClickHouse dialect. Auth via builder API key with read:analytics scope. Rate limited: 100 queries/hour per builder. Provide Tableau/Looker/Metabase connector templates (custom SQL connection config). Pre-built dashboard templates for common analyses. Document Analytics Engine schema and available metrics. Track BI connector usage by tool type.
+  </div>
+</div>
+<div id="G-BA40" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA40 [HIGH] — A/B Test Results Statistical Significance</strong><br>
+    <em>The Gap:</em> A/B testing framework (AX10) runs experiments but no statistical significance calculation is applied — builders may conclude experiments based on insufficient data, making incorrect optimization decisions.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add statistical significance engine: for each A/B experiment, compute: sample_size_per_variant, conversion_rate_A, conversion_rate_B, relative_lift, p_value (two-proportion z-test), confidence_interval. Display in experiment dashboard: "Variant B shows +12% lift (p=0.032, 95% CI: +3% to +21%) — statistically significant." Auto-recommend stopping early if significance reached AND MDE (minimum detectable effect) exceeded. Alert if experiment runs &gt;30 days without significance.
+  </div>
+</div>
+<div id="G-BA41" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA41 [LOW] — IPv6 Support and Dual-Stack Networking</strong><br>
+    <em>The Gap:</em> Platform endpoints may not be accessible over IPv6 to end-users on IPv6-only networks (increasingly common in mobile). CF Workers natively support IPv6 but the routing and DO addressing must explicitly support dual-stack.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Verify CF Workers endpoints respond on IPv6 (CF handles transparently). Ensure no IPv4-only assumptions in: (1) IP allowlist validation — support CIDR for both IPv4 and IPv6, (2) geo-header parsing — CF-Connecting-IP contains IPv6 addresses, parse correctly, (3) rate limiting — bucket by normalized IP (collapse IPv6 to /64 prefix to prevent rate limit evasion via address rotation). Test: synthetic monitor from IPv6-only probe.
+  </div>
+</div>
+<div id="G-BA42" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA42 [HIGH] — WebSocket Connection Rate Limiting and Authentication</strong><br>
+    <em>The Gap:</em> WebSocket connections (agent streaming, live presence, collaborative editing) are established without rate limiting or per-connection authentication re-validation. An attacker can exhaust DO WebSocket connection capacity (CF limit: 1M connections per DO) via connection flooding.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> WebSocket connection gate: before ctx.acceptWebSocket(), validate: (1) auth token present and valid (re-check JWT, not just session cookie), (2) connection_count for Space &lt; connection_limit (default 10,000), (3) connections from same IP &lt; 100. Reject excess connections with 429. Heartbeat: ping every 30s, close connection if no pong within 60s. Track ws_connection_peak per Space. Alert builder if peak approaches limit.
+  </div>
+</div>
+<div id="G-BA43" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA43 [LOW] — HTTP/2 and HTTP/3 (QUIC) Optimization</strong><br>
+    <em>The Gap:</em> Space shell asset delivery and API calls use default CF connection handling. No explicit HTTP/2 server push or HTTP/3 QUIC optimization is configured for mobile users on high-latency connections.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Enable CF HTTP/3 (QUIC) for all endpoints (CF dashboard setting). Implement Early Hints (103 status) for Space shell HTML: preload critical CSS and JS before body renders. Configure CF HTTP/2 server push for Space shell landing: push shell.js and shell.css alongside HTML response. Link preconnect headers for LLM API domains. Track protocol_distribution (HTTP/1.1 vs H2 vs H3) and correlation with ttfb metric. Target: &gt;50% H3 for mobile users.
+  </div>
+</div>
+<div id="G-BA44" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA44 [MEDIUM] — Anycast Routing and PoP Selection Optimization</strong><br>
+    <em>The Gap:</em> CF Workers run at CF PoPs globally via anycast, but DO placement (Smart Placement, AT14) optimizes per-DO. No systematic analysis ensures that builders' target markets have DO placement near the end-user cluster, minimizing latency.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement DO placement analytics: record CF-Ray header datacenter code with each DO request. Identify top-5 PoPs per Space by session count. Compare actual DO placement PoP vs top user PoPs. If top user PoP != DO placement PoP AND latency_delta &gt; 50ms, recommend DO relocation: alert builder with: "80% of your users are in Paris — consider relocating your Space to EU region." Track placement_optimality_score per Space.
+  </div>
+</div>
+<div id="G-BA45" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA45 [HIGH] — Developer Debug Mode for Spaces</strong><br>
+    <em>The Gap:</em> When a Space behaves unexpectedly, builders have no debug mode to inspect internal agent reasoning, tool call inputs/outputs, KB retrieval chunks, and token usage in real-time. Debugging requires log analysis — slow and indirect.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement debug mode: builder enables debug_mode per Space (not in production by default). In debug mode: agent responses include debug_context field: {reasoning_steps, tool_calls:[{name, input, output, latency_ms}], kb_chunks:[{id, content_preview, score}], token_usage:{prompt, completion, cached}, total_latency_ms}. Builder dashboard Debug tab shows expandable trace per conversation turn. Auto-disable after 1h or 1000 requests. Debug data stored 24h.
+  </div>
+</div>
+<div id="G-BA46" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA46 [MEDIUM] — Request Replay and Time-Travel Debugging</strong><br>
+    <em>The Gap:</em> When a production bug is reported, engineers cannot replay the exact request that triggered it. Request payloads are not persisted, making reproduction difficult especially for non-deterministic LLM responses.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement request capture for debug sessions: when debug_mode=true or sampled at 1% in production, persist full request payload (headers, body) to R2 with 7-day TTL. Engineers can replay request via internal API: POST /debug/replay/{request_id} — exactly reproduces original request with same inputs. Compare replayed response to original. Track replay_utility (replays that led to bug fix) to justify storage cost.
+  </div>
+</div>
+<div id="G-BA47" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA47 [MEDIUM] — Error Fingerprinting and Deduplication</strong><br>
+    <em>The Gap:</em> Error logging captures many error events but no fingerprinting deduplicates similar errors. An LLM timeout affecting 10,000 users generates 10,000 individual error events — obscuring signal in noise.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement error fingerprinting: extract error signature = hash(error_type + stack_frame_top3 + endpoint). Group errors by fingerprint in Analytics Engine. Dashboard shows: unique_error_types, occurrence_count_per_fingerprint, first_seen, last_seen, affected_users. New error fingerprint not seen before triggers higher-priority alert. Resolved fingerprint tracked: reopen if recurs within 7 days. Track error_fingerprint_count and mean_time_between_recurrences.
+  </div>
+</div>
+<div id="G-BA48" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA48 [MEDIUM] — Distributed Context Propagation (Baggage)</strong><br>
+    <em>The Gap:</em> Distributed traces (AZ29) correlate spans but context baggage (tenant_id, space_id, session_id, experiment_variant) is not propagated through all async hops: CF Queues messages, CF Workflows steps, and sub-requests from Workers.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement W3C Baggage propagation: routing Worker sets baggage header (tenant_id, space_id, session_id, trace_id). All downstream Workers extract and re-propagate baggage. CF Queue messages include baggage JSON in metadata field. CF Workflow steps receive baggage as step input. Sub-requests (fetch calls within Workers) include propagated headers. Analytics Engine events include all baggage fields. Enables full cross-hop correlation for any request.
+  </div>
+</div>
+<div id="G-BA49" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA49 [HIGH] — Platform Governance and Policy Engine</strong><br>
+    <em>The Gap:</em> As the platform scales to millions of Spaces, manual policy enforcement (ToS violations, content policy, usage policy) becomes impossible. No automated policy engine detects and enforces platform policies at scale.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build policy engine: policy rules defined as code (OPA — Open Policy Agent): {rule_id, condition_query, action, severity}. Evaluated at: (1) SpaceType publish (content policy check), (2) Session start (builder account in good standing?), (3) Periodic background audit (active Spaces comply with current policies). Policy violations: automated actions (warn, suspend, terminate) based on severity. Appeal process: builder disputes via ticket, human review within 48h. Track policy_violation_rate by category.
+  </div>
+</div>
+<div id="G-BA50" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BA50 [HIGH] — Platform Health Score and Executive Dashboard</strong><br>
+    <em>The Gap:</em> Platform leadership has no unified health score aggregating the most important platform metrics into a single executive view. Individual metric dashboards exist but no single "platform is healthy / degraded / critical" signal.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build executive health dashboard: compute platform_health_score (0-100) from weighted signals: (1) p99_latency_ok (weight 20), (2) error_rate_ok (weight 20), (3) billing_processing_ok (weight 15), (4) LLM_provider_ok (weight 15), (5) active_sessions_vs_target (weight 10), (6) synthetic_monitor_ok (weight 10), (7) security_alerts_zero (weight 10). Score &lt; 80: DEGRADED, &lt; 60: CRITICAL. Weekly executive email: health score trend, top 3 risks, top 3 positive signals.
+  </div>
+</div>
 </section>
 
 
