@@ -60762,6 +60762,460 @@ When bumping the date, bump it everywhere in one change and re-run the full test
     <em>Required Fix:</em> Implement ConfigVersionHistory: each published Space config snapshot stored in SpaceDO SQLite config_snapshots table with snapshot_id, config_json, published_at, published_by, changelog_id. Keep last 90 snapshots. Builder dashboard: Config History tab shows timeline of snapshots with diff summary. "Restore to this version" button: sets current config to selected snapshot's config_json, creates new changelog entry (restored_from: snapshot_id). Compare any two snapshots side-by-side (unified diff view). Export any historical config snapshot as JSON. Weekly config backup to R2 as additional safety net beyond DO storage.
   </div>
 </div>
+
+<section id="appendix-aw">
+<h2>Appendix AW — Compliance Certifications, Observability, Content Processing, Access Control, Privacy, Notifications, Dev Tools &amp; Scaling</h2>
+
+<div id="G-AW01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW01 [CRITICAL] — SOC 2 Type II Certification Readiness</strong><br>
+    <em>The Gap:</em> Naelao has no documented SOC 2 Type II audit readiness program. Enterprise customers require SOC 2 Type II reports as a procurement prerequisite. Without it, Naelao cannot enter procurement processes at Fortune 500 companies regardless of technical capability.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Initiate SOC 2 Type II readiness program: (1) Define scope: Trust Service Criteria — Security (CC), Availability (A), Confidentiality (C), Privacy (P). (2) Implement evidence collection automation: connect CF Logpush, GitHub audit log, and Stripe events to Drata or Vanta compliance automation platform. (3) Close control gaps: access reviews (AT36), vendor risk assessments, change management (AV50), incident response procedures (AU37). (4) Engage qualified auditor for 12-month observation window. (5) Publish SOC 2 report to enterprise customers under NDA via trust center. Annual renewal required.
+  </div>
+</div>
+<div id="G-AW02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW02 [HIGH] — ISO 27001 Information Security Management System</strong><br>
+    <em>The Gap:</em> No ISO 27001 ISMS exists. European enterprise customers (especially in financial services and healthcare) require ISO 27001 certification as a mandatory procurement criterion. CF infrastructure alone does not provide certification — the organizational ISMS must be certified.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ISO 27001 ISMS: (1) Define scope statement and information security policy. (2) Complete Statement of Applicability (SoA) mapping 114 Annex A controls to Naelao processes. (3) Conduct risk assessment (asset register, threat modeling, risk treatment plan). (4) Implement controls: access management (AU14-16), cryptographic key management (AP19), supplier relationships (AT27 connectors), business continuity (AP48). (5) Internal audit and management review cycle. (6) Certification audit via accredited body (BSI, Bureau Veritas). Maintain via annual surveillance audits.
+  </div>
+</div>
+<div id="G-AW03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW03 [HIGH] — NIST Cybersecurity Framework Alignment</strong><br>
+    <em>The Gap:</em> No NIST CSF alignment documentation exists. US Federal, defense, and critical infrastructure customers require NIST CSF adherence. Without a documented NIST CSF implementation, these customer segments are inaccessible.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Map Naelao security controls to NIST CSF v2.0 five functions: Identify (asset inventory, risk assessment, supply chain risk via AT27), Protect (access control via AU14-16, data security via AP19, awareness training), Detect (continuous monitoring via AJ series, intrusion detection), Respond (incident response plan, communications via AA43), Recover (recovery planning via AP48, improvements tracking). Publish NIST CSF implementation tier rating. Create customer-facing NIST CSF summary document for security questionnaires. Review quarterly against framework updates.
+  </div>
+</div>
+<div id="G-AW04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW04 [HIGH] — PCI DSS Level 1 Compliance for Payments</strong><br>
+    <em>The Gap:</em> Naelao handles cardholder data on behalf of builders who charge end-users. While Stripe Elements reduces PCI scope, Naelao's role as a platform that orchestrates payments for millions of transactions requires formal PCI DSS compliance documentation and potentially a Level 1 merchant/service provider assessment.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Conduct PCI DSS scoping exercise: determine if Naelao is a Level 1 service provider (&gt;300K transactions/year) or merchant. Use Stripe as PCI-compliant processor (Stripe handles cardholder data; Naelao never stores card numbers). Complete SAQ-A (simplest) or SAQ-D as applicable. Network segmentation: ensure payment-processing Workers are isolated from non-payment services. Penetration testing of payment flows (quarterly). Maintain payment security awareness training for engineering. Publish PCI compliance status on trust center. File annual ROC (Report on Compliance) with card brands if Level 1.
+  </div>
+</div>
+<div id="G-AW05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW05 [MEDIUM] — Cloud Security Alliance (CSA) STAR Certification</strong><br>
+    <em>The Gap:</em> Enterprise cloud security teams use the CSA STAR registry (Cloud Controls Matrix) to assess cloud providers. Without a CSA STAR entry, security teams must perform bespoke assessments instead of relying on standardized documentation, slowing enterprise procurement.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Complete CSA Consensus Assessment Initiative Questionnaire (CAIQ-Lite for Level 1, full CAIQ for Level 2). Map Naelao controls to CCM v4.0 domains: Application Security, Audit Assurance, Business Continuity, Data Security, Encryption, Identity &amp; Access Management, Infrastructure Security, Privacy. Publish CAIQ response on CSA STAR registry (free for Level 1 self-assessment). Pursue STAR Certification (Level 2) via ISO 27001 audit (AW02) plus STAR Certification assessment. Update annually. Reference STAR registry in enterprise trust center.
+  </div>
+</div>
+<div id="G-AW06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW06 [HIGH] — Ethical AI Guidelines and AI Policy Review Board</strong><br>
+    <em>The Gap:</em> Naelao has no published ethical AI guidelines or internal AI policy review board. As builders deploy AI products to millions of end-users, absence of ethical guardrails exposes Naelao to reputational and regulatory risk from AI harms (bias, discrimination, manipulation, autonomous harm).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Establish AI Ethics program: (1) Publish Naelao AI Principles (transparency, fairness, safety, privacy, accountability). (2) Create AI Review Board: engineering lead, legal, product, external AI ethicist. Board reviews new AI capabilities before launch. (3) Implement bias testing for AI responses across demographic groups. (4) Require builders to declare AI use in Space description ("This Space uses AI"). (5) Publish model cards for AI models used in platform. (6) Incident process for AI harm reports. (7) EU AI Act compliance (high-risk AI system classification, transparency obligations). Annual ethics audit.
+  </div>
+</div>
+<div id="G-AW07" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW07 [HIGH] — EU AI Act Compliance Framework</strong><br>
+    <em>The Gap:</em> The EU AI Act (effective August 2026) imposes obligations on AI systems deployed to EU users. Naelao and its builders may be deploying "high-risk" or "general purpose AI" systems subject to transparency, logging, human oversight, and registration requirements. No EU AI Act compliance framework exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Complete EU AI Act mapping: classify each Naelao AI feature by risk tier (minimal, limited, high, unacceptable). Most Spaces = "limited risk" (transparency obligation: disclose AI). High-risk criteria check: does any Space system make automated decisions affecting EU individuals' rights (credit, employment, healthcare)? If yes: conformity assessment, technical documentation, human oversight mechanism, bias testing, registration in EU database. GPAI provisions: Naelao (as model provider integrator) must maintain technical documentation and EU-standard model policies. Publish EU AI Act conformity documentation by effective date.
+  </div>
+</div>
+<div id="G-AW08" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW08 [HIGH] — OpenTelemetry Distributed Tracing Integration</strong><br>
+    <em>The Gap:</em> Naelao has no distributed tracing system. When a builder reports "agent responses are slow," engineers cannot trace the latency through: entry Worker → SpaceDO → VectorizeDO → LLM API → response. Each hop is a black box with no timing visibility.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement OpenTelemetry in all Workers: use @opentelemetry/sdk-node with OTLP exporter sending traces to CF Workers Trace API (or Honeycomb/Jaeger endpoint). Each Worker creates trace spans: space-worker.receive_request, space-do.fetch_config, vectorize.query, llm.inference, space-do.write_message. Propagate W3C Trace Context header (traceparent) across all fetch() and DO RPC calls. Sampling: 100% for errors, 1% for successful requests (adjustable). Surface builder-visible latency breakdown in builder observability dashboard: "Time to first token: 340ms (vectorize: 50ms, llm_queue: 10ms, llm_inference: 280ms)."
+  </div>
+</div>
+<div id="G-AW09" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW09 [HIGH] — Performance Regression Detection in CI</strong><br>
+    <em>The Gap:</em> No automated performance regression detection exists in Naelao's CI pipeline. A code change that increases p99 latency by 50% ships to production undetected. Only after builders report slowness does an investigation begin.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Integrate performance benchmarking into CI: on each PR, run k6 load test (AJ38) against staging environment. Record p50/p95/p99 latency per key operation (session_init, agent_run, kb_query). Compare against baseline (last 7 days' average from Analytics Engine). If p99 regresses &gt; 20% vs baseline: mark CI check as failed, block merge, post regression report as PR comment. Store benchmark history in D1. Alert on-call when production p99 exceeds SLA thresholds (AV42). Track benchmark_regression_detected, benchmark_regression_blocked_merge counts monthly.
+  </div>
+</div>
+<div id="G-AW10" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW10 [HIGH] — Real-Time Error Rate Dashboard for Builder Spaces</strong><br>
+    <em>The Gap:</em> Builders have no real-time view of their Space's error rate. When a deployment causes a sudden increase in agent failures, builders discover it via end-user complaints rather than proactive platform alerting. The gap between incident start and builder awareness is measured in hours.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build real-time ErrorRateDashboard: in builder dashboard home, show live error rate sparkline (last 30 minutes, 1-minute buckets) queried from Analytics Engine. Error types tracked: agent_run_failed, tool_call_failed, kb_query_timeout, session_auth_failed. Alert thresholds: warn at &gt;1% error rate, critical at &gt;5%. Browser push notification (AU08) when error rate exceeds critical threshold. Error breakdown by type so builder can identify root cause (e.g., 90% are tool_call_failed → connector is down). Link each error type to relevant docs and debug checklist. Auto-create support ticket (AU17) when error rate exceeds 10%.
+  </div>
+</div>
+<div id="G-AW11" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW11 [HIGH] — Structured Log Aggregation with Log Levels</strong><br>
+    <em>The Gap:</em> Naelao Workers emit unstructured console.log() output mixed with console.error() to CF Worker logs. There is no structured log schema, no log levels (DEBUG/INFO/WARN/ERROR), no log correlation (request_id), and no log aggregation pipeline delivering logs to builders.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement structured logging library for all Workers: logger.info/warn/error({ requestId, spaceId, event, ...fields }). Log schema: { timestamp, level, event, request_id, space_id, duration_ms, ...event_fields }. Output as JSON to CF Workers logs. CF Logpush ships JSON logs to Naelao SIEM (Splunk/Datadog). Builder-facing logs: filtered by space_id, exposed via builder log viewer (last 1000 entries, 24h retention, searchable). Log levels: DEBUG (disabled in production by default), INFO (normal operations), WARN (degraded but functional), ERROR (request failed). Error logs trigger PagerDuty on frequency threshold.
+  </div>
+</div>
+<div id="G-AW12" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW12 [MEDIUM] — Alerting Runbook Library for On-Call Engineers</strong><br>
+    <em>The Gap:</em> When PagerDuty fires an alert for a Naelao platform issue, on-call engineers have no runbooks describing the expected investigation procedure, known causes, and remediation steps for each alert type. Incident response time is longer than necessary due to knowledge loss.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Create runbook library at runbooks.naelao.internal: one runbook per alert type (DO storage near 10GB, KV throughput exceeded, Vectorize latency spike, LLM provider failure, payment webhook failure, etc). Each runbook: alert description, severity, expected symptoms, step-by-step investigation checklist, common causes and fixes, rollback procedure, escalation path. Runbooks stored in git (version-controlled, peer-reviewed). Link each PagerDuty alert to its runbook URL. Track runbook_used and resolution_time per incident. Update runbooks after every post-incident review. On-call rotation includes runbook review as onboarding step.
+  </div>
+</div>
+<div id="G-AW13" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW13 [HIGH] — PDF Document Processing Pipeline with Layout Awareness</strong><br>
+    <em>The Gap:</em> PDF KB documents are processed as plain text extraction, losing table structure, column layouts, headers, and footnotes. Complex PDFs (financial reports, technical specifications with tables) produce garbled text chunks that mislead the agent with out-of-order content.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement PDFLayoutExtractor using pdfjs-dist in an Unbound Worker: extract text with position metadata (bounding boxes). Reconstruct reading order: sort text blocks by page → column → vertical position. Table detection: identify grid patterns in bounding boxes, serialize tables as markdown (| header | header |\n|---|---|\n| cell | cell |). Header/footer detection: filter repeating elements. Process PDFs asynchronously via CF Workflow; store extracted structured text in R2; update SpaceDO SQLite with processing status. Alert builder if PDF extraction confidence &lt; 70% (complex scanned PDFs may need OCR — AS14).
+  </div>
+</div>
+<div id="G-AW14" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW14 [HIGH] — Spreadsheet and CSV Knowledge Base Ingestion</strong><br>
+    <em>The Gap:</em> Builders frequently have knowledge in Excel/CSV format (product catalogs, pricing tables, FAQ spreadsheets). Uploading these as KB documents produces raw CSV text that the agent struggles to reason over. No table-aware chunking or structured query support exists for tabular data.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SpreadsheetIngester: on .xlsx/.csv upload, use SheetJS to parse. For each sheet: (1) identify header row, (2) serialize each row as a natural-language description "Product: iPhone 15, Price: $999, Category: Phone, Stock: Available" to create semantically rich text for embedding. (3) For large sheets (&gt;1000 rows), chunk into 50-row segments with header repeated in each chunk. (4) Store raw table in SpaceDO SQLite as structured_tables(sheet_name, data_json) for SQL-like tool queries. Expose sql_query tool that executes SELECT statements against structured_tables. Handle merged cells and multi-level headers.
+  </div>
+</div>
+<div id="G-AW15" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW15 [HIGH] — Web Page Crawling for Live KB Updates</strong><br>
+    <em>The Gap:</em> Builders who want their Space to have up-to-date knowledge from a website (product docs, help center, blog) must manually upload documents. No web crawling capability exists to automatically keep the KB synchronized with a website, causing stale knowledge.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement WebCrawler: builder configures seed URLs and crawl depth (max 3). CrawlWorkflow: fetch URL via CF fetch() → parse HTML with cheerio → extract main content (remove nav/footer/ads via content heuristics) → extract links → queue new URLs within same domain. Rate limit: 1 req/sec per domain. Store fetched pages in R2. Differential update: on re-crawl, compare content hash vs stored; only re-embed changed pages. Schedule: builder configures crawl frequency (daily/weekly/monthly). Robots.txt compliance: respect Disallow directives. Track crawl_pages_fetched, crawl_errors, kb_docs_updated per crawl run.
+  </div>
+</div>
+<div id="G-AW16" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW16 [HIGH] — Knowledge Base Automatic Expiry and Freshness Tracking</strong><br>
+    <em>The Gap:</em> KB documents have no expiry mechanism. A document uploaded 2 years ago with outdated pricing information continues to be retrieved and used by the agent as authoritative. Builders have no visibility into document age or staleness.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add freshness metadata to KB docs: uploaded_at, last_updated_at, expires_at (optional), source_url (for crawled docs). On retrieval, include doc_age in retrieved chunk metadata. Agent system prompt injection: "Note: the following sources are older than 180 days and may be outdated: [doc names]." Builder dashboard: KB freshness report — list of docs not updated in &gt;90/180/365 days, sorted by retrieval frequency (stale but heavily used = highest risk). Builder configures auto-archive: docs not updated in X days automatically marked as archived (still queryable but flagged). Auto-expire: docs past expires_at automatically deleted.
+  </div>
+</div>
+<div id="G-AW17" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW17 [MEDIUM] — Knowledge Graph Construction from KB Documents</strong><br>
+    <em>The Gap:</em> The KB is a flat collection of document chunks indexed by semantic similarity. Complex reasoning questions that require traversing relationships (e.g., "What products are compatible with Product X and available in the EU?") cannot be answered by pure vector retrieval — they need a structured knowledge graph.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement KnowledgeGraphExtractor: on KB upload, use LLM to extract entity-relationship triples (subject, predicate, object) from document: ("iPhone 15", "compatible_with", "Lightning Cable"), ("Lightning Cable", "available_in", "EU"). Store triples in SpaceDO SQLite knowledge_graph(subject, predicate, object, confidence, source_doc_id). Expose graph_query tool: given question, LLM formulates SPARQL-like query, system executes against SQLite using graph traversal. For complex multi-hop queries: combine graph traversal with vector retrieval (hybrid RAG). Surface knowledge graph visualization in builder dashboard.
+  </div>
+</div>
+<div id="G-AW18" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW18 [MEDIUM] — Automatic KB Document Summarization for Large Documents</strong><br>
+    <em>The Gap:</em> Large documents (50+ pages) are chunked but have no summary representation. When an end-user asks a general question about a large document ("What is this document about?"), the agent must retrieve specific chunks that may not capture the document's overall purpose and structure.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement DocSummaryGenerator: on KB doc upload (after chunking), generate multi-level summaries via LLM: (1) executive summary (150 words, top-level overview), (2) section summaries (one per major header), (3) entity extraction (key terms, people, products, dates). Store summaries in SpaceDO SQLite doc_summaries table. Retrieval strategy: on query, first check if query matches summary tier (general questions match executive summary, specific questions match section summaries, very specific match chunk-level). Inject appropriate tier into context. Cache summaries; regenerate when source doc is updated.
+  </div>
+</div>
+<div id="G-AW19" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW19 [HIGH] — Attribute-Based Access Control (ABAC) for Spaces</strong><br>
+    <em>The Gap:</em> Current access control is role-based (RBAC): a user is an admin, member, or viewer. Enterprise use cases require attribute-based policies: "Only users in the Sales department can access financial KB documents" or "Only users in EU can see pricing for EU products." ABAC cannot be expressed in RBAC.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ABAC policy engine in SpaceDO: builder defines policies as JSON rules: { resource: "kb", action: "read", condition: { user.department: "sales", user.region: "EU" } }. Policies stored in SpaceDO SQLite abac_policies table. On each resource access, PolicyEngine.evaluate(user_attributes, resource_type, action) resolves matching policies. User attributes sourced from session JWT custom claims (builder-defined at identity provider). Return PERMIT/DENY. Provide policy testing sandbox in builder dashboard: test a hypothetical user against all policies to verify access decisions.
+  </div>
+</div>
+<div id="G-AW20" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW20 [HIGH] — Resource-Level Permission Grants for KB Documents</strong><br>
+    <em>The Gap:</em> KB permissions are all-or-nothing per Space: either a user can access all KB documents or none. Builders cannot restrict specific sensitive KB documents (e.g., internal pricing, executive strategy docs) to specific user roles while making other KB docs publicly accessible.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement KB document-level access control: each KB doc has access_policy: "public" | "authenticated" | { roles: ["admin", "premium"] } | ABAC expression. On KB retrieval, filter retrieved chunks: only return chunks from docs where current user satisfies doc's access_policy. Session JWT includes user roles for policy evaluation. Builder configures per-document access in KB management UI (select doc → set access policy). Audit all access denials in SpaceDO SQLite. For GDPR: document access policies included in data processing records (AS16 GDPR Art.30).
+  </div>
+</div>
+<div id="G-AW21" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW21 [MEDIUM] — Team Member Permission Inheritance and Override</strong><br>
+    <em>The Gap:</em> Builder team members inherit permissions from their assigned role with no mechanism for per-person overrides (e.g., elevate one team member to admin for a specific Space, restrict another from seeing billing data while keeping other admin rights). Role permissions are all-or-nothing.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement permission override system: AccountDO stores permission_overrides(account_id, user_id, permission_key, granted: bool). On permission check: evaluate base_role permissions → apply overrides (grants add permissions, denials remove). Builder admin can add/remove specific permissions for specific team members without changing their role. Permissions are atomic: can_view_billing, can_edit_config, can_deploy, can_view_analytics, can_manage_kb, can_manage_members. Override changes logged in immutable audit trail. Enterprise: manager approval workflow for sensitive permission overrides.
+  </div>
+</div>
+<div id="G-AW22" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW22 [HIGH] — IP Allowlist / Denylist for Builder Dashboard Access</strong><br>
+    <em>The Gap:</em> Enterprise builder accounts with strict security policies need to restrict dashboard access to corporate network IPs only. No IP allowlisting exists for the builder dashboard. An attacker with stolen credentials from outside the corporate network can access the dashboard without restriction.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement IP allowlist for builder accounts: builder admin configures ip_allowlist: ["203.0.113.0/24", "198.51.100.50"] in security settings stored in AccountDO. Entry Worker for dashboard routes checks CF-Connecting-IP against account's allowlist on every authenticated request. Allowlist enforcement: if enabled and IP not in list, return 403 with "Access restricted to approved networks" — even with valid session token. Bypass via emergency access code (time-limited TOTP code for off-network emergencies). IP change audit: log each new IP that accesses dashboard. CF Access also provides this as a native capability (AW01 scope).
+  </div>
+</div>
+<div id="G-AW23" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW23 [HIGH] — Cross-Space Data Access Audit Trail</strong><br>
+    <em>The Gap:</em> Cross-Space data sharing grants (AT29) allow Space A to read data from Space B. When Space A reads Space B's user data, the access event is not audited. Space B's owner cannot see which data was accessed, when, or by whom, violating the transparency requirements of both GDPR and enterprise data governance.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Extend DataSharingGrant (AT29) with mandatory audit logging: every cross-Space data access writes audit_cross_space_access(granter_space_id, grantee_space_id, data_type, records_accessed_count, accessed_at, session_id, purpose) to GrantorDO immutable audit log. Grantor Space owner can query audit log via builder dashboard: "Space X accessed 15 user profile records from your Space on 2026-06-22 at 14:32." Include cross-Space access events in GDPR Art.30 records (AS16). Rate limit cross-Space accesses: max 1000 records/hour per grant to prevent data exfiltration. Alert grantor on unusual access patterns (3× daily average).
+  </div>
+</div>
+<div id="G-AW24" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW24 [HIGH] — End-User Consent Management for Data Collection</strong><br>
+    <em>The Gap:</em> Spaces collecting end-user data (profile, messages, behavior) require explicit consent under GDPR, CCPA, and other privacy laws. No consent management system exists within Spaces. Builders cannot collect, store, or prove consent from their end-users for data processing.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build ConsentManager component for Space UI library: on first session, show configurable consent modal with: purpose description, data types collected, retention period, sharing with third parties. End-user can accept all, customize (select purposes), or decline. Consent decisions stored in SpaceDO SQLite end_user_consents(user_id, purpose, granted, timestamp, consent_version). Agent and KB access gated by consent: KB retrieval requires consent_granted for "AI personalization." Builder configures consent modal text and required/optional purposes in dashboard. Provide consent history export for GDPR. Re-consent trigger when purposes change.
+  </div>
+</div>
+<div id="G-AW25" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW25 [HIGH] — PII Detection and Redaction in Agent Conversations</strong><br>
+    <em>The Gap:</em> End-users routinely share PII in conversations (credit card numbers, SSNs, phone numbers, email addresses). Agents echo this PII in responses and it is stored verbatim in conversation history. No PII detection or redaction pipeline exists, creating GDPR, CCPA, and PCI liability.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement PIIDetector middleware: before storing any message (user or agent), scan for PII patterns: credit card numbers (Luhn-validated regex), SSNs (XXX-XX-XXXX), phone numbers (E.164), email addresses. For each PII type: (1) MASK in stored conversation: "My card is [CREDIT_CARD_REDACTED]", (2) ALERT builder if PII volume exceeds threshold. For agent responses: detect before sending to end-user; if agent inadvertently repeats PII, redact from response. Builder configures PII policy: strict (block storage), mask (store redacted), or warn (log and store unredacted for compliance use). Powered by CF AI regex + LLM classification.
+  </div>
+</div>
+<div id="G-AW26" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW26 [HIGH] — Conversation History Encryption at Rest</strong><br>
+    <em>The Gap:</em> Conversation history stored in SpaceDO SQLite is encrypted by CF infrastructure at the storage level, but application-level encryption is absent. If CF infrastructure encryption is insufficient for a compliance requirement (e.g., healthcare, finance), there is no field-level or row-level encryption option.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement application-level encryption for message_history table: encrypt message_content field using AES-256-GCM with per-Space encryption key derived from builder's BYOK key (AP19) or Naelao-managed key. Key derivation: HKDF(master_key, space_id + "messages") → 256-bit symmetric key. Encrypt on write, decrypt on read in SpaceDO. Key rotation: re-encrypt messages when BYOK is rotated (AT01 pattern). For Spaces with HIPAA mode (AP39): mandatory application-level encryption. Surface encryption status in Space settings: "Messages encrypted with AES-256-GCM using your key."
+  </div>
+</div>
+<div id="G-AW27" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW27 [HIGH] — Data Anonymization Pipeline for Analytics</strong><br>
+    <em>The Gap:</em> Analytics data in CF Analytics Engine contains raw end-user identifiers (user_id, IP hashes, session IDs). For privacy compliance (GDPR minimization principle) and CCPA, analytics data should be anonymized or pseudonymized to the minimum necessary precision.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement AnalyticsAnonymizer: before writing to Analytics Engine, apply: (1) user_id → HMAC(user_id + date_bucket + salt) — k-anonymity via daily key rotation, (2) IP address → never stored (only CF-IPCountry used), (3) session_id → truncated to first 16 chars (reduces uniqueness), (4) message content → never stored in analytics (only length/type metadata). Store anonymization salt rotation schedule in KV (rotated daily for behavioral analytics, monthly for cohort analytics). Provide differential privacy noise for low-count events (add Laplace noise when event_count &lt; 10). Document anonymization guarantees in privacy policy.
+  </div>
+</div>
+<div id="G-AW28" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW28 [HIGH] — Naelao Red Team and Penetration Testing Program</strong><br>
+    <em>The Gap:</em> No formal red team or penetration testing program exists for Naelao. Security vulnerabilities in the platform are discovered reactively via bug bounty (AS01) rather than proactively through systematic adversarial testing of critical paths (auth, billing, agent injection).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Establish annual penetration testing program: (1) Quarterly automated DAST scans using OWASP ZAP or Burp Suite against staging environment. (2) Annual external penetration test by qualified security firm covering: API auth bypass, privilege escalation, prompt injection (agent), payment tampering, data exfiltration. (3) Internal red team exercises: engineer rotations testing production security controls. (4) Purple team exercises: red team (attack) + blue team (detection) working together to improve detection coverage. Remediate all Critical findings within 48h, High within 7 days. Publish penetration test scope (not results) in trust center. Track mean-time-to-remediate (MTTR) by severity.
+  </div>
+</div>
+<div id="G-AW29" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW29 [HIGH] — Supply Chain Security (SLSA / Sigstore)</strong><br>
+    <em>The Gap:</em> Naelao's build and deployment pipeline has no software supply chain attestation. Compromised build tooling (malicious npm package, hijacked CI pipeline) could inject malicious code into production Workers without detection. SLSA (Supply-chain Levels for Software Artifacts) attestation is absent.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Achieve SLSA Level 2: (1) Version all build inputs (npm lockfile, Dockerfile FROM pinned to digest). (2) Generate SLSA provenance attestation in CI: GitHub Actions generates signed provenance (workflow_id, commit_sha, build_timestamp). (3) Sign Worker bundles with Sigstore cosign before deployment. (4) Verify signatures in deployment gate: deployment blocked if signature is absent or verification fails. (5) Maintain Software Bill of Materials (SBOM) per deployment (AS04 existing gap extends to include provenance). (6) Monitor Sigstore TL transparency log. Advance to SLSA Level 3 (hermetic builds) annually.
+  </div>
+</div>
+<div id="G-AW30" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW30 [HIGH] — Transactional Email Templates with Builder Branding</strong><br>
+    <em>The Gap:</em> Naelao sends transactional emails to end-users on behalf of Spaces (session summaries, notification digests, export ready) using generic Naelao branding. Builders who want white-labeled transactional emails sent to their end-users from their own domain cannot configure custom email templates.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build EmailTemplateEngine: builder creates transactional email templates in dashboard with handlebars-style merge tags ({{user_name}}, {{space_name}}, {{action_url}}). Templates stored in SpaceDO SQLite. Builder configures custom From domain (DNS verification via DKIM/SPF records shown in dashboard). Emails sent via Resend or Sendgrid with builder's verified From domain. Naelao manages sending infrastructure; builder provides template + domain. Template editor with live preview, SPAM score check, mobile preview. Built-in templates for common triggers: welcome_email, session_summary, magic_link. Rate limit: max 1000 emails/Space/hour.
+  </div>
+</div>
+<div id="G-AW31" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW31 [MEDIUM] — SMS Notification Channel for Agent-Triggered Messages</strong><br>
+    <em>The Gap:</em> Agent-triggered notifications can only reach end-users via email, browser push, and in-app notification. Many end-users have higher engagement with SMS, and time-sensitive notifications (appointment reminders, OTP codes, alerts) are more effective via SMS.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Integrate Twilio (or Vonage) as SMS provider: builder configures Twilio Account SID + Auth Token (encrypted in SpaceDO) and sender phone number. Notification system (AP22) gains SMS channel. Agent can trigger SMS via send_sms tool: { phone: "+14155551234", message: "Your report is ready: {url}" }. Rate limits: max 100 SMS/Space/day on Pro, 1000 on Enterprise. End-user opts in to SMS via explicit consent form in Space (AW24). Opt-out: reply STOP to any message automatically unsubscribes via Twilio webhook. Track sms_sent, sms_delivered, sms_opted_out per Space in Analytics Engine.
+  </div>
+</div>
+<div id="G-AW32" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW32 [HIGH] — Agent-Triggered Email Sending from Space</strong><br>
+    <em>The Gap:</em> Agents in Spaces cannot send emails to end-users or third parties as part of their workflow. Common use cases (send a summary after a support call, email a generated report, notify a team member of an action item) require builder-developed workarounds.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add send_email to agent standard tool library: { to: "user@example.com", subject: "Your report", body_template_id: "report_ready", merge_vars: { report_url: "..." } }. Email sending routed through EmailTemplateEngine (AW30) using builder's configured email domain. Outbound email rate limit: 100/Space/hour. Require end-user email to be in Space's known user emails (prevent spam). Builder can configure allowed recipient patterns (e.g., only @company.com domains). Track emails sent with per-recipient deduplication (max 1 email per user per 5 minutes for same template). Log all sent emails in SpaceDO with message_id for bounce tracking.
+  </div>
+</div>
+<div id="G-AW33" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW33 [HIGH] — Slack and Teams Integration for Agent Notifications</strong><br>
+    <em>The Gap:</em> Builders using Slack or Microsoft Teams for internal communication cannot receive Naelao Space alerts or agent outputs in their preferred channel. All platform notifications are email-only with no native Slack/Teams integration for real-time operational awareness.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build Slack integration: builder installs Naelao Slack App via OAuth; app stores Slack team_id + bot_token encrypted in AccountDO. NotificationDO routes builder alerts to Slack channel based on notification preferences (AU50). Slack message format: structured blocks with alert type, Space affected, severity, action buttons (View Space, Acknowledge). Microsoft Teams: build Teams bot using Bot Framework; identical notification routing. Agent-triggered Slack messages: agent can use send_slack_message tool to post to builder-configured channels (sales updates, support escalations). Interactive buttons in Slack/Teams messages trigger Space API callbacks.
+  </div>
+</div>
+<div id="G-AW34" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW34 [MEDIUM] — Voice Call Notification for Critical Alerts</strong><br>
+    <em>The Gap:</em> Critical platform alerts (Space down, billing payment failed, security breach detected) currently reach builders only via email and in-app banner. For builders running business-critical Spaces, a phone call for critical alerts provides significantly faster response time (especially outside business hours).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Integrate Twilio Voice (or PagerDuty phone call) for CRITICAL-severity alerts: builder configures on-call phone number in notification preferences. On CRITICAL alert trigger: PagerDutyDO initiates Twilio voice call, reads alert summary via TTS ("Critical: Space customer-support is down. Error rate: 48%. Please acknowledge."). Call recipient presses 1 to acknowledge (silences further calls), 2 to escalate (calls backup number), 3 for runbook. Track voice_call_sent, voice_call_acknowledged, mean_time_to_acknowledge in on-call metrics. Builder can configure business hours → email only, after-hours → voice call. Enterprise: integrate with existing PagerDuty/OpsGenie instead of Twilio.
+  </div>
+</div>
+<div id="G-AW35" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW35 [MEDIUM] — VS Code Extension for Space Development</strong><br>
+    <em>The Gap:</em> Builders who prefer code-based Space configuration have no VS Code extension for schema validation, IntelliSense, and local development. They edit Space config JSON blindly without autocomplete, schema validation, or test preview in their IDE.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build naelao VS Code extension: (1) JSON schema validation for Space config files (SpaceType config schema pulled from registry, validates on save). (2) IntelliSense for merge tags in prompt templates ({{ hints for available variables). (3) Local preview: run naelao dev command to start local Space server (mocked CF Worker) for testing. (4) Deploy command: naelao deploy pushes config to staging/production. (5) KB upload command: naelao kb push ./docs/ for bulk KB management. (6) Log tail: naelao logs --space=xyz streams live logs in VS Code terminal. Publish to VS Code Marketplace. JetBrains plugin as follow-on (AU10 parallel).
+  </div>
+</div>
+<div id="G-AW36" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW36 [HIGH] — GitHub Action for Space CI/CD Integration</strong><br>
+    <em>The Gap:</em> Builders who want to version-control their Space configuration in git and deploy via CI/CD have no official GitHub Action. They must use the API manually with custom scripts, creating fragile bespoke pipelines with inconsistent behavior.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Publish naelao/deploy-space GitHub Action: inputs: space_id, config_path, api_key (from GitHub Secrets). Steps: (1) Validate config against SpaceType schema, (2) Run E2E tests via naelao-test SDK (AU39), (3) Deploy to staging Space and run smoke tests, (4) Deploy to production Space if tests pass, (5) Post deployment summary to PR as comment. Support matrix deployments (multiple Spaces in one workflow). Supports canary strategy: deploy to 10% traffic, wait 10 minutes, promote to 100%. Available in GitHub Marketplace. Example workflows in documentation (AU23). Companion GitLab CI template for non-GitHub users.
+  </div>
+</div>
+<div id="G-AW37" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW37 [HIGH] — Local Development Environment for Spaces (naelao dev)</strong><br>
+    <em>The Gap:</em> Builders cannot develop and test Space configurations locally before deploying. The only development path is deploying to a staging Space and testing against it — which requires API keys, network access, and cloud costs even for simple config changes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build naelao CLI command naelao dev: starts local Space development server mimicking CF Worker environment. Uses Wrangler (CF's local dev tool) under the hood with Naelao-specific fixtures. Mocks: VectorizeDO (in-memory vector store), SpaceDO (local SQLite), LLM provider (configurable: real API or mock responses from ./fixtures/). Hot reload: config file changes trigger instant Space restart. Local HTTPS tunnel via cloudflared for webhook testing. naelao dev runs the UI Builder preview panel locally against local Space. Output: same SSE streaming format as production. Documented at docs.naelao.com/cli/dev.
+  </div>
+</div>
+<div id="G-AW38" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW38 [MEDIUM] — Space Template Repository (GitHub-Based)</strong><br>
+    <em>The Gap:</em> No official repository of Space configuration templates exists for common use cases (customer support bot, FAQ bot, coding assistant, document Q&amp;A, sales bot). Builders must build from scratch, reinventing common patterns.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Create github.com/naelao/space-templates repository: curated Space configuration templates for 20+ use cases. Each template: complete config.json (SpaceType config, system prompt, tool definitions), sample_kb/ folder with example documents, tests/ folder with E2E test cases (AU39), README with deployment instructions. Templates deployable in one command: naelao deploy --template customer-support. Templates versioned with SpaceType compatibility matrix. Community contributions accepted via PR. Featured on builder dashboard onboarding wizard (AV17). Template download count tracked for popularity signals.
+  </div>
+</div>
+<div id="G-AW39" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW39 [MEDIUM] — Postman / Bruno Collection for Naelao API</strong><br>
+    <em>The Gap:</em> Builders wanting to explore the Naelao API with tools like Postman or Bruno must manually construct requests. No official Postman collection or Bruno collection exists. Without it, API exploration is slow and error-prone.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Generate Postman collection from OpenAPI spec (AT18): use openapi-to-postman converter in CI pipeline. Collection includes: all endpoints, pre-request scripts setting auth headers, example request bodies, tests validating response schema. Export as Postman Collection v2.1 JSON and Bruno collection format. Publish at docs.naelao.com/api/collections. Auto-update on each API spec change. Include environment files for staging and production with variable placeholders. Also generate Insomnia export. Link "Run in Postman" button on each API reference page. Track collection download counts to measure developer engagement.
+  </div>
+</div>
+<div id="G-AW40" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW40 [CRITICAL] — CF Account Limits and Platform Quota Planning</strong><br>
+    <em>The Gap:</em> CF accounts have hard limits: 100 Durable Object namespaces, 100 Workers scripts (unless Workers for Platforms), 100 Vectorize indexes, 500 KV namespaces. Naelao's growth plan may hit these account-level limits, blocking new Space creation with no mitigation path.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Conduct CF account quota audit: document current usage vs limits for all quota dimensions. At 70% utilization: (1) Request quota increase from CF Enterprise sales, (2) Implement sharding strategy across multiple CF accounts for Vectorize (one account per 80 indexes = ~800K Spaces per account). Multi-account orchestration: AccountRouterDO maps space_id → cf_account_id for resource routing. Vectorize sharding (AT44 partial — extend for multi-account). Workers for Platforms eliminates Workers script limit. Monitor quota utilization daily via CF API polling. Alert ops team at 80% of any quota dimension.
+  </div>
+</div>
+<div id="G-AW41" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW41 [HIGH] — Database Connection Pool Exhaustion Under Load</strong><br>
+    <em>The Gap:</em> SpaceDO SQLite connections are serialized (one request at a time), but high-concurrency Spaces with many simultaneous requests queue behind each other. Queue depth has no cap — a thundering herd (all users hitting Space simultaneously) can cause unbounded queue depth and timeout cascades.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement admission control in SpaceDO: maintain active_request_count counter. If active_request_count &gt; max_concurrent (configurable per plan: Free=5, Pro=20, Enterprise=100), return 429 with Retry-After: 1 immediately rather than queuing. This converts unbounded queue into shed load — client retries after 1s vs indefinite wait. Track admission_rejected_count in Analytics Engine. For high-traffic Spaces: scale out via horizontal Space partition (each partition handles subset of users). SpaceDO input queue (CF DO built-in) handles sequential processing; admission control ensures queue remains bounded.
+  </div>
+</div>
+<div id="G-AW42" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW42 [HIGH] — Global Traffic Routing and Latency Optimization</strong><br>
+    <em>The Gap:</em> End-users in Asia-Pacific connecting to a SpaceDO pinned in US-East experience 200-300ms round-trip latency on every DO RPC call. For real-time chat applications, this adds perceptible lag to every message. Global DO distribution strategy is missing.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement global routing strategy: (1) Smart Placement (AT14) auto-locates DO near end-users for existing traffic patterns. (2) For new Spaces: create DO in region closest to builder (detected from builder's IP country at Space creation). (3) Read replicas: for read-heavy operations (config fetch, KB queries), maintain regional read replicas in KV (5-minute TTL) to serve from nearest CF PoP without transatlantic DO RPC. (4) CDN for static assets: Space shells, component libraries served from CF edge cache (200+ PoPs). Target: &lt;100ms P99 for config reads globally. Track p99_latency_by_region in Analytics Engine.
+  </div>
+</div>
+<div id="G-AW43" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW43 [HIGH] — Horizontal Space Partition for High-Traffic Spaces</strong><br>
+    <em>The Gap:</em> A single SpaceDO handles all requests for a Space. High-traffic Spaces (millions of end-user sessions/month) bottleneck on DO throughput. DO concurrency is bounded by the request queue; no horizontal scaling path exists within a single Space.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ShardedSpaceDO: for Spaces exceeding traffic threshold, partition sessions across N SpaceDO shards by session_id % shard_count. SpaceRouterDO maintains shard_count per space_id; routes session requests to correct shard. Shard config stored in KV (cache layer). Config/KB reads: broadcast to all shards (or serve from single config-DO, separate from session-DOs). Write coordination: global operations (credit deduction, Space config update) go to primary shard which then broadcasts. Auto-shard promotion: when a Space exceeds 100 concurrent sessions, SpaceRouterDO adds a shard. Transparent to end-users.
+  </div>
+</div>
+<div id="G-AW44" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW44 [HIGH] — Platform Quota Self-Service Increase Requests</strong><br>
+    <em>The Gap:</em> When builders need quota increases (more token budget, larger Vectorize index, more concurrent sessions), there is no self-service path. They must contact support and wait for manual increases. This creates friction for fast-growing builders and unnecessary support load.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build QuotaRequestDO: builder submits self-service quota increase request via dashboard. Request includes: resource_type, current_limit, requested_limit, justification (dropdown: rapid_growth, enterprise_requirement, event_spike). Auto-approve if: requested increase &lt;= 2× current limit AND builder in good standing (no payment failures, no abuse flags). Manual review if: requested increase &gt; 2× OR resource has waiting period (Vectorize index takes 24h to provision). Track request_auto_approved, request_manually_approved, request_denied. Email builder confirmation with new limits and effective date. Log all quota changes in immutable audit trail.
+  </div>
+</div>
+<div id="G-AW45" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW45 [CRITICAL] — Disaster Recovery Runbook and RTO/RPO Targets</strong><br>
+    <em>The Gap:</em> Naelao has no documented disaster recovery plan with defined RTO (Recovery Time Objective) and RPO (Recovery Point Objective) targets. In a CF region outage or catastrophic data loss event, the recovery procedure is undefined, extending outage duration and potentially losing customer data.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define and document DR plan: RTO target: &lt;4 hours (Pro), &lt;1 hour (Enterprise). RPO target: &lt;1 hour (Pro), &lt;15 minutes (Enterprise). DR procedures: (1) CF Region Failure — Smart Placement auto-migrates DOs to available region; manual DO namespace migration if Smart Placement insufficient. (2) R2 Data Loss — restore from previous-day R2 versioned backup; rebuild Vectorize indexes from KB documents in R2. (3) DO Data Loss — restore from SQLite snapshots taken to R2 every 4 hours. (4) CF Account Compromise — secondary CF account warm standby for critical Workers (entry, auth, billing). Annual DR drill: tabletop exercise + partial failover test. Publish RTO/RPO targets in SLA (AV42).
+  </div>
+</div>
+<div id="G-AW46" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW46 [MEDIUM] — Naelao Platform Internal Security Training Program</strong><br>
+    <em>The Gap:</em> No formal security awareness training program exists for Naelao engineering and operations staff. Employees may be unaware of social engineering tactics, phishing attacks, or secure coding practices, creating human-layer vulnerabilities that technical controls cannot fully mitigate.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement annual security training program: (1) Secure coding training for engineers (OWASP Top 10, injection prevention, cryptography best practices). (2) Phishing simulation: quarterly phishing emails to all staff; click-throughs trigger mandatory training module. (3) Social engineering awareness: recognize pretexting, vishing, baiting. (4) Incident response role-play: tabletop exercise simulating data breach scenario. (5) New employee security onboarding: complete training before production access granted. Track training_completion_rate by team. Integrate with HR system for tracking. Evidence of training collected for SOC 2 (AW01) and ISO 27001 (AW02) audits.
+  </div>
+</div>
+<div id="G-AW47" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW47 [HIGH] — Content Delivery Network (CDN) Architecture for Space Assets</strong><br>
+    <em>The Gap:</em> Space static assets (component library JavaScript, CSS, fonts, images) are served from CF Workers on every request. While CF Workers are globally distributed, they do not leverage CF's CDN caching for static assets, causing unnecessary computation and higher latency vs pure cache hit.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement CDN strategy for Space assets: (1) Immutable assets (component JS with content hash in filename): Cache-Control: public, max-age=31536000, immutable. Served from CF R2 via CF Pages (CDN-backed). (2) Semi-static assets (Space config, theme CSS): Cache-Control: public, max-age=300, stale-while-revalidate=60, s-maxage=600. Cache-Tag: space-{space_id} for purging (AT22). (3) Dynamic API responses: Cache-Control: no-store. (4) Measure cache hit ratio via CF Analytics; target &gt;90% for static, &gt;60% for semi-static. CDN architecture reduces Worker CPU usage and latency for asset-heavy Spaces.
+  </div>
+</div>
+<div id="G-AW48" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW48 [HIGH] — Multi-Region Active-Active Deployment Architecture</strong><br>
+    <em>The Gap:</em> CF Workers deploy globally by default, but SpaceDOs have a single home region. True active-active architecture where multiple regions can serve writes for the same Space requires multi-region DO coordination, which has no specified design.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define multi-region architecture: CF Workers already active-active (all PoPs). SpaceDO active-active via: (1) For read-heavy operations: regional KV cache (AT22 pattern extended). (2) For write operations: CF Smart Placement (AT14) ensures DO is in region of most writes. (3) True active-active writes (rare): CF Multi-Region Durable Objects (CF upcoming feature — track CF roadmap). (4) Near-term: geographic sharding of Spaces — EU Spaces → EU DO namespace, US Spaces → US namespace, APAC Spaces → APAC namespace. Enforce sharding at Space creation via jurisdiction selection. Data residency: EU sharding satisfies GDPR Art.44 (AN41).
+  </div>
+</div>
+<div id="G-AW49" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW49 [LOW] — Builder Account Merger and Acquisition Support</strong><br>
+    <em>The Gap:</em> When a builder company is acquired or merges with another, their Naelao account (all Spaces, billing, team members) needs to be transferred to a new parent account. No account merger/transfer process exists. The acquired company's Spaces are stranded in the original account.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement AccountTransferWorkflow: initiated by Naelao support (not self-service, to prevent fraudulent transfers). Steps: (1) verify ownership of both source and target accounts (email confirmation from both), (2) transfer all Spaces (space ownership update in SpaceDO), (3) transfer billing (Stripe customer merge or subscription transfer), (4) transfer team members (invite to new account, optional), (5) freeze source account (read-only, 30-day grace for DNS/integration updates), (6) delete source account on confirmation. Audit log captures full transfer history. Enterprise: handled via customer success team with custom contract amendment.
+  </div>
+</div>
+<div id="G-AW50" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AW50 [HIGH] — Space Blueprint Export and Import (Portable Format)</strong><br>
+    <em>The Gap:</em> There is no portable Space export format that captures all Space configuration, content, and metadata in a vendor-neutral way. Builders cannot migrate their Space to a different host, create full backups, or share Space blueprints with other builders in a structured format.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define SpaceBlueprint format: ZIP archive containing: manifest.json (Space metadata, SpaceType reference, schema version), config.json (full Space configuration), prompts/ (all prompt versions as .txt), kb/ (all KB documents as .md/.pdf), theme.json (ThemeConfig), components/ (all ComponentConfig JSON files), README.md (builder notes). Export via POST /api/spaces/{id}/export/blueprint → async job → download link. Import via POST /api/spaces/import/blueprint (validates manifest schema, checks SpaceType availability). Blueprint is portable: import into any Naelao account. GDPR: blueprint export excludes end-user data (conversations, profiles) — separate conversation export (AU30).
+  </div>
+</div>
 </section>
 
 
