@@ -59854,6 +59854,460 @@ When bumping the date, bump it everywhere in one change and re-run the full test
     <em>Required Fix:</em> Configure naelao-r2-dlq Queue with maxRetries=3 and deadLetterQueue binding. R2 consumer Worker: on processing failure, throws RetryableError to trigger Queue retry with exponential backoff (30s, 90s, 270s). After 3 failures, message routes to DLQ. DLQ monitor Worker: alerts on-call via PagerDuty webhook when DLQ depth &gt; 10. Provides /admin/dlq endpoint to list, inspect, and replay DLQ messages. Track retry counts and failure reasons in Analytics Engine per event_type.
   </div>
 </div>
+
+<section id="appendix-au">
+<h2>Appendix AU — CF Platform Limits, Mobile/PWA, Builder Auth, Marketplace, Billing, AI Patterns &amp; Operations</h2>
+
+<div id="G-AU01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU01 [HIGH] — CF Workflows Step Timeout Recovery</strong><br>
+    <em>The Gap:</em> Each CF Workflow step has a 30-second execution timeout. Long-running steps (LLM inference calls, large embedding jobs) may exceed this limit, causing the Workflow step to fail with no documented retry or recovery path, abandoning in-flight work.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> For steps that may exceed 30s, decompose into: (1) submit step — POST request to async LLM provider returning job_id, (2) poll step — loop via Workflow sleep(5s) + status check (max 12 iterations = 60s), (3) retrieve step — fetch result. Use CF Workflow's built-in step.sleep() for polling. Cap total retries at 5; after 5 failures emit workflow_step_failed event to Analytics Engine and notify builder. Document max per-step timeout in builder platform docs.
+  </div>
+</div>
+<div id="G-AU02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU02 [HIGH] — DO Storage Quota Alerting (Approaching 10GB Limit)</strong><br>
+    <em>The Gap:</em> Durable Object SQLite storage is capped at 10GB per DO instance. No monitoring or alerting exists when a SpaceDO approaches this limit. A Space with large KB, many sessions, and extensive analytics data will hit the cap and throw StorageError without warning.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement StorageMonitor: weekly scheduled Worker queries each SpaceDO's storage.sql.exec("SELECT page_count * page_size AS db_size FROM pragma_page_count(), pragma_page_size()"). If db_size &gt; 8GB (80% threshold), emit storage_quota_warning event and alert builder via email + in-dashboard banner. At 9.5GB, also alert Naelao ops. Remediation: archive old message history to R2, purge old analytics, compact SQLite. Expose storage usage gauge in builder Space settings.
+  </div>
+</div>
+<div id="G-AU03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU03 [HIGH] — CF KV Namespace Key Quota and Sharding Strategy</strong><br>
+    <em>The Gap:</em> CF KV allows at most 100 million keys per namespace on paid plans. With millions of Spaces, each storing per-user sessions, feature flags, and cached content in a single KV namespace, the 100M key limit will be reached. No sharding strategy or namespace quota monitoring exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement KV namespace sharding: partition keys by space_id prefix hash into 10 namespaces (namespace = kv_buckets[hash(space_id) % 10]). Each namespace handles ~10M keys at scale. Monitor key count per namespace via CF API daily; alert at 80M keys per namespace. Define key naming convention: {space_id}:{key_type}:{key}. Document migration procedure for adding a new shard. Consider KV only for ephemeral/cache data; prefer DO SQLite for durable per-Space data.
+  </div>
+</div>
+<div id="G-AU04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU04 [HIGH] — Analytics Engine Write Limits and Event Sampling</strong><br>
+    <em>The Gap:</em> CF Analytics Engine has a default write limit of 25 million data points per day. High-traffic Spaces generating per-message analytics events can exhaust this limit, causing silent event drops and incomplete billing/usage data at platform scale.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement adaptive sampling in AnalyticsEmitter: track daily_event_count in KV (reset at UTC midnight). When daily_event_count &gt; 20M, enable 50% sampling for low-priority events (page_view, ui_click); always write high-priority events (agent_run, token_deduction, error). Log sampling decisions for billing reconciliation. Request Analytics Engine write limit increase (paid plan: 25M/day default; enterprise: custom). Alert Naelao ops when daily count exceeds 22M so limit increase can be pre-requested.
+  </div>
+</div>
+<div id="G-AU05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU05 [HIGH] — CF Queues Throughput Limit (5,000 msgs/sec) at Platform Scale</strong><br>
+    <em>The Gap:</em> CF Queues support up to 5,000 messages per second per queue. At platform scale with millions of Spaces generating events simultaneously, a single naelao-events queue will hit this throughput ceiling, causing message backpressure and delayed event processing.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Shard event queues by space_id: route Space events to naelao-events-{hash(space_id) % 8} (8 queues × 5,000 = 40,000 msgs/sec capacity). Implement QueueRouter Worker that selects queue by consistent hash. Monitor per-queue depth and message lag via CF API; alert at &gt;50,000 messages backed up. For bursty workloads, implement producer-side batching: buffer up to 10 events per space_id over 100ms and send as single batch message. Expand shard count without code change by incrementing modulus and rebalancing.
+  </div>
+</div>
+<div id="G-AU06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU06 [CRITICAL] — DO SQLite Schema Migration Safety</strong><br>
+    <em>The Gap:</em> DO SQLite schema evolves as Naelao features are added (new tables, new columns). No migration version tracking, idempotency guarantees, or rollback mechanism exists. A failed migration mid-execution leaves the DO in an inconsistent schema state that causes all subsequent requests to fail.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement MigrationRunner on every DO initialization: CREATE TABLE IF NOT EXISTS __migrations(version INTEGER PRIMARY KEY, applied_at TEXT). On DO startup, run pending migrations in version order as SQLite transactions. Each migration: BEGIN TRANSACTION; [ALTER TABLE / CREATE TABLE]; INSERT INTO __migrations VALUES(N, datetime('now')); COMMIT. On failure, ROLLBACK — DO returns to prior schema. Never use destructive migrations in production (no DROP COLUMN). Test all migrations in staging with representative data. Version migrations as sequential integers; never reorder or delete.
+  </div>
+</div>
+<div id="G-AU07" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU07 [HIGH] — Progressive Web App (PWA) Support for Spaces</strong><br>
+    <em>The Gap:</em> Spaces have no web app manifest or Service Worker, preventing end-users from installing Spaces as standalone PWAs on their device. Without PWA support, Spaces cannot appear in mobile home screens, lack native-app-like UX, and cannot work offline.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Generate per-Space web app manifest at /spaces/{space_id}/manifest.json: { name, short_name, start_url, display: "standalone", theme_color (from ThemeConfig), icons: [192, 512 px] }. Register Service Worker sw.js: precache Space shell (HTML/CSS/JS); implement stale-while-revalidate for component assets; network-first for API calls with offline fallback page. Builder can configure PWA settings (app name, splash screen icon, theme color) in UI Builder. PWA install eligibility requires HTTPS (already CF-native).
+  </div>
+</div>
+<div id="G-AU08" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU08 [HIGH] — Web Push Notifications for End-Users via VAPID</strong><br>
+    <em>The Gap:</em> No Web Push API integration exists for delivering push notifications to end-users when their Space tab is closed. Builders cannot notify end-users of async events (AI response ready, new message, appointment reminder) outside an active session.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement Web Push service: generate VAPID keypair stored in PlatformSecrets KV. Client-side: request Notification permission; call pushManager.subscribe({applicationServerKey: vapid_public_key}); POST subscription object to /api/spaces/{id}/push/subscribe stored in SpaceDO SQLite. Server-side: NotificationDO holds VAPID sender; on trigger event, calls web-push library to send payload to stored subscription. Browser Service Worker handles push event: shows notification via self.registration.showNotification(). Handle PushSubscriptionChange (subscription refresh).
+  </div>
+</div>
+<div id="G-AU09" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU09 [HIGH] — Mobile-Responsive UI Builder Components</strong><br>
+    <em>The Gap:</em> The UI Builder operates on a desktop layout canvas only. No mobile breakpoint preview, touch event support, or responsive layout configuration exists. Spaces built without mobile consideration render poorly on phones, with overlapping components and non-touch-friendly controls.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add breakpoint mode switcher to UI Builder canvas: Desktop (1280px) / Tablet (768px) / Mobile (375px). Each component stores per-breakpoint overrides in ComponentConfig: { desktop: {cols: 12}, tablet: {cols: 6}, mobile: {cols: 12} }. ComponentRenderer reads viewport and applies appropriate config. Add touch-event handling to interactive components (tap for click, swipe for carousel). Test all pre-built components for touch usability on iOS Safari and Android Chrome. Surface mobile preview in builder dashboard.
+  </div>
+</div>
+<div id="G-AU10" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU10 [HIGH] — Native Mobile App SDK for Space Embedding</strong><br>
+    <em>The Gap:</em> Builders wanting to embed their Space in a React Native or Flutter app have no supported SDK. Without a native SDK, mobile developers must implement the full Space protocol (auth, WebSocket, streaming) from scratch, creating fragmented integrations.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build @naelao/react-native-sdk: SpaceProvider component wrapping WebView with injected JavaScript bridge. Bridge protocol: postMessage for agent_run requests, streaming SSE via injected JS EventSource polyfill, auth token refresh via native secure storage (Keychain/Keystore). For Flutter: naelao_flutter package using webview_flutter with same bridge. SDK handles: session token refresh, push notification registration (links to AU08), biometric auth trigger (AU38), deep link handling. Publish to npm and pub.dev with example apps.
+  </div>
+</div>
+<div id="G-AU11" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU11 [MEDIUM] — iOS and Android Deep Links for Space Content</strong><br>
+    <em>The Gap:</em> No universal links (iOS) or app links (Android) configuration exists for Spaces. Sharing a link to specific Space content (a conversation, a KB article) from a native app context fails to deep-link into the app and falls back to the browser, breaking native app UX.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Configure Apple App Site Association file (/.well-known/apple-app-site-association) served from Space domain with CF Worker: { "applinks": { "details": [{"appIDs": ["{team_id}.{bundle_id}"], "components": [{"/" : "/spaces/*"}]}] } }. Analogously configure assetlinks.json for Android. Builder provides team ID and bundle ID in Space Settings. CF Worker serves both files at well-known paths. Native SDK (AU10) registers handleDeepLink() to parse space_id + content_id from URL and navigate to correct screen.
+  </div>
+</div>
+<div id="G-AU12" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU12 [MEDIUM] — PWA Install Prompt in Space UI</strong><br>
+    <em>The Gap:</em> No beforeinstallprompt handling exists in Space shells. The browser's native PWA install prompt appears randomly (if at all) with no coordination with the builder's desired install CTA placement, timing, or A/B testing of install prompts.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Space shell script: window.addEventListener("beforeinstallprompt", e =&gt; { e.preventDefault(); store deferred prompt in ref }). Builder can place InstallPromptButton component in UI Builder; clicking it calls deferredPrompt.prompt(). Track install_prompt_shown, install_prompt_accepted, install_prompt_dismissed in Analytics Engine. Builder configures prompt trigger rule: after N sessions, after first successful interaction, or on explicit button. Show install prompt only if app not already installed (check window.matchMedia("(display-mode: standalone)")).
+  </div>
+</div>
+<div id="G-AU13" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU13 [MEDIUM] — Space Offline Mode via Service Worker Cache</strong><br>
+    <em>The Gap:</em> When an end-user loses network connectivity, their Space shows a generic browser offline error. No Service Worker caches recent conversations or KB answers, and no synchronization strategy exists for messages sent offline.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Service Worker strategy: on install, cache Space shell and last 50 agent responses. On fetch: for API calls, try network; if offline, serve last cached response with offline indicator. For new messages sent offline: queue in IndexedDB outbox (message_text, timestamp, session_id). On network restore (sync event or online event), replay outbox to Space API. Display offline banner in Space UI with "You are offline — messages will send when reconnected." Sync status tracked in Space shell state.
+  </div>
+</div>
+<div id="G-AU14" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU14 [HIGH] — WebAuthn / Passkeys for Builder Platform Authentication</strong><br>
+    <em>The Gap:</em> Builder platform login uses password + TOTP only. No WebAuthn/FIDO2 passkey support exists for the builder dashboard. Passkeys are phishing-resistant and more secure than passwords; their absence leaves builder accounts vulnerable to credential phishing.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement WebAuthn registration in builder settings: navigator.credentials.create({publicKey: challenge}) for passkey registration. Store credential_id + public_key in AccountDO SQLite. Authentication flow: challenge from server → navigator.credentials.get() → verify signature server-side. Support platform authenticators (TouchID, FaceID, Windows Hello) and roaming authenticators (YubiKey). Allow multiple passkeys per account. Show passkey management UI (view, delete registered passkeys). Fall back to password if passkey assertion fails.
+  </div>
+</div>
+<div id="G-AU15" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU15 [HIGH] — Hardware Security Key (YubiKey / FIDO2) as Builder 2FA</strong><br>
+    <em>The Gap:</em> Builder two-factor authentication supports only TOTP authenticator apps. Hardware security keys (YubiKey, Google Titan) using FIDO2/U2F protocol are not supported. Enterprise builders requiring hardware-bound second factors have no supported path.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Extend WebAuthn implementation (AU14) to explicitly support roaming authenticators (cross-platform, not just platform). During registration, set authenticatorSelection.authenticatorAttachment = "cross-platform" to accept USB/NFC/BLE security keys. Store attestation data and AAGUID to identify key type. UI: show "Add Security Key" option alongside "Add Passkey" in MFA settings. For enterprise plans, allow enforcement policy: "Require hardware security key for all team members." Integrate with existing MFA enrollment flow without breaking TOTP.
+  </div>
+</div>
+<div id="G-AU16" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU16 [HIGH] — Session Hijacking and Cookie Theft Protection</strong><br>
+    <em>The Gap:</em> Builder session tokens are stored as httpOnly cookies but have no binding to client fingerprint or IP. An attacker who steals a session cookie via XSS or network interception can use it from any location/device. Anomalous session reuse is not detected.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement session binding: on login, compute session_fingerprint = HMAC(user_agent + cf_ip_continent + device_id_header). Store in SessionDO alongside session_token. On each request, recompute fingerprint; if mismatch exceeds threshold (new continent + new device), flag as suspicious: require re-authentication or MFA challenge. Log anomalous_session_reuse events to immutable audit log. Implement concurrent session detection: builder can see active sessions and revoke any. Send email alert when new session login detected from unrecognized device.
+  </div>
+</div>
+<div id="G-AU17" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU17 [HIGH] — Platform Support Ticketing System with SLA Tiers</strong><br>
+    <em>The Gap:</em> No platform support ticketing system exists. Builders have no structured way to report issues, and Naelao has no SLA-tracked response system. Support requests go through generic email or community channels with no priority routing, SLA tracking, or escalation path.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build SupportTicketDO: ticket = { ticket_id, builder_id, plan_tier, subject, body, status, priority, created_at, first_response_at, resolved_at }. SLA targets: Free 48h first response; Pro 8h; Enterprise 1h. Builder submits via in-dashboard "Get Help" form or API. SLA timer starts on submission; if first_response_at &gt; SLA, auto-escalate to tier-2 queue and notify support lead. Integration: sync tickets to Zendesk/Linear via webhook. Surface ticket status in builder dashboard. After resolution, send CSAT survey (links to G-AR34).
+  </div>
+</div>
+<div id="G-AU18" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU18 [MEDIUM] — Support SLA Breach Alerting</strong><br>
+    <em>The Gap:</em> Even if a ticketing system exists, no automated alerting notifies the support team when a ticket is approaching or has breached its SLA response window. SLA breaches go undetected until a builder escalates externally.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SLAMonitor: scheduled CF Worker runs every 15 minutes, queries SupportTicketDO for tickets with status=open AND first_response_at IS NULL AND created_at &lt; NOW() - sla_window(plan_tier). For each at-risk ticket, send PagerDuty alert with ticket_id, builder_id, time_over_sla, plan_tier. For breached tickets, send automated apology email to builder with next-response commitment. Track SLA adherence rate in support metrics dashboard. Report monthly SLA performance to leadership. Enterprise SLA: contractual penalty credits on breach.
+  </div>
+</div>
+<div id="G-AU19" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU19 [HIGH] — SpaceType Interactive Preview Sandbox</strong><br>
+    <em>The Gap:</em> Builders browsing the SpaceType marketplace cannot try a SpaceType interactively before installing it. They must read static descriptions and screenshots, leading to high abandonment after install when the product doesn't match expectations.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SpaceType demo: each SpaceType publisher can configure a demo Space (a real Space running in demo mode with sample data). Marketplace listing includes "Try Demo" button launching the demo Space in a sandboxed iframe. Demo Space: rate-limited to 10 agent runs per visitor per day, no persistent user data, reset on close. Demo analytics sent to SpaceType publisher dashboard. Track demo_start, demo_run, demo_to_install_conversion in Analytics Engine. Require demo Space for SpaceType certification (AU20).
+  </div>
+</div>
+<div id="G-AU20" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU20 [HIGH] — SpaceType Certification and Quality Review Program</strong><br>
+    <em>The Gap:</em> All SpaceTypes appear in the marketplace without quality review. A builder can publish a broken, insecure, or deceptive SpaceType to the catalog with no verification. No certification program, review criteria, or human review process exists to protect buyers.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SpaceType Certification: publisher submits for certification review via dashboard. Review checklist: (1) SpaceType demo passes automated smoke test, (2) no prompt injection vulnerabilities (automated scan), (3) data handling policy declared, (4) pricing transparent, (5) human reviewer approves description accuracy. Certified SpaceTypes get "Certified by Naelao" badge. Non-certified SpaceTypes visible in marketplace but with disclaimer. Fast-track review (&lt;48h) for enterprise publishers. Monthly re-review of certified SpaceTypes for continued compliance.
+  </div>
+</div>
+<div id="G-AU21" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU21 [MEDIUM] — SpaceType Editorial Curation and Trending Algorithm</strong><br>
+    <em>The Gap:</em> The SpaceType marketplace is a flat, undifferentiated list with no editorial curation, staff picks, category collections, or trending algorithm. Discovery relies entirely on search, causing new high-quality SpaceTypes to be invisible to most builders.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement editorial layer: Naelao curators mark SpaceTypes as featured, staff_pick, or collection_member. Collections: curated thematic groupings (e.g., "Best for E-commerce", "Customer Support Starters"). Trending algorithm: score = install_count_7d × 0.4 + rating_avg × 0.3 + demo_conversion_rate × 0.3. Refresh trending scores daily via CF Workflow. Homepage shows: Featured, Staff Picks, Trending, New This Week sections. A/B test different curation strategies via PricingExperimentDO. Track editorial click-through vs organic search conversion.
+  </div>
+</div>
+<div id="G-AU22" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU22 [MEDIUM] — Builder Community Forum Platform</strong><br>
+    <em>The Gap:</em> No community forum exists for builders to share Space examples, ask technical questions, request features, or showcase their products. Builder community engagement happens in unstructured external channels (Discord, Reddit) with no connection to the platform.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build community.naelao.com using discourse-equivalent or embed Discourse. Categories: General, Showcase, Help &amp; Support, Feature Requests, SpaceType Marketplace. Single sign-on: builder dashboard SSO to community (OAuth2). Space showcase posts include live demo link to Space. Top contributors earn builder credits. Community moderation: trust levels, spam detection. Link community posts to relevant platform docs. Highlight "Community Answer" in builder in-product help (AU41). Surface trending community posts in builder dashboard sidebar.
+  </div>
+</div>
+<div id="G-AU23" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU23 [HIGH] — Builder-Facing API Documentation Portal</strong><br>
+    <em>The Gap:</em> No hosted, searchable API reference portal exists at docs.naelao.com. Builders must piece together API knowledge from example code, GitHub issues, and community posts. Without structured documentation, builder onboarding time increases and integration quality suffers.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build docs.naelao.com using Mintlify or Docusaurus: auto-generated API reference from OpenAPI spec (AU18), hand-written concept guides (SpaceTypes, UI Builder, agent architecture), quickstarts. Search powered by Algolia DocSearch. Versioned docs matching API versions. Interactive API playground embedded from Swagger UI. Each API endpoint shows code examples in JS, Python, Go. Dark mode. Docs automatically updated on each API spec release via CI/CD. Track doc page analytics to identify confusing/missing sections.
+  </div>
+</div>
+<div id="G-AU24" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU24 [HIGH] — Credit Pack One-Time Purchase Model</strong><br>
+    <em>The Gap:</em> Naelao only supports subscription billing. Builders wanting pay-as-you-go credit packs (no monthly commitment) have no option. This blocks occasional-use builders and one-time-project customers who prefer not to subscribe.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement credit pack SKUs in Stripe: $10 (100K tokens), $50 (600K tokens), $200 (3M tokens). Builder purchases pack via Stripe Checkout (one-time payment). Credits stored in AccountDO SQLite credit_balance. Credits never expire for 12 months, then expire per Stripe policy. Pack purchases stack; subscription credits consumed first (monthly reset), then pack credits. Track pack_purchased, pack_credits_used, pack_expired events in Analytics Engine. Show credit balance and expiry timeline in builder billing dashboard.
+  </div>
+</div>
+<div id="G-AU25" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU25 [MEDIUM] — Metered Compute Billing Beyond Plan Included Compute</strong><br>
+    <em>The Gap:</em> Plans include a fixed number of AI calls but no compute overage billing for CPU-intensive operations (embedding generation, image analysis, long-context processing). Compute-heavy Spaces consume disproportionate resources with no billing signal to Naelao.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement compute unit (CU) metering: each AI operation has a CU cost (1 embedding = 1 CU, 1 image analysis = 10 CU, 1 LLM call = CU proportional to tokens). Plan includes N CUs/month. Deduct CUs from CU balance in AccountDO atomically. When CU balance exhausted and overage enabled: charge $0.001/CU over Stripe metered price_id. Report CU usage in builder billing dashboard broken down by operation type. Alert builder at 80% CU consumption. Hard-stop option: builder can disable overage (all AI calls fail when CUs exhausted).
+  </div>
+</div>
+<div id="G-AU26" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU26 [MEDIUM] — Volume Discount Tiers for High-Volume Spaces</strong><br>
+    <em>The Gap:</em> All builders on the same plan pay identical per-token rates regardless of volume. A Space with 100,000 MAU and 50M tokens/month pays the same per-token rate as a Space with 100 MAU. No volume discounts exist, creating pricing disadvantage vs directly negotiated LLM contracts.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement automatic volume tier discounts in token pricing: 0-1M tokens: base rate; 1M-10M: 15% discount; 10M-50M: 25% discount; 50M+: 35% discount. Tier evaluated monthly based on trailing 30-day token consumption. Apply discount via Stripe pricing tiers (graduated pricing on metered subscription). Show current tier and next tier threshold in billing dashboard. For 100M+ token/month customers: custom enterprise pricing via sales conversation. Announce discount tiers in public pricing page and email existing heavy users about savings.
+  </div>
+</div>
+<div id="G-AU27" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU27 [MEDIUM] — White-Label Invoice Customization for Resellers</strong><br>
+    <em>The Gap:</em> Reseller builders charging their clients through Naelao cannot customize invoices with their own branding. All invoices show "Naelao" branding, exposing the platform vendor to the reseller's clients and breaking the white-label promise.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement InvoiceCustomizer for reseller accounts: builder uploads logo (stored in R2), sets company_name, invoice_prefix, address. When Naelao generates invoice for end-customer via Stripe, use builder's Stripe connected account (or custom invoice template via Stripe Invoice API). PDF invoices generated with builder branding via Puppeteer CF container or Cloudflare Pages function. Builder-branded invoices sent directly from builder's Stripe account. Naelao collects platform fees separately via Stripe Connect fee extraction. Requires verified business identity (KYC).
+  </div>
+</div>
+<div id="G-AU28" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU28 [HIGH] — Detailed Dunning Retry Sequence and Space Freeze Policy</strong><br>
+    <em>The Gap:</em> Failed subscription payment retry behavior is undefined. No specification exists for: retry intervals, grace period duration before Space freeze, Space freeze mechanics (read-only vs full suspension), or automatic un-freeze on payment success.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define dunning sequence: Day 0 — payment fails, retry immediately + email "card declined." Day 3 — retry + email "last warning." Day 7 — retry + email + in-dashboard banner "Account will freeze in 48h." Day 9 — FREEZE: Space serves "subscription expired" to end-users; builder can still access dashboard to update payment. Day 30 — SUSPEND: Space data retained but DO deactivated; data deletion warning. Day 60 — SCHEDULE for deletion. On successful payment: immediate un-freeze via Stripe webhook, Space resumes &lt; 60s. Enterprise: 30-day grace period, personal account manager notification.
+  </div>
+</div>
+<div id="G-AU29" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU29 [HIGH] — Builder Analytics Data Retention and GDPR Export Right</strong><br>
+    <em>The Gap:</em> No defined retention period exists for builder-owned Space analytics data in Analytics Engine. Builders exercising their GDPR right to data portability cannot export their own analytics data in a standard format.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define analytics retention: Analytics Engine data retained for 2 years for paid plans, 90 days for free. After retention period, data automatically deleted via Analytics Engine retention policy. GDPR export: Builder triggers "Export Analytics" from dashboard → CF Workflow queries Analytics Engine for all space_id rows → exports as CSV/JSON to R2 → signed download URL valid 24h. Export includes: event_type, timestamp, anonymized end-user hash, metric values. Exclude PII (raw IP addresses not stored per G-AK15). Complete export within 72 hours of request.
+  </div>
+</div>
+<div id="G-AU30" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU30 [HIGH] — End-User Conversation Bulk Export for Builders</strong><br>
+    <em>The Gap:</em> Builders need access to their end-users' conversation transcripts for compliance audits, model fine-tuning, and quality review. No bulk export API or UI exists for downloading all Space conversations as structured data.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ConversationExportAPI: POST /api/spaces/{id}/exports/conversations with optional date_range and user_id filters. ExportWorker streams SpaceDO SQLite query results (SELECT * FROM sessions JOIN messages) chunked into 1000-row pages via R2 multipart upload. Output format: JSONL (one conversation per line with messages array) or CSV. Large exports complete async; builder receives webhook + download link. Rate limit: 1 export per hour. Enforce: exclude messages flagged as deleted per GDPR erasure (G-AO31). Log export events in immutable audit log for GDPR compliance.
+  </div>
+</div>
+<div id="G-AU31" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU31 [HIGH] — Space Revenue Analytics Dashboard for Monetized Spaces</strong><br>
+    <em>The Gap:</em> Builders who monetize their Spaces (charging end-users per session, subscription, or pay-per-call) have no revenue analytics dashboard. They cannot see MRR, ARPU, churn, or revenue trends from within Naelao — they must log into Stripe separately.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build SpaceRevenueAnalytics: embed Stripe Revenue Dashboard data in builder dashboard via Stripe API. Show: MRR (sum active subscriptions), ARPU (MRR / active subscribers), revenue chart (daily/weekly/monthly), top revenue end-users, recent transactions. For pay-per-call Spaces: session_revenue, conversion_rate (visitors → paying), average_session_value. Pull data via Stripe API with builder's Stripe Connect token (stored encrypted in AccountDO). Cache Stripe data in SpaceDO SQLite (refresh every 4 hours). Export as CSV. Alert builder on revenue milestone ($100, $1K, $10K MRR).
+  </div>
+</div>
+<div id="G-AU32" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU32 [HIGH] — Builder Cost Attribution Dashboard (Tokens vs Storage vs Bandwidth)</strong><br>
+    <em>The Gap:</em> Builders receive a single monthly Naelao invoice but cannot see the breakdown of their bill by cost category (AI tokens, R2 storage, bandwidth, DO compute). Without attribution, builders cannot optimize their cost structure or identify runaway costs.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement CostAttributionDO: track daily costs per category in SpaceDO SQLite: { date, token_cost_usd, storage_cost_usd, bandwidth_cost_usd, compute_cost_usd }. Calculate each from metered usage × Naelao's internal cost rates. Aggregate weekly/monthly. Builder dashboard shows cost breakdown chart with category drill-down (e.g., tokens: which agent runs cost most). Export as CSV. Surface "Optimize" suggestions: "Your KB embeddings account for 40% of token cost — consider chunking optimization." Alert builder when daily cost exceeds 2× daily average.
+  </div>
+</div>
+<div id="G-AU33" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU33 [MEDIUM] — Affiliate and Referral Program for Builder Acquisition</strong><br>
+    <em>The Gap:</em> No affiliate or referral program exists for builder-driven growth. Builders who recommend Naelao to colleagues have no tracking mechanism, no reward, and no way to see how many referrals they've made. This leaves a viral growth lever untapped.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ReferralDO: on builder signup, generate referral_code (8-char slug). Builder shares referral link (naelao.com/r/{code}). Referred builder signs up → ReferralDO records referrer_id, referee_id, signup_at. On referee first paid subscription: issue $50 credit to referrer (AccountDO credit_balance). Fraud prevention: same email domain exclusion, max 10 referral credits per month, verified payment before credit issued. Track referral_signup, referral_converted, credit_issued events. Builder sees referral dashboard: sent invites, conversions, total credits earned.
+  </div>
+</div>
+<div id="G-AU34" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU34 [HIGH] — LLM Structured Output (JSON Mode) Enforcement</strong><br>
+    <em>The Gap:</em> Agent tool calls and data extraction tasks require LLM responses to be valid JSON matching a schema. No mechanism enforces JSON mode (OpenAI response_format: {type: "json_object"}), retries on malformed output, or schema validation after parsing. Malformed JSON propagates to downstream tools.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement StructuredOutputWrapper: for tool_call and data_extraction intent types, set response_format: { type: "json_schema", json_schema: { schema: toolSchema } } on supported providers. For providers without native JSON mode: append "Respond ONLY with valid JSON matching this schema: {schema}" to system prompt. Parse response with JSON.parse(); on SyntaxError, retry up to 2 times with "Your response was invalid JSON, try again." After 3 failures, return structured error. Validate parsed JSON against Zod schema before passing to tool handler. Log schema_validation_failure events.
+  </div>
+</div>
+<div id="G-AU35" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU35 [CRITICAL] — DO SQLite Schema Migration Version Control</strong><br>
+    <em>The Gap:</em> DO SQLite schema is modified by deploying new Worker code, but no formal migration version control system tracks which migrations have been applied to which DO instances. After a deployment, some DOs may run old schema, others new, causing inconsistent behavior across Workers.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement versioned migration table in every DO: CREATE TABLE IF NOT EXISTS __schema_version (version INTEGER, applied_at TEXT). Bootstrap: each DO class defines MIGRATIONS array of { version, up(sql) } objects. On DO initialization, check current version vs latest migration. Run each pending migration in sequence. All migrations are append-only and backwards-compatible for 1 deployment cycle (old Workers must be able to read new schema). Deploy procedure: (1) deploy new Worker with backwards-compatible schema changes, (2) wait for all DOs to migrate, (3) remove backwards-compat shims.
+  </div>
+</div>
+<div id="G-AU36" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU36 [MEDIUM] — CF Geo-Header-Based Content Routing for Country-Specific Spaces</strong><br>
+    <em>The Gap:</em> No mechanism exists for routing end-users to country-specific Space content variants using CF-IPCountry headers. Builders serving EU and US customers from the same Space cannot serve different content, language, or compliance-relevant information based on the user's geographic location.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement GeoRouter middleware in Space entry Worker: read request.cf.country (CF geo header, always populated for Worker requests). Match against builder-configured geo_rules: [{ countries: ["DE","FR","IT"], space_variant: "eu", redirect_do_jurisdiction: "eu" }]. For data residency rules (G-AN41): enforce EU users → EU DO namespace. For content rules: pass X-Space-Country header to SpaceDO; agent system prompt includes geo_context for country-appropriate responses. Builder configures geo rules in Space Settings. Default: no routing (all users same Space variant).
+  </div>
+</div>
+<div id="G-AU37" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU37 [LOW] — Internal Developer Portal (Service Catalog and ADRs)</strong><br>
+    <em>The Gap:</em> Naelao engineering has no centralized service catalog, architecture decision records (ADRs), or internal developer portal. Onboarding new engineers requires tribal knowledge; architectural decisions are undocumented, causing repeated debates and inconsistent implementations.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Deploy Backstage (or Cortex) as internal developer portal at internal.naelao.dev (CF Access protected, AU15-level auth). Populate service catalog: each CF Worker/DO/Queue/KV namespace registered as a component with owner, docs link, runbook, SLO target, incident history. ADR directory: architectural decisions stored as Markdown in git, rendered in portal. Dependency graph: service-to-service call topology auto-discovered from service token registry (AT35). Tech radar: track technology adoption (adopt/trial/assess/hold). Onboarding checklist for new engineers auto-generated from catalog.
+  </div>
+</div>
+<div id="G-AU38" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU38 [MEDIUM] — Biometric / Platform Authenticator Auth for Builders</strong><br>
+    <em>The Gap:</em> Builder dashboard authentication requires explicit password entry or TOTP code entry on every login. Platform authenticators (Apple TouchID, FaceID, Windows Hello) that can provide passwordless biometric login are not supported, creating unnecessary friction especially on trusted devices.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement conditional UI WebAuthn (passkeys, AU14) specifically tuned for platform authenticators. On login page: detect if platform authenticator available (PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()). If yes, show "Use TouchID/FaceID/Windows Hello" as primary login option. Registration: set authenticatorAttachment: "platform" for biometric registration. Login: navigator.credentials.get with mediation: "conditional" for browser-autofilled passkey. Biometric auth completes in &lt;1s. Fall back to password on biometric failure. Track biometric_login_rate in product analytics.
+  </div>
+</div>
+<div id="G-AU39" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU39 [MEDIUM] — E2E Test Framework for Space Builders (Playwright)</strong><br>
+    <em>The Gap:</em> Builders have no way to write automated E2E tests for their Space that run against the actual deployed product. Without E2E tests, builders discover regressions only when end-users report them, after a config change has been live for hours.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build naelao-test SDK: Playwright-based test harness for Spaces. Builder writes test: const space = new NaelaoTestClient({space_id}); await space.sendMessage("hello"); expect(space.lastResponse).toContain("welcome"). Tests run against staging Space (AU31 — builder sandbox). CI integration: builder adds .naelao/tests/*.spec.ts to their git repo; Naelao GitHub App triggers test run on config change PR. Test results shown in builder deployment dashboard. Support assertions: response_contains, kb_source_cited, response_time_under, no_error_in_response. Provide 10 starter test templates covering common agent patterns.
+  </div>
+</div>
+<div id="G-AU40" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU40 [HIGH] — Automated CVE Scanning Blocking Critical Vulnerability Deployments</strong><br>
+    <em>The Gap:</em> Third-party npm packages in Space Workers (imported as MCP plugins or connectors) may contain known CVEs. No automated CVE scanning exists in the deployment pipeline; critical vulnerabilities in dependencies ship to production silently.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Integrate Snyk or npm audit into CF Workers deployment pipeline. On each Space Worker build: run npm audit --audit-level=critical. If critical CVE found: block deployment, surface CVE details in builder deployment error (CVE-ID, package, fix version). MEDIUM/HIGH CVEs: warn, allow deployment with acknowledgment. Weekly scheduled scan of all deployed Space Worker packages via CF Workflow; alert builder on newly discovered CVEs in their dependencies. Provide "Auto-fix" button that opens PR bumping affected package to patched version. Exempt false positives via .snykignore in Space repo.
+  </div>
+</div>
+<div id="G-AU41" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU41 [HIGH] — In-Product Support Chat Powered by Naelao (Dog-Fooding)</strong><br>
+    <em>The Gap:</em> Builders in the dashboard have no in-product help beyond static documentation links. A live support chat widget could answer 80% of common questions, but no such widget exists. When a builder is stuck, they must leave the dashboard to find help, increasing drop-off.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build support Space: a Naelao Space configured as support agent with: KB containing all Naelao documentation, SpaceType guides, API reference, troubleshooting runbooks. Embed this Space as chat widget in builder dashboard (bottom-right corner). Session authenticated as builder (passes builder_id context). AI can: answer documentation questions, debug Space config issues, suggest fixes. On agent failure confidence &lt; threshold: offer human handoff (connect to real support via SupportTicketDO, AU17). Track support_deflection_rate (AI-resolved vs escalated). Dog-fooding: Naelao uses own product for support.
+  </div>
+</div>
+<div id="G-AU42" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU42 [MEDIUM] — End-User Notification Center Within Space (Bell Icon)</strong><br>
+    <em>The Gap:</em> Spaces have no notification center for end-users. Builders cannot send in-product notifications to their end-users (e.g., "New feature available", "Your report is ready"). Notifications exist only for builders in the Naelao dashboard, not for end-users in Spaces.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add NotificationCenter component to Space UI component library: bell icon with unread badge count in Space header. Builder sends notifications via POST /api/spaces/{id}/notifications with { user_id, title, body, action_url, expires_at }. Notifications stored in SpaceDO SQLite notifications table. End-user clicks bell: panel shows notification list (newest first, read/unread state). Mark as read updates SpaceDO via PATCH /api/spaces/{id}/notifications/{id}/read. Builder dashboard: compose notifications, target all users or specific segment (AU42). Analytics: notification_delivered, notification_opened, notification_action_clicked.
+  </div>
+</div>
+<div id="G-AU43" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU43 [MEDIUM] — Background Service Worker Push Event Handling</strong><br>
+    <em>The Gap:</em> When an end-user's Space tab is closed, push notifications (AU08) require a Service Worker to handle the push event and show a browser notification. No Service Worker push event handler, notification click handler, or background sync logic is specified.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Service Worker push event handler: self.addEventListener("push", event =&gt; { const data = event.data.json(); event.waitUntil(self.registration.showNotification(data.title, { body: data.body, icon: data.space_icon, data: { action_url: data.action_url } })) }). Notification click handler: event.notification.close(); event.waitUntil(clients.openWindow(data.action_url)). Background sync: if message sent while offline (AU13), register sync event. ServiceWorker sync handler replays IndexedDB outbox. Notification badge: use navigator.setAppBadge(unread_count) where supported. Handle Service Worker update lifecycle: skipWaiting on new SW activation.
+  </div>
+</div>
+<div id="G-AU44" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU44 [HIGH] — Parallel AI Tool Call Orchestration</strong><br>
+    <em>The Gap:</em> When an agent needs to call multiple tools (e.g., search KB + query external API + get user profile simultaneously), the current implementation calls tools sequentially. Sequential tool calls multiply latency for each parallel-safe tool call.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement parallel tool dispatch: after LLM returns tool_calls array, group calls by dependency (independent = no output of A is input to B). Dispatch independent tool calls concurrently via Promise.all(). Collect results; inject all results into context for next LLM step. Guard: tool call result size sum must not exceed context_window_remaining (G-AP23). For tool calls that require sequential execution (result of tool A feeds into tool B), build dependency graph from function annotations (dependsOn: ["tool_a"]). Track parallel_tool_calls_ratio in Analytics Engine. Target: reduce 3-tool sequences from 3× latency to ~1.3× latency.
+  </div>
+</div>
+<div id="G-AU45" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU45 [HIGH] — Space Analytics Data Retention and Automated Purge Policy</strong><br>
+    <em>The Gap:</em> Analytics Engine data for a Space accumulates indefinitely with no per-Space retention policy or automated purge. For GDPR compliance and storage cost management, old analytics data must be purged on a schedule, but no deletion mechanism or retention configuration exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Analytics Engine does not support per-row deletion. Implement retention via table rotation: Analytics Engine writes to time-partitioned dataset names (naelao_events_2026_q1, _q2, etc.). Retention policy: drop entire partition dataset after 2 years. Implement PartitionDropScheduler: quarterly CF Workflow deletes Analytics Engine datasets older than retention window via CF Analytics Engine API. For GDPR erasure requests: pseudonymize user_id → hash of (user_id + erasure_epoch) for all new events; old events in expired partitions deleted on schedule. Store current partition mapping in KV.
+  </div>
+</div>
+<div id="G-AU46" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU46 [MEDIUM] — SpaceType Bundle Pricing in Marketplace</strong><br>
+    <em>The Gap:</em> The SpaceType marketplace sells individual SpaceTypes but has no bundle/collection pricing. Buyers wanting multiple related SpaceTypes (e.g., a 5-SpaceType "E-commerce Suite") must purchase each individually at full price with no bundled discount.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SpaceTypeBundle: publisher creates bundle with { bundle_id, name, included_spacetype_ids, bundle_price, individual_total_price }. Buyer purchases bundle via single Stripe checkout; receives installation rights to all included SpaceTypes. Bundle discount shown as savings (e.g., "Save $20 vs individual"). Bundle tracked as single subscription; if one component SpaceType is deprecated, bundle remains valid for remaining components. Publisher analytics: bundle conversion rate vs individual sales. Limit: publishers can only bundle their own SpaceTypes; cross-publisher bundles require bilateral agreement.
+  </div>
+</div>
+<div id="G-AU47" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU47 [HIGH] — Workers for Platforms Canary Deploy for Tenant Scripts</strong><br>
+    <em>The Gap:</em> When Naelao updates the platform Worker script that runs inside a CF Workers for Platforms namespace, all tenant Spaces are updated simultaneously with no canary deploy, traffic splitting, or rollback capability. A bad script update affects all Spaces instantly.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement WfP canary deploy: maintain two script versions in WfP namespace (stable, canary). DispatcherWorker reads canary_percentage from KV (default 0%). For each request: if hash(space_id + request_id) % 100 &lt; canary_percentage, dispatch to canary script; else dispatch to stable. Monitor canary error rate via Analytics Engine. Auto-promote to 100% if error rate &lt; 0.1% after 1 hour at 10% canary. Auto-rollback if error rate &gt; 1%. Canary_percentage configurable via admin API without redeployment. Track canary_request_count, canary_error_rate per script version.
+  </div>
+</div>
+<div id="G-AU48" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU48 [HIGH] — Multi-Language KB Content Management Within a Space</strong><br>
+    <em>The Gap:</em> Spaces serving multilingual audiences need KB documents in multiple languages (English + French + Spanish). No mechanism exists to store, organize, and retrieve language-specific KB variants within the same Space. All KB content is treated as a single language corpus.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement KB language variants: each KB document gets language_code field (BCP-47: en, fr, es). Vectorize index uses metadata filter {$eq: {language: lang_code}} per query. On KB upload, builder specifies language or enables auto-detect (CF AI Language Detection model). Agent retrieves KB filtered to session_language (detected from first user message or explicit user preference). Builder KB management UI: filter docs by language, view translation coverage (which languages have this doc). Missing translation detection: alert builder when source doc updated but translation not updated (staleness flag per variant).
+  </div>
+</div>
+<div id="G-AU49" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU49 [CRITICAL] — DO Concurrent Request Serialization and Write Ordering</strong><br>
+    <em>The Gap:</em> Durable Objects process one request at a time (serialized), but this guarantee only holds within a single DO instance. When SpaceDO is partitioned by session_id and multiple sessions for the same space_id write to a shared AccountDO concurrently (e.g., deducting credits), write ordering and atomicity across the concurrent credit deductions are not formally guaranteed.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Enforce write serialization within AccountDO: all credit deductions are processed by a single AccountDO per account_id — this is already implicit in DO architecture (one DO per account). Ensure SpaceDO never directly mutates AccountDO state — always route via AccountDO RPC. Add sequence numbers to all AccountDO mutations to detect out-of-order delivery. Implement AccountDO idempotency layer: each deduction carries deduction_request_id; duplicate deductions return cached result without double-deduction. Document DO concurrency model clearly in internal architecture docs to prevent future mis-implementations.
+  </div>
+</div>
+<div id="G-AU50" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-AU50 [MEDIUM] — Builder Email Notification Preference Management</strong><br>
+    <em>The Gap:</em> Naelao sends builders various email notifications (billing, platform alerts, Space health, feature announcements) but no preference management center exists. Builders cannot unsubscribe from specific categories, change frequency, or manage notification channels (email vs Slack vs webhook), leading to notification fatigue and unsubscribes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build NotificationPreferencesDO per builder: stores { category: string, channels: email|slack|webhook, frequency: immediate|daily_digest|weekly, enabled: boolean }. Categories: billing_alerts, space_health_alerts, platform_updates, marketing, security_alerts (cannot disable). Builder manages preferences at /settings/notifications. Slack integration: builder provides Slack webhook URL; notifications fan-out to email + Slack. Webhook option: POST to builder-specified URL with notification payload. Daily digest: aggregate notifications into single email (BuildDigestWorker runs at 9am builder timezone). CAN-SPAM compliance: all marketing emails include unsubscribe link updating preference DO.
+  </div>
+</div>
 </section>
 
 
