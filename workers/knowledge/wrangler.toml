@@ -1,0 +1,33 @@
+name = "naelao-knowledge"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[ai]
+binding = "AI"
+
+[[kv_namespaces]]
+binding = "KB_CACHE"
+id = "REPLACE_WITH_KV_ID"
+
+[[r2_buckets]]
+binding = "KB_BUCKET"
+bucket_name = "naelao-kb"
+
+[[vectorize]]
+binding = "KB_VECTORS"
+index_name = "naelao-kb-vectors"
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "PLACEHOLDER_D1_ID"
+
+[vars]
+ENVIRONMENT = "development"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
+
+[env.production]
+vars = { ENVIRONMENT = "production" }

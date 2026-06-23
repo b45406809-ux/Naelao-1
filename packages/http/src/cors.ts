@@ -22,5 +22,6 @@ export function cors(allowedOrigins: string[] = ["*"]) {
 
     await next();
     if (allowed) c.res.headers.set("Access-Control-Allow-Origin", allowed);
+    return;
   });
 }
