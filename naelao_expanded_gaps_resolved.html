@@ -64394,6 +64394,460 @@ When bumping the date, bump it everywhere in one change and re-run the full test
     <em>Required Fix:</em> Write Platform Principles document: (1) Builder empowerment without coding — every configuration must be doable via UI, no exceptions, (2) End-user safety over feature velocity — ship safety measures before adjacent features, (3) Scale from day one — no temporary architectures, (4) Privacy by design — collect minimum data, default to privacy, (5) Transparency with builders — publish uptime, pricing changes, API deprecations with ample notice. Reference in all major technical decision ADRs (BC50). Review principles annually with leadership. Track decisions_aligned_to_principles_pct in PIRs.
   </div>
 </div>
+
+<section id="appendix-be">
+<h2>Appendix BE — CF Platform Limits, Emerging Tech, Builder Experience, QA Infrastructure, Security Final Layer, End-User Engagement, Cross-Cutting Architecture</h2>
+
+<div id="G-BE01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE01 [HIGH] — CF Workers Script Size Limit (10MB Compressed)</strong><br>
+    <em>The Gap:</em> CF Workers scripts have a 10MB compressed size limit. As the platform routing Worker grows with more middleware, routing logic, and bundled dependencies, this limit becomes a real constraint. Exceeding it causes deploy failures.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Monitor Worker script size on every build: CI step runs wrangler deploy --dry-run and checks bundle size. Alert if &gt; 7MB (70% threshold). Optimization strategies: (1) Code split via ES module imports (CF supports multi-module Workers), (2) Move large static data (pricing tables, regex libraries) to CF KV instead of bundle, (3) Lazy-load rarely-used middleware via dynamic import(), (4) Audit dependencies monthly — remove unused packages. Target: keep routing Worker &lt; 5MB compressed.
+  </div>
+</div>
+<div id="G-BE02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE02 [HIGH] — CF KV Value Size Limit (25MB) and Key Count (100M)</strong><br>
+    <em>The Gap:</em> CF KV values have a 25MB maximum size. Cached LLM responses, session token payloads, or large config snapshots that exceed this limit cause silent write failures if not validated. The 100M key per namespace limit also needs headroom monitoring.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add KV write validation: before any KV.put(), measure value byte length. If &gt; 23MB (92% threshold): log warning, split value into chunked keys ({key}_chunk_{n}) and store chunk manifest at base key. For large cached responses: truncate to 23MB with truncated=true flag. Key count monitoring: monthly CF Workflow queries key count via KV list (paginated), alerts at 80M keys (80%), suggests namespace sharding at 90M.
+  </div>
+</div>
+<div id="G-BE03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE03 [HIGH] — CF Queues Message Retention and DLQ Lifecycle</strong><br>
+    <em>The Gap:</em> CF Queues retain messages up to 4 days in DLQ (covered in R2 event DLQ, AT50). However, the primary queue also has a 4-day maximum retention. Messages that fail processing for &gt;4 days (e.g., consumer Worker consistently down) are silently dropped — never entering DLQ.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Monitor queue health: CF Workflow every 30min: check queue_backlog_depth and oldest_message_age via CF API. If oldest_message_age &gt; 3 days: CRITICAL alert — investigate consumer health immediately. If DLQ depth &gt; 1000: alert — bulk replay or investigate root cause. DLQ processing: separate consumer Worker processes DLQ messages with manual review gate. Track messages_silently_dropped_count (should always be 0). Consumer circuit breaker: pause consumption if error_rate &gt; 50% to allow investigation.
+  </div>
+</div>
+<div id="G-BE04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE04 [HIGH] — CF Workers Sub-Request Limit (1000 per Request)</strong><br>
+    <em>The Gap:</em> CF Workers can make maximum 1000 subrequests per incoming request invocation. Complex agent pipelines making many tool calls (web searches, API calls, KB retrievals) across a single conversation turn can approach this limit, causing unexpected failures.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Audit subrequest consumption per agent turn: instrument subrequest counter in routing Worker. Log subrequest_count per request. Alert if any request exceeds 800 subrequests (80% of limit). Optimization: (1) Batch multiple KV reads into single KV.getAll() call, (2) Consolidate Vectorize queries, (3) Fan-out tool calls via CF Queue (avoids subrequest counting), (4) Cache frequent subrequests in memory within request scope. Track p99_subrequest_count and limit_approach_incidents.
+  </div>
+</div>
+<div id="G-BE05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE05 [HIGH] — CF Analytics Engine Row Limit (25M/day) Per Account</strong><br>
+    <em>The Gap:</em> Analytics Engine (covered in G-AU04) allows 25M rows/day per account — shared across all Workers in the account. At 1M active sessions/day with 10 events per session, that is 10M events/day — 40% of quota consumed by traffic alone, leaving little headroom for error logs, audit events, and system metrics.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement row budget management: daily Analytics Engine write budget: 25M rows. Allocate by priority: system_metrics (5M), session_events (10M), audit_logs (5M), error_logs (3M), debug_events (2M). Rate limiter per event category in routing Worker. When category budget exhausted: drop events (for debug), or sample at 10% (for session events). Emergency: switch low-priority event types to R2 batch export instead of Analytics Engine. Track daily_row_consumption_pct per category.
+  </div>
+</div>
+<div id="G-BE06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE06 [MEDIUM] — CF Vectorize Index Limit (100 Indexes Per Account)</strong><br>
+    <em>The Gap:</em> Platform creates one Vectorize index per Space KB (AY27 covers warm-up, BC18 covers partitioning). With 100 indexes per CF account limit, a platform with 100+ active Spaces hits the limit and cannot create new indexes. No index multiplexing strategy is specified.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement Vectorize index multiplexing: instead of one index per Space, group multiple Spaces into shared indexes with Space_id metadata filter. Strategy: (1) Tier 1 (high-traffic Spaces, &gt;1000 sessions/day): dedicated index, (2) Tier 2 (medium-traffic, 100-1000/day): group 5 Spaces per index, (3) Tier 3 (low-traffic, &lt;100/day): group 20 Spaces per index. All queries include metadata filter {space_id: {$eq: id}}. Track index_utilization_pct and query_latency by tier.
+  </div>
+</div>
+<div id="G-BE07" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE07 [LOW] — CF D1 Database Limit (50,000 Databases Per Account)</strong><br>
+    <em>The Gap:</em> Per-tenant D1 databases (AT11) for tenant SQL isolation would hit the 50,000 D1 database limit at scale. At 50,000 builders, each with one D1 database, the account limit is reached. No sharding or pooling strategy handles this.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Use shared D1 databases with tenant isolation: rather than one D1 database per tenant, shard by: {tenant_id MOD num_shards} into a fixed number of D1 shards (e.g., 100 shards). All tables include tenant_id column with index. Row-level security enforced in query layer (WHERE tenant_id = ?). D1 migration: apply to all shards. Monitoring: per-shard row count and query latency. Alert if any shard &gt; 80% of D1 500MB limit. Shard rebalancing: move high-volume tenant to dedicated D1.
+  </div>
+</div>
+<div id="G-BE08" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE08 [MEDIUM] — CF R2 Bucket Limit and Naming Convention</strong><br>
+    <em>The Gap:</em> R2 bucket count limits per CF account. Platform using multiple R2 buckets (KB storage, conversation exports, analytics exports, fine-tune datasets, backups) may approach limits at scale. No bucket naming convention or lifecycle management prevents bucket sprawl.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define R2 bucket architecture: fixed bucket set (not per-tenant): kb-storage (all KB documents), conversation-exports, analytics-exports, model-datasets, backups, temp-uploads. All objects prefixed by tenant_id: kb-storage/{tenant_id}/{space_id}/{doc_id}. Lifecycle rules per bucket: temp-uploads: 7-day deletion, backups: 90-day transition to Infrequent Access. Track bucket count and object count per bucket. Avoid dynamic bucket creation.
+  </div>
+</div>
+<div id="G-BE09" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE09 [LOW] — CF Workers Free Tier Request Limit Impact on Development</strong><br>
+    <em>The Gap:</em> Development and staging environments on CF Workers consume request quota from the same account. During load testing (BC46) or heavy development, dev/staging Workers may consume quota intended for production.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Separate CF accounts for environments: production CF account, staging CF account, development CF account. Each account has independent quotas. IaC manages all three accounts. Account isolation: production Secrets cannot be accessed from staging/dev workers by design. Cross-account cost tracking: total CF spend aggregated monthly. CI/CD deploys to staging account first, promote artifacts to production account. Track environment_cost_distribution (prod/staging/dev should be ~90/8/2%).
+  </div>
+</div>
+<div id="G-BE10" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE10 [MEDIUM] — CF Durable Objects Alarm API for Scheduled Tasks</strong><br>
+    <em>The Gap:</em> DOs support an Alarm API (this.ctx.storage.setAlarm(Date)) for scheduling future callbacks. No use of the Alarm API is specified for time-triggered DO tasks: session expiry, scheduled analytics flush, memory consolidation, reminder dispatch. Without alarms, these require external Cron Workers instead of co-located DO logic.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Use DO Alarm API for co-located scheduling: SpaceDO.setAlarm() for: (1) Session timeout: setAlarm(Date.now() + session_ttl_ms) — alarm fires → close idle session, (2) Analytics flush: setAlarm(Date.now() + 30000) — flush in-memory event buffer to Analytics Engine, (3) Memory consolidation: setAlarm for next 3am — trigger nightly consolidation. alarm() method handles all alarm types based on stored alarm_type in SQLite. Track alarm_fire_latency (time between scheduled and actual firing).
+  </div>
+</div>
+<div id="G-BE11" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE11 [HIGH] — AI Agent Communication Protocol (A2A)</strong><br>
+    <em>The Gap:</em> Multiple AI agents need to communicate in complex pipelines (AX02 subagent spawning, AY02 agent-to-agent handoff). No standard agent communication protocol is used — all agent coordination is bespoke. Google's A2A (Agent-to-Agent) protocol is emerging as a standard.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement A2A-compatible agent interfaces: each SpaceDO exposes /.well-known/agent.json (A2A Agent Card) describing: name, description, capabilities, supported_protocols, authentication. A2A task endpoint: POST /a2a/tasks → {task_id, status, result}. Task streaming via SSE. Inter-agent calls use A2A protocol over HTTPS with JWT auth. Benefits: cross-platform agent interoperability. Track a2a_inter_agent_call_count and external_a2a_client_count.
+  </div>
+</div>
+<div id="G-BE12" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE12 [HIGH] — Agentic RAG (Retrieval-Augmented Generation)</strong><br>
+    <em>The Gap:</em> Current RAG retrieves once per turn. Agentic RAG allows the agent to iteratively refine retrieval: retrieve → assess sufficiency → retrieve again with refined query if needed. No iterative retrieval pattern is specified.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement agentic RAG loop: (1) Initial retrieval: standard vector search, (2) Agent assesses: "Do I have enough context to answer?" (classification step), (3) If INSUFFICIENT: generate refined_query based on retrieved gaps, retrieve again (max 3 iterations), (4) If SUFFICIENT: generate answer. Each retrieval iteration logged as retrieval_round in trace. Track mean_retrieval_rounds per query, and answer_quality comparison: agentic vs single-shot RAG on eval set. Cost: agentic RAG uses more tokens — gate by query complexity score.
+  </div>
+</div>
+<div id="G-BE13" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE13 [HIGH] — Structured Output with Tool-Augmented Reasoning (ReAct)</strong><br>
+    <em>The Gap:</em> Agent reasoning is implicit (standard chat completion). No ReAct (Reasoning + Acting) pattern structures agent thought-action cycles explicitly, making reasoning harder to audit and less reliable on complex tasks.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ReAct prompting pattern: system prompt structures agent response format: Thought: [reasoning step] → Action: [tool call or final answer] → Observation: [tool result]. Parser extracts Thought/Action/Observation from LLM output. Multiple cycles until Action=FINAL_ANSWER. Benefits: explicit reasoning trace, easier to detect errors, better on complex multi-step tasks. Store full ReAct trace in DO SQLite for audit. Toggle: builder configures reasoning_mode: "react" | "standard" | "chain-of-thought". Track ReAct_task_completion_rate vs standard.
+  </div>
+</div>
+<div id="G-BE14" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE14 [MEDIUM] — Constitutional AI Principles Integration</strong><br>
+    <em>The Gap:</em> Agent safety relies on model training and prompt-level instructions. No Constitutional AI (CAI) principles layer provides an additional safety check that critiques and revises agent responses against a defined set of principles before delivery.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement CAI review step (optional, configurable per SpaceType): after initial LLM response generation, send to CAI reviewer: "Review this response against these principles: [builder-defined principles]. Identify any violations and provide a revised response." On violation detected: use revised response, log cai_revision_event. Builder-defined principles examples: "Never claim certainty about medical facts", "Always recommend consulting a professional for legal matters", "Do not disclose pricing of competitors." Track cai_revision_rate and revision_categories.
+  </div>
+</div>
+<div id="G-BE15" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE15 [LOW] — Mixture-of-Experts (MoE) Model Routing</strong><br>
+    <em>The Gap:</em> Platform routes all requests to the same configured LLM. Emerging MoE architectures (Mixtral, GPT-4o) activate specialist expert networks for different query types. No query-type-aware model routing leverages MoE capabilities.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement query-aware model routing: classify incoming query by type: {code, math, creative_writing, factual_qa, conversational, multilingual}. Route to specialized model or MoE expert: code queries → code-optimized model (GPT-4o or Claude with code tools), math queries → math-specialized model, general → default model. Classification: lightweight classifier (CF AI Workers text-classification, &lt;10ms). Track routing_distribution, per_class_quality_scores, and routing_latency_overhead.
+  </div>
+</div>
+<div id="G-BE16" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE16 [HIGH] — Visual SpaceType Builder (No-Code Flow Editor)</strong><br>
+    <em>The Gap:</em> SpaceType configuration is form-based (field-by-field). No visual flow editor allows builders to see and configure the agent workflow as a visual graph: tool connections, conditional branches, knowledge sources, response paths.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build visual flow editor: drag-and-drop React Flow (or similar) canvas. Nodes: LLM_call, KB_retrieve, Tool_call, Condition, Start, End. Edges represent data flow. Node properties panel: click node → configure parameters. Live preview: send test message, see execution path highlighted on canvas. Export: canvas state serializes to SpaceType config YAML. Import: existing config parsed to canvas. Undo/redo (50 steps). Track visual_editor_adoption_rate vs form-based editor.
+  </div>
+</div>
+<div id="G-BE17" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE17 [HIGH] — Builder AI Co-Pilot for SpaceType Creation</strong><br>
+    <em>The Gap:</em> Builders starting from scratch must understand SpaceType concepts and configuration options. No AI co-pilot guides them through optimal configuration based on their described use case.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add AI co-pilot to builder dashboard: text input: "Describe your Space in plain English." Co-pilot (powered by Claude) generates: (1) Recommended SpaceType template, (2) Suggested system prompt, (3) Recommended tools to enable, (4) KB seeding suggestions (what documents to add), (5) Suggested conversation starters. Builder can accept/edit/reject each suggestion. Track co-pilot_adoption_rate, suggestions_accepted_rate, and co-pilot_vs_manual_time_to_first_session.
+  </div>
+</div>
+<div id="G-BE18" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE18 [HIGH] — Builder Experimentation Platform</strong><br>
+    <em>The Gap:</em> Builders want to A/B test their Space configurations but AX10 A/B testing is platform-level. No builder-controlled experimentation allows testing: different system prompts, different KB subsets, different tool combinations, different response styles.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add builder A/B testing: builder creates experiment: {control: {config_override_A}, variant: {config_override_B}, traffic_split: 50/50, metric: [session_rating, message_count, return_rate]}. Platform routes sessions to variants based on split. Builder dashboard "Experiments" tab: live metrics per variant, statistical significance indicator (AZ40). Auto-winner promotion: if variant reaches significance AND improvement &gt; threshold, promote to 100%. Track builder_experiment_count and winning_variant_lift_distribution.
+  </div>
+</div>
+<div id="G-BE19" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE19 [MEDIUM] — Builder Community Forum and Knowledge Sharing</strong><br>
+    <em>The Gap:</em> Builder community (AU22 certification, AW50 ecosystem) lacks a structured knowledge-sharing forum where builders can ask questions, share SpaceType configurations, post tutorials, and get peer support.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build builder community platform: forum categories: Getting Started, SpaceType Design, Integrations, Showcases, Feature Requests, Bug Reports. Features: markdown posts, code snippet highlighting, SpaceType config sharing (sanitized), upvoting, solution marking, builder reputation system (points from helpful answers). Integration: new community post triggers KB ingestion candidate (auto-suggest: "This post may be useful KB content"). Search indexed by Vectorize for semantic discovery. Track forum_DAU, answer_rate, and time_to_first_response.
+  </div>
+</div>
+<div id="G-BE20" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE20 [LOW] — Builder Cohort Peer Learning</strong><br>
+    <em>The Gap:</em> Builders learn platform capabilities in isolation. No cohort-based learning program connects builders working on similar use cases who could learn from each other's configurations and mistakes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Launch builder cohort program: quarterly cohort of 20-30 builders in the same vertical (e.g., "Q1 2026 Legal Tech Cohort"). Cohort activities: weekly group office hours with platform team, shared Slack channel, cohort-specific SpaceType templates, peer showcase sessions. Outcomes tracked: cohort_activation_rate, time_to_first_paid_end_user vs non-cohort, cohort NPS. Successful cohort members become platform advocates. Track cohort_completion_rate and post_cohort_retention.
+  </div>
+</div>
+<div id="G-BE21" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE21 [HIGH] — Property-Based Testing for Agent Logic</strong><br>
+    <em>The Gap:</em> Unit tests cover specific scenarios. Property-based testing (PBT) generates thousands of random inputs to discover edge cases. Agent logic (routing decisions, context truncation, tool selection) has complex state spaces that benefit from PBT.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement PBT with fast-check (TypeScript) or Hypothesis (Python): define properties: (1) "Context truncation never drops the system prompt", (2) "KB retrieval always returns results within context budget", (3) "Rate limiter token bucket never exceeds burst_capacity", (4) "Session state after DO wake equals state before sleep". Run 10,000 random inputs per property in CI. Properties that fail: add as regression test. Track property_violations_found and test_coverage_properties_pct.
+  </div>
+</div>
+<div id="G-BE22" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE22 [HIGH] — Mutation Testing for Test Suite Quality</strong><br>
+    <em>The Gap:</em> Test suite exists (BC49 integration tests, E2E tests) but test quality is unmeasured. Mutation testing introduces deliberate code mutations and checks if tests detect them — revealing weak test coverage.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Run mutation testing with Stryker (TypeScript) or mutmut (Python) on core platform logic: agent routing, billing calculation, auth middleware, rate limiting. Mutation score target: &gt; 75% (75% of mutations caught by tests). Low mutation score areas flagged for additional test coverage. Run mutation testing weekly in CI background job (not blocking — takes 30-60 min). Track mutation_score_trend and files_with_low_coverage. High-impact mutations (auth bypass, billing calculation) tested exhaustively.
+  </div>
+</div>
+<div id="G-BE23" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE23 [HIGH] — Visual Regression Testing for Space Shell</strong><br>
+    <em>The Gap:</em> Space shell UI changes can introduce visual regressions (broken layouts, missing elements, incorrect styling) that functional tests miss. No visual regression testing captures pixel-level differences across browser/device combinations.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement visual regression with Playwright + Percy/Chromatic: capture baseline screenshots of: empty conversation state, mid-conversation, error state, mobile viewport (375px), tablet (768px), dark mode. On each PR: run Playwright, capture screenshots, compare to baseline (pixel diff threshold: 0.1%). Diff images uploaded to Percy/Chromatic for review. Failures block PR merge (unless manually approved — for intentional visual changes). Track visual_regression_detection_rate and false_positive_rate.
+  </div>
+</div>
+<div id="G-BE24" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE24 [HIGH] — API Contract Testing (Consumer-Driven)</strong><br>
+    <em>The Gap:</em> Platform has frontend builder dashboard, Space shell, mobile apps, and CLI — all consuming platform APIs. No consumer-driven contract testing (Pact) ensures API changes do not break consumer expectations.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement Pact contract testing: each consumer (dashboard, Space shell, CLI, SDK) publishes interaction contracts to Pact Broker. Provider (platform API) verifies contracts in CI: for each consumer contract, replay interactions against API, verify responses match expectations. Provider changes that break contracts block deploy. Pact Broker: hosted on CF Workers + R2. Track contract_coverage_pct and provider_verification_pass_rate. New API features require consumer contracts before shipping.
+  </div>
+</div>
+<div id="G-BE25" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE25 [HIGH] — Accessibility Automated Testing in CI</strong><br>
+    <em>The Gap:</em> WCAG 2.2 AA compliance (AY18, AY50 continuous accessibility monitoring) requires systematic automated testing. No accessibility test suite runs in CI to catch regressions before they reach production.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add accessibility tests to CI pipeline: axe-core integration with Playwright — after each page render, run axe.run() and assert zero violations at WCAG 2.2 AA level. Coverage: Space shell (all states), builder dashboard (all main pages), error pages, email templates (after HTML render). Critical violations (contrast ratio, missing labels, keyboard traps) block PR merge. Non-critical (AA advisory) create GitHub issue. Track accessibility_violation_count_trend and time_to_fix_per_violation.
+  </div>
+</div>
+<div id="G-BE26" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE26 [HIGH] — Hardware Security Module (HSM) for Key Management</strong><br>
+    <em>The Gap:</em> Master encryption keys and HMAC secrets are stored as CF Workers Secrets (software-managed). For enterprise-grade security, these should be backed by Hardware Security Modules that prevent key extraction even by privileged platform operators.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Integrate HSM-backed key management: use Cloudflare Key Management (if available) or AWS KMS (via Worker fetch) for: (1) Master encryption key (used for tenant key derivation), (2) JWT signing keys, (3) Webhook HMAC secrets. HSM operations: encrypt, decrypt, sign — private key never leaves HSM. Key rotation: HSM generates new key version, re-wraps encrypted data. Audit: every HSM operation logged with caller identity. Track HSM_operation_latency and key_access_audit_completeness.
+  </div>
+</div>
+<div id="G-BE27" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE27 [HIGH] — Insider Threat Detection</strong><br>
+    <em>The Gap:</em> Platform has audit logs (BB29 cryptographic audit log) but no system detects insider threats: privileged employees accessing customer data beyond their job function, unusual bulk data exports, or suspicious configuration changes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement insider threat detection: (1) Define normal access patterns per role (support: read tickets/sessions, engineer: read logs, no customer data), (2) Alert on deviations: engineer accessing billing records, support bulk-exporting &gt;1000 sessions, admin creating API keys outside business hours, (3) Privileged access monitoring: all access to production databases logged with justification (JIT access, AW30), (4) Quarterly access review: managers certify employees still need their access levels. Track anomalous_access_events and false_positive_rate.
+  </div>
+</div>
+<div id="G-BE28" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE28 [CRITICAL] — Security Incident Response Plan (SIRP)</strong><br>
+    <em>The Gap:</em> Security alerts exist (AW30 red team, BA30 automated pentest) but no documented Security Incident Response Plan defines: how to classify incidents, who to notify, what to preserve for forensics, when to notify regulators/customers.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Document SIRP: severity classification: P1 (active breach, customer data exposed), P2 (potential breach, abnormal access), P3 (security vulnerability found, not exploited). For P1: (1) &lt;15min: page CISO, isolate affected systems, (2) &lt;1h: evidence preservation, legal notification, (3) &lt;4h: customer notification (GDPR: &lt;72h from awareness), (4) &lt;24h: regulator notification if required. Forensic preservation: disable log rotation for affected accounts. Playbook for: data breach, account compromise, DDoS, insider threat. Annual SIRP drill.
+  </div>
+</div>
+<div id="G-BE29" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE29 [HIGH] — Cryptographic Agility</strong><br>
+    <em>The Gap:</em> Platform uses current cryptographic algorithms (AES-256, SHA-256, RSA-2048, ECDSA P-256). Quantum computing advances threaten these algorithms within 10-15 years. No cryptographic agility plan allows algorithm migration without full system rebuild.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Design for cryptographic agility: (1) Wrap all crypto operations in abstraction layer: crypto.encrypt(data, key_id), crypto.sign(data, key_id) — implementation swappable, (2) Tag all encrypted data with {algorithm_id, key_version}, (3) Migration path: add new algorithm, re-encrypt data in background batch, sunset old algorithm, (4) Post-quantum readiness: monitor NIST PQC standards (ML-KEM, ML-DSA finalized 2024), (5) Hybrid mode: combine classical + PQ algorithms during transition period. Track algorithm_distribution across stored data.
+  </div>
+</div>
+<div id="G-BE30" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE30 [LOW] — Secure Multi-Party Computation for Sensitive Analytics</strong><br>
+    <em>The Gap:</em> Platform computes analytics over sensitive conversation data. No secure multi-party computation (SMPC) or differential privacy mechanism protects individual user privacy in aggregated analytics.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Apply differential privacy (DP) to analytics exports: (1) Add calibrated Laplace noise to aggregate counts before export (epsilon=1.0, delta=1e-5 for GDPR-acceptable privacy budget), (2) K-anonymity: suppress metrics where group size &lt; 10 (to prevent re-identification), (3) DP mechanism implemented in analytics aggregation CF Workflow, (4) Publish epsilon/delta values in privacy policy for transparency. Track analytics_suppression_rate (metrics hidden by k-anonymity) and noise_impact_on_accuracy.
+  </div>
+</div>
+<div id="G-BE31" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE31 [LOW] — Gamification for End-User Engagement</strong><br>
+    <em>The Gap:</em> End-user engagement mechanics are passive. No gamification layer (streaks, achievements, progress bars, badges) incentivises continued use of Spaces — especially for learning, coaching, or habit-building use cases.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define gamification framework (builder-configurable): achievement types: {streak: "7-day conversation streak", milestone: "Asked 100 questions", quality: "5-star session"}, badges, progress bars (X% toward goal). Builder configures: gamification_enabled, achievement_definitions, rewards (credits, features unlocked). Agent proactively celebrates achievements: "Congratulations on your 7-day streak!" Achievements stored in user_profile DO SQLite. Track gamification_space_adoption_rate and engagement_lift in gamified vs non-gamified Spaces.
+  </div>
+</div>
+<div id="G-BE32" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE32 [HIGH] — Proactive Agent Outreach (Push-Initiated Sessions)</strong><br>
+    <em>The Gap:</em> Agents respond reactively. For coaching, reminder, and follow-up use cases, agents need to proactively reach out to end-users based on scheduled triggers, behavioral signals, or external events — without the user initiating.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement proactive outreach: builder configures triggers: {type: "schedule", cron: "0 9 * * 1", message_template: "Good morning! Ready to continue your learning?"}. Or behavioral: {type: "inactivity", days: 3, message: "We missed you! Here's where you left off: {last_topic}"}. Delivery: Web Push (AU08 VAPID), email, or SMS. Outreach creates new session, user responds to continue. Track outreach_open_rate, outreach_response_rate, and reactivation_rate from outreach vs organic.
+  </div>
+</div>
+<div id="G-BE33" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE33 [MEDIUM] — End-User Learning Path and Progress Tracking</strong><br>
+    <em>The Gap:</em> Educational and training Spaces have no structured learning path concept. Agents can teach topics but no progression system tracks what the user has learned, recommends next steps, or certifies completion of a curriculum.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add learning path framework (builder-configurable): builder defines curriculum: {modules:[{id, title, topics:[], prerequisite_module_ids:[]}]}. Agent tracks: {user_id, module_id, status(not_started/in_progress/completed), score, completed_at}. Progress stored in user_profile DO SQLite. Agent proactively suggests next module on session start: "Last time we covered X. Ready for Y?" Completion certificate: generated PDF with builder branding (via R2). Track learning_path_completion_rate and time_to_completion distribution.
+  </div>
+</div>
+<div id="G-BE34" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE34 [LOW] — Social Features: Shared Conversations and Communities</strong><br>
+    <em>The Gap:</em> End-users interact with Spaces in isolation. No social features allow sharing interesting conversations (with consent), following other users' public interactions, or building community around shared Spaces.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add social sharing layer (builder opt-in): end-user can publish specific conversation as public snippet: {session_id, message_range, public_url, views}. Builder curates: featured_conversations on Space landing page. Social discovery: trending public conversations within Space topic. Privacy: user explicitly selects messages to share, PII stripped before publishing. Community: users can comment on public conversations (moderated). Track share_rate, viral_coefficient from shared conversations, and community_engagement_score.
+  </div>
+</div>
+<div id="G-BE35" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE35 [MEDIUM] — End-User Skill Assessment and Adaptive Difficulty</strong><br>
+    <em>The Gap:</em> For training and educational Spaces, no adaptive difficulty system adjusts content complexity based on demonstrated user knowledge level. All users receive the same experience regardless of expertise.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement adaptive difficulty: (1) Skill assessment: opening quiz or conversation analysis classifies user into: BEGINNER / INTERMEDIATE / EXPERT, (2) KB retrieval filter: {complexity_level: {$lte: user_level}}, (3) Agent prompt adjustment: "User is BEGINNER — use simple vocabulary, avoid jargon, provide more examples", (4) Dynamic re-assessment: after N sessions, re-evaluate level based on questions asked and comprehension signals, (5) Builder configures: assessment_method, level_thresholds, complexity metadata on KB documents. Track level_distribution and advancement_rate.
+  </div>
+</div>
+<div id="G-BE36" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE36 [HIGH] — Cross-Space Analytics Aggregation for Builders</strong><br>
+    <em>The Gap:</em> Builders with multiple Spaces see per-Space analytics only. No cross-Space aggregated view shows total sessions across all Spaces, total revenue, combined KB health, aggregate end-user count — critical for builders operating a portfolio of Spaces.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add "Portfolio" view to builder dashboard: aggregate metrics across all builder's Spaces: {total_active_sessions, total_revenue_mtd, total_end_users_active_30d, total_kb_documents, combined_health_score}. Breakdown by Space: table with per-Space metrics sortable by session count, revenue, health score. Cross-Space funnel: how many end-users interact with &gt;1 Space. Combined export: download all Space data in single CSV. Track portfolio_view_usage_rate and multi_space_builder_share.
+  </div>
+</div>
+<div id="G-BE37" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE37 [HIGH] — SpaceType Deprecation and Migration Wizard</strong><br>
+    <em>The Gap:</em> When a SpaceType publisher deprecates a version (BC11 runtime version pinning), builders using the deprecated SpaceType must migrate to the new version. No migration wizard guides builders through the config differences.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build migration wizard: triggered when builder's installed SpaceType version is deprecated. Wizard steps: (1) Show diff between old and new config schema (added/removed/changed fields), (2) For each changed field: show old value, explain what changed and why, suggest new value, (3) Test new config against builder's KB before applying, (4) One-click apply with rollback option for 24h. Track migration_completion_rate, time_in_wizard, and rollback_rate_after_migration.
+  </div>
+</div>
+<div id="G-BE38" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE38 [MEDIUM] — Platform API Consistency Audit</strong><br>
+    <em>The Gap:</em> Platform API has grown organically across multiple appendices with different naming conventions (snake_case vs camelCase), pagination styles (cursor vs offset), and error formats. No consistency audit identifies and plans remediation of API inconsistencies.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Conduct API consistency audit: automated linter checks OpenAPI spec for: (1) Naming: all fields snake_case in JSON, PascalCase for types, (2) Pagination: all list endpoints use cursor-based pagination with next_cursor, (3) Error format: all errors use {error_code, message, details} structure, (4) Date format: all dates ISO8601 UTC, (5) ID format: all IDs are UUIDs v4. Violations reported as API consistency issues. Breaking fixes scheduled for next major API version. Non-breaking fixes shipped immediately. Track consistency_score_pct.
+  </div>
+</div>
+<div id="G-BE39" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE39 [HIGH] — Platform Internal Developer Portal (IDP)</strong><br>
+    <em>The Gap:</em> Platform engineers lack a centralized internal developer portal showing: all internal services, their APIs, owners, SLOs, runbooks, deployment status. Engineers must search multiple wikis and Slack channels to find this information.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build internal developer portal using Backstage (open-source) or custom: service catalog: {service_name, owner_team, tier(P0/P1/P2), api_docs_url, runbook_url, current_health, deployment_status, slo_dashboard_url}. Auto-populated from: CF Workers manifest, git repository metadata, PagerDuty services, Datadog/Analytics dashboards. Search: find service by name, team, or capability. On-call: shows current on-call engineer per service. Track portal_DAU and time_saved_vs_searching_slack.
+  </div>
+</div>
+<div id="G-BE40" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE40 [HIGH] — Multi-Tenant Load Balancing Fairness</strong><br>
+    <em>The Gap:</em> Under high load, CF Workers processes requests from all tenants in the order they arrive. High-volume tenants can starve low-volume tenants of processing capacity. No fair queuing mechanism ensures equitable request processing across tenants.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement fair queuing at routing layer: maintain per-tenant virtual queue with weighted fair queuing (WFQ) algorithm. Weight proportional to plan tier: Enterprise=4, Business=2, Growth=1, Free=0.5. Under normal load: FIFO. Under contention (queue depth &gt; 1000): WFQ scheduling ensures no tenant gets more than weight_share of capacity. Track per_tenant_p99_latency and fairness_index (should be &gt; 0.95 with WFQ). Alert if any paid tenant p99 exceeds free tier p99 + 500ms.
+  </div>
+</div>
+<div id="G-BE41" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE41 [MEDIUM] — Platform Edge Function Framework Standardization</strong><br>
+    <em>The Gap:</em> Platform Workers code has grown across multiple feature areas (routing, auth, billing, analytics, KB) without a standardized middleware framework. Code duplication and inconsistent error handling exist across Workers.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define CF Workers middleware framework: (1) Middleware chain: request → [auth_middleware, tenant_middleware, rate_limit_middleware, logging_middleware] → handler → [response_middleware], (2) Each middleware follows: (req, ctx, next) =&gt; response pattern (similar to Hono.js), (3) Adopt Hono.js or Itty Router as routing framework — both CF-native, &lt;10KB overhead, (4) Shared middleware packages: @naelao/auth, @naelao/rate-limit, @naelao/logging. Track code_duplication_reduction_pct and middleware_error_rate.
+  </div>
+</div>
+<div id="G-BE42" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE42 [HIGH] — Platform Documentation Site (Developer Hub)</strong><br>
+    <em>The Gap:</em> API docs portal (AU22) and builder docs are mentioned but no comprehensive developer hub is specified: quickstart guides, tutorials, concept explanations, API reference, changelog, SDK docs, community resources — all in one searchable site.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build developer hub: powered by Mintlify or Docusaurus. Sections: Getting Started (5-min quickstart), Concepts (SpaceTypes, Templates, DOs, KB), Guides (by use case), API Reference (OpenAPI auto-generated), SDK Docs (TypeScript, Python), Changelog, Community. Search: powered by Algolia DocSearch (free for open source, or Naelao's own Vectorize-backed search). AI assistant: "Ask the docs" feature using Naelao platform itself (dog-fooding). Track docs_search_success_rate and docs_to_signup_conversion.
+  </div>
+</div>
+<div id="G-BE43" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE43 [HIGH] — Platform Health Communication to Builders</strong><br>
+    <em>The Gap:</em> Status page (AW42 mentioned in CDN architecture) exists but builders have no real-time notification when an incident affects their Spaces specifically. Generic status page updates may not be relevant to all builders.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement targeted incident communication: on incident declaration, analyze: which Spaces are affected (by CF region, by service dependency), which builders are impacted. Send targeted alert: email/Slack to builders with affected Spaces only. Updates every 30min during incident. Post-incident: summary email with impact duration and credits (if SLA breached). Opt-out: builder can configure notification preferences. Track notification_reach_rate (affected builders notified / total affected) and builder_satisfaction_with_comms.
+  </div>
+</div>
+<div id="G-BE44" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE44 [HIGH] — AI-Powered Builder Support Bot</strong><br>
+    <em>The Gap:</em> Builder support tickets (AU22, BD37 internal KB) currently require human response. An AI support bot using the platform's own capabilities (dog-fooding) could resolve 60-70% of common questions automatically.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Deploy AI support bot for builders: powered by Naelao platform (eat own cooking). KB: internal support KB + API docs + changelog + known issues. Channel: in-app chat widget in builder dashboard, support ticket intake. Capabilities: answer API questions, explain error codes, guide through common configurations, escalate to human if confidence &lt; 0.7 or issue unresolved after 3 turns. Track bot_resolution_rate, escalation_rate, builder_satisfaction_score, and ticket_deflection_count. Target: 60% resolution without human.
+  </div>
+</div>
+<div id="G-BE45" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE45 [MEDIUM] — Continuous Documentation Generation from Code</strong><br>
+    <em>The Gap:</em> API documentation (BD48 quality standards) requires manual maintenance. As codebase evolves, docs quickly drift from actual behaviour. No automated documentation generation from code keeps docs in sync.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement code-driven docs: (1) JSDoc/TSDoc annotations on all exported functions and types, (2) OpenAPI spec auto-generated from route handler decorators (Zod schemas → OpenAPI via zod-to-openapi), (3) CI step: generate OpenAPI spec, compare to committed spec — fail if drift detected (forces developer to update spec on API change), (4) Changelog auto-generated from conventional commits (semantic-release), (5) SDK type definitions auto-generated from OpenAPI spec. Track docs_drift_incidents and api_spec_accuracy_pct.
+  </div>
+</div>
+<div id="G-BE46" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE46 [LOW] — Platform Energy Efficiency and Green Computing</strong><br>
+    <em>The Gap:</em> Platform has no energy efficiency metrics or sustainability commitments. As AI inference is energy-intensive, this becomes increasingly important for enterprise buyers with sustainability mandates.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define sustainability strategy: (1) Measure: track estimated_kWh per 1000 sessions using CF energy data (if available) or industry benchmarks (cloud AI inference: ~0.001-0.01 kWh per inference), (2) Optimize: prompt caching (AZ07) reduces redundant inference energy, semantic cache (AZ19) reduces LLM calls, (3) Reporting: annual sustainability report: total estimated_carbon_footprint, offset purchases, YoY efficiency improvement, (4) CF commitment: Cloudflare is 100% renewable energy — document this for builder ESG reporting. Track energy_per_session_trend.
+  </div>
+</div>
+<div id="G-BE47" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE47 [HIGH] — Platform API Gateway Consolidation</strong><br>
+    <em>The Gap:</em> Platform has grown multiple API entry points: REST API (v1), GraphQL (BD09), MCP server (BB05), A2A endpoint (BE11), gRPC (BD06), WebSocket. No unified API gateway manages: auth, rate limiting, routing, observability across all these protocols consistently.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Consolidate under API gateway layer: single CF Worker entry point for all protocols. Protocol detection: HTTP Content-Type/Upgrade header determines protocol (REST/GraphQL/gRPC/WebSocket). Shared middleware applied once: auth, rate limiting, logging, tracing — regardless of protocol. Protocol-specific routing after middleware. Unified API key: single API key works across all protocols. Consistent rate limits across protocols (not separately counted). Track protocol_distribution and gateway_error_rate by protocol.
+  </div>
+</div>
+<div id="G-BE48" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE48 [HIGH] — SpaceType Analytics for End-User Behavior Flows</strong><br>
+    <em>The Gap:</em> Builder analytics tracks aggregate metrics but no user behavior flow analysis shows: what sequences of messages lead to successful outcomes, where do users drop off in multi-step interactions, which conversation paths achieve high ratings.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build conversation flow analytics: record conversation paths as sequences: [intent_A → tool_X → response_type_P → rating]. Aggregate sequences across all sessions. Identify: (1) High-success paths (sequences ending in 5-star rating), (2) Abandonment paths (sequences ending in session_close without resolution), (3) Loop paths (user repeats similar questions — indicates KB gap). Visualize as Sankey diagram in builder dashboard "Flow Analysis" tab. Track flow_analysis_usage_rate and improvement_actions_from_flow_insights.
+  </div>
+</div>
+<div id="G-BE49" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE49 [HIGH] — Platform Emergency Contact and Escalation Tree</strong><br>
+    <em>The Gap:</em> On-call rotation (BA17) exists but no publicly documented emergency contact path allows builders to escalate P1 incidents directly to platform leadership when normal support channels are unresponsive.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define and publish emergency escalation: (1) In-app: red "Report Critical Incident" button creates P1 ticket, pages primary on-call immediately, (2) Emergency hotline: phone number for Enterprise tier builders (staffed 24/7 during on-call hours), (3) Status page: incident declaration form triggers internal P1 alert, (4) Escalation path: L1 support → senior engineer → engineering manager → CTO (automatic escalation after SLA breach). Contact details in Service Agreement. Track P1_response_time vs committed SLA and escalation_trigger_rate.
+  </div>
+</div>
+<div id="G-BE50" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BE50 [LOW] — Platform Long-Term Sustainability and Funding Strategy</strong><br>
+    <em>The Gap:</em> Platform architecture and technical gaps are exhaustively documented, but no technical specification addresses long-term platform sustainability: financial runway, revenue targets to reach profitability, funding milestones that unlock infrastructure scaling. Without this, technical completeness does not guarantee platform survival.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define technical sustainability gates: (1) Seed stage (0-$1M ARR): architect for 10k builders, use shared DB sharding, limit to 3 CF regions, (2) Series A ($1M-$10M ARR): dedicated per-enterprise DB, expand to 8 CF regions, dedicated support team, (3) Series B ($10M-$100M ARR): full multi-region active-active, dedicated ML infra, (4) Each stage: specific infrastructure investments unlocked by revenue milestone. Technical team tracks: infrastructure_cost_as_pct_of_revenue (target &lt; 20%). Revenue and infra decisions co-owned by CTO + CFO.
+  </div>
+</div>
 </section>
 
 
