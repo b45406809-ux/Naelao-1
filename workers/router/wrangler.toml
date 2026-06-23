@@ -1,0 +1,41 @@
+name = "naelao-router"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "development"
+
+[[kv_namespaces]]
+binding = "SESSION_REVOCATION"
+id = "PLACEHOLDER_SESSION_KV_ID"
+preview_id = "PLACEHOLDER_SESSION_KV_PREVIEW_ID"
+
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "PLACEHOLDER_CONFIG_KV_ID"
+preview_id = "PLACEHOLDER_CONFIG_KV_PREVIEW_ID"
+
+[[services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+[[services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+[[services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+[[services]]
+binding = "AUTH_WORKER"
+service = "naelao-auth"
+
+[env.staging]
+name = "naelao-router-staging"
+vars = { ENVIRONMENT = "staging" }
+
+[env.production]
+name = "naelao-router-production"
+vars = { ENVIRONMENT = "production" }

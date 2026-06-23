@@ -1,0 +1,20 @@
+name = "naelao-spaces"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "development"
+
+[[durable_objects.bindings]]
+name = "SPACE_DO"
+class_name = "SpaceDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["SpaceDO"]
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "PLACEHOLDER_D1_ID"

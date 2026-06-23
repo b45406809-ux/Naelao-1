@@ -1,0 +1,371 @@
+import { DurableObject } from "cloudflare:workers";
+import { applyMigrations, queryAll, queryOne, execute } from "@naelao/db";
+import type { Migration } from "@naelao/db";
+import type { MessageRole } from "@naelao/types";
+
+// ── Schema migrations ────────────────────────────────────────────────────────
+const MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    description: "initial schema",
+    up: `
+      PRAGMA journal_mode=WAL;
+      PRAGMA synchronous=NORMAL;
+      PRAGMA cache_size=-32768;
+
+      CREATE TABLE IF NOT EXISTS sessions (
+        id          TEXT PRIMARY KEY,
+        space_id    TEXT NOT NULL,
+        tenant_id   TEXT NOT NULL,
+        end_user_id TEXT,
+        status      TEXT NOT NULL DEFAULT 'active',
+        metadata    TEXT NOT NULL DEFAULT '{}',
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS messages (
+        id           TEXT PRIMARY KEY,
+        session_id   TEXT NOT NULL REFERENCES sessions(id),
+        role         TEXT NOT NULL,
+        content      TEXT NOT NULL,
+        tool_call_id TEXT,
+        tool_name    TEXT,
+        token_count  INTEGER,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS agent_state (
+        session_id        TEXT PRIMARY KEY REFERENCES sessions(id),
+        current_fsm_state TEXT NOT NULL DEFAULT 'IDLE',
+        goal_stack        TEXT NOT NULL DEFAULT '[]',
+        context_json      TEXT NOT NULL DEFAULT '{}',
+        updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS kb_documents (
+        id           TEXT PRIMARY KEY,
+        space_id     TEXT NOT NULL,
+        title        TEXT NOT NULL,
+        source_url   TEXT,
+        content_type TEXT NOT NULL DEFAULT 'text',
+        status       TEXT NOT NULL DEFAULT 'pending',
+        chunk_count  INTEGER NOT NULL DEFAULT 0,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_sessions_space ON sessions(space_id);
+      CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON sessions(tenant_id);
+      CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+      CREATE INDEX IF NOT EXISTS idx_kb_space ON kb_documents(space_id);
+    `,
+  },
+  {
+    version: 2,
+    description: "FTS5 for message search",
+    up: `
+      CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+        content,
+        content=messages,
+        content_rowid=rowid
+      );
+    `,
+  },
+];
+
+export interface SpaceDOEnv {
+  PLATFORM_SECRET: string;
+}
+
+// Row types for internal use
+interface SessionRow {
+  id: string;
+  space_id: string;
+  tenant_id: string;
+  end_user_id: string | null;
+  status: string;
+  metadata: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface MessageRow {
+  id: string;
+  session_id: string;
+  role: string;
+  content: string;
+  tool_call_id: string | null;
+  tool_name: string | null;
+  token_count: number | null;
+  created_at: string;
+}
+
+interface AgentStateRow {
+  session_id: string;
+  current_fsm_state: string;
+  goal_stack: string;
+  context_json: string;
+}
+
+// ── SpaceDO ──────────────────────────────────────────────────────────────────
+export class SpaceDO extends DurableObject<SpaceDOEnv> {
+  private initialized = false;
+
+  private ensureInit(): void {
+    if (this.initialized) return;
+    applyMigrations(this.ctx.storage.sql as never, MIGRATIONS);
+    this.initialized = true;
+  }
+
+  override async fetch(request: Request): Promise<Response> {
+    this.ensureInit();
+    const url = new URL(request.url);
+    const method = request.method;
+
+    try {
+      // POST /sessions
+      if (method === "POST" && url.pathname === "/sessions") {
+        return this.createSession(request);
+      }
+      // GET /sessions/:id
+      const sessionMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
+      if (method === "GET" && sessionMatch?.[1]) {
+        return this.getSession(sessionMatch[1]);
+      }
+      // POST /sessions/:id/messages
+      const msgMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
+      if (method === "POST" && msgMatch?.[1]) {
+        return this.appendMessage(request, msgMatch[1]);
+      }
+      // GET /sessions/:id/messages
+      if (method === "GET" && msgMatch?.[1]) {
+        return this.getMessages(msgMatch[1], url.searchParams);
+      }
+      // PATCH /sessions/:id — update status
+      if (method === "PATCH" && sessionMatch?.[1]) {
+        return this.updateSession(request, sessionMatch[1]);
+      }
+      // GET /sessions/:id/state — agent state
+      const stateMatch = url.pathname.match(/^\/sessions\/([^/]+)\/state$/);
+      if (method === "GET" && stateMatch?.[1]) {
+        return this.getAgentState(stateMatch[1]);
+      }
+      if (method === "PUT" && stateMatch?.[1]) {
+        return this.putAgentState(request, stateMatch[1]);
+      }
+
+      return Response.json(
+        { error_code: "not_found", message: "Unknown DO route" },
+        { status: 404 }
+      );
+    } catch (err) {
+      console.error("SpaceDO error:", err);
+      return Response.json(
+        { error_code: "internal_error", message: String(err) },
+        { status: 500 }
+      );
+    }
+  }
+
+  private async createSession(request: Request): Promise<Response> {
+    const body = await request.json<{
+      space_id: string;
+      tenant_id: string;
+      end_user_id?: string;
+      metadata?: Record<string, unknown>;
+    }>();
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO sessions (id, space_id, tenant_id, end_user_id, metadata, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      body.space_id,
+      body.tenant_id,
+      body.end_user_id ?? null,
+      JSON.stringify(body.metadata ?? {}),
+      now,
+      now
+    );
+
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO agent_state (session_id, current_fsm_state, goal_stack, context_json, updated_at)
+       VALUES (?, 'IDLE', '[]', '{}', ?)`,
+      id,
+      now
+    );
+
+    return Response.json(
+      { id, space_id: body.space_id, status: "active", created_at: now },
+      { status: 201 }
+    );
+  }
+
+  private getSession(sessionId: string): Response {
+    const session = queryOne<SessionRow>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM sessions WHERE id = ?",
+      sessionId
+    );
+    if (!session) {
+      return Response.json(
+        { error_code: "not_found", message: "Session not found" },
+        { status: 404 }
+      );
+    }
+    return Response.json(session);
+  }
+
+  private async appendMessage(request: Request, sessionId: string): Promise<Response> {
+    const body = await request.json<{
+      role: MessageRole;
+      content: string;
+      tool_call_id?: string;
+      tool_name?: string;
+      token_count?: number;
+    }>();
+
+    const session = queryOne<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM sessions WHERE id = ?",
+      sessionId
+    );
+    if (!session) {
+      return Response.json(
+        { error_code: "not_found", message: "Session not found" },
+        { status: 404 }
+      );
+    }
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO messages (id, session_id, role, content, tool_call_id, tool_name, token_count, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      sessionId,
+      body.role,
+      body.content,
+      body.tool_call_id ?? null,
+      body.tool_name ?? null,
+      body.token_count ?? null,
+      now
+    );
+
+    // Update session updated_at
+    execute(
+      this.ctx.storage.sql as never,
+      "UPDATE sessions SET updated_at = ? WHERE id = ?",
+      now,
+      sessionId
+    );
+
+    return Response.json(
+      { id, session_id: sessionId, role: body.role, created_at: now },
+      { status: 201 }
+    );
+  }
+
+  private getMessages(sessionId: string, params: URLSearchParams): Response {
+    const limit = Math.min(parseInt(params.get("limit") ?? "50"), 200);
+    const before = params.get("before");
+
+    const rows = before
+      ? queryAll<MessageRow>(
+          this.ctx.storage.sql as never,
+          `SELECT * FROM messages WHERE session_id = ? AND created_at < ?
+           ORDER BY created_at DESC LIMIT ?`,
+          sessionId,
+          before,
+          limit
+        )
+      : queryAll<MessageRow>(
+          this.ctx.storage.sql as never,
+          `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC LIMIT ?`,
+          sessionId,
+          limit
+        );
+
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  private async updateSession(request: Request, sessionId: string): Promise<Response> {
+    const body = await request.json<{
+      status?: string;
+      metadata?: Record<string, unknown>;
+    }>();
+    const now = new Date().toISOString();
+
+    if (body.status) {
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?",
+        body.status,
+        now,
+        sessionId
+      );
+    }
+    if (body.metadata) {
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?",
+        JSON.stringify(body.metadata),
+        now,
+        sessionId
+      );
+    }
+    return Response.json({ id: sessionId, updated_at: now });
+  }
+
+  private getAgentState(sessionId: string): Response {
+    const state = queryOne<AgentStateRow>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM agent_state WHERE session_id = ?",
+      sessionId
+    );
+    if (!state) {
+      return Response.json(
+        { error_code: "not_found", message: "State not found" },
+        { status: 404 }
+      );
+    }
+    return Response.json({
+      session_id: state.session_id,
+      current_fsm_state: state.current_fsm_state,
+      goal_stack: JSON.parse(state.goal_stack) as unknown[],
+      context: JSON.parse(state.context_json) as unknown,
+    });
+  }
+
+  private async putAgentState(request: Request, sessionId: string): Promise<Response> {
+    const body = await request.json<{
+      current_fsm_state?: string;
+      goal_stack?: unknown[];
+      context?: Record<string, unknown>;
+    }>();
+    const now = new Date().toISOString();
+
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE agent_state
+       SET current_fsm_state = COALESCE(?, current_fsm_state),
+           goal_stack = COALESCE(?, goal_stack),
+           context_json = COALESCE(?, context_json),
+           updated_at = ?
+       WHERE session_id = ?`,
+      body.current_fsm_state ?? null,
+      body.goal_stack ? JSON.stringify(body.goal_stack) : null,
+      body.context ? JSON.stringify(body.context) : null,
+      now,
+      sessionId
+    );
+    return Response.json({ session_id: sessionId, updated_at: now });
+  }
+}
