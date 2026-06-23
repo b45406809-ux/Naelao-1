@@ -43,8 +43,8 @@ export function errorResponse(err: unknown, requestId: string): Response {
     const body: ApiError = {
       error_code: err.code,
       message: err.message,
-      details: err.details,
       request_id: requestId,
+      ...(err.details !== undefined ? { details: err.details } : {}),
     };
     return Response.json(body, { status: err.status });
   }
