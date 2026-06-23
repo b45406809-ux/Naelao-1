@@ -10,5 +10,9 @@ CREATE TABLE IF NOT EXISTS usage_events (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_org_month ON usage_events(org_id, recorded_at);
 
--- G-D02: Trial support on subscriptions
+-- G-D02: Add unique constraint on stripe_invoice_id to allow upsert
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invoices_stripe_id ON invoices(stripe_invoice_id)
+  WHERE stripe_invoice_id IS NOT NULL;
+
+-- G-D03: Trial support on subscriptions
 ALTER TABLE subscriptions ADD COLUMN trial_ends_at TEXT;
