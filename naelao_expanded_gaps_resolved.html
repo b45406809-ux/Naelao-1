@@ -63032,6 +63032,460 @@ When bumping the date, bump it everywhere in one change and re-run the full test
     <em>Required Fix:</em> Build executive health dashboard: compute platform_health_score (0-100) from weighted signals: (1) p99_latency_ok (weight 20), (2) error_rate_ok (weight 20), (3) billing_processing_ok (weight 15), (4) LLM_provider_ok (weight 15), (5) active_sessions_vs_target (weight 10), (6) synthetic_monitor_ok (weight 10), (7) security_alerts_zero (weight 10). Score &lt; 80: DEGRADED, &lt; 60: CRITICAL. Weekly executive email: health score trend, top 3 risks, top 3 positive signals.
   </div>
 </div>
+
+<section id="appendix-bb">
+<h2>Appendix BB — LLM Ops Advanced, Multi-Language, KB Advanced, Billing Advanced, ML Ops, Security Hardening, Reliability Engineering, Data Governance, Edge Cases, Strategic KPIs</h2>
+
+<div id="G-BB01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB01 [HIGH] — Multi-Model Ensemble and Voting</strong><br>
+    <em>The Gap:</em> For high-stakes decisions (medical triage, legal analysis), no ensemble approach combines responses from multiple LLM models. Single-model responses carry single-model failure modes — hallucinations, biases — with no independent verification.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ensemble router: for ENSEMBLE-tagged agent steps, call N models (e.g., Claude+GPT-4+Gemini) in parallel. Aggregate responses using: (1) majority vote for classification tasks, (2) LLM judge for open-ended responses (ask 4th model to select best response), (3) confidence-weighted average for numeric outputs. Log ensemble_agreement_rate. Fallback to best single model if 2 of 3 models fail. Track ensemble vs single-model accuracy on golden eval set.
+  </div>
+</div>
+<div id="G-BB02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB02 [HIGH] — Streaming Response Backpressure Handling</strong><br>
+    <em>The Gap:</em> LLM streaming responses send tokens at model output speed. If the client (browser or mobile) cannot consume tokens fast enough (slow connection, heavy rendering), no backpressure mechanism is specified — buffers overflow or tokens are silently dropped.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement streaming backpressure: CF Worker streams LLM tokens to client via SSE with flow control. If client stops acknowledging (SSE connection stalled), pause token forwarding to LLM (not possible with most APIs) or buffer in DO memory (max 64KB). On buffer full, abort LLM call and return partial_response with streaming_interrupted=true. Client reconnects with last_token_id to resume. Track streaming_abort_rate and buffer_overflow_events.
+  </div>
+</div>
+<div id="G-BB03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB03 [HIGH] — Context Window Overflow Graceful Truncation</strong><br>
+    <em>The Gap:</em> When conversation history + system prompt + KB chunks exceed the model context window, the platform must truncate intelligently. No truncation strategy is specified — models receive oversized prompts causing API errors.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement priority-based context truncation: context budget allocation: system_prompt (reserved 20%), KB_chunks (40%), recent_conversation (30%), metadata (10%). When total &gt; model_context_limit: (1) truncate oldest conversation turns first (keep last N turns), (2) reduce KB_chunks to top-3 by score, (3) compress older conversation with LLM summarizer to summary_token. Track context_truncation_events and user_experience_impact (does truncation correlate with negative ratings?).
+  </div>
+</div>
+<div id="G-BB04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB04 [HIGH] — LLM Output Structured Extraction Validation</strong><br>
+    <em>The Gap:</em> Agents request structured JSON outputs from LLMs (JSON mode). LLMs occasionally return malformed JSON or JSON that does not match the expected schema, causing unhandled downstream errors.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement structured output validation pipeline: (1) Request JSON mode or function calling from LLM, (2) Parse response — on JSONParseError, retry once with explicit correction prompt: "Your previous response was not valid JSON. Return only valid JSON.", (3) Validate parsed JSON against expected Zod/JSON Schema, (4) On schema mismatch, extract best-effort values using LLM coercion prompt, (5) On persistent failure (3 retries), return structured error to user. Track json_parse_error_rate and coercion_success_rate.
+  </div>
+</div>
+<div id="G-BB05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB05 [HIGH] — Model Context Protocol (MCP) Server Integration</strong><br>
+    <em>The Gap:</em> Anthropic's Model Context Protocol (MCP) is becoming the standard for LLM-tool integration. No MCP server implementation is specified — builders must integrate tools via custom formats, missing the emerging ecosystem of MCP-compatible tools.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement MCP server: SpaceDO exposes MCP-compliant endpoint at /mcp. Tool definitions generated from SpaceType config conform to MCP schema. Agent requests tool calls via MCP protocol (JSON-RPC 2.0). MCP client library in platform agent runtime. Builders can connect external MCP servers (e.g., Filesystem, GitHub, Slack MCP servers) by providing server_url + auth in Space config. List connected MCP tools in builder dashboard. Track mcp_tool_call_count by tool_name.
+  </div>
+</div>
+<div id="G-BB06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB06 [MEDIUM] — Token Budget Forecasting per Session</strong><br>
+    <em>The Gap:</em> Builders configure max_tokens per Space but have no visibility into how quickly token budgets are consumed per session. No forecast helps builders set appropriate limits — too low disrupts users, too high drives runaway costs.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Track per-session token consumption: SpaceDO SQLite records {turn_id, prompt_tokens, completion_tokens, cached_tokens, cumulative_total}. At 80% of session token budget: agent proactively informs user "We are approaching our conversation limit for this session." Builder dashboard: token_usage_percentile distribution, average_tokens_per_session, budget_exhaustion_rate. Suggest budget adjustment if &gt;10% of sessions hit limit.
+  </div>
+</div>
+<div id="G-BB07" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB07 [LOW] — Speculative Decoding and Latency Optimization</strong><br>
+    <em>The Gap:</em> LLM API calls are sequential by default. For common response patterns, speculative decoding (using a small draft model to predict tokens, verified by main model) can reduce latency by 30-50%. No latency optimization strategy addresses this.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Where supported by LLM provider, enable speculative decoding: Anthropic's extended thinking fast mode, OpenAI o-series reasoning modes. For predictable response templates (yes/no questions, fill-in-the-blank), pre-generate common completions and cache (semantic cache, AZ19). For follow-up responses in multi-turn conversations, pre-fetch likely next user inputs using background prediction. Track speculative_hit_rate and latency_reduction_pct.
+  </div>
+</div>
+<div id="G-BB08" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB08 [HIGH] — Real-Time Translation for Multi-Language Spaces</strong><br>
+    <em>The Gap:</em> Multi-language agent support (AY41) covers LLM responses in target language, but does not address real-time translation of KB documents. A KB in English cannot serve French/Japanese users accurately without translation.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement KB translation pipeline: on KB document addition, CF Workflow translates to all builder-configured target languages using translation API (DeepL preferred for accuracy, CF AI Workers as fallback). Translations stored in R2 with locale suffix (doc_{id}_fr.json). At retrieval, select locale-appropriate version based on user_language header. Track translation_freshness: flag documents where source updated but translation stale &gt;7 days.
+  </div>
+</div>
+<div id="G-BB09" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB09 [HIGH] — Language Detection and Auto-Switch</strong><br>
+    <em>The Gap:</em> When a user writes in a different language than the Space default, the agent responds in the Space's configured language, creating a poor experience. No language detection automatically switches response language to match user input.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement language detection: on first user message, detect language using CF AI Workers text-classification or langdetect library (lightweight Wasm build). If detected_language != space_default_language AND detected_language in builder_supported_languages: switch session to detected language, update user_language preference in DO SQLite. Agent uses detected language for all subsequent responses. Log language_switch_events. Builder configures: auto_detect=true/false, supported_languages=[].
+  </div>
+</div>
+<div id="G-BB10" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB10 [HIGH] — RTL Language Full Platform Support</strong><br>
+    <em>The Gap:</em> Right-to-left language support (AX36 covers RTL layout basics) must extend beyond the Space shell to: builder dashboard, email templates, PDF exports, admin panels, error messages. Incomplete RTL causes broken layouts for Arabic/Hebrew markets.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Audit all UI surfaces for RTL: (1) Builder dashboard: CSS dir=rtl, logical properties (margin-inline-start vs margin-left), (2) Email templates: HTML dir=rtl, table-based RTL layout, (3) PDF exports: RTL text rendering with proper Unicode bidi algorithm, (4) Error messages: translated Arabic/Hebrew strings, (5) Date/number formatting: locale-aware via Intl.DateTimeFormat/NumberFormat. Track RTL_locale_users and report broken layouts via synthetic visual regression tests.
+  </div>
+</div>
+<div id="G-BB11" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB11 [MEDIUM] — Currency and Regional Pricing Localization</strong><br>
+    <em>The Gap:</em> Billing is specified in USD. No multi-currency support or regional pricing allows builders outside the US to pay in their local currency or take advantage of purchasing power parity pricing.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement multi-currency billing: Stripe supports 135+ currencies. At checkout: detect builder country from IP/profile, offer pricing in local currency (convert from USD using daily exchange rate from CF KV-cached FX feed). Display: "$29/mo or €27/mo". Stripe processes in local currency. Payouts to builders in their local currency. For emerging markets: consider purchasing power parity pricing matrix (e.g., 50% discount for specific country codes). Track currency_distribution and conversion_rate_by_currency.
+  </div>
+</div>
+<div id="G-BB12" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB12 [LOW] — Locale-Specific Date, Time, and Number Formatting</strong><br>
+    <em>The Gap:</em> Platform displays dates, times, and numbers in ISO or US format throughout — builder dashboard, analytics, conversation timestamps, export files. Non-US users see formats they cannot parse intuitively.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Apply Intl API throughout: (1) Dates: Intl.DateTimeFormat(user_locale, {dateStyle:"medium"}) — "22 Jun 2026" for UK, "Jun 22, 2026" for US, (2) Times: 12h vs 24h based on locale, (3) Numbers: Intl.NumberFormat(locale) — "1.234,56" for DE vs "1,234.56" for US, (4) Relative times: "2 hours ago" localized via Intl.RelativeTimeFormat. Store user_locale in profile. Apply on all rendered surfaces including exported PDFs and emails.
+  </div>
+</div>
+<div id="G-BB13" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB13 [HIGH] — KB Document Access Control Lists (ACL)</strong><br>
+    <em>The Gap:</em> All KB documents in a Space are equally accessible to all authenticated end-users. No document-level ACL allows builders to restrict specific KB content to specific user segments (e.g., premium users see advanced docs, free users see basic docs).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement document ACL: KB document metadata includes visibility: {user_segments:[], plan_tiers:[], user_ids:[]}. At retrieval, filter Vectorize results by end-user segment/plan. Vectorize metadata filter: {$and: [{visibility_public: true}, OR {visibility_segments: {$in: [user_segment]}}]}. Builder configures segment membership rules (user attributes → segment). Track ACL_filter_rate and segment_usage_distribution.
+  </div>
+</div>
+<div id="G-BB14" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB14 [HIGH] — KB Version Control and Content History</strong><br>
+    <em>The Gap:</em> KB documents are updated in place with no version history. If a builder accidentally overwrites critical content or an automated pipeline corrupts a document, there is no rollback path.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement KB document versioning: R2 stores each document version as doc_{id}_v{n}.json. D1/DO SQLite tracks: {doc_id, version, created_at, created_by, change_summary, is_current}. GET /kb/{id}/versions lists history. GET /kb/{id}?version=N fetches specific version. POST /kb/{id}/rollback?version=N reverts. Diff viewer shows changes between versions. Auto-archive: keep last 20 versions, purge older. Track rollback_frequency to identify problematic automation.
+  </div>
+</div>
+<div id="G-BB15" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB15 [MEDIUM] — KB Duplicate Detection and Deduplication</strong><br>
+    <em>The Gap:</em> Builders adding KB content manually or via automated pipelines frequently create near-duplicate documents (same article slightly reworded, same URL crawled twice). Duplicates degrade retrieval quality and waste storage.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement duplicate detection: at KB document add time, compute embedding, query Vectorize for top-3 similar documents (threshold 0.95). If duplicate found: block add, show builder "This content is very similar to: [existing doc title]." Offer: "Update existing doc" or "Add anyway (different version)." Batch deduplication job: weekly scan of all KB documents, generate deduplication_report for builder. Track duplicate_block_rate and deduplication_savings_bytes.
+  </div>
+</div>
+<div id="G-BB16" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB16 [HIGH] — KB Citation and Source Attribution</strong><br>
+    <em>The Gap:</em> When agents respond using KB content, they do not cite the source documents. End-users cannot verify information or read the full source document, reducing trust and raising misinformation risk.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement citation injection: after KB retrieval, include source citations in agent response. Format: "According to [Document Title]([doc_url]), ..." For multi-source responses: numbered citations [1][2] with footnote list. Builder configures: citation_style=inline|footnote|none. Citation links open document in Space shell sidebar or navigate to source URL. Track citation_click_rate. Builder can specify citation_display_text template: "Source: {doc_title} (updated {date})."
+  </div>
+</div>
+<div id="G-BB17" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB17 [MEDIUM] — KB Quality Score and Content Health Metrics</strong><br>
+    <em>The Gap:</em> No quality score measures KB content health: outdated documents, low-readability content, thin documents, broken URLs in content. Builders have no signal about which KB documents need improvement.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Compute KB health metrics per document: (1) freshness_score: days_since_updated / staleness_threshold, (2) usage_score: times_retrieved / total_retrievals, (3) utility_score: avg_rating_of_responses_using_this_doc, (4) completeness_score: word_count / expected_min_length, (5) link_health: URL checker on embedded links. Aggregate to document_health_score (0-100). Builder dashboard: KB Health view, sorted by lowest health. Bulk action: "Archive all docs with health &lt; 30."
+  </div>
+</div>
+<div id="G-BB18" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB18 [LOW] — Automated KB Enrichment from Usage Patterns</strong><br>
+    <em>The Gap:</em> KB content is purely author-added. No system uses conversation data to enrich KB — identifying frequently asked questions not well-covered, extracting useful agent responses as new KB documents, or surfacing agent-discovered facts.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement KB enrichment pipeline: weekly CF Workflow analyzes: (1) High-rated agent responses not grounded in KB → suggest as new KB draft, (2) FAQ clusters with low retrieval relevance → flag for manual content creation, (3) Agent-cited external URLs → offer to crawl and add to KB. Enrichment suggestions land in builder "KB Suggestions" queue with preview. Builder approves/rejects each. Track enrichment_acceptance_rate and KB_coverage_improvement.
+  </div>
+</div>
+<div id="G-BB19" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB19 [HIGH] — Usage-Based Billing with Metered Seats</strong><br>
+    <em>The Gap:</em> Current billing is subscription-based (flat monthly fee per plan tier). No usage-based billing option exists for builders whose costs scale directly with usage — high-volume builders overpay on flat plans, low-volume builders are discouraged by flat minimums.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add usage-based billing tier: builders pay per 1,000 LLM tokens, per 1,000 sessions, per GB of storage. Meter via Analytics Engine aggregations computed nightly. Invoice generated via Stripe Metered Billing: usage records created via Stripe API. Builder dashboard: usage meter with projected monthly bill, daily breakdown chart. Alert at 80% of estimated budget. Hybrid: base subscription + overage charges for usage above plan limits.
+  </div>
+</div>
+<div id="G-BB20" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB20 [HIGH] — Enterprise Contract and Custom Pricing</strong><br>
+    <em>The Gap:</em> Enterprise builders with large contracts need custom pricing, annual commitments, and custom payment terms. No enterprise contract management system handles negotiated deals outside the self-serve pricing grid.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define enterprise deal flow: Salesforce/CRM integration tracks enterprise deals. Custom pricing configured as override in billing system: {org_id, custom_plan_name, rates:{session_rate, token_rate, storage_rate}, commitment_amount_usd, contract_start, contract_end}. Invoice generated monthly from actual usage applied to custom rates. Minimum commitment enforced: if usage &lt; commitment, invoice for commitment. Enterprise SSO provisioning auto-assigns custom plan on user join. Track enterprise_ARR and contract_renewal_rate.
+  </div>
+</div>
+<div id="G-BB21" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB21 [HIGH] — Billing Portal Self-Service (Stripe Customer Portal)</strong><br>
+    <em>The Gap:</em> Builders cannot self-serve billing changes (upgrade, downgrade, cancel, update payment method, download invoices) without contacting support. This creates support burden and friction for subscription management.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Integrate Stripe Customer Portal: builder clicks "Manage Billing" → redirected to Stripe-hosted portal (Stripe Customer Portal API). Portal provides: subscription management, payment method update, invoice download, usage history. Return URL back to platform after changes. Webhook: stripe:customer.subscription.updated triggers plan_change in platform. Track self_service_billing_rate (% of billing changes done via portal vs support ticket).
+  </div>
+</div>
+<div id="G-BB22" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB22 [HIGH] — Failed Payment Recovery and Grace Period</strong><br>
+    <em>The Gap:</em> When a builder's payment fails (expired card, insufficient funds), the spec (AU27 dunning) covers email sequences but does not specify what happens to running Spaces during the grace period — whether they are throttled, paused, or fully blocked.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define payment failure lifecycle: Day 0: payment fails → retry, Space continues normally. Day 1-3: Smart Retry (Stripe), builder notified via email + in-app banner. Day 7: if still failed, Space enters DEGRADED mode (rate limits halved, new KB adds blocked). Day 14: Space SUSPENDED (new sessions blocked, existing data preserved). Day 30: account TERMINATED (data export offered, then data scheduled for deletion). Reactivation: payment succeeds → immediate restore. Log all state transitions.
+  </div>
+</div>
+<div id="G-BB23" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB23 [MEDIUM] — Revenue Recognition and Deferred Revenue Accounting</strong><br>
+    <em>The Gap:</em> Annual subscription payments received upfront (builder pays $1,188 for the year) must be recognized as revenue monthly ($99/mo). No deferred revenue tracking supports proper GAAP revenue recognition.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement revenue recognition: at annual subscription payment, create deferred_revenue_schedule: {payment_id, total_amount, monthly_recognition_amount, recognition_periods:[{period, amount, status}]}. Monthly CF Workflow runs revenue_recognition job: marks current period as recognized, updates recognized_revenue and deferred_revenue_balance in accounting DB. Export monthly revenue recognition report in CSV. Integrate with accounting system (QuickBooks/Xero) via API. Track total_deferred_revenue_balance for balance sheet.
+  </div>
+</div>
+<div id="G-BB24" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB24 [HIGH] — Embedding Model Drift Detection</strong><br>
+    <em>The Gap:</em> Vectorize indexes are built with a specific embedding model version. When the embedding model is updated (better accuracy), old vectors and new vectors are incompatible — retrieval quality silently degrades without detection.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement embedding drift monitor: tag each Vectorize vector with embedding_model_version at upsert time. Weekly job: compare retrieval quality (golden query set) using current model vs. stored vectors. If relevance_score drops &gt;10% compared to baseline, trigger KB re-embedding workflow. Re-embedding: CF Workflow iterates all KB documents, re-embeds with new model version, upserts new vectors, deletes old. Track embedding_model_version distribution and migration_progress_pct.
+  </div>
+</div>
+<div id="G-BB25" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB25 [HIGH] — Agent Benchmark Regression Suite</strong><br>
+    <em>The Gap:</em> Platform ships new agent framework versions but no automated benchmark compares new version to previous version on standardized tasks. Regressions in reasoning quality, tool use accuracy, or instruction following may go undetected until user complaints.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define agent benchmark suite: 200 curated test cases covering: (1) KB retrieval accuracy (correct answer grounded in KB), (2) Tool call accuracy (correct tool selected, correct parameters), (3) Instruction following (response matches format/length constraints), (4) Multi-turn coherence (follow-up questions answered correctly), (5) Safety (refusal on policy-violating inputs). Run suite against new agent version in staging. If any category drops &gt;5% vs baseline, block deploy. Track benchmark_score_trend.
+  </div>
+</div>
+<div id="G-BB26" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB26 [MEDIUM] — Continuous Fine-Tuning Pipeline Safety</strong><br>
+    <em>The Gap:</em> Fine-tuned models (AT01) must be safety-validated before deployment. A fine-tuning run on customer conversation data could inadvertently teach the model harmful patterns present in the data.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add safety validation gate for fine-tuned models: before deploying any fine-tuned model, run: (1) Harmlessness eval suite (TruthfulQA, HarmBench), (2) PII leakage test (prompt probing for memorized PII from training data), (3) Regression test on agent benchmark suite (BB25), (4) Human review of 100 random outputs from fine-tuned model. Gate: all checks must pass. Fine-tune blocked if harmlessness score &lt; threshold or PII leakage detected. Track fine_tune_safety_pass_rate.
+  </div>
+</div>
+<div id="G-BB27" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB27 [HIGH] — Multi-Modal Context Management</strong><br>
+    <em>The Gap:</em> Vision-augmented agents (AX28) handle image inputs but no multi-modal context management is specified. Images consume disproportionate context tokens — a single image may use 1,000-4,000 tokens, rapidly exhausting context budgets in multi-turn conversations.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement multi-modal context budget: track image_token_cost separately from text_token_cost. On context overflow: (1) oldest images replaced with [Image summary: user provided a photo of X], (2) recent images downscaled if original &gt;1024px wide, (3) builder configures image_retention_turns (how many turns to keep images in context). Token cost forecast shown before processing large images. Track image_token_share and context_overflow_rate in image-enabled Spaces.
+  </div>
+</div>
+<div id="G-BB28" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB28 [LOW] — Zero-Knowledge Proof for Sensitive Verifications</strong><br>
+    <em>The Gap:</em> Some verification use cases (age verification, credential verification) require proving attributes without revealing the underlying data. No ZKP integration is specified — platforms use raw PII for verification instead.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Explore ZKP integration for age/credential verification: integrate with ZKP-based identity providers (e.g., zkPass, Worldcoin credentials for proof-of-humanity). Builder can require zk_proof_verification for specific Space access: user generates proof client-side, platform verifies proof on-chain or via verifier API without seeing raw data. Use case: 18+ content access without transmitting DOB. Track zk_verification_rate and false_positive_rate.
+  </div>
+</div>
+<div id="G-BB29" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB29 [HIGH] — Cryptographic Audit Log Integrity</strong><br>
+    <em>The Gap:</em> Audit logs record security-sensitive events but logs stored in Analytics Engine or DO SQLite can be silently modified by a privileged attacker with platform access. No cryptographic integrity guarantee prevents audit log tampering.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement append-only cryptographically chained audit log: each audit event includes: {id, prev_hash, event_data, timestamp, hmac_sha256(prev_hash + event_data + timestamp + secret)}. Store in write-once R2 object per day (lifecycle: delete-protected for 7 years). Weekly integrity check: re-compute chain from genesis, verify no hash breaks. Alert on chain break — indicates tampering. Export audit log with integrity proof for compliance auditors.
+  </div>
+</div>
+<div id="G-BB30" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB30 [MEDIUM] — Confidential Computing for Sensitive Workloads</strong><br>
+    <em>The Gap:</em> Healthcare, legal, and financial Spaces may require that even platform operators cannot read user conversation data. Current encryption protects against external attackers but not against platform-level access.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Explore Trusted Execution Environment (TEE) options: CF does not natively support TEEs but partner TEE providers can process sensitive workloads. Alternative: client-side encryption where user holds encryption key (BYOK pattern). Builder enables end_user_encryption: user-generated key encrypts messages client-side before sending; agent sees encrypted text and uses user-provided key to decrypt in TEE. Platform stores only ciphertext. Compliance certification: "Zero-knowledge architecture for Enterprise tier."
+  </div>
+</div>
+<div id="G-BB31" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB31 [HIGH] — Chaos Engineering Program</strong><br>
+    <em>The Gap:</em> Platform resilience is assumed based on CF architecture but never validated under deliberate failure injection. Untested failure modes (DO unavailable, LLM API 503, R2 slow, Queue backlog) may behave worse than expected when they occur in production.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement chaos engineering schedule: monthly chaos experiments in staging: (1) LLM API chaos: inject 30% 503 errors → verify fallback chain activates, (2) DO chaos: kill random SpaceDOs → verify reconnection and state recovery, (3) R2 chaos: inject 10s latency → verify timeout handling and degraded mode, (4) Queue chaos: pause consumer → verify backlog handling and DLQ routing. Each experiment has: hypothesis, blast_radius, halt_condition. Document results in Chaos Registry. Track hypothesis_validated_rate.
+  </div>
+</div>
+<div id="G-BB32" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB32 [HIGH] — Multi-Region Failover Drill</strong><br>
+    <em>The Gap:</em> Active-active multi-region architecture (AW46) is specified but never tested under real regional failure. Regional failover procedures are untested and may not work as designed.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Quarterly multi-region failover drill: simulate CF region outage by rerouting traffic away from one region. Measure: failover_time (time for traffic to shift), data_consistency (no lost sessions), end_user_impact (error rate during failover). Success criteria: failover &lt; 60s, data_consistency 100%, error_rate_during_failover &lt; 1%. Document deviations from expected behavior. Update failover runbook based on drill findings. Track drill_success_rate and mean_failover_time.
+  </div>
+</div>
+<div id="G-BB33" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB33 [MEDIUM] — Database Connection Pool Management</strong><br>
+    <em>The Gap:</em> D1 database connections (used for platform metadata, billing, user accounts) are opened per CF Worker request. Without connection pooling, high concurrency causes connection exhaustion, especially under traffic spikes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement D1 connection management via Hyperdrive: CF Hyperdrive provides connection pooling for D1/PostgreSQL. Configure Hyperdrive in wrangler.toml: max_pool_size=20, idle_timeout=300s. All D1 queries route through Hyperdrive connection pool. Track: pool_utilization_pct, connection_wait_time_p99, connection_timeout_rate. Alert if pool_utilization &gt; 80% — trigger pool size increase or query optimization. Hyperdrive caches read queries: track query_cache_hit_rate.
+  </div>
+</div>
+<div id="G-BB34" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB34 [HIGH] — Distributed Lock Management</strong><br>
+    <em>The Gap:</em> Some platform operations require distributed locks: SpaceType publish (one publisher at a time), billing invoice generation (one per billing period), DO migration (one shard at a time). No distributed lock mechanism is specified — concurrent executions cause duplicate processing.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement distributed locks via DO: LockDO singleton per lock_name. Acquire: HTTP request to LockDO, if lock_holder=null set lock_holder=caller_id with TTL, return acquired=true. Release: set lock_holder=null. Automatic expiry: if lock holder crashes, TTL expires lock after 30s. Retry: callers retry with exponential backoff. Track lock_contention_rate and lock_hold_duration_p99. Use CF Workflow for long-running operations that need persistent lock across steps.
+  </div>
+</div>
+<div id="G-BB35" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB35 [HIGH] — Data Classification and Tagging System</strong><br>
+    <em>The Gap:</em> Platform stores various data types (PII, business-sensitive, public) without a formal classification system. No tagging prevents PII from flowing into analytics systems that should not receive it.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define data classification schema: PUBLIC (can be logged/cached freely), INTERNAL (platform-only, no external exposure), CONFIDENTIAL (builder data, encrypted at rest, limited access), RESTRICTED (PII/PHI, special handling required). Tag all data fields at definition time. Enforce: RESTRICTED data masked in logs ("user_email": "[REDACTED]"), not written to Analytics Engine, encrypted in DO SQLite with field-level encryption. Data flow diagram shows classification boundaries. Track PII_in_logs violations.
+  </div>
+</div>
+<div id="G-BB36" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB36 [HIGH] — Data Retention Schedule and Enforcement</strong><br>
+    <em>The Gap:</em> Conversation data, session logs, and analytics events accumulate indefinitely. No formal data retention schedule with automated enforcement deletes data at end of retention period, violating GDPR's data minimization principle.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define retention schedule: session_messages: 2 years, analytics_events: 1 year, audit_logs: 7 years, billing_records: 7 years, KB_documents: until deleted by builder, temporary_files: 7 days. CF Workflows run nightly: identify records past retention date, delete from all storage layers (DO SQLite, R2, KV). Log deletion_counts per data_type in audit trail. Builder can configure shorter retention. Track retention_compliance_rate (records past due / total records).
+  </div>
+</div>
+<div id="G-BB37" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB37 [MEDIUM] — Cross-Border Data Transfer Compliance</strong><br>
+    <em>The Gap:</em> When EU end-users interact with Spaces hosted by US builders, data may transfer from EU to US. GDPR Chapter V requires adequate protections for cross-border data transfers. No transfer mechanism (SCCs, adequacy decision) is documented.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Document cross-border transfer mechanisms: for EU→US transfers, rely on EU-US Data Privacy Framework (adequacy decision). Add Data Processing Agreement (DPA) template builders can execute with platform. DPA covers: SCCs for transfers to third-party processors (LLM providers), description of processing activities, security measures, breach notification. Auto-attach DPA to EU builder accounts. Update DPA when transfer mechanisms change. Track DPA_execution_rate for EU builders.
+  </div>
+</div>
+<div id="G-BB38" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB38 [MEDIUM] — Consent Management Platform (CMP) Integration</strong><br>
+    <em>The Gap:</em> Spaces embedded in third-party websites need to respect the host website's consent preferences (cookie consent, analytics opt-out). No CMP integration allows Space to receive and honor consent signals from the embedding page.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement CMP integration in embed SDK: embed SDK checks host page for: (1) TCF 2.2 consent string (IAB standard), (2) GPP string (US Privacy), (3) OneTrust/Cookiebot API if present. Map consent signals: if analytics_consent=false, disable Analytics Engine events for this session. If functional_consent=false, disable personalization features. Propagate consent preferences to Space shell via postMessage. Track consent_opt_out_rate by category.
+  </div>
+</div>
+<div id="G-BB39" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB39 [HIGH] — Large File Upload Handling in Agent Conversations</strong><br>
+    <em>The Gap:</em> End-users may upload large files (PDFs, spreadsheets, images) to Spaces. No large file upload path is specified beyond multi-part upload for KB (AT25/AU25). Agent conversations lack a user file upload pathway entirely.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add user file upload to conversation: (1) Client requests pre-signed R2 URL via /sessions/{id}/uploads, (2) Client uploads directly to R2 (max 100MB), (3) On upload complete: R2 event triggers processing Worker, (4) Worker extracts text (PDF→text, image→OCR or vision API, CSV→structured JSON), (5) Extracted content added to conversation context as tool_result, (6) Agent processes file content and responds. Track upload_success_rate, file_type_distribution, extraction_accuracy.
+  </div>
+</div>
+<div id="G-BB40" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB40 [HIGH] — Long-Running Background Tasks for Agents</strong><br>
+    <em>The Gap:</em> Some agent tasks take minutes to hours (web research, document generation, data analysis). The 30s CF Worker timeout prevents long-running tasks from executing synchronously. No async long-running task pattern is fully specified.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement long-running task pattern: (1) Client POSTs task_request → receives task_id immediately (202 Accepted), (2) CF Workflow executes multi-step task (up to 1000 steps, hours total), (3) Client polls GET /tasks/{id}/status or subscribes to SSE stream for updates, (4) Progress events emitted per Workflow step, (5) On completion: result stored in R2, client notified via SSE + webhook. Max task duration: 24h. Task queue: builder-configurable priority. Track task_completion_rate and mean_task_duration.
+  </div>
+</div>
+<div id="G-BB41" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB41 [CRITICAL] — Agent Tool Sandboxing and Security</strong><br>
+    <em>The Gap:</em> Agent tools execute arbitrary actions (HTTP requests, code execution, file operations). Without sandboxing, a jailbroken agent could abuse tool access — making unauthorized API calls, exfiltrating data, or executing malicious code.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement tool sandbox: (1) HTTP request tools: allowlist permitted domains per SpaceType (no arbitrary URLs), (2) Code execution: not permitted (security risk — no eval or dynamic code execution), (3) File operations: scoped to session R2 prefix only, (4) Tool call rate limiting: max 20 tool calls per turn, max 100 per session, (5) Tool call output size limit: max 64KB per tool response, (6) Timeout: tool calls timeout after 10s. Log all tool calls for audit. Track tool_sandbox_violation_rate.
+  </div>
+</div>
+<div id="G-BB42" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB42 [HIGH] — Conversation Handoff to Human Agent</strong><br>
+    <em>The Gap:</em> When agent escalation (AU03) occurs, no structured handoff protocol delivers conversation context to human agents in existing helpdesk systems (Zendesk, Intercom, Freshdesk). Escalation is a notification, not a rich handoff.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement human agent handoff protocol: on escalation trigger, create handoff_package: {session_id, conversation_transcript, user_profile, sentiment_score, topic_tags, ai_summary, suggested_resolution, priority}. Deliver via: (1) Zendesk: create ticket via Zendesk API with transcript in description, (2) Intercom: create conversation with all context, (3) Generic: POST to builder-configured webhook. Track handoff_acceptance_rate (human picks up within SLA), handoff_resolution_rate, and handoff_to_close_time.
+  </div>
+</div>
+<div id="G-BB43" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB43 [MEDIUM] — Sparse Attention and Long-Document Handling</strong><br>
+    <em>The Gap:</em> Extremely long KB documents (legal contracts, technical manuals, 100-page PDFs) exceed chunk size limits even after processing. No strategy handles documents that require understanding across distant sections.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement hierarchical document processing for long documents: (1) Split into chunks (512 tokens), (2) Create chunk-level embeddings (leaf nodes), (3) Create section-level summaries (512-token summaries of N chunks), embed section summaries (intermediate nodes), (4) Create document-level summary, embed (root node), (5) At retrieval: query at document level first, then section level, then chunk level (top-down traversal). Track hierarchical_retrieval_accuracy vs flat_retrieval on long_document eval set.
+  </div>
+</div>
+<div id="G-BB44" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB44 [HIGH] — Agent Memory Privacy Controls</strong><br>
+    <em>The Gap:</em> Agent episodic and semantic memory (AZ04) persists across sessions, building detailed user profiles. End-users have no control over what is remembered, cannot view their stored memories, or request memory deletion.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add memory privacy controls: (1) Memory transparency: GET /users/{id}/memories returns all stored memories with source_session and type (episodic/semantic/procedural), (2) Selective deletion: DELETE /users/{id}/memories/{id} removes specific memory, (3) Full memory wipe: DELETE /users/{id}/memories clears all memories for that Space, (4) Memory opt-out: user setting disable_memory_collection=true prevents new memories being stored (future sessions only), (5) Memory export: included in GDPR data export. Track memory_deletion_rate.
+  </div>
+</div>
+<div id="G-BB45" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB45 [HIGH] — Platform API Rate Limit Fairness Under Bursty Traffic</strong><br>
+    <em>The Gap:</em> Token bucket rate limiting (AX12) handles smooth traffic well but under bursty patterns (e.g., builder sends 500 requests in 1 second after extended idle period), the bucket fills instantly, rate-limiting legitimate catch-up traffic.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement leaky bucket + token bucket hybrid: leaky bucket smooths output rate at max_rate (prevents downstream overload), token bucket allows legitimate burst up to burst_capacity. Configuration: base_rate=100 req/min, burst_capacity=200, leak_rate=100/min. For builders with predictable batch workloads: scheduled batch windows with elevated rate limits. Track burst_throttle_rate and legitimate_burst_vs_abusive_burst ratio using heuristics (session age, account age, historical patterns).
+  </div>
+</div>
+<div id="G-BB46" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB46 [MEDIUM] — Space Template Gallery for End-Users</strong><br>
+    <em>The Gap:</em> Builders configure SpaceTypes but end-users launching new sessions start from blank context. No conversation starter templates or example interactions help end-users understand what the Space can do and how to use it effectively.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add Space starter templates (configured by builder in SpaceType): {templates:[{id, title, description, starter_message}]}. Examples: "Analyze my contract", "Write a product description for...", "Help me debug this error:". Display as clickable suggestion chips in empty conversation state. On click: auto-send starter_message as first user message. Track template_click_rate and template_to_completion_rate (sessions that clicked template and reached resolution).
+  </div>
+</div>
+<div id="G-BB47" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB47 [MEDIUM] — Agent Persona Consistency Enforcement</strong><br>
+    <em>The Gap:</em> SpaceType defines agent persona (name, tone, personality) but LLMs can be jailbroken to abandon their persona and respond as base model. No persona consistency enforcement validates that responses stay in character.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement persona consistency check: (1) Pre-response check: scan agent response for persona break signals ("I am an AI language model", "As ChatGPT", persona name mismatch), (2) On persona break detection: discard response, regenerate with reinforced persona system prompt, (3) Log persona_break_event with session context for security review, (4) Track persona_break_rate per SpaceType — spikes indicate active jailbreak campaigns. Builder alert: "Unusual persona breaks detected in your Space."
+  </div>
+</div>
+<div id="G-BB48" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB48 [MEDIUM] — Platform Announcement and Changelog System</strong><br>
+    <em>The Gap:</em> Platform updates, new features, and maintenance windows are communicated ad-hoc. No structured announcement system ensures builders and end-users receive timely, relevant notifications about platform changes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build announcement system: announcements table {id, type(FEATURE/MAINTENANCE/INCIDENT/SECURITY), title, body_md, affects(BUILDERS/END_USERS/ALL), severity(INFO/WARNING/CRITICAL), scheduled_at, published_at, expires_at}. Delivery: (1) Builder dashboard: dismissible banner for relevant announcements, (2) Email: for CRITICAL/MAINTENANCE announcements, (3) Status page RSS feed: all announcements, (4) Webhook: builders can subscribe to announcement webhooks. Track announcement_open_rate and feedback_action_rate.
+  </div>
+</div>
+<div id="G-BB49" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB49 [HIGH] — Platform Sunset and Migration Path</strong><br>
+    <em>The Gap:</em> As the platform evolves, some features, SpaceType versions, or runtime versions will be sunset. No formal sunset policy or migration assistance helps builders migrate away from deprecated features before removal.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define sunset policy: (1) Feature deprecation: 12-month notice minimum (except security reasons: 90 days), (2) Migration guide provided at deprecation announcement, (3) Builder dashboard: "Deprecated features in use" warning card with migration steps, (4) Automated migration: where possible, auto-migrate configurations to new pattern (with builder confirmation), (5) Migration validator: API to test migrated config before switching, (6) Support window: dedicated migration support for Enterprise builders. Track migration_completion_rate before sunset date.
+  </div>
+</div>
+<div id="G-BB50" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BB50 [HIGH] — Platform Strategic KPI Alignment Dashboard</strong><br>
+    <em>The Gap:</em> Platform operational metrics (uptime, latency, cost) are tracked, but no dashboard aligns operational performance with strategic business KPIs: GMV (gross marketplace value), builder NPS, ecosystem health score, platform take rate, logo count, expansion revenue. Leadership cannot see whether operational investments translate to business outcomes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build strategic KPI dashboard (executive-only access): metrics: (1) GMV = total transaction value through Spaces, (2) Take rate = platform revenue / GMV, (3) Builder NPS (quarterly survey, automated), (4) Ecosystem health = active SpaceTypes / total SpaceTypes * avg_rating, (5) Logo count = unique paying organizations, (6) Expansion revenue = MRR from plan upgrades, (7) NRR (Net Revenue Retention). Track weekly, monthly, quarterly trends. Alert on significant deviations from plan. Export for board reporting.
+  </div>
+</div>
 </section>
 
 
