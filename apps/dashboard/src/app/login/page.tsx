@@ -2,7 +2,8 @@
 
 import { useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
-import { useAuth, storeToken } from "@/lib/auth";
+import { useAuth } from "@/lib/auth-provider";
+import { storeToken } from "@/lib/auth";
 import { register as apiRegister } from "@/lib/api";
 
 type Tab = "signin" | "register";

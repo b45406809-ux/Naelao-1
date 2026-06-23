@@ -9,7 +9,7 @@ import {
   createBillingCheckout,
 } from "@/lib/api";
 import type { ApiKey } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
+import { useAuth } from "@/lib/auth-provider";
 
 // G-BE40: Settings — subscription info, API keys, org info
 

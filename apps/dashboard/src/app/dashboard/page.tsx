@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { listSpaces, listSpaceTypes } from "@/lib/api";
 import type { Space, SpaceType } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
+import { useAuth } from "@/lib/auth-provider";
 
 function StatCard({
   label,

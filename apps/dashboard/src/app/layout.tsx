@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { AuthProvider } from "@/lib/auth";
+import { AuthProvider } from "@/lib/auth-provider";
 
 export const metadata: Metadata = {
   title: "Naelao Dashboard",
