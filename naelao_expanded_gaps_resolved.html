@@ -63486,6 +63486,460 @@ When bumping the date, bump it everywhere in one change and re-run the full test
     <em>Required Fix:</em> Build strategic KPI dashboard (executive-only access): metrics: (1) GMV = total transaction value through Spaces, (2) Take rate = platform revenue / GMV, (3) Builder NPS (quarterly survey, automated), (4) Ecosystem health = active SpaceTypes / total SpaceTypes * avg_rating, (5) Logo count = unique paying organizations, (6) Expansion revenue = MRR from plan upgrades, (7) NRR (Net Revenue Retention). Track weekly, monthly, quarterly trends. Alert on significant deviations from plan. Export for board reporting.
   </div>
 </div>
+
+<section id="appendix-bc">
+<h2>Appendix BC — Agent Workflow Advanced, Space Shell UI, Auth Patterns, Data Storage, Media Processing, Ecosystem, End-User Features, Infrastructure-as-Code, Growth Analytics, Scalability</h2>
+
+<div id="G-BC01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC01 [HIGH] — Agent Pipeline Versioning and Reproducibility</strong><br>
+    <em>The Gap:</em> Agent pipelines (DAG workflows, AX01) evolve as builders modify steps, tools, and prompts. No versioning of the complete pipeline graph means a debugging session cannot reproduce the exact pipeline that generated a problematic output two weeks ago.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement pipeline snapshot versioning: on each SpaceType deploy, serialize the complete agent pipeline definition (DAG structure, tool configs, prompt templates, model settings) as a versioned JSON snapshot stored in R2. Each session records pipeline_version_id used. GET /pipelines/{id}/versions/{v} retrieves snapshot. Diff view shows changes between versions. Replay sessions against historical pipeline version for debugging. Track pipeline_version_spread across active sessions.
+  </div>
+</div>
+<div id="G-BC02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC02 [HIGH] — Conditional Branching in Agent Workflows</strong><br>
+    <em>The Gap:</em> Agent DAG workflows (AX01) assume linear or parallel execution. No conditional branching allows agents to dynamically choose different execution paths based on intermediate results — e.g., route to billing tool if purchase_intent detected, else route to KB search.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add conditional gateway nodes to workflow DAG: {type: "CONDITION", condition_expr: "output.intent == 'purchase'", branches: {true: "billing_node", false: "kb_node"}}. Condition expressions evaluated in secure sandbox (no eval — use JSON Logic or similar safe evaluator). Visualise branches in builder workflow editor. Track branch_frequency per gateway to identify dead branches. Document condition expression language in builder docs.
+  </div>
+</div>
+<div id="G-BC03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC03 [HIGH] — Agent Workflow Step Retry with Exponential Backoff</strong><br>
+    <em>The Gap:</em> CF Workflow step retry (G-AU01 covered step timeout recovery) but no per-step retry policy is configurable by builders. Transient failures in tool calls (rate limits, network blips) abort the entire workflow instead of retrying the failed step.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add per-step retry configuration in workflow DAG: {step_id, retry: {max_attempts: 3, backoff: "exponential", initial_delay_ms: 1000, max_delay_ms: 30000, retryable_errors: ["RATE_LIMIT", "TIMEOUT", "503"]}}. CF Workflow natively supports retries — expose configuration through SpaceType config. Non-retryable errors (validation errors, auth failures) fail immediately. Track retry_rate and retry_success_rate per step type.
+  </div>
+</div>
+<div id="G-BC04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC04 [HIGH] — Agent Workflow Cost Guard</strong><br>
+    <em>The Gap:</em> Long-running agent workflows can accumulate significant LLM token costs across many steps. No per-workflow cost cap halts execution when a budget threshold is exceeded, allowing runaway workflows to drain builder budgets.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add workflow cost guard: each workflow run tracks cumulative_cost_usd. At each LLM step, check cumulative_cost vs workflow_budget_usd (configurable per SpaceType, default $0.10). If exceeded: halt workflow, return partial_result with cost_guard_triggered=true and cost breakdown. Notify builder via webhook. Builder configures: alert_at_pct (default 80%), halt_at_pct (default 100%), override_allowed=false. Track cost_guard_trigger_rate.
+  </div>
+</div>
+<div id="G-BC05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC05 [MEDIUM] — Agent Tool Call Dependency Resolution</strong><br>
+    <em>The Gap:</em> When an agent needs data from Tool B that depends on Tool A output, no formal dependency declaration causes agents to either call tools sequentially (slow) or to call Tool B before Tool A has run (incorrect). Dependencies are implicit in LLM reasoning.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add explicit tool dependency declarations in SpaceType tool config: {tool_id: "enrich_profile", depends_on: ["fetch_user"], input_mapping: {"user_id": "$.fetch_user.result.id"}}. Workflow engine resolves dependency graph, topological sorts, executes in optimal order (parallel where no dependency, sequential where required). JSONPath input_mapping extracts values from dependency outputs. Track dependency_resolution_errors and parallelism_gain_factor.
+  </div>
+</div>
+<div id="G-BC06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC06 [HIGH] — Space Shell Theme System and Dark Mode</strong><br>
+    <em>The Gap:</em> Space shell supports basic branding colors (BA33 white-label) but no full theme system allows builders to offer dark mode, high-contrast mode, or custom theme switching to end-users.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement CSS custom property theme system: define --color-bg, --color-text, --color-primary, --color-surface, --color-border as CSS variables. Builder provides light and dark theme token values in SpaceType config. Theme applied via data-theme attribute on &lt;html&gt;. System preference detection: prefers-color-scheme media query sets default theme. User toggle: saved in localStorage. High-contrast theme: WCAG AAA ratios enforced. Track theme_preference_distribution.
+  </div>
+</div>
+<div id="G-BC07" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC07 [HIGH] — Space Shell Progressive Enhancement</strong><br>
+    <em>The Gap:</em> Space shell is built as a JavaScript-heavy SPA. If JavaScript fails to load (CDN failure, ad blocker, old browser), users see a blank page with no fallback content — completely breaking the Space experience.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement progressive enhancement: Space shell HTML includes server-rendered initial state (Space name, description, available actions) visible without JS. Core functionality degrades gracefully: without JS, form submission works via standard HTML POST to server-rendered conversation endpoint. Service Worker (AU07) caches shell assets. No-JS fallback page: static HTML with "Please enable JavaScript for full functionality" and basic contact info. Test: disable JS, verify page still informative.
+  </div>
+</div>
+<div id="G-BC08" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC08 [MEDIUM] — Space Shell Keyboard Navigation and Focus Management</strong><br>
+    <em>The Gap:</em> Keyboard-only users (accessibility requirement, power users) cannot efficiently navigate the Space shell. Focus management on conversation updates (new messages appearing) does not move focus correctly — screen readers miss new agent responses.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement ARIA live regions: agent response container has aria-live="polite" — screen readers announce new responses without focus disruption. Focus management: after sending a message, focus returns to input field. Keyboard shortcuts: Enter to send, Shift+Enter for newline, Escape to cancel streaming, Tab to navigate suggested actions. Roving tabindex for conversation history navigation. WCAG 2.2 Focus Visible requirement: visible focus indicator on all interactive elements. Test with NVDA/VoiceOver.
+  </div>
+</div>
+<div id="G-BC09" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC09 [MEDIUM] — Space Shell Offline-First Architecture</strong><br>
+    <em>The Gap:</em> Service Worker (AU07) caches assets but no offline-first architecture allows end-users to draft messages while offline, queue them, and send when connectivity restores. All interactions require live connection.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement offline message queue: Service Worker intercepts POST /sessions/{id}/messages. If offline: store message in IndexedDB queue with status=QUEUED, show optimistic UI (message appears as "sending..."). Background Sync API (via SW): when connectivity restores, flush IndexedDB queue — send queued messages in order. On send success: update UI from QUEUED to SENT. On send failure: mark FAILED with retry option. Track offline_queue_depth and sync_success_rate.
+  </div>
+</div>
+<div id="G-BC10" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC10 [MEDIUM] — Space Shell Component Hydration Strategy</strong><br>
+    <em>The Gap:</em> Space shell loads all JavaScript upfront, causing high Time-to-Interactive on slow connections. No partial hydration or islands architecture defers JS execution for non-critical components.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement islands hydration: critical path (chat input, send button, message list) hydrates immediately. Deferred islands (analytics panels, settings sidebar, history viewer) hydrate on interaction or IntersectionObserver trigger. Use import() dynamic imports for deferred components. Total JS payload target: &lt;50KB initial, &lt;200KB full. Measure INP (Interaction to Next Paint) and LCP (Largest Contentful Paint). Track core_web_vitals distribution (Good/Needs Improvement/Poor).
+  </div>
+</div>
+<div id="G-BC11" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC11 [HIGH] — Federated Identity for Enterprise SSO (SCIM)</strong><br>
+    <em>The Gap:</em> SSO (AX24 covers Google/GitHub/Apple, AX26 SAML) allows individual login but no SCIM (System for Cross-domain Identity Management) provisioning automates user lifecycle in enterprise IdPs (Okta, Azure AD, JumpCloud).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement SCIM 2.0 server: endpoints /scim/v2/Users, /scim/v2/Groups. Okta/Azure AD provisions users via SCIM on employee onboarding — auto-creates builder account, assigns org/role. Deprovision: SCIM DELETE → immediately revokes all API keys and sessions. Group sync: IdP groups map to Naelao org roles (Admin/Editor/Viewer). Verify SCIM implementation against Okta integration guide. Track scim_provision_events and deprovision_lag_minutes.
+  </div>
+</div>
+<div id="G-BC12" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC12 [HIGH] — Step-Up Authentication for Sensitive Actions</strong><br>
+    <em>The Gap:</em> High-risk actions (delete Space, change billing, export all data, revoke all API keys) require only standard session auth. No step-up authentication demands fresh proof of identity for these irreversible actions.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement step-up auth: define SENSITIVE_ACTIONS list (delete_space, billing_change, api_key_revoke_all, data_export, org_transfer). On trigger: require fresh auth (within last 5min) OR complete step-up challenge: (1) TOTP code if MFA enabled, (2) Email confirmation link if no MFA, (3) Biometric re-auth on mobile. Step-up token valid 15min, scoped to specific action_type. Log all step-up events. Track step-up_abandonment_rate (user cancelled sensitive action after challenge).
+  </div>
+</div>
+<div id="G-BC13" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC13 [HIGH] — Service Account and Machine-to-Machine Auth</strong><br>
+    <em>The Gap:</em> Platform API keys (AX22) are builder-user-linked. No service account concept allows CI/CD pipelines, automated scripts, and backend services to authenticate without being tied to a specific human user account — whose departure would break automation.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add Service Accounts: separate entity from user accounts. {id, name, org_id, created_by, api_keys:[], roles:[], last_used_at}. Service accounts have API keys with org-scoped permissions but no user identity. Audit logs show "service_account:deploy-bot" as actor. Service account cannot log in via UI. Created by org admins only. Machine token rotation: automatic expiry + rotation via API (naelao sa rotate-key). Track service_account_count and key_age_distribution.
+  </div>
+</div>
+<div id="G-BC14" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC14 [HIGH] — Session Anomaly Detection and Adaptive Auth</strong><br>
+    <em>The Gap:</em> Authentication succeeds based on credentials alone. No session anomaly detection notices suspicious signals (login from new country, new device, impossible travel) that should trigger additional verification.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement risk-based auth: at each login, compute risk_score from: (1) new_device_fingerprint (+20), (2) new_geo_country (+30), (3) impossible_travel (+50, velocity &gt; 900km/h), (4) TOR/VPN exit node (+40), (5) known_malicious_IP (+60). risk_score &gt; 50: require MFA even if not normally required. risk_score &gt; 80: block login, require email verification with security alert. Log risk_events. Track risk_score_distribution and false_positive_rate (legitimate users challenged).
+  </div>
+</div>
+<div id="G-BC15" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC15 [MEDIUM] — API Key Hierarchical Delegation</strong><br>
+    <em>The Gap:</em> API keys have flat permissions. No delegation model allows a master API key to mint sub-keys with narrower permissions (like AWS IAM role assumption) — builders must share full-permission keys with third parties.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement API key delegation: master key can generate delegated_key with: subset of master key scopes, expiry (max 30 days for delegated keys), resource constraints ({space_ids:[...], rate_limit_override:100}). Delegated key cannot delegate further. Revoke: master key revokes any delegated key. Audit log shows delegation chain: "api_key:master_xxx delegated to delegated_yyy." Track delegation_depth and delegated_key_usage_share.
+  </div>
+</div>
+<div id="G-BC16" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC16 [MEDIUM] — DO SQLite Full-Text Search (FTS5) for Conversations</strong><br>
+    <em>The Gap:</em> Conversation search (BB23) requires FTS5 in DO SQLite. FTS5 must be explicitly created with USING fts5 clause and content table. No specification ensures FTS5 tables are created and maintained correctly in DO SQLite schema.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Create FTS5 virtual tables in DO SQLite schema: CREATE VIRTUAL TABLE messages_fts USING fts5(content, content=messages, content_rowid=id). Triggers keep FTS index in sync: AFTER INSERT ON messages → INSERT INTO messages_fts. AFTER UPDATE → UPDATE messages_fts. AFTER DELETE → DELETE FROM messages_fts. Search query: SELECT m.* FROM messages m JOIN messages_fts f ON m.id = f.rowid WHERE messages_fts MATCH ? ORDER BY rank. Track fts_query_latency_p99.
+  </div>
+</div>
+<div id="G-BC17" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC17 [MEDIUM] — R2 Storage Class Tiering and Cost Optimization</strong><br>
+    <em>The Gap:</em> All R2 objects stored in default storage class regardless of access frequency. Rarely accessed objects (old conversation exports, archived KB versions, historical analytics exports) cost same as frequently accessed objects.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement R2 lifecycle tiering: R2 Infrequent Access storage class for objects older than 30 days with &lt;1 access/month (R2 lifecycle rules). Objects older than 1 year with 0 accesses → R2 Archive tier (retrieval latency 12h acceptable for compliance data). Track storage_class_distribution and estimated_storage_savings_usd_monthly. Architect: DO NOT tier active session data or recently accessed KB documents — only cold analytics exports, old conversation archives, historical snapshots.
+  </div>
+</div>
+<div id="G-BC18" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC18 [HIGH] — Vectorize Index Partitioning Strategy</strong><br>
+    <em>The Gap:</em> As KB grows to millions of documents, a single Vectorize index per Space becomes a performance bottleneck. Vectorize has 10-shard limit per index (AY27 warm-up covered) and 5M vector limit per index. No partitioning strategy handles massive KBs.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement KB partitioning: when KB_vector_count &gt; 4M (80% threshold), auto-create secondary Vectorize index for new documents. Query both indexes in parallel, merge results (reciprocal rank fusion). Builder UI shows "KB Partition 1/2" indicator. Index naming: {space_id}_kb_p{n}. Metadata filter consistency across partitions. Track partition_count_distribution and cross-partition_query_latency. Limit: max 5 partitions per Space (CF 100-index limit allocation).
+  </div>
+</div>
+<div id="G-BC19" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC19 [CRITICAL] — D1 Database Schema Migration Safety</strong><br>
+    <em>The Gap:</em> D1 database schema (platform metadata, billing, user accounts) evolves with new columns, tables, and indexes. No safe migration strategy handles the 50-150ms D1 cold-query latency (AT11) and the risk of partial migrations under concurrent traffic.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement D1 migration safety: (1) All schema changes via migration files in /migrations/{timestamp}_{name}.sql, (2) Migrations run in D1 migration API (wrangler d1 migrations apply), (3) Blue-green migration: apply additive changes (new columns with defaults) before deploying code that uses them, (4) For destructive changes (column drop): deploy code that ignores old column → wait 1 deploy cycle → then drop, (5) Migration lock: D1 table schema_migrations with applied_at prevents double-apply. Track migration_duration and rollback_count.
+  </div>
+</div>
+<div id="G-BC20" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC20 [HIGH] — Event Sourcing for Audit-Critical Operations</strong><br>
+    <em>The Gap:</em> Billing state, Space config changes, and permission changes are stored as mutable records — only current state is queryable. No event sourcing captures the full history of state transitions for these audit-critical operations.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement event sourcing for critical domains: domain_events table: {id, aggregate_type, aggregate_id, event_type, event_data_json, actor_id, occurred_at, sequence_num}. Examples: SpaceCreated, SpaceConfigUpdated, PlanUpgraded, UserRoleChanged. Current state reconstructed by replaying events. Immutable append-only (never UPDATE or DELETE events). Query: "What was billing state at 2025-03-15?" — replay events up to that timestamp. Export event log for audit. Track event_store_size and replay_latency.
+  </div>
+</div>
+<div id="G-BC21" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC21 [MEDIUM] — Video Transcription and Chapter Generation</strong><br>
+    <em>The Gap:</em> Image/video pipeline (AT25) handles media ingestion, but no video transcription pipeline converts video KB content to searchable text with timestamp-linked chapters.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build video transcription pipeline: video uploaded to R2 → CF Workflow triggers → (1) Extract audio track via CF Workers (FFmpeg Wasm), (2) Submit to transcription API (Deepgram/AssemblyAI/CF AI Whisper), (3) Receive timestamped transcript, (4) LLM generates chapter markers from transcript structure, (5) Store transcript + chapters as KB document with video_id reference, (6) At retrieval: return timestamp-linked snippets. Track transcription_accuracy and chapter_generation_quality.
+  </div>
+</div>
+<div id="G-BC22" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC22 [MEDIUM] — Document Table and Chart Data Extraction</strong><br>
+    <em>The Gap:</em> PDF ingestion (AT22 layout-aware extraction) extracts text but tables and charts are typically rendered as images — their structured data is lost. Agents cannot reason over tabular data hidden in PDFs.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement table/chart extraction: (1) PDF tables: use pdfplumber or Camelot-style extraction to identify table boundaries, extract as CSV/JSON, store alongside text, (2) Chart images: pass chart image to vision model with prompt "Extract the data represented in this chart as JSON", (3) Store extracted structured data as structured_content field in KB document, (4) Agent retrieval: when structured_content available, pass as formatted table in context. Track table_extraction_success_rate and chart_extraction_accuracy.
+  </div>
+</div>
+<div id="G-BC23" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC23 [HIGH] — Code Repository Ingestion for Technical Spaces</strong><br>
+    <em>The Gap:</em> Technical Spaces (developer tools, code assistants) need to ingest code repositories as KB. No code repository ingestion pipeline handles: file type filtering, comment extraction, function/class boundary detection, and code-aware chunking.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build code repository ingestion: GitHub/GitLab OAuth → clone repo to ephemeral Worker storage → (1) Filter: include code files by extension (.py, .ts, .go, etc.), exclude generated files (node_modules, dist), (2) Code-aware chunking: split at function/class boundaries using AST parser (tree-sitter Wasm), (3) Extract docstrings and inline comments as KB metadata, (4) Embed code chunks with code-specific embedding model (voyage-code-2), (5) Index in Vectorize with metadata: {file_path, language, function_name}. Track code_chunk_count and retrieval_accuracy on code queries.
+  </div>
+</div>
+<div id="G-BC24" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC24 [MEDIUM] — Spreadsheet Formula and Data Model Awareness</strong><br>
+    <em>The Gap:</em> Spreadsheet ingestion (AT23 covers basic CSV/Excel parsing) does not handle formulas, named ranges, or multi-sheet relationships — these are silently dropped, losing critical business logic context.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Enhance spreadsheet ingestion: (1) Formula extraction: record formula strings alongside computed values ("Revenue = Units * Price"), (2) Named range extraction: identify Excel Named Ranges and include in metadata, (3) Cross-sheet references: detect sheet references (Sheet2!A1), build relationship graph, (4) Data model detection: identify pivot tables, structured tables, data validation rules, (5) LLM-generated plain-language description of spreadsheet structure and key relationships. Store as enriched KB document.
+  </div>
+</div>
+<div id="G-BC25" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC25 [MEDIUM] — API Documentation Auto-Ingestion</strong><br>
+    <em>The Gap:</em> Spaces built for developer support need current API documentation as KB. Manual KB maintenance is impractical — API docs change with each release. No automated API doc ingestion keeps the KB current.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build API doc ingestion pipeline: builder provides OpenAPI spec URL or Postman collection URL. CF Workflow fetches spec, parses endpoints, generates human-readable descriptions per endpoint: "POST /users — Creates a new user account. Parameters: name (required), email (required), role (optional, default: viewer)." Each endpoint becomes a KB chunk. Daily refresh: re-fetch spec, detect changes (spec hash diff), update changed endpoint KB chunks. Track api_doc_freshness and endpoint_coverage_pct.
+  </div>
+</div>
+<div id="G-BC26" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC26 [MEDIUM] — SpaceType Certification Levels</strong><br>
+    <em>The Gap:</em> SpaceType marketplace (AW50 blueprint export/import, AU22 certification) mentions certification but no certification level system differentiates basic, verified, and enterprise-grade SpaceTypes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define certification tiers: BASIC (passes automated checks: schema valid, no malicious patterns), VERIFIED (human review: quality assessment, demo session tested, documentation complete, support contact provided), ENTERPRISE (VERIFIED + security audit passed, SLA commitment, dedicated support, compliance documentation). Display certification badges on listings. Certification process: builder applies, pays certification fee ($0/$99/$499), platform team reviews within 5/10/20 business days. Track certification_distribution and certified_spacetype_install_share.
+  </div>
+</div>
+<div id="G-BC27" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC27 [HIGH] — Partner API Program</strong><br>
+    <em>The Gap:</em> Third-party developers (CRM vendors, ERP vendors, analytics platforms) want to build official integrations. No partner API program provides enhanced rate limits, dedicated endpoints, sandbox environments, or partnership SLAs.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define Partner API Program: tiers: TECHNOLOGY_PARTNER (enhanced rate limits: 10k req/min, sandbox environment, co-marketing), RESELLER (sell platform subscriptions, custom pricing, white-label), ISV (embed platform capabilities in their product, revenue share). Application process via partner portal. Partner sandbox: isolated CF account for testing. Partner-specific API keys with elevated limits. Partner directory listing. Track partner_count by tier and partner_driven_GMV.
+  </div>
+</div>
+<div id="G-BC28" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC28 [MEDIUM] — SpaceType Analytics for Publishers (Builder-to-Builder)</strong><br>
+    <em>The Gap:</em> Builders who publish SpaceTypes to the marketplace have no analytics on how other builders use their SpaceType: configuration patterns, most-used features, common failure modes. This data is essential for improving published SpaceTypes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build publisher analytics: aggregate (anonymized) usage data for each published SpaceType. Publisher dashboard "Analytics" tab: installing_builder_count, active_spaces_using_spacetype, config_field_usage_distribution (which config options builders actually set vs leave default), common_tool_combinations, error_rate_in_spaces_using_this. Opt-in: installing builders consent to sharing anonymized usage. Track publisher_analytics_engagement.
+  </div>
+</div>
+<div id="G-BC29" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC29 [MEDIUM] — Community Templates and Starter Kits</strong><br>
+    <em>The Gap:</em> New builders start from a blank configuration. No community template library provides proven starting configurations for common use cases (customer support bot, sales assistant, HR FAQ, technical documentation assistant).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build template library: community_templates repository with SpaceType config templates categorized by: industry (retail, SaaS, healthcare, legal), use_case (support, sales, onboarding, documentation), complexity (beginner/intermediate/advanced). Each template: name, description, preview_screenshot, config_yaml, sample_KB_documents, expected_behavior_description. Accessible from "Start from template" in builder onboarding. Track template_usage_rate and template_to_live_conversion.
+  </div>
+</div>
+<div id="G-BC30" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC30 [HIGH] — SpaceType Revenue Analytics and Payouts Dashboard</strong><br>
+    <em>The Gap:</em> Builders who earn revenue from SpaceType marketplace have no comprehensive revenue dashboard showing: earnings by SpaceType, earnings by installing builder, monthly trends, payout history, tax documentation. This is a critical gap for monetization adoption.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build publisher revenue dashboard: earnings_summary: {total_lifetime, current_month, previous_month, pending_payout}. Earnings breakdown: by spacetype, by time period (daily/weekly/monthly). Payout history: {payout_id, amount, payment_method, status, initiated_at, completed_at, statement_url}. Tax documents: annual 1099-K PDF download. Projected next payout date and amount. Earnings share rate displayed. Track publisher_dashboard_engagement and time_to_first_payout.
+  </div>
+</div>
+<div id="G-BC31" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC31 [HIGH] — End-User Account Linking (Cross-Space Identity)</strong><br>
+    <em>The Gap:</em> End-users who interact with multiple Spaces from different builders have separate accounts per Space with no connection. A returning user of Space A who signs up for Space B cannot carry their identity or preferences.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement cross-Space identity: platform-level end-user account (email-based) linked to Space-specific profiles. Builder opts in to platform identity (shared user pool). End-user logs in with platform credentials across all opted-in Spaces. Profile data: {display_name, avatar_url, preferred_language, timezone}. Space-specific profile: {user_since, total_sessions, preferences}. Privacy: builders see only their Space-specific data, not other Space interactions. Track cross_space_user_count.
+  </div>
+</div>
+<div id="G-BC32" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC32 [HIGH] — End-User Notification Preferences Center</strong><br>
+    <em>The Gap:</em> End-users receive notifications (AU44 notification center, AU45 background push) but have no unified preferences center to manage all notification types across all Spaces they use.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build end-user notification preferences center: accessible via /settings/notifications in Space shell. Grouped by notification type: {session_reminders, proactive_suggestions, Space_announcements, weekly_summaries}. Per-Space overrides: mute specific Space entirely. Delivery channel preferences: {in_app, email, push_mobile, SMS}. Frequency controls: immediate, daily_digest, weekly_only. Preference changes propagate in real-time to all notification dispatchers. Track unsubscribe_rate by notification_type.
+  </div>
+</div>
+<div id="G-BC33" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC33 [LOW] — End-User Session Scheduling and Reminders</strong><br>
+    <em>The Gap:</em> Spaces with appointment-setting or coaching use cases need end-users to schedule future sessions and receive reminders. No session scheduling capability exists — these use cases require workarounds.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add session scheduling: end-user sets reminder: "Remind me to continue this tomorrow at 9am." Stored in user_reminders DO SQLite: {id, user_id, space_id, remind_at, message}. CF Cron Trigger checks reminders every minute, dispatches due reminders via: Web Push (SW), email, or SMS (Twilio). Reminder message can be personalized: "Continue your [Space_name] session — you were asking about [last_topic]." Track reminder_set_rate and reminder_click_through_rate.
+  </div>
+</div>
+<div id="G-BC34" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC34 [LOW] — End-User Space Discovery (Cross-Space Recommendations)</strong><br>
+    <em>The Gap:</em> End-users who are satisfied with one Space have no mechanism to discover other Spaces on the platform. No cross-Space recommendation engine surfaces relevant Spaces based on user interests.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build cross-Space discovery: at builder opt-in, Space listed in end-user discovery feed. Recommendation engine: embed user interaction topics, query Vectorize for Spaces with similar topic coverage. Display as "You might also like" panel in Space shell (configurable by builder: show/hide). Discovery click → Space landing page. Track discovery_click_rate and cross_space_activation_rate. Privacy: users can opt out of being included in recommendation signals.
+  </div>
+</div>
+<div id="G-BC35" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC35 [HIGH] — End-User Content Flagging and Appeal</strong><br>
+    <em>The Gap:</em> Agents may produce content that end-users find offensive, inaccurate, or inappropriate. Beyond thumbs down (BB24), no content flagging mechanism routes specific messages for builder review with enough context for investigation.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add "Flag this response" action on agent messages: opens modal with categories: {inaccurate, offensive, unhelpful, harmful, other}. Submission creates content_flag: {session_id, message_id, category, user_comment, timestamp}. Builder reviews flags in dashboard "Moderation" tab. Actions: acknowledge, update KB to fix inaccuracy, report to platform (for offensive content). Platform-level flags: if same message_id flagged &gt;10 times, auto-escalate to platform trust &amp; safety. Track flag_rate and flag_resolution_time.
+  </div>
+</div>
+<div id="G-BC36" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC36 [HIGH] — Terraform / Pulumi IaC for Platform Infrastructure</strong><br>
+    <em>The Gap:</em> Platform CF infrastructure (Workers, DO namespaces, KV namespaces, R2 buckets, Queues, D1 databases) is provisioned manually via dashboard or CLI. No Infrastructure-as-Code (IaC) ensures reproducibility and prevents configuration drift.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define all CF infrastructure in Terraform (Cloudflare Terraform provider) or Pulumi (TypeScript). Resources: cloudflare_worker_script, cloudflare_worker_domain, cloudflare_kv_namespace, cloudflare_r2_bucket, cloudflare_d1_database, cloudflare_queue, cloudflare_vectorize_index. State stored in Terraform Cloud or Pulumi Cloud. CI/CD: terraform plan on PR, terraform apply on merge to main. Drift detection: daily plan run, alert on unexpected drift. Track infrastructure_drift_incidents.
+  </div>
+</div>
+<div id="G-BC37" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC37 [HIGH] — Environment Promotion Pipeline (Dev→Staging→Prod)</strong><br>
+    <em>The Gap:</em> No formal environment promotion pipeline ensures that the same artifact that passed staging testing is what gets deployed to production. Ad-hoc deployments skip environments or deploy different code than tested.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define promotion pipeline: DEV (Miniflare local), STAGING (CF staging account, same config as prod), PROD (CF production). Promotion gates: DEV→STAGING requires all unit tests pass. STAGING→PROD requires: integration tests pass, E2E smoke tests pass, performance benchmarks within budget, human approval for CRITICAL changes. Artifact promotion: same Worker script bundle (content-addressed hash) promoted between environments — not rebuilt. Track promotion_lead_time and rollback_frequency.
+  </div>
+</div>
+<div id="G-BC38" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC38 [HIGH] — Secret Management and Rotation Automation</strong><br>
+    <em>The Gap:</em> Platform secrets (LLM API keys, Stripe webhook secrets, database credentials) are manually rotated. No automated rotation schedule or rotation event propagation ensures secrets are rotated on schedule and all consumers receive updated values.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Integrate CF Workers Secrets with automated rotation: CF Cron Trigger monthly: (1) Generate new API key at external provider, (2) Upload to CF Workers secret: wrangler secret put KEY_NAME, (3) Verify new key works (health check), (4) Revoke old key at provider. Rotation events published to CF Queue → all dependent Workers reload secret on next cold start. Critical secret compromise: emergency rotation runbook (&lt; 15 min process). Track secret_age_days and rotation_success_rate.
+  </div>
+</div>
+<div id="G-BC39" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC39 [MEDIUM] — Configuration Drift Detection and Auto-Remediation</strong><br>
+    <em>The Gap:</em> CF Worker configurations (routes, limits, bindings) may drift from IaC definitions due to manual changes. No drift detection identifies and remediates unplanned configuration changes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement drift detection: daily CF Workflow: (1) Read current CF configuration via CF API (routes, KV bindings, secret names, environment variables), (2) Compare to expected configuration in git-tracked config manifest, (3) Differences: log drift_event with {resource, expected, actual}, alert ops. Auto-remediation for safe drifts (route order, cache TTL): re-apply IaC. For structural drifts (missing binding, wrong secret name): page on-call. Track drift_detection_latency and auto_remediation_success_rate.
+  </div>
+</div>
+<div id="G-BC40" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC40 [HIGH] — Blue-Green Worker Deployment with Instant Rollback</strong><br>
+    <em>The Gap:</em> CF Worker deployments are atomic (new script version deployed globally in seconds) but no blue-green mechanism routes subset of traffic to new version before full cutover, and rollback requires re-deploying old script.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement blue-green deployment: use CF Workers Gradual Rollouts (if available) or route-based splitting: new version at /v-{hash}/* receives 5% traffic via CF Ruleset routing. Monitor new version error_rate and latency for 15min. If metrics OK: promote to 100%. CF Worker versions: keep previous 5 versions deployable. Rollback: naelao rollback --to={version_hash} triggers CF API to restore previous binding. Rollback target: &lt;60s from alert to old version restored. Track deployment_rollback_rate.
+  </div>
+</div>
+<div id="G-BC41" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC41 [HIGH] — Product-Led Growth (PLG) Activation Funnel</strong><br>
+    <em>The Gap:</em> Builders sign up and install SpaceTypes but no activation funnel tracks the specific steps that correlate with long-term retention: first successful session, first KB document added, first paying end-user, first $100 GMV. No activation optimization exists.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define activation milestones: SIGNUP → SPACETYPE_INSTALLED → FIRST_SESSION_CREATED → FIRST_END_USER_INTERACTION → KB_FIRST_DOCUMENT → FIRST_PAYING_END_USER → FIRST_100_GMV → RETAINED_30D. Track each milestone in Analytics Engine. Compute step conversion rates weekly. A/B test: automated nudges at each drop-off point (email at 48h if no KB added: "Adding knowledge boosts response quality by 3x"). Measure: milestone_completion_rate, time_to_milestone, nudge_conversion_rate.
+  </div>
+</div>
+<div id="G-BC42" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC42 [HIGH] — Net Promoter Score (NPS) Automation</strong><br>
+    <em>The Gap:</em> Builder NPS is mentioned (BA50 strategic KPIs) but no automated NPS collection system gathers, processes, and routes feedback. No NPS segmentation identifies detractors for intervention or promoters for advocacy programs.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Implement NPS automation: quarterly in-app survey (builders active &gt;30 days): "How likely are you to recommend Naelao to a colleague? (0-10)". Follow-up: for score 0-6 (detractors): "What can we improve?" for score 9-10 (promoters): "Would you write a review or case study?" NPS score = promoters_pct - detractors_pct. Route detractor responses to CSM for follow-up within 48h. Track NPS_trend, response_rate, detractor_resolution_rate, and promoter_advocacy_rate.
+  </div>
+</div>
+<div id="G-BC43" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC43 [MEDIUM] — Feature Usage Analytics and Adoption Metrics</strong><br>
+    <em>The Gap:</em> Platform ships new features but has no systematic feature usage analytics. Teams cannot determine which features drive retention, which are ignored, or which should be sunset.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Instrument every platform feature with usage event: {feature_id, builder_id, action, context, timestamp}. Feature adoption metrics: adoption_rate (builders using feature / total builders), usage_frequency (sessions per week), feature_retention (builders still using feature after 30/60/90 days). Dashboard: feature adoption heatmap, "Features used by &lt;5% of builders" flagged for review. Inform roadmap: features with high adoption_rate AND high retention prioritized for enhancement. Track feature_sunset_rate.
+  </div>
+</div>
+<div id="G-BC44" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC44 [MEDIUM] — Viral Coefficient and Referral Attribution</strong><br>
+    <em>The Gap:</em> Platform has referral mechanics (AY13 PLG viral loop) but no viral coefficient measurement or referral attribution tracks whether referral programs actually drive growth.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Measure viral coefficient: K = invites_sent_per_user * invite_conversion_rate. Track: (1) referral_link_generated events, (2) referral_link_clicked, (3) referral_signup_completed, (4) referred_user_converted_to_paid. Attribution window: 30 days. Viral coefficient dashboard: K-factor trend, top referrers, referral revenue. A/B test referral incentive structures (double-sided credit vs single-sided). Track K_factor_trend and referral_CAC vs organic_CAC.
+  </div>
+</div>
+<div id="G-BC45" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC45 [HIGH] — Churn Prediction and Early Intervention</strong><br>
+    <em>The Gap:</em> Platform tracks MRR and churn (AV09 MRR decomposition) but no predictive model identifies builders likely to churn before they cancel. Churn intervention is reactive — only triggered by cancellation.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Build churn prediction model: weekly feature computation per builder: {login_frequency_30d, session_count_30d, kb_updates_30d, api_call_trend_14d, support_tickets_open, NPS_score, plan_age_days, days_since_last_session}. Logistic regression or gradient boosting model (trained on historical churned vs retained). Churn_probability &gt; 0.7: route to CSM for proactive outreach. Automated: send "We miss you" email if login_gap &gt; 14 days AND churn_probability &gt; 0.5. Track churn_prediction_accuracy and early_intervention_save_rate.
+  </div>
+</div>
+<div id="G-BC46" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC46 [CRITICAL] — Platform Scalability Stress Testing</strong><br>
+    <em>The Gap:</em> Platform is designed for millions of builders and Spaces but has never been stress tested at scale. No load testing validates that CF Workers, DOs, Vectorize, and D1 perform within SLA under millions of concurrent sessions.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define scalability test suite: (1) Ramp test: 0→100k concurrent sessions over 10min — measure latency and error rate, (2) Sustained load: 1M sessions/day for 24h — measure DO storage growth, KV quota, Analytics Engine write rate vs limits, (3) Spike test: 10x traffic in 60s — measure auto-scale response, (4) Chaos under load: inject LLM timeout at peak — verify degradation is graceful. Use k6 or Locust for load generation. Pass criteria: p99 &lt; 3s at 1M sessions/day, error_rate &lt; 0.1%. Run quarterly.
+  </div>
+</div>
+<div id="G-BC47" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC47 [CRITICAL] — SpaceType Marketplace Trust and Safety Review</strong><br>
+    <em>The Gap:</em> SpaceType marketplace allows any builder to publish. No systematic trust and safety review catches SpaceTypes designed to mislead (fake personas claiming to be humans), scam (fake financial advisors), or harm (soliciting personal information under false pretenses).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define marketplace review process: automated pre-checks: (1) system prompt analysis for persona disclosure requirement, (2) tool access review (flag if requests excessive permissions), (3) PII collection detection (flag if collects sensitive data without disclosure), (4) Prohibited category check (illegal advice, CSAM-adjacent). Human review for VERIFIED+ tier. Community flagging: "Report this SpaceType" → trust &amp; safety queue. Repeat violations: builder account suspension. Track false_positive_rate in automated checks.
+  </div>
+</div>
+<div id="G-BC48" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#f8d7da;border-left:4px solid #c0392b;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC48 [CRITICAL] — Platform Data Backup and Recovery Testing</strong><br>
+    <em>The Gap:</em> Backup procedures are specified (disaster recovery, AW44) but backup integrity and restoration procedures are never tested. An untested backup is not a backup — it may be corrupt or incomplete.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define backup testing schedule: (1) Weekly: restore a random DO SQLite backup to test environment, query to verify data integrity, (2) Monthly: restore full D1 database from backup to staging, run integration test suite against restored data, (3) Quarterly: full disaster recovery drill — simulate complete platform outage, restore from backups, measure RTO (target &lt; 4h) and RPO (target &lt; 1h). Document recovery test results. Alert if any backup restore fails. Track backup_integrity_rate and drill_rto_minutes.
+  </div>
+</div>
+<div id="G-BC49" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d4edda;border-left:4px solid #27ae60;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC49 [LOW] — Long-Term Platform Vision: Autonomous Space Improvement</strong><br>
+    <em>The Gap:</em> The platform enables builders to create Spaces but requires ongoing manual maintenance (KB updates, prompt tuning, tool configuration). No vision for autonomous Space improvement exists — a capability gap that will become a competitive disadvantage as AI advances.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Define autonomous improvement roadmap: (1) Automated KB gap detection and content suggestion (BB16 knowledge gap detection → AZ17 trending topics → auto-draft articles for builder approval), (2) Prompt optimization: A/B test prompt variants, promote winning variants automatically, (3) Tool usage analysis: suggest adding/removing tools based on usage patterns, (4) Conversation quality scoring: weekly quality report with specific improvement recommendations. Frame as "Co-pilot for builders" — AI assists, human approves. Ship MVP of (1) in next quarter.
+  </div>
+</div>
+<div id="G-BC50" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#d1ecf1;border-left:4px solid #2980b9;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BC50 [MEDIUM] — Platform Founding Architecture Decision Record (ADR)</strong><br>
+    <em>The Gap:</em> Platform architecture is encoded in the spec but the rationale behind key decisions (why CF Workers vs containers, why DO vs distributed DB, why Vectorize vs Pinecone, why SpaceType/Template split) is not documented. Future engineers will re-litigate settled decisions without historical context.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Create Architecture Decision Records (ADRs) for each foundational decision: standard ADR format: Title, Status, Context (problem being solved), Decision (what was chosen), Rationale (why), Alternatives Considered (what was rejected and why), Consequences (trade-offs accepted). Store in /docs/adr/ directory, versioned in git. Required: ADR for each major component choice, each security pattern, each scalability approach. ADR review process: new architectural decisions require ADR before implementation. Track ADR_count and ADR_staleness.
+  </div>
+</div>
 </section>
 
 
