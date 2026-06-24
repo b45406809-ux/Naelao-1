@@ -1,0 +1,30 @@
+name = "naelao-security-gateway"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiterDO"
+script_name = "naelao-security-gateway"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RateLimiterDO"]
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "REPLACE_WITH_DB_ID"
+
+[vars]
+ENVIRONMENT = "development"
+RATE_LIMIT_GLOBAL = "1000"
+RATE_LIMIT_AUTH = "10"
+RATE_LIMIT_TENANT = "500"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
+
+[env.production]
+vars = { ENVIRONMENT = "production" }
