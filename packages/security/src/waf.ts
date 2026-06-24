@@ -33,7 +33,7 @@ const XSS_PATTERNS = [
 
 const PATH_TRAVERSAL_PATTERNS = [
   /\.\.[/\\]/,
-  /%2e%2e[%2f%5c]/i,
+  /%2e%2e[%2f%5c/\\]/i,
   /%252e%252e/i,
   /\.\.%2f/i,
   /\.\.%5c/i,
@@ -121,6 +121,6 @@ export function wafMiddleware() {
       }
     }
 
-    await next();
+    return next();
   });
 }

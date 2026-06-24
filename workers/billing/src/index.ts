@@ -100,10 +100,24 @@ async function orgForCustomer(
   return row?.org_id ?? null;
 }
 
+// G-A11: Validate required secrets at startup
+function validateEnv(env: BillingEnv): void {
+  const required = [
+    "STRIPE_SECRET_KEY",
+    "STRIPE_WEBHOOK_SECRET",
+    "STRIPE_GROWTH_PRICE_ID",
+    "STRIPE_BUSINESS_PRICE_ID",
+  ] as const;
+  for (const key of required) {
+    if (!env[key]) throw new Error(`Missing required secret: ${key}`);
+  }
+}
+
 // ── App setup ─────────────────────────────────────────────────────────────────
 
 const app = new Hono<{ Bindings: BillingEnv }>();
 app.use("*", requestId);
+app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 
 // ── GET /billing/subscription ─────────────────────────────────────────────────
 // Authenticated — router sets x-naelao-tenant-id from validated JWT

@@ -10,7 +10,8 @@ class InMemorySql {
     const q = query.trim().toUpperCase();
 
     if (q.startsWith("PRAGMA") || q.startsWith("CREATE TABLE") || q.startsWith("CREATE INDEX") ||
-        q.startsWith("CREATE VIRTUAL") || q.startsWith("CREATE TRIGGER")) {
+        q.startsWith("CREATE VIRTUAL") || q.startsWith("CREATE TRIGGER") ||
+        q.startsWith("BEGIN") || q === "COMMIT" || q === "ROLLBACK") {
       return { toArray: () => [], one: () => ({} as never) };
     }
 
@@ -64,13 +65,47 @@ class InMemorySql {
   }
 
   private buildRow(query: string, params: unknown[]): Record<string, unknown> {
-    const colMatch = query.match(/\(([^)]+)\)\s*VALUES/i);
+    const colMatch = query.match(/INSERT\s+INTO\s+\w+\s*\(([^)]+)\)\s*VALUES/i);
+    const valMatch = query.match(/VALUES\s*\((.+)\)\s*$/is);
     if (!colMatch) return { id: params[0] };
-    const cols = colMatch[1]!.split(",").map((c) => c.trim().replace(/\s+/g, "_"));
+
+    const cols = colMatch[1]!.split(",").map((c) => c.trim());
+
+    if (!valMatch) {
+      const row: Record<string, unknown> = {};
+      cols.forEach((col, i) => { row[col] = params[i] ?? null; });
+      return row;
+    }
+
+    // Tokenize the VALUES clause, respecting single-quoted string literals
+    const valStr = valMatch[1]!;
+    const tokens: string[] = [];
+    let current = "";
+    let inStr = false;
+    for (const ch of valStr) {
+      if (ch === "'" && !inStr) { inStr = true; current += ch; }
+      else if (ch === "'" && inStr) { inStr = false; current += ch; }
+      else if (ch === "," && !inStr) { tokens.push(current.trim()); current = ""; }
+      else { current += ch; }
+    }
+    if (current.trim()) tokens.push(current.trim());
+
     const row: Record<string, unknown> = {};
+    let paramIdx = 0;
     cols.forEach((col, i) => {
-      row[col] = params[i] ?? null;
+      const token = tokens[i] ?? "?";
+      if (token === "?") {
+        row[col] = params[paramIdx++] ?? null;
+      } else if (/^null$/i.test(token)) {
+        row[col] = null;
+      } else if (token.startsWith("'") && token.endsWith("'")) {
+        row[col] = token.slice(1, -1);
+      } else {
+        const num = Number(token);
+        row[col] = isNaN(num) ? token : num;
+      }
     });
+
     return row;
   }
 }

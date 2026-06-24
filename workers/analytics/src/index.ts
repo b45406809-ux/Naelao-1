@@ -76,10 +76,19 @@ function writeBatch(
   return written;
 }
 
+// G-A11: Validate required secrets at startup
+function validateEnv(env: AnalyticsEnv): void {
+  const required = ["CF_ACCOUNT_ID", "CF_ANALYTICS_API_TOKEN"] as const;
+  for (const key of required) {
+    if (!env[key]) throw new Error(`Missing required secret: ${key}`);
+  }
+}
+
 // ── Hono app ──────────────────────────────────────────────────────────────────
 
 const app = new Hono<{ Bindings: AnalyticsEnv }>();
 app.use("*", requestId);
+app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 
 // ── POST /events ──────────────────────────────────────────────────────────────
 // Internal ingest endpoint — no JWT auth required.
@@ -315,5 +324,5 @@ export async function queue(
 
 export default {
   fetch: app.fetch,
-  queue,
+  queue: queue as ExportedHandlerQueueHandler<AnalyticsEnv>,
 } satisfies ExportedHandler<AnalyticsEnv>;

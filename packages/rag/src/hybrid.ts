@@ -118,9 +118,7 @@ export function bm25Score(
       score += idf * tfNorm;
     }
 
-    if (score > 0) {
-      scored.push({ id: doc.id, score });
-    }
+    scored.push({ id: doc.id, score });
   }
 
   return scored.sort((a, b) => b.score - a.score);

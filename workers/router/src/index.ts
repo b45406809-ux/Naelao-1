@@ -22,11 +22,20 @@ declare module "hono" {
   }
 }
 
+// G-A11: Validate required secrets at startup
+function validateEnv(env: Env): void {
+  const required = ["JWT_SECRET", "PLATFORM_SECRET"] as const;
+  for (const key of required) {
+    if (!env[key]) throw new Error(`Missing required secret: ${key}`);
+  }
+}
+
 const app = new Hono<{ Bindings: Env }>();
 
 // ── Global middleware ────────────────────────────────────────────────────────
 app.use("*", cors(["*"]));
 app.use("*", requestId);
+app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 
 // ── Health check (unauthenticated) ───────────────────────────────────────────
 app.get("/health", (c) =>

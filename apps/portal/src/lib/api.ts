@@ -98,7 +98,7 @@ export async function startSession(
   return portalFetch<SessionResponse>(`/v1/spaces/${spaceId}/sessions`, {
     method: "POST",
     body: JSON.stringify({}),
-    endUserId,
+    ...(endUserId !== undefined ? { endUserId } : {}),
   });
 }
 
@@ -196,8 +196,8 @@ export async function pollRun(
   return {
     id: res.id,
     status: (res.status as AgentRun["status"]) ?? "running",
-    final_answer: res.final_answer,
-    error: res.error,
+    ...(res.final_answer !== undefined ? { final_answer: res.final_answer } : {}),
+    ...(res.error !== undefined ? { error: res.error } : {}),
   };
 }
 

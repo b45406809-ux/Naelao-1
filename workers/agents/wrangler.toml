@@ -15,12 +15,35 @@ new_classes = ["NaelaoAgentDO"]
 binding = "AGENT_CACHE"
 id = "REPLACE_WITH_KV_ID"
 
+[[services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+[[services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
 [vars]
 ENVIRONMENT = "development"
-ANTHROPIC_API_KEY = ""
 
 [env.staging]
 vars = { ENVIRONMENT = "staging" }
 
+[[env.staging.services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+[[env.staging.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+[[env.production.services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+[[env.production.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"

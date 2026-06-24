@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { cors, requestId, errorResponse, badRequest, unauthorized, notFound } from "@naelao/http";
+import { cors, requestId, errorResponse, badRequest, unauthorized } from "@naelao/http";
 import { signJwt, verifyJwt, AuthError } from "@naelao/auth";
 
 export interface AuthEnv {
@@ -7,6 +7,105 @@ export interface AuthEnv {
   JWT_SECRET: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
+}
+
+// G-A11: Validate required secrets at startup
+function validateEnv(env: AuthEnv): void {
+  const required = ["JWT_SECRET", "PLATFORM_SECRET"] as const;
+  for (const key of required) {
+    if (!env[key]) {
+      throw new Error(`Missing required secret: ${key}`);
+    }
+  }
+}
+
+// G-B02: PBKDF2 password helpers (600,000 iterations, SHA-256, 32-byte salt)
+
+interface PasswordHash {
+  hash: string;
+  salt: string;
+  iterations: number;
+}
+
+async function hashPassword(password: string): Promise<string> {
+  const saltBytes = crypto.getRandomValues(new Uint8Array(32));
+  const iterations = 600_000;
+  const enc = new TextEncoder();
+
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(password),
+    { name: "PBKDF2" },
+    false,
+    ["deriveBits"]
+  );
+
+  const derived = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", hash: "SHA-256", salt: saltBytes, iterations },
+    keyMaterial,
+    256
+  );
+
+  const toHex = (buf: Uint8Array): string =>
+    Array.from(buf)
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+
+  const ph: PasswordHash = {
+    hash: toHex(new Uint8Array(derived)),
+    salt: toHex(saltBytes),
+    iterations,
+  };
+  return JSON.stringify(ph);
+}
+
+async function verifyPassword(
+  password: string,
+  storedJson: string
+): Promise<boolean> {
+  let stored: PasswordHash;
+  try {
+    stored = JSON.parse(storedJson) as PasswordHash;
+    if (!stored.hash || !stored.salt || !stored.iterations) return false;
+  } catch {
+    return false;
+  }
+
+  const saltBytes = new Uint8Array(
+    (stored.salt.match(/.{2}/g) ?? []).map((h) => parseInt(h, 16))
+  );
+  const enc = new TextEncoder();
+
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    enc.encode(password),
+    { name: "PBKDF2" },
+    false,
+    ["deriveBits"]
+  );
+
+  const derived = await crypto.subtle.deriveBits(
+    {
+      name: "PBKDF2",
+      hash: "SHA-256",
+      salt: saltBytes,
+      iterations: stored.iterations,
+    },
+    keyMaterial,
+    256
+  );
+
+  const hashHex = Array.from(new Uint8Array(derived))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
+  // Constant-time comparison to prevent timing attacks
+  if (hashHex.length !== stored.hash.length) return false;
+  let diff = 0;
+  for (let i = 0; i < hashHex.length; i++) {
+    diff |= (hashHex.charCodeAt(i) ^ stored.hash.charCodeAt(i));
+  }
+  return diff === 0;
 }
 
 declare module "hono" {
@@ -19,6 +118,10 @@ const app = new Hono<{ Bindings: AuthEnv }>();
 
 app.use("*", cors(["*"]));
 app.use("*", requestId);
+app.use("*", async (c, next) => {
+  validateEnv(c.env);
+  await next();
+});
 
 // ── POST /login ───────────────────────────────────────────────────────────────
 app.post("/login", async (c) => {
@@ -50,14 +153,9 @@ app.post("/login", async (c) => {
   if (!user) throw unauthorized("Invalid email or password");
   if (user.status !== "active") throw unauthorized("Account is not active");
 
-  // Verify SHA-256 password hash (hex)
-  const enc = new TextEncoder();
-  const hashBuffer = await crypto.subtle.digest("SHA-256", enc.encode(body.password));
-  const hashHex = Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-
-  if (hashHex !== user.password_hash) throw unauthorized("Invalid email or password");
+  // G-B02: Verify PBKDF2 password hash
+  const passwordMatch = await verifyPassword(body.password, user.password_hash);
+  if (!passwordMatch) throw unauthorized("Invalid email or password");
 
   // Update last_login_at
   await db
@@ -104,11 +202,8 @@ app.post("/register", async (c) => {
     .first();
   if (existing) throw badRequest("Email already registered");
 
-  const enc = new TextEncoder();
-  const hashBuffer = await crypto.subtle.digest("SHA-256", enc.encode(body.password));
-  const passwordHash = Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  // G-B02: PBKDF2 password hashing
+  const passwordHash = await hashPassword(body.password);
 
   const userId = crypto.randomUUID();
   const orgId = crypto.randomUUID();

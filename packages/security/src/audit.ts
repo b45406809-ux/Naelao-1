@@ -65,12 +65,12 @@ export async function readAuditLog(
   return (rows.results ?? []).map((r) => ({
     eventType: r.event_type,
     actorId: r.actor_id,
-    actorRole: r.actor_role ?? undefined,
+    ...(r.actor_role !== null ? { actorRole: r.actor_role } : {}),
     resourceType: r.resource_type,
     resourceId: r.resource_id,
     action: r.action,
     metadata: JSON.parse(r.metadata_json) as Record<string, unknown>,
-    ip: r.ip ?? undefined,
-    userAgent: r.user_agent ?? undefined,
+    ...(r.ip !== null ? { ip: r.ip } : {}),
+    ...(r.user_agent !== null ? { userAgent: r.user_agent } : {}),
   }));
 }

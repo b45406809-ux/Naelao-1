@@ -33,8 +33,14 @@ interface ChunkRecord {
 
 // ── Hono app ──────────────────────────────────────────────────────────────────
 
+// G-A11: Validate required secrets at startup
+function validateEnv(env: KnowledgeEnv): void {
+  if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
+}
+
 const app = new Hono<{ Bindings: KnowledgeEnv }>();
 app.use("*", requestId);
+app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 
 // ── Helper: extract + validate tenant ────────────────────────────────────────
 

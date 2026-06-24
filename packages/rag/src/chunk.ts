@@ -82,7 +82,9 @@ export function chunkText(text: string, opts: ChunkOptions = {}): string[] {
     }
   }
 
-  return chunks.filter(c => c.trim().length >= MIN_CHUNK_CHARS);
+  const filtered = chunks.filter(c => c.trim().length >= MIN_CHUNK_CHARS);
+  // If everything was filtered (e.g. text shorter than MIN_CHUNK_CHARS), return all non-empty chunks
+  return filtered.length > 0 ? filtered : chunks.filter(c => c.trim().length > 0);
 }
 
 /**

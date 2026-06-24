@@ -66,6 +66,15 @@ export async function verifyJwt(
   if (parts.length !== 3) throw new AuthError("invalid_token", "Malformed JWT");
 
   const [headerB64, payloadB64, sigB64] = parts as [string, string, string];
+
+  // G-B01: Pin algorithm — reject any token not using HS256 (prevents alg:none attacks)
+  const header = JSON.parse(
+    new TextDecoder().decode(base64UrlDecode(headerB64))
+  ) as { alg?: string; typ?: string };
+  if (header.alg !== "HS256") {
+    throw new AuthError("invalid_token", "JWT algorithm must be HS256");
+  }
+
   const enc = new TextEncoder();
   const signingInput = `${headerB64}.${payloadB64}`;
 

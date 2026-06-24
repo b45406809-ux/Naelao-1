@@ -11,8 +11,14 @@ export interface Env {
   SPACE_DO: DurableObjectNamespace<SpaceDO>;
 }
 
+// G-A11: Validate required secrets at startup
+function validateEnv(env: Env): void {
+  if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
+}
+
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requestId);
+app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 
 // Extract caller identity from headers (set by router worker after JWT validation)
 function getCallerIdentity(c: { req: { header: (h: string) => string | undefined } }) {

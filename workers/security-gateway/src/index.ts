@@ -1,6 +1,7 @@
 import { Hono } from "hono";
-import { RateLimiterDO, wafMiddleware, securityHeaders } from "@naelao/security";
-import { errorResponse, tooManyRequests } from "@naelao/http";
+import { RateLimiterDO } from "@naelao/security/src/rate-limit-do.js";
+import { wafMiddleware, securityHeaders } from "@naelao/security";
+import { errorResponse } from "@naelao/http";
 
 export { RateLimiterDO };
 
@@ -48,10 +49,16 @@ async function checkRateLimit(
   return data;
 }
 
+// G-A11: Validate required secrets at startup
+function validateEnv(env: SecurityEnv): void {
+  if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
+}
+
 const app = new Hono<{ Bindings: SecurityEnv }>();
 
 // Security headers on all responses
 app.use("*", securityHeaders());
+app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 
 // WAF scan on all requests
 app.use("*", wafMiddleware());

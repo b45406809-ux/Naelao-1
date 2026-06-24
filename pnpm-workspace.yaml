@@ -2,3 +2,4 @@ packages:
   - "packages/*"
   - "workers/*"
   - "apps/*"
+  - "tests"

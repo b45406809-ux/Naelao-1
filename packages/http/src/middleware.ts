@@ -1,7 +1,11 @@
+import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import { verifyJwt, AuthError } from "@naelao/auth";
 import type { NaelaoJwtClaims } from "@naelao/types";
 import { unauthorized } from "./errors.js";
+
+// Keep Context import used for module augmentation below
+type _CtxRef = Context;
 
 // Attach request ID to every request
 export const requestId = createMiddleware(async (c, next) => {

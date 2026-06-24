@@ -46,8 +46,17 @@ interface SpaceTypeRow {
 
 // ── Hono app ──────────────────────────────────────────────────────────────────
 
+// G-A11: Validate required secrets at startup
+function validateEnv(env: AgentsEnv): void {
+  const required = ["ANTHROPIC_API_KEY", "PLATFORM_SECRET"] as const;
+  for (const key of required) {
+    if (!env[key]) throw new Error(`Missing required secret: ${key}`);
+  }
+}
+
 const app = new Hono<{ Bindings: AgentsEnv }>();
 app.use("*", requestId);
+app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 
 // Extract caller identity from request headers (set by router after JWT validation)
 function getCallerIdentity(c: {

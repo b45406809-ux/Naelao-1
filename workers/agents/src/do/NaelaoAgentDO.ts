@@ -185,12 +185,21 @@ function safeCalculate(expression: string): number {
   return new ExprParser(expression).parse();
 }
 
+// ── Tool services (injected from DO env) ─────────────────────────────────────
+
+interface ToolServices {
+  knowledgeWorker: Fetcher;
+  spaceId: string;
+  tenantId: string;
+}
+
 // ── Tool dispatch ────────────────────────────────────────────────────────────
 
 async function dispatchTool(
   toolName: string,
   toolInput: Record<string, unknown>,
-  allowedDomains: string[]
+  allowedDomains: string[],
+  services: ToolServices
 ): Promise<ToolResult> {
   switch (toolName) {
     case "http_get": {
@@ -282,10 +291,48 @@ async function dispatchTool(
       }
     }
 
+    // G-I04: KB retrieval via knowledge worker service binding
+    case "search_kb": {
+      const query = toolInput.query as string;
+      if (!query || typeof query !== "string") {
+        return { output: "", error: "Missing or invalid query parameter" };
+      }
+
+      try {
+        const resp = await services.knowledgeWorker.fetch(
+          `http://knowledge-worker/spaces/${services.spaceId}/kb/search?q=${encodeURIComponent(query)}&top_k=5`,
+          {
+            method: "GET",
+            headers: { "x-naelao-tenant-id": services.tenantId },
+          }
+        );
+
+        if (!resp.ok) {
+          return { output: "", error: `KB search failed: HTTP ${resp.status}` };
+        }
+
+        const data = await resp.json<{
+          data?: Array<{ content: string; score?: number }>;
+        }>();
+
+        if (!data.data || data.data.length === 0) {
+          return { output: "No results found in knowledge base" };
+        }
+
+        const results = data.data
+          .map((r, i) => `[${i + 1}] ${r.content}`)
+          .join("\n\n---\n\n");
+
+        return { output: `<kb_content>\n${results}\n</kb_content>` };
+      } catch (err) {
+        return { output: "", error: `KB search error: ${String(err)}` };
+      }
+    }
+
     default:
       return {
         output: "",
-        error: `Unknown tool: ${toolName}. Available tools: http_get, search_web, calculate`,
+        error: `Unknown tool: ${toolName}. Available tools: http_get, search_web, calculate, search_kb`,
       };
   }
 }
@@ -294,6 +341,8 @@ async function dispatchTool(
 
 export interface AgentDOEnv {
   PLATFORM_SECRET: string;
+  KNOWLEDGE_WORKER: Fetcher;
+  SPACES_WORKER: Fetcher;
 }
 
 export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
@@ -383,7 +432,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         "running",
         cutoff
       )
-      .toArray<{ id: string }>();
+      .toArray() as { id: string }[];
 
     const now = new Date().toISOString();
     for (const row of rows) {
@@ -463,6 +512,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const model = body.model ?? "claude-sonnet-4-6";
     const allowedDomains = body.allowedDomains ?? [];
 
+    const services: ToolServices = {
+      knowledgeWorker: this.env.KNOWLEDGE_WORKER,
+      spaceId: body.spaceId,
+      tenantId: body.tenantId,
+    };
+
     try {
       const finalAnswer = await this.runReActLoop(
         runId,
@@ -472,7 +527,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         body.kbContext,
         body.apiKey,
         model,
-        allowedDomains
+        allowedDomains,
+        services
       );
 
       // Cancel the alarm since we finished
@@ -488,20 +544,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       );
 
       // Read the completed run to return
-      const run = this.ctx.storage.sql
+      const run = (this.ctx.storage.sql
         .exec(`SELECT * FROM agent_runs WHERE id = ?`, runId)
-        .toArray<AgentRunRow>()[0];
+        .toArray() as unknown as AgentRunRow[])[0];
 
       if (!run) {
         return Response.json({ error_code: "not_found", message: "Run not found" }, { status: 404 });
       }
+
+      // G-I11: Write conversation turns back to SpaceDO session messages
+      await this.writeConversationToSession(
+        body.sessionId,
+        body.spaceId,
+        body.tenantId,
+        body.goal,
+        finalAnswer
+      );
 
       return Response.json(
         {
           runId,
           status: "completed",
           finalAnswer,
-          reactSteps: JSON.parse(run.react_steps) as ReactStep[],
+          reactSteps: JSON.parse(run.react_steps as string) as ReactStep[],
         },
         { status: 200 }
       );
@@ -537,7 +602,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     kbContext: string,
     apiKey: string,
     model: string,
-    allowedDomains: string[]
+    allowedDomains: string[],
+    services: ToolServices
   ): Promise<string> {
     // Build initial messages
     // System prompt + KB context forms the system; goal is first user message
@@ -553,9 +619,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
       // Check if current run has been cancelled
-      const runRow = this.ctx.storage.sql
+      const runRow = (this.ctx.storage.sql
         .exec(`SELECT status FROM agent_runs WHERE id = ?`, runId)
-        .toArray<{ status: string }>()[0];
+        .toArray() as { status: string }[])[0];
 
       if (!runRow || runRow.status === "cancelled") {
         throw new Error("Agent run was cancelled");
@@ -566,7 +632,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         model,
         system: fullSystem,
         messages,
-        tools: tools.length > 0 ? tools : undefined,
+        ...(tools.length > 0 ? { tools } : {}),
         max_tokens: 4096,
         temperature: 0,
       });
@@ -632,7 +698,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           const result = await dispatchTool(
             toolBlock.name,
             toolBlock.input,
-            allowedDomains
+            allowedDomains,
+            services
           );
 
           const observation = result.error
@@ -675,16 +742,48 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     // Exceeded max iterations
+    const maxIterAnswer = "I was unable to complete the task within the allowed number of steps. Please try rephrasing your goal.";
     const lastStep: ReactStep = {
       iteration: MAX_ITERATIONS,
       thought: "Maximum iterations exceeded",
-      finalAnswer: "I was unable to complete the task within the allowed number of steps. Please try rephrasing your goal.",
+      finalAnswer: maxIterAnswer,
       timestamp: new Date().toISOString(),
     };
     reactSteps.push(lastStep);
     this.persistReactSteps(runId, reactSteps);
 
-    return lastStep.finalAnswer;
+    return maxIterAnswer;
+  }
+
+  // G-I11: Write user goal and agent answer back to SpaceDO session messages
+  private async writeConversationToSession(
+    sessionId: string,
+    spaceId: string,
+    tenantId: string,
+    goal: string,
+    finalAnswer: string
+  ): Promise<void> {
+    const baseUrl = `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/messages`;
+    const headers = {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": tenantId,
+    };
+
+    try {
+      await this.env.SPACES_WORKER.fetch(new Request(baseUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ role: "user", content: goal }),
+      }));
+
+      await this.env.SPACES_WORKER.fetch(new Request(baseUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ role: "assistant", content: finalAnswer }),
+      }));
+    } catch {
+      // Best-effort — do not fail the run if write-back fails
+    }
   }
 
   private persistReactSteps(runId: string, steps: ReactStep[]): void {
@@ -700,9 +799,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // ── GET /runs/:runId ──────────────────────────────────────────────────────
 
   private handleGetRun(runId: string): Response {
-    const run = this.ctx.storage.sql
+    const run = (this.ctx.storage.sql
       .exec(`SELECT * FROM agent_runs WHERE id = ?`, runId)
-      .toArray<AgentRunRow>()[0];
+      .toArray() as unknown as AgentRunRow[])[0];
 
     if (!run) {
       return Response.json(
@@ -718,7 +817,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       tenantId: run.tenant_id,
       status: run.status,
       goal: run.goal,
-      reactSteps: JSON.parse(run.react_steps) as ReactStep[],
+      reactSteps: JSON.parse(run.react_steps as string) as ReactStep[],
       finalAnswer: run.final_answer,
       error: run.error,
       createdAt: run.created_at,
@@ -729,9 +828,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // ── POST /runs/:runId/cancel ──────────────────────────────────────────────
 
   private handleCancelRun(runId: string): Response {
-    const run = this.ctx.storage.sql
+    const run = (this.ctx.storage.sql
       .exec(`SELECT id, status FROM agent_runs WHERE id = ?`, runId)
-      .toArray<{ id: string; status: string }>()[0];
+      .toArray() as { id: string; status: string }[])[0];
 
     if (!run) {
       return Response.json(

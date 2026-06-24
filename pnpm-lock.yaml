@@ -67,6 +67,40 @@ importers:
         specifier: ^5.6.3
         version: 5.9.3
 
+  apps/portal:
+    dependencies:
+      next:
+        specifier: 14.2.18
+        version: 14.2.18(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.1
+        version: 18.3.1(react@18.3.1)
+    devDependencies:
+      '@cloudflare/next-on-pages':
+        specifier: ^1.13.5
+        version: 1.13.16(@cloudflare/workers-types@4.20260623.1)(next@14.2.18(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(wrangler@3.114.17(@cloudflare/workers-types@4.20260623.1))
+      '@types/react':
+        specifier: ^18.3.12
+        version: 18.3.31
+      '@types/react-dom':
+        specifier: ^18.3.1
+        version: 18.3.7(@types/react@18.3.31)
+      autoprefixer:
+        specifier: ^10.4.20
+        version: 10.5.0(postcss@8.5.15)
+      postcss:
+        specifier: ^8.4.48
+        version: 8.5.15
+      tailwindcss:
+        specifier: ^3.4.15
+        version: 3.4.19
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+
   packages/auth:
     dependencies:
       '@naelao/types':
@@ -91,6 +125,9 @@ importers:
 
   packages/http:
     dependencies:
+      '@naelao/auth':
+        specifier: workspace:*
+        version: link:../auth
       '@naelao/types':
         specifier: workspace:*
         version: link:../types
@@ -131,6 +168,22 @@ importers:
         specifier: ^5.6.3
         version: 5.9.3
 
+  packages/security:
+    dependencies:
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
+      hono:
+        specifier: ^4.6.14
+        version: 4.12.27
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20241205.0
+        version: 4.20260623.1
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+
   packages/types:
     devDependencies:
       '@cloudflare/workers-types':
@@ -140,6 +193,30 @@ importers:
         specifier: '*'
         version: 5.9.3
 
+  tests:
+    devDependencies:
+      '@naelao/auth':
+        specifier: workspace:*
+        version: link:../packages/auth
+      '@naelao/llm-gateway':
+        specifier: workspace:*
+        version: link:../packages/llm-gateway
+      '@naelao/rag':
+        specifier: workspace:*
+        version: link:../packages/rag
+      '@naelao/security':
+        specifier: workspace:*
+        version: link:../packages/security
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../packages/types
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@26.0.0)
+
   workers/agents:
     dependencies:
       '@naelao/http':
@@ -148,6 +225,28 @@ importers:
       '@naelao/llm-gateway':
         specifier: workspace:*
         version: link:../../packages/llm-gateway
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../../packages/types
+      hono:
+        specifier: ^4.6.0
+        version: 4.12.27
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20241205.0
+        version: 4.20260623.1
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      wrangler:
+        specifier: ^3.91.0
+        version: 3.114.17(@cloudflare/workers-types@4.20260623.1)
+
+  workers/analytics:
+    dependencies:
+      '@naelao/http':
+        specifier: workspace:*
+        version: link:../../packages/http
       '@naelao/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -268,6 +367,31 @@ importers:
         specifier: '*'
         version: 3.114.17(@cloudflare/workers-types@4.20260623.1)
 
+  workers/security-gateway:
+    dependencies:
+      '@naelao/http':
+        specifier: workspace:*
+        version: link:../../packages/http
+      '@naelao/security':
+        specifier: workspace:*
+        version: link:../../packages/security
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../../packages/types
+      hono:
+        specifier: ^4.6.0
+        version: 4.12.27
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20241205.0
+        version: 4.20260623.1
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      wrangler:
+        specifier: ^3.91.0
+        version: 3.114.17(@cloudflare/workers-types@4.20260623.1)
+
   workers/spaces:
     dependencies:
       '@naelao/db':
@@ -297,6 +421,25 @@ importers:
         version: 2.1.9(@types/node@26.0.0)
       wrangler:
         specifier: '*'
+        version: 3.114.17(@cloudflare/workers-types@4.20260623.1)
+
+  workers/workflows:
+    dependencies:
+      '@naelao/http':
+        specifier: workspace:*
+        version: link:../../packages/http
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../../packages/types
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20241205.0
+        version: 4.20260623.1
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      wrangler:
+        specifier: ^3.91.0
         version: 3.114.17(@cloudflare/workers-types@4.20260623.1)
 
 packages:

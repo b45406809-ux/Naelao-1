@@ -148,7 +148,7 @@ export async function callLlm(
           "anthropic-beta": "prompt-caching-2024-07-31",
         },
         body: JSON.stringify(body),
-        signal: abortSignal,
+        ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
       });
 
       if (!response.ok) {
@@ -197,7 +197,7 @@ export async function streamLlm(
           accept: "text/event-stream",
         },
         body: JSON.stringify(body),
-        signal: abortSignal,
+        ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
       });
 
       if (!response.ok) {
@@ -271,21 +271,24 @@ export async function streamLlm(
             responseModel = (msg.model as string) ?? "";
             const msgUsage = msg.usage as Record<string, number> | undefined;
             if (msgUsage) {
+              const crit = msgUsage.cache_read_input_tokens;
+              const ccit = msgUsage.cache_creation_input_tokens;
               usage = {
                 input_tokens: msgUsage.input_tokens ?? 0,
                 output_tokens: msgUsage.output_tokens ?? 0,
-                cache_read_input_tokens: msgUsage.cache_read_input_tokens,
-                cache_creation_input_tokens:
-                  msgUsage.cache_creation_input_tokens,
+                ...(crit !== undefined ? { cache_read_input_tokens: crit } : {}),
+                ...(ccit !== undefined ? { cache_creation_input_tokens: ccit } : {}),
               };
             }
           } else if (eventType === "content_block_start") {
             const index = parsed.index as number;
             const block = parsed.content_block as Record<string, unknown>;
+            const blockId = block.id as string | undefined;
+            const blockName = block.name as string | undefined;
             currentBlockMeta[index] = {
               type: block.type as string,
-              id: block.id as string | undefined,
-              name: block.name as string | undefined,
+              ...(blockId !== undefined ? { id: blockId } : {}),
+              ...(blockName !== undefined ? { name: blockName } : {}),
             };
             currentBlockText[index] = "";
           } else if (eventType === "content_block_delta") {
@@ -318,8 +321,8 @@ export async function streamLlm(
                 }
                 contentBlocks.push({
                   type: "tool_use",
-                  id: meta.id,
-                  name: meta.name,
+                  ...(meta.id !== undefined ? { id: meta.id } : {}),
+                  ...(meta.name !== undefined ? { name: meta.name } : {}),
                   input,
                 });
               }
@@ -396,7 +399,7 @@ export function calculateTokenBudget(
 
 const JAILBREAK_PATTERNS: RegExp[] = [
   /ignore\s+(all\s+)?previous\s+instructions?/i,
-  /you\s+are\s+now\s+(a|an|the)\s+/i,
+  /you\s+are\s+now\s+/i,
   /disregard\s+(your|all)\s+/i,
   /forget\s+(all\s+)?previous\s+/i,
   /system\s+prompt/i,
