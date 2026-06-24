@@ -1,0 +1,28 @@
+{
+  "name": "naelao-registry",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "SpaceTypeRegistryDO", "class_name": "SpaceTypeRegistryDO" },
+      { "name": "AppRegistryDO", "class_name": "AppRegistryDO" },
+      { "name": "WorkflowRegistryDO", "class_name": "WorkflowRegistryDO" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SpaceTypeRegistryDO", "AppRegistryDO", "WorkflowRegistryDO"]
+    }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "NAELAO_WORKFLOW_DISPATCH", "queue": "naelao-workflow-dispatch" }
+    ]
+  },
+  "kv_namespaces": [
+    { "binding": "NAELAO_CONFIG_KV", "id": "$NAELAO_CONFIG_KV_ID" },
+    { "binding": "NAELAO_CIRCUIT_KV", "id": "$NAELAO_CIRCUIT_KV_ID" }
+  ]
+}

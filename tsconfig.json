@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "types": ["@cloudflare/workers-types"],
+    "paths": {
+      "@naelao/types": ["./packages/types/src/index.ts"],
+      "@naelao/analytics-schema": ["./packages/analytics-schema/src/index.ts"],
+      "@naelao/billing-providers": ["./packages/billing-providers/src/index.ts"]
+    }
+  },
+  "exclude": ["node_modules", "dist"]
+}

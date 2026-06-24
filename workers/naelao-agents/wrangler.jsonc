@@ -1,0 +1,43 @@
+{
+  "name": "naelao-agents",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "NAELAO_AGENT_DO", "class_name": "NaelaoAgentDO" },
+      { "name": "LOCAL_TUNNEL_DO", "class_name": "LocalTunnelDO" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["NaelaoAgentDO", "LocalTunnelDO"]
+    }
+  ],
+  "services": [
+    { "binding": "NAELAO_SPACES", "service": "naelao-spaces" },
+    { "binding": "NAELAO_AUTH", "service": "naelao-auth" },
+    { "binding": "NAELAO_CREDENTIALS", "service": "naelao-credentials" },
+    { "binding": "NAELAO_THREADS", "service": "naelao-threads" },
+    { "binding": "NAELAO_KNOWLEDGE", "service": "naelao-knowledge" },
+    { "binding": "NAELAO_BILLING", "service": "naelao-billing" },
+    { "binding": "NAELAO_REGISTRY", "service": "naelao-registry" },
+    { "binding": "NAELAO_TOGETHER_AI", "service": "naelao-together-ai" },
+    { "binding": "NAELAO_MCP_HUB", "service": "naelao-mcp-hub" },
+    { "binding": "NAELAO_ADMIN", "service": "naelao-admin" }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "NAELAO_ANALYTICS_QUEUE", "queue": "naelao-analytics-queue" },
+      { "binding": "NAELAO_WORKFLOW_DISPATCH", "queue": "naelao-workflow-dispatch" }
+    ]
+  },
+  "kv_namespaces": [
+    { "binding": "NAELAO_CONFIG_KV", "id": "$NAELAO_CONFIG_KV_ID" },
+    { "binding": "NAELAO_CIRCUIT_KV", "id": "$NAELAO_CIRCUIT_KV_ID" }
+  ],
+  "r2_buckets": [
+    { "binding": "NAELAO_WORKSPACE", "bucket_name": "naelao-workspace" }
+  ]
+}

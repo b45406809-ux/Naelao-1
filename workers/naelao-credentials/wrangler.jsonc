@@ -1,0 +1,10 @@
+{
+  "name": "naelao-credentials",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "kv_namespaces": [
+    { "binding": "NAELAO_CONFIG_KV", "id": "$NAELAO_CONFIG_KV_ID" },
+    { "binding": "NAELAO_CIRCUIT_KV", "id": "$NAELAO_CIRCUIT_KV_ID" }
+  ]
+}

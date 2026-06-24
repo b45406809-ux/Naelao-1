@@ -1,0 +1,25 @@
+{
+  "name": "naelao-provisioner",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "services": [
+    { "binding": "NAELAO_SPACE_DO", "service": "naelao-spaces" },
+    { "binding": "NAELAO_REGISTRY", "service": "naelao-registry" }
+  ],
+  "r2_buckets": [
+    { "binding": "NAELAO_WORKSPACE", "bucket_name": "naelao-workspace" },
+    { "binding": "NAELAO_WORKFLOW_R2", "bucket_name": "naelao-workflows" }
+  ],
+  "vectorize": [
+    { "binding": "NAELAO_VECTORIZE", "index_name": "naelao-knowledge-base" }
+  ],
+  "kv_namespaces": [
+    { "binding": "NAELAO_CONFIG_KV", "id": "$NAELAO_CONFIG_KV_ID" },
+    { "binding": "NAELAO_CIRCUIT_KV", "id": "$NAELAO_CIRCUIT_KV_ID" },
+    { "binding": "NAELAO_PORTAL_ROUTES", "id": "$NAELAO_PORTAL_ROUTES_KV_ID" }
+  ],
+  "analytics_engine_datasets": [
+    { "binding": "NAELAO_ANALYTICS", "dataset": "naelao_events" }
+  ]
+}

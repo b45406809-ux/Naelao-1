@@ -1,0 +1,26 @@
+{
+  "name": "naelao-analytics",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "analytics_engine_datasets": [
+    { "binding": "NAELAO_ANALYTICS", "dataset": "naelao_events" }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "NAELAO_DLQ", "queue": "naelao-analytics-dlq" }
+    ],
+    "consumers": [
+      {
+        "queue": "naelao-analytics",
+        "max_batch_size": 100,
+        "max_retries": 5,
+        "dead_letter_queue": "naelao-analytics-dlq"
+      }
+    ]
+  },
+  "kv_namespaces": [
+    { "binding": "NAELAO_CONFIG_KV", "id": "$NAELAO_CONFIG_KV_ID" },
+    { "binding": "NAELAO_CIRCUIT_KV", "id": "$NAELAO_CIRCUIT_KV_ID" }
+  ]
+}

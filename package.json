@@ -1,0 +1,24 @@
+{
+  "name": "naelao",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.0.0",
+  "workspaces": [
+    "packages/*",
+    "workers/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "deploy:all": "wrangler deploy --config workers/naelao-spaces/wrangler.jsonc && wrangler deploy --config workers/naelao-auth/wrangler.jsonc && wrangler deploy --config workers/naelao-credentials/wrangler.jsonc && wrangler deploy --config workers/naelao-threads/wrangler.jsonc && wrangler deploy --config workers/naelao-knowledge/wrangler.jsonc && wrangler deploy --config workers/naelao-billing/wrangler.jsonc && wrangler deploy --config workers/naelao-analytics/wrangler.jsonc && wrangler deploy --config workers/naelao-notifications/wrangler.jsonc && wrangler deploy --config workers/naelao-registry/wrangler.jsonc && wrangler deploy --config workers/naelao-agents/wrangler.jsonc && wrangler deploy --config workers/naelao-mcp-hub/wrangler.jsonc && wrangler deploy --config workers/naelao-triggers/wrangler.jsonc && wrangler deploy --config workers/naelao-workflows/wrangler.jsonc && wrangler deploy --config workers/naelao-sweeper/wrangler.jsonc && wrangler deploy --config workers/naelao-provisioner/wrangler.jsonc && wrangler deploy --config workers/naelao-together-ai/wrangler.jsonc && wrangler deploy --config workers/naelao-admin/wrangler.jsonc && wrangler deploy --config workers/naelao-eval/wrangler.jsonc && wrangler deploy --config workers/naelao-portal-router/wrangler.jsonc && wrangler deploy --config workers/naelao-artifact/wrangler.jsonc && wrangler deploy --config workers/naelao-router/wrangler.jsonc"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@cloudflare/workers-types": "^4.20240701.0",
+    "wrangler": "^3.60.0",
+    "hono": "^4.4.0",
+    "vitest": "^1.6.0",
+    "@vitest/coverage-v8": "^1.6.0"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "name": "naelao-router",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "routes": [
+    { "pattern": "api.naelao.com/*", "zone_name": "naelao.com" }
+  ],
+  "services": [
+    { "binding": "NAELAO_AUTH", "service": "naelao-auth" },
+    { "binding": "NAELAO_SPACES", "service": "naelao-spaces" },
+    { "binding": "NAELAO_AGENTS", "service": "naelao-agents" },
+    { "binding": "NAELAO_THREADS", "service": "naelao-threads" },
+    { "binding": "NAELAO_KNOWLEDGE", "service": "naelao-knowledge" },
+    { "binding": "NAELAO_BILLING", "service": "naelao-billing" },
+    { "binding": "NAELAO_MCP_HUB", "service": "naelao-mcp-hub" },
+    { "binding": "NAELAO_REGISTRY", "service": "naelao-registry" },
+    { "binding": "NAELAO_TOGETHER_AI", "service": "naelao-together-ai" },
+    { "binding": "NAELAO_ADMIN", "service": "naelao-admin" },
+    { "binding": "NAELAO_CREDENTIALS", "service": "naelao-credentials" },
+    { "binding": "NAELAO_TRIGGERS", "service": "naelao-triggers" }
+  ],
+  "kv_namespaces": [
+    { "binding": "NAELAO_CONFIG_KV", "id": "$NAELAO_CONFIG_KV_ID" },
+    { "binding": "NAELAO_CIRCUIT_KV", "id": "$NAELAO_CIRCUIT_KV_ID" }
+  ]
+}

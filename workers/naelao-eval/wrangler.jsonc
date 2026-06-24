@@ -1,0 +1,25 @@
+{
+  "name": "naelao-eval",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "triggers": {
+    "crons": ["0 6 * * *"]
+  },
+  "services": [
+    { "binding": "NAELAO_AGENTS", "service": "naelao-agents" },
+    { "binding": "TOGETHER_AI_SERVICE", "service": "naelao-together-ai" },
+    { "binding": "ANALYTICS_SERVICE", "service": "naelao-analytics" }
+  ],
+  "r2_buckets": [
+    { "binding": "R2_EVAL_RESULTS", "bucket_name": "naelao-eval-results" }
+  ],
+  "kv_namespaces": [
+    { "binding": "KV_EVAL_LOCK", "id": "$NAELAO_EVAL_LOCK_KV_ID" },
+    { "binding": "NAELAO_CONFIG_KV", "id": "$NAELAO_CONFIG_KV_ID" },
+    { "binding": "NAELAO_CIRCUIT_KV", "id": "$NAELAO_CIRCUIT_KV_ID" }
+  ],
+  "vars": {
+    "MAX_EVAL_CONCURRENCY": "3"
+  }
+}

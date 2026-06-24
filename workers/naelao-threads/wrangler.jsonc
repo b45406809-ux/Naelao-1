@@ -1,0 +1,24 @@
+{
+  "name": "naelao-threads",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "NAELAO_THREADS_DO", "class_name": "ThreadsDO" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ThreadsDO"]
+    }
+  ],
+  "services": [
+    { "binding": "NAELAO_SPACE_DO", "service": "naelao-spaces" }
+  ],
+  "kv_namespaces": [
+    { "binding": "NAELAO_CONFIG_KV", "id": "$NAELAO_CONFIG_KV_ID" },
+    { "binding": "NAELAO_CIRCUIT_KV", "id": "$NAELAO_CIRCUIT_KV_ID" }
+  ]
+}

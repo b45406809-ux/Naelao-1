@@ -1,0 +1,36 @@
+{
+  "name": "naelao-knowledge",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vectorize": [
+    { "binding": "NAELAO_VECTORIZE", "index_name": "naelao-knowledge-base" }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "r2_buckets": [
+    { "binding": "NAELAO_R2", "bucket_name": "naelao-knowledge-docs" }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "NAELAO_ANALYTICS_QUEUE", "queue": "naelao-analytics-queue" },
+      { "binding": "NAELAO_KNOWLEDGE_QUEUE", "queue": "naelao-knowledge-index" }
+    ],
+    "consumers": [
+      {
+        "queue": "naelao-knowledge-index",
+        "max_batch_size": 5,
+        "max_retries": 3,
+        "dead_letter_queue": "naelao-dlq"
+      }
+    ]
+  },
+  "services": [
+    { "binding": "NAELAO_SPACE_DO", "service": "naelao-spaces" }
+  ],
+  "kv_namespaces": [
+    { "binding": "NAELAO_CONFIG_KV", "id": "$NAELAO_CONFIG_KV_ID" },
+    { "binding": "NAELAO_CIRCUIT_KV", "id": "$NAELAO_CIRCUIT_KV_ID" }
+  ]
+}

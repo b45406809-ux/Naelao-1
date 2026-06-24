@@ -1,0 +1,34 @@
+{
+  "name": "naelao-sweeper",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "services": [
+    { "binding": "NAELAO_SPACE_DO", "service": "naelao-spaces" },
+    { "binding": "NAELAO_CONCURRENCY_DO", "service": "naelao-spaces" },
+    { "binding": "NAELAO_REGISTRY", "service": "naelao-registry" }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "NAELAO_DLQ", "queue": "naelao-dlq" },
+      { "binding": "NAELAO_WORKFLOW_DISPATCH", "queue": "naelao-workflow-dispatch" }
+    ],
+    "consumers": [
+      {
+        "queue": "naelao-dlq",
+        "max_batch_size": 100,
+        "max_retries": 0
+      }
+    ]
+  },
+  "kv_namespaces": [
+    { "binding": "NAELAO_CONFIG_KV", "id": "$NAELAO_CONFIG_KV_ID" },
+    { "binding": "NAELAO_CIRCUIT_KV", "id": "$NAELAO_CIRCUIT_KV_ID" }
+  ],
+  "analytics_engine_datasets": [
+    { "binding": "NAELAO_ANALYTICS", "dataset": "naelao_events" }
+  ]
+}

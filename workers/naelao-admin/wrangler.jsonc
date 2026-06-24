@@ -1,0 +1,27 @@
+{
+  "name": "naelao-admin",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "KILL_SWITCH_DO", "class_name": "KillSwitchDO" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["KillSwitchDO"]
+    }
+  ],
+  "services": [
+    { "binding": "NAELAO_SPACE_DO", "service": "naelao-spaces" }
+  ],
+  "analytics_engine_datasets": [
+    { "binding": "NAELAO_ANALYTICS", "dataset": "naelao_events" }
+  ],
+  "kv_namespaces": [
+    { "binding": "NAELAO_CONFIG_KV", "id": "$NAELAO_CONFIG_KV_ID" },
+    { "binding": "NAELAO_CIRCUIT_KV", "id": "$NAELAO_CIRCUIT_KV_ID" }
+  ]
+}

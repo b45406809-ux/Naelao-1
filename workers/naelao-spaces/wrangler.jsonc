@@ -1,0 +1,24 @@
+{
+  "name": "naelao-spaces",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      { "name": "NAELAO_SPACE_DO", "class_name": "SpaceDO" },
+      { "name": "NAELAO_WALLET_DO", "class_name": "WalletDO" },
+      { "name": "NAELAO_CONCURRENCY_DO", "class_name": "ConcurrencyDO" },
+      { "name": "NAELAO_BUILDER_DO", "class_name": "BuilderAccountDO" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SpaceDO", "WalletDO", "ConcurrencyDO", "BuilderAccountDO"]
+    }
+  ],
+  "kv_namespaces": [
+    { "binding": "NAELAO_CONFIG_KV", "id": "$NAELAO_CONFIG_KV_ID" },
+    { "binding": "NAELAO_CIRCUIT_KV", "id": "$NAELAO_CIRCUIT_KV_ID" }
+  ]
+}
