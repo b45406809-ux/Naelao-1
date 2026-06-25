@@ -1,0 +1,23 @@
+name = "naelao-assistant"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "PLACEHOLDER_D1_ID"
+
+[[vectorize]]
+binding = "PLATFORM_DOCS_INDEX"
+index_name = "naelao-platform-docs"
+
+[vars]
+ENVIRONMENT = "development"
+LLM_GATEWAY_URL = "http://localhost:8788"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging", LLM_GATEWAY_URL = "https://llm.naelao.com" }
+
+[env.production]
+vars = { ENVIRONMENT = "production", LLM_GATEWAY_URL = "https://llm.naelao.com" }

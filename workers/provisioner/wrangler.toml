@@ -1,0 +1,30 @@
+name = "naelao-provisioner"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[queues.consumers]]
+queue = "naelao-provisioning-queue"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 3
+dead_letter_queue = "naelao-provisioning-dlq"
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "PLACEHOLDER_D1_ID"
+
+[[kv_namespaces]]
+binding = "SPACES_KV"
+id = "PLACEHOLDER_KV_ID"
+
+[vars]
+ENVIRONMENT = "development"
+SPACES_API_URL = "http://localhost:8787"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging", SPACES_API_URL = "https://api.staging.naelao.com" }
+
+[env.production]
+vars = { ENVIRONMENT = "production", SPACES_API_URL = "https://api.naelao.com" }

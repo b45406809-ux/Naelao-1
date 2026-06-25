@@ -1,0 +1,14 @@
+name = "naelao-together-ai"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "development"
+TOGETHER_API_URL = "https://api.together.xyz/v1"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging", TOGETHER_API_URL = "https://api.together.xyz/v1" }
+
+[env.production]
+vars = { ENVIRONMENT = "production", TOGETHER_API_URL = "https://api.together.xyz/v1" }

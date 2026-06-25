@@ -1,0 +1,22 @@
+{
+  "name": "@naelao/mcp-hub-worker",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "scripts": {
+    "build": "wrangler deploy --dry-run",
+    "typecheck": "tsc --noEmit",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production"
+  },
+  "dependencies": {
+    "@naelao/types": "workspace:*",
+    "@naelao/http": "workspace:*",
+    "hono": "^4.6.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "@cloudflare/workers-types": "^4.20241205.0",
+    "wrangler": "^3.91.0"
+  }
+}
