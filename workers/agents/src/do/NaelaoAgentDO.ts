@@ -10,6 +10,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { LlmTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
+import { moderateText } from "@naelao/moderation";
 
 // ── SQLite row types ─────────────────────────────────────────────────────────
 
@@ -193,6 +194,64 @@ interface ToolServices {
   knowledgeWorker: Fetcher;
   spaceId: string;
   tenantId: string;
+}
+
+// ── beforeToolCall: policy interceptor (G-AB20) ──────────────────────────────
+// Validates LLM-generated tool arguments before any execution occurs.
+
+function beforeToolCall(
+  toolName: string,
+  toolInput: Record<string, unknown>
+): { allow: boolean; reason?: string } {
+  const ALLOWED_TOOLS = new Set(["http_get", "search_web", "calculate", "search_kb"]);
+
+  if (!ALLOWED_TOOLS.has(toolName)) {
+    return { allow: false, reason: `Tool '${toolName}' is not in the allowed tool list` };
+  }
+
+  if (toolName === "http_get") {
+    const url = toolInput.url;
+    if (typeof url !== "string" || !url) {
+      return { allow: false, reason: "http_get requires a string url parameter" };
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return { allow: false, reason: "http_get url is not a valid URL" };
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return { allow: false, reason: "http_get only allows http/https protocols" };
+    }
+    // Pre-flight SSRF check (mirrors the runtime blocklist in dispatchTool)
+    for (const pattern of BLOCKED_DOMAIN_PATTERNS) {
+      if (pattern.test(parsed.hostname)) {
+        return { allow: false, reason: `http_get target '${parsed.hostname}' is in a blocked IP range` };
+      }
+    }
+  }
+
+  if (toolName === "calculate") {
+    const expr = toolInput.expression;
+    if (typeof expr !== "string" || !expr) {
+      return { allow: false, reason: "calculate requires a string expression parameter" };
+    }
+    if (!/^[\d\s+\-*/().]+$/.test(expr)) {
+      return { allow: false, reason: "calculate expression contains disallowed characters" };
+    }
+    if (expr.length > 500) {
+      return { allow: false, reason: "calculate expression exceeds length limit" };
+    }
+  }
+
+  if (toolName === "search_kb") {
+    const query = toolInput.query;
+    if (typeof query !== "string" || !query) {
+      return { allow: false, reason: "search_kb requires a string query parameter" };
+    }
+  }
+
+  return { allow: true };
 }
 
 // ── Tool dispatch ────────────────────────────────────────────────────────────
@@ -674,6 +733,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (llmResponse.stop_reason === "end_turn") {
         const answerText = outputText.trim();
 
+        // G-AB19: Post-generation content moderation — scan for policy violations
+        // (CSAM text, extreme violence, targeted harassment, CBRN content)
+        const contentMod = moderateText(answerText);
+        if (!contentMod.allowed) {
+          const flagTypes = contentMod.flags.map((f) => f.type).join(", ");
+          console.error(`[agent] Output blocked by content policy: ${flagTypes}`);
+          step.finalAnswer = "I'm unable to provide that response as it was flagged by content policy.";
+          reactSteps.push(step);
+          this.persistReactSteps(runId, reactSteps);
+          return step.finalAnswer;
+        }
+
         step.finalAnswer = answerText;
         reactSteps.push(step);
 
@@ -712,6 +783,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             toolInput: toolBlock.input,
             toolUseId: toolBlock.id,
           };
+
+          // G-AB20: beforeToolCall policy interceptor — validate args before execution
+          const policy = beforeToolCall(toolBlock.name, toolBlock.input);
+          if (!policy.allow) {
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolBlock.id,
+              content: `Error: Tool call blocked by policy: ${policy.reason ?? "not allowed"}`,
+            });
+            continue;
+          }
 
           // G-X01: Enforce per-tool call limit to prevent recursive drain
           const callsSoFar = toolCallCounts.get(toolBlock.name) ?? 0;
