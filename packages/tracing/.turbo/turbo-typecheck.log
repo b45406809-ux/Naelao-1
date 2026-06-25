@@ -1,0 +1,4 @@
+
+> @naelao/tracing@0.1.0 typecheck /home/user/Naelao-1/packages/tracing
+> tsc --noEmit
+

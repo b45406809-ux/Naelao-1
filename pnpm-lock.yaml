@@ -101,6 +101,32 @@ importers:
         specifier: ^5.6.3
         version: 5.9.3
 
+  packages/agent-sdk:
+    dependencies:
+      '@naelao/client-sdk':
+        specifier: workspace:*
+        version: link:../client-sdk
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
+  packages/analytics-schema:
+    dependencies:
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: '*'
+        version: 4.20260623.1
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
   packages/auth:
     dependencies:
       '@naelao/types':
@@ -114,7 +140,69 @@ importers:
         specifier: '*'
         version: 5.9.3
 
+  packages/billing-core:
+    dependencies:
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: '*'
+        version: 4.20260623.1
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
+  packages/client-sdk:
+    dependencies:
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
+  packages/config:
+    dependencies:
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: '*'
+        version: 4.20260623.1
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
+  packages/crypto:
+    dependencies:
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: '*'
+        version: 4.20260623.1
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
   packages/db:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: '*'
+        version: 4.20260623.1
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
+  packages/entitlements:
+    dependencies:
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
     devDependencies:
       '@cloudflare/workers-types':
         specifier: '*'
@@ -142,6 +230,19 @@ importers:
         specifier: '*'
         version: 5.9.3
 
+  packages/idempotency:
+    dependencies:
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: '*'
+        version: 4.20260623.1
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
   packages/llm-gateway:
     dependencies:
       '@naelao/types':
@@ -153,6 +254,35 @@ importers:
         version: 4.20260623.1
       typescript:
         specifier: ^5.6.3
+        version: 5.9.3
+
+  packages/logger:
+    dependencies:
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: '*'
+        version: 4.20260623.1
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
+  packages/moderation:
+    dependencies:
+      '@naelao/security':
+        specifier: workspace:*
+        version: link:../security
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: '*'
+        version: 4.20260623.1
+      typescript:
+        specifier: '*'
         version: 5.9.3
 
   packages/rag:
@@ -184,7 +314,62 @@ importers:
         specifier: ^5.6.3
         version: 5.9.3
 
+  packages/testing:
+    dependencies:
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: '*'
+        version: 4.20260623.1
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
+  packages/tool-runtime:
+    dependencies:
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: '*'
+        version: 4.20260623.1
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
+  packages/tracing:
+    dependencies:
+      '@naelao/logger':
+        specifier: workspace:*
+        version: link:../logger
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: '*'
+        version: 4.20260623.1
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
   packages/types:
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: '*'
+        version: 4.20260623.1
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
+  packages/webhooks:
+    dependencies:
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../types
     devDependencies:
       '@cloudflare/workers-types':
         specifier: '*'

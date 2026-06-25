@@ -1,0 +1,4 @@
+
+> @naelao/moderation@0.1.0 typecheck /home/user/Naelao-1/packages/moderation
+> tsc --noEmit
+
