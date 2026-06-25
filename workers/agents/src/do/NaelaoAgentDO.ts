@@ -63,6 +63,16 @@ const MAX_CALLS_PER_TOOL = 5;
 // G-BB41: Hard cap on total tool calls per turn (loop iteration) and per run
 const MAX_TOOL_CALLS_PER_TURN = 20;
 const MAX_TOOL_CALLS_PER_RUN = 100;
+// G-N44: Max messages kept in context window (keeps first + most recent N-1)
+const MAX_CONTEXT_MESSAGES = 40;
+
+// G-N44: Correct context truncation — keep first message (user goal) and most
+// recent (maxCount-1) messages in chronological order.
+// NEVER use splice() in a reverse loop (inserts at index 1, reversing order).
+function truncateMiddle<T>(messages: T[], maxCount: number): T[] {
+  if (messages.length <= maxCount) return messages;
+  return [messages[0]!, ...messages.slice(-(maxCount - 1))];
+}
 
 // Blocked SSRF domains (G-D15: prevent SSRF in tool execution)
 const BLOCKED_DOMAIN_PATTERNS: RegExp[] = [
@@ -722,11 +732,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         throw new Error("Agent run was cancelled");
       }
 
+      // G-N44: Trim context to prevent token overflow; keeps first message + recent history
+      const contextMessages = truncateMiddle(messages, MAX_CONTEXT_MESSAGES);
+
       // Call LLM
       const llmResponse = await callLlm(apiKey, {
         model,
         system: fullSystem,
-        messages,
+        messages: contextMessages,
         ...(tools.length > 0 ? { tools } : {}),
         max_tokens: 4096,
         temperature: 0,

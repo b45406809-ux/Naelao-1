@@ -306,8 +306,11 @@ app.post("/billing/usage", async (c) => {
   const body = await c.req.json<{
     org_id: string;
     space_id?: string;
+    user_id?: string;
     event_type: string;
     quantity?: number;
+    // G-AN09: Caller may supply an idempotency key; if absent, one is computed
+    idempotency_key?: string;
   }>();
 
   if (!body.org_id || !body.event_type) {
@@ -318,10 +321,25 @@ app.post("/billing/usage", async (c) => {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
-  // Insert into D1 for authoritative accounting
-  await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO usage_events (id, org_id, space_id, event_type, quantity, recorded_at)
-     VALUES (?, ?, ?, ?, ?, ?)`
+  // G-AN09: Compute stable event hash for idempotency.
+  // Truncate timestamp to the minute so retries within the same minute are deduplicated.
+  // Format: sha256(org_id:space_id:user_id:event_type:YYYY-MM-DDTHH:MM)
+  let eventHash: string | null = null;
+  if (body.idempotency_key) {
+    // Caller-supplied key takes precedence
+    const hashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body.idempotency_key));
+    eventHash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
+  } else {
+    const minuteBucket = now.slice(0, 16); // "YYYY-MM-DDTHH:MM"
+    const hashInput = `${body.org_id}:${body.space_id ?? ""}:${body.user_id ?? ""}:${body.event_type}:${minuteBucket}`;
+    const hashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(hashInput));
+    eventHash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  // G-AN09: INSERT OR IGNORE on event_hash — if duplicate, silently skip (idempotent)
+  const result = await c.env.PLATFORM_DB.prepare(
+    `INSERT OR IGNORE INTO usage_events (id, org_id, space_id, event_type, quantity, recorded_at, event_hash)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       id,
@@ -329,9 +347,15 @@ app.post("/billing/usage", async (c) => {
       body.space_id ?? null,
       body.event_type,
       quantity,
-      now
+      now,
+      eventHash
     )
     .run();
+
+  // If INSERT was ignored (duplicate), return success without re-enqueuing
+  if (result.meta.changes === 0) {
+    return c.json({ recorded: false, deduplicated: true, id }, 200);
+  }
 
   // Increment KV quota counter for api_call events (for fast quota checks)
   if (body.event_type === "api_call") {
@@ -348,6 +372,7 @@ app.post("/billing/usage", async (c) => {
     event_type: body.event_type,
     quantity,
     event_id: id,
+    event_hash: eventHash,
     recorded_at: now,
   });
 
