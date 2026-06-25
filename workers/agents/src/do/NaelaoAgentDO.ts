@@ -331,14 +331,27 @@ async function dispatchTool(
               `\n[TRUNCATED: output exceeded ${MAX_TOOL_OUTPUT_BYTES} bytes]`
             : text;
 
-        // G-AA25: Scan web content for prompt injection before returning to LLM
-        const webMod = moderateInput(truncated.slice(0, 4000));
-        const safeOutput = webMod.blocked
-          ? `[Web content blocked: contains disallowed patterns]`
+        // G-AA25 / G-AH45: Scan web content for prompt injection before returning to LLM.
+        // Check in 4KB windows across the full response to catch injections in long pages.
+        const SCAN_WINDOW = 4000;
+        let injectionDetected = false;
+        for (let pos = 0; pos < truncated.length; pos += SCAN_WINDOW) {
+          const windowText = truncated.slice(pos, pos + SCAN_WINDOW);
+          const webMod = moderateInput(windowText);
+          if (webMod.blocked) {
+            injectionDetected = true;
+            console.warn(`[agent][security] Prompt injection detected in http_get result url=${url} pos=${pos} reason=${webMod.reason}`);
+            break;
+          }
+        }
+
+        const safeOutput = injectionDetected
+          ? `[Content partially redacted: potential prompt injection detected in response]`
           : truncated;
 
-        // Wrap in XML to structurally separate untrusted web content from instructions
-        return { output: `<web_content>\nHTTP ${resp.status}\n${safeOutput}\n</web_content>` };
+        // G-AH45: Wrap external content in <untrusted_tool_result> to signal to the
+        // LLM that this content must not be interpreted as instructions.
+        return { output: `<untrusted_tool_result>\nHTTP ${resp.status}\n${safeOutput}\n</untrusted_tool_result>` };
       } catch (err) {
         return { output: "", error: `Fetch failed: ${String(err)}` };
       }

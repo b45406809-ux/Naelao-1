@@ -36,7 +36,7 @@ export function detectPhi(text: string): ModerationFlag[] {
   return flags;
 }
 
-// Prompt injection patterns
+// Prompt injection patterns — G-AH45: extended to cover tool-result injection vectors
 const INJECTION_PATTERNS = [
   /ignore\s+(all\s+)?(previous|above|prior)\s+(instructions?|prompts?)/i,
   /system\s*:\s*you\s+are/i,
@@ -44,6 +44,13 @@ const INJECTION_PATTERNS = [
   /\[system\]/i,
   /###\s*system/i,
   /override\s+(your\s+)?(system\s+)?prompt/i,
+  // Tool-result-specific injection patterns (G-AH45)
+  /^(SYSTEM|ASSISTANT|USER)\s*:/im,   // role prefixes at line start
+  /\bexfiltrate\b.*\b(api\s*key|token|secret|credential)/i,
+  /send\s+(all|the|this)\s+.{0,50}(to\s+)?(https?:\/\/|attacker|evil)/i,
+  /forward\s+(this|all|the)\s+(conversation|data|context|message)/i,
+  /print\s+(your\s+)?(system\s+)?prompt/i,
+  /reveal\s+(your\s+)?(secret|instruction|system\s+prompt)/i,
 ];
 
 export function detectPromptInjection(text: string): ModerationFlag[] {
