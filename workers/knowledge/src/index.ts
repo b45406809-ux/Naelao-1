@@ -9,6 +9,7 @@ import { Hono } from "hono";
 import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError } from "@naelao/http";
 import { chunkText, embedText, embedBatch, bm25Score, reciprocalRankFusion } from "@naelao/rag";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
+import { moderateInput } from "@naelao/llm-gateway";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -135,6 +136,21 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   const MAX_CONTENT_CHARS = 1_048_576;
   if (body.content.length > MAX_CONTENT_CHARS) {
     throw badRequest(`content exceeds maximum size of 1MB (${MAX_CONTENT_CHARS} chars)`);
+  }
+
+  // G-AA26: Scan document content for prompt injection before indexing
+  const titleMod = moderateInput(body.title.trim());
+  if (titleMod.blocked) {
+    throw badRequest(`Document title contains disallowed content: ${titleMod.reason}`);
+  }
+  // Sample the content in 2000-char windows to catch injections in long docs
+  const SAMPLE_WINDOW = 2000;
+  for (let pos = 0; pos < body.content.length; pos += SAMPLE_WINDOW) {
+    const window = body.content.slice(pos, pos + SAMPLE_WINDOW);
+    const mod = moderateInput(window);
+    if (mod.blocked) {
+      throw badRequest(`Document content contains disallowed content: ${mod.reason}`);
+    }
   }
 
   // G-D12: Enforce KB document quota at the API layer (not just the UI)

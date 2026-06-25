@@ -14,6 +14,7 @@
     "@naelao/http": "workspace:*",
     "@naelao/rag": "workspace:*",
     "@naelao/entitlements": "workspace:*",
+    "@naelao/llm-gateway": "workspace:*",
     "hono": "^4.6.0"
   },
   "devDependencies": {

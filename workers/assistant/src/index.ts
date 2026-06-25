@@ -160,7 +160,7 @@ async function retrievePlatformDocs(query: string, env: Env): Promise<string> {
     const embedding = data.data[0]?.embedding;
     if (!embedding) return "";
 
-    const results = await env.PLATFORM_DOCS_INDEX.query(embedding, { topK: 5, returnMetadata: "all" });
+    const results = await env.PLATFORM_DOCS_INDEX.query(embedding, { topK: 5, returnMetadata: "indexed" });
     return results.matches.map((m) => (m.metadata as Record<string, string>)["text"] ?? "").filter(Boolean).join("\n\n");
   } catch {
     return "";

@@ -9,7 +9,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import type { LlmTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
-import { callLlm, moderateInput } from "@naelao/llm-gateway";
+import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 
 // ── SQLite row types ─────────────────────────────────────────────────────────
 
@@ -268,7 +268,14 @@ async function dispatchTool(
               `\n[TRUNCATED: output exceeded ${MAX_TOOL_OUTPUT_BYTES} bytes]`
             : text;
 
-        return { output: `HTTP ${resp.status}\n${truncated}` };
+        // G-AA25: Scan web content for prompt injection before returning to LLM
+        const webMod = moderateInput(truncated.slice(0, 4000));
+        const safeOutput = webMod.blocked
+          ? `[Web content blocked: contains disallowed patterns]`
+          : truncated;
+
+        // Wrap in XML to structurally separate untrusted web content from instructions
+        return { output: `<web_content>\nHTTP ${resp.status}\n${safeOutput}\n</web_content>` };
       } catch (err) {
         return { output: "", error: `Fetch failed: ${String(err)}` };
       }
@@ -652,13 +659,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         step.thought = textBlock.text;
       }
 
+      // G-C08: Output moderation — check for system prompt leakage
+      const outputText = llmResponse.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text ?? "")
+        .join("\n");
+      const systemFirstLine = fullSystem.split("\n")[0] ?? "";
+      const outMod = moderateOutput(outputText, systemFirstLine);
+      if (outMod.flagged) {
+        console.warn(`[agent] Output moderation flagged: ${outMod.reason}`);
+      }
+
       // Check if this is a final answer (no tool use)
       if (llmResponse.stop_reason === "end_turn") {
-        const answerText = llmResponse.content
-          .filter((b) => b.type === "text")
-          .map((b) => b.text ?? "")
-          .join("\n")
-          .trim();
+        const answerText = outputText.trim();
 
         step.finalAnswer = answerText;
         reactSteps.push(step);
