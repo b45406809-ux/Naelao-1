@@ -12,6 +12,33 @@ import type { LlmTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
 
+// ── G-AZ01: Agent FSM states and valid transitions ───────────────────────────
+
+type AgentFsmState =
+  | "IDLE"
+  | "PLANNING"
+  | "TOOL_CALL"
+  | "AWAITING_TOOL"
+  | "AWAITING_HUMAN"
+  | "SUMMARIZING"
+  | "DONE"
+  | "ERROR";
+
+const FSM_TRANSITIONS: Record<AgentFsmState, AgentFsmState[]> = {
+  IDLE:           ["PLANNING", "ERROR"],
+  PLANNING:       ["TOOL_CALL", "SUMMARIZING", "AWAITING_HUMAN", "ERROR"],
+  TOOL_CALL:      ["AWAITING_TOOL", "ERROR"],
+  AWAITING_TOOL:  ["PLANNING", "ERROR"],
+  AWAITING_HUMAN: ["PLANNING", "DONE", "ERROR"],
+  SUMMARIZING:    ["DONE", "ERROR"],
+  DONE:           [],
+  ERROR:          [],
+};
+
+function isFsmTransitionValid(from: AgentFsmState, to: AgentFsmState): boolean {
+  return FSM_TRANSITIONS[from]?.includes(to) ?? false;
+}
+
 // ── SQLite row types ─────────────────────────────────────────────────────────
 
 interface AgentRunRow {
@@ -20,6 +47,7 @@ interface AgentRunRow {
   space_id: string;
   tenant_id: string;
   status: string;
+  fsm_state: AgentFsmState;
   goal: string;
   react_steps: string;
   final_answer: string | null;
@@ -464,6 +492,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         space_id     TEXT NOT NULL,
         tenant_id    TEXT NOT NULL,
         status       TEXT NOT NULL DEFAULT 'running',
+        fsm_state    TEXT NOT NULL DEFAULT 'IDLE',
         goal         TEXT NOT NULL,
         react_steps  TEXT NOT NULL DEFAULT '[]',
         final_answer TEXT,
@@ -472,6 +501,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
+    // G-AZ01: Migrate existing tables that lack fsm_state
+    try {
+      this.ctx.storage.sql.exec(`ALTER TABLE agent_runs ADD COLUMN fsm_state TEXT NOT NULL DEFAULT 'IDLE'`);
+    } catch { /* column already exists — ignore */ }
 
     this.ctx.storage.sql.exec(`
       CREATE INDEX IF NOT EXISTS idx_runs_session
@@ -593,10 +626,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const runId = crypto.randomUUID();
     const now = new Date().toISOString();
 
-    // Create run record
+    // Create run record with FSM in IDLE state (G-AZ01)
     this.ctx.storage.sql.exec(
-      `INSERT INTO agent_runs (id, session_id, space_id, tenant_id, status, goal, react_steps, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'running', ?, '[]', ?, ?)`,
+      `INSERT INTO agent_runs (id, session_id, space_id, tenant_id, status, fsm_state, goal, react_steps, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'running', 'IDLE', ?, '[]', ?, ?)`,
       runId,
       body.sessionId,
       body.spaceId,
@@ -678,8 +711,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const errMsg = err instanceof Error ? err.message : String(err);
       const errNow = new Date().toISOString();
 
+      // G-AZ01: Transition to ERROR state on failure
       this.ctx.storage.sql.exec(
-        `UPDATE agent_runs SET status = 'failed', error = ?, updated_at = ? WHERE id = ?`,
+        `UPDATE agent_runs SET status = 'failed', fsm_state = 'ERROR', error = ?, updated_at = ? WHERE id = ?`,
         errMsg,
         errNow,
         runId
@@ -722,15 +756,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // G-BB41: Track total tool calls across all iterations of this run
     let totalToolCallsThisRun = 0;
 
+    // G-AZ01: Transition from IDLE to PLANNING at the start of the loop
+    this.transitionFsm(runId, "IDLE", "PLANNING");
+    let currentFsmState: AgentFsmState = "PLANNING";
+
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
       // Check if current run has been cancelled
       const runRow = (this.ctx.storage.sql
-        .exec(`SELECT status FROM agent_runs WHERE id = ?`, runId)
-        .toArray() as { status: string }[])[0];
+        .exec(`SELECT status, fsm_state FROM agent_runs WHERE id = ?`, runId)
+        .toArray() as { status: string; fsm_state: AgentFsmState }[])[0];
 
       if (!runRow || runRow.status === "cancelled") {
         throw new Error("Agent run was cancelled");
       }
+      currentFsmState = runRow.fsm_state;
 
       // G-N44: Trim context to prevent token overflow; keeps first message + recent history
       const contextMessages = truncateMiddle(messages, MAX_CONTEXT_MESSAGES);
@@ -769,6 +808,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
       // Check if this is a final answer (no tool use)
       if (llmResponse.stop_reason === "end_turn") {
+        // G-AZ01: PLANNING → SUMMARIZING → DONE
+        this.transitionFsm(runId, currentFsmState, "SUMMARIZING");
+        currentFsmState = "SUMMARIZING";
         const answerText = outputText.trim();
 
         // G-AB19: Post-generation content moderation — scan for policy violations
@@ -789,11 +831,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // Persist steps
         this.persistReactSteps(runId, reactSteps);
 
+        // G-AZ01: SUMMARIZING → DONE
+        this.transitionFsm(runId, "SUMMARIZING", "DONE");
         return answerText;
       }
 
       // Handle tool use
       if (llmResponse.stop_reason === "tool_use") {
+        // G-AZ01: PLANNING → TOOL_CALL
+        this.transitionFsm(runId, currentFsmState, "TOOL_CALL");
+        currentFsmState = "TOOL_CALL";
         const toolUseBlocks = llmResponse.content.filter(
           (b) => b.type === "tool_use"
         );
@@ -803,6 +850,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           role: "assistant",
           content: llmResponse.content,
         });
+
+        // G-AZ01: TOOL_CALL → AWAITING_TOOL while executing
+        this.transitionFsm(runId, "TOOL_CALL", "AWAITING_TOOL");
+        currentFsmState = "AWAITING_TOOL";
 
         // Execute each tool and collect results
         const toolResults: ContentBlock[] = [];
@@ -910,6 +961,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           content: toolResults,
         });
 
+        // G-AZ01: AWAITING_TOOL → PLANNING for next iteration
+        this.transitionFsm(runId, "AWAITING_TOOL", "PLANNING");
+        currentFsmState = "PLANNING";
         continue;
       }
 
@@ -982,6 +1036,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     );
   }
 
+  // G-AZ01: Transition FSM state — validates allowed transitions, persists to SQLite
+  private transitionFsm(runId: string, from: AgentFsmState, to: AgentFsmState): void {
+    if (!isFsmTransitionValid(from, to)) {
+      console.warn(`[agent] Invalid FSM transition ${from} → ${to} for run ${runId}`);
+    }
+    this.ctx.storage.sql.exec(
+      `UPDATE agent_runs SET fsm_state = ?, updated_at = ? WHERE id = ?`,
+      to,
+      new Date().toISOString(),
+      runId
+    );
+  }
+
   // ── GET /runs/:runId ──────────────────────────────────────────────────────
 
   private handleGetRun(runId: string): Response {
@@ -1002,6 +1069,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       spaceId: run.space_id,
       tenantId: run.tenant_id,
       status: run.status,
+      fsmState: run.fsm_state,
       goal: run.goal,
       reactSteps: JSON.parse(run.react_steps as string) as ReactStep[],
       finalAnswer: run.final_answer,

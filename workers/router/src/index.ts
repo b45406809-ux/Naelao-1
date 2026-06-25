@@ -9,11 +9,46 @@ export interface Env {
   PLATFORM_SECRET: string;
   SESSION_REVOCATION: KVNamespace;
   CONFIG: KVNamespace;
+  NONCE_STORE: KVNamespace;
   PLATFORM_DB: D1Database;
   SPACES_WORKER: Fetcher;
   KNOWLEDGE_WORKER: Fetcher;
   AGENTS_WORKER: Fetcher;
   AUTH_WORKER: Fetcher;
+}
+
+// G-AX27: Replay attack prevention — max clock skew in seconds
+const MAX_TIMESTAMP_SKEW_S = 300;
+
+// ── G-AX27: validate timestamp and track nonce to prevent replay attacks ──────
+async function checkReplayPrevention(
+  request: Request,
+  nonceStore: KVNamespace
+): Promise<{ ok: boolean; reason?: string }> {
+  const tsHeader = request.headers.get("x-naelao-timestamp");
+  if (!tsHeader) return { ok: true }; // header optional for unauthenticated routes
+
+  const ts = parseInt(tsHeader, 10);
+  if (isNaN(ts)) return { ok: false, reason: "x-naelao-timestamp must be a unix epoch integer" };
+
+  const nowS = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowS - ts) > MAX_TIMESTAMP_SKEW_S) {
+    return { ok: false, reason: `Request timestamp is outside ±${MAX_TIMESTAMP_SKEW_S}s window` };
+  }
+
+  // Nonce check (best-effort — KV eventual consistency ~60s, but catches most replays)
+  const nonceHeader = request.headers.get("x-naelao-nonce");
+  if (nonceHeader) {
+    const nonceKey = `nonce:${nonceHeader}`;
+    const existing = await nonceStore.get(nonceKey);
+    if (existing !== null) {
+      return { ok: false, reason: "Request nonce has already been used (replay detected)" };
+    }
+    // Store nonce with TTL slightly longer than the allowed skew window
+    await nonceStore.put(nonceKey, "1", { expirationTtl: MAX_TIMESTAMP_SKEW_S + 60 });
+  }
+
+  return { ok: true };
 }
 
 // G-AD02: In-memory per-user token version cache (5s TTL)
@@ -91,6 +126,17 @@ api.use(
   "*",
   jwtAuth((c) => (c as unknown as { env: Env }).env.JWT_SECRET)
 );
+
+// G-AX27: Replay attack prevention — timestamp skew + nonce dedup
+api.use("*", async (c, next) => {
+  if (c.env.NONCE_STORE) {
+    const result = await checkReplayPrevention(c.req.raw, c.env.NONCE_STORE);
+    if (!result.ok) {
+      return c.json({ error_code: "replay_detected", message: result.reason }, 400);
+    }
+  }
+  return next();
+});
 
 // G-AD02: Token version check — reject tokens whose version is behind the DB value.
 // Uses 5s in-memory cache to avoid a D1 read on every request.

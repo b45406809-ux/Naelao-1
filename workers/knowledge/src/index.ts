@@ -52,6 +52,38 @@ function requireTenant(c: { req: { header: (h: string) => string | undefined } }
   return tenantId;
 }
 
+// ── G-BD01: KB content sanitization — strip HTML/XML and scan for injection ───
+
+// Patterns that commonly signal prompt injection attempts in KB content
+const INJECTION_PATTERNS: RegExp[] = [
+  /ignore\s+(all\s+)?(previous|prior|above)\s+instructions?/i,
+  /disregard\s+(all\s+)?(previous|prior|above)\s+instructions?/i,
+  /forget\s+(all\s+)?(previous|prior|above)\s+instructions?/i,
+  /you\s+are\s+now\s+(a|an)\s+/i,
+  /\[SYSTEM\]/i,
+  /\bSYSTEM\s*PROMPT\b/i,
+  /###\s*(INSTRUCTIONS?|SYSTEM|OVERRIDE|JAILBREAK)/i,
+  /<\s*system\s*>/i,
+  /\bOVERRIDE\s+(ALL\s+)?(PREVIOUS\s+)?INSTRUCTIONS?\b/i,
+  /\bACT\s+AS\s+(IF\s+YOU\s+ARE\s+)?(A\s+)?/i,
+];
+
+function sanitizeKbContent(content: string): { sanitized: string; injectionDetected: boolean } {
+  // Strip HTML/XML tags to prevent tag-based injection vectors
+  const stripped = content
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, "")
+    .replace(/<[^>]{0,500}>/g, " ")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/\s{3,}/g, "\n\n")
+    .trim();
+
+  const injectionDetected = INJECTION_PATTERNS.some((p) => p.test(stripped));
+
+  return { sanitized: stripped, injectionDetected };
+}
+
 // ── Helper: sha256 hex digest (Web Crypto, available in Workers) ──────────────
 
 async function sha256Hex(input: string): Promise<string> {
@@ -181,12 +213,22 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     .run();
 
   try {
+    // ── G-BD01: Sanitize content — strip HTML, detect injection patterns ────
+    const { sanitized: sanitizedContent, injectionDetected } = sanitizeKbContent(body.content);
+    if (injectionDetected) {
+      // Flag in DB but do NOT reject — builders may legitimately document attacks
+      await c.env.PLATFORM_DB.prepare(
+        `UPDATE kb_documents SET status = 'flagged', updated_at = ? WHERE id = ?`
+      ).bind(new Date().toISOString(), docId).run();
+      console.warn(`[kb] Injection pattern detected in doc ${docId} for space ${spaceId}`);
+    }
+
     // ── Chunking ────────────────────────────────────────────────────────────
-    const chunks = chunkText(body.content);
+    const chunks = chunkText(sanitizedContent);
 
     if (chunks.length === 0) {
       // Content too short to chunk — treat as one chunk
-      chunks.push(body.content.trim());
+      chunks.push(sanitizedContent.trim());
     }
 
     // ── Embedding (batch, 50 chunks per CF AI call) ─────────────────────────
