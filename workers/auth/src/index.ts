@@ -133,7 +133,7 @@ app.post("/login", async (c) => {
   const user = await db
     .prepare(
       `SELECT u.id, u.email, u.password_hash, u.status, u.org_id,
-              m.role, s.plan_tier
+              u.token_version, m.role, s.plan_tier
        FROM users u
        JOIN org_members m ON m.user_id = u.id AND m.org_id = u.org_id
        JOIN subscriptions s ON s.org_id = u.org_id AND s.status = 'active'
@@ -146,6 +146,7 @@ app.post("/login", async (c) => {
       password_hash: string;
       status: string;
       org_id: string;
+      token_version: number;
       role: string;
       plan_tier: string;
     }>();
@@ -170,6 +171,8 @@ app.post("/login", async (c) => {
       email: user.email,
       role: user.role as "owner" | "admin" | "editor" | "viewer",
       scopes: ["api:access"],
+      // G-AD02: Embed token version so router can verify against D1 on each request
+      tv: user.token_version ?? 0,
     },
     c.env.JWT_SECRET,
     86400 // 24 hours
@@ -259,6 +262,24 @@ app.post("/register", async (c) => {
     },
     201
   );
+});
+
+// ── POST /revoke — G-AD02: Increment token_version to revoke ALL user tokens ──
+app.post("/revoke", async (c) => {
+  const authHeader = c.req.header("authorization") ?? "";
+  if (!authHeader.startsWith("Bearer ")) throw unauthorized("Missing Authorization header");
+  const token = authHeader.slice(7);
+  let claims;
+  try {
+    claims = await verifyJwt(token, c.env.JWT_SECRET);
+  } catch (err) {
+    if (err instanceof AuthError) throw unauthorized(err.message);
+    throw err;
+  }
+  await c.env.PLATFORM_DB.prepare(
+    `UPDATE users SET token_version = token_version + 1 WHERE id = ?1`
+  ).bind(claims.sub).run();
+  return c.json({ revoked: true, request_id: c.get("requestId") });
 });
 
 // ── POST /verify ──────────────────────────────────────────────────────────────

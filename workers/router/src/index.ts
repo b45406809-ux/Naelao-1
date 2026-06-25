@@ -9,10 +9,38 @@ export interface Env {
   PLATFORM_SECRET: string;
   SESSION_REVOCATION: KVNamespace;
   CONFIG: KVNamespace;
+  PLATFORM_DB: D1Database;
   SPACES_WORKER: Fetcher;
   KNOWLEDGE_WORKER: Fetcher;
   AGENTS_WORKER: Fetcher;
   AUTH_WORKER: Fetcher;
+}
+
+// G-AD02: In-memory per-user token version cache (5s TTL)
+// Map key: userId, value: { version, expiresAt }
+const tokenVersionCache = new Map<string, { version: number; expiresAt: number }>();
+const TOKEN_VERSION_CACHE_TTL_MS = 5_000;
+
+async function checkTokenVersion(
+  db: D1Database,
+  userId: string,
+  claimedVersion: number
+): Promise<boolean> {
+  const cached = tokenVersionCache.get(userId);
+  let currentVersion: number;
+
+  if (cached && Date.now() < cached.expiresAt) {
+    currentVersion = cached.version;
+  } else {
+    const row = await db
+      .prepare("SELECT token_version FROM users WHERE id = ?1")
+      .bind(userId)
+      .first<{ token_version: number }>();
+    currentVersion = row?.token_version ?? 0;
+    tokenVersionCache.set(userId, { version: currentVersion, expiresAt: Date.now() + TOKEN_VERSION_CACHE_TTL_MS });
+  }
+
+  return claimedVersion >= currentVersion;
 }
 
 // Extend Hono context variables for this worker
@@ -63,6 +91,22 @@ api.use(
   "*",
   jwtAuth((c) => (c as unknown as { env: Env }).env.JWT_SECRET)
 );
+
+// G-AD02: Token version check — reject tokens whose version is behind the DB value.
+// Uses 5s in-memory cache to avoid a D1 read on every request.
+api.use("*", async (c, next) => {
+  const claims = c.get("claims");
+  if (claims?.tv !== undefined) {
+    const valid = await checkTokenVersion(c.env.PLATFORM_DB, claims.sub, claims.tv);
+    if (!valid) {
+      return c.json(
+        { error_code: "token_revoked", message: "Session has been revoked" },
+        401
+      );
+    }
+  }
+  return next();
+});
 
 // G-I01: Sign inter-worker requests with HMAC so downstream workers can verify origin
 async function proxyTo(

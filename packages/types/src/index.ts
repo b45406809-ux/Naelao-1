@@ -26,6 +26,8 @@ export interface NaelaoJwtClaims {
   iat: number;
   exp: number;
   jti: string;        // unique token ID for revocation
+  // G-AD02: token version — must match users.token_version; incrementing revokes all tokens
+  tv?: number;
 }
 
 export type UserRole = "owner" | "admin" | "editor" | "viewer";

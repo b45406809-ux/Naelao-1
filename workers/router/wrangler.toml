@@ -6,6 +6,11 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 ENVIRONMENT = "development"
 
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "REPLACE_WITH_DB_ID"
+
 [[kv_namespaces]]
 binding = "SESSION_REVOCATION"
 id = "PLACEHOLDER_SESSION_KV_ID"
