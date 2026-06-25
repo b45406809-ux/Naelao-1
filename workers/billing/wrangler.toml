@@ -21,6 +21,7 @@ queue = "naelao-billing-events"
 max_batch_size = 100
 max_batch_timeout = 5
 max_retries = 3
+max_concurrency = 50
 dead_letter_queue = "naelao-billing-events-dlq"
 
 [vars]

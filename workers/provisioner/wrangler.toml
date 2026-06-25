@@ -8,6 +8,7 @@ queue = "naelao-provisioning-queue"
 max_batch_size = 10
 max_batch_timeout = 30
 max_retries = 3
+max_concurrency = 10
 dead_letter_queue = "naelao-provisioning-dlq"
 
 [[d1_databases]]

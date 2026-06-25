@@ -8,6 +8,7 @@ queue = "naelao-notifications-queue"
 max_batch_size = 50
 max_batch_timeout = 10
 max_retries = 3
+max_concurrency = 50
 dead_letter_queue = "naelao-notifications-dlq"
 
 [[d1_databases]]

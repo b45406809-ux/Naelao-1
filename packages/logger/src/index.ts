@@ -21,17 +21,20 @@ const PII_FIELDS = new Set([
   "private_key", "privateKey", "refresh_token", "refreshToken",
 ]);
 
-const PII_PATTERNS = [
-  /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g, // email
-  /\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/g,             // credit card
-  /\b\d{3}-\d{2}-\d{4}\b/g,                                 // SSN
-];
+// G-N33: Store pattern sources (not compiled /g RegExp objects) to avoid shared
+// lastIndex state corruption across concurrent requests in the same isolate.
+const PII_PATTERN_SOURCES = [
+  /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/,  // email
+  /\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/,               // credit card
+  /\b\d{3}-\d{2}-\d{4}\b/,                                   // SSN
+] as const;
 
 export function scrubPii(obj: unknown): unknown {
   if (typeof obj === "string") {
     let s = obj;
-    for (const pattern of PII_PATTERNS) {
-      s = s.replace(pattern, "[REDACTED]");
+    for (const src of PII_PATTERN_SOURCES) {
+      // Construct a fresh /g regex per call to avoid shared lastIndex across concurrent requests
+      s = s.replace(new RegExp(src.source, "g"), "[REDACTED]");
     }
     return s;
   }

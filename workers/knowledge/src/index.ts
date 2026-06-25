@@ -270,6 +270,139 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   }
 });
 
+// ── PATCH /spaces/:spaceId/kb/documents/:docId ───────────────────────────────
+// G-X09: Document update must delete old stale vectors before upserting new ones
+
+app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const docId = c.req.param("docId");
+
+  const body = await c.req.json<{
+    title?: string;
+    content?: string;
+  }>();
+
+  if (!body.title && !body.content) {
+    throw badRequest("At least one of title or content is required");
+  }
+
+  // Verify ownership and get current state
+  const existing = await c.env.PLATFORM_DB.prepare(
+    "SELECT id, title, chunk_count FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ?"
+  ).bind(docId, spaceId, tenantId).first<{ id: string; title: string; chunk_count: number }>();
+
+  if (!existing) throw notFound("KbDocument");
+
+  // If only updating title (no content re-index needed)
+  if (body.title && !body.content) {
+    const newTitle = body.title.trim();
+    const titleMod = moderateInput(newTitle);
+    if (titleMod.blocked) throw badRequest(`Title contains disallowed content: ${titleMod.reason}`);
+
+    await c.env.PLATFORM_DB.prepare(
+      "UPDATE kb_documents SET title = ?, updated_at = datetime('now') WHERE id = ?"
+    ).bind(newTitle, docId).run();
+
+    const updated = await c.env.PLATFORM_DB.prepare("SELECT * FROM kb_documents WHERE id = ?").bind(docId).first();
+    return c.json(updated, 200);
+  }
+
+  const newContent = body.content!;
+  const newTitle = body.title?.trim() ?? existing.title;
+
+  // G-AA26: Scan updated content for injection
+  const titleMod = moderateInput(newTitle);
+  if (titleMod.blocked) throw badRequest(`Title contains disallowed content: ${titleMod.reason}`);
+  const SAMPLE_WINDOW = 2000;
+  for (let pos = 0; pos < newContent.length; pos += SAMPLE_WINDOW) {
+    const win = newContent.slice(pos, pos + SAMPLE_WINDOW);
+    const mod = moderateInput(win);
+    if (mod.blocked) throw badRequest(`Content contains disallowed content: ${mod.reason}`);
+  }
+
+  const MAX_CONTENT_CHARS = 1_048_576;
+  if (newContent.length > MAX_CONTENT_CHARS) {
+    throw badRequest(`content exceeds maximum size of 1MB`);
+  }
+
+  // Mark as re-processing
+  await c.env.PLATFORM_DB.prepare(
+    "UPDATE kb_documents SET status = 'processing', updated_at = datetime('now') WHERE id = ?"
+  ).bind(docId).run();
+
+  try {
+    // G-X09: Delete ALL old vectors before re-indexing to prevent stale accumulation
+    const oldChunkCount = existing.chunk_count ?? 0;
+    if (oldChunkCount > 0) {
+      const oldVectorIds: string[] = [];
+      for (let i = 0; i < oldChunkCount; i++) oldVectorIds.push(`${docId}_chunk_${i}`);
+      const VECTOR_DELETE_BATCH = 100;
+      for (let i = 0; i < oldVectorIds.length; i += VECTOR_DELETE_BATCH) {
+        await c.env.KB_VECTORS.deleteByIds(oldVectorIds.slice(i, i + VECTOR_DELETE_BATCH));
+      }
+    }
+
+    // Delete old R2 chunks
+    const prefix = `kb/${spaceId}/${docId}/`;
+    let cursor: string | undefined;
+    do {
+      const listOpts: R2ListOptions = cursor !== undefined ? { prefix, cursor } : { prefix };
+      const listed: R2Objects = await c.env.KB_BUCKET.list(listOpts);
+      if (listed.objects.length > 0) {
+        await Promise.all(listed.objects.map(o => c.env.KB_BUCKET.delete(o.key)));
+      }
+      cursor = listed.truncated ? listed.cursor : undefined;
+    } while (cursor);
+
+    // Re-chunk and re-embed
+    const chunks = chunkText(newContent);
+    if (chunks.length === 0) chunks.push(newContent.trim());
+
+    const EMBED_BATCH_SIZE = 50;
+    const allEmbedResults: Array<{ embedding: number[]; tokenCount: number }> = [];
+    for (let i = 0; i < chunks.length; i += EMBED_BATCH_SIZE) {
+      const batchResults = await embedBatch(c.env.AI, chunks.slice(i, i + EMBED_BATCH_SIZE));
+      allEmbedResults.push(...batchResults);
+    }
+
+    const vectorUpserts: VectorizeVector[] = [];
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const embedResult = allEmbedResults[i];
+      if (chunk === undefined || embedResult === undefined) continue;
+
+      await c.env.KB_BUCKET.put(
+        chunkR2Key(spaceId, docId, i),
+        JSON.stringify({ docId, chunkIndex: i, content: chunk, spaceId, tenantId } satisfies ChunkRecord)
+      );
+
+      vectorUpserts.push({
+        id: `${docId}_chunk_${i}`,
+        values: embedResult.embedding,
+        metadata: { space_id: spaceId, doc_id: docId, chunk_index: i, title: newTitle, content_preview: chunk.slice(0, 200) },
+      });
+    }
+
+    const VECTOR_BATCH_SIZE = 100;
+    for (let i = 0; i < vectorUpserts.length; i += VECTOR_BATCH_SIZE) {
+      await c.env.KB_VECTORS.upsert(vectorUpserts.slice(i, i + VECTOR_BATCH_SIZE));
+    }
+
+    await c.env.PLATFORM_DB.prepare(
+      "UPDATE kb_documents SET status = 'indexed', title = ?, chunk_count = ?, updated_at = datetime('now') WHERE id = ?"
+    ).bind(newTitle, chunks.length, docId).run();
+
+    const updated = await c.env.PLATFORM_DB.prepare("SELECT * FROM kb_documents WHERE id = ?").bind(docId).first();
+    return c.json(updated, 200);
+  } catch (err) {
+    await c.env.PLATFORM_DB.prepare(
+      "UPDATE kb_documents SET status = 'failed', updated_at = datetime('now') WHERE id = ?"
+    ).bind(docId).run().catch(() => {});
+    throw internalError(`Document update failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+});
+
 // ── DELETE /spaces/:spaceId/kb/documents/:docId ───────────────────────────────
 
 app.delete("/spaces/:spaceId/kb/documents/:docId", async (c) => {
