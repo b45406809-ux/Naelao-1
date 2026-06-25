@@ -26,6 +26,14 @@ binding = "NONCE_STORE"
 id = "PLACEHOLDER_NONCE_STORE_KV_ID"
 preview_id = "PLACEHOLDER_NONCE_STORE_KV_PREVIEW_ID"
 
+[[durable_objects.bindings]]
+name = "RATE_LIMIT_DO"
+class_name = "RateLimitDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RateLimitDO"]
+
 [[services]]
 binding = "SPACES_WORKER"
 service = "naelao-spaces"

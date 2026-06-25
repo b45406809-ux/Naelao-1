@@ -98,6 +98,20 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_injection_user ON injection_attempts(end_user_id, detected_at);
     `,
   },
+  {
+    version: 6,
+    // G-AX13: per-user token bucket for message rate limiting within a Space
+    description: "user_rate_limits token bucket table",
+    up: `
+      CREATE TABLE IF NOT EXISTS user_rate_limits (
+        user_id        TEXT PRIMARY KEY,
+        tokens         REAL NOT NULL DEFAULT 10,
+        last_refill_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
+        capacity       REAL NOT NULL DEFAULT 10,
+        rate_per_sec   REAL NOT NULL DEFAULT 0.1667
+      );
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -304,6 +318,51 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // G-D02: 128 KB hard cap on message content to prevent OOM in DO SQLite
   private static readonly MAX_MESSAGE_CONTENT_BYTES = 131_072;
 
+  // G-AX13: Token bucket rate limit check for a given end_user_id (10 msg/min default)
+  private checkUserRateLimit(userId: string): { allowed: boolean; retryAfterMs: number } {
+    const MSG_PER_MIN = 10;
+    const capacity = MSG_PER_MIN;
+    const ratePerSec = MSG_PER_MIN / 60;
+    const nowMs = Date.now();
+
+    interface RateLimitRow {
+      tokens: number;
+      last_refill_at: number;
+      capacity: number;
+      rate_per_sec: number;
+    }
+
+    const rows = queryAll<RateLimitRow>(
+      this.ctx.storage.sql as never,
+      "SELECT tokens, last_refill_at, capacity, rate_per_sec FROM user_rate_limits WHERE user_id = ?",
+      userId
+    );
+    const row = rows[0];
+
+    const currentTokens = row?.tokens ?? capacity;
+    const lastRefill = row?.last_refill_at ?? nowMs;
+    const elapsedSec = Math.max(0, (nowMs - lastRefill) / 1000);
+    const refilled = Math.min(capacity, currentTokens + elapsedSec * ratePerSec);
+
+    if (refilled < 1) {
+      execute(
+        this.ctx.storage.sql as never,
+        `INSERT OR REPLACE INTO user_rate_limits (user_id, tokens, last_refill_at, capacity, rate_per_sec)
+         VALUES (?, ?, ?, ?, ?)`,
+        userId, refilled, nowMs, capacity, ratePerSec
+      );
+      return { allowed: false, retryAfterMs: Math.ceil((1 - refilled) / ratePerSec * 1000) };
+    }
+
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT OR REPLACE INTO user_rate_limits (user_id, tokens, last_refill_at, capacity, rate_per_sec)
+       VALUES (?, ?, ?, ?, ?)`,
+      userId, refilled - 1, nowMs, capacity, ratePerSec
+    );
+    return { allowed: true, retryAfterMs: 0 };
+  }
+
   private async appendMessage(request: Request, sessionId: string): Promise<Response> {
     const body = await request.json<{
       role: MessageRole;
@@ -311,6 +370,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       tool_call_id?: string;
       tool_name?: string;
       token_count?: number;
+      end_user_id?: string;
     }>();
 
     // G-D02: Reject oversized messages before writing to SQLite
@@ -320,6 +380,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         { error_code: "payload_too_large", message: `Message content exceeds ${SpaceDO.MAX_MESSAGE_CONTENT_BYTES} byte limit` },
         { status: 413 }
       );
+    }
+
+    // G-AX13: Per-user rate limiting — only for end-user "user" role messages
+    if (body.role === "user" && body.end_user_id) {
+      const rl = this.checkUserRateLimit(body.end_user_id);
+      if (!rl.allowed) {
+        return Response.json(
+          { error_code: "rate_limited", message: "Too many messages — please slow down", retry_after_ms: rl.retryAfterMs },
+          { status: 429 }
+        );
+      }
     }
 
     const session = queryOne<{ id: string }>(

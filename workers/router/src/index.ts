@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { cors, requestId, jwtAuth, errorResponse } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
 import type { NaelaoJwtClaims } from "@naelao/types";
+export { RateLimitDO } from "./RateLimitDO";
 
 export interface Env {
   ENVIRONMENT: string;
@@ -11,6 +12,7 @@ export interface Env {
   CONFIG: KVNamespace;
   NONCE_STORE: KVNamespace;
   PLATFORM_DB: D1Database;
+  RATE_LIMIT_DO: DurableObjectNamespace;
   SPACES_WORKER: Fetcher;
   KNOWLEDGE_WORKER: Fetcher;
   AGENTS_WORKER: Fetcher;
@@ -134,6 +136,37 @@ api.use("*", async (c, next) => {
     if (!result.ok) {
       return c.json({ error_code: "replay_detected", message: result.reason }, 400);
     }
+  }
+  return next();
+});
+
+// G-AX12: Token bucket rate limiting per authenticated user
+// Default: 120 requests/minute (2× smoother than fixed 60-window)
+const DEFAULT_RATE_LIMIT = 120;
+api.use("*", async (c, next) => {
+  if (!c.env.RATE_LIMIT_DO) return next();
+  const claims = c.get("claims");
+  const bucketKey = claims?.sub ?? c.req.header("x-forwarded-for") ?? "anonymous";
+  const doId = c.env.RATE_LIMIT_DO.idFromName("global-rate-limiter");
+  const stub = c.env.RATE_LIMIT_DO.get(doId);
+  try {
+    const rl = await stub.fetch("http://do/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: bucketKey, limit: DEFAULT_RATE_LIMIT }),
+    });
+    const result = await rl.json<{ allowed: boolean; remaining: number; retry_after_ms: number }>();
+    if (!result.allowed) {
+      return c.json(
+        { error_code: "rate_limited", message: "Too many requests", retry_after_ms: result.retry_after_ms },
+        429
+      );
+    }
+    // Surface remaining quota in response headers (set after response via header)
+    c.header("X-RateLimit-Limit", String(DEFAULT_RATE_LIMIT));
+    c.header("X-RateLimit-Remaining", String(result.remaining));
+  } catch {
+    // Rate limiter unavailable — fail open to avoid blocking all traffic
   }
   return next();
 });
