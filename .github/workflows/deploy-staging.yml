@@ -1,0 +1,227 @@
+name: Deploy to staging
+
+on:
+  push:
+    branches: [main]
+
+env:
+  NODE_VERSION: "20"
+  PNPM_VERSION: "9"
+
+jobs:
+  deploy-workers-staging:
+    name: Deploy workers to staging
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency: deploy-staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run D1 migrations (staging)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          DB_ID="${{ vars.D1_DATABASE_ID_STAGING }}"
+          for migration in infra/migrations/*.sql; do
+            echo "Applying $migration..."
+            npx wrangler d1 execute "$DB_ID" \
+              --file="$migration" \
+              --remote \
+              --env=staging 2>&1 || true
+          done
+
+      - name: Deploy router worker (staging)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: npx wrangler deploy --env=staging --config=workers/router/wrangler.toml
+
+      - name: Deploy spaces worker (staging)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: npx wrangler deploy --env=staging --config=workers/spaces/wrangler.toml
+
+      - name: Deploy agents worker (staging)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: npx wrangler deploy --env=staging --config=workers/agents/wrangler.toml
+
+      - name: Deploy auth worker (staging)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: npx wrangler deploy --env=staging --config=workers/auth/wrangler.toml
+
+      - name: Deploy knowledge worker (staging)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: npx wrangler deploy --env=staging --config=workers/knowledge/wrangler.toml
+
+      - name: Deploy billing worker (staging)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: npx wrangler deploy --env=staging --config=workers/billing/wrangler.toml
+
+      - name: Deploy remaining workers (staging)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          for w in analytics marketplace threads assistant browser mini-agi channels security-gateway workflows ws-gateway; do
+            if [ -f "workers/$w/wrangler.toml" ]; then
+              echo "Deploying $w..."
+              npx wrangler deploy --env=staging --config="workers/$w/wrangler.toml" || echo "⚠️ $w deploy failed (non-fatal)"
+            fi
+          done
+
+  deploy-dashboard-staging:
+    name: Deploy dashboard to staging (CF Pages)
+    runs-on: ubuntu-latest
+    environment: staging
+    concurrency: deploy-staging-pages
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build dashboard
+        run: pnpm --filter @naelao/dashboard build
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.API_URL_STAGING }}
+
+      - name: Deploy to CF Pages (dashboard)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_PAGES_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          npx wrangler pages deploy apps/dashboard/.vercel/output/static \
+            --project-name=naelao-dashboard-staging \
+            --branch=main
+
+  deploy-portal-staging:
+    name: Deploy portal to staging (CF Pages)
+    runs-on: ubuntu-latest
+    environment: staging
+    needs: [deploy-workers-staging]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build portal
+        run: pnpm --filter @naelao/portal build
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.API_URL_STAGING }}
+
+      - name: Deploy to CF Pages (portal)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_PAGES_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          npx wrangler pages deploy apps/portal/.vercel/output/static \
+            --project-name=naelao-portal-staging \
+            --branch=main
+
+  deploy-marketplace-staging:
+    name: Deploy marketplace-web to staging (CF Pages)
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build marketplace
+        run: pnpm --filter @naelao/marketplace-web build
+        env:
+          NEXT_PUBLIC_API_URL: ${{ vars.API_URL_STAGING }}
+          NEXT_PUBLIC_DASHBOARD_URL: ${{ vars.DASHBOARD_URL_STAGING }}
+
+      - name: Deploy to CF Pages (marketplace)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_PAGES_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          npx wrangler pages deploy apps/marketplace-web/.vercel/output/static \
+            --project-name=naelao-marketplace-staging \
+            --branch=main
+
+  deploy-widget-staging:
+    name: Build and publish widget
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build widget
+        run: pnpm --filter @naelao/widget build
+
+      - name: Upload widget to R2 (staging)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          npx wrangler r2 object put \
+            naelao-static/widget/naelao-chat.js \
+            --file=apps/widget/dist/naelao-chat.js \
+            --content-type="application/javascript" \
+            --cache-control="public, max-age=300"

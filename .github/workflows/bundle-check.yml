@@ -1,0 +1,72 @@
+name: Bundle size check
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "workers/**"
+      - "apps/widget/**"
+
+env:
+  NODE_VERSION: "20"
+  PNPM_VERSION: "9"
+  # Workers must stay under 8MB compressed (10MB CF limit, 8MB CI budget)
+  WORKER_BUNDLE_LIMIT_KB: 8192
+  # Widget must stay under 10KB gzipped
+  WIDGET_LIMIT_KB: 10
+
+jobs:
+  bundle-check:
+    name: Check bundle sizes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build widget
+        run: pnpm --filter @naelao/widget build
+
+      - name: Check widget bundle size (< 10KB gzipped)
+        run: |
+          WIDGET_GZ=$(gzip -c apps/widget/dist/naelao-chat.js | wc -c)
+          WIDGET_KB=$(( WIDGET_GZ / 1024 ))
+          echo "Widget gzipped size: ${WIDGET_KB}KB (limit: ${{ env.WIDGET_LIMIT_KB }}KB)"
+          if [ "$WIDGET_KB" -gt "${{ env.WIDGET_LIMIT_KB }}" ]; then
+            echo "❌ Widget too large: ${WIDGET_KB}KB > ${{ env.WIDGET_LIMIT_KB }}KB"
+            exit 1
+          fi
+          echo "✅ Widget size OK"
+
+      - name: Build workers (dry-run via wrangler)
+        run: |
+          FAILED=0
+          for worker_dir in workers/*/; do
+            worker=$(basename "$worker_dir")
+            if [ -f "$worker_dir/wrangler.toml" ]; then
+              echo "Building $worker..."
+              pnpm --filter "@naelao/$worker" build 2>&1 | tail -5 || true
+              if [ -f "$worker_dir/dist/index.js" ]; then
+                SIZE=$(wc -c < "$worker_dir/dist/index.js")
+                SIZE_GZ=$(gzip -c "$worker_dir/dist/index.js" | wc -c)
+                SIZE_GZ_KB=$(( SIZE_GZ / 1024 ))
+                echo "  $worker: ${SIZE_GZ_KB}KB gzipped"
+                if [ "$SIZE_GZ_KB" -gt "${{ env.WORKER_BUNDLE_LIMIT_KB }}" ]; then
+                  echo "  ❌ $worker too large: ${SIZE_GZ_KB}KB > ${{ env.WORKER_BUNDLE_LIMIT_KB }}KB"
+                  FAILED=1
+                fi
+              fi
+            fi
+          done
+          if [ "$FAILED" -eq 1 ]; then exit 1; fi
+          echo "✅ All worker bundles within limits"

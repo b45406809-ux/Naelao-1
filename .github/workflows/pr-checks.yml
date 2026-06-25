@@ -1,0 +1,98 @@
+name: PR checks
+
+on:
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: "20"
+  PNPM_VERSION: "9"
+
+jobs:
+  migration-safety:
+    name: Migration safety check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for destructive migration statements
+        run: |
+          FAILED=0
+          CHANGED=$(git diff --name-only origin/main...HEAD -- 'infra/migrations/*.sql' 2>/dev/null || \
+                    git diff --name-only HEAD~1 HEAD -- 'infra/migrations/*.sql' 2>/dev/null || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No migration files changed."
+            exit 0
+          fi
+          for f in $CHANGED; do
+            if [ -f "$f" ]; then
+              # Block DROP TABLE / DROP COLUMN / TRUNCATE on existing migrations
+              if grep -iE '^\s*(DROP\s+TABLE|TRUNCATE|DROP\s+COLUMN)' "$f"; then
+                echo "❌ Destructive statement found in $f — use ALTER TABLE RENAME for column changes"
+                FAILED=1
+              fi
+              # Warn about migrations that modify existing tables without IF EXISTS guards
+              if grep -iE '^\s*ALTER\s+TABLE' "$f" | grep -iv 'IF EXISTS'; then
+                echo "⚠️  ALTER TABLE without IF EXISTS guard in $f — ensure backwards compatibility"
+              fi
+            fi
+          done
+          if [ "$FAILED" -eq 1 ]; then exit 1; fi
+          echo "✅ Migration safety check passed"
+
+  secret-scan:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect hardcoded secrets
+        run: |
+          FAILED=0
+          # Patterns that suggest hardcoded secrets
+          PATTERNS=(
+            'sk-[a-zA-Z0-9]{20,}'
+            'AKIA[0-9A-Z]{16}'
+            'AIza[0-9A-Za-z\-_]{35}'
+            'ghp_[a-zA-Z0-9]{36}'
+            'stripe_live.*sk_live'
+            'password\s*=\s*["\x27][^"\x27]{8,}'
+          )
+          EXCLUDE='\.github/workflows|\.example|\.env\.example|test.*fixture|mock'
+          for pattern in "${PATTERNS[@]}"; do
+            MATCHES=$(git diff origin/main...HEAD -U0 2>/dev/null | grep '^+' | grep -v '^+++' | \
+                      grep -iP "$pattern" | grep -vE "$EXCLUDE" | head -5 || true)
+            if [ -n "$MATCHES" ]; then
+              echo "⚠️  Possible secret pattern '$pattern' in diff:"
+              echo "$MATCHES"
+              FAILED=1
+            fi
+          done
+          if [ "$FAILED" -eq 1 ]; then
+            echo "❌ Potential secrets detected — use CF Workers Secrets, never hardcode"
+            exit 1
+          fi
+          echo "✅ No hardcoded secrets detected"
+
+  migration-order:
+    name: Migration ordering check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify migration file ordering
+        run: |
+          PREV=0
+          for f in infra/migrations/*.sql; do
+            NUM=$(basename "$f" | grep -oP '^\d+')
+            if [ "$((10#$NUM))" -ne "$((PREV + 1))" ]; then
+              echo "❌ Migration gap: expected $((PREV + 1)) but got $NUM (file: $f)"
+              exit 1
+            fi
+            PREV="$((10#$NUM))"
+          done
+          echo "✅ Migration order is correct (1 through $PREV)"
