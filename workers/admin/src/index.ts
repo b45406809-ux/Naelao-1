@@ -10,6 +10,51 @@ interface Env {
   ANALYTICS: AnalyticsEngineDataset;
 }
 
+// ── G-D11: DLQ consumer — persist dead-letter messages before 4-day CF expiry ──
+
+interface DlqMessage {
+  type?: string;
+  message_type?: string;
+  [key: string]: unknown;
+}
+
+export async function queue(
+  batch: MessageBatch<DlqMessage>,
+  env: Env
+): Promise<void> {
+  for (const message of batch.messages) {
+    const body = message.body;
+    const messageType = body.type ?? body.message_type ?? "unknown";
+    const now = new Date().toISOString();
+
+    try {
+      // Persist to D1 platform_failures table for operator review
+      await env.PLATFORM_DB.prepare(
+        `INSERT INTO platform_failures (id, message_type, payload_json, failure_reason, failed_at, retry_count, reviewed)
+         VALUES (?, ?, ?, ?, ?, 0, 0)`
+      )
+        .bind(
+          crypto.randomUUID(),
+          messageType,
+          JSON.stringify(body),
+          `DLQ: exhausted retries for message type=${messageType}`,
+          now
+        )
+        .run();
+
+      // Log for operator alert visibility
+      console.error(
+        `[admin/dlq] PERMANENT FAILURE type=${messageType} at=${now} body=${JSON.stringify(body).slice(0, 500)}`
+      );
+
+      message.ack();
+    } catch (err) {
+      console.error("[admin/dlq] Failed to write platform_failure record:", err);
+      message.retry();
+    }
+  }
+}
+
 function validateEnv(env: Env): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
   if (!env.ADMIN_SECRET) throw new Error("Missing required secret: ADMIN_SECRET");
@@ -158,6 +203,34 @@ app.get("/admin/stats", async (c) => {
   });
 });
 
+// G-D11: Platform failures (DLQ) dashboard endpoint
+// GET /admin/failures?reviewed=0&limit=50
+app.get("/admin/failures", async (c) => {
+  const url = new URL(c.req.url);
+  const reviewed = url.searchParams.get("reviewed") ?? "0";
+  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10), 200);
+
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT id, message_type, payload_json, failure_reason, failed_at, retry_count, reviewed
+     FROM platform_failures
+     WHERE reviewed = ?
+     ORDER BY failed_at DESC
+     LIMIT ?`
+  ).bind(parseInt(reviewed, 10), limit).all();
+
+  return c.json({ data: results, count: results.length });
+});
+
+// PATCH /admin/failures/:id/reviewed — mark a failure as reviewed
+app.patch("/admin/failures/:id/reviewed", async (c) => {
+  const result = await c.env.PLATFORM_DB.prepare(
+    "UPDATE platform_failures SET reviewed = 1 WHERE id = ?"
+  ).bind(c.req.param("id")).run();
+
+  if (result.meta.changes === 0) return c.json({ error_code: "not_found", message: "Failure not found" }, 404);
+  return c.json({ reviewed: true });
+});
+
 // G-P10: Audit log endpoint — CF Analytics Engine with parameterized queries (no SQL injection)
 // GET /admin/audit?space_id=xxx&event_type=yyy&limit=50
 // G-P10 Required Fix: parameterize all dynamic values — never template-literal AE queries.
@@ -202,4 +275,7 @@ app.get("/admin/audit", async (c) => {
 });
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
-export default { fetch: app.fetch } satisfies ExportedHandler<Env>;
+export default {
+  fetch: app.fetch,
+  queue: queue as ExportedHandlerQueueHandler<Env>,
+} satisfies ExportedHandler<Env>;

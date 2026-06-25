@@ -9,6 +9,7 @@ export interface CredentialsEnv {
   PLATFORM_SECRET: string;
   CREDENTIAL_ENCRYPTION_KEY: string;
   PLATFORM_DB: D1Database;
+  ANALYTICS: AnalyticsEngineDataset;
 }
 
 function validateEnv(env: CredentialsEnv): void {
@@ -345,6 +346,28 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
 
   // G-AH07: Re-derive the per-space key from the resolved root key hex and spaceId
   const value = await decrypt(row.encrypted_value, row.iv, rootHex, spaceId);
+
+  // G-D06: Immutable audit entry — credential_access event in Analytics Engine
+  try {
+    const tokenParts: Record<string, string> = {};
+    for (const seg of credentialToken.split(",")) {
+      const eq = seg.indexOf("=");
+      if (eq > 0) tokenParts[seg.slice(0, eq)] = seg.slice(eq + 1);
+    }
+    c.env.ANALYTICS.writeDataPoint({
+      blobs: [
+        "credential_access",   // blob1: event_name
+        row.name,              // blob2: credential_name (not the value)
+        spaceId,               // blob3: space_id
+        tokenParts["aid"] ?? "", // blob4: agent_id
+        tenantId,              // blob5: tenant_id
+      ],
+      doubles: [Date.now()],   // double1: access_timestamp_ms
+      indexes: [spaceId],
+    });
+  } catch {
+    // Best-effort — audit failures must not block the credential read
+  }
 
   return c.json({ name: row.name, value });
 });

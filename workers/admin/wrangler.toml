@@ -12,6 +12,12 @@ database_id = "PLACEHOLDER_D1_ID"
 binding = "ANALYTICS"
 dataset = "naelao_events"
 
+[[queues.consumers]]
+queue = "naelao-dlq"
+binding = "DLQ"
+max_batch_size = 10
+max_retries = 0
+
 [vars]
 ENVIRONMENT = "development"
 
