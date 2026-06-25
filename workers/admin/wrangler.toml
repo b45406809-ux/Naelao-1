@@ -8,6 +8,10 @@ binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "PLACEHOLDER_D1_ID"
 
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_events"
+
 [vars]
 ENVIRONMENT = "development"
 

@@ -7,6 +7,7 @@ interface Env {
   PLATFORM_SECRET: string;
   ADMIN_SECRET: string; // separate secret for admin access
   PLATFORM_DB: D1Database;
+  ANALYTICS: AnalyticsEngineDataset;
 }
 
 function validateEnv(env: Env): void {
@@ -155,6 +156,49 @@ app.get("/admin/stats", async (c) => {
     sessions_24h: sessions?.count ?? 0,
     timestamp: new Date().toISOString(),
   });
+});
+
+// G-P10: Audit log endpoint — CF Analytics Engine with parameterized queries (no SQL injection)
+// GET /admin/audit?space_id=xxx&event_type=yyy&limit=50
+// G-P10 Required Fix: parameterize all dynamic values — never template-literal AE queries.
+const ALLOWED_EVENT_TYPES = new Set([
+  "session.created", "session.ended", "message.sent", "tool.called",
+  "llm.request", "kb.search", "space.created", "space.deleted",
+  "user.login", "user.logout", "credential.accessed", "injection.detected",
+  "quota.exceeded", "erasure.completed", "export.requested",
+]);
+
+app.get("/admin/audit", async (c) => {
+  const url = new URL(c.req.url);
+  const spaceId = url.searchParams.get("space_id") ?? "";
+  const rawEventType = url.searchParams.get("event_type") ?? "";
+  const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10), 200);
+
+  if (!spaceId) return c.json({ error_code: "bad_request", message: "space_id is required" }, 400);
+
+  // G-P10: Validate event_type against allowlist before using in query
+  const eventType = rawEventType && ALLOWED_EVENT_TYPES.has(rawEventType) ? rawEventType : null;
+
+  // G-P10: Use parameterized AE query — never string interpolation
+  // CF Analytics Engine SQL uses ? positional params
+  let queryText: string;
+  let params: unknown[];
+
+  if (eventType) {
+    queryText = "SELECT blob1 as event_type, blob2 as space_id, blob3 as user_id, blob4 as session_id, double1 as ts FROM ANALYTICS WHERE blob2 = ? AND blob1 = ? ORDER BY double1 DESC LIMIT ?";
+    params = [spaceId, eventType, limit];
+  } else {
+    queryText = "SELECT blob1 as event_type, blob2 as space_id, blob3 as user_id, blob4 as session_id, double1 as ts FROM ANALYTICS WHERE blob2 = ? ORDER BY double1 DESC LIMIT ?";
+    params = [spaceId, limit];
+  }
+
+  try {
+    const result = await (c.env.ANALYTICS as unknown as { query: (sql: string, ...params: unknown[]) => Promise<{ results: unknown[] }> }).query(queryText, ...params);
+    return c.json({ data: result.results, count: result.results.length });
+  } catch (err) {
+    console.error("[admin/audit] AE query error:", err);
+    return c.json({ error_code: "internal_error", message: "Failed to query audit log" }, 500);
+  }
 });
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));

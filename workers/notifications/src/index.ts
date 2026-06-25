@@ -10,6 +10,12 @@ export interface NotificationsEnv {
   RESEND_API_URL: string;
   WEBHOOK_SIGNING_SECRET: string;
   PLATFORM_DB: D1Database;
+  // G-P11/G-P12: APNs push notification credentials (optional — push disabled if absent)
+  APNS_KEY_ID?: string;
+  APNS_TEAM_ID?: string;
+  APNS_PRIVATE_KEY_BASE64?: string;
+  APNS_BUNDLE_ID?: string;
+  APNS_HOST?: string; // "api.push.apple.com" prod, "api.sandbox.push.apple.com" sandbox
 }
 
 function validateEnv(env: NotificationsEnv): void {
@@ -20,15 +26,116 @@ function validateEnv(env: NotificationsEnv): void {
 // ── Queue message type ────────────────────────────────────────────────────────
 
 interface NotificationMessage {
-  type: "email" | "in_app" | "webhook";
+  type: "email" | "in_app" | "webhook" | "push";
   tenantId: string;
   userId?: string;
+  spaceId?: string;
   email?: string;
   subject?: string;
   html?: string;
   templateId?: string;
   data?: Record<string, unknown>;
   webhookUrl?: string;
+  // For push notifications
+  title?: string;
+  body?: string;
+  deviceToken?: string; // explicit token (optional — can also look up via SpaceDO)
+}
+
+// ── G-P11: APNs JWT generation with correct DER→P1363 ECDSA conversion ──────
+// Web Crypto returns DER-encoded ECDSA signatures. APNs requires raw P1363
+// format: R || S (two 32-byte big-endian integers, 64 bytes total).
+
+function derToP1363(derBuf: ArrayBuffer, coordSize = 32): Uint8Array {
+  const der = new Uint8Array(derBuf);
+  // DER SEQUENCE: 0x30 <len> 0x02 <rLen> <r> 0x02 <sLen> <s>
+  let offset = 0;
+  if (der[offset++] !== 0x30) throw new Error("APNs DER: expected SEQUENCE");
+  // Skip length bytes (may be 1 or 2 bytes)
+  const seqLenByte = der[offset++];
+  if (seqLenByte === undefined) throw new Error("APNs DER: truncated");
+  if (seqLenByte > 0x80) offset += seqLenByte & 0x7f; // long form length
+
+  // Parse R INTEGER
+  if (der[offset++] !== 0x02) throw new Error("APNs DER: expected INTEGER for R");
+  const rLen = der[offset++] ?? 0;
+  const rBytes = der.slice(offset, offset + rLen);
+  offset += rLen;
+
+  // Parse S INTEGER
+  if (der[offset++] !== 0x02) throw new Error("APNs DER: expected INTEGER for S");
+  const sLen = der[offset++] ?? 0;
+  const sBytes = der.slice(offset, offset + sLen);
+
+  // Strip leading 0x00 padding (added to indicate positive integer) and left-pad to coordSize
+  const p1363 = new Uint8Array(coordSize * 2);
+  const rTrimmed = rBytes[0] === 0x00 ? rBytes.slice(1) : rBytes;
+  const sTrimmed = sBytes[0] === 0x00 ? sBytes.slice(1) : sBytes;
+  p1363.set(rTrimmed, coordSize - rTrimmed.length);
+  p1363.set(sTrimmed, coordSize * 2 - sTrimmed.length);
+  return p1363;
+}
+
+function base64url(buf: Uint8Array): string {
+  return btoa(String.fromCharCode(...buf))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+async function generateApnsJwt(env: NotificationsEnv): Promise<string> {
+  // APNs JWT: header.payload signed with ES256 using APNS_PRIVATE_KEY (PEM/base64)
+  const header = base64url(new TextEncoder().encode(JSON.stringify({ alg: "ES256", kid: env.APNS_KEY_ID ?? "" })));
+  const payload = base64url(new TextEncoder().encode(JSON.stringify({ iss: env.APNS_TEAM_ID ?? "", iat: Math.floor(Date.now() / 1000) })));
+  const signingInput = `${header}.${payload}`;
+
+  // Import ECDSA P-256 key from base64-encoded raw PKCS8
+  const keyBytes = Uint8Array.from(atob(env.APNS_PRIVATE_KEY_BASE64 ?? ""), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey(
+    "pkcs8",
+    keyBytes,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign"]
+  );
+
+  // Sign and convert DER→P1363 (G-P11: the critical fix)
+  const derSig = await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    key,
+    new TextEncoder().encode(signingInput)
+  );
+  const p1363Sig = derToP1363(derSig, 32); // 64 bytes total
+  return `${signingInput}.${base64url(p1363Sig)}`;
+}
+
+// ── G-P12: sendPush with properly scoped env (no undefined spaceDO) ──────────
+async function sendApnsPush(
+  env: NotificationsEnv,
+  deviceToken: string,
+  title: string,
+  body: string
+): Promise<void> {
+  const jwt = await generateApnsJwt(env);
+  const payload = JSON.stringify({
+    aps: { alert: { title, body }, sound: "default" },
+  });
+
+  const url = `https://${env.APNS_HOST}/3/device/${deviceToken}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      authorization: `bearer ${jwt}`,
+      "apns-topic": env.APNS_BUNDLE_ID ?? "",
+      "content-type": "application/json",
+    },
+    body: payload,
+  });
+
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "");
+    throw new Error(`APNs push failed: ${res.status} ${errBody}`);
+  }
 }
 
 // ── SSRF guard (G-AS03) ───────────────────────────────────────────────────────
@@ -217,6 +324,36 @@ export async function queue(
           }
 
           message.ack();
+          break;
+        }
+
+        case "push": {
+          // G-P11/G-P12: APNs push notification with correct DER→P1363 signature
+          if (!env.APNS_KEY_ID || !env.APNS_TEAM_ID || !env.APNS_PRIVATE_KEY_BASE64 || !env.APNS_BUNDLE_ID) {
+            console.warn("[notifications/queue] APNs not configured, skipping push notification");
+            message.ack();
+            break;
+          }
+
+          const deviceToken = msg.deviceToken;
+          if (!deviceToken) {
+            console.warn("[notifications/queue] push message missing deviceToken, acking");
+            message.ack();
+            break;
+          }
+
+          try {
+            await sendApnsPush(
+              env,
+              deviceToken,
+              msg.title ?? "Notification",
+              msg.body ?? ""
+            );
+            message.ack();
+          } catch (pushErr) {
+            console.error("[notifications/queue] APNs push failed:", pushErr);
+            message.retry();
+          }
           break;
         }
 
