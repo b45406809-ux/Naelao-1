@@ -9,12 +9,14 @@ const IV_BYTES = 12; // 96-bit IV for AES-GCM
 // ── Password hashing (PBKDF2, SHA-256, 600k iterations) ─────────────────────
 
 export interface HashedPassword {
-  hash: string; // base64(salt || hash)
+  hash: string;       // hex-encoded 32-byte derived key
+  salt: string;       // hex-encoded 32-byte random salt
+  iterations: number; // PBKDF2_ITERATIONS
   algorithm: "pbkdf2-sha256-600k";
 }
 
 export async function hashPassword(password: string): Promise<HashedPassword> {
-  const salt = crypto.getRandomValues(new Uint8Array(PBKDF2_SALT_BYTES));
+  const saltBytes = crypto.getRandomValues(new Uint8Array(PBKDF2_SALT_BYTES));
   const keyMaterial = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(password),
@@ -23,20 +25,20 @@ export async function hashPassword(password: string): Promise<HashedPassword> {
     ["deriveBits"]
   );
   const derivedBits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
+    { name: "PBKDF2", salt: saltBytes, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
     keyMaterial,
     256
   );
-  const combined = new Uint8Array(PBKDF2_SALT_BYTES + 32);
-  combined.set(salt, 0);
-  combined.set(new Uint8Array(derivedBits), PBKDF2_SALT_BYTES);
-  return { hash: bufToBase64(combined), algorithm: "pbkdf2-sha256-600k" };
+  return {
+    hash: bufToHex(new Uint8Array(derivedBits)),
+    salt: bufToHex(saltBytes),
+    iterations: PBKDF2_ITERATIONS,
+    algorithm: "pbkdf2-sha256-600k",
+  };
 }
 
 export async function verifyPassword(password: string, stored: HashedPassword): Promise<boolean> {
-  const combined = base64ToBuf(stored.hash);
-  const salt = combined.slice(0, PBKDF2_SALT_BYTES);
-  const expectedHash = combined.slice(PBKDF2_SALT_BYTES);
+  const saltBytes = hexToBuf(stored.salt);
   const keyMaterial = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(password),
@@ -45,17 +47,18 @@ export async function verifyPassword(password: string, stored: HashedPassword): 
     ["deriveBits"]
   );
   const derivedBits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
+    { name: "PBKDF2", salt: saltBytes, iterations: stored.iterations, hash: "SHA-256" },
     keyMaterial,
     256
   );
-  return timingSafeEqual(new Uint8Array(derivedBits), expectedHash);
+  return timingSafeEqual(new Uint8Array(derivedBits), hexToBuf(stored.hash));
 }
 
 // ── AES-256-GCM envelope encryption ─────────────────────────────────────────
 
 export interface EncryptedEnvelope {
-  ciphertext: string; // base64(iv || ciphertext || tag)
+  ciphertext: string; // base64-encoded ciphertext+auth-tag
+  iv: string;         // base64-encoded 96-bit IV
   algorithm: "aes-256-gcm";
 }
 
@@ -76,29 +79,43 @@ export async function encrypt(plaintext: string, dek: CryptoKey): Promise<Encryp
   const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES));
   const data = new TextEncoder().encode(plaintext);
   const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, dek, data);
-  const combined = new Uint8Array(IV_BYTES + ciphertext.byteLength);
-  combined.set(iv, 0);
-  combined.set(new Uint8Array(ciphertext), IV_BYTES);
-  return { ciphertext: bufToBase64(combined), algorithm: "aes-256-gcm" };
+  return {
+    ciphertext: bufToBase64(new Uint8Array(ciphertext)),
+    iv: bufToBase64(iv),
+    algorithm: "aes-256-gcm",
+  };
 }
 
 export async function decrypt(envelope: EncryptedEnvelope, dek: CryptoKey): Promise<string> {
-  const combined = base64ToBuf(envelope.ciphertext);
-  const iv = combined.slice(0, IV_BYTES);
-  const ciphertext = combined.slice(IV_BYTES);
+  const iv = base64ToBuf(envelope.iv);
+  const ciphertext = base64ToBuf(envelope.ciphertext);
   const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, dek, ciphertext);
   return new TextDecoder().decode(plaintext);
 }
 
-// Wrap (encrypt) a DEK with a Key Encryption Key
+// Wrap (encrypt) a DEK with a Key Encryption Key — returns compact base64(iv||ciphertext)
 export async function wrapDek(dek: CryptoKey, kek: CryptoKey): Promise<string> {
   const rawDek = await (crypto.subtle.exportKey("raw", dek) as Promise<ArrayBuffer>);
   const envelope = await encrypt(bufToBase64(new Uint8Array(rawDek)), kek);
-  return envelope.ciphertext;
+  // Pack iv + ciphertext into a single string for storage
+  const ivBytes = base64ToBuf(envelope.iv);
+  const ctBytes = base64ToBuf(envelope.ciphertext);
+  const combined = new Uint8Array(ivBytes.byteLength + ctBytes.byteLength);
+  combined.set(ivBytes, 0);
+  combined.set(ctBytes, ivBytes.byteLength);
+  return bufToBase64(combined);
 }
 
 export async function unwrapDek(wrappedDek: string, kek: CryptoKey): Promise<CryptoKey> {
-  const rawBase64 = await decrypt({ ciphertext: wrappedDek, algorithm: "aes-256-gcm" }, kek);
+  const combined = base64ToBuf(wrappedDek);
+  const iv = combined.slice(0, IV_BYTES);
+  const ciphertext = combined.slice(IV_BYTES);
+  const envelope: EncryptedEnvelope = {
+    ciphertext: bufToBase64(ciphertext),
+    iv: bufToBase64(iv),
+    algorithm: "aes-256-gcm",
+  };
+  const rawBase64 = await decrypt(envelope, kek);
   return importDek(rawBase64);
 }
 

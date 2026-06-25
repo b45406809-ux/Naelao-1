@@ -423,12 +423,27 @@ importers:
 
   tests:
     devDependencies:
+      '@naelao/analytics-schema':
+        specifier: workspace:*
+        version: link:../packages/analytics-schema
       '@naelao/auth':
         specifier: workspace:*
         version: link:../packages/auth
+      '@naelao/crypto':
+        specifier: workspace:*
+        version: link:../packages/crypto
+      '@naelao/entitlements':
+        specifier: workspace:*
+        version: link:../packages/entitlements
+      '@naelao/idempotency':
+        specifier: workspace:*
+        version: link:../packages/idempotency
       '@naelao/llm-gateway':
         specifier: workspace:*
         version: link:../packages/llm-gateway
+      '@naelao/moderation':
+        specifier: workspace:*
+        version: link:../packages/moderation
       '@naelao/rag':
         specifier: workspace:*
         version: link:../packages/rag
@@ -438,6 +453,9 @@ importers:
       '@naelao/types':
         specifier: workspace:*
         version: link:../packages/types
+      '@naelao/webhooks':
+        specifier: workspace:*
+        version: link:../packages/webhooks
       typescript:
         specifier: ^5.6.3
         version: 5.9.3
