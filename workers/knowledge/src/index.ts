@@ -323,7 +323,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   const denseResponse = await c.env.KB_VECTORS.query(queryEmbed.embedding, {
     topK: topK * 2,
     filter: { space_id: { $eq: spaceId } },
-    returnMetadata: "all",
+    returnMetadata: "indexed",
   });
 
   const denseMatches = denseResponse.matches ?? [];

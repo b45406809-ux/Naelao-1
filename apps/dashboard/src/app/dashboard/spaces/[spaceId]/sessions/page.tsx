@@ -21,7 +21,8 @@ export default function LiveSessionsPage() {
 
   useEffect(() => {
     const wsBase = getApiBase().replace(/^https?/, "wss");
-    const url = `${wsBase}/v1/spaces/${params.spaceId}/sessions/live?${new URLSearchParams({ Authorization: getAuthHeader() })}`;
+    const authHeader = getAuthHeader() ?? "";
+    const url = `${wsBase}/v1/spaces/${params.spaceId}/sessions/live?${new URLSearchParams({ Authorization: authHeader })}`;
 
     const connect = () => {
       const ws = new WebSocket(url);

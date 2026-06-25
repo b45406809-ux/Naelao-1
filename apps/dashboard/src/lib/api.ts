@@ -80,6 +80,15 @@ export function getToken(): string | null {
   return localStorage.getItem("naelao_token");
 }
 
+export function getApiBase(): string {
+  return API_URL;
+}
+
+export function getAuthHeader(): string | null {
+  const token = getToken();
+  return token ? `Bearer ${token}` : null;
+}
+
 // ── Core fetch wrapper ───────────────────────────────────────────────────────
 
 export async function apiFetch<T>(
