@@ -42,6 +42,76 @@ async function enforceSpaceQuota(db: D1Database, tenantId: string): Promise<void
   }
 }
 
+// G-AV02: Lightweight JSON Schema (draft-07 subset) validator for SpaceType config.
+// Validates: type, required, properties (type+enum), minLength, minimum, maximum.
+// Returns field-level errors without importing ajv (keeps Workers bundle small).
+interface SchemaValidationError {
+  field: string;
+  error: string;
+}
+
+function validateConfigSchema(
+  config: Record<string, unknown>,
+  schema: Record<string, unknown>
+): SchemaValidationError[] {
+  const errors: SchemaValidationError[] = [];
+  const properties = schema["properties"] as Record<string, Record<string, unknown>> | undefined;
+  const required = schema["required"] as string[] | undefined;
+
+  if (required) {
+    for (const field of required) {
+      if (config[field] === undefined || config[field] === null || config[field] === "") {
+        errors.push({ field, error: "required field missing" });
+      }
+    }
+  }
+
+  if (properties) {
+    for (const [field, fieldSchema] of Object.entries(properties)) {
+      const value = config[field];
+      if (value === undefined || value === null) continue;
+
+      const expectedType = fieldSchema["type"] as string | undefined;
+      if (expectedType) {
+        const actualType = Array.isArray(value) ? "array" : typeof value;
+        if (actualType !== expectedType) {
+          errors.push({ field, error: `expected type ${expectedType}, got ${actualType}` });
+          continue;
+        }
+      }
+
+      const enumValues = fieldSchema["enum"] as unknown[] | undefined;
+      if (enumValues && !enumValues.includes(value)) {
+        errors.push({ field, error: `value must be one of: ${enumValues.join(", ")}` });
+      }
+
+      if (typeof value === "string") {
+        const minLen = fieldSchema["minLength"] as number | undefined;
+        if (minLen !== undefined && value.length < minLen) {
+          errors.push({ field, error: `minimum length is ${minLen}` });
+        }
+        const maxLen = fieldSchema["maxLength"] as number | undefined;
+        if (maxLen !== undefined && value.length > maxLen) {
+          errors.push({ field, error: `maximum length is ${maxLen}` });
+        }
+      }
+
+      if (typeof value === "number") {
+        const minimum = fieldSchema["minimum"] as number | undefined;
+        if (minimum !== undefined && value < minimum) {
+          errors.push({ field, error: `minimum value is ${minimum}` });
+        }
+        const maximum = fieldSchema["maximum"] as number | undefined;
+        if (maximum !== undefined && value > maximum) {
+          errors.push({ field, error: `maximum value is ${maximum}` });
+        }
+      }
+    }
+  }
+
+  return errors;
+}
+
 // G-A11: Validate required secrets at startup
 function validateEnv(env: Env): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
@@ -89,6 +159,29 @@ app.post("/spaces", async (c) => {
       { error_code: "bad_request", message: "name and spacetype_id are required" },
       400
     );
+  }
+
+  // G-AV02: Validate config_overrides against SpaceType's declared config_schema
+  if (body.config_overrides) {
+    const spaceTypeRow = await c.env.PLATFORM_DB.prepare(
+      "SELECT config_schema FROM spacetypes WHERE id = ?"
+    ).bind(body.spacetype_id).first<{ config_schema: string | null }>();
+
+    if (spaceTypeRow?.config_schema) {
+      try {
+        const schema = JSON.parse(spaceTypeRow.config_schema) as Record<string, unknown>;
+        const validationErrors = validateConfigSchema(body.config_overrides, schema);
+        if (validationErrors.length > 0) {
+          return c.json({
+            error_code: "config_validation_failed",
+            message: "SpaceType config validation failed",
+            errors: validationErrors,
+          }, 400);
+        }
+      } catch {
+        // Malformed schema stored in DB — skip validation, don't block creation
+      }
+    }
   }
 
   // G-I13: Enforce per-plan space quota
