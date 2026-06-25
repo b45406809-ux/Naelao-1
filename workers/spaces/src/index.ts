@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound } from "@naelao/http";
-import { getDOName } from "@naelao/crypto";
+import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import type { SpaceDO } from "./do/SpaceDO.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
@@ -10,6 +10,7 @@ export interface Env {
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
   SPACE_DO: DurableObjectNamespace<SpaceDO>;
+  EXPORTS_BUCKET: R2Bucket;
 }
 
 // Plan-tier space limits (G-I13: quota enforcement)
@@ -194,6 +195,129 @@ app.delete("/spaces/:id", async (c) => {
 
   if (result.meta.changes === 0) throw notFound("Space");
   return c.json({ deleted: true });
+});
+
+// ── G-AO30: GDPR Art. 15 — End-user conversation history export ─────────────
+// GET /spaces/:spaceId/me/export?end_user_id=xxx
+// Fetches all messages for the end_user_id, serializes to JSON, uploads to R2,
+// returns a presigned URL valid 24 hours.
+app.get("/spaces/:spaceId/me/export", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const endUserId = c.req.query("end_user_id") ?? c.req.header("x-naelao-end-user-id") ?? "";
+  if (!endUserId) return c.json({ error_code: "bad_request", message: "end_user_id is required" }, 400);
+
+  const doId = c.env.SPACE_DO.idFromName(
+    await getDOName("space", spaceId, c.req.header("x-naelao-tenant-id") ?? "", c.env.PLATFORM_SECRET)
+  );
+  const stub = c.env.SPACE_DO.get(doId);
+
+  const doRes = await stub.fetch(
+    new Request(`http://space-do/me/messages?user_id=${encodeURIComponent(endUserId)}`, { method: "GET" })
+  );
+  if (!doRes.ok) {
+    return new Response(doRes.body, { status: doRes.status, headers: { "content-type": "application/json" } });
+  }
+
+  const exportData = await doRes.json<{ messages: unknown[]; sessions: string[] }>();
+  const payload = JSON.stringify({
+    export_version: "1",
+    space_id: spaceId,
+    end_user_id: endUserId,
+    exported_at: new Date().toISOString(),
+    sessions: exportData.sessions,
+    messages: exportData.messages,
+  }, null, 2);
+
+  // Upload to R2 with a 24h expiry path
+  const exportKey = `exports/${spaceId}/${endUserId}/${crypto.randomUUID()}.json`;
+  await c.env.EXPORTS_BUCKET.put(exportKey, payload, {
+    httpMetadata: { contentType: "application/json" },
+    customMetadata: { end_user_id: endUserId, space_id: spaceId },
+  });
+
+  // G-AO30: HMAC-signed download URL valid 24 hours (R2 Workers binding has no native presigned URL)
+  // URL: /spaces/{spaceId}/me/export/download?key=...&expires=...&sig=...
+  const expiresAt = Math.floor(Date.now() / 1000) + 86400;
+  const sigInput = `${exportKey}:${expiresAt}`;
+  const sig = await signHmac(sigInput, c.env.PLATFORM_SECRET);
+  const downloadUrl = `/spaces/${spaceId}/me/export/download?key=${encodeURIComponent(exportKey)}&expires=${expiresAt}&sig=${sig}`;
+
+  console.log(`[gdpr][export] user=${endUserId} space=${spaceId} key=${exportKey}`);
+  return c.json({ export_url: downloadUrl, expires_in_seconds: 86400, message_count: exportData.messages.length }, 200);
+});
+
+// ── G-AO30: Signed export download ──────────────────────────────────────────
+// GET /spaces/:spaceId/me/export/download?key=...&expires=...&sig=...
+app.get("/spaces/:spaceId/me/export/download", async (c) => {
+  const key = c.req.query("key") ?? "";
+  const expiresStr = c.req.query("expires") ?? "0";
+  const sig = c.req.query("sig") ?? "";
+
+  const expiresAt = parseInt(expiresStr, 10);
+  if (!key || !sig || Date.now() / 1000 > expiresAt) {
+    return c.json({ error_code: "forbidden", message: "Export link has expired or is invalid" }, 403);
+  }
+
+  const sigInput = `${key}:${expiresAt}`;
+  const valid = await verifyHmac(sigInput, sig, c.env.PLATFORM_SECRET);
+  if (!valid) {
+    return c.json({ error_code: "forbidden", message: "Invalid export link signature" }, 403);
+  }
+
+  const obj = await c.env.EXPORTS_BUCKET.get(key);
+  if (!obj) return c.json({ error_code: "not_found", message: "Export not found" }, 404);
+
+  return new Response(obj.body, {
+    headers: {
+      "content-type": "application/json",
+      "content-disposition": `attachment; filename="naelao-export.json"`,
+    },
+  });
+});
+
+// ── G-AO31: GDPR Art. 17 — End-user erasure within a Space ──────────────────
+// DELETE /spaces/:spaceId/me/data?end_user_id=xxx
+app.delete("/spaces/:spaceId/me/data", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const endUserId = c.req.query("end_user_id") ?? c.req.header("x-naelao-end-user-id") ?? "";
+  if (!endUserId) return c.json({ error_code: "bad_request", message: "end_user_id is required" }, 400);
+
+  const doId = c.env.SPACE_DO.idFromName(
+    await getDOName("space", spaceId, c.req.header("x-naelao-tenant-id") ?? "", c.env.PLATFORM_SECRET)
+  );
+  const stub = c.env.SPACE_DO.get(doId);
+
+  const doRes = await stub.fetch(
+    new Request(`http://space-do/me/data?user_id=${encodeURIComponent(endUserId)}`, { method: "DELETE" })
+  );
+
+  const result = await doRes.json<{ sessions_deleted: number; messages_deleted: number; erased_at: string }>();
+  console.log(`[gdpr][erasure] user=${endUserId} space=${spaceId} result=${JSON.stringify(result)}`);
+
+  return c.json({ erased: true, space_id: spaceId, sessions_deleted: result.sessions_deleted, messages_deleted: result.messages_deleted, erased_at: result.erased_at }, 200);
+});
+
+// ── G-AO17: Runtime injection attempt recording ──────────────────────────────
+// POST /spaces/:spaceId/me/injection { end_user_id, space_id }
+// Records attempt in SpaceDO and returns rate-limited status.
+app.post("/spaces/:spaceId/me/injection", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+
+  const doId = c.env.SPACE_DO.idFromName(
+    await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET)
+  );
+  const stub = c.env.SPACE_DO.get(doId);
+
+  const doRes = await stub.fetch(
+    new Request("http://space-do/me/injection", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: c.req.raw.body,
+    })
+  );
+  const result = await doRes.json<unknown>();
+  return c.json(result, doRes.status as 200 | 400);
 });
 
 // ── SpaceDO session proxy ────────────────────────────────────────────────────

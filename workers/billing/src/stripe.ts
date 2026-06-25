@@ -155,6 +155,8 @@ export async function createCheckoutSession(
     mode: "subscription",
     success_url: params.successUrl,
     cancel_url: params.cancelUrl,
+    // G-AN06: Stripe Tax — jurisdictional tax calculation for global compliance
+    "automatic_tax[enabled]": true,
   };
   // Flatten metadata object into Stripe's bracket notation
   for (const [k, v] of Object.entries(params.metadata)) {

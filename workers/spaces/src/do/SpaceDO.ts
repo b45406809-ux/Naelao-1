@@ -78,6 +78,26 @@ const MIGRATIONS: Migration[] = [
     description: "composite message ordering index",
     up: `CREATE INDEX IF NOT EXISTS idx_messages_session_time ON messages(session_id, created_at, id);`,
   },
+  {
+    version: 4,
+    // G-AO30/G-AO31: index for per-user GDPR export and erasure queries
+    description: "end_user_id index on sessions for GDPR",
+    up: `CREATE INDEX IF NOT EXISTS idx_sessions_end_user ON sessions(end_user_id);`,
+  },
+  {
+    version: 5,
+    // G-AO17: track injection attempts per user for runtime rate-limiting
+    description: "injection_attempts table",
+    up: `
+      CREATE TABLE IF NOT EXISTS injection_attempts (
+        id          TEXT PRIMARY KEY,
+        space_id    TEXT NOT NULL,
+        end_user_id TEXT NOT NULL,
+        detected_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_injection_user ON injection_attempts(end_user_id, detected_at);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -190,6 +210,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // POST /invalidate-user — G-F03: clear deny-cache entries for a user+space pair
       if (method === "POST" && url.pathname === "/invalidate-user") {
         return this.handleInvalidateUser(request);
+      }
+
+      // GET /me/messages?user_id=xxx — G-AO30: fetch all messages for GDPR export
+      if (method === "GET" && url.pathname === "/me/messages") {
+        return this.getUserMessages(url.searchParams);
+      }
+
+      // DELETE /me/data?user_id=xxx — G-AO31: erase all user data within space
+      if (method === "DELETE" && url.pathname === "/me/data") {
+        return this.eraseUserData(url.searchParams);
+      }
+
+      // POST /me/injection — G-AO17: record an injection attempt, return rate-limited status
+      if (method === "POST" && url.pathname === "/me/injection") {
+        return this.recordInjectionAttempt(request);
       }
 
       return Response.json(
@@ -443,5 +478,125 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // G-F03: Block a user — add to deny cache and optionally mark in SQLite
   denyUser(userId: string, spaceId: string): void {
     this.cacheDeny(userId, spaceId);
+  }
+
+  // G-AO30: Return all messages for a given end_user_id across all sessions in this space.
+  // Used by the spaces worker to build a GDPR Art. 15 data export package.
+  private getUserMessages(params: URLSearchParams): Response {
+    const userId = params.get("user_id");
+    if (!userId) {
+      return Response.json({ error_code: "bad_request", message: "user_id is required" }, { status: 400 });
+    }
+
+    const sessions = queryAll<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM sessions WHERE end_user_id = ?",
+      userId
+    );
+
+    if (sessions.length === 0) {
+      return Response.json({ messages: [], sessions: [] });
+    }
+
+    const sessionIds = sessions.map((s) => s.id);
+    // Fetch all messages across all user sessions; use positional placeholders
+    const placeholders = sessionIds.map(() => "?").join(",");
+    const messages = queryAll<MessageRow>(
+      this.ctx.storage.sql as never,
+      `SELECT m.* FROM messages m WHERE m.session_id IN (${placeholders}) ORDER BY m.created_at ASC, m.id ASC`,
+      ...sessionIds
+    );
+
+    return Response.json({ messages, sessions: sessionIds });
+  }
+
+  // G-AO31: Delete all sessions and messages for a given end_user_id within this space.
+  // Returns counts of deleted rows for the audit trail.
+  private eraseUserData(params: URLSearchParams): Response {
+    const userId = params.get("user_id");
+    if (!userId) {
+      return Response.json({ error_code: "bad_request", message: "user_id is required" }, { status: 400 });
+    }
+
+    const sessions = queryAll<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM sessions WHERE end_user_id = ?",
+      userId
+    );
+
+    let messagesDeleted = 0;
+    let sessionsDeleted = 0;
+
+    for (const session of sessions) {
+      // Delete messages first (FK constraint)
+      execute(
+        this.ctx.storage.sql as never,
+        "DELETE FROM messages WHERE session_id = ?",
+        session.id
+      );
+      messagesDeleted++;
+
+      execute(
+        this.ctx.storage.sql as never,
+        "DELETE FROM agent_state WHERE session_id = ?",
+        session.id
+      );
+      execute(
+        this.ctx.storage.sql as never,
+        "DELETE FROM sessions WHERE id = ?",
+        session.id
+      );
+      sessionsDeleted++;
+    }
+
+    // Also remove injection attempt records for this user
+    execute(
+      this.ctx.storage.sql as never,
+      "DELETE FROM injection_attempts WHERE end_user_id = ?",
+      userId
+    );
+
+    const erasedAt = new Date().toISOString();
+    console.log(`[gdpr][erasure] user=${userId} sessions=${sessionsDeleted} messages=${messagesDeleted} at=${erasedAt}`);
+
+    return Response.json({ erased: true, sessions_deleted: sessionsDeleted, messages_deleted: messagesDeleted, erased_at: erasedAt });
+  }
+
+  // G-AO17: Record a prompt injection attempt for a user and check if they are now rate-limited.
+  // Rate limit: 3 attempts within 1 hour triggers block.
+  private async recordInjectionAttempt(request: Request): Promise<Response> {
+    const body = await request.json<{ end_user_id: string; space_id: string }>();
+    if (!body.end_user_id) {
+      return Response.json({ error_code: "bad_request", message: "end_user_id is required" }, { status: 400 });
+    }
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      "INSERT INTO injection_attempts (id, space_id, end_user_id, detected_at) VALUES (?, ?, ?, ?)",
+      id,
+      body.space_id ?? "",
+      body.end_user_id,
+      now
+    );
+
+    // Count attempts within the last 1 hour
+    const oneHourAgo = new Date(Date.now() - 3_600_000).toISOString();
+    const row = queryOne<{ cnt: number }>(
+      this.ctx.storage.sql as never,
+      "SELECT COUNT(*) as cnt FROM injection_attempts WHERE end_user_id = ? AND detected_at > ?",
+      body.end_user_id,
+      oneHourAgo
+    );
+    const count = row?.cnt ?? 0;
+    const rateLimited = count >= 3;
+
+    if (rateLimited) {
+      // Cache the deny to fast-path future requests
+      this.cacheDeny(body.end_user_id, body.space_id ?? "");
+    }
+
+    return Response.json({ recorded: true, attempts_last_hour: count, rate_limited: rateLimited });
   }
 }

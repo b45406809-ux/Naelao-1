@@ -10,6 +10,7 @@ import { Hono } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { getDOName } from "@naelao/crypto";
+import { detectPromptInjection } from "@naelao/moderation";
 import { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 
 export { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
@@ -100,6 +101,34 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   }
   if (body.goal.length > 10_000) {
     throw badRequest("goal must not exceed 10,000 characters");
+  }
+
+  // G-AO17: Runtime prompt injection detection — silent detection, no oracle
+  const { userId } = getCallerIdentity(c);
+  const injectionFlags = detectPromptInjection(body.goal);
+  if (injectionFlags.length > 0) {
+    // Record attempt and check rate-limit without revealing detection to user
+    try {
+      const injRes = await c.env.SPACES_WORKER.fetch(
+        new Request(`http://spaces-worker/spaces/${spaceId}/me/injection`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-naelao-tenant-id": tenantId,
+          },
+          body: JSON.stringify({ end_user_id: userId, space_id: spaceId }),
+        })
+      );
+      if (injRes.ok) {
+        const injData = await injRes.json<{ rate_limited?: boolean; attempts_last_hour?: number }>();
+        if (injData.rate_limited) {
+          // Return generic error — do not reveal injection detection
+          return c.json({ error_code: "rate_limited", message: "Too many requests" }, 429);
+        }
+      }
+    } catch {
+      // Best-effort — never block legitimate users due to injection tracking failures
+    }
   }
 
   // Fetch space from D1 (validate tenant ownership)

@@ -5,7 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [[queues.consumers]]
 queue = "naelao-notifications-queue"
-max_batch_size = 50
+max_batch_size = 100
 max_batch_timeout = 10
 max_retries = 3
 max_concurrency = 50

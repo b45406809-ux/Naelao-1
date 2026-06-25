@@ -18,3 +18,7 @@ new_classes = ["SpaceDO"]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "PLACEHOLDER_D1_ID"
+
+[[r2_buckets]]
+binding = "EXPORTS_BUCKET"
+bucket_name = "naelao-exports"
