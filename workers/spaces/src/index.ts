@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound } from "@naelao/http";
+import { getDOName } from "@naelao/crypto";
 import type { SpaceDO } from "./do/SpaceDO.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
@@ -202,8 +203,10 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
 
-  // DO name is deterministic per space
-  const doId = c.env.SPACE_DO.idFromName(`${tenantId}:space:${spaceId}`);
+  // G-BA01: HMAC-derived DO name prevents enumeration by compromised workers
+  const doId = c.env.SPACE_DO.idFromName(
+    await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET)
+  );
   const stub = c.env.SPACE_DO.get(doId);
 
   const url = new URL(c.req.url);

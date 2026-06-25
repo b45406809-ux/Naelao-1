@@ -9,6 +9,7 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
+import { getDOName } from "@naelao/crypto";
 import { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 
 export { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
@@ -71,14 +72,14 @@ function getCallerIdentity(c: {
 }
 
 // Get DO stub for agent session
-function getAgentDO(
+// G-BA01: HMAC-derived name prevents cross-tenant DO enumeration
+async function getAgentDO(
   env: AgentsEnv,
   tenantId: string,
   sessionId: string
-): DurableObjectStub<NaelaoAgentDO> {
-  const doId = env.NAELAO_AGENT_DO.idFromName(
-    `${tenantId}:agent:${sessionId}`
-  );
+): Promise<DurableObjectStub<NaelaoAgentDO>> {
+  const doName = await getDOName("agent", sessionId, tenantId, env.PLATFORM_SECRET);
+  const doId = env.NAELAO_AGENT_DO.idFromName(doName);
   return env.NAELAO_AGENT_DO.get(doId);
 }
 
@@ -210,7 +211,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   }
 
   // Get agent DO stub and forward the run request
-  const stub = getAgentDO(c.env, tenantId, sessionId);
+  const stub = await getAgentDO(c.env, tenantId, sessionId);
 
   const doResponse = await stub.fetch(
     new Request("http://agent-do/run", {
@@ -256,7 +257,7 @@ app.get(
 
     if (!space) throw notFound("Space");
 
-    const stub = getAgentDO(c.env, tenantId, sessionId);
+    const stub = await getAgentDO(c.env, tenantId, sessionId);
     const doResponse = await stub.fetch(
       new Request(`http://agent-do/runs/${runId}`, { method: "GET" })
     );
@@ -287,7 +288,7 @@ app.post(
 
     if (!space) throw notFound("Space");
 
-    const stub = getAgentDO(c.env, tenantId, sessionId);
+    const stub = await getAgentDO(c.env, tenantId, sessionId);
     const doResponse = await stub.fetch(
       new Request(`http://agent-do/runs/${runId}/cancel`, { method: "POST" })
     );
@@ -330,7 +331,7 @@ app.get(
       await writer.write(enc.encode(line));
     };
 
-    const stub = getAgentDO(c.env, tenantId, sessionId);
+    const stub = await getAgentDO(c.env, tenantId, sessionId);
 
     // Poll the DO until the run terminates (max 2 minutes)
     const pollTask = async (): Promise<void> => {

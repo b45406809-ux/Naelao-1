@@ -387,9 +387,15 @@ async function dispatchTool(
           return { output: "No results found in knowledge base" };
         }
 
-        const results = data.data
-          .map((r, i) => `[${i + 1}] ${r.content}`)
-          .join("\n\n---\n\n");
+        // G-BD01: Scan each retrieved KB chunk for prompt injection before context insertion
+        const safeChunks = data.data.map((r, i) => {
+          const chunkMod = moderateInput(r.content.slice(0, 4000));
+          const safeContent = chunkMod.blocked
+            ? `[CONTENT_REDACTED: retrieved chunk ${i + 1} contained disallowed patterns]`
+            : r.content;
+          return `[${i + 1}] ${safeContent}`;
+        });
+        const results = safeChunks.join("\n\n---\n\n");
 
         return { output: `<kb_content>\n${results}\n</kb_content>` };
       } catch (err) {

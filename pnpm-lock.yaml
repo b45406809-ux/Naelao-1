@@ -490,6 +490,9 @@ importers:
 
   workers/agents:
     dependencies:
+      '@naelao/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@naelao/entitlements':
         specifier: workspace:*
         version: link:../../packages/entitlements
@@ -499,6 +502,9 @@ importers:
       '@naelao/llm-gateway':
         specifier: workspace:*
         version: link:../../packages/llm-gateway
+      '@naelao/moderation':
+        specifier: workspace:*
+        version: link:../../packages/moderation
       '@naelao/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -747,6 +753,9 @@ importers:
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
+      '@naelao/llm-gateway':
+        specifier: workspace:*
+        version: link:../../packages/llm-gateway
       '@naelao/rag':
         specifier: workspace:*
         version: link:../../packages/rag
@@ -985,6 +994,9 @@ importers:
 
   workers/spaces:
     dependencies:
+      '@naelao/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@naelao/db':
         specifier: workspace:*
         version: link:../../packages/db

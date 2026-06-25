@@ -8,6 +8,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@naelao/crypto": "workspace:*",
     "@naelao/db": "workspace:*",
     "@naelao/http": "workspace:*",
     "@naelao/types": "workspace:*",

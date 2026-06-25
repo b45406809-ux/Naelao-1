@@ -137,6 +137,20 @@ export async function deriveKek(platformSecret: string, tenantId: string): Promi
   return crypto.subtle.importKey("raw", bits, { name: "AES-GCM" }, true, ["encrypt", "decrypt"]);
 }
 
+// ── Durable Object name derivation (G-BA01) ─────────────────────────────────
+// DO names MUST use HMAC to prevent enumeration/prediction by compromised workers.
+// Format: "<hmac-hex(tenantId, platformSecret)>:<type>:<resourceId>"
+
+export async function getDOName(
+  type: string,
+  resourceId: string,
+  tenantId: string,
+  platformSecret: string
+): Promise<string> {
+  const tenantHash = await signHmac(tenantId, platformSecret);
+  return `${tenantHash}:${type}:${resourceId}`;
+}
+
 // ── HMAC-SHA256 signing ──────────────────────────────────────────────────────
 
 export async function signHmac(payload: string, secret: string): Promise<string> {
