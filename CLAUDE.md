@@ -63,15 +63,23 @@ Commit after every working subsystem. Push after every commit.
 ## Build Progress
 - [x] Phase 0: Scaffold (root workspace, packages, workers structure)
 - [x] Phase 1: Foundation (router worker, auth, SpaceDO, D1 migrations)
-- [ ] Phase 2: KB System (knowledge worker, Vectorize ingestion, hybrid retrieval)
-- [ ] Phase 3: LLM Gateway + Agent Runtime (llm-gateway, agent loop, tool framework)
-- [ ] Phase 4: Billing (Stripe webhooks, subscriptions, metering)
-- [ ] Phase 5: Builder Dashboard (Next.js on CF Pages)
-- [ ] Phase 6: Space Shell / Product Portal (end-user UI)
-- [ ] Phase 7: Async Systems (Queues consumers, Workflows)
-- [ ] Phase 8: Analytics + Observability
-- [ ] Phase 9: Security Hardening
-- [ ] Phase 10: Test Suite
+- [x] Phase 2: KB System (knowledge worker, Vectorize ingestion, hybrid retrieval)
+- [x] Phase 3: LLM Gateway + Agent Runtime (llm-gateway, agent loop, tool framework)
+- [x] Phase 4: Billing (Stripe webhooks, subscriptions, metering)
+- [x] Phase 5: Builder Dashboard (Next.js on CF Pages, all pages)
+- [x] Phase 6: Space Shell / Product Portal (SSE streaming, i18n, magic link auth, feedback)
+- [x] Phase 7: Async Systems (Queues consumers, Workflows, all 28 workers)
+- [x] Phase 8: Analytics + Observability (analytics-schema, tracing, logger packages)
+- [x] Phase 9: Security Hardening (PBKDF2 G-B02, JWT pin G-B01, moderation, SSRF, env validation)
+- [x] Phase 10: Test Suite (167 tests across 14 suites — crypto, moderation, entitlements, webhooks, analytics-schema, idempotency, auth, rag, security, llm-gateway, spacedo, auth-flow, api-schema, tenant-isolation)
+
+## Additional Infrastructure Built
+- [x] Terraform IaC (cloudflare/cloudflare ~4.45, all KV/R2/D1/Queues/Vectorize/Pages resources)
+- [x] GitHub Actions CI/CD (ci, bundle-check, pr-checks, deploy-staging, deploy-prod)
+- [x] D1 migrations 0001-0028 (all tables including marketplace, threads, eval, artifacts, gdpr, etc.)
+- [x] apps/widget/ (zero-dependency web component, SSE streaming, < 10KB gzip target)
+- [x] apps/marketplace-web/ (SpaceType discovery, categories, listing detail, fork flow)
+- [x] All 14 packages: types, auth, db, http, rag, security, llm-gateway, config, crypto, logger, tracing, idempotency, webhooks, analytics-schema, entitlements, tool-runtime, billing-core, moderation, testing, client-sdk, agent-sdk
 
 ## Spec Reference
 Full gap specification: `/home/user/Naelao-1/naelao_expanded_gaps_resolved.html`
