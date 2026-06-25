@@ -42,7 +42,10 @@ function bytesToHex(bytes: Uint8Array): string {
 // On key rotation: new encryptions use the new key version; old records can be
 // re-encrypted by reading them with the old key and re-writing with the new key.
 // The CREDENTIAL_ENCRYPTION_KEY env var encodes "v<N>:<hex-key>", e.g. "v2:<32bytes-hex>".
-// Multiple previous keys can be provided as CREDENTIAL_ENCRYPTION_KEY_PREV for re-encryption.
+
+// G-AH07: Per-space key hierarchy. Root key is CREDENTIAL_ENCRYPTION_KEY.
+// Per-space key is derived via HKDF(root_key, "naelao-cred-v1:<spaceId>").
+// This means a single-key compromise only yields the root; space keys are non-extractable.
 
 function parseKeyEnv(keyEnv: string): { version: string; hex: string } {
   const colonIdx = keyEnv.indexOf(":");
@@ -53,36 +56,42 @@ function parseKeyEnv(keyEnv: string): { version: string; hex: string } {
   return { version: "v1", hex: keyEnv };
 }
 
+// G-AH07: Derive a per-space AES-256-GCM key from the root key using HKDF-SHA256.
+// The info string binds the derivation to the specific space — compromise of one
+// space's derived key cannot be used to decrypt another space's credentials.
+async function deriveSpaceKey(rootKeyHex: string, spaceId: string): Promise<CryptoKey> {
+  const rootBytes = hexToBytes(rootKeyHex);
+  const rootKey = await crypto.subtle.importKey("raw", rootBytes, { name: "HKDF" }, false, ["deriveBits"]);
+  const info = new TextEncoder().encode(`naelao-cred-v1:${spaceId}`);
+  const salt = new Uint8Array(32); // zero salt (info provides domain separation)
+  const bits = await crypto.subtle.deriveBits(
+    { name: "HKDF", hash: "SHA-256", salt, info },
+    rootKey,
+    256
+  );
+  return crypto.subtle.importKey("raw", bits, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
 async function encrypt(
   plaintext: string,
-  key: string
+  rootKeyEnv: string,
+  spaceId: string
 ): Promise<{ ciphertext: string; iv: string; key_version: string }> {
-  const { version, hex } = parseKeyEnv(key);
-  const keyBytes = await crypto.subtle.importKey(
-    "raw",
-    hexToBytes(hex),
-    { name: "AES-GCM" },
-    false,
-    ["encrypt"]
-  );
+  const { version, hex } = parseKeyEnv(rootKeyEnv);
+  // G-AH07: Use space-specific derived key, not the root key directly
+  const spaceKey = await deriveSpaceKey(hex, spaceId);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const encoded = new TextEncoder().encode(plaintext);
-  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, keyBytes, encoded);
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, spaceKey, encoded);
   return { ciphertext: bytesToHex(new Uint8Array(encrypted)), iv: bytesToHex(iv), key_version: version };
 }
 
-async function decrypt(ciphertext: string, iv: string, key: string): Promise<string> {
-  const { hex } = parseKeyEnv(key);
-  const keyBytes = await crypto.subtle.importKey(
-    "raw",
-    hexToBytes(hex),
-    { name: "AES-GCM" },
-    false,
-    ["decrypt"]
-  );
+async function decrypt(ciphertext: string, iv: string, rootKeyHex: string, spaceId: string): Promise<string> {
+  // G-AH07: Derive the same per-space key for decryption
+  const spaceKey = await deriveSpaceKey(rootKeyHex, spaceId);
   const decrypted = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: hexToBytes(iv) },
-    keyBytes,
+    spaceKey,
     hexToBytes(ciphertext)
   );
   return new TextDecoder().decode(decrypted);
@@ -198,7 +207,8 @@ app.post("/v1/spaces/:spaceId/credentials", async (c) => {
 
   validateCredentialName(body.name);
 
-  const { ciphertext, iv, key_version } = await encrypt(body.value, c.env.CREDENTIAL_ENCRYPTION_KEY);
+  // G-AH07: Space-derived key; each space's credentials use a distinct HKDF-derived key
+  const { ciphertext, iv, key_version } = await encrypt(body.value, c.env.CREDENTIAL_ENCRYPTION_KEY, spaceId);
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
@@ -316,25 +326,25 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
     throw notFound("Credential");
   }
 
-  // G-D05: Use the key matching this credential's key_version.
-  // If key_version matches the current key's version, use it directly.
-  // Otherwise try the previous key env var (CREDENTIAL_ENCRYPTION_KEY_PREV) for rotation.
+  // G-AH07/G-D05: Resolve the root key matching this credential's key_version for decryption.
+  // Per-space derived key is always re-derived from the appropriate root key version.
   const currentKey = c.env.CREDENTIAL_ENCRYPTION_KEY;
-  const { version: currentVersion } = parseKeyEnv(currentKey);
+  const { version: currentVersion, hex: currentHex } = parseKeyEnv(currentKey);
   const rowVersion = row.key_version ?? "v1";
 
-  let decryptKey = currentKey;
+  let rootHex = currentHex;
   if (rowVersion !== currentVersion) {
     const prevKey = (c.env as typeof c.env & { CREDENTIAL_ENCRYPTION_KEY_PREV?: string }).CREDENTIAL_ENCRYPTION_KEY_PREV;
     if (prevKey) {
-      const { version: prevVersion } = parseKeyEnv(prevKey);
+      const { version: prevVersion, hex: prevHex } = parseKeyEnv(prevKey);
       if (rowVersion === prevVersion) {
-        decryptKey = prevKey;
+        rootHex = prevHex;
       }
     }
   }
 
-  const value = await decrypt(row.encrypted_value, row.iv, decryptKey);
+  // G-AH07: Re-derive the per-space key from the resolved root key hex and spaceId
+  const value = await decrypt(row.encrypted_value, row.iv, rootHex, spaceId);
 
   return c.json({ name: row.name, value });
 });
