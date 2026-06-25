@@ -32,6 +32,10 @@ database_id = "REPLACE_WITH_DB_ID"
 binding = "KB_BUCKET"
 bucket_name = "naelao-kb"
 
+[[vectorize_indexes]]
+binding = "KB_VECTORS"
+index_name = "naelao-kb-prod"
+
 [[kv_namespaces]]
 binding = "QUOTA_CACHE"
 id = "REPLACE_WITH_KV_ID"

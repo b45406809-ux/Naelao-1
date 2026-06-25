@@ -16,6 +16,9 @@ export interface Env {
   // R2 — KB documents
   KB_BUCKET: R2Bucket;
 
+  // Vectorize — KB semantic index
+  KB_VECTORS: VectorizeIndex;
+
   // KV — quota cache / config
   QUOTA_CACHE: KVNamespace;
 

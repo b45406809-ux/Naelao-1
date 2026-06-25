@@ -8,6 +8,7 @@
 
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized } from "@naelao/http";
+import { EntitlementsChecker } from "@naelao/entitlements";
 import { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 
 export { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
@@ -292,6 +293,9 @@ app.get(
       .bind(spaceId, tenantId)
       .first<{ id: string }>();
     if (!space) throw notFound("Space");
+
+    // G-D12: Enforce SSE streaming feature gate at the API layer
+    await new EntitlementsChecker(c.env.PLATFORM_DB).requireFeature(tenantId, "sse_streaming");
 
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const writer = writable.getWriter();

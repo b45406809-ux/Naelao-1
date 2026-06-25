@@ -8,6 +8,7 @@
 import { Hono } from "hono";
 import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError } from "@naelao/http";
 import { chunkText, embedText, embedBatch, bm25Score, reciprocalRankFusion } from "@naelao/rag";
+import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 
 // ── Environment ───────────────────────────────────────────────────────────────
 
@@ -134,6 +135,21 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   const MAX_CONTENT_CHARS = 1_048_576;
   if (body.content.length > MAX_CONTENT_CHARS) {
     throw badRequest(`content exceeds maximum size of 1MB (${MAX_CONTENT_CHARS} chars)`);
+  }
+
+  // G-D12: Enforce KB document quota at the API layer (not just the UI)
+  const entitlements = new EntitlementsChecker(c.env.PLATFORM_DB);
+  const tier = await entitlements.getTenantTier(tenantId);
+  const limits = getPlanLimits(tier);
+  const countRow = await c.env.PLATFORM_DB.prepare(
+    `SELECT COUNT(*) as count FROM kb_documents WHERE space_id = ? AND tenant_id = ? AND status != 'purged'`
+  ).bind(spaceId, tenantId).first<{ count: number }>();
+  const docCount = countRow?.count ?? 0;
+  if (docCount >= limits.kb_documents_per_space) {
+    throw Object.assign(
+      new Error(`KB document limit (${limits.kb_documents_per_space}) reached for ${tier} plan`),
+      { error_code: "quota_exceeded", status: 429 }
+    );
   }
 
   const docId = crypto.randomUUID();

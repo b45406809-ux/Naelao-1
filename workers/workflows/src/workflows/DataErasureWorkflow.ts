@@ -78,7 +78,8 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
     // This satisfies GDPR Art. 17 implementation requirements (reversibility window).
     await step.sleep("cooling-off", "24 hours");
 
-    // ── Step 3: Delete space data ─────────────────────────────────────────────
+    // ── Step 3: Delete space data (R2, Vectorize, D1) ────────────────────────
+    // G-E08: Paginated R2 deletion — iterate all pages, not just first
     await step.do("delete-spaces-data", async () => {
       // Fetch all space IDs for this org
       const { results: spaces } = await this.env.PLATFORM_DB.prepare(
@@ -94,34 +95,58 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
         .bind(params.orgId)
         .run();
 
-      // Log R2 deletion intent for each space (Phase 9 hardening will implement
-      // actual R2 list+delete as a chunked sub-workflow to stay within step limits).
+      // Delete R2 objects and Vectorize vectors for each space
       for (const space of spaces) {
-        const r2Prefix = `kb/${space.id}/`;
-        console.log(
-          `[DataErasure] R2 deletion intent logged for prefix="${r2Prefix}" ` +
-            `(space=${space.id}, org=${params.orgId})`,
-        );
-
-        // Insert audit entry for R2 deletion intent
-        await this.env.PLATFORM_DB.prepare(
-          `INSERT OR IGNORE INTO audit_log
-             (id, tenant_id, actor_id, actor_type, event_type, resource_type, resource_id, event_data)
-           VALUES (?, ?, ?, 'system', 'r2_deletion_intent', 'space', ?, ?)`
+        // Get all indexed KB documents for this space
+        const { results: docs } = await this.env.PLATFORM_DB.prepare(
+          `SELECT id, chunk_count FROM kb_documents WHERE space_id = ?`
         )
-          .bind(
-            crypto.randomUUID(),
-            params.orgId,
-            params.requestedBy,
-            space.id,
-            JSON.stringify({ r2Prefix }),
-          )
-          .run();
+          .bind(space.id)
+          .all<{ id: string; chunk_count: number }>();
+
+        for (const doc of docs) {
+          // Delete R2 objects — paginated (G-E08 fix: don't stop at first page)
+          const prefix = `kb/${space.id}/${doc.id}/`;
+          let cursor: string | undefined;
+          do {
+            const listOpts: R2ListOptions = cursor !== undefined ? { prefix, cursor } : { prefix };
+            const listed: R2Objects = await this.env.KB_BUCKET.list(listOpts);
+            if (listed.objects.length > 0) {
+              await Promise.all(listed.objects.map((o) => this.env.KB_BUCKET.delete(o.key)));
+            }
+            cursor = listed.truncated ? listed.cursor : undefined;
+          } while (cursor);
+
+          // Delete Vectorize vectors
+          const chunkCount = doc.chunk_count ?? 0;
+          if (chunkCount > 0) {
+            const vectorIds = Array.from({ length: chunkCount }, (_, i) => `${doc.id}_chunk_${i}`);
+            const BATCH = 100;
+            for (let i = 0; i < vectorIds.length; i += BATCH) {
+              await this.env.KB_VECTORS.deleteByIds(vectorIds.slice(i, i + BATCH));
+            }
+          }
+        }
+
+        // Delete all D1 KB document records for this space
+        await this.env.PLATFORM_DB.prepare(
+          `DELETE FROM kb_documents WHERE space_id = ?`
+        ).bind(space.id).run();
+
+        // Delete active session registry entries for this space
+        await this.env.PLATFORM_DB.prepare(
+          `DELETE FROM active_sessions WHERE space_id = ?`
+        ).bind(space.id).run();
+
+        await this.env.PLATFORM_DB.prepare(
+          `DELETE FROM thread_sessions WHERE space_id = ?`
+        ).bind(space.id).run();
+
+        console.log(`[DataErasure] Cleaned space=${space.id} for org=${params.orgId}`);
       }
 
       console.log(
-        `[DataErasure] Deleted usage_events for org=${params.orgId}; ` +
-          `logged R2 deletion intent for ${spaces.length} space(s).`,
+        `[DataErasure] Deleted data for ${spaces.length} space(s) in org=${params.orgId}`,
       );
       return { spacesProcessed: spaces.length };
     });

@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import { verifyJwt, AuthError } from "@naelao/auth";
+import { verifyHmac } from "@naelao/crypto";
 import type { NaelaoJwtClaims } from "@naelao/types";
 import { unauthorized } from "./errors.js";
 
@@ -22,6 +23,20 @@ declare module "hono" {
     claims: NaelaoJwtClaims;
     jwtSecret: string;
   }
+}
+
+// G-I01: Verify inter-worker HMAC token from x-naelao-internal-token header
+// Format: t=<timestamp>,v1=<hmac-hex>
+// Rejects tokens older than 60 seconds.
+export async function verifyInternalToken(header: string | undefined, tenantId: string, secret: string): Promise<boolean> {
+  if (!header) return false;
+  const parts = Object.fromEntries(header.split(",").map((p) => p.split("=")));
+  const ts = parts["t"];
+  const sig = parts["v1"];
+  if (!ts || !sig) return false;
+  const age = Math.abs(Date.now() - parseInt(ts, 10));
+  if (age > 60_000) return false;
+  return verifyHmac(`internal:${tenantId}:${ts}`, sig, secret);
 }
 
 // JWT verification middleware — expects Authorization: Bearer <token>

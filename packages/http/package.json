@@ -8,6 +8,7 @@
   "scripts": { "build": "tsc", "typecheck": "tsc --noEmit" },
   "dependencies": {
     "@naelao/auth": "workspace:*",
+    "@naelao/crypto": "workspace:*",
     "@naelao/types": "workspace:*",
     "hono": "^4.6.14"
   },

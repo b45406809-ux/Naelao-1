@@ -13,6 +13,7 @@
     "@naelao/types": "workspace:*",
     "@naelao/http": "workspace:*",
     "@naelao/llm-gateway": "workspace:*",
+    "@naelao/entitlements": "workspace:*",
     "hono": "^4.6.0"
   },
   "devDependencies": {

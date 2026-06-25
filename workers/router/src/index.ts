@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { cors, requestId, jwtAuth, errorResponse } from "@naelao/http";
+import { signHmac } from "@naelao/crypto";
 import type { NaelaoJwtClaims } from "@naelao/types";
 
 export interface Env {
@@ -63,14 +64,22 @@ api.use(
   jwtAuth((c) => (c as unknown as { env: Env }).env.JWT_SECRET)
 );
 
-// Helper: forward to downstream worker with identity headers
-function proxyTo(worker: Fetcher, claims: NaelaoJwtClaims | undefined, req: Request): Promise<Response> {
+// G-I01: Sign inter-worker requests with HMAC so downstream workers can verify origin
+async function proxyTo(
+  worker: Fetcher,
+  claims: NaelaoJwtClaims | undefined,
+  req: Request,
+  platformSecret: string,
+): Promise<Response> {
   const headers = new Headers(req.headers);
+  const ts = Date.now().toString();
   if (claims) {
     headers.set("x-naelao-tenant-id", claims.tid);
     headers.set("x-naelao-user-id", claims.sub);
     headers.set("x-naelao-role", claims.role);
     headers.set("x-naelao-scopes", claims.scopes.join(","));
+    const sig = await signHmac(`internal:${claims.tid}:${ts}`, platformSecret);
+    headers.set("x-naelao-internal-token", `t=${ts},v1=${sig}`);
   }
   return worker.fetch(new Request(req.url, {
     method: req.method,
@@ -80,20 +89,20 @@ function proxyTo(worker: Fetcher, claims: NaelaoJwtClaims | undefined, req: Requ
 }
 
 // Spaces CRUD → spaces worker
-api.all("/spaces/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw));
-api.all("/spaces", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw));
+api.all("/spaces/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/spaces", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
 // Knowledge (KB) → knowledge worker
 api.all("/spaces/:spaceId/kb/*", async (c) =>
-  proxyTo(c.env.KNOWLEDGE_WORKER, c.get("claims"), c.req.raw)
+  proxyTo(c.env.KNOWLEDGE_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 
 // Agent sessions + messages → agents worker
 api.all("/spaces/:spaceId/sessions/*", async (c) =>
-  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw)
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 api.all("/spaces/:spaceId/sessions", async (c) =>
-  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw)
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 
 app.route("/v1", api);

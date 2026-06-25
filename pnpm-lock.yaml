@@ -259,6 +259,9 @@ importers:
       '@naelao/auth':
         specifier: workspace:*
         version: link:../auth
+      '@naelao/crypto':
+        specifier: workspace:*
+        version: link:../crypto
       '@naelao/types':
         specifier: workspace:*
         version: link:../types
@@ -487,6 +490,9 @@ importers:
 
   workers/agents:
     dependencies:
+      '@naelao/entitlements':
+        specifier: workspace:*
+        version: link:../../packages/entitlements
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
@@ -735,6 +741,9 @@ importers:
 
   workers/knowledge:
     dependencies:
+      '@naelao/entitlements':
+        specifier: workspace:*
+        version: link:../../packages/entitlements
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
@@ -895,6 +904,9 @@ importers:
       '@naelao/auth':
         specifier: workspace:*
         version: link:../../packages/auth
+      '@naelao/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
