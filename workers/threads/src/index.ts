@@ -70,7 +70,7 @@ app.get("/v1/threads/:id", async (c) => {
   if (!thread) return c.json({ error_code: "not_found", message: "Thread not found" }, 404);
 
   const { results: sessions } = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, status, created_at, ended_at FROM sessions WHERE thread_id = ? AND tenant_id = ? ORDER BY created_at ASC"
+    "SELECT id, status, message_count, created_at, ended_at FROM thread_sessions WHERE thread_id = ? AND tenant_id = ? ORDER BY created_at ASC"
   ).bind(thread.id, tenantId).all();
   return c.json({ data: { ...thread, sessions } });
 });
@@ -99,28 +99,65 @@ app.post("/v1/threads", async (c) => {
 });
 
 // Attach a session to a thread (called after session creation)
+// Inserts into thread_sessions (D1 shadow table) — messages stay in SpaceDO SQLite
 app.post("/v1/threads/:id/sessions", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const thread = await c.env.PLATFORM_DB.prepare(
-    "SELECT id FROM threads WHERE id = ? AND tenant_id = ?"
-  ).bind(c.req.param("id"), tenantId).first<{ id: string }>();
+    "SELECT id, space_id FROM threads WHERE id = ? AND tenant_id = ?"
+  ).bind(c.req.param("id"), tenantId).first<{ id: string; space_id: string }>();
   if (!thread) return c.json({ error_code: "not_found", message: "Thread not found" }, 404);
 
-  const body = await c.req.json<{ session_id: string }>();
+  const body = await c.req.json<{ session_id: string; end_user_id?: string }>();
   if (!body.session_id) return c.json({ error_code: "bad_request", message: "session_id required" }, 400);
 
   const now = new Date().toISOString();
   await c.env.PLATFORM_DB.prepare(
-    "UPDATE sessions SET thread_id = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
-  ).bind(thread.id, now, body.session_id, tenantId).run();
+    `INSERT INTO thread_sessions (id, thread_id, space_id, tenant_id, end_user_id, status, created_at)
+     VALUES (?, ?, ?, ?, ?, 'active', ?)
+     ON CONFLICT(id) DO UPDATE SET thread_id = excluded.thread_id`
+  ).bind(body.session_id, thread.id, thread.space_id, tenantId, body.end_user_id ?? null, now).run();
   await c.env.PLATFORM_DB.prepare(
     "UPDATE threads SET session_count = session_count + 1, last_active_at = ?, updated_at = ? WHERE id = ?"
   ).bind(now, now, thread.id).run();
   return c.json({ thread_id: thread.id, session_id: body.session_id });
 });
 
-// Generate/refresh thread summary using LLM
+// Update session status/message_count in thread_sessions shadow table
+app.patch("/v1/threads/sessions/:sessionId", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json<{ status?: string; message_count?: number; last_message_at?: string; ended_at?: string; summary?: string }>();
+  const now = new Date().toISOString();
+
+  const updates: string[] = ["updated_at = ?"];
+  const params: unknown[] = [now];
+
+  if (body.status !== undefined) { updates.push("status = ?"); params.push(body.status); }
+  if (body.message_count !== undefined) { updates.push("message_count = ?"); params.push(body.message_count); }
+  if (body.last_message_at !== undefined) { updates.push("last_message_at = ?"); params.push(body.last_message_at); }
+  if (body.ended_at !== undefined) { updates.push("ended_at = ?"); params.push(body.ended_at); }
+  if (body.summary !== undefined) { updates.push("summary = ?"); params.push(body.summary); }
+
+  params.push(c.req.param("sessionId"), tenantId);
+
+  await c.env.PLATFORM_DB.prepare(
+    `UPDATE thread_sessions SET ${updates.join(", ")} WHERE id = ? AND tenant_id = ?`
+  ).bind(...params).run();
+
+  // Propagate last_active_at to parent thread if a message came in
+  if (body.last_message_at) {
+    await c.env.PLATFORM_DB.prepare(
+      "UPDATE threads SET last_active_at = ?, updated_at = ? WHERE id = (SELECT thread_id FROM thread_sessions WHERE id = ? AND tenant_id = ?)"
+    ).bind(body.last_message_at, now, c.req.param("sessionId"), tenantId).run();
+  }
+
+  return c.json({ updated: true });
+});
+
+// Generate/refresh thread summary using per-session summaries stored in thread_sessions
+// Note: full message content lives in SpaceDO SQLite. Callers should PATCH session summaries
+// into thread_sessions before calling this endpoint. This assembles them into a thread summary.
 app.post("/v1/threads/:id/summarize", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
@@ -129,22 +166,19 @@ app.post("/v1/threads/:id/summarize", async (c) => {
   ).bind(c.req.param("id"), tenantId).first<{ id: string }>();
   if (!thread) return c.json({ error_code: "not_found", message: "Thread not found" }, 404);
 
-  // Fetch last 50 messages across all sessions in this thread
-  const { results: messages } = await c.env.PLATFORM_DB.prepare(
-    `SELECT m.role, m.content FROM messages m
-     JOIN sessions s ON m.session_id = s.id
-     WHERE s.thread_id = ? AND s.tenant_id = ?
-     ORDER BY m.created_at DESC LIMIT 50`
-  ).bind(thread.id, tenantId).all<{ role: string; content: string }>();
+  // Retrieve per-session summaries from the D1 shadow table (ordered by session start time)
+  const { results: sessionRows } = await c.env.PLATFORM_DB.prepare(
+    `SELECT summary, message_count, created_at FROM thread_sessions
+     WHERE thread_id = ? AND tenant_id = ? AND summary IS NOT NULL
+     ORDER BY created_at ASC LIMIT 20`
+  ).bind(thread.id, tenantId).all<{ summary: string; message_count: number; created_at: string }>();
 
-  if (messages.length === 0) return c.json({ summary: null });
+  if (sessionRows.length === 0) return c.json({ summary: null });
 
-  const transcript = messages
-    .reverse()
-    .map((m) => `${m.role}: ${m.content}`)
-    .join("\n");
+  const transcript = sessionRows
+    .map((s, i) => `Session ${i + 1} (${s.message_count} messages): ${s.summary}`)
+    .join("\n\n");
 
-  // LLM call to generate summary
   const summary = await generateSummary(transcript, c.env);
   const now = new Date().toISOString();
   await c.env.PLATFORM_DB.prepare(
@@ -153,14 +187,11 @@ app.post("/v1/threads/:id/summarize", async (c) => {
   return c.json({ summary, updated_at: now });
 });
 
-// Delete thread and detach sessions
+// Delete thread and its session shadow records
 app.delete("/v1/threads/:id", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
-  // Detach sessions
-  await c.env.PLATFORM_DB.prepare(
-    "UPDATE sessions SET thread_id = NULL WHERE thread_id = ? AND tenant_id = ?"
-  ).bind(c.req.param("id"), tenantId).run();
+  // CASCADE DELETE removes thread_sessions rows (FK ON DELETE CASCADE)
   const result = await c.env.PLATFORM_DB.prepare(
     "DELETE FROM threads WHERE id = ? AND tenant_id = ?"
   ).bind(c.req.param("id"), tenantId).run();
