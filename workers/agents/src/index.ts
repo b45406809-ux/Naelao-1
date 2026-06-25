@@ -8,7 +8,7 @@
 
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized } from "@naelao/http";
-import { EntitlementsChecker } from "@naelao/entitlements";
+import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 
 export { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
@@ -183,6 +183,30 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   } catch {
     // KB context is best-effort — continue without it
     console.warn("Failed to fetch KB context, continuing without it");
+  }
+
+  // G-X04: Pre-run token quota check — reject if monthly limit exceeded
+  // This prevents unbounded overspend from async billing lag
+  try {
+    const checker = new EntitlementsChecker(c.env.PLATFORM_DB);
+    const tier = await checker.getTenantTier(tenantId);
+    const limits = getPlanLimits(tier);
+    const monthStart = new Date();
+    monthStart.setUTCDate(1);
+    monthStart.setUTCHours(0, 0, 0, 0);
+    const tokenUsageRow = await c.env.PLATFORM_DB.prepare(
+      `SELECT COALESCE(SUM(quantity), 0) as total FROM usage_events
+       WHERE org_id = ? AND event_type = 'llm_tokens' AND recorded_at >= ?`
+    ).bind(tenantId, monthStart.toISOString()).first<{ total: number }>();
+    const tokensUsed = tokenUsageRow?.total ?? 0;
+    if (tokensUsed >= limits.monthly_tokens) {
+      return c.json({
+        error_code: "quota_exceeded",
+        message: `Monthly token limit (${limits.monthly_tokens}) reached for ${tier} plan`,
+      }, 429);
+    }
+  } catch {
+    // Best-effort — don't block runs if quota check fails
   }
 
   // Get agent DO stub and forward the run request

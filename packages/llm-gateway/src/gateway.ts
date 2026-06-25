@@ -335,6 +335,18 @@ export async function streamLlm(
             if (deltaUsage) {
               usage.output_tokens = deltaUsage.output_tokens ?? usage.output_tokens;
             }
+          } else if (eventType === "content_block_stop") {
+            // G-Z11: Capture thinking token count from reasoning blocks (extended thinking)
+            const index = parsed.index as number | undefined;
+            if (index !== undefined) {
+              const meta = currentBlockMeta[index];
+              if (meta?.type === "thinking") {
+                // Approximate thinking token count: reasoning text / 4 chars per token
+                const thinkingText = currentBlockText[index] ?? "";
+                const approxThinkingTokens = Math.ceil(thinkingText.length / 4);
+                usage.thinking_tokens = (usage.thinking_tokens ?? 0) + approxThinkingTokens;
+              }
+            }
           }
         }
       }

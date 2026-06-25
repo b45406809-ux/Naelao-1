@@ -52,6 +52,8 @@ export interface LlmResponse {
     output_tokens: number;
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
+    // G-Z11: Extended thinking tokens (claude-opus-4-8) — billed at output token rate
+    thinking_tokens?: number;
   };
 }
 

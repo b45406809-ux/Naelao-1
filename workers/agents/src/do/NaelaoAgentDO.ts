@@ -56,6 +56,8 @@ const MAX_GOAL_LENGTH = 10_000;
 const MAX_TOOL_OUTPUT_BYTES = 100 * 1024; // 100KB
 const TIMEOUT_MS = 30_000; // 30 seconds
 const TIMEOUT_QUERY_THRESHOLD_S = 25; // flag runs older than 25s
+// G-X01: Per-tool call limit within a single run — prevents recursive tool loops
+const MAX_CALLS_PER_TOOL = 5;
 
 // Blocked SSRF domains (G-D15: prevent SSRF in tool execution)
 const BLOCKED_DOMAIN_PATTERNS: RegExp[] = [
@@ -616,6 +618,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     ];
 
     const reactSteps: ReactStep[] = [];
+    // G-X01: Track per-tool call counts to prevent unbounded recursive loops
+    const toolCallCounts = new Map<string, number>();
 
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
       // Check if current run has been cancelled
@@ -694,6 +698,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             toolInput: toolBlock.input,
             toolUseId: toolBlock.id,
           };
+
+          // G-X01: Enforce per-tool call limit to prevent recursive drain
+          const callsSoFar = toolCallCounts.get(toolBlock.name) ?? 0;
+          if (callsSoFar >= MAX_CALLS_PER_TOOL) {
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolBlock.id,
+              content: `Error: Tool '${toolBlock.name}' has been called ${MAX_CALLS_PER_TOOL} times in this run — limit reached to prevent recursive loops.`,
+            });
+            continue;
+          }
+          toolCallCounts.set(toolBlock.name, callsSoFar + 1);
 
           const result = await dispatchTool(
             toolBlock.name,
