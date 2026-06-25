@@ -114,9 +114,35 @@ interface AgentStateRow {
   context_json: string;
 }
 
+// ── G-F03: Negative auth result cache ────────────────────────────────────────
+// Key: deny:{userId}:{spaceId} → expiry timestamp ms
+// In-memory only; intentionally lost on DO hibernation (acceptable for 30s TTL).
+const DENY_CACHE_TTL_MS = 30_000;
+
 // ── SpaceDO ──────────────────────────────────────────────────────────────────
 export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private initialized = false;
+  // G-F03: Negative auth cache — maps deny:{userId}:{spaceId} to expiry timestamp
+  private readonly denyCache = new Map<string, number>();
+
+  private isDenied(userId: string, spaceId: string): boolean {
+    const key = `deny:${userId}:${spaceId}`;
+    const expiry = this.denyCache.get(key);
+    if (expiry === undefined) return false;
+    if (Date.now() > expiry) {
+      this.denyCache.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  private cacheDeny(userId: string, spaceId: string): void {
+    this.denyCache.set(`deny:${userId}:${spaceId}`, Date.now() + DENY_CACHE_TTL_MS);
+  }
+
+  private invalidateUserCache(userId: string, spaceId: string): void {
+    this.denyCache.delete(`deny:${userId}:${spaceId}`);
+  }
 
   private ensureInit(): void {
     if (this.initialized) return;
@@ -161,6 +187,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.putAgentState(request, stateMatch[1]);
       }
 
+      // POST /invalidate-user — G-F03: clear deny-cache entries for a user+space pair
+      if (method === "POST" && url.pathname === "/invalidate-user") {
+        return this.handleInvalidateUser(request);
+      }
+
       return Response.json(
         { error_code: "not_found", message: "Unknown DO route" },
         { status: 404 }
@@ -181,6 +212,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       end_user_id?: string;
       metadata?: Record<string, unknown>;
     }>();
+
+    // G-F03: Fast-path deny for recently banned/blocked users before touching SQLite
+    if (body.end_user_id && this.isDenied(body.end_user_id, body.space_id)) {
+      return Response.json(
+        { error_code: "forbidden", message: "Access denied" },
+        { status: 403 }
+      );
+    }
 
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
@@ -386,5 +425,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       sessionId
     );
     return Response.json({ session_id: sessionId, updated_at: now });
+  }
+
+  // G-F03: POST /invalidate-user — clear both positive and negative deny-cache entries
+  private async handleInvalidateUser(request: Request): Promise<Response> {
+    const body = await request.json<{ user_id: string; space_id: string }>();
+    if (!body.user_id || !body.space_id) {
+      return Response.json(
+        { error_code: "bad_request", message: "user_id and space_id are required" },
+        { status: 400 }
+      );
+    }
+    this.invalidateUserCache(body.user_id, body.space_id);
+    return Response.json({ invalidated: true });
+  }
+
+  // G-F03: Block a user — add to deny cache and optionally mark in SQLite
+  denyUser(userId: string, spaceId: string): void {
+    this.cacheDeny(userId, spaceId);
   }
 }

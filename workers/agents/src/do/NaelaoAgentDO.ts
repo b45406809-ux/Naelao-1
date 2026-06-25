@@ -54,11 +54,15 @@ interface ToolResult {
 
 const MAX_ITERATIONS = 10;
 const MAX_GOAL_LENGTH = 10_000;
-const MAX_TOOL_OUTPUT_BYTES = 100 * 1024; // 100KB
+// G-BB41: 64KB cap per tool response (down from 100KB) to limit context bloat
+const MAX_TOOL_OUTPUT_BYTES = 64 * 1024;
 const TIMEOUT_MS = 30_000; // 30 seconds
 const TIMEOUT_QUERY_THRESHOLD_S = 25; // flag runs older than 25s
 // G-X01: Per-tool call limit within a single run — prevents recursive tool loops
 const MAX_CALLS_PER_TOOL = 5;
+// G-BB41: Hard cap on total tool calls per turn (loop iteration) and per run
+const MAX_TOOL_CALLS_PER_TURN = 20;
+const MAX_TOOL_CALLS_PER_RUN = 100;
 
 // Blocked SSRF domains (G-D15: prevent SSRF in tool execution)
 const BLOCKED_DOMAIN_PATTERNS: RegExp[] = [
@@ -692,6 +696,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const reactSteps: ReactStep[] = [];
     // G-X01: Track per-tool call counts to prevent unbounded recursive loops
     const toolCallCounts = new Map<string, number>();
+    // G-BB41: Track total tool calls across all iterations of this run
+    let totalToolCallsThisRun = 0;
 
     for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
       // Check if current run has been cancelled
@@ -774,6 +780,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
         // Execute each tool and collect results
         const toolResults: ContentBlock[] = [];
+        // G-BB41: Per-turn tool call counter (max 20 per iteration)
+        let toolCallsThisTurn = 0;
 
         for (const toolBlock of toolUseBlocks) {
           if (
@@ -793,6 +801,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           // G-AB20: beforeToolCall policy interceptor — validate args before execution
           const policy = beforeToolCall(toolBlock.name, toolBlock.input);
           if (!policy.allow) {
+            console.warn(`[agent] Tool call blocked by policy: tool=${toolBlock.name} reason=${policy.reason}`);
             toolResults.push({
               type: "tool_result",
               tool_use_id: toolBlock.id,
@@ -811,7 +820,33 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             });
             continue;
           }
+
+          // G-BB41: Enforce per-turn cap (max 20 total tool calls per iteration)
+          if (toolCallsThisTurn >= MAX_TOOL_CALLS_PER_TURN) {
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolBlock.id,
+              content: `Error: Per-turn tool call limit (${MAX_TOOL_CALLS_PER_TURN}) reached — too many tool calls in a single step.`,
+            });
+            continue;
+          }
+
+          // G-BB41: Enforce per-run cap (max 100 total tool calls across all iterations)
+          if (totalToolCallsThisRun >= MAX_TOOL_CALLS_PER_RUN) {
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolBlock.id,
+              content: `Error: Per-run tool call limit (${MAX_TOOL_CALLS_PER_RUN}) reached — too many tool calls in this agent run.`,
+            });
+            continue;
+          }
+
           toolCallCounts.set(toolBlock.name, callsSoFar + 1);
+          toolCallsThisTurn++;
+          totalToolCallsThisRun++;
+
+          // G-BB41: Audit log every dispatched tool call
+          console.log(`[agent][audit] tool_call run=${runId} iteration=${iteration} tool=${toolBlock.name} total_this_run=${totalToolCallsThisRun}`);
 
           const result = await dispatchTool(
             toolBlock.name,
@@ -820,9 +855,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             services
           );
 
-          const observation = result.error
+          let observation = result.error
             ? `Error: ${result.error}`
             : result.output;
+
+          // G-BB41: Cap tool output at 64KB before returning to LLM
+          const obsBytes = new TextEncoder().encode(observation).length;
+          if (obsBytes > MAX_TOOL_OUTPUT_BYTES) {
+            observation = observation.slice(0, MAX_TOOL_OUTPUT_BYTES) +
+              `\n[TRUNCATED: output exceeded ${MAX_TOOL_OUTPUT_BYTES} bytes]`;
+          }
 
           step.observation = observation;
 

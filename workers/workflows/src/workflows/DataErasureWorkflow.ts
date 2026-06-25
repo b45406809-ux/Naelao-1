@@ -168,6 +168,29 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
       return { piiErased: true };
     });
 
+    // ── Step 4b: Clear KV cache for the erased org ────────────────────────────
+    // G-AZ34: Delete all CF KV cached responses scoped to this tenant.
+    // QUOTA_CACHE keys follow the pattern: {orgId}:* (quota entries, config, etc.)
+    await step.do("clear-kv-cache", async () => {
+      const prefix = `${params.orgId}:`;
+      let cursor: string | undefined;
+      let deleted = 0;
+      do {
+        const listOpts = cursor !== undefined
+          ? { prefix, cursor }
+          : { prefix };
+        const listed = await this.env.QUOTA_CACHE.list(listOpts);
+        for (const key of listed.keys) {
+          await this.env.QUOTA_CACHE.delete(key.name);
+          deleted++;
+        }
+        cursor = listed.list_complete ? undefined : listed.cursor;
+      } while (cursor);
+
+      console.log(`[DataErasure] Cleared ${deleted} KV cache entries for org=${params.orgId}`);
+      return { kvKeysDeleted: deleted };
+    });
+
     // ── Step 5: Cancel subscription ───────────────────────────────────────────
     await step.do("cancel-subscription", async () => {
       await this.env.PLATFORM_DB.prepare(
@@ -200,12 +223,24 @@ export class DataErasureWorkflow extends WorkflowEntrypoint<Env, ErasureParams> 
         )
         .run();
 
+      const completedAt = new Date().toISOString();
+
       // Emit org.erased event to the main event queue
       await this.env.EVENTS_QUEUE.send({
         type: "org.erased",
         orgId: params.orgId,
         requestedBy: params.requestedBy,
-        timestamp: new Date().toISOString(),
+        timestamp: completedAt,
+      });
+
+      // G-AZ34: Analytics Engine is append-only — cannot delete rows.
+      // Emit an analytics.user_erased correction record so the analytics worker
+      // can write a null_user_id anonymization marker into Analytics Engine.
+      await this.env.EVENTS_QUEUE.send({
+        type: "analytics.user_erased",
+        orgId: params.orgId,
+        erasedAt: completedAt,
+        reason: params.reason,
       });
 
       console.log(
