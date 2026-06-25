@@ -88,6 +88,75 @@ async function decrypt(ciphertext: string, iv: string, key: string): Promise<str
   return new TextDecoder().decode(decrypted);
 }
 
+// ── G-F06: Short-lived per-request HMAC token for internal credential access ──
+// Token format: "t=<unix-seconds>,aid=<agentId>,v1=<hmac-hex>"
+// HMAC payload:  "<spaceId>:<agentId>:<timestamp>"
+// Token expires after 60 seconds.
+
+export async function generateCredentialToken(
+  platformSecret: string,
+  spaceId: string,
+  agentId: string
+): Promise<string> {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signingInput = `${spaceId}:${agentId}:${timestamp}`;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(platformSecret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(signingInput));
+  const hexSig = Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return `t=${timestamp},aid=${agentId},v1=${hexSig}`;
+}
+
+async function verifyCredentialToken(
+  token: string,
+  platformSecret: string,
+  expectedSpaceId: string
+): Promise<{ ok: boolean; reason?: string }> {
+  const TOKEN_MAX_AGE_SECONDS = 60;
+  const parts: Record<string, string> = {};
+  for (const segment of token.split(",")) {
+    const eq = segment.indexOf("=");
+    if (eq > 0) parts[segment.slice(0, eq)] = segment.slice(eq + 1);
+  }
+  const timestamp = parseInt(parts["t"] ?? "0", 10);
+  const agentId = parts["aid"] ?? "";
+  const receivedHex = parts["v1"] ?? "";
+
+  if (!agentId || !receivedHex) return { ok: false, reason: "Malformed credential token" };
+
+  const age = Math.floor(Date.now() / 1000) - timestamp;
+  if (age < 0 || age > TOKEN_MAX_AGE_SECONDS) {
+    return { ok: false, reason: `Credential token expired (age=${age}s)` };
+  }
+
+  const signingInput = `${expectedSpaceId}:${agentId}:${timestamp}`;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(platformSecret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["verify"]
+  );
+  const expectedSigBytes = new Uint8Array(
+    (receivedHex.match(/.{2}/g) ?? []).map((h) => parseInt(h, 16))
+  );
+  const valid = await crypto.subtle.verify(
+    "HMAC",
+    key,
+    expectedSigBytes,
+    new TextEncoder().encode(signingInput)
+  );
+  if (!valid) return { ok: false, reason: "Invalid credential token signature" };
+  return { ok: true };
+}
+
 // ── Validation ────────────────────────────────────────────────────────────────
 
 const CREDENTIAL_NAME_RE = /^[A-Za-z0-9_]{1,64}$/;
@@ -212,15 +281,21 @@ app.delete("/v1/spaces/:spaceId/credentials/:credId", async (c) => {
 
 // POST /v1/internal/spaces/:spaceId/credentials/:name/plaintext
 // Internal endpoint — returns decrypted value for agent tool dispatch
+// G-F06: Requires short-lived HMAC credential token (x-naelao-credential-token)
+//        embedding {spaceId}:{agentId}:{timestamp}, expires 60s.
 app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
-  const platformSecret = c.req.header("x-naelao-platform-secret") ?? "";
+  const credentialToken = c.req.header("x-naelao-credential-token") ?? "";
   const spaceId = c.req.param("spaceId");
   const credName = c.req.param("name");
 
   if (!tenantId) throw badRequest("x-naelao-tenant-id header is required");
-  if (platformSecret !== c.env.PLATFORM_SECRET) {
-    throw forbidden("Invalid platform secret");
+  if (!credentialToken) throw forbidden("x-naelao-credential-token header is required");
+
+  // G-F06: Verify short-lived HMAC token — prevents cross-space exfiltration
+  const tokenCheck = await verifyCredentialToken(credentialToken, c.env.PLATFORM_SECRET, spaceId);
+  if (!tokenCheck.ok) {
+    throw forbidden(tokenCheck.reason ?? "Invalid credential token");
   }
 
   const row = await c.env.PLATFORM_DB.prepare(

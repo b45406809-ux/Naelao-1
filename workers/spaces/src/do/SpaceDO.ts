@@ -72,6 +72,12 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 3,
+    // G-D01: composite index ensures ORDER BY (session_id, created_at, id) uses an index scan
+    description: "composite message ordering index",
+    up: `CREATE INDEX IF NOT EXISTS idx_messages_session_time ON messages(session_id, created_at, id);`,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -221,6 +227,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json(session);
   }
 
+  // G-D02: 128 KB hard cap on message content to prevent OOM in DO SQLite
+  private static readonly MAX_MESSAGE_CONTENT_BYTES = 131_072;
+
   private async appendMessage(request: Request, sessionId: string): Promise<Response> {
     const body = await request.json<{
       role: MessageRole;
@@ -229,6 +238,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       tool_name?: string;
       token_count?: number;
     }>();
+
+    // G-D02: Reject oversized messages before writing to SQLite
+    const contentBytes = new TextEncoder().encode(body.content ?? "").length;
+    if (contentBytes > SpaceDO.MAX_MESSAGE_CONTENT_BYTES) {
+      return Response.json(
+        { error_code: "payload_too_large", message: `Message content exceeds ${SpaceDO.MAX_MESSAGE_CONTENT_BYTES} byte limit` },
+        { status: 413 }
+      );
+    }
 
     const session = queryOne<{ id: string }>(
       this.ctx.storage.sql as never,
@@ -277,18 +295,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const limit = Math.min(parseInt(params.get("limit") ?? "50"), 200);
     const before = params.get("before");
 
+    // G-D01: id as tie-breaker ensures stable ordering when messages share a timestamp
     const rows = before
       ? queryAll<MessageRow>(
           this.ctx.storage.sql as never,
           `SELECT * FROM messages WHERE session_id = ? AND created_at < ?
-           ORDER BY created_at DESC LIMIT ?`,
+           ORDER BY created_at DESC, id DESC LIMIT ?`,
           sessionId,
           before,
           limit
         )
       : queryAll<MessageRow>(
           this.ctx.storage.sql as never,
-          `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC LIMIT ?`,
+          `SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, id ASC LIMIT ?`,
           sessionId,
           limit
         );
