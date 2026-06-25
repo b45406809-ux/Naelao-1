@@ -272,6 +272,92 @@ app.post(
   }
 );
 
+// ── GET /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/stream ─────────
+// G-AF08: SSE streaming for live agent run updates
+
+app.get(
+  "/spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/stream",
+  async (c) => {
+    const { tenantId } = getCallerIdentity(c);
+    if (!tenantId) throw unauthorized("Missing tenant identity");
+
+    const spaceId = c.req.param("spaceId");
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+
+    // Validate space ownership
+    const space = await c.env.PLATFORM_DB.prepare(
+      "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
+    )
+      .bind(spaceId, tenantId)
+      .first<{ id: string }>();
+    if (!space) throw notFound("Space");
+
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const writer = writable.getWriter();
+    const enc = new TextEncoder();
+
+    const sendEvent = async (event: string, data: unknown): Promise<void> => {
+      const line = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+      await writer.write(enc.encode(line));
+    };
+
+    const stub = getAgentDO(c.env, tenantId, sessionId);
+
+    // Poll the DO until the run terminates (max 2 minutes)
+    const pollTask = async (): Promise<void> => {
+      try {
+        const deadline = Date.now() + 120_000;
+        while (Date.now() < deadline) {
+          const resp = await stub.fetch(
+            new Request(`http://agent-do/runs/${runId}`, { method: "GET" })
+          );
+          const run = await resp.json<{
+            status: string;
+            final_answer?: string;
+            error?: string;
+            react_steps?: unknown[];
+          }>();
+
+          await sendEvent("status", {
+            run_id: runId,
+            status: run.status,
+            steps: run.react_steps?.length ?? 0,
+          });
+
+          if (
+            run.status === "completed" ||
+            run.status === "failed" ||
+            run.status === "cancelled"
+          ) {
+            await sendEvent("done", { run_id: runId, status: run.status, final_answer: run.final_answer, error: run.error });
+            break;
+          }
+
+          await new Promise<void>((r) => setTimeout(r, 1000));
+        }
+      } catch (err) {
+        try {
+          await sendEvent("error", { message: err instanceof Error ? err.message : String(err) });
+        } catch { /* ignore write error after close */ }
+      } finally {
+        try { await writer.close(); } catch { /* already closed */ }
+      }
+    };
+
+    c.executionCtx.waitUntil(pollTask());
+
+    return new Response(readable, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-store",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+      },
+    });
+  }
+);
+
 // ── Error handler ─────────────────────────────────────────────────────────────
 
 app.onError((err, c) =>

@@ -213,3 +213,54 @@ export async function getSpace(
     `/v1/spaces/${spaceId}`
   );
 }
+
+// ── Feedback ──────────────────────────────────────────────────────────────────
+
+/**
+ * Submit thumbs-up / thumbs-down feedback for an assistant message.
+ * POST /v1/spaces/:spaceId/sessions/:sessionId/messages/:messageId/feedback
+ * G-P-FB: Per-message feedback widget
+ */
+export async function submitFeedback(
+  spaceId: string,
+  sessionId: string,
+  messageId: string,
+  rating: "up" | "down"
+): Promise<void> {
+  await portalFetch<void>(
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/messages/${messageId}/feedback`,
+    { method: "POST", body: JSON.stringify({ rating }) }
+  );
+}
+
+// ── Magic link auth ───────────────────────────────────────────────────────────
+
+/**
+ * Request a magic link to be sent to an email address.
+ * POST /v1/spaces/:spaceId/auth/magic-link
+ * G-P-AUTH: End-user magic link authentication
+ */
+export async function requestMagicLink(
+  spaceId: string,
+  email: string
+): Promise<void> {
+  await portalFetch<void>(`/v1/spaces/${spaceId}/auth/magic-link`, {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+/**
+ * Verify a magic link token and return a short-lived auth token.
+ * POST /v1/spaces/:spaceId/auth/verify
+ * G-P-AUTH: Magic link token verification
+ */
+export async function verifyMagicLink(
+  spaceId: string,
+  token: string
+): Promise<{ auth_token: string; end_user_id: string }> {
+  return portalFetch<{ auth_token: string; end_user_id: string }>(
+    `/v1/spaces/${spaceId}/auth/verify`,
+    { method: "POST", body: JSON.stringify({ token }) }
+  );
+}

@@ -11,6 +11,35 @@ export interface Env {
   SPACE_DO: DurableObjectNamespace<SpaceDO>;
 }
 
+// Plan-tier space limits (G-I13: quota enforcement)
+const SPACE_LIMITS: Record<string, number> = {
+  free: 3,
+  starter: 25,
+  pro: 100,
+  enterprise: 1000,
+};
+
+async function enforceSpaceQuota(db: D1Database, tenantId: string): Promise<void> {
+  const org = await db.prepare(
+    "SELECT plan_tier FROM organizations WHERE id = ?"
+  ).bind(tenantId).first<{ plan_tier: string }>();
+
+  const tier = org?.plan_tier ?? "free";
+  const limit = SPACE_LIMITS[tier] ?? SPACE_LIMITS["free"] ?? 3;
+
+  const row = await db.prepare(
+    "SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ? AND status != 'deleted'"
+  ).bind(tenantId).first<{ count: number }>();
+
+  const count = row?.count ?? 0;
+  if (count >= limit) {
+    const err = new Error(`Space limit reached for ${tier} plan (${limit} spaces)`);
+    (err as unknown as Record<string, unknown>)["status"] = 402;
+    (err as unknown as Record<string, unknown>)["error_code"] = "quota_exceeded";
+    throw err;
+  }
+}
+
 // G-A11: Validate required secrets at startup
 function validateEnv(env: Env): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
@@ -58,6 +87,17 @@ app.post("/spaces", async (c) => {
       { error_code: "bad_request", message: "name and spacetype_id are required" },
       400
     );
+  }
+
+  // G-I13: Enforce per-plan space quota
+  try {
+    await enforceSpaceQuota(c.env.PLATFORM_DB, tenantId);
+  } catch (err) {
+    const e = err as Record<string, unknown>;
+    if (e["error_code"] === "quota_exceeded") {
+      return c.json({ error_code: "quota_exceeded", message: String(e["message"] ?? "Space limit exceeded") }, 402);
+    }
+    throw err;
   }
 
   const id = crypto.randomUUID();
