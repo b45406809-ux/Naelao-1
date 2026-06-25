@@ -22,6 +22,43 @@ const ANTHROPIC_API_VERSION = "2023-06-01";
 const RESPONSE_RESERVE_TOKENS = 4096;
 const CHARS_PER_TOKEN = 4; // approximate
 
+// ── Circuit breaker (G-AO11) ─────────────────────────────────────────────────
+// In-memory per-isolate circuit breaker for LLM provider failures.
+// Opens after CB_FAILURE_THRESHOLD consecutive 5xx/429 errors; probes after CB_RESET_MS.
+
+const CB_FAILURE_THRESHOLD = 5;
+const CB_RESET_MS = 60_000; // 60 seconds half-open probe
+
+interface CircuitBreakerState {
+  failures: number;
+  openedAt: number | null; // epoch ms, null = closed
+}
+
+const circuitBreaker: CircuitBreakerState = { failures: 0, openedAt: null };
+
+function cbIsOpen(): boolean {
+  if (circuitBreaker.openedAt === null) return false;
+  // Auto-reset after CB_RESET_MS (half-open probe)
+  if (Date.now() - circuitBreaker.openedAt >= CB_RESET_MS) {
+    circuitBreaker.openedAt = null;
+    circuitBreaker.failures = 0;
+    return false;
+  }
+  return true;
+}
+
+function cbRecordSuccess(): void {
+  circuitBreaker.failures = 0;
+  circuitBreaker.openedAt = null;
+}
+
+function cbRecordFailure(): void {
+  circuitBreaker.failures++;
+  if (circuitBreaker.failures >= CB_FAILURE_THRESHOLD) {
+    circuitBreaker.openedAt = Date.now();
+  }
+}
+
 // ── Retry helper ─────────────────────────────────────────────────────────────
 
 async function withRetry<T>(
@@ -135,6 +172,11 @@ export async function callLlm(
   request: LlmRequest,
   abortSignal?: AbortSignal
 ): Promise<LlmResponse> {
+  // G-AO11: Fail fast if circuit breaker is open
+  if (cbIsOpen()) {
+    throw new LlmGatewayError(503, "circuit_open", "LLM provider circuit breaker is open — too many recent failures");
+  }
+
   return withRetry(
     async () => {
       const body = buildRequestBody({ ...request, stream: false });
@@ -160,13 +202,19 @@ export async function callLlm(
         } catch {
           // ignore JSON parse failure
         }
-        throw new LlmGatewayError(
+        const err = new LlmGatewayError(
           response.status,
           errCode,
           `Anthropic API error ${response.status}: ${errText.slice(0, 200)}`
         );
+        // Record 5xx and 429 as provider failures for the circuit breaker
+        if (response.status >= 500 || response.status === 429) {
+          cbRecordFailure();
+        }
+        throw err;
       }
 
+      cbRecordSuccess();
       return response.json() as Promise<LlmResponse>;
     },
     3,
@@ -183,6 +231,11 @@ export async function streamLlm(
   onChunk: (delta: string) => void,
   abortSignal?: AbortSignal
 ): Promise<LlmResponse> {
+  // G-AO11: Fail fast if circuit breaker is open
+  if (cbIsOpen()) {
+    throw new LlmGatewayError(503, "circuit_open", "LLM provider circuit breaker is open — too many recent failures");
+  }
+
   return withRetry(
     async () => {
       const body = buildRequestBody({ ...request, stream: true });
@@ -202,6 +255,10 @@ export async function streamLlm(
 
       if (!response.ok) {
         const errText = await response.text().catch(() => "");
+        // Record 5xx and 429 as provider failures for the circuit breaker
+        if (response.status >= 500 || response.status === 429) {
+          cbRecordFailure();
+        }
         throw new LlmGatewayError(
           response.status,
           "api_error",
@@ -351,6 +408,7 @@ export async function streamLlm(
         }
       }
 
+      cbRecordSuccess();
       return {
         id: responseId,
         model: responseModel,

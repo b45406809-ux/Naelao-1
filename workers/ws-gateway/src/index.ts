@@ -6,6 +6,37 @@ interface Env {
   ENVIRONMENT: string;
   PLATFORM_SECRET: string;
   WS_HUB: DurableObjectNamespace<WsHubDO>;
+  ALLOWED_ORIGINS?: string; // comma-separated list, e.g. "https://app.naelao.com,https://dashboard.naelao.com"
+}
+
+// G-AL03: Strict origin validation to prevent subdomain spoofing.
+// Uses URL parsing and exact hostname matching — not string.includes() or endsWith().
+function isAllowedOrigin(origin: string | null, env: Env): boolean {
+  if (!origin) return false;
+
+  let parsedOrigin: URL;
+  try {
+    parsedOrigin = new URL(origin);
+  } catch {
+    return false;
+  }
+
+  // In development, allow localhost
+  if (env.ENVIRONMENT === "development" || env.ENVIRONMENT === "dev") {
+    if (parsedOrigin.hostname === "localhost" || parsedOrigin.hostname === "127.0.0.1") {
+      return true;
+    }
+  }
+
+  // Check explicit allowlist if provided
+  if (env.ALLOWED_ORIGINS) {
+    const allowed = env.ALLOWED_ORIGINS.split(",").map((o) => o.trim());
+    if (allowed.includes(origin)) return true;
+  }
+
+  // Default: allow any subdomain of naelao.com (exact .naelao.com suffix, not substring match)
+  const hostname = parsedOrigin.hostname;
+  return hostname === "naelao.com" || hostname.endsWith(".naelao.com");
 }
 
 interface WsSessionMeta {
@@ -36,6 +67,15 @@ export class WsHubDO extends DurableObject<Env> {
       // WebSocket upgrade
       if (request.headers.get("Upgrade") !== "websocket") {
         return new Response("Expected WebSocket upgrade", { status: 400 });
+      }
+
+      // G-AL03: Reject WebSocket upgrades from unauthorized origins
+      const origin = request.headers.get("Origin");
+      if (!isAllowedOrigin(origin, this.env)) {
+        return new Response(JSON.stringify({ error_code: "forbidden", message: "WebSocket origin not allowed" }), {
+          status: 403,
+          headers: { "Content-Type": "application/json" },
+        });
       }
 
       const pair = new WebSocketPair();
