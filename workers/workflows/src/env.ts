@@ -9,6 +9,8 @@ export type WorkflowBinding = { create(opts: { id?: string; params?: any }): Pro
 
 export interface Env {
   ENVIRONMENT: string;
+  CF_ACCOUNT_ID: string;
+  CF_API_TOKEN: string;
 
   // D1 — platform metadata, billing, users
   PLATFORM_DB: D1Database;
@@ -34,4 +36,5 @@ export interface Env {
   DATA_ERASURE: WorkflowBinding;
   KB_INGESTION: WorkflowBinding;
   DUNNING: WorkflowBinding;
+  QUEUE_HEALTH: WorkflowBinding;
 }

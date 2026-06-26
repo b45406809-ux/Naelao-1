@@ -9,13 +9,16 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
-import { getDOName } from "@naelao/crypto";
+import { getDOName, verifyDOTenantPrefix } from "@naelao/crypto";
 import { detectPromptInjection } from "@naelao/moderation";
 import { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
+import { TaskDO } from "./do/TaskDO.js";
 
 export { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 export { HITLApprovalDO } from "./do/HITLApprovalDO.js";
+export { TaskDO } from "./do/TaskDO.js";
+export { AgentTaskWorkflow } from "./workflows/AgentTaskWorkflow.js";
 
 // ── Env interface ─────────────────────────────────────────────────────────────
 
@@ -26,9 +29,12 @@ export interface AgentsEnv {
   PLATFORM_DB: D1Database;
   NAELAO_AGENT_DO: DurableObjectNamespace<NaelaoAgentDO>;
   HITL_APPROVAL_DO: DurableObjectNamespace<HITLApprovalDO>;
+  TASK_DO: DurableObjectNamespace<TaskDO>;
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
+  AGENTS_WORKER: Fetcher;
   AGENT_CACHE: KVNamespace;
+  AGENT_TASK_WORKFLOW: { create(opts: { id?: string; params?: unknown }): Promise<void> };
 }
 
 // ── DB row types ──────────────────────────────────────────────────────────────
@@ -75,16 +81,50 @@ function getCallerIdentity(c: {
   };
 }
 
+// G-BA01: Log cross-tenant DO probe attempts and apply best-effort rate alerting.
+// Uses AGENT_CACHE KV with 5-min TTL windows.
+async function recordCrossTenantProbe(
+  env: AgentsEnv,
+  tenantId: string,
+  doName: string,
+  requestId: string
+): Promise<void> {
+  const windowKey = `security:cross_tenant_probe:${tenantId}:${Math.floor(Date.now() / 300_000)}`;
+  try {
+    const raw = await env.AGENT_CACHE.get(windowKey);
+    const count = raw ? parseInt(raw, 10) + 1 : 1;
+    await env.AGENT_CACHE.put(windowKey, String(count), { expirationTtl: 300 });
+    const severity = count > 3 ? "CRITICAL" : "WARN";
+    console.error(
+      `[Security][${severity}] G-BA01 cross-tenant DO probe: tenantId=${tenantId} doName=${doName} requestId=${requestId} probeCount=${count}`
+    );
+  } catch {
+    console.error(`[Security][WARN] G-BA01 probe detected but count tracking failed: tenantId=${tenantId}`);
+  }
+}
+
 // Get DO stub for agent session
-// G-BA01: HMAC-derived name prevents cross-tenant DO enumeration
+// G-BA01: HMAC-derived name prevents cross-tenant DO enumeration; prefix verified before access
 async function getAgentDO(
   env: AgentsEnv,
   tenantId: string,
-  sessionId: string
+  sessionId: string,
+  reqId?: string
 ): Promise<DurableObjectStub<NaelaoAgentDO>> {
   const doName = await getDOName("agent", sessionId, tenantId, env.PLATFORM_SECRET);
+  const valid = await verifyDOTenantPrefix(doName, tenantId, env.PLATFORM_SECRET);
+  if (!valid) {
+    await recordCrossTenantProbe(env, tenantId, doName, reqId ?? "unknown");
+    throw new Error("Cross-tenant DO access denied");
+  }
   const doId = env.NAELAO_AGENT_DO.idFromName(doName);
   return env.NAELAO_AGENT_DO.get(doId);
+}
+
+// G-AX04: Get TaskDO stub — one DO per space for task state management
+function getTaskDO(env: AgentsEnv, spaceId: string): DurableObjectStub<TaskDO> {
+  const doId = env.TASK_DO.idFromName(`tasks:${spaceId}`);
+  return env.TASK_DO.get(doId);
 }
 
 // ── POST /spaces/:spaceId/sessions/:sessionId/agent/run ───────────────────────
@@ -242,8 +282,85 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     // Best-effort — don't block runs if quota check fails
   }
 
+  // G-AZ19: Semantic response cache check — skip for async tasks (checked per-request only)
+  try {
+    const cacheResp = await c.env.KNOWLEDGE_WORKER.fetch(
+      new Request("http://knowledge-worker/internal/semantic-cache/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: body.goal, spaceId }),
+      })
+    );
+    if (cacheResp.ok) {
+      const cacheData = await cacheResp.json<{ hit: boolean; response?: string; similarity?: number }>();
+      if (cacheData.hit && cacheData.response) {
+        console.log(`[SemanticCache] Cache hit for spaceId=${spaceId} similarity=${cacheData.similarity}`);
+        return c.json(
+          JSON.parse(cacheData.response),
+          200,
+          { "X-Cache": "HIT", "X-Cache-Similarity": String(cacheData.similarity ?? 0) }
+        );
+      }
+    }
+  } catch {
+    // Cache lookup errors must never block the main request
+  }
+
+  // G-AX04: Async task dispatch — if client sends Prefer: respond-async, return 202 immediately
+  const preferAsync = (c.req.header("prefer") ?? "").toLowerCase().includes("respond-async");
+  const callbackUrl = (body as Record<string, unknown>)["callback_url"] as string | undefined;
+
+  if (preferAsync && c.env.AGENT_TASK_WORKFLOW && c.env.TASK_DO) {
+    const taskId = crypto.randomUUID();
+    const taskDoName = `tasks:${spaceId}`;
+    const taskStub = getTaskDO(c.env, spaceId);
+
+    // Create task record
+    const createResp = await taskStub.fetch("http://task-do/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: taskId,
+        space_id: spaceId,
+        session_id: sessionId,
+        tenant_id: tenantId,
+        goal: body.goal,
+        callback_url: callbackUrl ?? null,
+      }),
+    });
+    if (!createResp.ok) {
+      throw new Error("Failed to create async task record");
+    }
+
+    // Start workflow for background execution
+    await c.env.AGENT_TASK_WORKFLOW.create({
+      id: taskId,
+      params: {
+        taskId,
+        spaceId,
+        sessionId,
+        tenantId,
+        goal: body.goal,
+        systemPrompt,
+        tools: toolsConfig,
+        kbContext,
+        model: modelConfig.model ?? "claude-sonnet-4-6",
+        taskDoName,
+      },
+    });
+
+    return c.json(
+      {
+        task_id: taskId,
+        status: "queued",
+        status_url: `/spaces/${spaceId}/tasks/${taskId}`,
+      },
+      202,
+    );
+  }
+
   // Get agent DO stub and forward the run request
-  const stub = await getAgentDO(c.env, tenantId, sessionId);
+  const stub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
 
   const doResponse = await stub.fetch(
     new Request("http://agent-do/run", {
@@ -265,6 +382,20 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   );
 
   const doBody = await doResponse.json<unknown>();
+
+  // G-AZ19: Store successful agent response in semantic cache for future hits
+  if (doResponse.ok) {
+    c.executionCtx.waitUntil(
+      c.env.KNOWLEDGE_WORKER.fetch(
+        new Request("http://knowledge-worker/internal/semantic-cache/store", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: body.goal, spaceId, response: JSON.stringify(doBody) }),
+        })
+      ).catch(() => {})
+    );
+  }
+
   return c.json(doBody, doResponse.status as 200 | 201 | 400 | 404 | 422 | 500);
 });
 
@@ -289,7 +420,7 @@ app.get(
 
     if (!space) throw notFound("Space");
 
-    const stub = await getAgentDO(c.env, tenantId, sessionId);
+    const stub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
     const doResponse = await stub.fetch(
       new Request(`http://agent-do/runs/${runId}`, { method: "GET" })
     );
@@ -320,7 +451,7 @@ app.post(
 
     if (!space) throw notFound("Space");
 
-    const stub = await getAgentDO(c.env, tenantId, sessionId);
+    const stub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
     const doResponse = await stub.fetch(
       new Request(`http://agent-do/runs/${runId}/cancel`, { method: "POST" })
     );
@@ -363,7 +494,7 @@ app.get(
       await writer.write(enc.encode(line));
     };
 
-    const stub = await getAgentDO(c.env, tenantId, sessionId);
+    const stub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
 
     // Poll the DO until the run terminates (max 2 minutes)
     const pollTask = async (): Promise<void> => {
@@ -418,6 +549,84 @@ app.get(
     });
   }
 );
+
+// ── G-AX04: Async Task routes ─────────────────────────────────────────────────
+// GET  /spaces/:spaceId/tasks             — list tasks for space
+// GET  /spaces/:spaceId/tasks/:taskId     — poll task status (optional ?timeout=30)
+// POST /internal/tasks/:taskId/run        — internal: invoked by AgentTaskWorkflow
+
+app.get("/spaces/:spaceId/tasks", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const spaceId = c.req.param("spaceId");
+
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(spaceId, tenantId).first<{ id: string }>();
+  if (!space) throw notFound("Space");
+
+  const stub = getTaskDO(c.env, spaceId);
+  return stub.fetch(`http://task-do/tasks?space_id=${spaceId}`);
+});
+
+app.get("/spaces/:spaceId/tasks/:taskId", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const spaceId = c.req.param("spaceId");
+  const taskId = c.req.param("taskId");
+
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(spaceId, tenantId).first<{ id: string }>();
+  if (!space) throw notFound("Space");
+
+  const timeout = c.req.query("timeout") ?? "0";
+  const stub = getTaskDO(c.env, spaceId);
+  return stub.fetch(`http://task-do/tasks/${taskId}?timeout=${timeout}`);
+});
+
+// Internal route: AgentTaskWorkflow calls this to execute the agent synchronously
+app.post("/internal/tasks/:taskId/run", async (c) => {
+  const taskId = c.req.param("taskId");
+  const body = await c.req.json<{
+    taskId: string;
+    spaceId: string;
+    sessionId: string;
+    tenantId: string;
+    goal: string;
+    systemPrompt: string;
+    tools: unknown[];
+    kbContext: string;
+    model: string;
+  }>();
+
+  try {
+    const stub = await getAgentDO(c.env, body.tenantId, body.sessionId);
+    const doResponse = await stub.fetch(
+      new Request("http://agent-do/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          goal: body.goal,
+          sessionId: body.sessionId,
+          spaceId: body.spaceId,
+          tenantId: body.tenantId,
+          systemPrompt: body.systemPrompt,
+          tools: body.tools,
+          kbContext: body.kbContext,
+          apiKey: c.env.ANTHROPIC_API_KEY,
+          model: body.model,
+          allowedDomains: [],
+        }),
+      })
+    );
+    const result = await doResponse.json<{ final_answer?: string; error?: string }>();
+    return c.json(result, doResponse.status as 200 | 201 | 400 | 500);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return c.json({ error: message }, 500);
+  }
+});
 
 // ── G-AY01: HITL Approval routes ──────────────────────────────────────────────
 // GET  /spaces/:spaceId/sessions/:sessionId/approvals          — list pending

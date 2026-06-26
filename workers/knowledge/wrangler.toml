@@ -18,6 +18,14 @@ bucket_name = "naelao-kb"
 binding = "KB_VECTORS"
 index_name = "naelao-kb-vectors"
 
+[[vectorize]]
+binding = "SEMANTIC_CACHE_VECTORS"
+index_name = "naelao-semantic-cache"
+
+[[kv_namespaces]]
+binding = "SEMANTIC_CACHE_KV"
+id = "REPLACE_WITH_SEMANTIC_CACHE_KV_ID"
+
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"

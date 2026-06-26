@@ -23,6 +23,14 @@ name = "DunningWorkflow"
 class_name = "DunningWorkflow"
 binding = "DUNNING"
 
+[[workflows]]
+name = "QueueHealthWorkflow"
+class_name = "QueueHealthWorkflow"
+binding = "QUEUE_HEALTH"
+
+[triggers]
+crons = ["*/30 * * * *"]
+
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"

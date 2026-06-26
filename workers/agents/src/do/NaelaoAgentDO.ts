@@ -473,6 +473,7 @@ export interface AgentDOEnv {
   PLATFORM_SECRET: string;
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
+  HITL_APPROVAL_DO?: DurableObjectNamespace; // G-AY01: optional — HITL support
 }
 
 export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
@@ -873,10 +874,41 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const toolResults: ContentBlock[] = [];
         let toolCallsThisTurn = 0;
 
+        // G-AY01: Build a fast-lookup map of require_approval per tool name
+        const approvalRequiredTools = new Set(
+          tools.filter((t) => t.require_approval).map((t) => t.name)
+        );
+
         // Partition: pre-check limits and policy before dispatching in parallel
         const dispatchQueue: Array<{ block: ContentBlock; skip?: ContentBlock }> = [];
         for (const toolBlock of toolUseBlocks) {
           if (!toolBlock.id || !toolBlock.name || !toolBlock.input) continue;
+
+          // G-AY01: HITL — if tool requires approval, pause and create approval request
+          if (approvalRequiredTools.has(toolBlock.name) && this.env.HITL_APPROVAL_DO) {
+            const hitlDoId = this.env.HITL_APPROVAL_DO.idFromName(`hitl:${services.spaceId}`);
+            const hitlStub = this.env.HITL_APPROVAL_DO.get(hitlDoId);
+            const approvalResp = await hitlStub.fetch("http://do/requests", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                run_id: runId,
+                session_id: services.spaceId,
+                tool_name: toolBlock.name,
+                tool_input: toolBlock.input,
+                action_description: `Tool '${toolBlock.name}' requested approval for run ${runId}`,
+              }),
+            });
+            const approvalData = await approvalResp.json<{ approval_id: string; expires_at: string }>();
+            this.transitionFsm(runId, currentFsmState, "AWAITING_HUMAN");
+            currentFsmState = "AWAITING_HUMAN";
+            toolResults.push({
+              type: "tool_result",
+              tool_use_id: toolBlock.id,
+              content: `[AWAITING_HUMAN_APPROVAL] Approval requested (id: ${approvalData.approval_id}). The builder must approve or reject this action within 30 seconds. Please inform the user that this action requires human approval.`,
+            });
+            continue;
+          }
 
           // G-AB20: policy check
           const policy = beforeToolCall(toolBlock.name, toolBlock.input);

@@ -6,7 +6,7 @@
  */
 
 import { Hono } from "hono";
-import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError } from "@naelao/http";
+import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut } from "@naelao/http";
 import { chunkText, embedText, embedBatch, bm25Score, reciprocalRankFusion } from "@naelao/rag";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
@@ -20,6 +20,8 @@ interface KnowledgeEnv {
   KB_BUCKET: R2Bucket;
   KB_VECTORS: VectorizeIndex;
   KB_CACHE: KVNamespace;
+  SEMANTIC_CACHE_VECTORS: VectorizeIndex;
+  SEMANTIC_CACHE_KV: KVNamespace;
   AI: Ai;
 }
 
@@ -601,10 +603,145 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     };
   });
 
-  // ── Cache results ─────────────────────────────────────────────────────────
-  await c.env.KB_CACHE.put(cacheKey, JSON.stringify(results), { expirationTtl: 3600 });
+  // ── Cache results (G-BE02: safeKvPut validates size before write) ────────
+  await safeKvPut(c.env.KB_CACHE, cacheKey, JSON.stringify(results), { expirationTtl: 3600 });
 
   return c.json({ data: results, cached: false });
+});
+
+// ── G-AZ19: Semantic Response Cache ──────────────────────────────────────────
+// Endpoint: POST /internal/semantic-cache/lookup
+//   Body: { query: string, spaceId: string }
+//   Returns: { hit: true, response: string, cache_id: string } | { hit: false }
+//
+// Endpoint: POST /internal/semantic-cache/store
+//   Body: { query: string, spaceId: string, response: string }
+//   Returns: { stored: true, cache_id: string }
+//
+// Endpoint: DELETE /internal/semantic-cache
+//   Query: ?spaceId=xxx
+//   Returns: { invalidated: true }
+
+const SEMANTIC_CACHE_SIMILARITY_THRESHOLD = 0.97;
+const SEMANTIC_CACHE_TTL_SECS = 24 * 60 * 60;
+
+app.post("/internal/semantic-cache/lookup", async (c) => {
+  const body = await c.req.json<{ query: string; spaceId: string }>();
+  if (!body.query || !body.spaceId) {
+    return c.json({ error: "query and spaceId required" }, 400);
+  }
+
+  // Fail open if Vectorize binding not available (optional binding)
+  if (!c.env.SEMANTIC_CACHE_VECTORS || !c.env.SEMANTIC_CACHE_KV) {
+    return c.json({ hit: false });
+  }
+
+  try {
+    const embedding = await embedText(c.env.AI, body.query);
+
+    const results = await c.env.SEMANTIC_CACHE_VECTORS.query(embedding.embedding, {
+      topK: 1,
+      filter: { space_id: { $eq: body.spaceId } },
+      returnMetadata: "indexed",
+    });
+
+    const top = results.matches?.[0];
+    if (!top || (top.score ?? 0) < SEMANTIC_CACHE_SIMILARITY_THRESHOLD) {
+      return c.json({ hit: false });
+    }
+
+    const cacheId = top.id;
+    const metadata = top.metadata as Record<string, unknown> | undefined;
+    const expiresAt = metadata?.["expires_at"] as number | undefined;
+
+    // Check if expired (Vectorize has no TTL — checked via metadata)
+    if (expiresAt && expiresAt < Date.now()) {
+      // Async cleanup of stale vector — don't block response
+      c.executionCtx.waitUntil(c.env.SEMANTIC_CACHE_VECTORS.deleteByIds([cacheId]));
+      return c.json({ hit: false });
+    }
+
+    const cachedResponse = await c.env.SEMANTIC_CACHE_KV.get(`sc:${cacheId}`);
+    if (!cachedResponse) {
+      return c.json({ hit: false });
+    }
+
+    console.log(`[SemanticCache] HIT spaceId=${body.spaceId} similarity=${top.score?.toFixed(4)} cacheId=${cacheId}`);
+    return c.json({ hit: true, response: cachedResponse, cache_id: cacheId, similarity: top.score });
+  } catch (err) {
+    // Fail open on cache errors — never block the main request
+    console.warn(`[SemanticCache] Lookup error: ${err}`);
+    return c.json({ hit: false });
+  }
+});
+
+app.post("/internal/semantic-cache/store", async (c) => {
+  const body = await c.req.json<{ query: string; spaceId: string; response: string }>();
+  if (!body.query || !body.spaceId || !body.response) {
+    return c.json({ error: "query, spaceId, and response required" }, 400);
+  }
+
+  if (!c.env.SEMANTIC_CACHE_VECTORS || !c.env.SEMANTIC_CACHE_KV) {
+    return c.json({ stored: false, reason: "semantic cache not configured" });
+  }
+
+  try {
+    const cacheId = crypto.randomUUID();
+    const embedding = await embedText(c.env.AI, body.query);
+    const expiresAt = Date.now() + SEMANTIC_CACHE_TTL_SECS * 1000;
+
+    await c.env.SEMANTIC_CACHE_VECTORS.upsert([{
+      id: cacheId,
+      values: embedding.embedding,
+      metadata: {
+        space_id: body.spaceId,
+        expires_at: expiresAt,
+      },
+    }]);
+
+    await c.env.SEMANTIC_CACHE_KV.put(`sc:${cacheId}`, body.response, {
+      expirationTtl: SEMANTIC_CACHE_TTL_SECS,
+    });
+
+    console.log(`[SemanticCache] STORED spaceId=${body.spaceId} cacheId=${cacheId}`);
+    return c.json({ stored: true, cache_id: cacheId });
+  } catch (err) {
+    console.warn(`[SemanticCache] Store error: ${err}`);
+    return c.json({ stored: false, reason: String(err) });
+  }
+});
+
+// Invalidate all semantic cache entries for a space (called on KB update)
+app.delete("/internal/semantic-cache", async (c) => {
+  const spaceId = c.req.query("spaceId");
+  if (!spaceId) return c.json({ error: "spaceId required" }, 400);
+
+  if (!c.env.SEMANTIC_CACHE_VECTORS || !c.env.SEMANTIC_CACHE_KV) {
+    return c.json({ invalidated: true, count: 0 });
+  }
+
+  try {
+    // Fetch all vectors for this space using a dummy query (get any embedding)
+    const dummyEmbed = await embedText(c.env.AI, "cache invalidation");
+    const toDelete = await c.env.SEMANTIC_CACHE_VECTORS.query(dummyEmbed.embedding, {
+      topK: 1000,
+      filter: { space_id: { $eq: spaceId } },
+      returnMetadata: "none",
+    });
+
+    const ids = toDelete.matches?.map(m => m.id) ?? [];
+    if (ids.length > 0) {
+      await c.env.SEMANTIC_CACHE_VECTORS.deleteByIds(ids);
+      // Also delete from KV
+      await Promise.all(ids.map(id => c.env.SEMANTIC_CACHE_KV.delete(`sc:${id}`)));
+    }
+
+    console.log(`[SemanticCache] Invalidated ${ids.length} entries for spaceId=${spaceId}`);
+    return c.json({ invalidated: true, count: ids.length });
+  } catch (err) {
+    console.warn(`[SemanticCache] Invalidation error: ${err}`);
+    return c.json({ invalidated: false, error: String(err) });
+  }
 });
 
 // ── Error handler ─────────────────────────────────────────────────────────────

@@ -151,6 +151,17 @@ export async function getDOName(
   return `${tenantHash}:${type}:${resourceId}`;
 }
 
+// G-BA01: Verify a DO name's tenant prefix matches the requesting tenant.
+// Returns false if the prefix doesn't match — caller should log and block.
+export async function verifyDOTenantPrefix(
+  doName: string,
+  tenantId: string,
+  platformSecret: string
+): Promise<boolean> {
+  const expectedPrefix = await signHmac(tenantId, platformSecret);
+  return doName.startsWith(expectedPrefix + ":");
+}
+
 // ── HMAC-SHA256 signing ──────────────────────────────────────────────────────
 
 export async function signHmac(payload: string, secret: string): Promise<string> {
