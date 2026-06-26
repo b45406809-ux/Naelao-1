@@ -12,8 +12,10 @@ import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection } from "@naelao/moderation";
 import { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
+import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 
 export { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
+export { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 
 // ── Env interface ─────────────────────────────────────────────────────────────
 
@@ -23,6 +25,7 @@ export interface AgentsEnv {
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
   NAELAO_AGENT_DO: DurableObjectNamespace<NaelaoAgentDO>;
+  HITL_APPROVAL_DO: DurableObjectNamespace<HITLApprovalDO>;
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
   AGENT_CACHE: KVNamespace;
@@ -415,6 +418,41 @@ app.get(
     });
   }
 );
+
+// ── G-AY01: HITL Approval routes ──────────────────────────────────────────────
+// GET  /spaces/:spaceId/sessions/:sessionId/approvals          — list pending
+// PUT  /spaces/:spaceId/sessions/:sessionId/approvals/:id/approve
+// PUT  /spaces/:spaceId/sessions/:sessionId/approvals/:id/reject
+
+function getHitlDo(env: AgentsEnv, spaceId: string) {
+  const doId = env.HITL_APPROVAL_DO.idFromName(`hitl:${spaceId}`);
+  return env.HITL_APPROVAL_DO.get(doId);
+}
+
+app.get("/spaces/:spaceId/sessions/:sessionId/approvals", async (c) => {
+  const { spaceId, sessionId } = c.req.param();
+  const stub = getHitlDo(c.env, spaceId);
+  const runId = c.req.query("run_id");
+  const url = runId ? `/requests?run_id=${runId}` : `/requests?session_id=${sessionId}`;
+  return stub.fetch(`http://do${url}`);
+});
+
+app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/approve", async (c) => {
+  const { spaceId, approvalId } = c.req.param();
+  const stub = getHitlDo(c.env, spaceId);
+  return stub.fetch(`http://do/requests/${approvalId}/approve`, { method: "PUT" });
+});
+
+app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/reject", async (c) => {
+  const { spaceId, approvalId } = c.req.param();
+  const body = await c.req.json<{ reason?: string }>().catch(() => ({}));
+  const stub = getHitlDo(c.env, spaceId);
+  return stub.fetch(`http://do/requests/${approvalId}/reject`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+});
 
 // ── Error handler ─────────────────────────────────────────────────────────────
 

@@ -7,9 +7,17 @@ compatibility_flags = ["nodejs_compat"]
 name = "NAELAO_AGENT_DO"
 class_name = "NaelaoAgentDO"
 
+[[durable_objects.bindings]]
+name = "HITL_APPROVAL_DO"
+class_name = "HITLApprovalDO"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["NaelaoAgentDO"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["HITLApprovalDO"]
 
 [[kv_namespaces]]
 binding = "AGENT_CACHE"

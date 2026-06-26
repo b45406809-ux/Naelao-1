@@ -74,8 +74,14 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
     let chunkCount = 0;
 
     try {
+      // G-BC03: Per-step retry config with exponential backoff
+      const networkRetry = {
+        retries: { limit: 3, delay: 1000, backoff: "exponential" as const },
+        timeout: 30_000,
+      };
+
       // ── Step 1: Fetch raw content from R2 ──────────────────────────────────
-      const { contentLength } = await step.do("fetch-content", async () => {
+      const { contentLength } = await step.do("fetch-content", networkRetry, async () => {
         const obj = await this.env.KB_BUCKET.get(params.r2Key);
 
         if (!obj) {
@@ -107,7 +113,7 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
       });
 
       // ── Step 2: Mark document as processing ────────────────────────────────
-      await step.do("update-status-processing", async () => {
+      await step.do("update-status-processing", networkRetry, async () => {
         const resp = await this.env.KNOWLEDGE_WORKER.fetch(
           `https://knowledge-worker/internal/docs/${params.docId}/status`,
           {
@@ -131,7 +137,7 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
       // We re-fetch the content inside this step because WorkflowStep state is
       // JSON-serialized between steps — storing large strings across steps would
       // balloon serialized state. R2 fetches are idempotent so re-fetching is safe.
-      chunkCount = await step.do("chunk-and-embed", async () => {
+      chunkCount = await step.do("chunk-and-embed", { ...networkRetry, timeout: 29_000 }, async () => {
         const obj = await this.env.KB_BUCKET.get(params.r2Key);
         if (!obj) {
           throw new Error(
@@ -175,7 +181,7 @@ export class KbIngestionWorkflow extends WorkflowEntrypoint<Env, IngestionParams
       });
 
       // ── Step 4: Mark document as indexed ──────────────────────────────────
-      await step.do("update-status-indexed", async () => {
+      await step.do("update-status-indexed", networkRetry, async () => {
         const resp = await this.env.KNOWLEDGE_WORKER.fetch(
           `https://knowledge-worker/internal/docs/${params.docId}/status`,
           {

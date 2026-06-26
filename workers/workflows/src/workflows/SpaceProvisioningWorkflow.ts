@@ -29,7 +29,13 @@ export class SpaceProvisioningWorkflow extends WorkflowEntrypoint<Env, Provision
     const params = event.payload;
 
     // ── Step 1: Validate space + active subscription ────────────────────────
-    await step.do("validate-space", async () => {
+    // G-BC03: Per-step retry with exponential backoff for transient failures
+    const networkRetry = {
+      retries: { limit: 3, delay: 1000, backoff: "exponential" as const },
+      timeout: 30_000,
+    };
+
+    await step.do("validate-space", networkRetry, async () => {
       // Confirm the space record exists and belongs to the expected tenant
       const space = await this.env.PLATFORM_DB.prepare(
         `SELECT id, status FROM spaces WHERE id = ? AND tenant_id = ? AND spacetype_id = ?`
@@ -60,7 +66,7 @@ export class SpaceProvisioningWorkflow extends WorkflowEntrypoint<Env, Provision
     });
 
     // ── Step 2: Init SpaceDO via SPACES_WORKER ──────────────────────────────
-    await step.do("init-space-do", async () => {
+    await step.do("init-space-do", networkRetry, async () => {
       const resp = await this.env.SPACES_WORKER.fetch(
         `https://spaces-worker/internal/spaces/${params.spaceId}/init`,
         {
@@ -84,7 +90,7 @@ export class SpaceProvisioningWorkflow extends WorkflowEntrypoint<Env, Provision
     // ── Step 3: Vectorize namespace note ─────────────────────────────────────
     // CF free/paid plans use a single shared Vectorize index filtered by spaceId.
     // No per-space namespace creation is needed — document this for observability.
-    await step.do("init-vectorize-namespace", async () => {
+    await step.do("init-vectorize-namespace", networkRetry, async () => {
       console.log(
         `[SpaceProvisioning] Space ${params.spaceId}: Vectorize uses shared index ` +
           `filtered by space_id field — no per-space namespace to create.`,
@@ -93,7 +99,7 @@ export class SpaceProvisioningWorkflow extends WorkflowEntrypoint<Env, Provision
     });
 
     // ── Step 4: Flip space status to active ──────────────────────────────────
-    await step.do("update-status", async () => {
+    await step.do("update-status", networkRetry, async () => {
       await this.env.PLATFORM_DB.prepare(
         `UPDATE spaces
          SET status = 'active', updated_at = datetime('now')
@@ -106,7 +112,7 @@ export class SpaceProvisioningWorkflow extends WorkflowEntrypoint<Env, Provision
     });
 
     // ── Step 5: Emit provisioned event ────────────────────────────────────────
-    await step.do("emit-event", async () => {
+    await step.do("emit-event", networkRetry, async () => {
       const eventPayload = {
         type: "space.provisioned",
         spaceId: params.spaceId,

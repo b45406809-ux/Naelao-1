@@ -22,6 +22,7 @@ export interface LlmTool {
   name: string;
   description: string;
   input_schema: Record<string, unknown>; // JSON Schema object
+  require_approval?: boolean; // G-AY01: HITL — pause agent and wait for human approval before executing
 }
 
 export interface LlmRequest {
