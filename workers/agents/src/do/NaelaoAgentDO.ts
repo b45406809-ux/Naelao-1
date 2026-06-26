@@ -95,6 +95,106 @@ const MAX_TOOL_CALLS_PER_RUN = 100;
 // G-N44: Max messages kept in context window (keeps first + most recent N-1)
 const MAX_CONTEXT_MESSAGES = 40;
 
+// G-BB03: Context window budget constants
+// claude-sonnet-4-6 supports 200K tokens; we reserve 10K headroom for completion
+const MODEL_CONTEXT_LIMIT_TOKENS = 190_000;
+// Budget allocation per spec: system 20%, KB 40%, conversation 30%, remainder 10%
+const SYSTEM_BUDGET_TOKENS   = Math.floor(MODEL_CONTEXT_LIMIT_TOKENS * 0.20); // 38K
+const KB_BUDGET_TOKENS       = Math.floor(MODEL_CONTEXT_LIMIT_TOKENS * 0.40); // 76K
+const CONVO_BUDGET_TOKENS    = Math.floor(MODEL_CONTEXT_LIMIT_TOKENS * 0.30); // 57K
+
+// Rough token estimator: 1 token ≈ 4 chars (conservative for English text)
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+function estimateMessageTokens(messages: LlmMessage[]): number {
+  return messages.reduce((sum, m) => {
+    const text = typeof m.content === "string"
+      ? m.content
+      : (Array.isArray(m.content) ? m.content.map(b => (b as {text?: string}).text ?? "").join("") : "");
+    return sum + estimateTokens(text) + 4; // +4 for role/formatting overhead
+  }, 0);
+}
+
+// G-BB03: Apply priority-based context budget truncation.
+// Returns { messages, kbContext, truncated } — caller uses returned values for LLM call.
+function applyContextBudget(
+  systemText: string,
+  messages: LlmMessage[],
+  kbContext: string,
+): { messages: LlmMessage[]; kbContext: string; truncated: boolean } {
+  let truncated = false;
+  let resultKbContext = kbContext;
+  let resultMessages = messages;
+
+  // 1. Check system prompt budget (non-truncatable — just log if over)
+  const systemTokens = estimateTokens(systemText);
+  if (systemTokens > SYSTEM_BUDGET_TOKENS) {
+    console.warn(`[ContextBudget] System prompt ${systemTokens} tokens exceeds budget ${SYSTEM_BUDGET_TOKENS}`);
+  }
+
+  // 2. Truncate KB context to budget
+  const kbTokens = estimateTokens(kbContext);
+  if (kbTokens > KB_BUDGET_TOKENS) {
+    // Truncate KB context to fit budget (rough char limit)
+    const maxKbChars = KB_BUDGET_TOKENS * 4;
+    resultKbContext = kbContext.slice(0, maxKbChars) + "\n[KB_CONTEXT_TRUNCATED]";
+    truncated = true;
+    console.warn(`[ContextBudget] G-BB03 KB context truncated: ${kbTokens} → ${KB_BUDGET_TOKENS} tokens`);
+  }
+
+  // 3. Truncate conversation to budget (keep first message + recent turns)
+  const convoTokens = estimateMessageTokens(resultMessages);
+  if (convoTokens > CONVO_BUDGET_TOKENS) {
+    truncated = true;
+    // Binary search for the right number of messages to keep
+    let lo = 1, hi = resultMessages.length;
+    while (lo < hi - 1) {
+      const mid = Math.floor((lo + hi) / 2);
+      const candidate = [resultMessages[0]!, ...resultMessages.slice(-mid)];
+      if (estimateMessageTokens(candidate) <= CONVO_BUDGET_TOKENS) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    const keepCount = Math.max(lo, 1);
+    resultMessages = [resultMessages[0]!, ...resultMessages.slice(-keepCount)];
+    console.warn(`[ContextBudget] G-BB03 conversation truncated: kept ${resultMessages.length}/${messages.length} messages`);
+  }
+
+  return { messages: resultMessages, kbContext: resultKbContext, truncated };
+}
+
+// G-AZ09: LLM pricing constants (claude-sonnet-4-6, USD per million tokens)
+const PRICING = {
+  input_per_mtok: 3.00,
+  output_per_mtok: 15.00,
+  cache_read_per_mtok: 0.30,
+  cache_write_per_mtok: 3.75,
+} as const;
+
+function computeLlmCostUsd(usage: {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}): number {
+  const inputTokens = usage.input_tokens ?? 0;
+  const outputTokens = usage.output_tokens ?? 0;
+  const cacheReadTokens = usage.cache_read_input_tokens ?? 0;
+  const cacheWriteTokens = usage.cache_creation_input_tokens ?? 0;
+  // Cached read tokens use different pricing — subtract from regular input
+  const regularInputTokens = Math.max(0, inputTokens - cacheReadTokens - cacheWriteTokens);
+  return (
+    (regularInputTokens / 1_000_000) * PRICING.input_per_mtok +
+    (outputTokens / 1_000_000) * PRICING.output_per_mtok +
+    (cacheReadTokens / 1_000_000) * PRICING.cache_read_per_mtok +
+    (cacheWriteTokens / 1_000_000) * PRICING.cache_write_per_mtok
+  );
+}
+
 // G-N44: Correct context truncation — keep first message (user goal) and most
 // recent (maxCount-1) messages in chronological order.
 // NEVER use splice() in a reverse loop (inserts at index 1, reversing order).
@@ -474,6 +574,7 @@ export interface AgentDOEnv {
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
   HITL_APPROVAL_DO?: DurableObjectNamespace; // G-AY01: optional — HITL support
+  ANALYTICS?: AnalyticsEngineDataset;         // G-AZ09: unit economics tracking
 }
 
 export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
@@ -742,12 +843,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     allowedDomains: string[],
     services: ToolServices
   ): Promise<string> {
-    // Build initial messages
     // System prompt + KB context forms the system; goal is first user message
-    const fullSystem = kbContext
-      ? `${systemPrompt}\n\n<kb_content>\n${kbContext}\n</kb_content>`
-      : systemPrompt;
-
     const messages: LlmMessage[] = [
       { role: "user", content: goal },
     ];
@@ -757,6 +853,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const toolCallCounts = new Map<string, number>();
     // G-BB41: Track total tool calls across all iterations of this run
     let totalToolCallsThisRun = 0;
+    // G-AZ09: Accumulate cost across all LLM calls in this run
+    let totalCostUsd = 0;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalCacheReadTokens = 0;
+    // G-BB03: Track context truncation events
+    let contextTruncatedCount = 0;
 
     // G-AZ01: Transition from IDLE to PLANNING at the start of the loop
     this.transitionFsm(runId, "IDLE", "PLANNING");
@@ -774,7 +877,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       currentFsmState = runRow.fsm_state;
 
       // G-N44: Trim context to prevent token overflow; keeps first message + recent history
-      const contextMessages = truncateMiddle(messages, MAX_CONTEXT_MESSAGES);
+      const prebudgetMessages = truncateMiddle(messages, MAX_CONTEXT_MESSAGES);
+
+      // G-BB03: Apply priority-based context budget (system 20%, KB 40%, conversation 30%)
+      // Build fullSystem for this iteration (KB context may be truncated per budget)
+      const rawSystem = kbContext
+        ? `${systemPrompt}\n\n<kb_content>\n${kbContext}\n</kb_content>`
+        : systemPrompt;
+      const budgeted = applyContextBudget(rawSystem, prebudgetMessages, kbContext);
+      if (budgeted.truncated) {
+        contextTruncatedCount++;
+        console.warn(`[ContextBudget] G-BB03 iteration ${iteration} truncated context for run ${runId}`);
+      }
+      const fullSystem = budgeted.kbContext
+        ? `${systemPrompt}\n\n<kb_content>\n${budgeted.kbContext}\n</kb_content>`
+        : systemPrompt;
+      const contextMessages = budgeted.messages;
 
       // G-AZ07: Structure system prompt with cache_control on stable prefix block
       // Anthropic caches the first ~2000 tokens of the system prompt for 5 minutes.
@@ -797,6 +915,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         max_tokens: 4096,
         temperature: 0,
       });
+
+      // G-AZ09: Track per-call costs for unit economics model
+      const usage = (llmResponse as { usage?: Record<string, number> }).usage ?? {};
+      const callCostUsd = computeLlmCostUsd(usage);
+      totalCostUsd += callCostUsd;
+      totalInputTokens += usage["input_tokens"] ?? 0;
+      totalOutputTokens += usage["output_tokens"] ?? 0;
+      totalCacheReadTokens += usage["cache_read_input_tokens"] ?? 0;
 
       const step: ReactStep = {
         iteration,
@@ -844,6 +970,44 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
         // Persist steps
         this.persistReactSteps(runId, reactSteps);
+
+        // G-AZ09: Emit unit economics event to Analytics Engine
+        if (this.env.ANALYTICS) {
+          try {
+            this.env.ANALYTICS.writeDataPoint({
+              blobs: [
+                "agent.run.completed",       // b1: event_type
+                services.tenantId,           // b2: tenant_id
+                services.spaceId,            // b3: space_id
+                "", "", "", "agents", "", "", // b4-b10
+                JSON.stringify({
+                  run_id: runId,
+                  iterations: iteration + 1,
+                  context_truncated: contextTruncatedCount > 0,
+                  context_truncation_count: contextTruncatedCount,
+                }),
+                "", "", "", "", "", "", "", "", "",
+              ],
+              doubles: [
+                0,                                         // d1: duration_ms (not tracked here)
+                totalInputTokens + totalOutputTokens,      // d2: total token_count
+                Math.round(totalCostUsd * 1_000_000),      // d3: cost_usd_micro
+                totalOutputTokens,                         // d4: output token count
+                totalInputTokens,                          // d5: input token count
+                totalCacheReadTokens,                      // d6: cache read tokens
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+              ],
+              indexes: [services.tenantId],
+            });
+          } catch {
+            // Analytics Engine is append-only best-effort — never block on failure
+          }
+        }
+
+        console.log(
+          `[AZ09] Run ${runId} cost: $${totalCostUsd.toFixed(6)} ` +
+          `(in=${totalInputTokens} out=${totalOutputTokens} cacheRead=${totalCacheReadTokens})`
+        );
 
         // G-AZ01: SUMMARIZING → DONE
         this.transitionFsm(runId, "SUMMARIZING", "DONE");

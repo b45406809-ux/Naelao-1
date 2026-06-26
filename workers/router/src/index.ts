@@ -11,6 +11,7 @@ export interface Env {
   SESSION_REVOCATION: KVNamespace;
   CONFIG: KVNamespace;
   NONCE_STORE: KVNamespace;
+  QUOTA_CACHE: KVNamespace;
   PLATFORM_DB: D1Database;
   RATE_LIMIT_DO: DurableObjectNamespace;
   SPACES_WORKER: Fetcher;
@@ -167,6 +168,35 @@ api.use("*", async (c, next) => {
     c.header("X-RateLimit-Remaining", String(result.remaining));
   } catch {
     // Rate limiter unavailable — fail open to avoid blocking all traffic
+  }
+  return next();
+});
+
+// G-BA02: Tenant resource quota enforcement at ingress.
+// Reads cached quota status from KV (written by billing/usage workers every 60s).
+// Key: quota:{tenantId}:blocked → "1" | absent
+// Grace: 5% overage is allowed; only hard-blocked tenants are rejected.
+// Fails open — if KV unavailable, request passes through.
+api.use("*", async (c, next) => {
+  if (!c.env.QUOTA_CACHE) return next();
+  const claims = c.get("claims");
+  const tenantId = claims?.tid ?? "";
+  if (!tenantId) return next();
+
+  try {
+    const blocked = await c.env.QUOTA_CACHE.get(`quota:${tenantId}:blocked`);
+    if (blocked === "1") {
+      const detail = await c.env.QUOTA_CACHE.get(`quota:${tenantId}:detail`);
+      let detailObj: Record<string, unknown> = {};
+      try { detailObj = detail ? JSON.parse(detail) : {}; } catch { /* ignore */ }
+      return c.json({
+        error_code: "quota_exceeded",
+        message: "Tenant resource quota exceeded — upgrade plan or contact support",
+        detail: detailObj,
+      }, 429);
+    }
+  } catch {
+    // Fail open — quota check errors never block requests
   }
   return next();
 });

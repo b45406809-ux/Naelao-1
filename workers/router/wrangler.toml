@@ -26,6 +26,11 @@ binding = "NONCE_STORE"
 id = "PLACEHOLDER_NONCE_STORE_KV_ID"
 preview_id = "PLACEHOLDER_NONCE_STORE_KV_PREVIEW_ID"
 
+[[kv_namespaces]]
+binding = "QUOTA_CACHE"
+id = "PLACEHOLDER_QUOTA_CACHE_KV_ID"
+preview_id = "PLACEHOLDER_QUOTA_CACHE_KV_PREVIEW_ID"
+
 [[durable_objects.bindings]]
 name = "RATE_LIMIT_DO"
 class_name = "RateLimitDO"

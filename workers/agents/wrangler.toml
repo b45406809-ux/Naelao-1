@@ -36,6 +36,10 @@ binding = "AGENT_TASK_WORKFLOW"
 binding = "AGENT_CACHE"
 id = "REPLACE_WITH_KV_ID"
 
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_agent_events"
+
 [[services]]
 binding = "KNOWLEDGE_WORKER"
 service = "naelao-knowledge"
