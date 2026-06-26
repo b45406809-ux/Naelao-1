@@ -10,6 +10,7 @@
 import { DurableObject } from "cloudflare:workers";
 import type { LlmTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
+import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
 
 // ── G-AZ01: Agent FSM states and valid transitions ───────────────────────────
@@ -774,10 +775,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // G-N44: Trim context to prevent token overflow; keeps first message + recent history
       const contextMessages = truncateMiddle(messages, MAX_CONTEXT_MESSAGES);
 
+      // G-AZ07: Structure system prompt with cache_control on stable prefix block
+      // Anthropic caches the first ~2000 tokens of the system prompt for 5 minutes.
+      // Splitting into stable prefix (SpaceType config / persona) + dynamic suffix
+      // lets us mark the stable part as ephemeral-cacheable to save ~90% cost there.
+      const systemBlocks: SystemBlock[] = [
+        {
+          type: "text",
+          text: fullSystem,
+          cache_control: { type: "ephemeral" },
+        },
+      ];
+
       // Call LLM
       const llmResponse = await callLlm(apiKey, {
         model,
-        system: fullSystem,
+        system: systemBlocks,
         messages: contextMessages,
         ...(tools.length > 0 ? { tools } : {}),
         max_tokens: 4096,
@@ -855,102 +868,61 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         this.transitionFsm(runId, "TOOL_CALL", "AWAITING_TOOL");
         currentFsmState = "AWAITING_TOOL";
 
-        // Execute each tool and collect results
+        // G-AZ08: Parallel tool dispatch — all independent tool calls run concurrently
+        // Pre-filter valid blocks and apply limits synchronously before parallel dispatch
         const toolResults: ContentBlock[] = [];
-        // G-BB41: Per-turn tool call counter (max 20 per iteration)
         let toolCallsThisTurn = 0;
 
+        // Partition: pre-check limits and policy before dispatching in parallel
+        const dispatchQueue: Array<{ block: ContentBlock; skip?: ContentBlock }> = [];
         for (const toolBlock of toolUseBlocks) {
-          if (
-            !toolBlock.id ||
-            !toolBlock.name ||
-            !toolBlock.input
-          ) {
-            continue;
-          }
+          if (!toolBlock.id || !toolBlock.name || !toolBlock.input) continue;
 
-          step.action = {
-            toolName: toolBlock.name,
-            toolInput: toolBlock.input,
-            toolUseId: toolBlock.id,
-          };
-
-          // G-AB20: beforeToolCall policy interceptor — validate args before execution
+          // G-AB20: policy check
           const policy = beforeToolCall(toolBlock.name, toolBlock.input);
           if (!policy.allow) {
-            console.warn(`[agent] Tool call blocked by policy: tool=${toolBlock.name} reason=${policy.reason}`);
-            toolResults.push({
-              type: "tool_result",
-              tool_use_id: toolBlock.id,
-              content: `Error: Tool call blocked by policy: ${policy.reason ?? "not allowed"}`,
-            });
+            toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id,
+              content: `Error: Tool call blocked by policy: ${policy.reason ?? "not allowed"}` });
             continue;
           }
-
-          // G-X01: Enforce per-tool call limit to prevent recursive drain
+          // G-X01: per-tool call count
           const callsSoFar = toolCallCounts.get(toolBlock.name) ?? 0;
           if (callsSoFar >= MAX_CALLS_PER_TOOL) {
-            toolResults.push({
-              type: "tool_result",
-              tool_use_id: toolBlock.id,
-              content: `Error: Tool '${toolBlock.name}' has been called ${MAX_CALLS_PER_TOOL} times in this run — limit reached to prevent recursive loops.`,
-            });
+            toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id,
+              content: `Error: Tool '${toolBlock.name}' call limit (${MAX_CALLS_PER_TOOL}) reached.` });
             continue;
           }
-
-          // G-BB41: Enforce per-turn cap (max 20 total tool calls per iteration)
-          if (toolCallsThisTurn >= MAX_TOOL_CALLS_PER_TURN) {
-            toolResults.push({
-              type: "tool_result",
-              tool_use_id: toolBlock.id,
-              content: `Error: Per-turn tool call limit (${MAX_TOOL_CALLS_PER_TURN}) reached — too many tool calls in a single step.`,
-            });
-            continue;
-          }
-
-          // G-BB41: Enforce per-run cap (max 100 total tool calls across all iterations)
-          if (totalToolCallsThisRun >= MAX_TOOL_CALLS_PER_RUN) {
-            toolResults.push({
-              type: "tool_result",
-              tool_use_id: toolBlock.id,
-              content: `Error: Per-run tool call limit (${MAX_TOOL_CALLS_PER_RUN}) reached — too many tool calls in this agent run.`,
-            });
+          // G-BB41: per-turn and per-run caps
+          if (toolCallsThisTurn >= MAX_TOOL_CALLS_PER_TURN || totalToolCallsThisRun >= MAX_TOOL_CALLS_PER_RUN) {
+            toolResults.push({ type: "tool_result", tool_use_id: toolBlock.id,
+              content: `Error: Tool call limit reached for this ${toolCallsThisTurn >= MAX_TOOL_CALLS_PER_TURN ? "turn" : "run"}.` });
             continue;
           }
 
           toolCallCounts.set(toolBlock.name, callsSoFar + 1);
           toolCallsThisTurn++;
           totalToolCallsThisRun++;
-
-          // G-BB41: Audit log every dispatched tool call
           console.log(`[agent][audit] tool_call run=${runId} iteration=${iteration} tool=${toolBlock.name} total_this_run=${totalToolCallsThisRun}`);
-
-          const result = await dispatchTool(
-            toolBlock.name,
-            toolBlock.input,
-            allowedDomains,
-            services
-          );
-
-          let observation = result.error
-            ? `Error: ${result.error}`
-            : result.output;
-
-          // G-BB41: Cap tool output at 64KB before returning to LLM
-          const obsBytes = new TextEncoder().encode(observation).length;
-          if (obsBytes > MAX_TOOL_OUTPUT_BYTES) {
-            observation = observation.slice(0, MAX_TOOL_OUTPUT_BYTES) +
-              `\n[TRUNCATED: output exceeded ${MAX_TOOL_OUTPUT_BYTES} bytes]`;
-          }
-
-          step.observation = observation;
-
-          toolResults.push({
-            type: "tool_result",
-            tool_use_id: toolBlock.id,
-            content: observation,
-          });
+          dispatchQueue.push({ block: toolBlock });
         }
+
+        // G-AZ08: Dispatch all queued tool calls in parallel (max 5 concurrent per spec)
+        const MAX_PARALLEL_TOOLS = 5;
+        const parallelResults = await Promise.all(
+          dispatchQueue.slice(0, MAX_PARALLEL_TOOLS).map(async ({ block }) => {
+            const result = await dispatchTool(block.name!, block.input!, allowedDomains, services);
+            let observation = result.error ? `Error: ${result.error}` : result.output;
+            const obsBytes = new TextEncoder().encode(observation).length;
+            if (obsBytes > MAX_TOOL_OUTPUT_BYTES) {
+              observation = observation.slice(0, MAX_TOOL_OUTPUT_BYTES) +
+                `\n[TRUNCATED: output exceeded ${MAX_TOOL_OUTPUT_BYTES} bytes]`;
+            }
+            step.action = { toolName: block.name!, toolInput: block.input!, toolUseId: block.id! };
+            step.observation = observation;
+            return { type: "tool_result" as const, tool_use_id: block.id!, content: observation };
+          })
+        );
+        toolResults.push(...parallelResults);
 
         reactSteps.push(step);
         this.persistReactSteps(runId, reactSteps);

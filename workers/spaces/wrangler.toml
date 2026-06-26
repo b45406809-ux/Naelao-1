@@ -18,9 +18,17 @@ class_name = "LockDO"
 tag = "v1"
 new_classes = ["SpaceDO"]
 
+[[durable_objects.bindings]]
+name = "FEATURE_FLAG_DO"
+class_name = "FeatureFlagDO"
+
 [[migrations]]
 tag = "v2"
 new_classes = ["LockDO"]
+
+[[migrations]]
+tag = "v3"
+new_classes = ["FeatureFlagDO"]
 
 [[d1_databases]]
 binding = "PLATFORM_DB"

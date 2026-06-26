@@ -5,6 +5,7 @@ import type { SpaceDO } from "./do/SpaceDO.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
+export { FeatureFlagDO } from "./do/FeatureFlagDO.js";
 
 export interface Env {
   ENVIRONMENT: string;
