@@ -1058,6 +1058,9 @@ async function handleScheduled(env: AgentsEnv): Promise<void> {
   }
 }
 
+// Exported for end-to-end tests that drive the assembled app the way the router does.
+export { app };
+
 export default {
   fetch: app.fetch,
   async scheduled(_controller: ScheduledController, env: AgentsEnv, _ctx: ExecutionContext): Promise<void> {
