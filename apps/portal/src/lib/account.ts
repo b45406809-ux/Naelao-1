@@ -78,6 +78,7 @@ export interface BusinessStatus {
   affiliate_id: string | null;
   template_version: string;
   autonomy_tier: number;
+  paused: boolean;
   fiber_status: string;
   last_cycle_at: number | null;
   script_count: number;
@@ -102,4 +103,10 @@ export async function runContentCycle(input: { topic?: string }): Promise<{ cycl
   const user = getUser();
   if (!user) throw new Error("Not signed in");
   return call(`/v1/business/${user.id}/content-cycle`, { method: "POST", body: JSON.stringify(input) });
+}
+
+export async function setPaused(paused: boolean): Promise<{ paused: boolean }> {
+  const user = getUser();
+  if (!user) throw new Error("Not signed in");
+  return call(`/v1/business/${user.id}/${paused ? "pause" : "resume"}`, { method: "POST" });
 }

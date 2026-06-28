@@ -838,6 +838,16 @@ app.post("/business/:userId/scripts/seed", async (c) => {
   return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/scripts/seed", { method: "POST" }));
 });
 
+// Kill switch — pause / resume the whole business
+app.post("/business/:userId/pause", async (c) => {
+  const { userId } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/pause", { method: "POST" }));
+});
+app.post("/business/:userId/resume", async (c) => {
+  const { userId } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/resume", { method: "POST" }));
+});
+
 // ── Micro-tool (Tier 5) lifecycle — the sellable product ──────────────────────
 app.get("/business/:userId/tool", async (c) => {
   const { userId } = c.req.param();
@@ -1028,10 +1038,11 @@ async function handleScheduled(env: AgentsEnv): Promise<void> {
       // Get the whop_product_id from this business
       const statusResp = await bizDO.fetch(new Request("http://do/status"));
       if (!statusResp.ok) continue;
-      const status = await statusResp.json<{ whop_product_id: string | null; fiber_status: string }>();
+      const status = await statusResp.json<{ whop_product_id: string | null; fiber_status: string; paused?: boolean }>();
       if (!status.whop_product_id) continue;
 
-      // Skip if a cycle is already running
+      // Skip paused businesses (kill switch) and any with a cycle already running.
+      if (status.paused) continue;
       if (status.fiber_status === "running") continue;
 
       // OBSERVE: pull current Whop snapshot

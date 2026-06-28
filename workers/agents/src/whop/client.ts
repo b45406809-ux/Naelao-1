@@ -104,8 +104,12 @@ export async function createWhopProduct(
     price_usd: number;
     billing_period: "monthly" | "one_time";
     idempotency_key: string;
+    affiliate_percentage?: number; // enable the global affiliate program at creation
   }
 ): Promise<WhopProduct> {
+  // Per Whop create-product API: affiliate commission can be set at creation via
+  // global_affiliate_percentage / global_affiliate_status.
+  // https://docs.whop.com/api-reference/products/create-product
   return whopRequest<WhopProduct>(
     config,
     "POST",
@@ -116,6 +120,9 @@ export async function createWhopProduct(
       price: opts.price_usd,
       billing_period: opts.billing_period,
       visibility: "hidden", // always start hidden; publish only when ready
+      ...(opts.affiliate_percentage !== undefined
+        ? { global_affiliate_percentage: opts.affiliate_percentage, global_affiliate_status: "enabled" }
+        : {}),
     },
     opts.idempotency_key,
   );
@@ -151,6 +158,10 @@ export interface WhopAffiliateRegistration {
   status: "active" | "pending" | "rejected";
 }
 
+// Whop affiliate-of-record is two steps per the docs: create an affiliate record,
+// then add an override that defines the commission. Fields per:
+// https://docs.whop.com/developer/guides/affiliates
+// https://docs.whop.com/api-reference/affiliates/create-affiliate
 export async function registerAffiliate(
   config: WhopClientConfig,
   opts: {
@@ -160,16 +171,34 @@ export async function registerAffiliate(
     idempotency_key: string;
   }
 ): Promise<WhopAffiliateRegistration> {
-  return whopRequest<WhopAffiliateRegistration>(
+  // 1. Create the affiliate record for Naelao's company on this product.
+  const affiliate = await whopRequest<WhopAffiliateRegistration>(
     config,
     "POST",
-    `/products/${opts.product_id}/affiliates`,
+    "/affiliates",
     {
+      product_id: opts.product_id,
       affiliate_company_id: opts.affiliate_company_id,
-      commission_percentage: opts.commission_percentage,
     },
     opts.idempotency_key,
   );
+
+  // 2. Add the commission override (rev-share % on all payments).
+  await whopRequest<unknown>(
+    config,
+    "POST",
+    `/affiliates/${affiliate.id}/overrides`,
+    {
+      override_type: "rev_share",
+      commission_type: "percentage",
+      commission_value: opts.commission_percentage,
+      applies_to_payments: "all_payments",
+      product_id: opts.product_id,
+    },
+    `${opts.idempotency_key}:override`,
+  );
+
+  return affiliate;
 }
 
 // ── Community posts ───────────────────────────────────────────────────────────

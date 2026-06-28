@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   isAuthenticated, getUser, logout,
-  onboardBusiness, businessStatus, runContentCycle,
+  onboardBusiness, businessStatus, runContentCycle, setPaused,
   type BusinessStatus,
 } from "@/lib/account";
 
@@ -52,6 +52,16 @@ export default function LaunchPage() {
     }
   }
 
+  async function togglePause() {
+    if (!status) return;
+    try {
+      await setPaused(!status.paused);
+      setStatus(await businessStatus());
+    } catch (err) {
+      setCycleMsg(err instanceof Error ? err.message : "Failed to update");
+    }
+  }
+
   if (loading) {
     return <main className="min-h-screen flex items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600" /></main>;
   }
@@ -72,15 +82,23 @@ export default function LaunchPage() {
           <div className="bg-white border border-gray-200 rounded-xl p-5 space-y-3">
             <Row label="Whop product" value={status.whop_product_id} mono />
             <Row label="Autonomy tier" value={String(status.autonomy_tier)} />
-            <Row label="Agent status" value={status.fiber_status} />
+            <Row label="Agent status" value={status.paused ? "paused" : status.fiber_status} />
             <Row label="Scripts" value={String(status.script_count)} />
             <Row label="Cycles logged" value={String(status.outcome_count)} />
-            <div className="pt-3 border-t border-gray-100">
-              <button onClick={triggerCycle} className="bg-indigo-600 text-white text-sm font-semibold px-4 py-2 rounded-lg">
+            {status.paused && (
+              <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                Paused — the agent will not run anything until you resume.
+              </p>
+            )}
+            <div className="pt-3 border-t border-gray-100 flex items-center gap-2">
+              <button onClick={triggerCycle} disabled={status.paused} className="bg-indigo-600 text-white text-sm font-semibold px-4 py-2 rounded-lg disabled:opacity-50">
                 Generate a community post
               </button>
-              {cycleMsg && <p className="text-sm text-gray-600 mt-2">{cycleMsg}</p>}
+              <button onClick={togglePause} className={`text-sm font-semibold px-4 py-2 rounded-lg border ${status.paused ? "border-green-300 text-green-700" : "border-red-300 text-red-700"}`}>
+                {status.paused ? "Resume agent" : "Pause agent"}
+              </button>
             </div>
+            {cycleMsg && <p className="text-sm text-gray-600 mt-2">{cycleMsg}</p>}
           </div>
         ) : (
           // ── Onboarding form ──
