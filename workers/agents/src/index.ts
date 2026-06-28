@@ -934,6 +934,13 @@ app.get("/business/:userId/channels/unanswered", async (c) => {
   const { userId } = c.req.param();
   return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/channels/unanswered"));
 });
+app.post("/business/:userId/channels/heartbeat", async (c) => {
+  const { userId } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/channels/heartbeat", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ api_key: c.env.ANTHROPIC_API_KEY }),
+  }));
+});
 
 // Kill switch — pause / resume the whole business
 app.post("/business/:userId/pause", async (c) => {
