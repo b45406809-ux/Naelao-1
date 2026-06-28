@@ -42,7 +42,7 @@ describe("product catalog — visible to any authenticated user", () => {
     const res = await call("/catalog/product", routerHeaders("user-1", "member"));
     expect(res.status).toBe(200);
     const body = await res.json<{ live_count: number; coming_soon_count: number; niches: unknown[] }>();
-    expect(body.live_count).toBe(1);
+    expect(body.live_count).toBeGreaterThanOrEqual(2); // official template + custom
     expect(body.coming_soon_count).toBeGreaterThan(0);
   });
 });

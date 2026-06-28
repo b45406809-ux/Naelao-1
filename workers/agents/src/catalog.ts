@@ -46,6 +46,7 @@ export const TEMPLATES: CatalogEntry[] = [
 // One is live; others are surfaced as "coming soon" inside the product.
 export const PRODUCT_NICHES: CatalogEntry[] = [
   { id: "ai-microtool-community", name: "AI Micro-Tool + Community", description: "A genuinely functional AI micro-tool bundled with a support community.", status: "live" },
+  { id: "custom", name: "Describe your own business", description: "Tell the agent what you want — it figures out how to build and run it (full live reasoning, costs more).", status: "live" },
   { id: "content-engine", name: "Content Engine", description: "Repurpose one piece of content into many, with a community.", status: "coming_soon" },
   { id: "outreach-agency", name: "Outreach Autopilot", description: "Automated outreach tooling + community.", status: "coming_soon" },
   { id: "niche-research", name: "Niche Research", description: "Find underserved niches and offers, with a community.", status: "coming_soon" },

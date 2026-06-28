@@ -76,8 +76,12 @@ export async function productCatalog(): Promise<{ niches: CatalogNiche[]; live_c
 export interface BusinessStatus {
   whop_product_id: string | null;
   affiliate_id: string | null;
+  template_id?: string;
   template_version: string;
   autonomy_tier: number;
+  custom_business: boolean;
+  cost_multiplier: number;
+  goal: string | null;
   paused: boolean;
   fiber_status: string;
   last_cycle_at: number | null;
@@ -86,8 +90,9 @@ export interface BusinessStatus {
 }
 
 export async function onboardBusiness(input: {
-  product_name: string; product_description: string; price_usd: number; billing_period?: "monthly" | "one_time";
-}): Promise<{ product_id: string; affiliate_id: string | null; template_version: string; autonomy_tier: number }> {
+  product_name: string; product_description: string; price_usd: number;
+  billing_period?: "monthly" | "one_time"; template_id?: string;
+}): Promise<{ product_id: string | null; affiliate_id: string | null; template_id: string; template_version: string; autonomy_tier: number }> {
   const user = getUser();
   if (!user) throw new Error("Not signed in");
   return call(`/v1/business/${user.id}/onboard`, { method: "POST", body: JSON.stringify(input) });

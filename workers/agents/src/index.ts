@@ -985,32 +985,39 @@ app.post("/business/:userId/onboard", async (c) => {
   const whopConfig = { apiKey: env.WHOP_API_KEY };
   const idBase = `${userId}:${Date.now()}`;
 
-  // 2. Create Whop product
-  let product;
-  try {
-    product = await createWhopProduct(whopConfig, {
-      name: body.product_name,
-      description: body.product_description ?? "",
-      price_usd: body.price_usd,
-      billing_period: body.billing_period ?? "monthly",
-      idempotency_key: `create-product:${idBase}`,
-    });
-  } catch (err) {
-    return Response.json({ error: `Whop product creation failed: ${String(err)}` }, { status: 502 });
-  }
+  // A CUSTOM business ("describe your own business") has no curated Whop template —
+  // it's driven by the user's free-text goal and runs on Level-4 reasoning + the
+  // Tier-5 container. No Whop product/affiliate is created here; the agent figures out
+  // what to build. The OFFICIAL Whop template creates the product + affiliate-of-record.
+  let product: { id: string } | null = null;
+  let affiliate: { id: string } | null = null;
 
-  // 3. Register Naelao as affiliate-of-record
-  let affiliate;
-  try {
-    affiliate = await registerAffiliate(whopConfig, {
-      product_id: product.id,
-      affiliate_company_id: env.NAELAO_WHOP_COMPANY_ID,
-      commission_percentage: 20,
-      idempotency_key: `affiliate:${idBase}`,
-    });
-  } catch (err) {
-    // Non-fatal: product is created; log and continue
-    console.warn(`[onboard] Affiliate registration failed for ${userId}:`, err);
+  if (!isCustom) {
+    // 2. Create Whop product
+    try {
+      product = await createWhopProduct(whopConfig, {
+        name: body.product_name,
+        description: body.product_description ?? "",
+        price_usd: body.price_usd,
+        billing_period: body.billing_period ?? "monthly",
+        idempotency_key: `create-product:${idBase}`,
+        affiliate_percentage: 20,
+      });
+    } catch (err) {
+      return Response.json({ error: `Whop product creation failed: ${String(err)}` }, { status: 502 });
+    }
+
+    // 3. Register Naelao as affiliate-of-record
+    try {
+      affiliate = await registerAffiliate(whopConfig, {
+        product_id: product.id,
+        affiliate_company_id: env.NAELAO_WHOP_COMPANY_ID,
+        commission_percentage: 20,
+        idempotency_key: `affiliate:${idBase}`,
+      });
+    } catch (err) {
+      console.warn(`[onboard] Affiliate registration failed for ${userId}:`, err);
+    }
   }
 
   // 4. Save Whop product ID + affiliate ID to BusinessDO. A custom business carries
@@ -1022,13 +1029,15 @@ app.post("/business/:userId/onboard", async (c) => {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      whop_product_id: product.id,
+      whop_product_id: product?.id ?? null,
       affiliate_registration_id: affiliate?.id ?? null,
       template_id: isCustom ? "custom" : "whop-businesses-v1",
       template_version: "1",
       user_id: userId,
       custom_business: isCustom ? "true" : "false",
       cost_multiplier: isCustom ? "3" : "1",
+      // For a custom business the free-text description IS the agent's goal (L4).
+      ...(isCustom ? { goal: body.product_description ?? body.product_name } : {}),
     }),
   }));
 
@@ -1062,15 +1071,16 @@ app.post("/business/:userId/onboard", async (c) => {
   // Emit analytics
   try {
     env.ANALYTICS.writeDataPoint({
-      blobs: ["business.onboarded", userId, product.id],
+      blobs: ["business.onboarded", userId, product?.id ?? "custom", isCustom ? "custom" : "whop"],
       doubles: [Date.now()],
       indexes: [userId],
     });
   } catch { /* best-effort */ }
 
   return Response.json({
-    product_id: product.id,
+    product_id: product?.id ?? null,
     affiliate_id: affiliate?.id ?? null,
+    template_id: isCustom ? "custom" : "whop-businesses-v1",
     template_version: "1",
     autonomy_tier: 1,
   }, { status: 201 });
@@ -1108,27 +1118,37 @@ async function handleScheduled(env: AgentsEnv): Promise<void> {
     try {
       const bizDO = await getBusinessDO(env, userId);
 
-      // Get the whop_product_id from this business
       const statusResp = await bizDO.fetch(new Request("http://do/status"));
       if (!statusResp.ok) continue;
-      const status = await statusResp.json<{ whop_product_id: string | null; fiber_status: string; paused?: boolean }>();
-      if (!status.whop_product_id) continue;
+      const status = await statusResp.json<{ whop_product_id: string | null; fiber_status: string; paused?: boolean; custom_business?: boolean; goal?: string | null }>();
 
       // Skip paused businesses (kill switch) and any with a cycle already running.
       if (status.paused) continue;
       if (status.fiber_status === "running") continue;
 
-      // OBSERVE: pull current Whop snapshot
+      if (status.custom_business) {
+        // CUSTOM business: no Whop product to observe — run a Level-4 cycle on the
+        // user's free-text goal. The safety floor inside executeLevel4 bounds it.
+        if (!status.goal) continue;
+        await bizDO.fetch(new Request("http://do/cycle", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            api_key: env.ANTHROPIC_API_KEY,
+            task_description: `Nightly cycle for a custom business. Goal: ${status.goal}. Decide the single most useful action to grow it today and do it.`,
+          }),
+        }));
+        continue;
+      }
+
+      // OFFICIAL Whop template: observe the product, then run the cheap L1 cycle.
+      if (!status.whop_product_id) continue;
       let snapshot: Record<string, unknown> = {};
       try {
         snapshot = await observeWhopBusiness(whopConfig, status.whop_product_id) as unknown as Record<string, unknown>;
       } catch (err) {
         console.warn(`[scheduled] Observe failed for ${userId}:`, err);
       }
-
-      // Trigger the cycle with the fresh snapshot. The nightly cron runs the safe,
-      // model-free observe action (Level 1) — the cheap repeat the script engine is
-      // built around; deliberate publishing/pricing actions are triggered explicitly.
       await bizDO.fetch(new Request("http://do/cycle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

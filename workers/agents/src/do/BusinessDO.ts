@@ -321,6 +321,9 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
       template_id: this.getCfg("template_id") ?? "whop-businesses-v1",
       template_version: this.getCfg("template_version") ?? "1",
       autonomy_tier: parseInt(this.getCfg("autonomy_tier") ?? "1", 10),
+      custom_business: this.getCfg("custom_business") === "true",
+      cost_multiplier: parseInt(this.getCfg("cost_multiplier") ?? "1", 10),
+      goal: this.getCfg("goal"),
       paused: this.getCfg("paused") === "true",
       fiber_status: fiberStatus,
       last_cycle_at: lastCycle ? parseInt(lastCycle, 10) : null,
@@ -333,7 +336,7 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
 
   private async handlePatchConfig(request: Request): Promise<Response> {
     const body = await request.json<Record<string, string | number>>();
-    const WRITABLE = ["whop_product_id", "affiliate_registration_id", "template_id", "template_version", "user_id", "custom_business", "cost_multiplier"];
+    const WRITABLE = ["whop_product_id", "affiliate_registration_id", "template_id", "template_version", "user_id", "custom_business", "cost_multiplier", "goal"];
     for (const [k, v] of Object.entries(body)) {
       if (WRITABLE.includes(k)) this.setCfg(k, String(v));
     }

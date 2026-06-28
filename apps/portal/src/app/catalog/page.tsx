@@ -11,6 +11,7 @@ import { productCatalog, isAuthenticated, type CatalogNiche } from "@/lib/accoun
 
 const FALLBACK: CatalogNiche[] = [
   { id: "ai-microtool-community", name: "AI Micro-Tool + Community", description: "A genuinely functional AI micro-tool bundled with a support community, sold on Whop.", status: "live" },
+  { id: "custom", name: "Describe your own business", description: "Tell the agent what you want — it figures out how to build and run it. Costs more (full live reasoning).", status: "live" },
   { id: "content-engine", name: "Content Engine", description: "Repurpose one piece of content into many, with a community.", status: "coming_soon" },
   { id: "outreach-agency", name: "Outreach Autopilot", description: "Automated outreach tooling + community.", status: "coming_soon" },
   { id: "niche-research", name: "Niche Research", description: "Find underserved niches and offers, with a community.", status: "coming_soon" },

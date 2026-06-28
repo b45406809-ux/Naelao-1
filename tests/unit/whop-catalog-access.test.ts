@@ -15,17 +15,19 @@ describe("catalog — exactly one live niche, rest coming soon", () => {
     expect(TEMPLATES.filter(t => t.status === "live").map(t => t.id)).toEqual(["whop-businesses"]);
   });
 
-  it("exactly one product niche is live; others are coming_soon", () => {
-    const live = PRODUCT_NICHES.filter(n => n.status === "live");
-    expect(live).toHaveLength(1);
-    expect(liveNiche().id).toBe("ai-microtool-community");
+  it("the official Whop template and custom are live; other niches are coming_soon", () => {
+    const liveIds = PRODUCT_NICHES.filter(n => n.status === "live").map(n => n.id);
+    expect(liveIds).toContain("ai-microtool-community");
+    expect(liveIds).toContain("custom");
+    expect(liveNiche().id).toBe("ai-microtool-community"); // primary live niche
     expect(PRODUCT_NICHES.every(n => n.status === "live" || n.status === "coming_soon")).toBe(true);
   });
 
   it("productCatalog reports correct counts", () => {
     const cat = productCatalog();
-    expect(cat.live_count).toBe(1);
-    expect(cat.coming_soon_count).toBe(PRODUCT_NICHES.length - 1);
+    const live = PRODUCT_NICHES.filter(n => n.status === "live").length;
+    expect(cat.live_count).toBe(live);
+    expect(cat.coming_soon_count).toBe(PRODUCT_NICHES.length - live);
   });
 
   it("devCatalog exposes both space types and templates", () => {
