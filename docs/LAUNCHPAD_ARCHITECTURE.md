@@ -75,10 +75,26 @@ spec), and it slots under the same engine because the engine is manifest-driven.
 
 ## What's built now vs next
 
-**Built:** the manifest/bundle abstraction; Whop, custom, and a sample assistant as
-data manifests; the engine seeds + instructs from the manifest (de-hardcoded);
-`GET /catalog/manifests` (founder) exposes the agent-definitions layer.
+**Built:**
+- The manifest/bundle abstraction; Whop, custom, and a sample assistant as data
+  manifests; the engine seeds + instructs from the manifest (de-hardcoded);
+  `GET /catalog/manifests` (founder) exposes the agent-definitions layer.
+- **Capability kernel** (appendix @3614922) — manifests may only declare capabilities
+  from a fixed vocabulary; validated at load. **Base-skill inheritance** (appendix
+  @3617022) — every manifest inherits `observe-first` + `verify-landed`.
+- **Sub-space tree + threads + messages** inside `BusinessDO` (the root Space):
+  `subspaces(id, parent_id, name, manifest_id, depth)`, `threads`, `thread_messages`.
+  Routes under `/business/:userId/subspaces[/…]` and `/threads/:tid/messages`. A
+  sub-space carries its own `manifest_id` — its assistant bundle.
 
-**Next (Launchpad-only):** the SpaceDO sub-space tree (`parent_id`), per-sub-space
-assistant instances, the `naelao-threads` worker, and channel capability
-implementations for assistant manifests. All slot into the same manifest-driven engine.
+**Appendix corrections baked in:**
+- DO SQLite with `?` placeholders only (not Postgres — flagged across dozens of bugs).
+- Sub-space **depth limit enforced in code** (`MAX_SUBSPACE_DEPTH`, @2068786), parent_id
+  immutable, atomic create (DO single-thread).
+- Thread messages **`ORDER BY created_at, id`** (@2028732) and a **content size cap**
+  (`MAX_MESSAGE_BYTES`, @2030468 — no 10 MB OOM).
+
+**Next (Launchpad-only):** per-sub-space assistant *instances* with a heartbeat cron;
+channel capability implementations (per-user channel sessions — appendix @3245389) and a
+channel adapter interface (@4211129); SSE streaming for threads. All slot into the same
+manifest-driven engine.

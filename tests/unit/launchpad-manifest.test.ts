@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { getManifest, listManifests } from "../../workers/agents/src/launchpad/manifest.js";
+import { getManifest, listManifests, validateManifest, CAPABILITY_KERNEL, BASE_SKILLS } from "../../workers/agents/src/launchpad/manifest.js";
 
 // The de-hardcoding layer: a niche / a custom business / an assistant are all just
 // manifests (data) loaded into the same script-first engine.
@@ -27,6 +27,26 @@ describe("manifest registry", () => {
   it("unknown ids fall back to custom (safe default → L4)", () => {
     expect(getManifest("does-not-exist").id).toBe("custom");
     expect(getManifest(null).id).toBe("custom");
+  });
+
+  it("every manifest stays inside the capability kernel (appendix @3614922)", () => {
+    for (const m of listManifests()) {
+      expect(() => validateManifest(m)).not.toThrow();
+      for (const cap of m.capabilities) expect(CAPABILITY_KERNEL.has(cap)).toBe(true);
+    }
+  });
+
+  it("rejects a manifest that invents a capability outside the kernel", () => {
+    expect(() => validateManifest({
+      id: "rogue", kind: "niche", name: "x", description: "x", instructions: "x".repeat(30),
+      skills: [], seed_scripts: [], capabilities: ["launch_missiles"], cost_multiplier: 1,
+    })).toThrow(/capability kernel/);
+  });
+
+  it("every manifest inherits the base skills (appendix @3617022)", () => {
+    for (const m of listManifests()) {
+      for (const base of BASE_SKILLS) expect(m.skills).toContain(base);
+    }
   });
 
   it("every manifest is well-formed", () => {

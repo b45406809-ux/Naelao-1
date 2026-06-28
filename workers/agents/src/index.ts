@@ -887,6 +887,38 @@ app.post("/business/:userId/scripts/seed", async (c) => {
   return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/scripts/seed", { method: "POST" }));
 });
 
+// ── Sub-space tree + threads + messages (Product → Sub-Spaces → Threads → Msgs) ──
+app.get("/business/:userId/subspaces", async (c) => {
+  const { userId } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/subspaces"));
+});
+app.post("/business/:userId/subspaces", async (c) => {
+  const { userId } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/subspaces", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(await c.req.json()),
+  }));
+});
+app.get("/business/:userId/subspaces/:sid/threads", async (c) => {
+  const { userId, sid } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/subspaces/${sid}/threads`));
+});
+app.post("/business/:userId/subspaces/:sid/threads", async (c) => {
+  const { userId, sid } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/subspaces/${sid}/threads`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(await c.req.json().catch(() => ({}))),
+  }));
+});
+app.get("/business/:userId/threads/:tid/messages", async (c) => {
+  const { userId, tid } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/threads/${tid}/messages`));
+});
+app.post("/business/:userId/threads/:tid/messages", async (c) => {
+  const { userId, tid } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/threads/${tid}/messages`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(await c.req.json()),
+  }));
+});
+
 // Kill switch — pause / resume the whole business
 app.post("/business/:userId/pause", async (c) => {
   const { userId } = c.req.param();

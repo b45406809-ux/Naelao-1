@@ -95,6 +95,13 @@ export interface BusinessDOEnv {
   TOOL_SANDBOX?: DurableObjectNamespace;
 }
 
+// Hierarchy limits enforced in code (appendix fixes, not prose-only).
+const MAX_SUBSPACE_DEPTH = 5;            // @2068786 — bound the sub-space tree
+const MAX_MESSAGE_BYTES = 256 * 1024;    // @2030468 — cap message content (no 10MB OOM)
+
+interface SubspaceRow { id: string; parent_id: string | null; name: string; manifest_id: string | null; depth: number; created_at: number }
+interface ThreadRow { id: string; subspace_id: string; title: string; created_at: number }
+
 interface ToolVersionRow {
   version: number;
   spec: string;
@@ -214,6 +221,44 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
       )
     `);
 
+    // Sub-space tree (the spec's Product → Sub-Spaces hierarchy). A "workspace"/
+    // "project" IS a sub-space. Each can carry its own assistant manifest. DO SQLite
+    // with ? placeholders (NOT Postgres — appendix flagged this repeatedly); parent_id
+    // is immutable; depth is enforced in code (appendix @2068786).
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS subspaces (
+        id          TEXT PRIMARY KEY,
+        parent_id   TEXT REFERENCES subspaces(id),
+        name        TEXT NOT NULL,
+        manifest_id TEXT,
+        depth       INTEGER NOT NULL DEFAULT 0,
+        created_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      );
+      CREATE INDEX IF NOT EXISTS idx_subspace_parent ON subspaces(parent_id);
+    `);
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS threads (
+        id          TEXT PRIMARY KEY,
+        subspace_id TEXT NOT NULL REFERENCES subspaces(id),
+        title       TEXT NOT NULL DEFAULT 'New thread',
+        created_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      );
+      CREATE INDEX IF NOT EXISTS idx_thread_subspace ON threads(subspace_id, created_at DESC);
+    `);
+    // Thread messages — ORDER BY created_at,id on read (appendix @2028732: out-of-order
+    // render without it). Content size is capped at insert (appendix @2030468: a 10MB
+    // message OOMs the DO).
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS thread_messages (
+        id         TEXT PRIMARY KEY,
+        thread_id  TEXT NOT NULL REFERENCES threads(id),
+        role       TEXT NOT NULL,
+        content    TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      );
+      CREATE INDEX IF NOT EXISTS idx_tmsg_thread ON thread_messages(thread_id, created_at, id);
+    `);
+
     this.initialized = true;
   }
 
@@ -259,6 +304,22 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
       if (method === "GET" && url.pathname === "/skills") {
         const tier = parseInt(this.getCfg("autonomy_tier") ?? "1", 10) as AutonimyTier;
         return Response.json({ skills: skillsForTier(tier), all: SKILLS.length });
+      }
+
+      // Sub-space tree (workspaces/projects) + threads + messages
+      if (url.pathname === "/subspaces") {
+        if (method === "GET") return this.handleListSubspaces();
+        if (method === "POST") return this.handleCreateSubspace(request);
+      }
+      const subThreadsMatch = url.pathname.match(/^\/subspaces\/([^/]+)\/threads$/);
+      if (subThreadsMatch?.[1]) {
+        if (method === "GET") return this.handleListThreads(subThreadsMatch[1]);
+        if (method === "POST") return this.handleCreateThread(subThreadsMatch[1], request);
+      }
+      const threadMsgMatch = url.pathname.match(/^\/threads\/([^/]+)\/messages$/);
+      if (threadMsgMatch?.[1]) {
+        if (method === "GET") return this.handleListThreadMessages(threadMsgMatch[1]);
+        if (method === "POST") return this.handleAddThreadMessage(threadMsgMatch[1], request);
       }
 
       // GET /outcome-log
@@ -1492,6 +1553,94 @@ Return a JSON object with exactly these fields:
   }
 
   // ── Pre-seeded script registry (§14: hand-seed 5–10 action types before launch) ─
+
+  // ── Sub-space tree + threads + messages (Product → Sub-Spaces → Threads → Msgs) ─
+
+  private handleListSubspaces(): Response {
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT * FROM subspaces ORDER BY depth ASC, created_at ASC`)
+      .toArray() as unknown as SubspaceRow[];
+    return Response.json({ subspaces: rows, count: rows.length });
+  }
+
+  private async handleCreateSubspace(request: Request): Promise<Response> {
+    const body = await request.json<{ name?: string; parent_id?: string; manifest_id?: string }>();
+    const name = (body.name ?? "").trim().slice(0, 120);
+    if (!name) return Response.json({ error: "name required" }, { status: 400 });
+
+    let depth = 0;
+    if (body.parent_id) {
+      const parent = this.ctx.storage.sql
+        .exec(`SELECT depth FROM subspaces WHERE id = ?`, body.parent_id)
+        .toArray() as { depth: number }[];
+      if (!parent[0]) return Response.json({ error: "parent_not_found" }, { status: 404 });
+      depth = parent[0].depth + 1;
+      if (depth > MAX_SUBSPACE_DEPTH) {
+        return Response.json({ error: "max_depth_exceeded", limit: MAX_SUBSPACE_DEPTH }, { status: 409 });
+      }
+    }
+
+    const id = crypto.randomUUID();
+    // parent_id is set once and never updated — sub-space placement is immutable.
+    this.ctx.storage.sql.exec(
+      `INSERT INTO subspaces (id, parent_id, name, manifest_id, depth, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      id, body.parent_id ?? null, name, body.manifest_id ?? null, depth, Date.now(),
+    );
+    return Response.json({ id, name, parent_id: body.parent_id ?? null, depth, manifest_id: body.manifest_id ?? null }, { status: 201 });
+  }
+
+  private subspaceExists(id: string): boolean {
+    return (this.ctx.storage.sql.exec(`SELECT 1 FROM subspaces WHERE id = ?`, id).toArray()).length > 0;
+  }
+
+  private handleListThreads(subspaceId: string): Response {
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT * FROM threads WHERE subspace_id = ? ORDER BY created_at DESC LIMIT 200`, subspaceId)
+      .toArray() as unknown as ThreadRow[];
+    return Response.json({ threads: rows, count: rows.length });
+  }
+
+  private async handleCreateThread(subspaceId: string, request: Request): Promise<Response> {
+    if (!this.subspaceExists(subspaceId)) return Response.json({ error: "subspace_not_found" }, { status: 404 });
+    const body = await request.json<{ title?: string }>().catch(() => ({} as { title?: string }));
+    const title = (body.title ?? "New thread").trim().slice(0, 200) || "New thread";
+    const id = crypto.randomUUID();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO threads (id, subspace_id, title, created_at) VALUES (?, ?, ?, ?)`,
+      id, subspaceId, title, Date.now(),
+    );
+    return Response.json({ id, subspace_id: subspaceId, title }, { status: 201 });
+  }
+
+  private threadExists(id: string): boolean {
+    return (this.ctx.storage.sql.exec(`SELECT 1 FROM threads WHERE id = ?`, id).toArray()).length > 0;
+  }
+
+  private handleListThreadMessages(threadId: string): Response {
+    // ORDER BY created_at, id — stable ordering (appendix @2028732).
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT id, role, content, created_at FROM thread_messages WHERE thread_id = ? ORDER BY created_at ASC, id ASC LIMIT 500`, threadId)
+      .toArray();
+    return Response.json({ messages: rows, count: rows.length });
+  }
+
+  private async handleAddThreadMessage(threadId: string, request: Request): Promise<Response> {
+    if (!this.threadExists(threadId)) return Response.json({ error: "thread_not_found" }, { status: 404 });
+    const body = await request.json<{ role?: string; content?: string }>();
+    const role = (body.role ?? "user").trim().slice(0, 32);
+    const content = body.content ?? "";
+    if (!content) return Response.json({ error: "content required" }, { status: 400 });
+    // Cap content size (appendix @2030468: a 10MB message OOMs the DO).
+    if (new TextEncoder().encode(content).length > MAX_MESSAGE_BYTES) {
+      return Response.json({ error: "message_too_large", limit_bytes: MAX_MESSAGE_BYTES }, { status: 413 });
+    }
+    const id = crypto.randomUUID();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO thread_messages (id, thread_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)`,
+      id, threadId, role, content, Date.now(),
+    );
+    return Response.json({ id, thread_id: threadId, role }, { status: 201 });
+  }
 
   // Seed the agent's script registry from its MANIFEST (de-hardcoded). The niche is
   // data: Whop seeds its 7 scripts, custom seeds none (pure L4), an assistant seeds

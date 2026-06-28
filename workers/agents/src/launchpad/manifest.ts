@@ -49,6 +49,33 @@ import { WHOP_MANIFEST } from "./templates/whop-businesses.js";
 import { CUSTOM_MANIFEST } from "./templates/custom.js";
 import { SUPPORT_ASSISTANT_MANIFEST } from "./templates/support-assistant.js";
 
+// ── Capability kernel (appendix @3614922: "No Formal Capability Kernel — Space Types
+// Risk Forking Into Separate Codebases"). A fixed vocabulary of capabilities a manifest
+// may declare. Anything outside this set is rejected — manifests cannot invent powers.
+export const CAPABILITY_KERNEL: ReadonlySet<string> = new Set([
+  // Whop niche
+  "observe_whop_snapshot", "post_community_update", "check_community_engagement",
+  "check_revenue_delta", "draft_welcome_post", "update_product_visibility", "log_cycle_outcome",
+  // general agent
+  "observe", "build_tool", "search_knowledge",
+  // assistant / channels
+  "read_channel", "reply_in_channel", "escalate_to_human",
+]);
+
+// ── Base inheritance (appendix @3617022: "No Base/Standard Space Type or Manifest
+// Inheritance — Every Manifest Re-declares Everything"). Every manifest inherits these
+// foundational skills so they don't re-declare them.
+export const BASE_SKILLS: readonly string[] = ["observe-first", "verify-landed"];
+
+/** Validate a manifest against the capability kernel. Throws on an unknown capability. */
+export function validateManifest(m: AgentManifest): void {
+  for (const cap of m.capabilities) {
+    if (!CAPABILITY_KERNEL.has(cap)) {
+      throw new Error(`Manifest '${m.id}' declares unknown capability '${cap}' (not in the capability kernel)`);
+    }
+  }
+}
+
 const REGISTRY: Record<string, AgentManifest> = {
   "whop-businesses-v1": WHOP_MANIFEST,
   "whop-businesses": WHOP_MANIFEST,
@@ -56,12 +83,16 @@ const REGISTRY: Record<string, AgentManifest> = {
   "support-assistant": SUPPORT_ASSISTANT_MANIFEST,
 };
 
-/** Resolve a manifest by template/niche id. Unknown ids fall back to custom (L4). */
+// Fail fast at module load if any manifest violates the kernel.
+for (const m of new Set(Object.values(REGISTRY))) validateManifest(m);
+
+/** Resolve a manifest by template/niche id, with base skills inherited (deduped). */
 export function getManifest(id: string | null | undefined): AgentManifest {
-  return (id && REGISTRY[id]) || CUSTOM_MANIFEST;
+  const m = (id && REGISTRY[id]) || CUSTOM_MANIFEST;
+  return { ...m, skills: Array.from(new Set([...BASE_SKILLS, ...m.skills])) };
 }
 
 export function listManifests(): AgentManifest[] {
-  // De-duplicate (whop has two aliases).
-  return Array.from(new Set(Object.values(REGISTRY)));
+  // De-duplicate (whop has two aliases) and apply base inheritance.
+  return Array.from(new Set(Object.values(REGISTRY))).map(m => getManifest(m.id));
 }
