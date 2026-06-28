@@ -414,11 +414,15 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
     const lastCycle = this.getCfg("last_cycle_at");
     const fiberStatus = this.getCfg("fiber_status") ?? "idle";
 
+    const templateId = this.getCfg("template_id") ?? "whop-businesses-v1";
+    const manifestKind = getManifest(templateId).kind;
+
     return Response.json({
       whop_product_id: this.getCfg("whop_product_id"),
       affiliate_id: this.getCfg("affiliate_registration_id"),
-      template_id: this.getCfg("template_id") ?? "whop-businesses-v1",
+      template_id: templateId,
       template_version: this.getCfg("template_version") ?? "1",
+      manifest_kind: manifestKind,
       autonomy_tier: parseInt(this.getCfg("autonomy_tier") ?? "1", 10),
       custom_business: this.getCfg("custom_business") === "true",
       cost_multiplier: parseInt(this.getCfg("cost_multiplier") ?? "1", 10),

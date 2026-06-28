@@ -1190,11 +1190,29 @@ async function handleScheduled(env: AgentsEnv): Promise<void> {
 
       const statusResp = await bizDO.fetch(new Request("http://do/status"));
       if (!statusResp.ok) continue;
-      const status = await statusResp.json<{ whop_product_id: string | null; fiber_status: string; paused?: boolean; custom_business?: boolean; goal?: string | null }>();
+      const status = await statusResp.json<{
+        whop_product_id: string | null;
+        fiber_status: string;
+        manifest_kind: string;
+        paused?: boolean;
+        custom_business?: boolean;
+        goal?: string | null;
+      }>();
 
       // Skip paused businesses (kill switch) and any with a cycle already running.
       if (status.paused) continue;
       if (status.fiber_status === "running") continue;
+
+      // ASSISTANT businesses: drain the unanswered channel queue (heartbeat).
+      // These are "glorified agents" with channel capabilities — no Whop product cycle.
+      if (status.manifest_kind === "assistant") {
+        await bizDO.fetch(new Request("http://do/channels/heartbeat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ api_key: env.ANTHROPIC_API_KEY }),
+        }));
+        continue;
+      }
 
       if (status.custom_business) {
         // CUSTOM business: no Whop product to observe — run a Level-4 cycle on the
