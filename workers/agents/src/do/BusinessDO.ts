@@ -206,6 +206,9 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
       // GET /outcome-log
       if (method === "GET" && url.pathname === "/outcome-log") return this.handleGetOutcomeLog(url);
 
+      // POST /scripts/seed — pre-populate registry with common action types
+      if (method === "POST" && url.pathname === "/scripts/seed") return this.handleSeedScripts();
+
       // Script registry CRUD
       if (url.pathname.startsWith("/scripts")) return this.handleScripts(method, url, request);
 
@@ -928,5 +931,133 @@ Return a JSON object with exactly these fields:
       state: (() => { try { return JSON.parse(row.state_json); } catch { return row.state_json; } })(),
       created_at: row.created_at,
     });
+  }
+
+  // ── Pre-seeded script registry (§14: hand-seed 5–10 action types before launch) ─
+
+  private handleSeedScripts(): Response {
+    const SEEDS: Array<{
+      name: string; description: string; code: string;
+      tier: 1 | 2 | 5; preconditions: string[];
+    }> = [
+      {
+        name: "observe_whop_snapshot",
+        description: "Pull current Whop product state: revenue metrics, community activity, and product visibility",
+        code: `
+// Observe: fetch Whop product snapshot
+const productId = state.whop_product_id;
+const [metrics, posts, product] = await Promise.allSettled([
+  whop.getRevenueMetrics(config, productId),
+  whop.getCommunityActivity(config, productId, 5),
+  whop.getWhopProduct(config, productId),
+]);
+return {
+  revenue: metrics.status === 'fulfilled' ? metrics.value : null,
+  recent_posts: posts.status === 'fulfilled' ? posts.value.posts : [],
+  visibility: product.status === 'fulfilled' ? product.value.visibility : 'unknown',
+  timestamp: Date.now(),
+};
+`.trim(),
+        tier: 2,
+        preconditions: ["whop_product_id is set", "whop API key available"],
+      },
+      {
+        name: "post_community_update",
+        description: "Post a content update to the Whop community feed — value/tip/announcement",
+        code: `
+// Post community update
+const content = params.content; // parameterized — model fills this in at L4
+const idKey = \`post:\${cycleId}\`;
+return whop.postCommunityUpdate(config, { product_id: state.whop_product_id, content, idempotency_key: idKey });
+`.trim(),
+        tier: 2,
+        preconditions: ["autonomy_tier >= 2", "content param provided"],
+      },
+      {
+        name: "check_community_engagement",
+        description: "Read recent community posts and surface reply/like count for the agent to act on",
+        code: `
+// Check engagement: list recent posts
+const activity = await whop.getCommunityActivity(config, state.whop_product_id, 10);
+const topPost = activity.posts.sort((a, b) => (b.likes + b.replies) - (a.likes + a.replies))[0];
+return { total_posts: activity.total, top_post: topPost ?? null, engagement_score: activity.posts.reduce((s, p) => s + p.likes + p.replies, 0) };
+`.trim(),
+        tier: 2,
+        preconditions: ["whop_product_id is set"],
+      },
+      {
+        name: "check_revenue_delta",
+        description: "Compare current revenue metrics against the last stored baseline and return delta",
+        code: `
+// Revenue delta check
+const current = await whop.getRevenueMetrics(config, state.whop_product_id);
+const baseline = state.revenue_baseline ?? current;
+return {
+  revenue_delta: current.total_revenue - (baseline.total_revenue ?? 0),
+  subscriber_delta: current.subscriber_count - (baseline.subscriber_count ?? 0),
+  current,
+};
+`.trim(),
+        tier: 2,
+        preconditions: ["whop_product_id is set"],
+      },
+      {
+        name: "draft_welcome_post",
+        description: "Draft a welcome post for new community members — queued for human review (Tier 1 safe)",
+        code: `
+// Draft welcome post (Tier 1: saves as draft, does NOT post)
+const draft = \`Welcome to the community! 🎉 This week we're covering: \${params.topic}. Reply with your biggest challenge and I'll address it in the next update.\`;
+return { draft, action: 'draft', requires_approval: true };
+`.trim(),
+        tier: 2,
+        preconditions: ["always allowed — Tier 1 safe"],
+      },
+      {
+        name: "update_product_visibility",
+        description: "Set the Whop product visibility (visible/hidden) — requires Tier 3 autonomy",
+        code: `
+// Update visibility — guarded by autonomy check in executeScriptLevel1
+const visibility = params.visibility as 'visible' | 'hidden' | 'archived';
+const idKey = \`visibility:\${cycleId}\`;
+return whop.updateWhopProductVisibility(config, state.whop_product_id, visibility, idKey);
+`.trim(),
+        tier: 2,
+        preconditions: ["autonomy_tier >= 3", "visibility param provided"],
+      },
+      {
+        name: "log_cycle_outcome",
+        description: "Write a structured outcome entry to the outcome_log after a completed cycle",
+        code: `
+// Outcome log — always runs last in a cycle
+const entry = {
+  cycle_id: cycleId,
+  action_type: params.action_type,
+  action_detail: params.action_detail ?? '',
+  revenue_delta_24h: params.revenue_delta ?? null,
+  engagement_delta_24h: params.engagement_delta ?? null,
+  template_version: state.template_version ?? '1',
+  timestamp: Date.now(),
+};
+// Caller writes to DB via logOutcome(); this script captures the intent.
+return { logged: true, entry };
+`.trim(),
+        tier: 1,
+        preconditions: ["always safe — read-only DB write"],
+      },
+    ];
+
+    let seeded = 0;
+    for (const s of SEEDS) {
+      const now = Date.now();
+      this.ctx.storage.sql.exec(
+        `INSERT OR IGNORE INTO scripts
+           (name, description, code, preconditions, fingerprint_schema, parameters, tier,
+            success_count, failure_count, patch_history, last_used, stability_score, created_at, updated_at)
+         VALUES (?, ?, ?, ?, '{}', '[]', ?, 0, 0, '[]', 0, 1.0, ?, ?)`,
+        s.name, s.description, s.code, JSON.stringify(s.preconditions), s.tier, now, now
+      );
+      seeded++;
+    }
+    return Response.json({ seeded, names: SEEDS.map(s => s.name) }, { status: 201 });
   }
 }

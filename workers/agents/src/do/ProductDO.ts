@@ -26,6 +26,11 @@ interface ProductRow {
   value: string;
 }
 
+interface BusinessUserRow {
+  user_id: string;
+  registered_at: number;
+}
+
 export class ProductDO extends DurableObject {
   private initialized = false;
 
@@ -37,6 +42,13 @@ export class ProductDO extends DurableObject {
       CREATE TABLE IF NOT EXISTS config (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
+      )
+    `);
+    // Registered business users — for nightly cron iteration
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS businesses (
+        user_id       TEXT PRIMARY KEY,
+        registered_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
       )
     `);
     // Seed defaults on first boot
@@ -112,6 +124,32 @@ export class ProductDO extends DurableObject {
       const open = this.get("signup_open") === "true";
       if (!open) return Response.json({ allowed: false, reason: "Signups are currently closed" }, { status: 403 });
       return Response.json({ allowed: true });
+    }
+
+    // GET /businesses — list all registered business user IDs (for cron)
+    if (method === "GET" && url.pathname === "/businesses") {
+      const rows = this.ctx.storage.sql
+        .exec(`SELECT user_id, registered_at FROM businesses ORDER BY registered_at ASC`)
+        .toArray() as unknown as BusinessUserRow[];
+      return Response.json({ user_ids: rows.map(r => r.user_id), count: rows.length });
+    }
+
+    // POST /businesses — register a new business user
+    if (method === "POST" && url.pathname === "/businesses") {
+      const { user_id } = await request.json<{ user_id: string }>();
+      if (!user_id) return Response.json({ error: "user_id required" }, { status: 400 });
+      this.ctx.storage.sql.exec(
+        `INSERT OR IGNORE INTO businesses (user_id, registered_at) VALUES (?, ?)`,
+        user_id, Date.now()
+      );
+      return Response.json({ registered: true, user_id }, { status: 201 });
+    }
+
+    // DELETE /businesses/:userId — remove a business user
+    const delMatch = url.pathname.match(/^\/businesses\/([^/]+)$/);
+    if (method === "DELETE" && delMatch?.[1]) {
+      this.ctx.storage.sql.exec(`DELETE FROM businesses WHERE user_id = ?`, delMatch[1]);
+      return Response.json({ deleted: true, user_id: delMatch[1] });
     }
 
     return Response.json({ error: "not_found" }, { status: 404 });

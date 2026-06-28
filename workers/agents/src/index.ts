@@ -16,6 +16,7 @@ import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
 import { ProductDO } from "./do/ProductDO.js";
 import { BusinessDO } from "./do/BusinessDO.js";
+import { observeWhopBusiness, createWhopProduct, registerAffiliate } from "./whop/client.js";
 
 export { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 export { HITLApprovalDO } from "./do/HITLApprovalDO.js";
@@ -30,6 +31,8 @@ export interface AgentsEnv {
   ENVIRONMENT: string;
   ANTHROPIC_API_KEY: string;
   PLATFORM_SECRET: string;
+  WHOP_API_KEY: string;
+  NAELAO_WHOP_COMPANY_ID: string;
   PLATFORM_DB: D1Database;
   NAELAO_AGENT_DO: DurableObjectNamespace<NaelaoAgentDO>;
   HITL_APPROVAL_DO: DurableObjectNamespace<HITLApprovalDO>;
@@ -41,6 +44,7 @@ export interface AgentsEnv {
   SPACES_WORKER: Fetcher;
   AGENTS_WORKER: Fetcher;
   AGENT_CACHE: KVNamespace;
+  ANALYTICS: AnalyticsEngineDataset;
   AGENT_TASK_WORKFLOW: { create(opts: { id?: string; params?: unknown }): Promise<void> };
 }
 
@@ -67,7 +71,7 @@ interface SpaceTypeRow {
 
 // G-A11: Validate required secrets at startup
 function validateEnv(env: AgentsEnv): void {
-  const required = ["ANTHROPIC_API_KEY", "PLATFORM_SECRET"] as const;
+  const required = ["ANTHROPIC_API_KEY", "PLATFORM_SECRET", "WHOP_API_KEY", "NAELAO_WHOP_COMPANY_ID"] as const;
   for (const key of required) {
     if (!env[key]) throw new Error(`Missing required secret: ${key}`);
   }
@@ -698,6 +702,24 @@ app.get("/product/signup-gate", async (c) => {
   return getProductDO(c.env).fetch(new Request("http://do/signup-gate"));
 });
 
+// Business registry (for nightly cron iteration)
+app.get("/product/businesses", async (c) => {
+  return getProductDO(c.env).fetch(new Request("http://do/businesses"));
+});
+
+app.post("/product/businesses", async (c) => {
+  return getProductDO(c.env).fetch(new Request("http://do/businesses", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(await c.req.json()),
+  }));
+});
+
+app.delete("/product/businesses/:userId", async (c) => {
+  const { userId } = c.req.param();
+  return getProductDO(c.env).fetch(new Request(`http://do/businesses/${userId}`, { method: "DELETE" }));
+});
+
 // ── BusinessDO routes — /business/:userId/* ───────────────────────────────────
 
 app.get("/business/:userId/status", async (c) => {
@@ -776,10 +798,177 @@ app.patch("/business/:userId/autonomy", async (c) => {
   }));
 });
 
+// POST /business/:userId/scripts/seed — pre-populate script registry
+app.post("/business/:userId/scripts/seed", async (c) => {
+  const { userId } = c.req.param();
+  return getBusinessDO(c.env, userId).fetch(new Request("http://do/scripts/seed", { method: "POST" }));
+});
+
+// POST /business/:userId/onboard — full onboarding flow (§06)
+// 1. Check signup gate   2. Create Whop product   3. Register affiliate
+// 4. Save IDs to BusinessDO   5. Register user in ProductDO businesses list
+app.post("/business/:userId/onboard", async (c) => {
+  const { userId } = c.req.param();
+  const env = c.env;
+
+  // 1. Signup gate
+  const gateResp = await getProductDO(env).fetch(new Request("http://do/signup-gate"));
+  if (!gateResp.ok) {
+    const body = await gateResp.json<{ allowed: boolean; reason?: string }>();
+    return Response.json({ error: body.reason ?? "Signups are closed" }, { status: 403 });
+  }
+
+  const body = await c.req.json<{
+    product_name: string;
+    product_description: string;
+    price_usd: number;
+    billing_period: "monthly" | "one_time";
+  }>();
+
+  if (!body.product_name || !body.price_usd) {
+    return Response.json({ error: "product_name and price_usd required" }, { status: 400 });
+  }
+
+  const whopConfig = { apiKey: env.WHOP_API_KEY };
+  const idBase = `${userId}:${Date.now()}`;
+
+  // 2. Create Whop product
+  let product;
+  try {
+    product = await createWhopProduct(whopConfig, {
+      name: body.product_name,
+      description: body.product_description ?? "",
+      price_usd: body.price_usd,
+      billing_period: body.billing_period ?? "monthly",
+      idempotency_key: `create-product:${idBase}`,
+    });
+  } catch (err) {
+    return Response.json({ error: `Whop product creation failed: ${String(err)}` }, { status: 502 });
+  }
+
+  // 3. Register Naelao as affiliate-of-record
+  let affiliate;
+  try {
+    affiliate = await registerAffiliate(whopConfig, {
+      product_id: product.id,
+      affiliate_company_id: env.NAELAO_WHOP_COMPANY_ID,
+      commission_percentage: 20,
+      idempotency_key: `affiliate:${idBase}`,
+    });
+  } catch (err) {
+    // Non-fatal: product is created; log and continue
+    console.warn(`[onboard] Affiliate registration failed for ${userId}:`, err);
+  }
+
+  // 4. Save Whop product ID + affiliate ID to BusinessDO
+  const bizDO = getBusinessDO(env, userId);
+  await bizDO.fetch(new Request("http://do/config", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      whop_product_id: product.id,
+      affiliate_registration_id: affiliate?.id ?? null,
+      template_id: "whop-businesses-v1",
+      template_version: "1",
+      user_id: userId,
+    }),
+  }));
+
+  // 5. Seed script registry with common action types
+  await bizDO.fetch(new Request("http://do/scripts/seed", { method: "POST" }));
+
+  // 6. Register user in ProductDO businesses list (for nightly cron)
+  await getProductDO(env).fetch(new Request("http://do/businesses", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId }),
+  }));
+
+  // Emit analytics
+  try {
+    env.ANALYTICS.writeDataPoint({
+      blobs: ["business.onboarded", userId, product.id],
+      doubles: [Date.now()],
+      indexes: [userId],
+    });
+  } catch { /* best-effort */ }
+
+  return Response.json({
+    product_id: product.id,
+    affiliate_id: affiliate?.id ?? null,
+    template_version: "1",
+    autonomy_tier: 1,
+  }, { status: 201 });
+});
+
 // ── Error handler ─────────────────────────────────────────────────────────────
 
 app.onError((err, c) =>
   errorResponse(err, c.get("requestId") ?? "unknown")
 );
 
-export default { fetch: app.fetch } satisfies ExportedHandler<AgentsEnv>;
+// ── Scheduled handler — nightly cycle cron (§09 Build Sequence) ───────────────
+// Fires at 02:00 UTC daily. Iterates all registered businesses and triggers
+// the script-first execution cycle for each one.
+
+async function handleScheduled(env: AgentsEnv): Promise<void> {
+  // Fetch all registered business user IDs from ProductDO
+  const productDO = env.PRODUCT_DO.get(env.PRODUCT_DO.idFromName("product"));
+  let userIds: string[] = [];
+  try {
+    const resp = await productDO.fetch(new Request("http://do/businesses"));
+    if (resp.ok) {
+      const data = await resp.json<{ user_ids: string[] }>();
+      userIds = data.user_ids ?? [];
+    }
+  } catch (err) {
+    console.error("[scheduled] Failed to fetch business list:", err);
+    return;
+  }
+
+  // Fire nightly cycle for each business (observe snapshot from Whop, then run)
+  const whopConfig = { apiKey: env.WHOP_API_KEY };
+
+  for (const userId of userIds) {
+    try {
+      const bizDO = env.BUSINESS_DO.get(env.BUSINESS_DO.idFromName(`business:${userId}`));
+
+      // Get the whop_product_id from this business
+      const statusResp = await bizDO.fetch(new Request("http://do/status"));
+      if (!statusResp.ok) continue;
+      const status = await statusResp.json<{ whop_product_id: string | null; fiber_status: string }>();
+      if (!status.whop_product_id) continue;
+
+      // Skip if a cycle is already running
+      if (status.fiber_status === "running") continue;
+
+      // OBSERVE: pull current Whop snapshot
+      let snapshot: Record<string, unknown> = {};
+      try {
+        snapshot = await observeWhopBusiness(whopConfig, status.whop_product_id) as unknown as Record<string, unknown>;
+      } catch (err) {
+        console.warn(`[scheduled] Observe failed for ${userId}:`, err);
+      }
+
+      // Trigger the cycle with the fresh snapshot
+      await bizDO.fetch(new Request("http://do/cycle", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          api_key: env.ANTHROPIC_API_KEY,
+          observe_snapshot: snapshot,
+          task_description: "Nightly cycle: review community engagement, post an update if warranted, check revenue delta",
+        }),
+      }));
+    } catch (err) {
+      console.error(`[scheduled] Cycle failed for user ${userId}:`, err);
+    }
+  }
+}
+
+export default {
+  fetch: app.fetch,
+  async scheduled(_controller: ScheduledController, env: AgentsEnv, _ctx: ExecutionContext): Promise<void> {
+    await handleScheduled(env);
+  },
+} satisfies ExportedHandler<AgentsEnv>;
