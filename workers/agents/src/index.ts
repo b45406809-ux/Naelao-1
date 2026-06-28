@@ -10,7 +10,8 @@ import { Hono } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { getDOName, verifyDOTenantPrefix } from "@naelao/crypto";
-import { detectPromptInjection } from "@naelao/moderation";
+import { detectPromptInjection, moderateText } from "@naelao/moderation";
+import { screenNiche } from "./whop/onboarding-guard.js";
 import { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
@@ -874,6 +875,20 @@ app.post("/business/:userId/onboard", async (c) => {
 
   if (!body.product_name || !body.price_usd) {
     return Response.json({ error: "product_name and price_usd required" }, { status: 400 });
+  }
+
+  // 1b. Niche guardrail (§11/WG-32): block out-of-scope niches and unsafe copy
+  // BEFORE any Whop product is created. Deny-list screen + general moderation.
+  const niche = screenNiche(body.product_name, body.product_description ?? "");
+  if (!niche.allowed) {
+    return Response.json({ error: niche.reason, blocked: true }, { status: 422 });
+  }
+  const copyVerdict = moderateText(`${body.product_name}\n${body.product_description ?? ""}`);
+  if (!copyVerdict.allowed) {
+    return Response.json(
+      { error: "Product copy flagged by moderation", flags: copyVerdict.flags.map(f => f.type), blocked: true },
+      { status: 422 },
+    );
   }
 
   const whopConfig = { apiKey: env.WHOP_API_KEY };
