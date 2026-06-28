@@ -28,10 +28,12 @@ import {
   structuralFingerprint,
   costCents,
   overDailyCap,
+  decidePublish,
   DAILY_ACTION_CAP,
   BREAKER_THRESHOLD,
   BREAKER_COOLDOWN_MS,
 } from "../whop/cycle-logic.js";
+import { postCommunityUpdate } from "../whop/client.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -341,6 +343,18 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
 
       let actionResult: { success: boolean; output: string; script_name?: string; level: number; data?: Record<string, unknown> };
 
+      // Special generative action: compose + moderate + publish/draft a community
+      // post. It's a deliberate, model-driven action (not a cheap L1 repeat), so the
+      // caller asks for it explicitly — the nightly cron does not run it by default.
+      if (requestedAction === "generate_community_post") {
+        const result = await this.generateAndPublishPost(cycleId, snapshot, params, apiKey, model, autonomyTier);
+        this.logOutcome(cycleId, result.outcomeType, result.output, revenueDelta, engagementDelta);
+        await this.writeBaseline(snapshot, result.data);
+        this.emitCycleAnalytics(cycleId, result.success, 4);
+        this.setCfg("fiber_status", "idle");
+        return;
+      }
+
       // decide(): pick the action for this cycle. A caller may name one explicitly;
       // otherwise default to the safe, always-valid observe repeat (the cheap path
       // the nightly cron takes) rather than an arbitrary top candidate.
@@ -376,22 +390,132 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
       // report(): refresh the R2 baseline for tomorrow's delta (WG-24/WG-25)
       await this.writeBaseline(snapshot, actionResult.data);
 
-      // Emit analytics
-      if (this.env.ANALYTICS) {
-        try {
-          this.env.ANALYTICS.writeDataPoint({
-            blobs: ["business.cycle.completed", this.getCfg("user_id") ?? "", cycleId, String(actionResult.level), verified ? "verified" : "unverified"],
-            doubles: [Date.now(), actionResult.success ? 1 : 0],
-            indexes: [this.getCfg("user_id") ?? "unknown"],
-          });
-        } catch { /* best-effort */ }
-      }
+      this.emitCycleAnalytics(cycleId, actionResult.success, actionResult.level, verified);
 
       this.setCfg("fiber_status", "idle");
     } catch (err) {
       console.error(`[BusinessDO] cycle ${cycleId} failed:`, err);
       this.setCfg("fiber_status", "failed");
       this.logOutcome(cycleId, "cycle_error", String(err), null, null);
+    }
+  }
+
+  private emitCycleAnalytics(cycleId: string, success: boolean, level: number, verified = success): void {
+    if (!this.env.ANALYTICS) return;
+    try {
+      this.env.ANALYTICS.writeDataPoint({
+        blobs: ["business.cycle.completed", this.getCfg("user_id") ?? "", cycleId, String(level), verified ? "verified" : "unverified"],
+        doubles: [Date.now(), success ? 1 : 0],
+        indexes: [this.getCfg("user_id") ?? "unknown"],
+      });
+    } catch { /* best-effort */ }
+  }
+
+  // ── Community/content cycle — generate → moderate → publish or draft ─────────
+  // The "community" half of the product. A model composes a post; output moderation
+  // (WG-30) gates it; autonomy + daily cap (§07/WG-17) decide whether it publishes,
+  // queues a draft for approval (WG-16), or defers. This is hardcoded niche logic.
+  private async generateAndPublishPost(
+    cycleId: string,
+    snapshot: Record<string, unknown>,
+    params: Record<string, unknown>,
+    apiKey: string,
+    model: string,
+    autonomyTier: AutonimyTier,
+  ): Promise<{ success: boolean; output: string; outcomeType: string; data?: Record<string, unknown> }> {
+    const productId = this.getCfg("whop_product_id") ?? "";
+    const topic = typeof params["topic"] === "string" ? params["topic"] as string : "";
+
+    // 1. Generate the post (model call). Caller may supply ready content to skip it.
+    let content = typeof params["content"] === "string" ? params["content"] as string : "";
+    if (!content) {
+      content = await this.composeCommunityPost(snapshot, topic, apiKey, model);
+    }
+    if (!content) {
+      return { success: false, output: "Failed to generate community post", outcomeType: "generation_failed" };
+    }
+
+    // 2. Output moderation (WG-30) — content safety, independent of autonomy.
+    const verdict = moderateText(content);
+    const overCap = overDailyCap(this.publishCountLast24h());
+
+    // 3. Decide: blocked / draft-for-approval / deferred / publish.
+    const decision = decidePublish(autonomyTier, verdict.allowed, overCap);
+
+    if (decision === "blocked_moderation") {
+      await this.requestApproval(cycleId, "generate_community_post", "content_moderation", { content, topic });
+      return { success: false, output: `Content flagged (${verdict.flags.map(f => f.type).join(",")}); queued for approval`, outcomeType: "content_blocked", data: { content } };
+    }
+
+    if (decision === "draft_for_approval") {
+      await this.requestApproval(cycleId, "generate_community_post", "autonomy_tier_1_draft", { content, topic });
+      return { success: true, output: "Drafted community post; queued for approval (Tier 1)", outcomeType: "pending_approval", data: { draft: content } };
+    }
+
+    if (decision === "deferred_cap") {
+      return { success: false, output: `Daily action cap (${DAILY_ACTION_CAP}) reached; post deferred`, outcomeType: "deferred_cap", data: { content } };
+    }
+
+    // decision === "publish" — Tier 2/3, content safe, under cap.
+    if (this.breakerOpen()) {
+      return { success: false, output: "Whop circuit breaker open; post deferred", outcomeType: "breaker_open", data: { content } };
+    }
+
+    const idKey = `${cycleId}:generate_community_post`;
+    const existing = this.ctx.storage.sql.exec(`SELECT id FROM tool_call_log WHERE id = ?`, idKey).toArray();
+    if (existing.length > 0) {
+      return { success: true, output: "Already published (idempotent skip)", outcomeType: "post_community_update" };
+    }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO tool_call_log (id, cycle_id, tool_name, params_hash, status, created_at) VALUES (?, ?, ?, ?, 'running', ?)`,
+      idKey, cycleId, "generate_community_post", "publish", Date.now()
+    );
+
+    try {
+      const post = await postCommunityUpdate({ apiKey: this.env.WHOP_API_KEY }, {
+        product_id: productId,
+        content,
+        idempotency_key: idKey, // deterministic; Whop dedups a retry (WG-15)
+      });
+      this.ctx.storage.sql.exec(`UPDATE tool_call_log SET status = 'completed', result = ?, completed_at = ? WHERE id = ?`, post.id, Date.now(), idKey);
+      this.breakerRecord(true);
+      return { success: true, output: `Published community post ${post.id}`, outcomeType: "post_community_update", data: { post_id: post.id, content } };
+    } catch (err) {
+      this.ctx.storage.sql.exec(`UPDATE tool_call_log SET status = 'failed', result = ?, completed_at = ? WHERE id = ?`, String(err), Date.now(), idKey);
+      this.breakerRecord(false);
+      return { success: false, output: `Publish failed: ${String(err)}`, outcomeType: "post_failed", data: { content } };
+    }
+  }
+
+  // Model call that composes a single community post for this niche.
+  private async composeCommunityPost(
+    snapshot: Record<string, unknown>,
+    topic: string,
+    apiKey: string,
+    model: string,
+  ): Promise<string> {
+    const branding = this.getCfg("branding") ?? "{}";
+    const prompt = `You write short, genuinely useful community posts for a Whop community attached to an AI-built micro-tool sold to a make-money-online audience.
+
+Branding: ${branding}
+${topic ? `Requested topic: ${topic}` : "Pick a useful, specific topic based on recent activity."}
+Recent business snapshot: ${JSON.stringify(snapshot).slice(0, 1200)}
+
+Write ONE community post: concrete, helpful, no hype, no financial/investment advice, no guarantees of income. 80–160 words. Return only the post text.`;
+
+    try {
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: JSON.stringify({ model, max_tokens: 512, messages: [{ role: "user", content: prompt }] }),
+      });
+      if (!resp.ok) return "";
+      const data = await resp.json<{ content: Array<{ type: string; text: string }>; usage?: { input_tokens?: number; output_tokens?: number } }>();
+      this.recordCost(4, model, data.usage);
+      return data.content.find(b => b.type === "text")?.text?.trim() ?? "";
+    } catch (err) {
+      console.warn("[BusinessDO] composeCommunityPost failed:", err);
+      return "";
     }
   }
 

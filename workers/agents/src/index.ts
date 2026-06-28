@@ -804,6 +804,24 @@ app.post("/business/:userId/scripts/seed", async (c) => {
   return getBusinessDO(c.env, userId).fetch(new Request("http://do/scripts/seed", { method: "POST" }));
 });
 
+// POST /business/:userId/content-cycle — deliberate community-post action:
+// generate → moderate → publish (Tier 2+) or queue a draft for approval (Tier 1).
+// Optional body: { topic?, content?, model? }.
+app.post("/business/:userId/content-cycle", async (c) => {
+  const { userId } = c.req.param();
+  const body = await c.req.json<{ topic?: string; content?: string; model?: string }>().catch(() => ({} as { topic?: string; content?: string; model?: string }));
+  return getBusinessDO(c.env, userId).fetch(new Request("http://do/cycle", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      api_key: c.env.ANTHROPIC_API_KEY,
+      action: "generate_community_post",
+      params: { ...(body.topic ? { topic: body.topic } : {}), ...(body.content ? { content: body.content } : {}) },
+      ...(body.model ? { model: body.model } : {}),
+    }),
+  }));
+});
+
 // POST /business/:userId/onboard — full onboarding flow (§06)
 // 1. Check signup gate   2. Create Whop product   3. Register affiliate
 // 4. Save IDs to BusinessDO   5. Register user in ProductDO businesses list

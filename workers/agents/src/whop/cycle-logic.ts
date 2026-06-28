@@ -77,3 +77,23 @@ export function costCents(model: string, inputTokens: number, outputTokens: numb
 export function overDailyCap(publishCountLast24h: number, cap: number = DAILY_ACTION_CAP): boolean {
   return publishCountLast24h >= cap;
 }
+
+export type AutonomyTier = 1 | 2 | 3;
+export type PublishDecision = "publish" | "draft_for_approval" | "blocked_moderation" | "deferred_cap";
+
+/**
+ * Decide what happens to a freshly generated community post. Composes the two
+ * independent axes from the spec: moderation (WG-30, content safety) and autonomy
+ * (§07, how much the agent may do unattended) plus the daily cap (WG-17).
+ *
+ *  - unsafe content        → blocked, regardless of tier
+ *  - Tier 1 (Draft)        → queue a draft for human approval, never auto-publish
+ *  - Tier 2/3 over the cap → defer to a later cycle
+ *  - otherwise             → publish
+ */
+export function decidePublish(tier: AutonomyTier, contentAllowed: boolean, overCap: boolean): PublishDecision {
+  if (!contentAllowed) return "blocked_moderation";
+  if (tier === 1) return "draft_for_approval";
+  if (overCap) return "deferred_cap";
+  return "publish";
+}

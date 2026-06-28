@@ -5,6 +5,7 @@ import {
   structuralFingerprint,
   costCents,
   overDailyCap,
+  decidePublish,
   DAILY_ACTION_CAP,
   DEMOTE_STABILITY,
   type PatchEntry,
@@ -85,6 +86,29 @@ describe("costCents (WG-21)", () => {
 
   it("prices an Opus call higher", () => {
     expect(costCents("claude-opus-4-8", 1_000_000, 0)).toBeCloseTo(1500, 5);
+  });
+});
+
+describe("decidePublish — content cycle gating (WG-30/WG-17/§07)", () => {
+  it("blocks unsafe content regardless of tier", () => {
+    expect(decidePublish(1, false, false)).toBe("blocked_moderation");
+    expect(decidePublish(2, false, false)).toBe("blocked_moderation");
+    expect(decidePublish(3, false, true)).toBe("blocked_moderation");
+  });
+
+  it("Tier 1 always drafts for approval, never auto-publishes", () => {
+    expect(decidePublish(1, true, false)).toBe("draft_for_approval");
+    expect(decidePublish(1, true, true)).toBe("draft_for_approval");
+  });
+
+  it("Tier 2/3 defers when over the daily cap", () => {
+    expect(decidePublish(2, true, true)).toBe("deferred_cap");
+    expect(decidePublish(3, true, true)).toBe("deferred_cap");
+  });
+
+  it("Tier 2/3 publishes safe content under the cap", () => {
+    expect(decidePublish(2, true, false)).toBe("publish");
+    expect(decidePublish(3, true, false)).toBe("publish");
   });
 });
 
