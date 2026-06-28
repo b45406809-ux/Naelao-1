@@ -16,6 +16,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { moderateText } from "@naelao/moderation";
+import { getDOName } from "@naelao/crypto";
 import {
   getHostAction,
   PUBLISH_ACTION_NAMES,
@@ -34,6 +35,7 @@ import {
   BREAKER_COOLDOWN_MS,
 } from "../whop/cycle-logic.js";
 import { postCommunityUpdate } from "../whop/client.js";
+import { nextToolState, canDeploy, type ToolState, type ToolEvent } from "../whop/tool-lifecycle.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -84,6 +86,22 @@ export interface BusinessDOEnv {
   BUSINESS_R2: R2Bucket;
   ANALYTICS?: AnalyticsEngineDataset;
   HITL_APPROVAL_DO?: DurableObjectNamespace;
+  // Optional Tier-5 container that builds + tests the micro-tool's code (WG-01).
+  // Contract: POST { code, version } → { built, tests_passed, logs }. When absent,
+  // a tool version cannot leave `building` — the safe outcome (§02 gate holds).
+  TOOL_SANDBOX?: Fetcher;
+}
+
+interface ToolVersionRow {
+  version: number;
+  spec: string;
+  state: string;
+  r2_key: string | null;
+  tests_passed: number;
+  build_logs: string | null;
+  portal_route: string | null;
+  created_at: number;
+  updated_at: number;
 }
 
 
@@ -177,6 +195,22 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
       CREATE INDEX IF NOT EXISTS idx_tcl_cycle ON tool_call_log(cycle_id);
     `);
 
+    // Micro-tool versions (Tier 5 — the sellable product). State machine in
+    // tool-lifecycle.ts enforces: deploy only from a `tested` version (§02).
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS tool_versions (
+        version      INTEGER PRIMARY KEY,
+        spec         TEXT NOT NULL DEFAULT '',
+        state        TEXT NOT NULL DEFAULT 'draft',
+        r2_key       TEXT,
+        tests_passed INTEGER NOT NULL DEFAULT 0,
+        build_logs   TEXT,
+        portal_route TEXT,
+        created_at   INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+        updated_at   INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      )
+    `);
+
     this.initialized = true;
   }
 
@@ -216,6 +250,12 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
 
       // GET /outcome-log
       if (method === "GET" && url.pathname === "/outcome-log") return this.handleGetOutcomeLog(url);
+
+      // Micro-tool (Tier 5) lifecycle
+      if (method === "GET" && url.pathname === "/tool") return this.handleToolStatus();
+      if (method === "GET" && url.pathname === "/tool/versions") return this.handleToolList();
+      if (method === "POST" && url.pathname === "/tool/build") return this.handleToolBuild(request);
+      if (method === "POST" && url.pathname === "/tool/deploy") return this.handleToolDeploy();
 
       // POST /scripts/seed — pre-populate registry with common action types
       if (method === "POST" && url.pathname === "/scripts/seed") return this.handleSeedScripts();
@@ -515,6 +555,159 @@ Write ONE community post: concrete, helpful, no hype, no financial/investment ad
       return data.content.find(b => b.type === "text")?.text?.trim() ?? "";
     } catch (err) {
       console.warn("[BusinessDO] composeCommunityPost failed:", err);
+      return "";
+    }
+  }
+
+  // ── Micro-tool (Tier 5) lifecycle — the sellable product (§02/WG-01/WG-29) ──
+
+  private getLatestToolVersion(): ToolVersionRow | null {
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT * FROM tool_versions ORDER BY version DESC LIMIT 1`)
+      .toArray() as unknown as ToolVersionRow[];
+    return rows[0] ?? null;
+  }
+
+  // Apply a state-machine transition; returns the new state or null if illegal.
+  private transitionTool(version: number, current: ToolState, event: ToolEvent): ToolState | null {
+    const next = nextToolState(current, event);
+    if (!next) return null;
+    this.ctx.storage.sql.exec(
+      `UPDATE tool_versions SET state = ?, updated_at = ? WHERE version = ?`,
+      next, Date.now(), version,
+    );
+    return next;
+  }
+
+  private handleToolStatus(): Response {
+    const latest = this.getLatestToolVersion();
+    if (!latest) return Response.json({ tool: null });
+    return Response.json({
+      tool: {
+        version: latest.version,
+        state: latest.state,
+        tests_passed: latest.tests_passed === 1,
+        r2_key: latest.r2_key,
+        portal_route: latest.portal_route,
+        deployable: canDeploy(latest.state as ToolState),
+        updated_at: latest.updated_at,
+      },
+    });
+  }
+
+  private handleToolList(): Response {
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT version, state, tests_passed, portal_route, created_at, updated_at FROM tool_versions ORDER BY version DESC LIMIT 50`)
+      .toArray();
+    return Response.json({ versions: rows, count: rows.length });
+  }
+
+  // POST /tool/build — generate the tool's code from a spec, stage it in R2, then
+  // build + test it in the Tier-5 container. A version only reaches `tested` if the
+  // container reports tests passed; with no container it stays `building`.
+  private async handleToolBuild(request: Request): Promise<Response> {
+    const body = await request.json<{ spec: string; api_key: string; model?: string }>().catch(
+      () => ({ spec: "", api_key: "" } as { spec: string; api_key: string; model?: string }),
+    );
+    if (!body.spec) return Response.json({ error: "spec required" }, { status: 400 });
+
+    const prev = this.getLatestToolVersion();
+    const version = (prev?.version ?? 0) + 1;
+    const now = Date.now();
+
+    // 1. Generate the tool code (model call, cost-tracked).
+    const code = await this.composeToolCode(body.spec, body.api_key, body.model ?? "claude-haiku-4-5-20251001");
+    if (!code) return Response.json({ error: "code generation failed" }, { status: 502 });
+
+    // 2. Stage the bundle in R2 and record the draft version.
+    const userId = this.getCfg("user_id") ?? "unknown";
+    const r2Key = `tool/${userId}/${version}/bundle.ts`;
+    try { await this.env.BUSINESS_R2.put(r2Key, code); } catch (err) { console.warn("[BusinessDO] tool bundle write failed:", err); }
+    this.ctx.storage.sql.exec(
+      `INSERT INTO tool_versions (version, spec, state, r2_key, created_at, updated_at) VALUES (?, ?, 'draft', ?, ?, ?)`,
+      version, body.spec, r2Key, now, now,
+    );
+
+    // 3. Build + test in the Tier-5 container (if configured).
+    this.transitionTool(version, "draft", "start_build");
+    if (!this.env.TOOL_SANDBOX) {
+      // No container bound — version stays `building`; cannot deploy (§02 gate holds).
+      return Response.json({ version, state: "building", note: "No Tier-5 container configured; build/test pending" }, { status: 202 });
+    }
+
+    try {
+      const resp = await this.env.TOOL_SANDBOX.fetch(new Request("http://sandbox/build", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, version }),
+      }));
+      const result = await resp.json<{ built: boolean; tests_passed: boolean; logs?: string }>();
+      const passed = result.built && result.tests_passed;
+      this.ctx.storage.sql.exec(
+        `UPDATE tool_versions SET tests_passed = ?, build_logs = ? WHERE version = ?`,
+        passed ? 1 : 0, (result.logs ?? "").slice(0, 4000), version,
+      );
+      const state = this.transitionTool(version, "building", passed ? "build_passed" : "build_failed");
+      return Response.json({ version, state, tests_passed: passed });
+    } catch (err) {
+      this.transitionTool(version, "building", "build_failed");
+      return Response.json({ version, state: "build_failed", error: String(err) }, { status: 502 });
+    }
+  }
+
+  // POST /tool/deploy — deploy the latest version. The §02 gate is enforced here:
+  // only a `tested` version may deploy. Staging the bundle to a stable R2 path is the
+  // deploy artifact; a real isolate boot (Worker Loader) is the future hosting step.
+  private async handleToolDeploy(): Promise<Response> {
+    const latest = this.getLatestToolVersion();
+    if (!latest) return Response.json({ error: "no tool version to deploy" }, { status: 404 });
+
+    if (!canDeploy(latest.state as ToolState)) {
+      return Response.json(
+        { error: "not_deployable", state: latest.state, message: "A tool version must pass build+test before it can be deployed (§02)" },
+        { status: 409 },
+      );
+    }
+
+    this.transitionTool(latest.version, "tested", "start_deploy");
+    try {
+      const userId = this.getCfg("user_id") ?? "unknown";
+      const liveKey = `tool/${userId}/live/bundle.ts`;
+      const bundle = latest.r2_key ? await this.env.BUSINESS_R2.get(latest.r2_key) : null;
+      if (bundle) await this.env.BUSINESS_R2.put(liveKey, await bundle.text());
+      const portalRoute = `/${this.getCfg("branding") ? (JSON.parse(this.getCfg("branding") ?? "{}").slug ?? userId) : userId}/tool`;
+      this.ctx.storage.sql.exec(
+        `UPDATE tool_versions SET portal_route = ? WHERE version = ?`,
+        portalRoute, latest.version,
+      );
+      const state = this.transitionTool(latest.version, "deploying", "deploy_succeeded");
+      return Response.json({ version: latest.version, state, portal_route: portalRoute, live_bundle: liveKey });
+    } catch (err) {
+      this.transitionTool(latest.version, "deploying", "deploy_failed");
+      return Response.json({ version: latest.version, state: "deploy_failed", error: String(err) }, { status: 502 });
+    }
+  }
+
+  // Model call that writes the micro-tool's code from a plain-language spec.
+  private async composeToolCode(spec: string, apiKey: string, model: string): Promise<string> {
+    const prompt = `You are building a small, genuinely functional micro-tool sold to a make-money-online audience on Whop.
+
+Spec: ${spec}
+
+Write a single self-contained TypeScript module that implements the tool as a Cloudflare Worker (export default { fetch }). It must include real, working functionality (not a stub or prompt-wrapper) and a small set of inline tests in an exported \`runTests()\` that returns { passed: boolean, results: string[] }. No external network calls except where the spec requires. Return ONLY the TypeScript module.`;
+
+    try {
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: JSON.stringify({ model, max_tokens: 4096, messages: [{ role: "user", content: prompt }] }),
+      });
+      if (!resp.ok) return "";
+      const data = await resp.json<{ content: Array<{ type: string; text: string }>; usage?: { input_tokens?: number; output_tokens?: number } }>();
+      this.recordCost(4, model, data.usage);
+      return data.content.find(b => b.type === "text")?.text?.trim() ?? "";
+    } catch (err) {
+      console.warn("[BusinessDO] composeToolCode failed:", err);
       return "";
     }
   }
@@ -1007,7 +1200,8 @@ Return a JSON object with exactly these fields:
     if (!this.env.HITL_APPROVAL_DO) return; // best-effort; no UI built this pass
     try {
       const userId = this.getCfg("user_id") ?? "unknown";
-      const id = this.env.HITL_APPROVAL_DO.idFromName(`hitl:business:${userId}`);
+      const name = await getDOName("hitl", userId, userId, this.env.PLATFORM_SECRET);
+      const id = this.env.HITL_APPROVAL_DO.idFromName(name);
       await this.env.HITL_APPROVAL_DO.get(id).fetch(
         new Request("http://do/requests", {
           method: "POST",

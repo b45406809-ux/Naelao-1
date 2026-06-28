@@ -676,22 +676,25 @@ app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/reject", asy
 
 // ── ProductDO routes — /product/* ─────────────────────────────────────────────
 
-function getProductDO(env: AgentsEnv) {
-  const id = env.PRODUCT_DO.idFromName("product");
-  return env.PRODUCT_DO.get(id);
+// HMAC-derived DO names (WG-23 / G-BA01): unguessable, tenant-prefixed so one
+// user can never address another user's BusinessDO. In this collapsed one-business-
+// per-user model the user IS the tenant; the singleton ProductDO is platform-scoped.
+async function getProductDO(env: AgentsEnv) {
+  const name = await getDOName("product", "product", "platform", env.PLATFORM_SECRET);
+  return env.PRODUCT_DO.get(env.PRODUCT_DO.idFromName(name));
 }
 
-function getBusinessDO(env: AgentsEnv, userId: string) {
-  const id = env.BUSINESS_DO.idFromName(`business:${userId}`);
-  return env.BUSINESS_DO.get(id);
+async function getBusinessDO(env: AgentsEnv, userId: string) {
+  const name = await getDOName("business", userId, userId, env.PLATFORM_SECRET);
+  return env.BUSINESS_DO.get(env.BUSINESS_DO.idFromName(name));
 }
 
 app.get("/product/config", async (c) => {
-  return getProductDO(c.env).fetch(new Request("http://do/config"));
+  return (await getProductDO(c.env)).fetch(new Request("http://do/config"));
 });
 
 app.patch("/product/config", async (c) => {
-  return getProductDO(c.env).fetch(new Request("http://do/config", {
+  return (await getProductDO(c.env)).fetch(new Request("http://do/config", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(await c.req.json()),
@@ -699,16 +702,16 @@ app.patch("/product/config", async (c) => {
 });
 
 app.get("/product/signup-gate", async (c) => {
-  return getProductDO(c.env).fetch(new Request("http://do/signup-gate"));
+  return (await getProductDO(c.env)).fetch(new Request("http://do/signup-gate"));
 });
 
 // Business registry (for nightly cron iteration)
 app.get("/product/businesses", async (c) => {
-  return getProductDO(c.env).fetch(new Request("http://do/businesses"));
+  return (await getProductDO(c.env)).fetch(new Request("http://do/businesses"));
 });
 
 app.post("/product/businesses", async (c) => {
-  return getProductDO(c.env).fetch(new Request("http://do/businesses", {
+  return (await getProductDO(c.env)).fetch(new Request("http://do/businesses", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(await c.req.json()),
@@ -717,19 +720,19 @@ app.post("/product/businesses", async (c) => {
 
 app.delete("/product/businesses/:userId", async (c) => {
   const { userId } = c.req.param();
-  return getProductDO(c.env).fetch(new Request(`http://do/businesses/${userId}`, { method: "DELETE" }));
+  return (await getProductDO(c.env)).fetch(new Request(`http://do/businesses/${userId}`, { method: "DELETE" }));
 });
 
 // ── BusinessDO routes — /business/:userId/* ───────────────────────────────────
 
 app.get("/business/:userId/status", async (c) => {
   const { userId } = c.req.param();
-  return getBusinessDO(c.env, userId).fetch(new Request("http://do/status"));
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/status"));
 });
 
 app.patch("/business/:userId/config", async (c) => {
   const { userId } = c.req.param();
-  return getBusinessDO(c.env, userId).fetch(new Request("http://do/config", {
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/config", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(await c.req.json()),
@@ -738,7 +741,7 @@ app.patch("/business/:userId/config", async (c) => {
 
 app.post("/business/:userId/cycle", async (c) => {
   const { userId } = c.req.param();
-  return getBusinessDO(c.env, userId).fetch(new Request("http://do/cycle", {
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/cycle", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...(await c.req.json<Record<string, unknown>>()), api_key: c.env.ANTHROPIC_API_KEY }),
@@ -748,17 +751,17 @@ app.post("/business/:userId/cycle", async (c) => {
 app.get("/business/:userId/outcome-log", async (c) => {
   const { userId } = c.req.param();
   const limit = c.req.query("limit") ?? "50";
-  return getBusinessDO(c.env, userId).fetch(new Request(`http://do/outcome-log?limit=${limit}`));
+  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/outcome-log?limit=${limit}`));
 });
 
 app.get("/business/:userId/scripts", async (c) => {
   const { userId } = c.req.param();
-  return getBusinessDO(c.env, userId).fetch(new Request("http://do/scripts"));
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/scripts"));
 });
 
 app.post("/business/:userId/scripts", async (c) => {
   const { userId } = c.req.param();
-  return getBusinessDO(c.env, userId).fetch(new Request("http://do/scripts", {
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/scripts", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(await c.req.json()),
@@ -767,12 +770,12 @@ app.post("/business/:userId/scripts", async (c) => {
 
 app.get("/business/:userId/scripts/:name", async (c) => {
   const { userId, name } = c.req.param();
-  return getBusinessDO(c.env, userId).fetch(new Request(`http://do/scripts/${name}`));
+  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/scripts/${name}`));
 });
 
 app.patch("/business/:userId/scripts/:name", async (c) => {
   const { userId, name } = c.req.param();
-  return getBusinessDO(c.env, userId).fetch(new Request(`http://do/scripts/${name}`, {
+  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/scripts/${name}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(await c.req.json()),
@@ -781,17 +784,17 @@ app.patch("/business/:userId/scripts/:name", async (c) => {
 
 app.delete("/business/:userId/scripts/:name", async (c) => {
   const { userId, name } = c.req.param();
-  return getBusinessDO(c.env, userId).fetch(new Request(`http://do/scripts/${name}`, { method: "DELETE" }));
+  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/scripts/${name}`, { method: "DELETE" }));
 });
 
 app.get("/business/:userId/autonomy", async (c) => {
   const { userId } = c.req.param();
-  return getBusinessDO(c.env, userId).fetch(new Request("http://do/autonomy"));
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/autonomy"));
 });
 
 app.patch("/business/:userId/autonomy", async (c) => {
   const { userId } = c.req.param();
-  return getBusinessDO(c.env, userId).fetch(new Request("http://do/autonomy", {
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/autonomy", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(await c.req.json()),
@@ -801,7 +804,33 @@ app.patch("/business/:userId/autonomy", async (c) => {
 // POST /business/:userId/scripts/seed — pre-populate script registry
 app.post("/business/:userId/scripts/seed", async (c) => {
   const { userId } = c.req.param();
-  return getBusinessDO(c.env, userId).fetch(new Request("http://do/scripts/seed", { method: "POST" }));
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/scripts/seed", { method: "POST" }));
+});
+
+// ── Micro-tool (Tier 5) lifecycle — the sellable product ──────────────────────
+app.get("/business/:userId/tool", async (c) => {
+  const { userId } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/tool"));
+});
+
+app.get("/business/:userId/tool/versions", async (c) => {
+  const { userId } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/tool/versions"));
+});
+
+app.post("/business/:userId/tool/build", async (c) => {
+  const { userId } = c.req.param();
+  const body = await c.req.json<{ spec?: string; model?: string }>().catch(() => ({} as { spec?: string; model?: string }));
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/tool/build", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ spec: body.spec ?? "", api_key: c.env.ANTHROPIC_API_KEY, ...(body.model ? { model: body.model } : {}) }),
+  }));
+});
+
+app.post("/business/:userId/tool/deploy", async (c) => {
+  const { userId } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/tool/deploy", { method: "POST" }));
 });
 
 // POST /business/:userId/content-cycle — deliberate community-post action:
@@ -810,7 +839,7 @@ app.post("/business/:userId/scripts/seed", async (c) => {
 app.post("/business/:userId/content-cycle", async (c) => {
   const { userId } = c.req.param();
   const body = await c.req.json<{ topic?: string; content?: string; model?: string }>().catch(() => ({} as { topic?: string; content?: string; model?: string }));
-  return getBusinessDO(c.env, userId).fetch(new Request("http://do/cycle", {
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/cycle", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -830,7 +859,7 @@ app.post("/business/:userId/onboard", async (c) => {
   const env = c.env;
 
   // 1. Signup gate
-  const gateResp = await getProductDO(env).fetch(new Request("http://do/signup-gate"));
+  const gateResp = await (await getProductDO(env)).fetch(new Request("http://do/signup-gate"));
   if (!gateResp.ok) {
     const body = await gateResp.json<{ allowed: boolean; reason?: string }>();
     return Response.json({ error: body.reason ?? "Signups are closed" }, { status: 403 });
@@ -879,7 +908,7 @@ app.post("/business/:userId/onboard", async (c) => {
   }
 
   // 4. Save Whop product ID + affiliate ID to BusinessDO
-  const bizDO = getBusinessDO(env, userId);
+  const bizDO = await getBusinessDO(env, userId);
   await bizDO.fetch(new Request("http://do/config", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -896,7 +925,7 @@ app.post("/business/:userId/onboard", async (c) => {
   await bizDO.fetch(new Request("http://do/scripts/seed", { method: "POST" }));
 
   // 6. Register user in ProductDO businesses list (for nightly cron)
-  await getProductDO(env).fetch(new Request("http://do/businesses", {
+  await (await getProductDO(env)).fetch(new Request("http://do/businesses", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_id: userId }),
@@ -931,7 +960,7 @@ app.onError((err, c) =>
 
 async function handleScheduled(env: AgentsEnv): Promise<void> {
   // Fetch all registered business user IDs from ProductDO
-  const productDO = env.PRODUCT_DO.get(env.PRODUCT_DO.idFromName("product"));
+  const productDO = await getProductDO(env);
   let userIds: string[] = [];
   try {
     const resp = await productDO.fetch(new Request("http://do/businesses"));
@@ -949,7 +978,7 @@ async function handleScheduled(env: AgentsEnv): Promise<void> {
 
   for (const userId of userIds) {
     try {
-      const bizDO = env.BUSINESS_DO.get(env.BUSINESS_DO.idFromName(`business:${userId}`));
+      const bizDO = await getBusinessDO(env, userId);
 
       // Get the whop_product_id from this business
       const statusResp = await bizDO.fetch(new Request("http://do/status"));
