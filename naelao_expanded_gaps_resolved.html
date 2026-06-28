@@ -67633,5 +67633,981 @@ When bumping the date, bump it everywhere in one change and re-run the full test
 </section>
 
 
+<section id="appendix-script-first-agent" style="margin:80px 0 0;padding:60px 0 0;border-top:2px solid var(--brd);">
+<div style="font-family:'DM Mono',monospace;font-size:10px;letter-spacing:.2em;color:var(--or);text-transform:uppercase;margin-bottom:14px;">Appendix — Agent Architecture</div>
+<h2 style="font-family:'Fraunces',serif;font-size:42px;font-weight:700;color:var(--hd);letter-spacing:-.03em;margin-bottom:8px;">Script-First General Agent Architecture</h2>
+<p style="font-family:'Fraunces',serif;font-size:17px;font-weight:300;font-style:italic;color:var(--dim);margin-bottom:40px;">A Domain-Agnostic Framework for Observation, Distillation, and Composable Skill Growth — Naelao internal design document</p>
+<div style="width:40px;height:2px;background:var(--or);margin-bottom:40px;"></div>
+
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-table-of-contents" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">Table of Contents</h3>
+
+<ol style="margin:12px 0 12px 22px;color:var(--dim);font-size:13.5px;line-height:1.7;">
+<li>[The Shape of the Loop](#2-the-shape-of-the-loop)</li>
+<li>[Why "Script CRUD + Run" Is Enough](#3-why-script-crud--run-is-enough)</li>
+<li>[The Skill Library](#4-the-skill-library)</li>
+<li>[The Escalation Ladder](#5-the-escalation-ladder)</li>
+<li>[Parameterization: From Trace to Skill](#6-parameterization-from-trace-to-skill)</li>
+<li>[Skills Calling Skills — The Growth Mechanism](#7-skills-calling-skills--the-growth-mechanism)</li>
+<li>[The Execution Ladder](#8-the-execution-ladder)</li>
+<li>[Environment Observation as a Script](#9-environment-observation-as-a-script)</li>
+<li>[Version History and Drift Detection](#10-version-history-and-drift-detection)</li>
+<li>[The Agent Configuration Surface](#11-the-agent-configuration-surface)</li>
+<li>[Prebuilt Script and Skill Catalogue](#12-prebuilt-script-and-skill-catalogue)</li>
+<li>[Agent Profiles — Composing Configurations](#13-agent-profiles--composing-configurations)</li>
+<li>[MCP Integration Without Hardcoded Tools](#14-mcp-integration-without-hardcoded-tools)</li>
+<li>[The Default Naelao Agent](#15-the-default-naelao-agent)</li>
+<li>[Implementation Notes](#16-implementation-notes)</li>
+</ol>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-1-the-core-insight" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">1. The Core Insight</h3>
+
+<p>Most agent systems make the reasoning model do too much work, too often, for too long. They treat every action as a fresh reasoning problem. A browser automation agent calls its vision model on every page load. A code agent re-plans from scratch on every tool invocation. A web scraping agent re-derives the structure of a site it has visited a hundred times. Token spend scales with task repetition rather than with task novelty, which is the wrong shape.</p>
+
+<p>The right shape is: <strong>token spend scales with novelty</strong>. When something is familiar, the agent should run a cached, tested, parameterized script at near-zero cost. When something is unfamiliar — a new task, a broken precondition, a drifted environment — the reasoning model wakes up, handles that instance live, and if it succeeds, distills what it did into a reusable script before closing the session.</p>
+
+<p>The mechanism that enables this is not new. It is what Voyager did for Minecraft (writes JavaScript functions as skills, stores them in a library, retrieves by embedding search, calls GPT-4 only when nothing in the library fits or something fails). It is what CodeAct formalized as a research paradigm (the agent's entire action space is write-and-execute code, not a fixed menu of tools). The contribution here is making it domain-general, building it natively on Cloudflare's execution primitives, and integrating it cleanly with Naelao's existing AgentDO / execution ladder / skills architecture.</p>
+
+<p>The loop is the same whether the environment is a browser, a filesystem, an API surface, a container, a robotics sensor feed, or a Slack workspace. The only thing that changes is the <span class="ic">observe</span> script. Everything else — fingerprint comparison, script retrieval, execution, drift handling, compile-to-skill — is identical machinery.</p>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-2-the-shape-of-the-loop" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">2. The Shape of the Loop</h3>
+
+<p>Every agent session, regardless of domain, runs this loop:</p>
+
+<pre><code class="">
+1. OBSERVE    — run observe script → get environment state snapshot
+2. FINGERPRINT — hash the snapshot → produce a fingerprint
+3. FIND        — search skill library for scripts whose preconditions match this fingerprint
+4. GATE        — if high-confidence match: go to EXECUTE
+                  if mismatch or partial match: go to DIAGNOSE
+                  if no match at all: go to REASON
+5. EXECUTE     — run matched script with current parameters → record result
+6. VERIFY      — re-observe → check postconditions → mark success or failure
+7. DISTILL     — if live reasoning was used and succeeded: compile trace to parameterized script → save to library
+</code></pre>
+
+<p>This is the whole loop. The reasoning model only participates in steps 4 (DIAGNOSE / REASON), 5 (when reasoning is required), and 7 (DISTILL). Every other step runs as a script with no model call.</p>
+
+<p><strong>What makes this domain-general</strong> is that steps 1 and 2 are the only domain-specific parts, and they are themselves just scripts stored in the library. A browser agent's observe script hashes the DOM, captures network log tail, and records window dimensions. A filesystem agent's observe script hashes file mtimes and checks command exit codes. An API integration agent's observe script diffs the response JSON schema and status codes against a saved baseline. The core loop never changes.</p>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-3-why-script-crud-run-is-enough" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">3. Why "Script CRUD + Run" Is Enough</h3>
+
+<p>The agent's tool surface is exactly five operations:</p>
+
+<table class="t">
+<tr><th>Tool</th><th>Description</th></tr>
+<tr><td>`script.create(name, code, metadata)`</td><td>Write a new script to the library</td></tr>
+<tr><td>`script.read(name)`</td><td>Fetch a script's code and metadata</td></tr>
+<tr><td>`script.update(name, patch, reason)`</td><td>Apply a versioned update to a script</td></tr>
+<tr><td>`script.delete(name)`</td><td>Remove a script from the library</td></tr>
+<tr><td>`script.find(query, fingerprint?)`</td><td>Semantic + fingerprint search across the library</td></tr>
+<tr><td>`script.run(name, params)`</td><td>Execute a script at the appropriate execution tier</td></tr>
+</table>
+
+<p>That is the complete tool surface. There are no hardcoded browser tools, filesystem tools, container tools, API tools, or communication tools. Those capabilities exist — but they exist as scripts in the library, not as built-in tools in the agent.</p>
+
+<p>This design has three consequences:</p>
+
+<p><strong>The capability surface is determined by configuration, not by the agent's code.</strong> You build a browser agent, a code agent, a robotics agent, or a vertical niche agent by loading different scripts at startup. The AgentDO core never changes.</p>
+
+<p><strong>New capabilities require no platform changes.</strong> If a user wants their agent to talk to a new API, control a new type of environment, or automate a new workflow, they write a script. The agent can then use it via <span class="ic">script.run</span>. Nothing needs to be wired into the platform layer.</p>
+
+<p><strong>The agent can extend its own capabilities.</strong> At any point, the agent can write a new script via <span class="ic">script.create</span>, immediately run it via <span class="ic">script.run</span>, and — if it works — update its metadata and mark it as a library permanent. The agent is not just a consumer of its skill library; it is an author of it.</p>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-4-the-skill-library" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">4. The Skill Library</h3>
+
+<p>The skill library is not a pile of scripts. It is a queryable, versioned, metadata-rich store that is the primary asset the agent accumulates over time.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">4.1 Script Metadata Schema</h4>
+
+<p>Every script in the library has the following metadata alongside its code:</p>
+
+<pre><code class="typescript">
+interface ScriptMetadata {
+  // Identity
+  name: string;                    // unique key
+  version: number;                 // incremented on every update
+  domain: string;                  // "browser" | "filesystem" | "api" | "container" | ...
+
+  // Retrieval
+  description: string;             // natural-language description for semantic search
+  embedding_vector: number[];      // embedded from description + code summary
+  tags: string[];                  // categorical tags for pre-filtering
+
+  // Preconditions
+  fingerprint_schema: JSONSchema;  // what the observe snapshot must look like for this script to be valid
+  preconditions: string[];         // human-readable list of preconditions
+
+  // Parameters
+  parameters: Array&lt;{
+    name: string;
+    type: string;
+    description: string;
+    required: boolean;
+    default?: unknown;
+  }&gt;;
+
+  // Dependencies
+  calls: string[];                 // names of scripts this script calls (skill graph)
+  requires_tier: 1 | 2 | 3 | 4 | 5;  // minimum execution tier needed
+
+  // Health
+  success_count: number;
+  failure_count: number;
+  patch_history: Array&lt;{
+    version: number;
+    reason: string;
+    timestamp: number;
+    patch_type: 'minor_fix' | 'precondition_tightening' | 'full_rederivation';
+  }&gt;;
+  last_used: number;
+  stability_score: number;         // computed from success rate + patch frequency
+}
+</code></pre>
+
+<p>The <span class="ic">fingerprint_schema</span> field is the key that separates this from embedding-only retrieval. When <span class="ic">script.find</span> runs, it does two things: semantic similarity search against <span class="ic">embedding_vector</span> (for natural-language intent matching), followed by fingerprint compatibility filtering (does the current environment state satisfy <span class="ic">fingerprint_schema</span>?). This combination degrades gracefully as the library grows — you don't get high-confidence wrong matches, because a semantically similar script that was written for a different environment configuration will fail the fingerprint filter.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">4.2 The Stability Score</h4>
+
+<p>The <span class="ic">stability_score</span> is a first-class derived metric, not just logging:</p>
+
+<pre><code class="">
+stability_score = (success_count / (success_count + failure_count)) 
+                  × (1 / (1 + recent_patch_count))
+</code></pre>
+
+<p>Where <span class="ic">recent_patch_count</span> is the number of patches in the last ten runs. A script with a high success rate but frequent recent patches is signaling that its preconditions are too loose — it's being matched to situations where it doesn't reliably work, and the patches are compensating. The right fix is not another patch; it is tightening the <span class="ic">fingerprint_schema</span> so the script only matches when its preconditions genuinely hold.</p>
+
+<p>A <span class="ic">stability_score</span> below 0.3 on any script that has been used more than twenty times should trigger automatic review: either tighten its fingerprint schema, promote the patched logic into a new generalized version, or flag it for full re-derivation.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">4.3 R2 Storage Layout</h4>
+
+<pre><code class="">
+platform/scripts/                        ← prebuilt scripts (read-only)
+  browser-use/
+    SCRIPT.md
+    scripts/
+      observe.ts
+      navigate.ts
+      click.ts
+      fill.ts
+      screenshot.ts
+  r2-workspace/
+  sandbox-container/
+  mcp-connector/
+  ...
+
+spaces/{spaceId}/scripts/               ← space-level scripts (shared across agents in space)
+  {script-name}/
+    SCRIPT.md
+    code.ts
+    versions/
+      v1.ts
+      v2.ts
+      ...
+
+spaces/{spaceId}/agents/{agentId}/scripts/  ← agent-level scripts (private to one agent)
+  {script-name}/
+    SCRIPT.md
+    code.ts
+    versions/
+</code></pre>
+
+<p>Scripts at the platform level are read-only prebuilts provided by Naelao. Space-level scripts are shared across all agents in a space. Agent-level scripts are private to a specific agent and represent the individual accumulated knowledge of that agent instance.</p>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-5-the-escalation-ladder" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">5. The Escalation Ladder</h3>
+
+<p>The escalation ladder defines exactly when the reasoning model gets invoked and what it does when it does. It has four levels:</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Level 1 — Direct Execution</h4>
+
+<p><strong>Condition:</strong> Script found in library. Current fingerprint matches script's <span class="ic">fingerprint_schema</span> within tolerance. <span class="ic">stability_score</span> above threshold (default: 0.7).</p>
+
+<p><strong>What happens:</strong> Script executes directly, no model call. Cost: execution tier cost only (often near zero for Tier 1–2 scripts).</p>
+
+<p><strong>Implementation:</strong> Runs entirely inside a Dynamic Workflow (CF Workflows). The AgentDO never wakes.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Level 2 — Diagnostic Patch</h4>
+
+<p><strong>Condition:</strong> Script found. Fingerprint mismatch detected (current state deviates from expected, but not catastrophically — the script structure is probably still valid with a small update).</p>
+
+<p><strong>What happens:</strong></p>
+<ol style="margin:12px 0 12px 22px;color:var(--dim);font-size:13.5px;line-height:1.7;">
+<li>A cheap diagnostic call (Tier 2 isolate, fast model like Haiku) receives: the current fingerprint, the expected fingerprint, and the diff between them.</li>
+<li>It identifies specifically what changed: a DOM selector shifted, an API field was renamed, a redirect timing changed, a new intermediate step appeared.</li>
+<li>It produces a targeted patch to the script that handles the new state.</li>
+<li><span class="ic">script.update</span> is called with <span class="ic">patch_type: 'minor_fix'</span>.</li>
+<li>Execution resumes with the patched script.</li>
+</ol>
+
+<p><strong>Cost:</strong> One cheap model call (Haiku, ~200 tokens). AgentDO may or may not wake depending on patch complexity.</p>
+
+<p><strong>Promotion condition:</strong> If the patch was a precondition issue (the script was matched to an incompatible environment) rather than a drift issue (the environment itself changed), the right action is <span class="ic">patch_type: 'precondition_tightening'</span> — update the <span class="ic">fingerprint_schema</span> so this mismatch doesn't happen again.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Level 3 — Full Re-derivation</h4>
+
+<p><strong>Condition:</strong> Level 2 patch was applied, but either: (a) the patched script still fails, (b) <span class="ic">patch_history</span> shows more than five patches in the last ten runs (chronic instability), or (c) the fingerprint mismatch is so large that a targeted patch is not plausible.</p>
+
+<p><strong>What happens:</strong></p>
+<ol style="margin:12px 0 12px 22px;color:var(--dim);font-size:13.5px;line-height:1.7;">
+<li>AgentDO wakes — full reasoning model invoked.</li>
+<li>Agent is given: the task description, the current environment state, the failed script, the patch history, and the full fingerprint diff.</li>
+<li>Agent reasons about what fundamentally changed and how to approach the task correctly in the new environment.</li>
+<li>Agent executes the task live, observing the environment at each step.</li>
+<li>If successful, the DISTILL step runs (see Section 6) — the trace is compiled into a new parameterized script, stored as version N+1 (or a new named script if the approach fundamentally changed), with <span class="ic">patch_type: 'full_rederivation'</span> recorded in history.</li>
+<li>Prior versions are preserved (see Section 10).</li>
+</ol>
+
+<p><strong>Cost:</strong> Full reasoning model run. This is the expensive path, and it should be rare. If Level 3 is triggering frequently for a given script, that is a signal the script's <span class="ic">fingerprint_schema</span> is wrong, not that the environment is unusually unstable.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Level 4 — Live Reasoning with Distillation</h4>
+
+<p><strong>Condition:</strong> No script found in library for this task.</p>
+
+<p><strong>What happens:</strong></p>
+<ol style="margin:12px 0 12px 22px;color:var(--dim);font-size:13.5px;line-height:1.7;">
+<li>AgentDO runs the task fully live. No script to fall back on — the model reasons through each step using whatever prebuilt scripts are available (observe, navigate, etc.) as building blocks.</li>
+<li>The full trace is recorded: every action taken, every environment state observed, every decision made.</li>
+<li>If the task succeeds, the DISTILL step runs immediately before the session closes.</li>
+<li>If the task fails, the trace is still saved (in a <span class="ic">failed_traces/</span> directory) for later review. Failed traces are not compiled into scripts, but they inform future Level 3 re-derivations.</li>
+</ol>
+
+<p><strong>The critical rule:</strong> Every successful Level 4 run must attempt distillation. Skipping distillation means the agent does the same first-principles reasoning work the next time it encounters the same task. The whole value of the system is that each Level 4 run makes the next run cheaper.</p>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-6-parameterization-from-trace-to-skill" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">6. Parameterization: From Trace to Skill</h3>
+
+<p>Distillation is the most important step in the system, and it is where most naive implementations fail. The difference between a macro and a skill is parameterization. A trace of "I did this once" is a recording. A skill is a typed function that works across all instances of a class of tasks.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">6.1 The Compile Prompt</h4>
+
+<p>After a successful live run, the following compile prompt runs against the trace:</p>
+
+<pre><code class="">
+You are a software engineer whose job is to extract a reusable, parameterized 
+script from a trace of agent actions.
+
+Here is the trace:
+&lt;trace&gt;
+[full action log with environment states]
+&lt;/trace&gt;
+
+The task that was accomplished: [task description]
+
+Your job:
+1. Identify every value in the trace that was specific to THIS INSTANCE of the 
+   task — account names, content strings, target URLs, credentials, specific 
+   IDs, dates, or any value the user provided. These become PARAMETERS.
+
+2. Identify every value that was STRUCTURAL — DOM selectors, API field names, 
+   wait conditions, response status checks, navigation steps. These stay 
+   HARDCODED in the script body.
+
+3. Write a TypeScript function with:
+   - A clear, descriptive name (verb_noun format: post_update, login_account, 
+     fetch_report)
+   - Typed parameters for every instance-specific value
+   - Hardcoded structural logic
+   - Calls to existing library scripts where possible (don't re-derive 
+     primitives that already exist)
+   - A return type that captures the meaningful output
+   - JSDoc comments explaining what each parameter means
+
+4. Write the fingerprint_schema: a JSON Schema that describes what the 
+   environment state must look like for this script to be valid. Be specific — 
+   wrong preconditions cause mismatches later.
+
+5. Write a one-sentence description for semantic retrieval.
+
+Return ONLY valid TypeScript. No explanation, no markdown fences.
+</code></pre>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">6.2 What Good Distillation Looks Like</h4>
+
+<p>Bad distillation (macro — frozen replay):</p>
+<pre><code class="typescript">
+// This is not a skill. This is a recording.
+async function run() {
+  await navigate("https://instagram.com");
+  await wait(2000);
+  await click("#loginButton");
+  await type("#username", "myusername");
+  await type("#password", "mypassword123");
+  await click("#submitBtn");
+}
+</code></pre>
+
+<p>Good distillation (skill — parameterized, calls primitives, typed):</p>
+<pre><code class="typescript">
+/**
+ * Log in to an Instagram account.
+ * @param credentials - Account username and password
+ * @param options - Optional configuration for timeout and retry behavior
+ */
+async function login_instagram(
+  credentials: { username: string; password: string },
+  options: { timeout_ms?: number; max_retries?: number } = {}
+): Promise&lt;{ success: boolean; session_cookies: Record&lt;string, string&gt; }&gt; {
+  const { timeout_ms = 5000, max_retries = 2 } = options;
+
+  // navigate_and_wait is a library primitive — we call it, don't re-derive it
+  await script.run('navigate_and_wait', {
+    url: 'https://instagram.com',
+    expected_url_pattern: '/accounts/login',
+    timeout_ms
+  });
+
+  // Fingerprint check: login page must be loaded
+  const state = await script.run('observe_browser');
+  if (!state.dom_has_selector('#loginForm')) {
+    throw new Error('Login page not found — navigate may have redirected unexpectedly');
+  }
+
+  await script.run('fill_and_submit', {
+    fields: {
+      '#username': credentials.username,
+      '#password': credentials.password
+    },
+    submit_selector: '[data-testid="login-button"]'
+  });
+
+  await script.run('wait_for_navigation', {
+    expected_url_pattern: '/home',
+    timeout_ms,
+    fallback_selectors: ['#mainFeed', '[aria-label="Home"]']
+  });
+
+  const cookies = await script.run('get_session_cookies');
+  return { success: true, session_cookies: cookies };
+}
+</code></pre>
+
+<p>The second version: takes parameters instead of hardcoding credentials, calls existing library primitives (<span class="ic">navigate_and_wait</span>, <span class="ic">observe_browser</span>, <span class="ic">fill_and_submit</span>, <span class="ic">wait_for_navigation</span>, <span class="ic">get_session_cookies</span>) rather than re-implementing them, checks preconditions explicitly, handles variation (multiple possible selectors for success detection), and returns meaningful output. It is a skill, not a recording.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">6.3 When the Compile Step Fails</h4>
+
+<p>The model will sometimes produce a script that is not truly parameterized — it abstracts some values but misses others, or produces something that is still too specific. The compile step should include a validation pass:</p>
+
+<ol style="margin:12px 0 12px 22px;color:var(--dim);font-size:13.5px;line-height:1.7;">
+<li>Check that no literal instance-specific values appear in the code (known user credentials, known specific content strings, known specific IDs that were in the trace but should be parameters).</li>
+<li>Check that the parameter list is non-empty for any task that will recur with different inputs.</li>
+<li>Check that the script calls at least one library primitive rather than re-deriving everything from scratch.</li>
+</ol>
+
+<p>If validation fails, re-run the compile prompt with a note about what was wrong. Allow at most two retries. If it still fails, save the trace and the failed compile attempts as a <span class="ic">draft_skill</span> for human review rather than discarding it.</p>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-7-skills-calling-skills-the-growth-mechanism" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">7. Skills Calling Skills — The Growth Mechanism</h3>
+
+<p>This is the property that makes the library grow in power rather than just in size.</p>
+
+<p>The insight: once a set of low-level primitives is stable (high <span class="ic">stability_score</span>, rarely patched, well-understood preconditions), every new higher-level skill gets built by composing them. The reasoning model never has to re-derive how to log in, navigate, wait for a page to load, or parse a response. It only derives new logic at the level where something is genuinely new.</p>
+
+<p>Over time, the stack looks like this:</p>
+
+<pre><code class="">
+Level 0 — Observe primitives
+  observe_browser()          → { dom_hash, network_log, window_rect, cursor_pos }
+  observe_filesystem()       → { file_mtimes, dir_structure, recent_changes }
+  observe_api(endpoint)      → { status, schema_hash, response_fields }
+  observe_container()        → { process_list, env_vars, stdout_tail }
+
+Level 1 — Environment primitives (built on Level 0)
+  navigate_and_wait(url, expected)
+  fill_and_submit(fields, submit_selector)
+  wait_for_selector(selector, timeout)
+  run_command(cmd, expected_exit_code)
+  call_api(method, url, body, expected_schema)
+  read_file(path)
+  write_file(path, content)
+
+Level 2 — Domain primitives (built on Level 1)
+  login_instagram(credentials)
+  checkout_github_branch(repo, branch)
+  fetch_slack_messages(channel, limit)
+  post_tweet(text, media?)
+  run_pytest(test_file)
+  deploy_to_cloudflare(worker_name)
+
+Level 3 — Task scripts (built on Level 2)
+  post_instagram_update(account, text, image?)
+  open_github_pr(repo, title, body, base_branch)
+  send_slack_report(channel, report_data)
+  run_and_report_tests(test_suite)
+  daily_deploy(worker_name, build_cmd)
+
+Level 4 — Workflow orchestration (built on Level 3)
+  morning_social_post(accounts, content_brief)
+  daily_code_review_and_deploy(repos)
+  weekly_performance_report(metrics_sources, recipients)
+</code></pre>
+
+<p>At each level, the model's reasoning is only needed for the novel part — the composition logic at that level. Everything below it is trusted library code. By the time the system has been running for weeks, a new Level 4 workflow can be derived with a single reasoning call that reads "call these Level 3 scripts in this order with these parameters" — because all the hard work has already been done by prior Level 3 and below derivations.</p>
+
+<p><strong>The practical implication:</strong> early in a deployment, almost every run hits Level 3 or Level 4 escalation. After a few weeks, almost every run stays at Level 1. Token spend per task trends toward near-zero over time as the library matures. This is the right cost curve for a production agent — high initial investment, compounding return.</p>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-8-the-execution-ladder" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">8. The Execution Ladder</h3>
+
+<p>Every script declares its required execution tier. The agent calls <span class="ic">script.run(name, params)</span> and the orchestrator routes to the appropriate tier automatically — the agent does not need to know or care which tier a script uses.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Tier 1 — Direct R2 (Workspace)</h4>
+
+<p><strong>Boot time:</strong> ~0ms. <strong>Cost:</strong> R2 operation pricing only (~$0.00004 per 1k ops). No CPU billing.</p>
+
+<p><strong>Capabilities:</strong> Read files, write files, list directories, delete files, copy within R2. Nothing else. No code execution. No HTTP. No filesystem beyond R2.</p>
+
+<p><strong>Use for:</strong> <span class="ic">read_file</span>, <span class="ic">write_file</span>, <span class="ic">list_directory</span>, observe scripts that are pure file reads, fingerprint checks against saved baselines stored in R2.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Tier 2 — V8 Isolate (Dynamic Worker)</h4>
+
+<p><strong>Boot time:</strong> <5ms. <strong>Cost:</strong> ~$0.000001 per call at Workers billing rates.</p>
+
+<p><strong>Capabilities:</strong> Full TypeScript/JavaScript execution. HTTP fetch to external endpoints. Web Crypto. No filesystem. No native binaries. Packages must be bundled at deploy time.</p>
+
+<p><strong>Use for:</strong> <span class="ic">web_search</span> (Tavily API call), <span class="ic">call_api</span> (REST/GraphQL), <span class="ic">observe_browser</span> fingerprint hash computation, <span class="ic">data_transform</span>, any TypeScript computation that does not need filesystem or native binaries.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Tier 3 — npm (Dynamic Worker + Package Resolution)</h4>
+
+<p><strong>Boot time:</strong> <10ms. <strong>Cost:</strong> Same as Tier 2 plus package resolution (minimal, cached by CF).</p>
+
+<p><strong>Capabilities:</strong> Everything in Tier 2 plus ability to import npm packages not bundled at deploy time. No filesystem. No native binaries.</p>
+
+<p><strong>Use for:</strong> Agent-authored scripts that need a specific npm package (markdown parsing, PDF extraction in pure JS, CSV generation, JSON schema validation, date parsing).</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Tier 4 — Browser (CF Browser Rendering)</h4>
+
+<p><strong>Boot time:</strong> ~200ms. <strong>Cost:</strong> CF Browser Rendering billing (~$0.002 per page load at scale).</p>
+
+<p><strong>Capabilities:</strong> Full Chrome instance. DOM manipulation. JavaScript execution on pages. Screenshot capture. Form filling. Cookie management. Network request interception. CDP protocol access via proxy.</p>
+
+<p><strong>Use for:</strong> All <span class="ic">browser-use</span> prebuilt scripts. Any observe script that needs to read the DOM of a live web page. Any action script that needs to click, type, or navigate in a real browser.</p>
+
+<p><strong>Note:</strong> Agents never get direct CDP access. All browser operations go through the <span class="ic">naelao-browser</span> Worker proxy, which enforces security limits and rate controls.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Tier 5 — Container (SandboxDO / CF Containers)</h4>
+
+<p><strong>Boot time:</strong> ~2–5 seconds cold, ~0ms warm. <strong>Cost:</strong> CF Container billing (per-second CPU + memory). Containers stay warm for up to 15 minutes after last use.</p>
+
+<p><strong>Capabilities:</strong> Full Linux environment. Arbitrary binary execution. Real filesystem. Network access. npm, pip, apt. Any language. GPU access where configured. Persistent across calls within a session (warm container reused).</p>
+
+<p><strong>Use for:</strong> Running Python, executing shell scripts, compiling code, running test suites, operating on large files, any task that needs a real OS.</p>
+
+<p><strong>Multi-container support:</strong> The <span class="ic">sandbox-container</span> prebuilt script can spin up multiple containers per task. Each mounts the R2 workspace via <span class="ic">mountBucket</span>. Container lifecycle (warm, idle, eviction) is managed by the script — the agent just calls <span class="ic">container.run(cmd)</span> and gets results back.</p>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-9-environment-observation-as-a-script" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">9. Environment Observation as a Script</h3>
+
+<p>Observation is not a special tool type. It is a script like any other, stored in the library, loaded at startup, and called via <span class="ic">script.run('observe_x')</span>.</p>
+
+<p>This is important because it means:</p>
+<ul class="fl">
+<li>Different environments have different observe scripts</li>
+<li>Observe scripts can be composed (a complex environment might require running two or three observe scripts and merging the snapshots)</li>
+<li>Observe scripts can be updated when the environment changes (the same escalation ladder applies to observe scripts themselves)</li>
+<li>Users can write custom observe scripts for new environments without platform changes</li>
+</ul>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">9.1 Browser Observe Script</h4>
+
+<pre><code class="typescript">
+// observe_browser.ts — Tier 4 (browser)
+// Returns a structured snapshot of the current browser state
+
+export async function observe_browser(): Promise&lt;BrowserSnapshot&gt; {
+  const [dom, network, cookies, window_rect] = await Promise.all([
+    browser.evaluate(() =&gt; ({
+      hash: hashDom(document.body.innerHTML),
+      title: document.title,
+      url: window.location.href,
+      selectors: extractKeySelectors(document),  // inputs, buttons, forms, nav
+    })),
+    browser.getNetworkLog({ last_n: 20 }),
+    browser.getCookies(),
+    browser.getWindowRect(),
+  ]);
+
+  return {
+    type: 'browser',
+    timestamp: Date.now(),
+    url: dom.url,
+    page_title: dom.title,
+    dom_hash: dom.hash,
+    key_selectors: dom.selectors,
+    network_log_hash: hashNetworkLog(network),
+    network_status_codes: network.map(r =&gt; r.status),
+    cookie_keys: cookies.map(c =&gt; c.name),
+    window_rect,
+    fingerprint: computeFingerprint({ dom, network, window_rect }),
+  };
+}
+</code></pre>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">9.2 Filesystem Observe Script</h4>
+
+<pre><code class="typescript">
+// observe_filesystem.ts — Tier 1 (direct R2) or Tier 5 (container for native fs)
+
+export async function observe_filesystem(path: string): Promise&lt;FilesystemSnapshot&gt; {
+  const listing = await r2.list(path);
+  const mtimes = await Promise.all(listing.objects.map(async obj =&gt; ({
+    key: obj.key,
+    size: obj.size,
+    etag: obj.etag,
+    modified: obj.uploaded,
+  })));
+
+  return {
+    type: 'filesystem',
+    timestamp: Date.now(),
+    path,
+    file_count: listing.objects.length,
+    total_size: mtimes.reduce((sum, f) =&gt; sum + f.size, 0),
+    structure_hash: hashListing(mtimes),
+    recent_changes: mtimes
+      .filter(f =&gt; Date.now() - f.modified.getTime() &lt; 300_000)  // last 5 min
+      .map(f =&gt; f.key),
+    fingerprint: computeFingerprint(mtimes),
+  };
+}
+</code></pre>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">9.3 API Observe Script</h4>
+
+<pre><code class="typescript">
+// observe_api.ts — Tier 2 (isolate)
+
+export async function observe_api(
+  endpoint: string,
+  auth_header: string
+): Promise&lt;ApiSnapshot&gt; {
+  const response = await fetch(endpoint, {
+    headers: { Authorization: auth_header }
+  });
+
+  const body = await response.json();
+
+  return {
+    type: 'api',
+    timestamp: Date.now(),
+    endpoint,
+    status: response.status,
+    schema_hash: hashSchema(body),       // hash of the field structure, not values
+    field_names: extractFieldNames(body),
+    pagination_present: 'next' in body || 'cursor' in body,
+    fingerprint: computeFingerprint({
+      status: response.status,
+      schema: hashSchema(body),
+      headers: Object.fromEntries(response.headers),
+    }),
+  };
+}
+</code></pre>
+
+<p>The <span class="ic">fingerprint</span> field in each snapshot is a deterministic hash of the state properties that matter for script validity. Two snapshots from different runs of the same environment, with no relevant changes, should produce the same fingerprint. A fingerprint mismatch triggers the escalation ladder.</p>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-10-version-history-and-drift-detection" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">10. Version History and Drift Detection</h3>
+
+<p>Scripts are never overwritten in place. Every update creates a new version, preserving the full history.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">10.1 Version Storage</h4>
+
+<pre><code class="">
+spaces/{spaceId}/scripts/{name}/
+  SCRIPT.md          ← current metadata (always reflects latest version)
+  code.ts            ← current code (latest version)
+  versions/
+    v1.ts            ← original distilled version
+    v1.meta.json     ← metadata snapshot at v1
+    v2.ts            ← first patch
+    v2.meta.json     ← why this patch was made, what changed
+    v3.ts            ← second patch
+    v3.meta.json
+</code></pre>
+
+<p>Each <span class="ic">vN.meta.json</span> contains:</p>
+<pre><code class="json">
+{
+  "version": 2,
+  "created_at": 1720000000,
+  "patch_type": "minor_fix",
+  "reason": "Instagram changed login button selector from #loginButton to [data-testid='login-button']",
+  "fingerprint_before": "abc123",
+  "fingerprint_after": "def456",
+  "success_count_at_patch": 47,
+  "failure_count_at_patch": 3
+}
+</code></pre>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">10.2 Drift Detection Signals</h4>
+
+<p>The system watches for three types of drift:</p>
+
+<p><strong>Environmental drift</strong> — the environment changed, the script needs to adapt. Indicated by: sudden increase in fingerprint mismatches after a period of stability. Response: Level 2 diagnostic patch. Example: a website updated its DOM structure; an API added a new required field.</p>
+
+<p><strong>Scope creep drift</strong> — the script is being called for tasks slightly outside its original design. Indicated by: steady increase in patch count but each patch adds special-case handling. Response: split the script into two more specialized versions with tighter fingerprint schemas.</p>
+
+<p><strong>Fundamental invalidation</strong> — the approach the script used is no longer valid at all. Indicated by: Level 2 patches repeatedly fail, <span class="ic">stability_score</span> collapses, patch history shows full re-derivations cycling. Response: Level 3 full re-derivation, starting from scratch with the current environment as the baseline.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">10.3 Rollback</h4>
+
+<p>If a Level 2 patch is applied and the patched script fails immediately, automatic rollback to the prior version occurs. The failed patch attempt is recorded in <span class="ic">patch_history</span> with <span class="ic">patch_type: 'failed_patch'</span>. Two consecutive failed patches triggers immediate Level 3 escalation.</p>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-11-the-agent-configuration-surface" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">11. The Agent Configuration Surface</h3>
+
+<p>An agent in Naelao is defined entirely by four files in R2. No code changes, no platform deployments, no configuration in a database. Change the files and reload the agent.</p>
+
+<pre><code class="">
+spaces/{spaceId}/agents/{agentId}/
+  agents.md           ← identity, rules, behavioral constraints
+  system-prompt.md    ← role, domain, tone, task framing
+  scripts.json        ← which scripts are loaded at startup
+  skills.json         ← which SKILL.md files are in context
+</code></pre>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">11.1 agents.md</h4>
+
+<p>Defines what the agent is and how it behaves:</p>
+
+<pre><code class="markdown">
+# Agent Identity
+Name: Naelao Agent
+Role: General-purpose autonomous agent
+
+# Behavioral Rules
+- Always observe the environment before acting
+- Always check the script library before reasoning from scratch
+- Always attempt distillation after a successful live run
+- Never skip the fingerprint check, even if you are confident the environment is the same
+- If a script has been patched more than five times, flag it for review instead of patching again
+- Prefer calling library primitives over re-deriving their functionality
+
+# Escalation Rules
+- Level 1 if stability_score &gt; 0.7 and fingerprint matches
+- Level 2 if fingerprint mismatch is partial and patch_history.length &lt; 5
+- Level 3 if patch_history.length &gt;= 5 or repeated Level 2 failures
+- Level 4 if no script found — always attempt distillation on success
+
+# Memory
+- Current skill library: [loaded at startup from scripts.json]
+- Session working memory: [AgentDO SQLite, cleared on session end]
+- Persistent knowledge: [R2 workspace, persists across sessions]
+</code></pre>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">11.2 scripts.json</h4>
+
+<pre><code class="json">
+{
+  "prebuilt": [
+    "r2-workspace",
+    "browser-use",
+    "sandbox-container",
+    "web-search",
+    "mcp-connector",
+    "dynamic-workflow",
+    "sub-agent",
+    "file-manager",
+    "notifications",
+    "vision-delegate"
+  ],
+  "space_scripts": [
+    "login_instagram",
+    "post_instagram_update",
+    "navigate_and_wait"
+  ],
+  "agent_scripts": "auto",
+  "startup_observe": "observe_browser"
+}
+</code></pre>
+
+<p><span class="ic">"agent_scripts": "auto"</span> means load all scripts from this agent's personal library at startup. This is the default — the agent's own distilled skills are always available to it.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">11.3 skills.json</h4>
+
+<pre><code class="json">
+{
+  "skills": [
+    {
+      "name": "browser-use",
+      "tier": "platform",
+      "config": {
+        "observation_loop_interval_ms": 500,
+        "fingerprint_tolerance": 0.05,
+        "jitter": { "mouse_path": true, "timing_variance_ms": 150 }
+      }
+    },
+    {
+      "name": "web-search",
+      "tier": "platform",
+      "config": {
+        "provider": "tavily",
+        "max_results": 10
+      }
+    }
+  ]
+}
+</code></pre>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-12-prebuilt-script-and-skill-catalogue" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">12. Prebuilt Script and Skill Catalogue</h3>
+
+<p>These ship with Naelao as platform-level scripts and skills, available to all agents. Users select which ones to enable in <span class="ic">scripts.json</span>.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">12.1 Infrastructure Scripts (I-series)</h4>
+
+<p><strong><span class="ic">r2-workspace</span></strong> — Maps file operations to Tier 1 direct R2. Provides <span class="ic">read_file</span>, <span class="ic">write_file</span>, <span class="ic">list_directory</span>, <span class="ic">delete_file</span>, <span class="ic">copy_file</span>, <span class="ic">move_file</span>. Default for all agents. The observe script for this is <span class="ic">observe_filesystem</span>.</p>
+
+<p><strong><span class="ic">sandbox-container</span></strong> — Wraps SandboxDO for Tier 5 container execution. Provides <span class="ic">container.run(cmd)</span>, <span class="ic">container.start(image)</span>, <span class="ic">container.stop()</span>, <span class="ic">container.exec(cmd)</span>, <span class="ic">container.mount(bucket)</span>. Handles warm/cold lifecycle automatically. Supports multi-container per task.</p>
+
+<p><strong><span class="ic">dynamic-workflow</span></strong> — Authors and deploys CF Workflows. Provides <span class="ic">workflow.create(name, code)</span>, <span class="ic">workflow.run(name, params)</span>, <span class="ic">workflow.schedule(name, cron)</span>, <span class="ic">workflow.status(id)</span>. Used for recurring tasks that should run without AgentDO being awake.</p>
+
+<p><strong><span class="ic">sub-agent</span></strong> — Spawns and coordinates sub-agents via AgentDO. Provides <span class="ic">agent.spawn(config)</span>, <span class="ic">agent.send(id, task)</span>, <span class="ic">agent.receive(id)</span>, <span class="ic">agent.terminate(id)</span>. Enables parallel task execution across multiple agent instances.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">12.2 Browser Scripts (B-series)</h4>
+
+<p><strong><span class="ic">browser-use</span></strong> — Full browser automation using CF Browser Rendering (Tier 4). Provides: <span class="ic">observe_browser</span>, <span class="ic">navigate_and_wait</span>, <span class="ic">click</span>, <span class="ic">fill</span>, <span class="ic">screenshot</span>, <span class="ic">get_session_cookies</span>, <span class="ic">intercept_network</span>, <span class="ic">eval_in_page</span>. Includes the observation loop that compares fingerprints and gates script execution. This is the prebuilt that operationalizes the browser automation architecture described in the original design session.</p>
+
+<p><strong><span class="ic">vision-delegate</span></strong> — Routes image content to a cheap vision model (Haiku or equivalent) for content-dependent decisions (image matching, content classification, visual quality checks). The agent does not need to use its own vision capacity; it builds a harness and delegates. Provides <span class="ic">vision.classify(image_url, criteria)</span>, <span class="ic">vision.describe(image_url)</span>, <span class="ic">vision.match(image_url, reference)</span>.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">12.3 Data and Compute Scripts (D-series)</h4>
+
+<p><strong><span class="ic">web-search</span></strong> — Tavily API integration (Tier 2 isolate). Provides <span class="ic">search(query, options)</span>, <span class="ic">fetch_page(url)</span>, <span class="ic">extract_content(url, schema)</span>.</p>
+
+<p><strong><span class="ic">code-exec</span></strong> — Language-aware code execution router. Python and bash go to Tier 5 (container); TypeScript goes to Tier 2 or 3 (isolate). Provides <span class="ic">exec.python(code, deps?)</span>, <span class="ic">exec.bash(script)</span>, <span class="ic">exec.typescript(code)</span>, <span class="ic">exec.run_file(path, lang)</span>.</p>
+
+<p><strong><span class="ic">knowledge-base</span></strong> — Vectorize RAG integration. Provides <span class="ic">knowledge.search(query, namespace?)</span>, <span class="ic">knowledge.index(text, metadata)</span>, <span class="ic">knowledge.delete(id)</span>. Used for long-term semantic memory that persists across sessions.</p>
+
+<p><strong><span class="ic">file-manager</span></strong> — Advanced file operations with append locking, diff tracking, and format awareness. Extends <span class="ic">r2-workspace</span> with <span class="ic">file.patch(path, diff)</span>, <span class="ic">file.lock(path)</span>, <span class="ic">file.unlock(path)</span>, <span class="ic">file.diff(path_a, path_b)</span>, <span class="ic">file.history(path)</span>.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">12.4 Communication Scripts (C-series)</h4>
+
+<p><strong><span class="ic">notifications</span></strong> — Multi-channel notification dispatch. Provides <span class="ic">notify.apns(device_token, payload)</span>, <span class="ic">notify.fcm(token, payload)</span>, <span class="ic">notify.slack(channel, message)</span>, <span class="ic">notify.discord(channel, message)</span>, <span class="ic">notify.email(to, subject, body)</span>.</p>
+
+<p><strong><span class="ic">mcp-connector</span></strong> — Registers and calls MCP servers in the session. Provides <span class="ic">mcp.register(server_url, auth)</span>, <span class="ic">mcp.call(server, tool, params)</span>, <span class="ic">mcp.list_tools(server)</span>. After calling <span class="ic">mcp.register</span>, the MCP server's tools become available as callable scripts for the rest of the session.</p>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-13-agent-profiles-composing-configurations" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">13. Agent Profiles — Composing Configurations</h3>
+
+<p>A profile is a pre-packaged combination of scripts, skills, system prompt, and agents.md that produces a specific type of agent. Users select a profile when creating an agent, then customize from there.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Profile: Default Naelao Agent</h4>
+
+<p>The baseline. A capable general-purpose agent, equivalent to a Claude-style coding and research assistant.</p>
+
+<pre><code class="json">
+{
+  "scripts": ["r2-workspace", "web-search", "file-manager", "sub-agent", 
+               "dynamic-workflow", "code-exec", "notifications"],
+  "startup_observe": "observe_filesystem",
+  "execution_ladder": "full",
+  "system_prompt": "naelao-default.md"
+}
+</code></pre>
+
+<p>This agent can: read and write files, search the web, execute code, author workflows that run on a schedule, spawn sub-agents for parallel work, and send notifications. The R2 workspace is the primary persistent environment. The execution ladder routes each script to the appropriate tier automatically.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Profile: Code Agent (Claude Code / Codex equivalent)</h4>
+
+<p>A specialized software engineering agent. Full container access, git integration, test running, multi-file editing with locking.</p>
+
+<pre><code class="json">
+{
+  "scripts": ["r2-workspace", "sandbox-container", "code-exec", "file-manager",
+               "web-search", "sub-agent", "notifications"],
+  "extra_scripts": ["github-skill", "git-skill", "test-runner-skill"],
+  "startup_observe": "observe_filesystem",
+  "startup_container": true,
+  "system_prompt": "code-agent.md",
+  "agents_md": "code-agent-rules.md"
+}
+</code></pre>
+
+<p>The <span class="ic">startup_container: true</span> flag means a warm container is pre-booted when the session starts, eliminating cold start latency on the first <span class="ic">container.run</span> call. The <span class="ic">github-skill</span> and <span class="ic">git-skill</span> are space-level or agent-level scripts the user brings in for their specific repositories.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Profile: Browser Agent</h4>
+
+<p>An automation agent for web tasks. Observation loop runs continuously. Vision delegation available for content-dependent decisions.</p>
+
+<pre><code class="json">
+{
+  "scripts": ["browser-use", "vision-delegate", "r2-workspace", 
+               "web-search", "notifications", "dynamic-workflow"],
+  "startup_observe": "observe_browser",
+  "observation_interval_ms": 500,
+  "fingerprint_tolerance": 0.05,
+  "system_prompt": "browser-agent.md"
+}
+</code></pre>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Profile: Vertical Niche Agent</h4>
+
+<p>A domain-specialized agent for a specific industry or workflow. The platform layer is minimal; the specialization lives entirely in the system prompt, agents.md, and domain-specific SKILL.md files.</p>
+
+<pre><code class="json">
+{
+  "scripts": ["r2-workspace", "web-search", "knowledge-base", "notifications"],
+  "startup_observe": "observe_filesystem",
+  "system_prompt": "legal-research-agent.md",
+  "agents_md": "legal-research-rules.md",
+  "skills": ["legal-research-skill", "case-citation-skill", "document-review-skill"]
+}
+</code></pre>
+
+<p>The <span class="ic">skills</span> array loads SKILL.md files into the agent's context. These are not scripts — they are knowledge documents that tell the agent what it knows and how to apply it. A <span class="ic">legal-research-skill</span> SKILL.md might contain: what legal databases the agent has access to, how to format citations, how to structure a research memo, what to do when a case citation is ambiguous.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Profile: Cowork Desktop Agent</h4>
+
+<p>A file-management and desktop automation agent, equivalent to Claude Cowork.</p>
+
+<pre><code class="json">
+{
+  "scripts": ["r2-workspace", "sandbox-container", "file-manager", "browser-use",
+               "code-exec", "notifications", "dynamic-workflow"],
+  "startup_observe": "observe_filesystem",
+  "container_image": "ubuntu-desktop",
+  "system_prompt": "cowork-agent.md"
+}
+</code></pre>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Profile: Community / Marketplace Agent</h4>
+
+<p>A lightweight agent configured to use Naelao Apps from the MCP marketplace. The agent's capabilities are primarily defined by which MCP servers are registered.</p>
+
+<pre><code class="json">
+{
+  "scripts": ["r2-workspace", "mcp-connector", "web-search", "notifications"],
+  "startup_observe": "observe_filesystem",
+  "mcp_servers": ["github-app", "linear-app", "slack-app", "figma-app"],
+  "system_prompt": "marketplace-agent.md"
+}
+</code></pre>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-14-mcp-integration-without-hardcoded-tools" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">14. MCP Integration Without Hardcoded Tools</h3>
+
+<p>MCP is not a hardcoded tool in the agent. It is the <span class="ic">mcp-connector</span> prebuilt script.</p>
+
+<p>When the agent needs to use an MCP server (either a Naelao App or an external MCP endpoint), it runs:</p>
+
+<pre><code class="typescript">
+await script.run('mcp.register', {
+  server_url: 'https://mcp.github-app.naelao.com',
+  auth: { type: 'bearer', token: env.GITHUB_TOKEN }
+});
+</code></pre>
+
+<p>From this point in the session, the GitHub MCP server's tools are available as callable scripts:</p>
+
+<pre><code class="typescript">
+await script.run('mcp.call', {
+  server: 'github-app',
+  tool: 'list_pull_requests',
+  params: { repo: 'myorg/myrepo', state: 'open' }
+});
+</code></pre>
+
+<p>The agent can discover what tools are available on a registered MCP server:</p>
+
+<pre><code class="typescript">
+const tools = await script.run('mcp.list_tools', { server: 'github-app' });
+// Returns: ['list_pull_requests', 'create_issue', 'merge_pr', ...]
+</code></pre>
+
+<p><strong>Why this is better than hardcoded MCP support:</strong></p>
+
+<p>The agent can dynamically decide which MCP servers to register based on the task. A research task might register <span class="ic">web-search-app</span> and <span class="ic">knowledge-base-app</span>. A code review task might register <span class="ic">github-app</span> and <span class="ic">linear-app</span>. The agent is not born with a fixed set of integrations — it assembles what it needs for the current task, and if none of the prebuilt MCP apps covers what it needs, it can write a custom <span class="ic">mcp-connector</span> script that calls any external MCP endpoint.</p>
+
+<p><strong>The MCP economy connection:</strong></p>
+
+<p>Naelao Apps are MCP servers with a UI layer. Every App in the Naelao marketplace becomes instantly available to any agent via <span class="ic">mcp-connector</span> — without any platform code changes. An agent that knows about <span class="ic">mcp.register</span> and <span class="ic">mcp.call</span> can use every App ever published to the marketplace, because they all implement the same MCP protocol. The marketplace grows, and every agent automatically gets access to the new capabilities.</p>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-15-the-default-naelao-agent" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">15. The Default Naelao Agent</h3>
+
+<p>The default configuration shipped to every new Naelao space is the Default Naelao Agent profile (Section 13). It operationalizes the full system described in this document on Cloudflare's infrastructure:</p>
+
+<ul class="fl">
+<li><strong>AgentDO</strong> as the agent brain — SQLite for session state, <span class="ic">runFiber()</span> for durable session continuity across CF edge nodes</li>
+<li><strong>R2 workspace</strong> as the persistent file system — project files, workspace scripts, distilled skill library, version history, observe baselines</li>
+<li><strong>Execution ladder</strong> routing all <span class="ic">script.run</span> calls to the appropriate tier — Tier 1 for direct R2 reads, Tier 2 for isolate scripts, Tier 3 for npm scripts, Tier 4 for browser operations, Tier 5 for container tasks</li>
+<li><strong>SpaceDO SQLite</strong> for space-level metadata — which scripts are installed, script registry index, cross-agent shared state</li>
+<li><strong>Vectorize</strong> for <span class="ic">script.find</span> semantic search — all script descriptions embedded at <span class="ic">script.create</span> time, searched at <span class="ic">script.find</span> time with fingerprint filtering</li>
+<li><strong>CF Workflows</strong> for Level 1 and Level 2 escalation runs — the workflow runner handles fingerprint checks and diagnostic patches without waking AgentDO</li>
+<li><strong>naelao-sweeper</strong> as the event source for Level 3 escalation — sweeper detects repeated patch failures or stability score drops and emits events that wake AgentDO for full re-derivation</li>
+</ul>
+
+<p>The result is an agent that, for the majority of its work, burns no reasoning tokens. The execution cost per task trends downward as the skill library matures. The reasoning model is reserved for what it is actually needed for: encountering genuinely new situations, handling environmental drift, and distilling successful live runs into reusable skills.</p>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<h3 id="sfa-16-implementation-notes" style="font-family:'Fraunces',serif;font-size:26px;font-weight:600;color:var(--hd);letter-spacing:-.02em;margin:56px 0 14px;padding-top:8px;border-top:1px solid var(--brd);">16. Implementation Notes</h3>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Fingerprint Computation</h4>
+
+<p>The fingerprint function must be:</p>
+<ul class="fl">
+<li><strong>Deterministic</strong> — same environment state always produces same hash</li>
+<li><strong>Stable under irrelevant change</strong> — a page that changed its analytics tracking script but not its functional structure should produce the same fingerprint for a browser automation script that doesn't interact with analytics</li>
+<li><strong>Sensitive to relevant change</strong> — a page that changed its login form structure should produce a different fingerprint for a login script</li>
+</ul>
+
+<p>This means the fingerprint should not hash raw HTML (too sensitive to minor changes) but also should not be too coarse (misses real structural changes). The right approach: extract key structural elements (form field selectors, button selectors, URL pattern, primary navigation items) and hash those, rather than the full DOM.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Embedding for script.find</h4>
+
+<p>Script descriptions should be embedded at create time using the same model used at search time. Using a fast, cheap embedding model (e.g. <span class="ic">text-embedding-3-small</span> or equivalent) is appropriate — these are short descriptions, and exact semantic precision is less important than consistency.</p>
+
+<p>The <span class="ic">script.find</span> implementation:</p>
+<ol style="margin:12px 0 12px 22px;color:var(--dim);font-size:13.5px;line-height:1.7;">
+<li>Embed the natural-language query</li>
+<li>ANN search against all script embedding vectors (CF Vectorize, top-K = 10)</li>
+<li>Filter results by <span class="ic">fingerprint_schema</span> compatibility with current environment state</li>
+<li>Filter by <span class="ic">domain</span> if specified</li>
+<li>Sort by <span class="ic">stability_score × semantic_similarity</span></li>
+<li>Return top 3 candidates with confidence scores</li>
+</ol>
+
+<p>If confidence for the top candidate is below 0.5, treat as "no match" and escalate to Level 4.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">Jitter and Environmental Robustness</h4>
+
+<p>Timing variance and mouse path randomization should be implemented in all browser-use scripts as a robustness measure, not an evasion measure. Real environments have noise — network latency varies, rendering is not pixel-perfect, page load times fluctuate. Scripts that assume perfectly deterministic timing will fail in production. The tolerance band in the fingerprint check (default: 0.05 = 5%) handles the same class of problem at the environment observation level.</p>
+
+<p>The architectural principle: build for robustness in real, noisy environments. The observation loop, fingerprint tolerance, escalation ladder, and jitter are all robustness mechanisms. They are not adversarial mechanisms, and the system does not make any guarantees about circumventing platform controls or ToS.</p>
+
+<h4 style="font-family:'Fraunces',serif;font-size:19px;font-weight:600;color:var(--hd);margin:36px 0 10px;">The Compile Step as a Scheduled Task</h4>
+
+<p>The DISTILL step should not block the session from closing. After a successful live run, <span class="ic">script.create</span> is called to save a draft version of the distilled skill. A background CF Workflow then runs the full compile prompt (model call) and updates the draft to a published version with complete metadata. This means the session ends promptly and the compile step happens asynchronously. The agent can start using the new skill on the next run after the workflow completes.</p>
+
+<hr style="border:none;border-top:1px solid var(--brd);margin:40px 0;">
+
+<p>*This document covers the complete architecture as of the current design session. Implementation follows Naelao's 12-phase build plan (Section 21 of the main document). The skill library, escalation ladder, and compile step are Phase 4 deliverables, following the core AgentDO and execution ladder work in Phases 1–3.*</p>
+
+</section>
+
 </body>
 </html>
