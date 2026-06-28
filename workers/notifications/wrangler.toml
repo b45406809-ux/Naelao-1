@@ -1,0 +1,27 @@
+name = "naelao-notifications"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[queues.consumers]]
+queue = "naelao-notifications-queue"
+max_batch_size = 100
+max_batch_timeout = 10
+max_retries = 3
+max_concurrency = 50
+dead_letter_queue = "naelao-notifications-dlq"
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "PLACEHOLDER_D1_ID"
+
+[vars]
+ENVIRONMENT = "development"
+RESEND_API_URL = "https://api.resend.com"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging", RESEND_API_URL = "https://api.resend.com" }
+
+[env.production]
+vars = { ENVIRONMENT = "production", RESEND_API_URL = "https://api.resend.com" }

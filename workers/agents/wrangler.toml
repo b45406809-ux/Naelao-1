@@ -1,0 +1,114 @@
+name = "naelao-agents"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[durable_objects.bindings]]
+name = "NAELAO_AGENT_DO"
+class_name = "NaelaoAgentDO"
+
+[[durable_objects.bindings]]
+name = "HITL_APPROVAL_DO"
+class_name = "HITLApprovalDO"
+
+[[durable_objects.bindings]]
+name = "TASK_DO"
+class_name = "TaskDO"
+
+[[durable_objects.bindings]]
+name = "PRODUCT_DO"
+class_name = "ProductDO"
+
+[[durable_objects.bindings]]
+name = "BUSINESS_DO"
+class_name = "BusinessDO"
+
+[[durable_objects.bindings]]
+name = "TOOL_SANDBOX"
+class_name = "ToolSandboxDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["NaelaoAgentDO"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["HITLApprovalDO"]
+
+[[migrations]]
+tag = "v3"
+new_classes = ["TaskDO"]
+
+[[migrations]]
+tag = "v4"
+new_classes = ["ProductDO", "BusinessDO"]
+
+[[migrations]]
+tag = "v5"
+new_classes = ["ToolSandboxDO"]
+
+[[r2_buckets]]
+binding = "BUSINESS_R2"
+bucket_name = "naelao-business-scripts"
+
+# Tier-5 micro-tool build/test compute (WG-01). A Cloudflare Container attached to
+# ToolSandboxDO — the agent spins it up on demand to build + test the micro-tool's
+# code (Node, and Python for scripts that need it), and it sleeps when idle.
+[[containers]]
+class_name = "ToolSandboxDO"
+image = "./Dockerfile.toolsandbox"
+max_instances = 5
+# instance_type = "basic"   # bump for heavier build/test workloads
+
+[[workflows]]
+name = "AgentTaskWorkflow"
+class_name = "AgentTaskWorkflow"
+binding = "AGENT_TASK_WORKFLOW"
+
+[[kv_namespaces]]
+binding = "AGENT_CACHE"
+id = "REPLACE_WITH_KV_ID"
+
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_agent_events"
+
+[triggers]
+crons = ["0 2 * * *"]
+
+[[services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+[[services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+[[services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+[vars]
+ENVIRONMENT = "development"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
+
+[[env.staging.services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+[[env.staging.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+[[env.production.services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+[[env.production.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"

@@ -1,0 +1,23 @@
+{
+  "name": "naelao",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.12.0",
+  "engines": { "node": ">=20", "pnpm": ">=9" },
+  "scripts": {
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "biome check .",
+    "typecheck": "turbo run typecheck",
+    "dev": "bash infra/scripts/start-dev.sh"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "1.9.4",
+    "turbo": "^2.3.0",
+    "typescript": "^5.6.3",
+    "@cloudflare/workers-types": "^4.20241205.0",
+    "wrangler": "^3.91.0",
+    "vitest": "^2.1.8",
+    "@cloudflare/vitest-pool-workers": "^0.5.33"
+  }
+}

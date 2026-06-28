@@ -1,0 +1,4 @@
+
+> @naelao/mcp-hub-worker@0.1.0 typecheck /home/user/Naelao-1/workers/mcp-hub
+> tsc --noEmit
+

@@ -1,0 +1,22 @@
+name = "naelao-synthetics"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[triggers]]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "PLACEHOLDER_D1_ID"
+
+[vars]
+ENVIRONMENT = "development"
+PLATFORM_API_URL = "https://api.naelao.com"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging", PLATFORM_API_URL = "https://api.staging.naelao.com" }
+
+[env.production]
+vars = { ENVIRONMENT = "production", PLATFORM_API_URL = "https://api.naelao.com" }

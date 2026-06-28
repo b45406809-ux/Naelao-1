@@ -1,0 +1,2720 @@
+# Original Spec — Header Index (auto-generated)
+
+Source: naelao_expanded_gaps_resolved.html · 2714 headers.
+Regenerate: `python3 infra/gen-spec-index.py`.
+Read THIS file instead of grepping the 68k-line spec. Numbers are byte offsets.
+
+- [26246] Naelao
+  - [37146] Naelao — Not Suna
+    - [37644] What Changes — The Complete Rename Checklist
+    - [42881] Automated Rename Script
+  - [44648] What Naelao Is Built From
+    - [45127] The Core Architecture Philosophy
+    - [46070] Complete Suna → Naelao Technology Map
+    - [50078] What Is Entirely New in Naelao (Not in Suna Kortix)
+    - [52085] Monorepo Structure Overview
+  - [56153] Complete System Architecture — All 22 Workers
+    - [56565] Full Architecture Diagram
+    - [60559] Worker Catalogue — Full Spec
+  - [73631] NaelaoAgentDO — The Agent Brain
+    - [74085] Why a Durable Object Is the Agent Brain
+    - [75326] DO Identity and Naming
+    - [76267] Complete DO SQLite Schema
+    - [81447] The Full Agent Run() Method
+    - [88288] WebSocket Hibernation — How Streaming Works
+    - [90883] The WAL (Write-Ahead Log) — Crash Recovery
+    - [93060] Cost Comparison — Why This Architecture Matters
+  - [94865] AgentPress — Complete TypeScript Port
+    - [96144] File-by-File Port Guide
+  - [116010] Space Assistants — Full OpenClaw Architecture, CF-Native
+    - [116730] What OpenClaw Architecture Naelao Clones
+    - [118786] AssistantDO — SQLite Schema
+    - [123555] The Heartbeat — Replacing OpenClaw's Continuous Loop
+    - [126750] cron-jobs.json — The Task Schedule
+    - [128903] Self-Modification — How the Assistant Updates Its Own Skills
+    - [133307] Sub-Agent Spawning
+    - [136172] Channel Integrations
+    - [139898] Assistant Configuration Spec
+  - [141822] Space Assistants — OpenClaw + CF Thinker + Memory OS
+    - [142586] Architecture Overview: The Four Pillars
+    - [144347] The 6-Layer Memory OS Pipeline
+    - [147140] Memory OS SQLite Schema (AssistantDO)
+    - [148534] Code: Surgical Recall Pre-Flight Check
+    - [151002] Proactive Heartbeat Loop (OpenClaw-Native)
+    - [152729] What a Space Assistant CAN and CANNOT Do
+  - [154511] Workers — Virtual Workforce Protocol
+    - [155126] The Two-Layer Model: Definition vs Instance
+    - [156802] WorkerDefinitionDO — Complete Schema and Implementation
+    - [163700] WorkerInstanceDO — The Live Company Deployment
+    - [171416] WalletDO — The Economic Engine
+    - [176434] Worker Taxonomy: Copilot, Autopilot, Pilot
+  - [177892] Naelao OS — The Foundation That Makes All Space Types Possible
+    - [179053] What All Space Types Have in Common
+    - [182825] The Space Type Manifest
+    - [187959] How a New Space Type Is Created at Runtime
+  - [191990] Naelao Apps — MCP-Native App Economy
+    - [192346] What Is a Naelao App?
+    - [193374] The Dynamic UI Problem — And the Solution
+    - [196950] Where Does the App UI Live? — CF Pages vs Dynamic Workers
+    - [198460] Building a Naelao App — Step by Step
+    - [200067] App Manifest Specification
+  - [202383] Mini-AGI — Company-Level Intelligence Layer
+    - [203743] Mini-AGI Architecture
+    - [205199] MiniAGIDO — Complete Schema
+    - [212459] Installing a Mini-AGI in a Company Space
+    - [214723] Mini-AGI vs Space Assistant — Key Differences
+  - [216492] Spaces, Sub-Spaces & 6-Layer Tenant Isolation
+    - [216942] The 6 Isolation Layers — Implemented in Full Detail
+    - [234200] Next.js Middleware — URL Rewriting (Zero Page Changes)
+    - [236848] getProductDB() — Resolving the Per-Product SpaceDO
+  - [238888] Launchpad — AI-Run Digital Business
+    - [239327] Launchpad Templates
+    - [241010] Launchpad Core Agents
+    - [242567] Launchpad Autopilot Mode — How It Actually Works
+    - [244724] Human-in-the-Loop Checkpoints
+  - [247732] Verticals Space Type + Bootstrap Mode Flywheel
+    - [248236] Vertical Industries Supported
+    - [249274] Bootstrap Mode — The Schmidt Flywheel
+    - [250783] Stage 1 — Expert Annotator System
+    - [254107] Stage 2 — AutoResearch Agent Fine-Tuning
+    - [258025] Stage 3 — Autopilot Activation
+  - [259252] Sites — AI-Managed Web Publishing (EmDash)
+    - [259704] Sites Architecture — How It Differs from Standard Spaces
+    - [261156] EmDash CMS — MCP-Native Content Management
+    - [263722] x402 AI Crawler Monetization
+  - [266514] Enterprise — Agentic Company OS
+    - [266956] Enterprise-Exclusive Features
+    - [268432] Enterprise Sub-Space URL Structure
+    - [269412] Agentic Wallet Flow — Complete Implementation
+  - [272213] AI Gateway, Together AI & LoRA Fine-Tuning
+    - [272683] AI Gateway — The Full Implementation
+    - [277815] AI Gateway Feature Configuration
+    - [280040] Together AI Integration — Complete Setup
+    - [283195] LoRA Fine-Tuning — End-to-End Flow
+    - [287941] Model Selector UI Integration
+  - [290589] Skills — OpenClaw-Style, Cloudflare-Powered
+    - [291110] The Skill Folder Structure — Every File Explained
+    - [292304] SKILL.md — Complete Format With All Fields
+    - [296105] Skill Loading at Agent Startup — Complete Implementation
+    - [300812] The 27-Pattern Security Scanner
+    - [306661] Platform Skills — The 13 Built-in Skills
+  - [311267] Dynamic Workflows + runFiber() — Durable Execution
+    - [313566] naelao-workflows Worker Loader — Complete Implementation
+    - [319401] wrangler.jsonc — Dynamic Workflow Binding
+    - [320238] Example Agent-Authored Workflow
+  - [322905] Artifacts — Dynamic Worker Loader (Claude-Style)
+    - [323333] Why Dynamic Workers Instead of Containers for Artifacts
+    - [324604] spin_artifact() — Complete Implementation
+    - [331233] Artifact Types — What Can and Cannot Be an Artifact
+  - [333426] Security Architecture — 8 Layers, Every CVE Fixed
+    - [333975] CVE-2026-25253 — 1-Click RCE via WebSocket Hijacking (CVSS 8.8)
+    - [338394] CVE-2026-24763 — Command Injection via Skill Names
+    - [340995] CVE-2026-26322 — SSRF via Agent HTTP Requests
+    - [345342] CVE-2026-26329 — Path Traversal in File Operations
+    - [348111] ClawHavoc — Supply Chain Attack Prevention
+    - [351109] Memory Poisoning Prevention (SOUL.md Attack)
+    - [355531] 8-Layer Security Stack — Complete Reference
+  - [358907] Complete Testing Specification — 700+ Tests in workerd
+    - [360086] Test Infrastructure Setup
+    - [362871] Suite 01 — Authentication Worker (32 tests)
+    - [364675] Suite 02 — NaelaoAgentDO (58 tests)
+    - [368121] Suite 03 — AgentPress TypeScript Port (44 tests)
+    - [370546] Suite 04 — Space Isolation (48 tests)
+    - [372581] Suite 05 — AssistantDO (42 tests)
+    - [375022] Suite 06 — WalletDO (28 tests)
+    - [376446] Suite 07 — Security Tests (56 tests)
+    - [379499] Suite 08 — Dynamic Workflows (26 tests)
+    - [380876] Suite 09 — Execution Ladder (18 tests)
+    - [382012] Suite 10 — Artifacts (22 tests)
+    - [383262] Suite 11 — Skills (34 tests)
+    - [384795] Suite 12 — Mini-AGI (24 tests)
+    - [386205] Suite 13 — Workers Space Type (32 tests)
+    - [387704] Suite 14 — Chaos + Load Tests (22 tests)
+  - [389450] 12-Phase Build Plan — Complete Implementation Sequence
+  - [403838] Complete Schema, R2 Path Layout & wrangler.jsonc
+    - [403929] Complete SpaceDO Schema — Base Platform Tables
+    - [410795] Complete R2 Directory Layout
+    - [414464] Complete wrangler.jsonc
+    - [420374] Environment Variables (CF Secrets)
+    - [422261] Common Implementation Errors — The Junior Developer Error Handbook
+  - [428917] Developer Space — The Builder's Environment
+    - [429451] Who Developer Space Is For
+    - [430260] What Developer Space Adds on Top of Standard Space
+    - [432076] The Developer Space Manifest
+    - [433945] Code Agent — Agentic Coding System Prompt
+    - [436552] How a Developer Builds a New Space Type
+  - [439362] ProjectDO — Real-Time Multi-User Collaboration
+    - [439833] ProjectDO — Complete SQLite Schema
+    - [450323] How File Versioning Works in R2
+  - [452480] Complete User Journeys — From Sign-Up to Production
+    - [452843] Journey 1A — Builder Onboards and Ships Their First Product
+    - [455402] Journey 1B — End User Joins a Builder's Product
+    - [458226] Journey 2 — Space Admin Sets Up a Launchpad Business
+    - [460198] Journey 3 — Developer Builds and Publishes a Naelao App
+    - [462183] Journey 4 — Enterprise Sets Up Mini-AGI
+  - [464684] Naelao Apps Economy — Where Is It Headed?
+    - [465063] The Three Models of App Value
+    - [467141] The Answer: All Three Models Coexist, Each for Different Apps
+    - [467984] Dynamic UI — The Right Architecture
+    - [469833] The Dynamic Pages Question
+  - [472162] Execution Ladder — All 5 Tiers, Complete Implementation
+    - [473121] Tier 1 — Workspace (Direct R2 Operations)
+    - [476015] Tier 2 — Isolate (V8 Dynamic Worker)
+    - [479105] Tier 3 — NPM (Isolate + Runtime Package Resolution)
+    - [480523] Tier 4 — Browser (CF Browser Rendering via CDP)
+    - [484229] Tier 5 — Sandbox (CF Container, Full Linux)
+    - [491726] Execution Ladder Routing in Orchestrator
+  - [494233] naelao-threads — Complete Implementation Reference
+    - [494693] Complete Thread Worker Implementation
+    - [501735] Why Cursor Pagination (Not Offset) for Chat History
+  - [503144] file-manager — The Agent's Primary File Interface
+    - [503563] file-manager SKILL.md
+    - [505506] Complete file-manager Tool Implementations
+  - [512659] WalletDO — Every Agent's Economic Engine
+    - [513163] Complete WalletDO Policy System
+    - [518610] x402 Inter-Space Payments
+    - [521423] Testing WalletDO — The Right Way
+  - [526237] naelao-threads — Thread & Message Management
+    - [526739] What naelao-threads Does
+    - [527813] Complete Endpoint Specification
+    - [530669] Complete Implementation
+    - [539035] Common Errors in naelao-threads
+  - [540545] ConcurrencyDO — Rate Limiting & Run Gating
+    - [541009] Complete ConcurrencyDO Implementation
+  - [546045] file-manager Skill — Complete Specification
+    - [546442] Complete SKILL.md
+    - [548607] Tool Implementation (naelao-mcp-hub routes file-manager tools to this)
+    - [555426] Test Suite for file-manager Skill (Suite 16 — 22 tests)
+  - [557976] Pricing Tiers, Billing Architecture & Credit System
+    - [558376] Pricing Tiers
+    - [559906] Credit System — What Gets Charged
+    - [561720] naelao-billing Worker — Complete Credit Deduction Flow
+  - [566392] naelao-knowledge — Knowledge Base & Semantic Search
+    - [566902] How Knowledge Injection Works
+    - [568060] Complete Implementation
+    - [573446] Using Knowledge in Agent Context
+  - [576410] naelao-credentials — Encrypted Secret Management
+    - [577502] Complete Implementation
+  - [584983] SandboxDO — On-Demand Container Management
+    - [585386] Critical Design Decisions
+    - [586777] Complete SandboxDO Implementation
+  - [594317] Container System — On-Demand Runtimes, Marketplace & Local Machines
+    - [595774] Container Types
+    - [597326] Multi-Container Project Architecture
+    - [600593] ProjectContainerDO — Generic Marketplace Container Lifecycle
+    - [603825] Container Marketplace
+    - [608552] Local PC as a Container Target
+    - [615635] Agent Tool Manifest — Multi-Container Awareness
+    - [618532] Updated Execution Ladder — Tier 5 Expansion
+    - [620904] UI Surface — Container Manager
+    - [622582] Billing & Metering — Per-Container Slots
+  - [624087] Complete Workspace Setup — From Zero to First Worker
+    - [624502] Prerequisites
+    - [624893] Step 1 — Fork and Clone
+    - [625591] Step 2 — Cloudflare Resources
+    - [626607] Step 3 — SpaceDO Configuration
+    - [627401] Step 4 — Local Development Variables
+    - [628478] Step 5 — Run Tests
+    - [629053] Step 6 — Start Local Development Server
+    - [630022] Common Setup Errors and Fixes
+  - [633283] Architecture Principles — The Rules That Never Break
+  - [638041] naelao-sweeper — The Heartbeat & Cleanup Cron
+    - [638530] Why a Cron Worker Instead of DO Alarms for Heartbeats
+    - [639258] Complete Implementation
+  - [648651] Building Your First Naelao App — A Complete Tutorial
+    - [649132] Step 1 — Create the App Directory
+    - [649353] Step 2 — Write the MCP Server (index.ts)
+    - [654451] Step 3 — Write the App Manifest (naelao-app.json)
+    - [655503] Step 4 — Write instructions.md for the Dynamic UI
+    - [656757] Step 5 — wrangler.jsonc for the App
+    - [657044] Step 6 — Deploy and Publish
+    - [657825] Step 7 — How an Agent Uses the App
+  - [658975] Complete Test Suite Runner & CI Configuration
+    - [659344] Complete vitest.config.ts
+    - [662633] Test Helper Utilities
+    - [666096] Example Complete Test File
+    - [671070] GitHub Actions CI Pipeline
+  - [673461] Platform Skills — How to Write Every SKILL.md
+    - [673879] web-search Skill — Complete Implementation
+    - [676541] code-exec Skill — Complete Implementation
+    - [679451] How to SHA-256 Sign a Platform Skill
+  - [681340] The 5-Tier Execution Ladder — Complete Specification
+    - [681838] The 5 Tiers — Complete Specification
+    - [691795] Execution Ladder Router — Complete Implementation
+  - [697270] System Prompt Architecture for Naelao Agents
+    - [697665] The Base System Prompt (Suna Kortix Port)
+    - [702142] Prompt Construction Order (Critical for Cache Efficiency)
+    - [704900] Assistant System Prompt (Space Assistant — OpenClaw-style)
+  - [707777] @naelao/agent-sdk — Complete API Reference
+    - [708155] NaelaoAgent Base Class
+    - [714013] Building a Custom Agent — Minimal Example
+  - [716728] Infrastructure Cost Model — Naelao vs Suna Kortix
+    - [717047] Cost Per Component at Scale
+    - [719423] Estimated Monthly Cost — 100 Active Spaces
+  - [721709] Mini-AGI — From Jack Dorsey's Vision to Running Code
+    - [722248] The Mini-AGI Mental Model
+    - [723841] MiniAGIDO — The Complete Data Domain Model
+    - [726410] Cross-Domain Query Handling — The Full Implementation
+    - [733262] Mini-AGI Data Ingestion Pipeline
+  - [735847] Space Isolation — Complete Test Implementation
+    - [736267] Complete Test File — tests/suites/04-isolation.test.ts
+  - [747062] Agent Definition JSON — Complete Specification
+    - [747427] Complete Agent Definition Schema
+    - [752383] SpaceDO Table: agent_definitions
+  - [755426] Pre-Launch Checklist — Everything That Must Be True Before Production
+    - [755794] Security Checklist
+    - [759505] Operational Checklist
+  - [763436] Workers Space — How to Create and Publish a Worker
+    - [763840] Step 1 — Create a Workers Space
+    - [764366] Step 2 — Design the Worker Definition
+    - [766107] Step 3 — Write the Worker System Prompt
+    - [767831] Step 4 — Publish to Marketplace
+    - [768693] Step 5 — Monitor Deployments and Earnings
+  - [769734] NaelaoAgentDO — Every Endpoint Documented
+    - [770134] Endpoint Reference
+    - [774333] WebSocket Events — Client to DO
+    - [775433] WebSocket Events — DO to Client
+  - [777528] What Naelao Is NOT — Preventing Architecture Drift
+    - [781089] Architectural Drift Detection — Code Review Checklist
+  - [782396] Naelao Glossary — Every Term Defined
+  - [795127] naelao-mcp-hub — MCP Tool Proxy & Registry
+    - [795605] What naelao-mcp-hub Does
+    - [796671] Complete Implementation
+    - [804238] Platform Tool Dispatch — executePlatformTool()
+  - [807084] Advanced Agent SDK Patterns — What Every Developer Must Know
+    - [807543] Pattern 1 — Multi-Turn Context Management
+    - [809977] Pattern 2 — Structured Output Extraction
+    - [812642] Pattern 3 — Sub-Agent Coordination
+    - [816389] Pattern 4 — Graceful Degradation
+  - [818624] Bootstrap Mode — The Economic Model in Detail
+    - [819037] The Four Economic Actors
+    - [820357] Payment Flow — From Cold Start to Profitable Vertical
+    - [824406] Autopilot Mode Activation Criteria
+  - [826061] Dynamic Workflow Examples — 5 Complete Templates
+    - [826481] Template 1 — Daily Report Workflow
+    - [829901] Template 2 — Data Pipeline Workflow
+  - [834180] Analytics Engine — All Analytics Events (Never Written to SpaceDO)
+    - [834689] Why Workers Analytics Engine Instead of SpaceDO Tables
+    - [835830] Complete Event Schema
+    - [839053] naelao-analytics Worker — Complete Implementation
+    - [842054] Admin Dashboard Queries
+  - [844785] SpaceDO Methods — Replacing All Stored Functions
+    - [845181] Function 1 — get_llm_formatted_messages
+    - [846718] Function 2 — get_stale_projects_for_categorization
+    - [847831] Function 3 — create_space_with_defaults
+    - [850007] Function 4 — get_active_assistants
+    - [851010] Function 5 — deduct_space_credits (Atomic)
+  - [853063] Multi-Region & Global Deployment — Cloudflare's Edge
+    - [853442] Where Each Component Lives
+    - [855897] DO Pinning — Critical for Agent Continuity
+    - [857368] Latency Budget — What a Typical Agent Turn Costs
+  - [860004] Migrating From Suna Kortix to Naelao — Complete Guide
+    - [860461] Phase 1 — Schema Migration
+    - [862719] Phase 2 — File Migration (Docker FS → R2)
+    - [864093] Phase 3 — Worker/Service Cutover
+  - [866476] Production Observability — Logs, Alerts & Dashboards
+    - [866847] Structured Logging Pattern
+    - [869371] Alert Rules
+    - [871854] The Admin Health Dashboard
+    - [875092] Logpush Configuration — Exporting to External SIEM
+    - [876142] On-Call Runbook — Top 5 Alert Responses
+  - [878941] Space Types — Platform Instances, Not Configuration
+    - [879772] The Three Layers of Every Space Type
+    - [881969] Space Type Manifest v2 — Complete Interface
+    - [888260] How Space Types Differ — Side-by-Side Comparison
+  - [891343] SpaceTypeRegistryDO — The Space Type Marketplace Engine
+    - [891985] SpaceTypeRegistryDO Schema
+    - [898732] The Space Provisioner — Complete Implementation
+  - [907001] External Portals — {slug}.naelao.com & Custom Domains
+    - [907522] Portal Deployment Architecture
+    - [913009] Custom Domain Configuration
+  - [914977] Community Contribution — Apps & Space Templates
+    - [916348] Scoped Token — Retained for Internal Use
+    - [918219] Community Economics — Apps & Templates
+  - [919761] Launchpad — Storefronts & Task-Completion Loops
+    - [920272] Launchpad Manifest V2
+    - [922964] The Task-Completion Loop
+  - [926075] Verticals — Knowledge-Graph Loops & AutoResearch
+    - [926636] Verticals Manifest V2
+    - [929358] The Knowledge-Graph Agent Loop
+    - [931518] AutoResearchDO: Nightly Expansion
+  - [932296] Sites — The Content Loop & EmDash CMS
+    - [932795] Sites Manifest V2
+    - [935138] The Content Agent Loop
+  - [938427] Enterprise — Agentic Company OS & Sub-Spaces
+    - [939018] Enterprise Manifest V2
+    - [941358] Wallet-Gated Agent Loop Interception
+  - [943581] Workers Space — Virtual Workforce Registry
+    - [944095] Workers Manifest V2
+    - [946427] The x402 Task-Completion Loop
+  - [948668] Mini-AGI — The Federated Query Loop
+    - [949185] Mini-AGI Manifest V2
+    - [951565] The Federated Query Loop (In-Memory Processing)
+  - [954090] Developer Space — Warm Containers & Live Preview
+    - [954533] Developer Manifest V2
+    - [956576] The File-Edit Loop & Live Preview
+  - [959021] Standard Space — The Baseline Chat Environment
+    - [959585] What Standard Provides
+    - [961321] What Standard Does Not Provide
+    - [962423] The Provisioner Path
+    - [964072] Standard Manifest V2 — Complete
+    - [965686] Agent System Prompt — Standard
+    - [966833] Upgrade Path
+  - [969168] RemoteLoop — Platform-Internal Agent Execution
+    - [970533] When Standard Loops Are Not Enough
+    - [971614] The Three Invariants
+    - [973284] How AgentDO Chooses a Loop
+    - [975172] Manifest Declaration
+    - [976018] Failure Handling
+  - [978685] Space Type Versioning & Canary Rollouts
+    - [979274] Version Bump Protocol
+    - [980653] SpaceTypeRegistryDO — Canary Rollout Engine
+    - [982899] Major Version Migrations
+  - [984853] Naelao Apps — Packaging, CLI & AppRegistryDO
+    - [985283] The App File Structure
+    - [985803] What `npx naelao app publish` Actually Does
+    - [987846] AppRegistryDO — The Marketplace Database
+  - [991663] Community Contribution Model — The Two Primitives
+    - [993006] The Three-Layer Ecosystem
+    - [994468] Decision Guide: App or Template?
+    - [995334] App Architecture — What a Developer Controls
+    - [997686] Space Template Architecture — What a Developer Controls
+    - [999291] Revenue Flows
+    - [1000852] Publishing Workflow
+  - [1002585] Space Templates — Community-Authored Starting Configurations
+    - [1003875] Space Template Format
+    - [1006416] Template Installation Flow
+    - [1008715] Template Installer Implementation
+    - [1013713] Template Registry — SpaceDO Table
+  - [1015636] naelao-admin — Audit Logs, DLQ & Platform Ops
+    - [1016632] Complete Implementation
+  - [1020672] naelao-notifications — Omnichannel Alerting & VAPI
+    - [1021099] Supported Channels & Integrations
+    - [1022275] Complete Implementation
+  - [1026261] naelao-eval — Benchmarking & QA (GAIA + Braintrust)
+    - [1027293] Complete Implementation
+    - [1031613] GAIA Benchmark Dataset Format
+    - [1033587] Extended Scorer Types
+    - [1035441] CI Integration — GitHub Actions Trigger
+    - [1037523] Regression Tracking — Score History
+  - [1040160] Categorizer & Feedback — Background Intelligence
+    - [1041559] Categorizer Implementation
+    - [1043736] Feedback Implementation (Skill Scoring)
+    - [1048175] Skill Quarantine System
+    - [1050807] Daily Quality Standup — Space Assistant Integration
+  - [1053165] naelao-triggers — Webhooks & Event Routing
+    - [1053637] Trigger Architecture
+    - [1054384] Complete Implementation
+  - [1058019] WorkflowRegistryDO & FinetuneJobDO
+    - [1058449] WorkflowRegistryDO Implementation
+    - [1060907] FinetuneJobDO Implementation
+  - [1063878] SpaceDO — Fast Auth Caching & Sub-Space Logic
+    - [1064370] What SpaceDO Does
+    - [1064993] Complete Implementation
+  - [1068536] AssistantSandboxDO — The Moltworker Pattern
+    - [1069572] Differences from standard SandboxDO
+    - [1070853] Complete Implementation
+  - [1074495] AgentPress Error Processor — The 30+ Error Catalog
+    - [1075617] Error Processor Implementation
+    - [1092006] Complete Error Code Index
+    - [1102303] How the Orchestrator Uses This
+  - [1104543] SpaceTypeRegistryDO — The Marketplace & Versioning Engine
+    - [1105186] KV Cache Invalidation — The Read-Through Pattern
+    - [1107884] Earnings Micropayment Ledger
+    - [1111356] Deprecation Pipeline
+    - [1113826] Complete DO SQLite Schema
+    - [1116169] Registering a Type — The Security Handshake
+  - [1117381] Provisioning & Deprovisioning — Transactional Assembly
+    - [1118013] The Provisioning Chain
+    - [1121289] Compensation Log Implementation
+    - [1125024] Deprovisioning — The Full Scrub
+    - [1128609] Lifecycle Hook Registry
+  - [1131115] External Portals — {slug}.naelao.com & Custom Domains
+    - [1131742] URL Structure
+    - [1133053] Routing Architecture
+    - [1135588] KV Route Table — How Hostnames Are Registered
+    - [1137029] The @naelao/portal-sdk
+    - [1139118] Custom Domain Flow
+    - [1140646] Static-First Caching Strategy
+  - [1142921] Operator Shell Slot System — The App Injection Pattern
+    - [1143619] The Slot Architecture
+    - [1145975] Manifest Declaration
+    - [1147500] Cross-Origin Communication (postMessage)
+    - [1150517] UIInstructionsDO Personalisation
+    - [1151843] Slot Conflict Resolution
+  - [1153863] RemoteLoop — Platform-Internal Custom Agent Brains
+    - [1154755] The Inverse Proxy Pattern
+    - [1157323] RemoteLoop Request/Response Interfaces
+    - [1159584] Calling the Scoped API from a Loop Worker
+    - [1160441] Worked Example — Legal Verticals Tree-of-Thought Loop
+    - [1162287] Security Constraints the Loop Worker Cannot Bypass
+  - [1165166] Agent Environment Declaration — Layer 1 Deep Dive
+    - [1165746] Complete agentConfig Field Reference
+    - [1171404] agentPermissions — Complete Permission Matrix
+    - [1174548] How the Provisioner Reads agentConfig
+    - [1177911] Common Environment Profiles
+    - [1181046] Context Compaction — When maxContextTokens Is Exceeded
+  - [1183181] naelao-billing — Credits, Stripe, RevenueCat & Trial Management
+    - [1184276] Complete Worker Implementation
+    - [1194923] Billing Endpoint Summary
+    - [1197195] Billing Schema (SQL Migration)
+  - [1199275] naelao-spaces — Space CRUD, Hierarchy & Member Management
+    - [1200808] Complete Worker Implementation
+    - [1209224] Key Design Decisions
+  - [1211142] naelao-together-ai — Open-Source Models, LoRA Fine-Tuning & AutoResearch
+    - [1212786] Complete Worker Implementation
+    - [1222337] Fine-Tune Lifecycle
+  - [1223810] WorkflowRegistryDO — Full CRUD, Cron Dispatch & Agent Integration
+    - [1224347] Complete WorkflowRegistryDO
+    - [1234217] Agent Integration — workflow-creator Skill
+  - [1236123] Appendix A10: Custom Durable Objects & the Security Scanner Pipeline
+    - [1237055] Declaring a Custom DO in a Manifest
+    - [1237681] Scope Values
+    - [1238841] The Security Scanner Pipeline (5 Gates)
+    - [1243771] CartDO — Example Custom DO for Launchpad
+    - [1245837] Custom DO Capability Matrix
+  - [1248739] naelao-admin — Complete Platform Operations Worker
+    - [1249920] Complete Worker Implementation
+    - [1266943] Admin Routes Reference
+  - [1271606] naelao-notifications — Omnichannel Alert Delivery: APNs, FCM, Slack, Discord, Resend, VAPI
+    - [1273316] Complete Worker Implementation
+    - [1289096] Device Token Registration (Frontend)
+    - [1289720] SQL: device_tokens table
+  - [1290731] naelao-billing — RevenueCat Mobile IAP, Trial Expiry Cron, BYOK Credit Bypass
+    - [1291297] RevenueCat Webhook Handler
+    - [1299796] Billing Flow Decision Tree
+  - [1301305] naelao-spaces — Delete, Archive, Role Change & Space Settings Endpoints
+  - [1312244] naelao-together-ai — Streaming Chat Proxy, BYOK Key Injection & Model Availability Polling
+    - [1322444] wrangler.jsonc additions for naelao-together-ai
+    - [1323114] Model Pricing & Selection Decision Matrix
+  - [1324916] The Three-Tier Platform Model
+    - [1326008] Tier 0 — Naelao (Infrastructure Owner)
+    - [1326993] Tier 1 — Builders (Product Owners)
+    - [1328028] Tier 2 — End Users (Product Consumers)
+    - [1330017] The NaelaoProduct Entity — Complete TypeScript Interface
+    - [1337428] Complete Postgres Schema — Product Tables
+    - [1344765] BuilderAccountDO — Durable Object
+    - [1352552] ProductUserDO — Durable Object
+    - [1358117] Builder Dashboard API — Complete Endpoint Reference
+    - [1362769] White-Label Portal Architecture
+    - [1368340] Concrete Product Category Examples
+    - [1372737] Three-Tier Billing Architecture
+    - [1376869] Security and Isolation Guarantees
+  - [1381122] Sub-Spaces in the Platform Model
+    - [1382511] Scenario A — Internal Organizational Structure (same space type throughout)
+    - [1386922] Scenario B — Agency / Holding Company Model (mixed space types ONLY here)
+    - [1391037] Scenario C — Product-Defined User Workspaces (same space type, builder-controlled)
+    - [1392323] Sub-Space Postgres Schema — Complete Extension
+    - [1395833] SubSpaceDO — Complete Durable Object Implementation
+    - [1403999] When a Sub-Space Becomes a Separate Product
+  - [1406965] How Builders Use Naelao — The Platform Experience
+    - [1407594] Surface 1 — The Naelao Platform (platform.naelao.app)
+    - [1408376] Surface 2 — The Builder Dashboard (dashboard.naelao.app)
+    - [1415941] Surface 3 — What Builders Build: The Product Frontend
+    - [1418817] Naelao Platform Aesthetic — Design System
+    - [1420729] What Builders Never See — The Infrastructure That Runs Their Products
+  - [1422171] Studio — The Creative Production Space
+    - [1424008] Studio Templates
+    - [1426004] The Production Board — Studio's Core UI
+    - [1427840] Studio Core Agents
+    - [1431560] Studio Knowledge Base — What Makes It Different
+    - [1433871] Studio as a Builder Product — Example: Polsia
+    - [1436108] Studio Space Type Manifest
+  - [1439528] Temples — Pre-Built Products on the Naelao Platform
+    - [1441289] Temple Registry — Data Model
+    - [1443581] Temple Gallery — The Builder Dashboard View
+    - [1444231] Temple Examples — Full Specifications
+    - [1466403] Temple vs Blank Product — Decision Guidance
+    - [1467822] Temple Lifecycle — From Configuration to Builder Customisation
+- [1472126] Appendix — Outstanding Gap Resolutions
+  - [1473265] Security & Compliance
+    - [1473738] SandboxDO exec() — Shell Injection via args Array
+    - [1478739] GDPR Right-to-Deletion — No Cross-System Erasure Path
+    - [1481059] Local Tunnel Security — User's Entire Filesystem Accessible via Path Traversal
+    - [1484858] postMessage Origin Allowlist — Shell Validates App Messages But Apps Never Validate Shell Messages
+    - [1487213] Workflow Path Validation — startsWith Check Vulnerable to Prefix Injection
+    - [1489189] R2 Path Prefixes — No Filesystem-Level Isolation; Path Traversal via Crafted Keys
+    - [1491435] Path Validation — '..' and Absolute Paths Checked Only in Skill Description, Not At Runtime
+    - [1493540] Memory Context Injection — Max 20 Items; Older Memories Silently Discarded Without Archival
+    - [1495558] Skill 27-Pattern Scanner — Detects Obvious `process.env.` Patterns; Misses Obfuscated Variants
+    - [1497747] Audit Query SQL Injection — Unparameterized Event Type Filter
+    - [1499498] Webhook Secret Validation — No Rotation Or Expiry; Compromised Secrets Never Invalidated
+    - [1501444] Manifest Signature Validation — Skipped If Signature Missing; Manifests Loaded Unsigned
+    - [1503565] Portal Slug Uniqueness — 30s TTL Lock Not Sufficient; Race Allocates Duplicate Slugs
+    - [1505571] Product Slug Uniqueness — No UNIQUE Constraint; Concurrent Creates Can Allocate Duplicate Slugs
+    - [1507690] SSO Config OIDC Secret — Encrypted In Secrets Store; No Key Rotation; Decryption Fails On Key Change
+    - [1509966] Conversation Access Approval — No Naelao Admin Enforcement; Builder Can Enable Without Review
+    - [1512123] Sub-Space Scenario Enforcement — No Runtime Check; Builders Violate Rules In API Calls
+    - [1514257] Agency Shell Parent/Child Isolation — Child Sub-Spaces Can Access Parent's R2 Prefix
+    - [1516400] Cross-Sub-Space Grants — Race Between Grant Creation And Access Check; Users Bypass Expiry
+  - [1518212] Billing & Payments
+    - [1518682] Billing Atomicity — Credit Deduction Race Condition
+    - [1521516] x402 Payment — Debit and Credit Are Not Atomic
+    - [1525801] App Developer Revenue Withdrawal — No Payout Path Specified
+    - [1529906] Money Stored as Float — balance_usd REAL Will Lose Cents
+    - [1533991] Sub-agent Credit Pre-deduction — Referenced in a Comment, Not Implemented
+    - [1537674] RevenueCat + Stripe Dual Billing — Same Purchase Processed Twice
+    - [1541709] Container Publisher Revenue — Billing Events Collected, Payout Flow Never Specified
+    - [1545521] x402 AI Crawler Payment Gate — No Rate Limiting; Attackers Can Exhaust Wallet Via Repeated 402 Responses
+    - [1547704] Tier 5 Container Billing — Metered by Start Time, Not Actual Usage; Idle Containers Overcharge
+    - [1549954] x402 Payments — Company Debit May Succeed While Creator Credit Fails; Atomicity Lost
+    - [1552155] Billing Cost Calculation — JavaScript Floats; Rounding Errors Accumulate Across Millions of Transactions
+    - [1554345] Annotation Payments — No Refund On Rejection; Paid Annotations Then Discarded
+    - [1556357] Bootstrap Fund Depletion — No Pause Or Warning; Annotations Queued But Unpaid
+    - [1558401] Sub-Space Billing Rollup — Cron-Based Accuracy; Race Between Usage Write And Rollup Snapshot
+  - [1560361] Durable Objects & Concurrency
+    - [1560842] Durable Object SQLite Storage Limits
+    - [1562883] ConcurrencyDO — Deadlock Scenario
+    - [1566322] WorkerDefinitionDO + WorkerInstanceDO — Concurrent Deployment Race
+    - [1570599] ConcurrencyDO Billing Tier — Stale After Plan Upgrade
+    - [1572713] Durable Object Single-Alarm Slot — Multiple Timers Silently Collide
+    - [1575038] KV Used for Locks and Counters — Eventual Consistency Breaks Both
+    - [1578339] SandboxDO One-Container Ceiling — No Path to Multiple Containers Per Space
+    - [1581817] pendingCalls Map Is In-Memory — Hibernation Leaks Every Pending Promise
+    - [1583964] AssistantDO Channel Messages — No Per-Channel Access Control; Metadata Leakage Across Channels
+    - [1586180] WorkerInstanceDO Local Task History — No Conflict Detection When Definition Sync and Local Execution Overlap
+    - [1588488] SpaceDO RLS Policies — Never Revoked When Space Is Deleted; Orphaned Policies Remain
+    - [1590801] WalletDO allowedHours Policy — UTC-Only; No Timezone Support; Broken For Multi-Region Billing
+    - [1593035] ConcurrencyDO Count Check — Not Atomic; Race Condition Between Check And INSERT
+    - [1594765] ConcurrencyDO Cleanup Race — DELETE In checkAndReserve And Alarm Both Try To Clean
+  - [1596070] Reliability & Observability
+    - [1596549] WebSocket Streaming Backpressure — Missing Flow Control
+    - [1600210] CF Queue Delivery Semantics — At-Least-Once Is Not Exactly-Once
+    - [1603334] SSE Fallback — Proxy Architecture Creates a Bottleneck Worker
+    - [1605456] Distributed Tracing — 22 Workers, Zero Trace Context
+    - [1609913] Partial Stream on Disconnect — Half-Written Assistant Messages Persist as Complete
+    - [1613579] Vectorize Metadata Filtering — Cross-User Leakage in Shared Index
+    - [1616566] Worker Subrequest Limit — Fan-Out Operations Hit the 1000-Subrequest Ceiling
+    - [1618703] Context Window Hard-Cut at 50 Messages — No Compaction Strategy
+    - [1623162] WebSocket Disconnect Detection — Heartbeat Exists, Reconnect Strategy Doesn't
+    - [1626664] wrangler.jsonc Binding Drift — Runtime Crashes When a Binding Is Missing
+    - [1629834] Knowledge Chunks Have No Overlap — Sentences Split Across Boundaries Are Lost
+    - [1633540] Knowledge Re-indexing on Document Update — Stale Vectors Remain After Edit
+  - [1637239] Agent Runtime & Intelligence
+    - [1637719] Dynamic Worker Loader — Rate Limits and Security Sandbox
+    - [1641190] The Sweeper's O(n) Problem — Waking All Assistants Every 5 Minutes
+    - [1645175] Channel Sessions — One Session Per Channel Type, Not Per Conversation
+    - [1649019] cron-jobs.json Time Zones — The Spec Uses UTC Only
+    - [1652251] Memory OS Layer 5 (Vectorize) — Sync Is Never Specified
+    - [1654369] Fine-Tuning Pipeline — Training Data Preparation Is Unspecified
+    - [1658209] AI Gateway Prompt Cache — Cross-Tenant Cache Collision Risk
+    - [1661899] Sub-Agent Result Delivery — The Polling Problem
+    - [1665953] Thread Title Generation — Fire-and-Forget LLM Call With No Error Handling
+    - [1668087] Dynamic UI Personalisation — Regeneration Race and Cost
+    - [1670199] Agent Model Fallback — No Strategy When the Requested Model Is Unavailable
+    - [1673881] Cron Jobs Have No Overlap Prevention — Slow Run Blocks Next Scheduled Execution
+    - [1677501] Dynamic UI Cache — instructions.md Changes Never Invalidate Generated HTML; Stale UI Served
+    - [1679704] Approval Timeout — Auto-Reject Not Atomic; Fiber May Resume on Stale Approval
+    - [1681881] Sub-Agent Spawn Payload — No Size Limit; Large Task Definitions OOM the AssistantDO
+    - [1684013] Skill Tier Precedence — Agent-Tier Skills Silently Override Space Skills With No Override Audit or Warning
+    - [1685657] Skill Verification SHA256 — Cached at Load Time, Never Recalculated; Tampering Post-Load Undetected
+    - [1687875] Workflow Code Cache — 5min TTL; Agent Updates TypeScript, Old Code Executes Until Cache Expires
+    - [1690143] Skill Loader Tier Merge — Promise.all() Order Non-Deterministic; Tier Precedence Depends on Load Speed
+    - [1692429] System Prompt Ordering — Cache Prefix Not Recalculated When Components Change
+    - [1694537] Tool Discovery Cache — Stale Schemas After App Installation; No Immediate Invalidation
+    - [1696600] MCP Tool Execution Timeout — 30s Hard Limit; No Streaming Or Progressive Results
+    - [1698672] Tool Schema Aggregation — No Conflict Detection; Two Apps Can Provide Identical Tool Names
+    - [1700851] Cron Double Dispatch — Race Between sweepSchedules() And Concurrent Agent Calls
+  - [1702230] Containers & R2 Storage
+    - [1702705] Multi-Container Parallelism — One Container Per Agent, No Parallel Execution
+    - [1706749] R2 ↔ Container Filesystem Sync — No Bidirectional Protocol
+    - [1711158] Container Resource Limits — No CPU, Memory, or Disk Cap Specified
+    - [1714691] Container Network Isolation — Agents Can Reach Internal CF Infrastructure
+    - [1717998] Local ↔ Cloud File Conflict Resolution — No Protocol When Both Sides Change
+    - [1720135] R2 Workspace ↔ Local Machine Sync — No Path Specified
+  - [1724315] Operational & Versioning
+    - [1724791] Disaster Recovery — No Plan, No RTO, No RPO
+    - [1729332] Global Rate Limiting — No Ingress Protection, Noisy Neighbour Possible
+    - [1732755] Provisioner Rollback — Migrations Are Declared Irreversible, Rollback SQL Is Optional
+    - [1735659] Canary Rollout — Error Spike Detection Uses a 5% Threshold With No Sensitivity Tuning
+    - [1737864] Major Version Opt-In — No Deadline, No Auto-Upgrade, No Incompatibility Guard
+    - [1739978] File Lock TTL — Agent Crash Orphans the Lock for 60 Seconds, Blocking All Writers
+    - [1742145] 3-Way Merge Is Line-Based Only — Binary Files and JSON Silently Corrupt on Concurrent Write
+    - [1744447] Error Processor — Retry Budget Never Defined; shouldRetry: true Errors Can Loop Forever
+    - [1746744] Analytics Blob Field Mapping — Not Versioned; Schema Changes Break Queries
+    - [1748903] Space Type Version Compatibility — No Backward Compatibility Check; Unknown Loop Models Crash
+    - [1751093] Resource Budget — Declared But Not Enforced; Spaces Exceed Limits Silently
+    - [1753111] Unhandled Errors — Fallthrough Default; Agents Never Know What Failed
+    - [1755158] Compensation Race — Async Cleanup Can Fail; Partial Rollbacks Leave Orphans
+    - [1757277] Lifecycle Hooks — No Timeout Or Failure Recovery; Hook Hang Blocks Entire Provisioning
+    - [1759425] Space Hierarchy Depth Check — Race Between Recursive Query And Parent Deletion
+    - [1761429] Member Cache Invalidation — Async Request Not Awaited; Members Stay Cached After Removal
+    - [1763440] Temple Agent Bundle Versioning — No Version Lock; Agents Auto-Update Post-Launch
+    - [1765595] Temple Demo Validation — Not Stress-Tested; Demo Works But Fails Under Real Load; Setup Fails
+  - [1767632] Launchpad & Business Templates
+    - [1768114] Tenancy Modes Not Specified — All Four Multi-Tenant Patterns Are Absent
+  - [1771391] Platform Features & Integrations
+    - [1771875] BuilderAccountDO — Referenced Everywhere, Never Specified
+    - [1773991] Space Type Manifest — Third-Party Manifests Have No Review Gate
+    - [1778471] Webhook Processing — No Replay Protection, No Ordering Guarantee
+    - [1782490] Webhook Dispatch Race — Concurrent Triggers Can Dispatch Duplicate Workflows
+    - [1784576] Notification Batch Failure — Promise.all() Blocks All Deliveries If Any Channel Fails
+  - [1786336] Miscellaneous Gaps
+    - [1786802] MiniAGI Domain Classifier — LLM Called on Every Query, No Cache
+    - [1790682] SkillRegistryDO Cache Invalidation — Skills Don't Propagate to Running Agents
+    - [1794466] Developer Space — The Agent Has wrangler CLI in the Container
+    - [1796590] Federated Learning LLM Judge — Confidence Threshold Has No Fallback
+    - [1798717] SpaceDO Shard Overflow — No Cross-Shard Query Strategy
+    - [1803082] Per-Space Vectorize Index — CF Index Count Limit Reached at ~100 Active Products
+    - [1806572] No Template Configuration Wizard — Builder Has No Way to Choose Their Operating Mode
+    - [1810823] MiniAGI Disabled in Manifest — Autonomous Mode Cannot Exist Without It
+    - [1814602] UIOrchestrationDO Slot Conflict Resolution — Priority Tie-Breaking Is Unspecified
+    - [1816949] Federated Learning LLM Judge — Confidence Threshold at 0.95 With No Fallback; Rejection Silent
+    - [1819290] Domain Classifier LLM — Called Every Query, No Cache; Hallucinates Domain IDs Outside Access
+    - [1821597] Domain Matching — Hardcoded Provider Domains; Custom Domains Undetected and Credentials Not Injected
+  - [1823502] Gap Resolution Index
+- [1876221] Appendix B — Deep Audit Gap Resolutions
+  - [1877299] Cloudflare Platform Limits
+    - [1877951] NaelaoAgentDO — CF Worker CPU Time Budget Exceeded by Agent Loop
+    - [1880072] Dynamic TypeScript Execution — CF Workers Prohibit eval() and Dynamic import()
+    - [1882472] SpaceDO SQLite — 1 GB Per-Account Ceiling, Not Per-DO
+    - [1884590] CF Workflows — 1,000 Step Hard Limit Kills Long-Running Agents
+    - [1886592] CF Queue — 128 KB Message Limit Silently Drops Large Tool Results
+    - [1889459] Analytics Engine — All Spec Queries Use Wrong SQL Dialect; Every Dashboard Breaks
+    - [1892537] CF KV Namespace — 1,000 Account Limit Broken by Dynamic Namespace Creation
+    - [1894737] Durable Object Class Count — 20+ Classes Approaching 500/Account Limit
+  - [1896372] Security & Multi-Tenant Isolation
+    - [1897035] SpaceDO SQLite — Application-Level 'RLS' Has No Enforcement Mechanism
+    - [1900038] Community Skills via npm — No Version Pinning Enables Supply Chain Attack
+  - [1901689] Agent Runtime & Workflows
+    - [1902340] runFiber() Result Delivery — Caller Cannot Receive the Result
+    - [1904507] Skills (SKILL.md) — No Execution Runtime Specified; Skills Are Inert Documentation
+    - [1906929] MCP Tool Calls via naelao-mcp-hub — 30s CF Worker Timeout Truncates Long Tools
+    - [1909047] LoRA Fine-Tuning — Together AI Job Poll Runs in 30s Worker, Not a Durable Workflow
+    - [1911157] Sub-Agent Recursion — No Maximum Depth; Exponential Resource Exhaustion
+  - [1912721] Billing & Payments
+    - [1913365] WalletDO — Single DO Serializes All Credit Debits, Bottleneck at Scale
+    - [1915573] Stripe Webhook — No Idempotency; Retries Cause Double Credit Top-Ups
+  - [1918124] Scalability
+    - [1918757] SpaceTypeRegistryDO — Global Singleton Hot-Spot With No Cache Layer
+    - [1920818] R2 Single Bucket — No Per-Space Rate Limiting Creates Noisy Neighbour
+  - [1922295] Missing Specifications
+    - [1922939] EmDash CMS — Sites Space Type Foundation Is Completely Unspecified
+    - [1925260] VAPI Voice Calls — Webhook Callback Receiver Never Specified
+    - [1927491] BuilderAccountDO — Zero Schema; Blocker for Auth, Rate-Limiting, and Billing Stack
+  - [1930096] Operational
+    - [1930731] APNs Certificate — Expires After Exactly 1 Year With No Rotation Alert
+    - [1932785] Canary Rollout — Schema Migrations Are Irreversible; No Rollback SQL Specified
+    - [1935053] naelao-sweeper — CF Cron Has No Delivery Guarantee; Critical Ops Must Use DO Alarms
+  - [1936686] Developer Space
+    - [1937323] Multiple Local Machines Connected to Same Space — No Conflict Model
+  - [1938985] Infrastructure Cost
+    - [1939628] CF Analytics Engine — 25M Event/Month Free Quota Exceeded at 10k Users
+  - [1941280] Real-Time Collaboration
+    - [1941927] ProjectDO Presence — In-Memory Presence Map Lost on DO Hibernation
+  - [1943450] Notifications
+    - [1944087] Push Notification Ordering — FCM/APNs Do Not Preserve Message Sequence
+  - [1945651] Third-Party Integrations
+    - [1946297] Together AI — Single Shared API Key; One User's Overuse Blocks Everyone
+  - [1947822] Appendix B — Gap Index
+- [1958986] Appendix C — Second-Pass Audit Gap Resolutions
+  - [1960273] Scheduling & Workflows
+    - [1960766] WorkflowRegistryDO cron Parser — Day-of-Month Field Skipped; Range/List Expressions Return NaN
+    - [1963456] WorkflowRegistryDO error_count — Cumulative, Never Reset; Transient Errors Permanently Pause Healthy Workflows
+    - [1966413] WorkflowRegistryDO Alarm Dispatches Workflows Sequentially — Long Dispatch Blocks All Other Scheduled Jobs
+  - [1969003] Security
+    - [1969478] 27-Pattern Security Scanner — Module-Level Global RegExp With /g Flag; Concurrent Requests Corrupt Scan Results
+    - [1972376] Dynamic Worker Loader — No Sandbox Memory Limit; Malicious Code Exhausts Host Worker Heap
+    - [1974423] naelao-mcp-hub Credential Injection — spaceId Trusted From Request Body; Cross-Tenant Credential Leak
+  - [1976340] Agent Runtime & Artifacts
+    - [1976836] React Artifacts — import from 'react-dom/server' Has No npm Resolution in CF Workers; Feature Non-Functional
+  - [1978712] Agent Runtime & MCP
+    - [1979199] naelao-mcp-hub resolveToolRoute() — 'unknown' Hardcoded as agentId; Cache Always Misses
+  - [1981593] Observability
+    - [1982073] Analytics Engine Dashboard — PostgreSQL Syntax Used Throughout; ClickHouse Dialect Required; All Queries Fail
+  - [1984796] Voice & Notifications
+    - [1985288] VAPI Voice Escalation — Fire-and-Forget; Approval Results Never Delivered Back to Waiting Agent Fiber
+  - [1987156] LoRA Fine-Tuning
+    - [1987636] LoRA Training Data Loaded Entirely Into Worker Memory — Files Over 50 MB Crash With OOM
+  - [1990305] Quality & CI
+    - [1990785] naelao-eval — Returns 'started' via waitUntil(); CI Gate Has No Way to Read the Score
+  - [1992563] Memory OS
+    - [1993036] Memory OS decay_rate — Field Defined in Schema, Never Read or Applied; Relevance Scores Never Decay
+  - [1995433] Security & Multi-Tenant Isolation
+    - [1995937] AssistantDO Session Lookup — Channel Type Only as Key; All Slack Users Share One Session
+  - [1998356] Performance
+    - [1998831] naelao-portal — Portal Code Fetched From R2 on Every Request; No Caching; High Latency and Cost
+  - [2000597] LoRA & Bootstrap Mode
+    - [2001086] Bootstrap Annotation LLM Judge — No Model, No Prompt, No Rubric; Quality Gate Is Unmeasurable
+  - [2002891] Agent Runtime & Context
+    - [2003385] StreamingXMLParser truncateMiddle() — Inserts Messages in Reverse Order; Context Window Corruption
+  - [2005861] Scalability
+    - [2006336] SpaceTypeRegistryDO — Global Singleton Write Bottleneck; Memory Ceiling at Large Catalog Size
+    - [2008497] AppRegistryDO — Global Singleton With No Pagination; Full Table Scan OOMs at Scale
+  - [2010276] Agent Runtime & Error Handling
+    - [2010774] runFiber() Launched With void — Unhandled Exceptions Leave Fiber State 'running' Forever
+  - [2013381] Billing & Payments
+    - [2013867] WalletDO x402 Cross-Space Payment — Nested DO Calls Risk Deadlock; Funds Lost on Timeout
+  - [2015639] Operational
+    - [2016114] Space Provisioner — Returns Space ID Immediately; Race With Premature API Calls Corrupts DO State
+  - [2017966] Appendix C — Gap Index
+- [2027082] Appendix D — Third-Pass Audit Gap Resolutions
+    - [2028732] naelao-threads — No ORDER BY on Message Listing; Messages Render Out-of-Sequence After Any Mutation
+    - [2030468] naelao-threads — No Maximum Message Content Size; 10 MB Message Crashes Agent DO With OOM
+    - [2032178] naelao-knowledge — Vectorize.deleteByIds() Never Called on Document Removal; Stale Vectors Poison Search Forever
+    - [2034035] naelao-knowledge — Embedding Model Version Not Tracked; Model Upgrade Silently Breaks All Semantic Search
+    - [2035949] naelao-credentials — Master Key Rotation Instantly Renders All Stored Credentials Unreadable
+    - [2037907] naelao-credentials — No Access Audit Log; Credential Reads Leave No Forensic Trail
+    - [2039775] naelao-spaces — Space Deletion Leaves R2 Files, Vectorize Vectors, and KV Entries as Permanent Orphans
+    - [2041693] naelao-spaces — Member Role Downgrade Does Not Invalidate Active Sessions; Terminated Admins Retain Privileges
+    - [2043645] External Portal Slugs — Per-Owner Uniqueness Allows Brand Squatting; 'apple.naelao.com' Registerable by Anyone
+    - [2045537] naelao-admin — No Separate Auth Path; Admin Endpoints Share User Auth System; Single Vuln Grants Platform Admin
+    - [2047394] naelao-admin — DLQ Consumer Logic Never Specified; Critical Failures Silently Discarded After 4 Days
+    - [2049347] Pricing Tier Feature Gates — Enforced Only in UI/Docs, Not in Worker Code; Free Users Access All Paid Features via API
+    - [2051315] Credit Exhaustion Mid-Run — No Specified Behavior; Agent Either Runs Free or Crashes Without Warning
+    - [2053301] External Portal Slug Routing — No Cache Layer; Registry DO Queried on Every Page View
+    - [2055056] naelao-together-ai Streaming — Token Count Lost on Client Disconnect; Tokens Consumed but Not Billed
+    - [2057012] naelao-sweeper — No Pagination on Space Fan-Out; Hits CF 1000 Subrequest Limit at 1001 Active Spaces
+    - [2058899] Operator Shell Slot System — Third-Party App Content Injected Into DOM Without Sandboxing; Stored XSS
+    - [2060886] Testing Spec '700+ Tests' — Category Descriptions, Not Test Cases; Zero Concurrency or Hibernation Tests Specified
+    - [2063081] naelao-knowledge — Vectorize topK Hardcoded at 20; Large Knowledge Bases Return Incomplete Results
+    - [2064978] naelao-credentials — Revoked OAuth Tokens Retained After Refresh; Historical Token Exposure on Breach
+    - [2066865] RemoteLoop — No Caller Authentication; SSRF Risk if Reachable From Public Internet
+    - [2068786] naelao-spaces — Sub-Space Hierarchy Depth Limit Stated in Prose, Never Enforced in API; Infinite Nesting Crashes Hierarchy Queries
+  - [2070400] Appendix D — Gap Index
+  - [2077867] Critical Implementation Gaps — Security, Reliability & Data Integrity
+    - [2080161] naelao-threads addMessage Uses Undeclared db Variable — Runtime ReferenceError
+    - [2082331] naelao-credentials /get-for-url Trusts spaceId from Request Body — Cross-Tenant Exfiltration
+    - [2084395] Single Vectorize Index for All Spaces — Cross-Tenant Knowledge Leakage
+    - [2086782] Portal Custom Domain Added Without DNS Ownership Verification — Domain Hijacking
+    - [2088979] AppRegistryDO handlePublish Stores Unscanned UI Instructions — Platform-Wide Prompt Injection
+    - [2091632] naelao-threads SSE Stream Targets Wrong AgentDO — Literal Underscore as ID
+    - [2093802] Knowledge Indexing Has No Status Tracking — Silent Failures Show 'Processing' Forever
+    - [2096143] Space Deletion R2 Archive Loop Stops at First Page — Files Left Orphaned
+    - [2098241] Member Role Downgrade Does Not Invalidate Active Sessions
+    - [2100416] naelao-sweeper Heartbeat Loads 1,000 Users per Cron — CPU Limit Risk
+    - [2102610] Knowledge Chunking Uses Word Count Not Token Count — Context Window Overflow
+    - [2104779] naelao-together-ai Streaming Billing Fires After Writer Close — Race Condition
+    - [2106980] VAPI Voice Call Has No Completion Callback — Calls Appear Permanently Active
+    - [2109143] Portal Slug Squatting — No Reserved List for Trademark / Brand Names
+    - [2111281] naelao-admin Impersonation Token Not Scoped — Full Platform Access for Support Sessions
+    - [2113541] append_to_file Tool Not Atomic — Concurrent Appends Cause Data Loss
+    - [2115735] RemoteLoop Has No Timeout on Full Response Stream — Runaway Agent Runs
+    - [2117944] AssistantSandboxDO isEnterprise Flag Trusted from Request Body — Financial Abuse
+    - [2120117] naelao-together-ai AutoResearch Indexes Only Search Snippets — Shallow Knowledge
+    - [2122629] naelao-sweeper DLQ Re-Queue Has No Timestamp Check — Infinite Retry Storm
+    - [2124737] getMessages Pagination Cursor Is created_at — Non-Unique, Drops Messages at Boundary
+    - [2126918] Test Suite Cannot Mock Vectorize — Zero Coverage of Knowledge / RAG Paths
+    - [2129289] Phase Build Order Dependency Inversion — Phase 4 Billing Asserts Phase 5 Infra
+    - [2131491] naelao-admin Audit Log Query Interpolates eventType Directly — SQL Injection
+  - [2134080] Operational, Distributed-Systems & Cloudflare Runtime Gaps
+    - [2136326] ConcurrencyDO Alarm Contention — Noisy-Neighbour Starvation Under Burst Load
+    - [2138396] No Platform-Level Daily Spending Cap — Runaway Agent Can Exhaust Credits Without Ceiling
+    - [2140534] No Negative Auth-Result Caching — Banned User Can DoS SpaceDO with Auth Stampede
+    - [2142665] Workflow SpaceId Binding Is Not Cryptographically Verified — Tenant Code Execution Forgery
+    - [2144737] Pending Tool-Call Resolve Functions Stored in JS Map — Lost on DO Eviction, Agent Hangs Forever
+    - [2146790] Static NAELAO_INTERNAL_TOKEN Allows Cross-Space Credential Exfiltration if Any Worker Is Compromised
+    - [2149041] Missing Index on run_wal(run_id, status) — O(n) Full Table Scan on Every Fiber Recovery
+    - [2151077] Billing Schema Split-Brain — space_credits Specified in Both PostgreSQL Migration and SpaceDO SQLite
+    - [2153257] Template Literal Interpolation in wrapArtifactCode() — Backtick Injection Escapes to Dynamic Worker Code
+    - [2155388] NAELAO_PORTAL_ROUTES KV Binding Absent from wrangler.jsonc — Portal Routing Broken at Deploy
+    - [2157486] R2 Object Versioning Not Enabled — Partial Writes Silently Destroy Live File Content
+    - [2159591] alarm() Uses PostgreSQL-Style db.query() in a Durable Object — Throws Runtime Error After Eviction
+    - [2161759] No Idempotency Key on MCP Tool Calls — Retries Cause Duplicate External Actions
+    - [2163849] Canary Promotion Has No Minimum Sample Size Guard — 0/2 Error Rate Triggers Full Rollout
+    - [2165895] token_buffer Table Grows Unbounded — Long-Running Agents Exhaust DO SQLite Storage Limit
+    - [2167992] sendPush() Calls fetch(spaceDO.getActiveDeviceTokens()) — API Misuse, Push Delivery Broken
+    - [2170179] Commented-Out Hyperdrive Block Creates JSONC Parse Ambiguity — Ghost Bindings on Some Wrangler Versions
+    - [2172275] Custom Cron Parser Skips Day-of-Month Field, No Timezone Support, No Input Validation
+    - [2174472] acceptWebSocket() Not Called in Upgrade Handler — DO Hibernation API Not Activated
+    - [2176911] Positional Analytics Engine Fields Have No Schema Registry — Adding a Field Silently Corrupts All Queries
+    - [2179118] No API Versioning Strategy — All Endpoints at Root Path, Breaking Changes Impossible to Deploy Safely
+    - [2181384] getLlmFormattedMessages Uses LIMIT Without Cursor and WalletDO Uses O(n) Offset Pagination
+    - [2183503] KV-Based Emergency Kill Switch Has 60-Second Propagation Delay — Agents Continue Running During Incidents
+    - [2185678] Alarm Handlers Not Idempotent — CF At-Least-Once Delivery Causes Duplicate Notifications and Status Updates
+    - [2187858] Single Global Encryption Key for All Tenant MCP Credentials — No Per-Tenant Key Isolation
+    - [2189964] No Distributed Trace ID Propagation Across 22-Worker Call Chain — Cross-Worker Debugging Is Impossible
+  - [2192599] Architecture Contradictions, Missing Infrastructure & Runtime Correctness Gaps
+    - [2195324] rootSpaceId Used in 56 Call Sites Across Workers But Never Declared — Universal ReferenceError on First Request
+    - [2198014] Five plpgsql Stored Functions with SECURITY DEFINER and auth.uid() Cannot Execute in DO SQLite
+    - [2200650] Stripe Webhook Handler Has No Idempotency Protection — Duplicate checkout.session.completed Events Double-Credit Users
+    - [2203130] invoice.payment_failed Reads spaceId from subscription_details.metadata — null for Most Stripe Invoice Shapes, Payment Failures Silently Ign
+    - [2205877] Concurrent POST /api/spaces Requests Have No Serialization Lock — Race Creates Duplicate DOs and Half-Provisioned Spaces
+    - [2208422] db.query('BEGIN') / db.query('ROLLBACK') Pattern Used in Workers — Cannot Execute Against SpaceDO, Atomic Billing Invariant Broken
+    - [2211358] JSON.parse(message) Without try/catch in webSocketMessage — Malformed Frame Crashes DO and Terminates All Active Runs
+    - [2213871] All Workers Deployed in a Single wrangler deploy Command With No Dependency Ordering — Service Binding Resolution Fails on First Deploy
+    - [2216452] Stripe Webhook Signature Verification in naelao-triggers Returns true Unconditionally — Anyone Can Trigger Agent Runs
+    - [2218850] Vectorize Binding Missing from wrangler.jsonc — env.NAELAO_VECTORIZE Is undefined, All Knowledge Upserts and Queries Throw TypeError
+    - [2221465] processCanaryRollouts() Is Never Called by Any Scheduler — Canary Versions Stuck at 5% Forever
+    - [2224051] RevenueCat Webhook Endpoint Has No Public Route — RevenueCat Cannot POST to an Internal Service Binding Worker
+    - [2226504] CREATE TABLE IF NOT EXISTS Silently Ignores New Columns on Existing DOs — Schema Evolution Is Broken for Live DOs
+    - [2229198] naelao-analytics Queue Consumer Has No DLQ — Analytics Batch Failures Permanently Drop Events Including Security Audit Logs
+    - [2231699] resolveToolRoute() Always Looks Up 'unknown' AgentId Cache Key — Installed App Tools Return 404 for All Real Agents
+    - [2234319] append_to_file Is O(n) in File Size — Reads and Rewrites the Entire File to Append a Few Bytes, Hits 30s CPU Limit on Large Files
+    - [2236752] Global SpaceTypeRegistryDO Singleton Serializes All Space Creation at Scale — 1000 Concurrent Creates = 5 Seconds of Head-of-Line Blocking
+    - [2239116] extractEventType() Referenced But Never Defined — All Webhook-Triggered Workflows Silently Dispatch Zero Agents
+    - [2241591] Concurrent checkAndReserve() Calls Each Invoke setAlarm() — Each Overwrites the Previous, Leaving Only One Alarm for N Concurrent Runs
+    - [2244156] Vectorize filter: { spaceId } Shorthand May Not Enforce Tenant Isolation — Silent Cross-Tenant Leak Depending on Binding Version
+    - [2246460] Notification Idempotency Keys Written With No TTL — Permanent KV Keys Block Legitimate Admin Resends Forever
+    - [2248833] Vectorize Vectors Not Deleted on Space Deprovisioning — GDPR Article 17 Right to Erasure Violated for Embedded Knowledge
+    - [2251307] deduct_space_credits Uses PostgreSQL FOR UPDATE Pattern That Is Unsafe Outside a Durable Object — Spec Shows Both Safe and Unsafe Implementa
+    - [2253766] wrangler.jsonc Contains Malformed JSONC With Multi-Line // Comment and Invalid localConnectionString on DO Binding — wrangler deploy Fails t
+    - [2256278] Analytics Engine Positional Fields Have No Schema Registry — Adding a Field Silently Shifts All Subsequent Fields and Corrupts Existing Quer
+    - [2258628] Knowledge Full-Text Search Uses LIKE '%term%' With No Index — O(n) Scan Over All Documents, Breaks at Scale
+  - [2261652] Lemon Squeezy Primary / Stripe Future — Provider-Agnostic Billing Architecture
+    - [2266978] Entire Billing Layer Hardcoded to Stripe — No Provider Abstraction, Cannot Use Lemon Squeezy Without Full Rewrite
+    - [2269745] No Lemon Squeezy Webhook Signature Verification Implemented — All LS Webhooks Accepted Unauthenticated
+    - [2272496] Lemon Squeezy Passes spaceId via custom_data Not Metadata — Current spaceId Resolution Path Breaks for LS Events
+    - [2275046] Lemon Squeezy Event Names Are Entirely Different From Stripe — Billing Handler switch() Cases All Miss
+    - [2278245] Lemon Squeezy Uses Variant IDs Not Price IDs — All Product/Pricing Config Must Change
+    - [2280908] Lemon Squeezy Subscription Pause and Resume Events Have No Handler — Paused Spaces Continue Serving Requests
+    - [2283671] Lemon Squeezy Customer Portal Is Hosted by LS With No Customization — naelao-billing Must Generate a Portal URL Per Customer, Not a Static L
+    - [2286266] Credit-Per-Payment Mapping Not Defined for Lemon Squeezy — No Equivalent of Stripe Price ID to Credit Amount Config
+    - [2288859] Lemon Squeezy order_refunded Event Has No Handler — Refunded Users Retain Credits Indefinitely
+    - [2291339] No Migration Path When Switching From Lemon Squeezy to Stripe — Existing Subscribers Cannot Be Transitioned Without Data Loss
+    - [2294040] RevenueCat Integration Is Mobile-Specific and Has No Lemon Squeezy Equivalent — Mobile Billing Is Undefined for LS Phase
+    - [2296502] Lemon Squeezy Test Mode Works Differently From Stripe — No Per-Request Test Mode Toggle, Separate API Keys Required
+    - [2299476] Lemon Squeezy Webhook Endpoint Must Be Publicly Accessible and Auth-Middleware-Exempt — naelao-router Must Whitelist the Route
+    - [2301876] Lemon Squeezy Reports Amounts in Cents as Strings Not Integers — Billing Arithmetic Uses Wrong Type, Credit Grants Are Off By 100x
+    - [2304466] No Billing Dashboard Aggregation Across Providers — Admin Revenue Reporting Breaks When Both LS and Stripe Are Active
+  - [2308360] GAP-291 – GAP-324: Wrangler Config Mismatches, Broken Seams, CF Platform Violations
+    - [2311027] naelao-eval Wrangler Config Declares Wrong Binding (NAELAO_AGENTS) — All Five Real Bindings Are Missing
+    - [2313591] naelao-triggers Wrangler Config Missing NAELAO_SPACE_DO Service Binding — SpaceDO Trigger Queries Always Fail
+    - [2316009] LocalTunnelDO /exec Uses Non-Existent Blocking Storage Poll — Synchronous Request/Response Pattern Is Broken
+    - [2318821] Knowledge Indexing Jobs Sent to NAELAO_ANALYTICS_QUEUE — Consumed by Analytics Worker, Never Indexed
+    - [2321661] naelao-agents Calls SPACES_SERVICE /internal/members/check — Route Does Not Exist in naelao-spaces
+    - [2324106] wrapHtmlArtifact Uses document.write(atob(base64)) — Base64 Does Not Sanitize; Stored XSS via User HTML
+    - [2327046] Workers for Platforms Dispatch Namespace Pattern Is Broken — Code Loaded from R2 Is Never Uploaded to Dispatch Namespace
+    - [2330233] NaelaoAgentDO Calls Together AI Directly via TOGETHER_AI_API_KEY — Bypasses Credit Reservation, WalletDO, and Analytics Entirely
+    - [2333119] naelao-sweeper Has Only a DLQ Producer Binding — Cannot Consume DLQ Messages; sweepDLQ Is Non-Functional
+    - [2336325] WorkflowRegistryDO alarm() Unconditionally Reschedules — Missing getAlarm() Guard Causes Last-Writer-Wins Overwrite
+    - [2339304] Sweeper Lists 'space:' KV Prefix That Does Not Exist — sweepAbandonedAgentRuns Always Finds Zero Spaces
+    - [2341955] deprovisionSpace KV Credential Deletion Issues 2000+ Individual KV Deletes — Exceeds 1000 Subrequest Limit
+    - [2344977] KV Refresh Token Revocation Has 60-Second Eventual Consistency Window — Token Replay Attack After Logout
+    - [2347621] Impersonation Token Scope Field Is Not Enforced in naelao-agents — Read-Scoped Tokens Can Trigger Write Operations
+    - [2350391] GET /agents/runs Calls SPACES_SERVICE /internal/agents/runs — Endpoint Does Not Exist, Run History Non-Functional
+    - [2352949] Lemon Squeezy Billing Webhooks Processed by Both naelao-billing and naelao-triggers — Duplicate Credit Grants
+    - [2356067] Queue Consumers Use Promise.allSettled Without Per-Message ack()/retry() — Failed Messages Silently Dropped
+    - [2358825] ctx.waitUntil() Credit Settlement Not Guaranteed — Worker Eviction Before Settlement Causes Permanent Revenue Leak
+    - [2361560] space_credits Table Defined Differently in SpaceDO vs schema.ts — Missing Columns Cause NULL Reads at Runtime
+    - [2364659] naelao-sweeper Missing NAELAO_CONCURRENCY_DO Binding — sweepAbandonedAgentRuns Cannot Release Stale Slots
+    - [2367042] deprovisionSpace KV Credential Deletion Uses Single kv.list() — No Cursor Pagination, First 1000 Only
+    - [2369557] Analytics Engine writeDataPoints() Called Without await — Rejections Unhandled, DLQ Fallback Never Fires
+    - [2372141] Fine-Tune Job Storage Calls SpaceDO Endpoint That Does Not Exist — finetune_jobs Schema and Routes Absent
+    - [2374754] KV Rate Limit Counter is Non-Atomic — Concurrent Burst Allows Brute Force Bypass
+    - [2377555] Router Auth Middleware Double-Hops Every Request Through naelao-auth — Revocation Check Inconsistency and Single Point of Failure
+    - [2380399] SSRF via MCP Hub App Worker URL — User-Controlled App Worker URLs Fetch Internal CF Metadata Endpoints
+    - [2383543] Portal Router In-Memory Route Cache Is Not Shared Across Worker Instances — Cache Is Ineffective and Inconsistent
+    - [2386076] Artifact R2 Key and KV Metadata Key Lack Namespace — Artifact IDs Are Not Scoped per Space, Enabling Enumeration
+    - [2388985] WalletDO expires_at and daily_reset_at Stored as TEXT — Inconsistent Format Risks Silent Incorrect Comparisons
+    - [2391653] WorkflowRegistryDO alarm() Fan-Out Has No LIMIT — Full Cursor Spread OOMs on Large Workflow Sets, 30s Timeout Risk
+    - [2395045] JWTPayload in naelao-auth Missing iat Field vs Shared Types — rootSpaceId Never Populated at Login
+    - [2397756] MCP Hub invalidateToolCache Lists Only First 1000 Keys and Issues Unbounded Parallel Deletes — Incomplete Invalidation and KV Rate Limit Ris
+    - [2400251] PBKDF2 Password Hash Storage Format Unspecified — Ambiguous Encoding Risks Verify-Always-Pass or Verify-Always-Fail
+    - [2403938] billingProvider Created Outside Handler for Reuse — No Problem With Reuse, But Secret Selection Logic for verifyWebhook Is Undocumented
+  - [2407316] Appendix J — 20 New Gaps Found in naelao_expanded_gaps_resolved.html Spec
+    - [2410465] Five "SpaceDO Methods" Are PostgreSQL plpgsql Functions — They Cannot Run in DO SQLite
+    - [2413709] provisionSpace() Redeclares spaceDO Twice, Calls db.query() with PostgreSQL Syntax, and References Undefined rootSpaceId
+    - [2417002] SandboxDO Eviction Leaves containerRef=null While SQLite Says "running" — All exec() Calls Return 409 After DO Wakes
+    - [2420468] validateContainerPath() Uses Node.js require('path') — Throws ReferenceError in CF Workers
+    - [2423194] Portal Worker Loads Code String from R2 and Passes It to DW Loader at Request Time — Requires eval(), Prohibited in CF Workers
+    - [2426360] wrapArtifactCode() React Type Generates Worker Script Containing JSX — JSX Cannot Execute at Runtime in CF Workers
+    - [2429862] naelao-analytics Queue Consumer ACKs All Messages Before writeDataPoints() — DLQ Fallback Is Bypassed on AE Write Failure
+    - [2433116] Admin Dashboard AE SQL Uses PostgreSQL INTERVAL Syntax — Invalid in Workers Analytics Engine SQL Dialect
+    - [2435622] listMarketplace() Directly Interpolates filter.maxPrice Into SQL String — SQL Injection in DO SQLite
+    - [2438553] wrapArtifactCode() HTML Type Uses Template Literal Interpolation of User Code — Stored XSS in Artifact Worker Scripts
+    - [2441604] Portal Template String.replace() Without /g Flag — Second and Later Occurrences of Placeholders Remain as Literal Strings
+    - [2444399] x402 Payment Flow Is Non-Atomic — Debit Can Succeed While Creator Credit Fails, With No Rollback
+    - [2448585] Tier 2 web_search Generated Worker Script References TAVILY_KEY as Undefined Variable — ReferenceError at Runtime
+    - [2451909] void agentDO.fetch() Without ctx.waitUntil() — Foreground Agent Runs Killed When HTTP Response Returns
+    - [2454851] deduct_space_credits() Uses PostgreSQL FOR UPDATE Row Lock — Not Supported in SQLite / DO SQLite
+    - [2458368] Portal Slug→SpaceId Routing Stored in KV — Up to 60-Second Eventual Consistency Window Causes "Portal Not Found" After Creation
+    - [2461425] routeAndExecute() Tier 5 Passes Object.values(toolCall.parameters) as Positional args — Property Order Does Not Guarantee Correct CLI Argume
+    - [2464863] Analytics Engine indexes Array Passes Two Values — AE Uses Only First Index, Second Value Is Silently Ignored
+    - [2467473] SandboxDO initSchema() Has No Visible Call Site — SQLite Tables May Not Exist on First Request
+    - [2470482] Browser Tier 4 fill_form Action Passes Form Field Values Through CDP — Passwords and PII Visible in CF Browser Rendering Infrastructure Logs
+  - [2473653] Appendix K — Additional Technical Gap Audit (Third Pass)
+    - [2475551] naelao-billing Uses PostgreSQL Manual Transaction Syntax That Has No Effect in SpaceDO SQLite — Non-Atomic Billing Updates
+    - [2478540] naelao-billing Uses $1 PostgreSQL Placeholders and NOW() / DATE_TRUNC() — All Five SQL Queries Throw at Runtime
+    - [2480904] All Five 'Replacement' SpaceDO Methods Are Written as PostgreSQL plpgsql Stored Functions — Section Heading Claims Migration But Body Still 
+    - [2483825] LocalTunnelDO.pendingCalls Is an In-Memory Map Destroyed on DO Hibernation — All In-Flight Local PC Tool Calls Hang Permanently
+    - [2486429] AssistantSandboxDO.lastCommandAt and sandboxRef Are In-Memory — Alarm Fires with lastCommandAt=0 After Restart, Immediately Terminating Cont
+    - [2489421] x402 Three-Step Cross-DO Payment Is Non-Atomic — Debit Succeeds but Credit Can Permanently Fail, Destroying Funds
+    - [2492171] Nested WalletDO Calls Within the Same Request Chain Deadlock Cloudflare's Single-Threaded DO Model — Funds Lost on Self-Payment
+    - [2494764] naelao-admin Analytics Engine Queries Are Vulnerable to SQL Injection via Unparameterized spaceId, eventType Template Interpolation
+    - [2497215] runFiber(), fiberCtx.stash(), and onFiberRecovered() Are Not Cloudflare Platform Primitives and Do Not Exist — Every Background Agent Run Th
+    - [2499816] NAELAO_AI_GATEWAY Used as a Direct DO/SDK Binding Throughout — CF AI Gateway Is a URL Proxy, Not a Binding Type
+    - [2502436] Vectorize Filter Uses Flat Object Syntax { spaceId, projectId } — Must Use { field: { $eq: value } } Operators — Silent Cross-Tenant Data Le
+    - [2505049] Vectorize returnMetadata:'all' Is Not a Valid API Value — Causes Runtime Error or Silent Metadata Loss on All Knowledge Queries
+    - [2507375] NAELAO_BILLING.recordTokens() Called as a DO RPC Method — naelao-billing Is a Standard Worker, Service Bindings Expose Only .fetch()
+    - [2509831] void agentDO.fetch() Fire-and-Forget in Worker Without ctx.waitUntil() — Agent Run May Be Killed Before Starting
+    - [2512260] KV-Based Rate Limiting in naelao-router Is Eventually Consistent — Allows Up to 300x Over-Limit Under Concurrent CF PoP Load
+    - [2514846] KV Token Revocation Check Suffers 60-Second Eventual Consistency Lag — Revoked Tokens Remain Valid After Security Incidents
+    - [2517384] Notification Idempotency Key Written After Delivery — Failed Channel Causes Duplicate Send on Retry
+    - [2519775] Admin DLQ Retry: queue.send() + ACK Are Non-Atomic — ACK Failure Causes Double-Delivery into Primary Agent Queue
+    - [2521957] Feedback Log R2 Append Is a Racy Read-Modify-Write — Concurrent Feedback Events Cause Silent Data Loss
+    - [2524451] Eval Suite Runs Sequential for...of Loop Inside waitUntil() — Guaranteed CPU Timeout for Any Dataset Larger Than ~2 Items
+    - [2526971] naelao-eval eval_runs SQLite Schema Uses PostgreSQL-Only Types and Functions — Table Cannot Be Created in SpaceDO
+    - [2529454] Space Provisioner Step 1 Calls PostgreSQL Stored Function create_space_with_defaults() — Guaranteed Runtime Failure Aborts Every Space Creat
+    - [2532019] Provisioner Step 5 Loads SQL Migration from R2 and Runs via db.query() — PostgreSQL Incompatibility and SQL Injection Vector
+    - [2534514] LoRA Fine-Tuning Loads Entire Training File into Memory via trainingObj.text() — OOM Crash for Datasets Over ~43 MB
+    - [2537062] listMarketplace() SQL Injection via Unparameterized filter.maxPrice Interpolation — Complete Marketplace Database Compromise
+    - [2539421] processCanaryRollouts() Is Never Triggered — No Alarm, No Cron, No Caller — Canary System Is Dead Code
+    - [2541793] naelao-knowledge Calls spaceDO.query() with PostgreSQL Syntax — Method Does Not Exist on SpaceDO Service Binding, knowledge_docs Never Writt
+    - [2544333] space_templates Schema Contains Supabase RLS Policies, auth.users FK, and TIMESTAMPTZ — Crashes SpaceDO Initialization
+    - [2546911] node:path Module Used for Path Traversal Validation in SandboxDO — Not Available in CF Workers Runtime
+    - [2549243] Platform Skill SHA-256 Signing Uses Node.js crypto.createHash() — Not Available in CF Workers Runtime
+    - [2551625] FinetuneJobDO Calls Together AI Directly, Bypassing SSRF Prevention Layer — And this.rootSpaceId Is Never Initialized
+    - [2554052] WorkflowRegistryDO.sweepSchedules() References this.spaceId Which Is Never Initialized — Every Scheduled Workflow Dispatch Creates a Workflo
+    - [2556474] checkSubAgentStatus() Constructs AgentDO ID with Two Components — Misses projectId, Polls Wrong DO Instance
+    - [2558986] AssistantDO Uses this.ctx.waitUntil() — waitUntil() Is on ExecutionContext, Not DurableObjectState — Slack Webhook Handler Crashes
+    - [2561524] Mini-AGI executeFederatedQueryLoop() Synthesizes Answer Before Writing Audit Log — DO Eviction Between Steps Permanently Loses Mandatory Aud
+    - [2564042] Sweeper Enumerates Active Assistants via KV list() with No Pagination — All Spaces Beyond 1,000 Silently Skipped
+    - [2566361] AppRegistryDO and SpaceTypeRegistryDO Are Global Singleton DOs — Single-Threaded Bottleneck Under Concurrent Platform Load
+    - [2568835] wrapArtifactCode() Template Literal Injection — ${...} Expressions in User Code Are Expanded, Leaking Worker Environment Variables
+    - [2571394] NaelaoAgentDO ID Constructed from Three Unsanitized Components — Colon Collisions Between spaceId:projectId:threadId Can Point to Wrong DO
+    - [2573948] Sweeper Reads DLQ via CF REST API with Account-Level Token — Security Anti-Pattern; DLQ Should Use Consumer Binding
+    - [2576285] WorkflowRegistryDO sweepSchedules() Has No Idempotency Guard — Concurrent Sweeper Invocations Trigger Duplicate Workflow Runs
+    - [2578691] VAPI Voice Call Configuration Hardcodes Deprecated claude-3-haiku-20240307 Model ID — Voice Alerts Will Fail or Route to Stale Model
+    - [2580883] SpaceDO.spaceId and rootSpaceId Are In-Memory Instance Properties Never Persisted — Lost on Every DO Restart
+    - [2583246] Sweeper Abandoned Agent Run Detection Uses NOW() - INTERVAL '10 minutes' PostgreSQL Syntax — Query Throws on Every Sweeper Tick
+    - [2585514] Bootstrap Autopilot Activation Has No Atomic Check-and-Transition — Concurrent Checkers Can Trigger Duplicate Activations
+    - [2587897] naelao-dlq Dead Letter Queue Binding Not Declared in wrangler.jsonc — Failed Messages Are Discarded, Not Routed to DLQ
+    - [2590171] Portal Router References Undeclared env.PORTAL_ROUTES KV Binding — Deploy-Time Binding Error on All Portal Routing Calls
+    - [2592401] Categorizer Cron Has No Idempotency — CF At-Least-Once Cron Fires Cause Double-Categorization and Doubled LLM Costs
+    - [2594795] Daily Standup Clears Feedback Log After LLM Analysis — Feedback Written During 2-Second LLM Call Window Is Permanently Lost
+    - [2597203] React Artifact Wrapper Imports from react-dom/server — Unavailable in Tier 2 Worker Isolate Without npm Resolution
+    - [2599564] ConcurrencyDO Tier Limits Are Hardcoded Constants — Cannot Update Without Worker Redeployment; Subscription Upgrades Not Wired to Concurrenc
+  - [2601880] Appendix L — Additional Technical Gap Audit (Fourth Pass)
+    - [2603637] SSRF Allowlist Check Uses endsWith() — evilgithub.com Passes as github.com
+    - [2605937] sandboxRef Cached In-Memory Is Null After DO Hibernation — All Container exec() Calls Return 503
+    - [2608364] lastCommandAt Resets to 0 After Hibernation — Container Stopped Immediately on Every Alarm Tick
+    - [2610552] LocalTunnelDO.grants Array Is In-Memory and Never Persisted — All Permissions Lost on Hibernation, Permanent 403
+    - [2612786] pendingCalls Map and WebSocket Ref Destroyed on Hibernation — In-Flight RPC Responses Silently Dropped
+    - [2615160] Skill Signature Verification Reads from KV — 60-Second Eventual Consistency Allows Revoked Skills to Execute
+    - [2617453] Global Schema Uses gen_random_uuid() as Column Default — no such function Error Crashes Schema Init for Every Space
+    - [2619610] Global Schema Declares TIMESTAMPTZ DEFAULT NOW() — Every INSERT Using Default Stores NULL, Breaking All Time-Based Logic
+    - [2621712] JSONB Column Type Declared in SQLite Schema — Missing NOT NULL Constraints and Broken Type Contract
+    - [2623837] Foreign Keys Reference auth.users(id) — Supabase-Internal Table Does Not Exist in CF DO SQLite
+    - [2625954] ALTER TABLE ENABLE ROW LEVEL SECURITY and CREATE POLICY Statements in Global Schema — Syntax Error Crashes All Space Init
+    - [2628340] Human Approval Awaiting In-Memory Promise Lost on DO Hibernation — Agent Loop Permanently Stuck
+    - [2630811] Webhook Signature Verification Returns true Unconditionally for All Non-GitHub Providers — Complete Auth Bypass
+    - [2633405] processCanaryRollouts Is a Module-Level Function That References this.ctx — TypeError on Every Invocation
+    - [2635717] AppRegistryDO.handleInstall Uses db.query() with $N PostgreSQL Placeholders — All App Installs Fail
+    - [2638076] FinetuneJobDO.alarm() Uses db.query() with $N Placeholders and NOW() — All Fine-Tune Jobs Permanently Stuck in 'running'
+    - [2640461] append_to_file Skips the Advisory File Lock — Concurrent Appends Silently Corrupt File Contents
+    - [2642752] Buffer.from(screenshot).toString('base64') Uses Node.js Buffer — Not Available in CF Workers
+    - [2645026] resolveToolRoute() Hardcodes agentId='unknown' in KV Cache Lookup — All Agent-Specific Tools Never Found
+    - [2647462] idleTimeoutMs = -1 for Enterprise Tier Stored In-Memory — Resets to 1 Hour After Hibernation, Enterprise Containers Shut Down
+    - [2649732] Tier 1 write_file Bypasses Advisory Lock — Parallel Tier 1 Writes Race and Corrupt Files
+    - [2652115] WRITE_LEARNING postMessage Handler Accepts Arbitrary Key/Value from Any Iframe — Storage Flooding and Instruction Injection
+    - [2654715] Per-User Personalization Injected in Iframe src URL Hash — Leaks Email and Plan Tier to Browser History
+  - [2656940] Appendix M — Final Technical Gap Audit (Fifth Pass)
+    - [2659081] WebSocket Upgrade Detection Reads URL Query Param Instead of Upgrade Header — All WebSocket Clients Silently Downgraded to SSE
+    - [2661172] SSE Background Writer Started with void async IIFE and No waitUntil — Stream Killed After First Chunk
+    - [2663329] createThread() and getMessages() Reference Undefined db Variable — ReferenceError on Every Call
+    - [2665543] handleTokenUsage() Uses BEGIN/COMMIT/ROLLBACK Manual Transactions — No-Op or Parse Error in DO SQLite
+    - [2667696] handleTokenUsage() Uses NOW(), DATE_TRUNC(), and $N PostgreSQL Syntax — All Billing Queries Fail
+    - [2669824] createSpace() Calls spaceDO.query() Before spaceDO Is Declared — ReferenceError: Cannot Access spaceDO Before Initialization
+    - [2672036] settleEarnings() Queries Non-Existent settled Column — SQLite: no such column Crashes Every Earnings Settlement
+    - [2674238] settleEarnings() References Undefined db Variable and Uses $N Placeholders — Every Settlement Throws ReferenceError
+    - [2676420] Duplicate const spaceDO Declarations in Route Handler Scope — SyntaxError Prevents Worker from Deploying
+    - [2678524] DataPipelineWorkflow Step 'extract' Fetches Arbitrary User-Supplied sourceUrl Without Validation — SSRF
+    - [2680815] Analytics Engine Queries Use PostgreSQL Syntax — All Health, Error-Rate, and Latency Dashboards Return Errors
+    - [2683141] SECURITY_EVENT_TIMELINE Filters on index2 — index2 Is Never Populated, Security Dashboard Always Empty
+    - [2685238] DailyReportWorkflow Uses Public HTTPS fetch() for All Internal API Calls — Violates Service Binding Architecture
+    - [2687605] DataPipelineWorkflow Step 'transform' Sends GET Request with a Body — Body Silently Stripped
+    - [2689802] Dynamic env[workerBinding] Access Returns undefined With No Diagnostic — TypeError Crashes RemoteLoop
+    - [2692102] naelao-spaces Uses COUNT(*)::int PostgreSQL Cast Syntax — SQLite Parse Error on Every Row Count Query
+    - [2694166] Invite Creation Uses NOW() + INTERVAL '7 days' — PostgreSQL Syntax, No Invite Can Ever Be Created
+    - [2696199] Accept-Invite Handler Uses db.query() with $N and NOW() — ReferenceError, No Invite Can Be Accepted
+    - [2698314] CartDO.checkout() Generates checkoutToken but Never Persists It — Token Lost on Network Failure, Cart Wiped Without Order
+    - [2700617] Space Provisioner Errors Swallowed in waitUntil — Space Marked active Before Provisioning Completes, Failures Silent
+    - [2702970] Admin Metrics Query References auth.users and Uses NOW()-INTERVAL — Supabase Artifact, User Count Always Broken
+    - [2705051] Admin User Ban Uses db.query() with $N, NOW(), and boolean true — ReferenceError, Admins Cannot Ban Users
+    - [2707215] truncateMiddle() Inserts Middle Messages in Reverse-Chronological Order — LLM Receives Backwards Context
+    - [2709417] StreamingXMLParser State Fields Are In-Memory — Lost on DO Hibernation Between Stream Chunks, Corrupting Tool-Call Extraction
+    - [2711720] runAnalysisBranch() Uses env.AI Workers AI Binding — Absent from RemoteLoop Workers That Don't Declare It
+    - [2713898] RemoteLoop Execution Token TTL of 120 Seconds Is Insufficient for Multi-Branch Reasoning — Runs Aborted Mid-Execution
+    - [2716033] executeContentLoop Uses Public HTTPS fetch() for Internal Tool Calls — Unnecessary Latency and Egress Cost
+    - [2718207] list_files Path-Stripping Uses a Fixed Offset Instead of Prefix Match — Returns Malformed Relative Paths
+    - [2720473] writeDataPoint() Called Fire-and-Forget with No Error Handling — Metric Loss Is Silent, Operators Fly Blind During Incidents
+    - [2722759] createSpace Passes NOW() as Inline SQL Rather Than a Bound Parameter — created_at Always NULL
+    - [2724748] Orchestrator.executeTools() Has No Per-Tool Timeout — Hung Tool Call Kills Entire Agent Turn After 30s
+  - [2727022] Sixth Pass — Uploaded File Gap Cross-Reference
+    - [2728770] Context Window Compaction — Missing Algorithm
+    - [2730972] SpaceDO Schema Migration — No Strategy Specified
+    - [2733291] Durable Object Location Affinity — locationHint Never Used
+    - [2735665] CF Access Public Key Caching — Key Rotation Causes Silent Auth Failure
+    - [2738027] DO Input Gates — Concurrent await Interleaves Read-Modify-Write State
+    - [2740426] Clock Skew Across PoPs — Time-Boundary Comparisons Use No Tolerance
+    - [2742796] Dead-Letter Queue — NAELAO_DLQ Binding Exists, Consumer Worker Does Not
+    - [2745193] Prompt Injection Scanner — Referenced as 27 Patterns, Never Enumerated
+    - [2747822] Tool Output Can Overflow the Context It Is Inserted Into
+    - [2750116] SSL Certificate Provisioning Race — Custom Domain Serves HTTP During Verification Window
+    - [2752597] Unguarded JSON.parse on KV Values — One Corrupt Key Crashes All Requests
+    - [2754912] isAllowedOrigin — WebSocket CORS Guard Called But Body Not Specified
+    - [2757313] Sub-agent Credit Pre-deduction — Referenced in Comment, Never Implemented
+    - [2759875] Credential URL Parameters Stripped at Router But Not in Logs
+    - [2762307] Dynamic Workflow Cancellation — CF Instance ID Never Stored; No Cancel Endpoint
+    - [2764701] MiniAGI Access Grant Expiry — Grants Checked Once at Plan Start, Not Per Step
+    - [2767079] Space Assistant Shared In-Memory Context — Concurrent Users Bleed State
+    - [2769647] Container Sync Script — Referenced in Tests, Never Specified
+    - [2772215] checkLocalAgentConnected — Called But Never Implemented; No Timeout
+    - [2774606] Project Container Slot Limit — Stated in Prose, Never Enforced in Code
+    - [2776981] Tool Manifest Stale When Container Goes to Sleep — No Invalidation on Stop
+    - [2779506] R2 Workspace vs Container Filesystem Diverge — read_file and execute_python See Different Content
+    - [2782026] Local Agent Re-auth on Reconnect — New WebSocket Has No Identity Verification
+    - [2784508] Multi-Container Billing Race — WalletDO.deduct() Missing blockConcurrencyWhile
+  - [2787169] Seventh Pass — Full Three-Band Spec Re-Audit
+    - [2789192] Malformed wrangler.jsonc — Orphaned Hyperdrive Remnant Breaks Config Parse
+    - [2791010] SSRF Filter Checks Hostname String, Not Resolved IP — DNS Rebinding Bypass
+    - [2793011] AgentDO WebSocket Origin Check Uses startsWith — Prefix-Spoof Bypass
+    - [2794868] LLM Judge Output Parsed as content[0].text — Fails Open on Privacy Gate
+    - [2796801] R2-Based Annotation Task Lock Has Check-Then-Act Race — Double Annotation and Double Pay
+    - [2798614] executeAgentLoop Called With Wrong Arguments and a Return It Never Produces
+    - [2800433] Stateful Global Regexes (g flag) Race Across Concurrent .test() Scans
+    - [2802290] HTML Artifact Wrapper Escapes Backticks But Not ${} — Template-Literal Injection
+    - [2804180] Heartbeat Written to storage.put() But Sweeper Queries SQL — Liveness Never Detected
+    - [2806039] MiniAGI Denied-Domain Names Disclosed to Unauthorized Users
+    - [2807870] Non-httpOnly Space Cookies Are Client-Writable — Cross-Space Access Vector
+    - [2809720] Invalid Hono APIs — c.req.cookie?.() and c.param() Are Not Real Methods
+    - [2811500] nextCursor Calls .getTime() on a String/Number Column — Pagination Throws
+    - [2813176] ConcurrencyDO Has No fetch() Handler But Callers Invoke It via fetch — Concurrency Gate Never Fires
+    - [2815143] base64 via String.fromCharCode(...spread) — Stack Overflow on Large Buffers
+    - [2816928] if (!inputTokens || !outputTokens) Rejects Legitimate Zero-Token Responses
+    - [2818641] Vectorize Upsert and Metadata Insert Not Atomic — Orphaned Vectors on Partial Failure
+    - [2820547] searchKnowledge Appends projectId=undefined — String 'undefined' Filters Out All Chunks
+    - [2822322] Promise.race Timeout Leaks the Timer and Never Cancels the Container exec
+    - [2824074] r2_mounted Persisted as true But Mount Is In-Memory — Container Runs With Empty Workspace
+    - [2825890] Local Path Grant Check via startsWith — Prefix Escape and No .. Normalization
+    - [2827646] Sweeper Task Functions Declared (env) But Invoked as (db, env) — env Is Always Undefined
+    - [2829433] jsonwebtoken (Node-only) Imported Into workerd Tests — Fails to Load
+    - [2831096] Tool Results Returned in Tier Order, Not Call Order — tool_use ID Misassociation
+    - [2832903] mcp-hub Awaits Analytics Send in Request Path and Skips Logging on Failure
+    - [2834625] Cutover Checks Query pg_tables/auth.users — Meaningless Against DO SQLite
+    - [2836416] SpaceDO.fetch(req) Body References Undefined `request` — ReferenceError on Hottest Path
+    - [2838167] App Install Count Incremented Non-Atomically — Inflates on Duplicate/Failed Installs
+    - [2840064] Cron Parser Skips Day-of-Month and Mishandles Ranges/Steps — Wrong/Duplicate Schedules
+    - [2841875] Major Migration Runs ALTER TABLE + R2 Move Non-Transactionally and Returns success Unconditionally
+    - [2843749] Two evaluateOutput Definitions With Incompatible Signatures — Extended Scorers Get Wrong Arguments
+    - [2845672] feedback-log.jsonl Appended via R2 Read-Modify-Write — Concurrent Feedback Lost, Truncate Races Writers
+    - [2847470] Eval Creates AgentDOs by Random idFromName and Never Destroys Them — Unenumerable Orphans
+    - [2849267] Portal Router Caches Before Checking Method — Non-GET Responses Cached and Cross-Served
+    - [2851038] attachCustomDomain Spreads a Host String as if It Were a PortalRoute — Empty Route Written
+    - [2852826] Community Revenue Split Mixes Dollars and Cents — Ledger Amounts Corrupted
+    - [2854633] Sub-Space / Member Quota Is Check-Then-Insert in the Worker — Race Exceeds Plan Limits
+    - [2856492] dispatchRemoteLoop Reads ctx.manifest That Was Never Assigned — TypeError on Delegation
+    - [2858269] Shell and Panel postMessage Origin Constants Disagree — Cross-Frame Messages Silently Dropped
+    - [2860101] /eval/run Returns Immediately via waitUntil But CI Expects a Synchronous Score
+    - [2861880] WHERE status = "active" Uses Double Quotes — Identifier, Not String Literal, in SQLite
+  - [2863867] Eighth-Pass Technical Gap Analysis
+    - [2865396] pendingApprovals Map Lost on DO Hibernation — Agent Hangs Forever
+    - [2867286] SpaceDO Canonical §22 Schema Uses PostgreSQL — Incompatible with DO SQLite
+    - [2869249] createSpace() Calls spaceDO.query() Before Declaration — ReferenceError + PostgreSQL $N Placeholders
+    - [2871127] handleSlackWebhook Double-Reads Consumed Request Body — Signature Always Fails
+    - [2872995] AssistantDO this.spaceId and this.userId Not Persisted — Undefined After Hibernation, Cross-Tenant R2 Paths
+    - [2874992] x402Payment Non-Atomic Two-DO Debit-Then-Credit — Money Lost If Credit Call Fails
+    - [2876926] ConcurrencyDO setAlarm Replaced on Every Reservation — Zombie Slots Never Cleaned
+    - [2878797] Analytics Queue msg.ack() Called Before writeDataPoints — Events Permanently Lost on Error
+    - [2880736] billingTier Never Passed to ConcurrencyDO — Paid Spaces Throttled to Free-Tier Limits
+    - [2882746] Admin Audit Analytics Engine Query Built via String Interpolation — SQL Injection
+    - [2884737] APNs JWT Signed with DER-Encoded ECDSA Signature — iOS Push Always Rejected
+    - [2886677] sendPush References spaceDO Variable Never Defined in Scope — ReferenceError on Every Call
+    - [2888628] export default { ...app, scheduled } Spread Destroys Hono Fetch Handler
+    - [2890656] space_templates DDL Uses PostgreSQL RLS, TIMESTAMPTZ, auth.users — SQLite Incompatible
+    - [2892686] BYOK Endpoint Returns Decrypted API Key in Plaintext JSON Response — Secret Exposed
+    - [2894666] AppRegistryDO.handleInstall Uses PostgreSQL db.query + $N Params — App Installation Broken
+    - [2896541] installTemplate Uses gen_random_uuid() + $N Params + NOW() — SQLite Incompatible
+    - [2898584] Non-GitHub Webhook Providers Return true from verifySignature — Auth Bypass
+    - [2900642] Duplicate const spaceDO in Archive Handler — SyntaxError Prevents Worker from Loading
+    - [2902598] processCanaryRollouts Standalone Function Accesses this.ctx — TypeError on Every Invocation
+    - [2904639] naelao-billing Token-Usage Handler Uses PostgreSQL BEGIN/COMMIT + db.query — Billing Writes Never Execute
+    - [2906662] getAvailableModels() References Undeclared spaceDO and Uses Non-Existent .rows on SQLite Result
+    - [2908507] handleChannelMessage Session Scoped to Channel Type Only — Cross-User Conversation Bleed
+    - [2910418] createTogetherAIClient() Instantiates Anthropic SDK Against OpenAI-Compatible Together AI — 422 on All Calls
+    - [2912378] loadSkillsFromR2() and list_files Both Truncate at 1000 R2 Objects — Skills and Files Silently Lost
+    - [2914241] WalletDO Creator Earning Fired as Bare void in DO Handler — Silently Lost on Response Return
+    - [2916121] WorkflowRegistryDO Calls Non-Existent instance.id() on CF Workflows Stub — Workflow Creation Throws
+    - [2918036] GET /threads Uses PostgreSQL $N Placeholders + Dead db.query Reference — ReferenceError on Every List Request
+    - [2919943] createSSEStream Bare void IIFE Killed When Response Returns — Zero SSE Tokens Delivered
+    - [2921778] SandboxDO Alarm Reads this.lastActiveAt Class Field — Always 0 After Hibernation, Stops Every Container
+    - [2923768] SandboxDO sandboxRef In-Memory Field Nulled on Hibernation — Container Orphaned, All Exec Calls Fail
+    - [2925764] getCredentialForUrl endsWith Domain Check — Subdomain Bypass Forwards Credentials to Attacker
+    - [2927677] Vectorize Filter Uses Flat Object — Cross-Space Knowledge Returned, Tenant Data Leak
+    - [2929648] deduct_space_credits Uses SELECT FOR UPDATE Row Lock — Invalid Syntax in SQLite, Billing Deduction Broken
+    - [2931715] VAPI Voice Escalation Has No Approval-Outcome Webhook Handler — Call Result Never Processed
+  - [2933322] Ninth-Pass: CF Think / Workspace / OpenClaw / Hermes Gap Analysis
+    - [2934637] AssistantDO Does Not Extend @cloudflare/think Think Class — Hand-Rolled Loop Misses Stream Resumption and Lifecycle Hooks
+    - [2937028] Extended Thinking Signature Never Captured — Multi-Turn Chain-of-Thought Broken at Turn 2
+    - [2939160] No beforeToolCall() Hook — Malicious Skill Tool Invocations Cannot Be Intercepted or Blocked
+    - [2941341] Sub-Agents Dispatched via Raw HTTP fetch() — No Abort Propagation, No Typed Streaming RPC, Orphaned Agents
+    - [2943588] Skill Executor Component Missing — SKILL.md Instructions Injected as Markdown with No Runtime Enforcement
+    - [2945876] Fiber Result Delivery Mechanism Undefined — runFiber() Returns Workflow ID with No Callback Path
+    - [2947979] Workspace R2 Writes Are Non-Transactional — Concurrent Batch File Operations Can Partially Succeed
+    - [2950142] AssistantDO Conflates MCP Server and AIChatAgent — Violates CF Think SDK Protocol Separation
+    - [2952316] Agent Cannot Self-Manage Its Own Memory — No memory Tool Exposed to LLM (Hermes Pattern Missing)
+    - [2954580] Runtime Agent Config Stored in KV — Up to 60-Second Stale Config After Tool Revocation or Model Change
+    - [2956789] Hermes-Style Skill Learning Absent — Agent Never Crystallizes Solved Workflows into Reusable Skills
+    - [2959071] No beforeTurn() Hook — Per-Turn Model/System-Prompt Override Impossible for Multi-Model Routing
+    - [2961258] No maxSteps Guard in Agentic Loop — Runaway Agent Exhausts Credits and CPU Without Bound
+    - [2963324] Agent Decisions Invisible to Tail Workers — CF Agents Observability Channels Not Wired
+    - [2965540] WebSocket Reconnect Creates Fresh Completion — In-Flight Tool Results Lost During Long-Running Tools
+    - [2967670] Global 5-Minute Cron Fires All Assistants Simultaneously — Thundering Herd on KV Registry
+    - [2969785] No Versioned Workspace Storage — File Overwrites Are Permanent with No Diff or Rollback
+    - [2971975] Structured edit() Tool Missing from Tier 1 — LLM Reads Entire File and Writes Entire File Back
+    - [2974059] Tier 5 Sandbox Is Custom Implementation — Misses CF Sandboxes GA Product (Ephemeral Micro-VMs with FUSE Workspace)
+    - [2976316] No beforeStep() Hook — Per-Step Tool Narrowing and Token Budget Injection Impossible
+    - [2978529] AI Model Hardcoded at Module Level — No Per-Agent or Per-Space Model Override, No Billing-Tier Enforcement
+    - [2980680] Sub-Agent Results Block Parent — No Incremental Streaming of Sub-Agent Progress
+    - [2982841] Memory OS Grows Without Bound — No Pruning Causes System Prompt Bloat and Context Window Exhaustion
+    - [2985039] No MCP Tool Auto-Discovery — All Skills Hand-Registered, Cannot Leverage External MCP Catalogs
+    - [2987272] No onChatEnd() or onChatError() Hooks — No Guaranteed Post-Turn Cleanup or Error Reporting
+    - [2989420] Skill Version Pinning Absent — Skill Updated in R2 Mid-Task Causes Tool Signature Mismatch
+    - [2991665] No afterToolCall() Hook — Tool Results Not Sanitized or Audited Before Being Sent Back to LLM
+    - [2993878] AssistantDO Schema Initialization Missing blockConcurrencyWhile() — First-Wake Race Corrupts Tables
+    - [2996273] Heartbeat Handler Calls runFiber() as Bare void — Fire-and-Forget Jobs Killed When Alarm Returns
+    - [2998555] System Prompt Fully Rebuilt Every Turn — No CF AI Gateway Prompt Cache Anchor for Memory OS Injection
+  - [3000535] Tenth-Pass Full-Spectrum Technical Gap Analysis
+    - [3001971] Dynamic TypeScript eval() Prohibited in CF Workers — Artifacts Feature Is Non-Functional
+    - [3004290] Money Stored as REAL (Float) in SQLite — Rounding Errors Compound Over Millions of Transactions
+    - [3006643] Shell Injection via LLM-Supplied Tool Name — Unsanitized Command Passed Directly to exec()
+    - [3008999] Space Isolation Check Fires After Database Writes — Attacker Records Session Before Receiving 403
+    - [3011216] Non-Storage I/O (fetch, R2 writes) Inside DO Allows Request Interleaving — State Corruption
+    - [3013683] Vectorize.deleteByIds() Never Called on Document Deletion — Ghost Vectors Accumulate, GDPR Violation
+    - [3016134] Space Deletion Leaves R2, Vectorize, and KV Orphans — No Cascade Cleanup, Unbounded Storage Cost
+    - [3018486] CF Workflows 1,000 Step Hard Limit — Long-Running Agent Tasks Silently Terminate Mid-Run
+    - [3020850] Embedding Model Version Not Tracked — Model Upgrade Silently Invalidates All Existing Vectors
+    - [3023276] Token Billing Skipped When Streaming Client Disconnects — Free Inference via Intentional Disconnect
+    - [3025699] Session Queries Lack space_id Predicate — Cross-Space Session Hijacking
+    - [3028051] Conversation Log Access Flag Settable Without Admin Approval — GDPR Data Processing Bypass
+    - [3030380] Memory Context Silently Capped at 20 Items — Oldest Memories Discarded Without Archival
+    - [3032634] 27-Pattern Skill Scanner Bypassed by Obfuscation — AST Analysis Required for Untrusted Skills
+    - [3035072] Webhook Secrets Have No Rotation Mechanism — Compromised Secret Permanently Valid
+    - [3037379] Space Type Manifest Loaded Without Signature — Missing signature Field Silently Ignored
+    - [3039766] Portal Slug KV Lock Uses 30-Second TTL — Concurrent Provisioning Race Allocates Duplicate Slugs
+    - [3042137] Product Slug Has No UNIQUE Constraint or Atomic Reservation — Concurrent Creates Produce Duplicates
+    - [3044459] OIDC Client Secret Tied to CF-Managed Master Key — Secret Rotation Impossible After Key Rotation
+    - [3046771] Sub-Space scenario_type Mutable After Creation — Space Type Contract Violated by PATCH
+    - [3049127] Message Listing Queries Missing ORDER BY — Tool Results Arrive Out of Sequence in Agent Context
+    - [3051594] No Message Content Size Limit — Unbounded User Input Causes DO OOM on Context Reconstruction
+    - [3054034] Sweeper Fan-Out to All Active Spaces Exceeds CF Workers 1,000 Subrequest Limit
+    - [3056371] Vectorize topK Hardcoded at 20 — Relevant Documents Beyond Rank 20 Never Surface
+    - [3058752] OAuth Token Refresh Retains All Historical Token Values — Breach Exposes Full Token History
+    - [3061080] NaelaoAgentDO Missing Unbound CPU Limit Declaration — Agent Times Out Under Default 30-Second CPU Budget
+    - [3063527] Auth Middleware Calls c.req.json() — Route Handler Gets Empty Body on Second Parse Attempt
+    - [3065854] Together AI Model Translation Has No Fallback Validation — Unknown Model Returns Opaque 400 Error
+    - [3068260] AI Gateway DLP Response Scanning Silently Disables Streaming — Agent Gets Buffered Response
+    - [3070671] Code Outside step.do() Re-Executes on Workflow Replay — Side Effects Duplicated on Retry
+    - [3073083] R2 Multipart Upload UploadId Not Persisted Across DO Wakes — Large File Uploads Always Fail
+    - [3075551] postMessage Origin Not Validated in App Iframes — Forged Token Injection from Third-Party Pages
+    - [3077957] Workflow R2 Path Validation Uses startsWith — Crafted spaceId Bypasses Isolation
+    - [3080335] Member Role Downgrade Does Not Invalidate Active Sessions — Privilege Window Until Session Expiry
+    - [3082787] Workers AI Context Window Claimed in Docs Differs From Actual — Silent 400 on Oversized Prompts
+  - [3084909] Eleventh-Pass: Use the Platform — CF Native vs. Spec Custom Implementations
+    - [3086533] Voice Built on Third-Party VAPI Instead of CF withVoice Mixin + Workers AI Native STT/TTS
+    - [3089212] pendingApprovals In-Memory Map Lost on DO Hibernation — CF needsApproval Tool Flag Is the Native Solution
+    - [3092083] Scheduled Tasks Use cron-jobs.json in R2 + Global Sweeper — CF this.schedule() Is the Native Solution
+    - [3094715] Concurrent Sweeper Invocations Create Duplicate Cron Job Runs — No Atomic Dedup Guard
+    - [3097170] Agent State Managed via Ad-Hoc SQL Queries — CF this.setState() Provides Typed Persistent State
+    - [3099690] Sub-Agents Dispatched via Raw HTTP fetch() — CF this.subAgent(ChildClass, name) Is the Native Solution
+    - [3102329] No Client SDK Documented — CF Provides useAgent(), useAgentChat(), useVoiceAgent() React Hooks
+    - [3104941] Manual idFromName() Routing — CF routeAgentRequest(request, env) Handles Agent URL Dispatch Natively
+    - [3107448] Twilio Media Streams Integration Hand-Rolled — @cloudflare/voice-twilio Provides It Natively
+    - [3110049] Voice Call Transcript Not Persisted via saveMessage() — Conversation History Broken After Voice Turns
+    - [3112603] DO Keep-Alive Relies on 5-Minute Global Cron — CF this.keepAlive() Is the Native Solution
+    - [3114872] VAPI External Speech Models Used Instead of CF Workers AI Native STT/TTS
+    - [3117226] CF Realtime SFU Not Used for Browser-to-Agent Real-Time Audio — Could Eliminate Telephony Dependency
+    - [3119570] this.queue() Pattern Not Used — Internal Async Work Sent via CF Queues (External Overhead)
+    - [3122012] this.onStart() Lifecycle Hook Not Implemented — DO Initialization Not Idempotent
+    - [3124441] useAgentToolEvents() Hook Missing — No Client-Side Tool Execution Progress Tracking
+    - [3126681] this.ctx.storage.sql.exec() Used Directly — CF this.sql Template Literal Is Safer and More Idiomatic
+    - [3129218] addToolApprovalResponse() Not Implemented — Approval Prompts Have No Real-Time Client Path
+    - [3131716] parentAgent() and parentPath Not Implemented — Sub-Agents Cannot Notify Parent of Progress
+    - [3134187] Manual getWebSockets().forEach() Loop — CF this.broadcast() Is the Native Broadcast Method
+    - [3136498] afterTranscribe() Hook Missing — PII Not Filtered Before Voice Transcript Reaches LLM
+    - [3138809] beforeSynthesize() Hook Missing — Content Moderation Gap on Voice Responses Before TTS
+    - [3141132] AI Gateway Spend Limits Not Configured — No Per-Provider Budget Enforcement at Infra Level
+    - [3143547] onStateChanged() Hook Not Implemented — No Agent State Change Audit Trail
+    - [3145891] STT eotThreshold Not Configured — Default End-of-Turn Detection Causes Premature or Late Turn Ends
+    - [3148310] beforeCallStart() Hook Missing — No Rate Limiting or Auth on Incoming Voice Calls
+    - [3150709] SFU WebSocket Auto-Reconnect Not Used — Browser Audio Drops Permanently on Network Hiccup
+    - [3153102] VoiceClient Vanilla JS Integration Missing — No Non-React Voice Embedding Option for Builders
+    - [3155607] scheduleEvery() Not Used for Recurring Tasks — Cron Expression Parsing Hand-Rolled and Error-Prone
+    - [3158112] session_affinity Not Set for Workers AI Calls — KV Prompt Cache Hit Rate Suboptimal
+    - [3160489] Sub-Agent URL Routes Not Registered in wrangler.toml — /agents/ Path Returns 404
+    - [3162851] needsApproval: true Tool Flag Pattern Not Applied — Per-Tool Client Approval Granularity Missing
+    - [3165394] forceEndCall() Not Implemented — Voice Calls Cannot Be Terminated Programmatically
+    - [3167850] Agent Connection Handler Not Implementing CF onConnect() Pattern — Auth Checked in Message Handler
+    - [3170385] No Multi-Agent Team Composition Pattern — CF Agent Facet Hierarchy Not Used for Specialist Agents
+  - [3172628] Twelfth-Pass: Space Assistant Completeness — OpenClaw Feature Parity, MCP Apps, Multi-Container, Skills Self-Improvement
+    - [3174630] No Continuous Background Loop — Heartbeat Driven by External Sweeper Instead of Native this.schedule() + this.keepAliveWhile()
+    - [3177200] Fiber Concurrency Model Incomplete — Fibers Stored in SQLite but Executed Sequentially, Not in Parallel
+    - [3179742] Proactive Trigger Types Limited to Time-Based Cron — Event-Based, State-Change, and Threshold Triggers Absent
+    - [3182476] Tool Chaining Dependency Graph Absent — Tools Run Sequentially With No DAG-Based Composition
+    - [3185064] Skill Marketplace Absent — Platform Skills Are Static; No User-Installable Skill Packs
+    - [3187747] No Inline Sub-Agent Delegation — Parent Always Fire-and-Forgets; Cannot Await Child Result Synchronously
+    - [3190360] Channel Hub Normalization Missing — Slack, Discord, Telegram Have Separate Handlers With No Unified Message Format
+    - [3193107] No Agent Delegation Chain — Sub-Agent Results Returned via Polling, Not Synchronous Parent Notification
+    - [3195789] No MCP App Store Concept — Users Cannot Browse, Install, or Manage MCP Apps That Extend AssistantDO
+    - [3198305] Installed MCP App State Not Persisted — No mcp_apps Table in AssistantDO SQLite
+    - [3200938] MCP App Tool Approval Flow Missing — Installed MCP App Tools Bypass needsApproval Requirement on First Use
+    - [3203515] No MCP App Scopes/Permissions Model — App Installation Grants All Tools With No Per-Tool Scope Manifest
+    - [3206301] AssistantDO Conflates MCP Server and AIChatAgent Roles — Violates CF SDK Class Hierarchy
+    - [3208999] No Remote MCP Server OAuth Callback Handling — MCP App Installation Flow Has No Redirect URI Handler
+    - [3211964] Skills Never Self-Improve — No Post-Task Skill Crystallization Loop (Hermes Pattern)
+    - [3214834] No Skill Versioning — Self-Modified Skills Overwrite Previous Version With No Rollback Capability
+    - [3217525] No Skill Test Suite — Self-Modified Skills Have No Automated Validation After Modification
+    - [3220321] Skill Loading Not Cached Within Session — All Three Tiers Re-Read From R2 on Every Agent Turn
+    - [3223183] No Skill Conflict Resolution — Tier 3 Override of Tier 1/2 Is Silent With No Precedence Logging
+    - [3226092] Single Container Assumption — AssistantSandboxDO Manages One Container; Concurrent Tasks Compete on Same Sandbox
+    - [3229083] Container Type Specialization Absent — All Tasks Run in a Single Generic Container
+    - [3231728] Container Filesystem Sync Undefined — Concurrent Container Writes to Same R2 Prefix Cause Undefined Behavior
+    - [3234467] No Container Pre-Warming Pool — First Sandbox Task After Idle Incurs 3+ Second Cold Start Latency
+    - [3237172] Container Network Policy Not Configured — Containers Get Full Network Access by Default; Untrusted Code Runs Unrestricted
+    - [3239974] Shared Agent Mode Memory Namespace Collision — memory Table Has No user_id Column; All Users' Memories Merge
+    - [3242706] Shared Agent Vectorize Namespace Collision — Vector Search Has No user_id Filter; User A's Memories Appear in User B's Recall
+    - [3245389] Shared Agent Channel Sessions Not Per-User — sessions Table Has No user_id Column; All Users Share One Session Per Channel
+    - [3248190] Shared Agent R2 Paths Identical to Per-User Paths — Skill Writes From One User Can Overwrite Another's Personal Skills
+    - [3250864] Max-Instances Enforcement Race Condition — Concurrent Creation Requests Both Pass Limit Check Before Either Commits
+    - [3253789] No Graceful State Flush on DO Hibernation — In-Flight Fiber State Lost When DO Is Evicted
+    - [3256480] AssistantDO spaceId/userId Instance Variables Lost After Hibernation — Cold Wake Has No Context; Cross-Tenant R2 Path Corruption Risk
+    - [3259573] No Assistant Health Metrics — No Analytics Engine Writes for Turn Latency, Memory Layer Hit Rates, or Skill Invocations
+    - [3262234] Memory OS Layer 5 Vectorize Write Path Undefined — No Code Defines When or How Memories Are Written to Vectorize; Layer 5 Is Effectively Rea
+    - [3265145] Memory OS decay_rate Field Defined But Never Applied — Stale Structured Facts Are Never Aged Out
+    - [3267993] ctx.waitUntil() Called on DurableObjectState — DurableObjectState Does Not Expose waitUntil(); Crashes at Runtime
+  - [3270602] Appendix U — Thirteenth Pass
+    - [3271630] WalletDO balance stored as REAL float — financial rounding errors compound at scale
+    - [3273961] Stripe webhook topUp() has no idempotency key — single retry causes double credit grant
+    - [3276473] JWT `alg` field not pinned — `none` algorithm and algorithm confusion attacks accepted
+    - [3278779] CF Access JWT audience and issuer claims not validated on admin routes — forged tokens accepted
+    - [3281063] Dead-letter queue consumer never implemented — failed messages accumulate with zero recovery
+    - [3283571] x402 debit-credit saga not atomic — company debited while creator receives nothing
+    - [3286282] CF Access public key cached indefinitely — admin routes inaccessible during CF key rotation
+    - [3288721] Sub-agent spend check is post-execution — users can spawn unlimited sub-agents with zero balance
+    - [3291318] `parseFloat()` on policy values stored in SQLite — cascading precision loss on budget checks
+    - [3293543] `refund-saga` endpoint referenced throughout spec but unimplemented in WalletDO
+    - [3295975] MCP tool calls have no idempotency key — payment tools and email tools execute twice on retry
+    - [3298388] Token cost calculation uses JS float arithmetic — billing errors accumulate into hundreds of dollars
+    - [3300759] Skill updates not broadcast to running agents — agents use stale tool list for remainder of session
+    - [3303170] Workflow R2 code cache uses TTL only — stale compiled code executes after in-place R2 update
+    - [3305586] Skill tier merge uses `Promise.all()` — load latency determines precedence, not tier hierarchy
+    - [3308177] System prompt cache key not content-hashed — stale prompt served after skill or memory update
+    - [3310618] JWT verified via Service Binding round-trip on every request — 10ms latency tax, single SPOF
+    - [3312981] Analytics queue ACKs all messages before `writeDataPoints()` — billing and security events lost on engine outage
+    - [3315436] APNs device tokens not rotated on push failure — persistent silent failures for iOS users
+    - [3317918] Notification idempotency KV lock written after delivery — duplicate notification on concurrent retry
+    - [3320448] Notification idempotency KV lock has no TTL — legitimate admin resends blocked forever
+    - [3322726] Rate limiting described as KV-based in prose — KV eventual consistency makes it ineffective
+    - [3325209] No startup binding validation — Workers crash on first use of missing binding, not at startup
+    - [3327667] Space deletion does not terminate or clean up orphaned Durable Objects — billing continues indefinitely
+    - [3330247] Bootstrap annotations paid before quality score — up to 20% of bootstrap fund wasted on rejected work
+    - [3332861] Sub-space billing rollup has a day-boundary race condition — usage events misattributed between billing periods
+    - [3335288] Dynamic tool execution has no per-tool timeout — hanging tools block agent turn indefinitely
+    - [3337705] Tier 3 skill silently overrides Tier 1 platform skill — no audit log, admins cannot detect shadowing
+    - [3340552] `maxConcurrency` not set on any queue consumer — burst traffic causes unbounded parallel processing and rate limit spikes
+    - [3342995] No pre-flight balance check before accepting annotation — bootstrap fund depletes mid-campaign silently
+    - [3345381] DO SQLite foreign key enforcement never enabled — referential integrity silently broken
+    - [3347894] Notification Worker attempts all channels even when one fails — no circuit breaker for persistently-failing providers
+    - [3350667] All spaces share a single Vectorize index with only metadata filter isolation — filter bypass leaks cross-tenant vectors
+    - [3353226] Proactive triggers limited to cron schedule — missing event-based, state-change, and threshold triggers
+    - [3355986] No message TTL on notification and run-complete queues — stale messages delivered days after events
+  - [3358065] Appendix V — Fourteenth Pass
+    - [3359131] Extended thinking signature never persisted — multi-turn reasoning returns 400 on turn 2
+    - [3361557] No maxSteps ceiling in the tool-call loop — prompt injection drives unbounded billed iterations
+    - [3363733] WebSocket reconnect mid-turn re-runs the completion — tool side-effects execute twice
+    - [3366177] No beforeToolCall interception — LLM-generated tool args execute without policy enforcement
+    - [3368488] Tool results forwarded to the LLM unsanitized — prompt injection via file/web content
+    - [3370889] No onChatEnd / onChatError boundary — locks, sub-agents, and metrics leak on error paths
+    - [3373216] SKILL.md injected as prompt text with no executor — declared scripts and binaries never enforced
+    - [3375541] System prompt rebuilt with volatile memory inline every turn — defeats Anthropic prompt caching (≈10x cost)
+    - [3377901] Document deletion removes SQLite metadata but never deletes vectors — search poisoning + GDPR breach
+    - [3380162] No embedding model version stored — a model upgrade silently turns all existing vectors into noise
+    - [3382278] topK hardcoded with no re-ranking — relevant chunks ranked just below the cutoff are dropped
+    - [3384424] Vector upsert and metadata insert are not atomic — partial failure leaves orphaned vectors
+    - [3386856] Ingestion is not idempotent — re-uploading the same document creates a duplicate vector set
+    - [3388994] Naive whitespace chunking splits mid-sentence and counts words, not tokens
+    - [3391344] PDF/DOCX parse failures have no error path — documents silently ingest with zero vectors
+    - [3393780] Embedding batch limits unhandled and embedding token cost is never billed
+    - [3396029] handleWebSocketUpgrade never calls acceptWebSocket — hibernation drops messages, reconnect replay broken
+    - [3398399] webSocketMessage parses JSON with no try/catch — a malformed frame evicts the DO mid-run
+    - [3400554] Token usage is billed only when the final SSE chunk reaches the client — disconnect = free inference
+    - [3402851] Stream replay buffer grows unbounded — long runs create 100MB+ of rows and slow reconnects
+    - [3405035] Pagination cursors on created_at collide on same-millisecond inserts — page 2 silently skips messages
+    - [3407159] Fine-tune jobs submitted to Together AI but never tracked locally — sweeper polls a 404 endpoint
+    - [3409530] Polling alarm fires at-least-once with no idempotency guard — duplicate completion notifications
+    - [3411848] No concurrent-job cap or pre-submission budget check — a user can exhaust the space budget with parallel jobs
+    - [3414189] Dataset validation checks format and count only — no size, sequence-length, or schema-consistency checks
+    - [3416604] Federated query concatenates domain results with no dedup or conflict resolution
+    - [3419061] Federated fetch has no size cap — a large domain overflows the prompt and OOMs the DO
+    - [3421249] finetune_jobs schema lacks error, metrics, ETA, and cost columns — failures are opaque
+    - [3423490] Marketplace agent definitions auto-upgrade with no version pinning — breaking changes hit live installs
+    - [3425747] Marketplace search indexes definitions without visibility scoping — private definitions leak across spaces
+    - [3427842] Worker payouts default to held with no KYC pipeline — creator revenue is stranded indefinitely
+    - [3430058] Deprecating a worker does not notify active instances — dependent runs break with no grace period
+    - [3432201] Publishers can rate their own assets and publish unlimited agents — Sybil-able ratings and marketplace spam
+    - [3434433] User deletion only soft-deletes SpaceDO — no cross-system erasure across R2, Vectorize, Analytics, KV, AI cache
+    - [3437101] Analytics Engine fields are positional with no schema registry — inserting a field corrupts every existing query
+    - [3439518] 22 Workers with zero W3C trace-context propagation — cross-Worker requests cannot be correlated
+    - [3441728] No automatic retention or expiry policy — messages, runs, and logs grow unbounded toward the 1GB DO limit
+    - [3443872] No PII redaction before Analytics Engine, logs, or external LLM calls
+    - [3446046] product_audit_log is a mutable SQLite table — audit records can be altered or deleted, defeating their purpose
+    - [3448414] Knowledge keyword search uses LIKE '%term%' with no index — full table scan that collapses at scale
+  - [3450056] Appendix W — Fifteenth Pass
+    - [3451159] Date.now() and randomUUID() called outside step.do() — replay creates duplicate files and inconsistent IDs
+    - [3453425] Aggregation step returns the full training set inline — exceeds the step-result size limit and bloats the journal
+    - [3455666] Polling loop has no max-iteration guard — a slow training job can exceed the 1000-step hard limit
+    - [3457827] Concurrent exec() calls hit the same container shell without serialization — interleaved output and state corruption
+    - [3460116] ensureRunning() is not atomic — two simultaneous calls boot two containers
+    - [3462227] Idle-termination alarm is reset only after exec() completes — a long command is killed mid-execution
+    - [3464452] exec() truncates stdout/stderr silently — the agent proceeds on incomplete output with no truncated flag
+    - [3466657] exec() has no per-command timeout — a hung process holds the container indefinitely
+    - [3468904] A crashed container leaves a stale containerRef and DB status of running — next exec() fails opaquely
+    - [3470876] Static shared NAELAO_INTERNAL_TOKEN for all inter-Worker calls — one compromised Worker exposes every space
+    - [3473252] Single platform key encrypts every space's credentials — no envelope encryption or per-tenant key
+    - [3475409] AES-GCM IV uniqueness not enforced or audited — nonce reuse under the same key is catastrophic
+    - [3477653] Stored OAuth tokens have no expiry tracking or refresh — silent tool failures and no rotation on use
+    - [3479930] Credentials injected into containers as env vars — readable by any process via printenv or shell history
+    - [3482198] No guaranteed scrubbing of secrets from error messages and logs
+    - [3484247] Webhook signing secrets lack per-integration isolation and rotation grace period
+    - [3486477] Inbound email is processed with no SPF/DKIM/DMARC verification — spoofed mail triggers agent actions
+    - [3488821] No email loop prevention — an auto-responder on the other end creates an unbounded reply storm
+    - [3490879] No per-space outbound email rate cap — a buggy or malicious agent can send 100k emails/hour
+    - [3492948] Uploaded images are not size/dimension-checked before base64 vision encoding — token explosion and OOM
+    - [3495107] File uploads trust the declared MIME type — polyglot files bypass downstream type assumptions
+    - [3497281] Presigned R2 upload URLs have no documented expiration — a leaked URL grants indefinite write access
+    - [3499416] Download content-type comes from stored metadata without re-sniffing — enables type-confusion on download
+    - [3501505] Relative-path validation is enforced only in app code — no R2-prefix enforcement as defense in depth
+    - [3503725] Concurrent setState() writes are last-write-wins — parallel tool results silently lose state mutations
+    - [3506053] Whole state object is broadcast on every change — large state floods every connected client per token
+    - [3508151] No defined boundary between in-memory this.state and SQLite — transient fields vanish on eviction
+    - [3510430] Sub-agent spawn passes only a task description — conversation, memory, and intermediate context are lost
+    - [3512728] Two messages to the same thread interleave — no explicit queue guarantees ordered, non-overlapping turns
+    - [3514833] Sub-agents have no parent-liveness link — if the parent dies, results are never delivered and work runs to waste
+    - [3516997] broadcast loop has no per-socket error isolation — one closed socket aborts delivery to the rest
+    - [3518914] onConnect can fire before schema/state is initialized — handlers read undefined state
+    - [3521033] No versioned migration system — schema changes cannot be applied to a live fleet of thousands of DOs
+    - [3523352] Hibernated DOs wake with stale schema after a schema-changing deploy — drift between dormant and active instances
+    - [3525620] Deploying 22 Workers is non-atomic — a skew window breaks Service Binding contracts between callers and callees
+    - [3527876] No rollback strategy for schema-changing deploys — DO SQLite changes are not backward-compatible
+    - [3529985] wrangler.jsonc has no migration tags — renaming or deleting a DO class will fail or break instances
+    - [3532014] Per-test DO isolation via random IDs does not isolate Service Bindings — tests cross-contaminate via inter-Worker calls
+    - [3534201] No CI/CD pipeline, deploy ordering, or secret-handling documented for the 22-Worker fleet
+    - [3536547] compatibility_date not validated for consistency across dev/test/prod environments
+  - [3538076] Appendix X — Sixteenth Pass
+    - [3539172] Per-Tool-Call Rate Limit Missing — Unbounded Recursive Tool Loops Drain Credits
+    - [3541030] Queue Consumer Unbounded Parallelism — Burst Traffic Causes Thundering Herd on Downstream APIs
+    - [3542846] AI Gateway 429 Response Not Caught at Worker Level — No Per-Space Exponential Backoff
+    - [3544664] No Pre-Run Credit Reservation — Asynchronous Billing Enables Unbounded Overspend
+    - [3546507] Personalisation Cache TTL Has No Jitter — Simultaneous Expiry Causes Hourly Rate-Limit Spike
+    - [3548325] Billing Events Lost on Analytics Engine Unavailability — No Durable Fallback Ledger
+    - [3550124] Chunker Uses Word Count Not BPE Token Count — Chunks Overflow Embedding Model Context Window
+    - [3551983] No Embedding Model Version Tracked in Vectorize — Upgrade Causes Silent Vector Space Drift
+    - [3553843] Stale Vectors Accumulate on Document Updates — Old Chunk Versions Permanently Indexed
+    - [3555730] No Relevance Score Threshold or Re-ranking — Low-Quality Chunks Injected into Prompt
+    - [3557573] Knowledge Block Has No Token Budget — Context Overflow Crashes Turn With Unspecified Error
+    - [3559447] Deleted Knowledge Documents Leave Vectors in Vectorize — GDPR Article 17 Violation
+    - [3561307] topK Hardcoded at 5 — Builders Cannot Tune Retrieval Depth for Larger Knowledge Bases
+    - [3563180] Token Stream Has No Sequence Numbers — Clients Cannot Detect Dropped or Duplicate Messages
+    - [3565095] Broadcast Blocks on Slow Socket — One Lagging Client Stalls Token Delivery for All Others
+    - [3566979] Reconnect Storm After DO Eviction — Simultaneous Reconnects Exhaust CF Subrequest Limit
+    - [3568857] JWT Expires During Hibernated Long-Lived WebSocket — No Re-Auth Path for Service Bindings
+    - [3570713] No Ping/Pong Keepalive — Network Proxies Drop Idle WebSocket Connections After 60 s
+    - [3572569] Binary WebSocket Frame Silently Coerced to String — Causes Spurious Client Disconnects
+    - [3574455] No WebSocket Subprotocol Negotiation — Clients Cannot Detect Incompatible Message Types
+    - [3576347] No Trace ID Propagated Across 22 Workers — Cross-Service Errors Cannot Be Correlated
+    - [3578211] No Standard Structured Log Schema — Worker Logs Are Ad-Hoc Text Prefixes Unqueryable at Scale
+    - [3580086] DLQ Retry Requeue Loses Original Failure Context — No Parent-Message Correlation
+    - [3581945] Cron Job Skip Accumulation Has No SLO Threshold or Alert — Silent Starvation of Background Jobs
+    - [3583804] Skill SKILL.md Hash Verified Only at Load Time — Post-Load Tampering in R2 Goes Undetected
+    - [3585719] Analytics Engine Blob Positions Not Versioned — Inserting a Field Silently Corrupts All Queries
+    - [3587612] Community Skills Reference npm Packages Without Version Pin — Supply Chain Attack Vector
+    - [3589498] MCP Tool Calls via naelao-mcp-hub Hit 30 s Worker CPU Limit — Long Tools Return Truncated Results
+    - [3591369] Skill Loader Tier Merge Uses Promise.all — Non-Deterministic Resolution Breaks Precedence
+    - [3593263] Skills Are Markdown Documents With No Formal Execution Contract — Reliability Depends on LLM Interpretation
+    - [3595268] Agent-Tier Skill Overrides Have No Audit Trail — Malicious Shadowing Is Invisible to Admins
+    - [3597143] MCP Tool Schemas Cached 1 Hour in KV — App Updates Invisible to Running Agents
+    - [3598980] Community Skill External Fetch URLs Unchecked at Runtime — Skills Can Exfiltrate Conversation Data
+    - [3600934] DO Name Contains Raw spaceId — Colon in spaceId Enables Cross-Space Namespace Collision
+    - [3602791] Admin Role Cached in Session JWT — Downgraded Admin Retains Privileges for Full Token Lifetime
+    - [3604737] KV Namespaces Shared Across All Spaces — Prefix-Only Isolation Breakable by Application Bug
+    - [3606640] Audit Log Has No Integrity Guarantee — Compromised Worker Can Insert False Audit Entries
+    - [3608544] Cross-Space Grant Validated at Auth Time Not Data-Access Time — TOCTOU Window Allows Post-Revocation Access
+    - [3610456] R2 Path Traversal via Crafted File Key — SpaceR2 Prefix Enforcement Bypassable by .. Sequences
+    - [3612379] Analytics Engine Has No Per-Space Erasure Path — GDPR Article 17 Compliance Gap for Event Stores
+  - [3613687] Appendix Y — Seventeenth Pass
+    - [3614922] No Formal Capability Kernel — Space Types Risk Forking Into Separate Codebases
+    - [3617022] No Base/Standard Space Type or Manifest Inheritance — Every Manifest Re-declares Everything
+    - [3618844] Capability Modules Have No Versioning — Upgrading a Block Silently Breaks Live Products
+    - [3620650] Manifest Schema Not Statically Validated — Malformed Manifests Can Reach Production
+    - [3622399] Blueprint vs Preset Boundary Unclear — Template/Space-Type Merge Order Undefined
+    - [3624251] No Per-Space Manifest Snapshot — Reconfiguring a Type Drifts Existing Spaces
+    - [3625998] No No-Code Configurator Specified — Configuration Implies Code, Violating the Security Goal
+    - [3627869] AI Product-Builder Agent Unspecified — NL-to-Manifest Could Emit Invalid or Unsafe Config
+    - [3629652] No Preview/Impact Analysis for Config Changes — Disabling a Capability Can Silently Delete Data
+    - [3631456] No Configuration Versioning or Rollback — A Bad Config Cannot Be Reverted
+    - [3633114] No Formal Configuration Constraint Graph — Incompatible Options Can Be Selected Together
+    - [3635114] Constraint Enforcement Only in UI — API Callers Can Bypass Compatibility Rules
+    - [3636815] Domain Compatibility Rules Not Encoded — Adding a Space Type Requires Editing Core Logic
+    - [3638580] No Validation of Configuration Transitions — Upgrades/Downgrades Can Strand State
+    - [3640266] Tenancy Model Not a First-Class Configurable Dimension — SaaS vs Team vs Single-User Undefined
+    - [3642247] Multi-Tenant SaaS Has No Per-End-User Isolation — Shared SpaceDO Risks Data Mixing
+    - [3644073] Shared-Assistant Mode Has No Per-User Partition — Admin Sharing Mixes User Data
+    - [3645828] Assistant-Per-User Count Hardcoded — Admin Cannot Configure It Within Plan Limits
+    - [3647451] No White-Label / Delegated User Management — A Company Cannot Own Its Own Product
+    - [3649267] Product-Admin Permissions Undefined Beyond "Full Visibility"
+    - [3651059] Product-Admin Could Reach Platform-Security Config — No Privilege Ceiling Defined
+    - [3652753] Four Actor Layers Not Canonically Modeled — Role Confusion Across Endpoints
+    - [3654447] Per-Product Billing Strategy Not Configurable — Only Fixed Platform Tiers Exist
+    - [3656207] Wholesale vs Retail Billing Flow Undocumented — Builder Margin and Reconciliation Unclear
+    - [3657925] Billing Strategy and Tenancy Not Constrained Together — Invalid Combinations Possible
+    - [3659516] Credit Exhaustion Mid-Run Undefined in Multi-Tenant Context — Whose Balance, What Degradation
+    - [3661218] No Account-Level Admission Control — One Tenant Can Exhaust the Whole CF Account
+    - [3663050] Concurrency Limits Hardcoded and Not Wired to Live Billing
+    - [3664680] Sandbox Concurrency Count Not Plan-Gated — Only Per-Sandbox Size Is Defined
+    - [3666320] No Admission Queue — Concurrency-Limited Requests Hard-Fail Instead of Waiting
+    - [3667928] 10GB-Per-DO Limit vs One-SpaceDO-Per-Product — Busy SaaS Products Will Hit the Ceiling
+    - [3669770] Storage Topology Not Tied to Tenancy/Plan — No Selectable Data-Plane Strategy
+    - [3671419] No Filesystem-Backed Database Option for Heavy Data Planes
+    - [3673151] D1 Rejected Globally — Per-Tenant D1 Was Not Reconsidered for Large Isolated Datasets
+    - [3674952] Uncontrolled Sub-Agent Recursion — Dynamic Orchestration Makes the Blast Radius Unbounded
+    - [3676694] No True Dynamic Orchestration — Workflows Are Runtime-Authored but Statically Registered
+    - [3678568] No Unified Composable Agent Profile — Channels/Tools/MCP/Memory/Voice/RAG Not a Selector
+    - [3680321] Execution Ladder Tier Not User-Selectable Per Agent — Only Tool-Pinned
+    - [3681970] Agent Types Are Not a Versioned Selectable Catalog — New Types Require Bespoke Builds
+    - [3683684] No Template-on-Space-Type Marketplace Loop — Users Cannot Publish Reusable Presets
+  - [3684839] Appendix Z — Eighteenth Pass
+    - [3685991] Single-SpaceDO-Per-Product Is the Only Data Topology — Multi-Tenant SaaS Exceeds 10GB and Has No Path
+    - [3688000] D1 Per-Tenant Never Wired to Space Lifecycle — No Automatic DB Provisioning or Deprovisioning
+    - [3689912] Turso (libSQL) Not Considered — Best-in-Class Option for Hundreds of Thousands of Per-User DBs
+    - [3691988] Sharded DO Topology (Coordinator + Per-Tenant Child DOs) Not Specified — Staying 100% CF Has No Documented Path
+    - [3693973] No Cross-Shard Query Federation — Per-Tenant DBs Make Admin Analytics and Reporting Impossible
+    - [3695866] No Managed Backup or Point-in-Time Restore Strategy — Data Loss Risk With No Recovery Path
+    - [3697707] No Heavy-Data Capability — Analytics and Large Dataset Products Have No Viable Store
+    - [3699556] No Migration Path From DO SQLite to External DB — Existing Spaces Are Stranded on Old Topology
+    - [3701421] DB Provisioning Not Wired to Space Lifecycle — Deleted Spaces Leave Orphaned Databases
+    - [3703224] No Query-Result Cache or Connection Warm-Up — Cold D1/Turso Queries Add 50–150ms to Every Turn
+    - [3705060] Extended Thinking Tokens Not Tracked Separately — Billing Undercharges claude-opus Reasoning Runs
+    - [3707076] Context Window Size Is a Static Constant — No Adaptive Resizing Based on Available Token Budget
+    - [3708951] max_tokens Passed to LLM Without Budget Check — Agent Can Request Tokens Beyond Remaining Credit
+    - [3710839] AI Gateway Fallback Uses Primary Model for Cost Attribution — Billing Is Wrong on Every Fallback
+    - [3712818] Token Count Lost on Client Disconnect During Streaming — Credits Not Charged for Partial Responses
+    - [3714733] Context Compaction Has No Preference Ranking or Depth Guard — Repeated Summarization Degrades Quality
+    - [3716651] Tool Timeout Returns Null Result — No Partial Output Recovery for Long-Running Tool Calls
+    - [3718517] Sub-Agent Token Budget Not Isolated From Parent — Parent Exhaustion Starves Child Agents
+    - [3720383] No Per-Space Outbound Push Notification Rate Limit — Buggy Agent Can Exhaust FCM/APNs Quota
+    - [3722322] FCM NOT_FOUND Token Deactivation Not Idempotent — Failed Deactivation Leaves Invalid Tokens Active Forever
+    - [3724252] Inbound Agent Webhook Triggers Have No Signature Verification — Forged Events Trigger Unauthorized Agent Runs
+    - [3726172] Stripe Webhook topUp() Has No Duplicate-Delivery Guard — Network Retries Can Double-Credit Accounts
+    - [3728167] Critical Notifications Have No Delivery Attestation — Billing Alerts and Approval Timeouts Silently Drop
+    - [3730098] Space Data Export Iterates All Rows Without Pagination — Times Out on Spaces With Large Data
+    - [3731995] External Data Source Integrations Have No Health Monitoring — Silently Failing Syncs Mislead Agents
+    - [3733901] Agent Result and Export Schema Has No Version — Downstream Consumers Cannot Handle Breaking Changes
+    - [3735819] No API Versioning Strategy — v1 Endpoints Exist But There Is No v2 Migration Path or Contract
+    - [3737663] Space Deletion Not a Transactional Saga — Partial Failure Leaves Orphaned DOs and Data
+    - [3739588] No Soft-Delete or Recovery Window — A Space Deleted in Error Cannot Be Restored
+    - [3741344] Not All List Endpoints Use Cursor-Based Pagination — Offset Pagination Fails at Scale
+    - [3743217] wrangler dev Runs Workers in Isolation — Inter-Service Binding Calls Fail During Local Development
+    - [3745148] No Integration Test Harness for Service Binding Chains — Testing Is Unit-Only
+    - [3747013] No OpenAPI Spec Generated From Worker Routes — Third-Party Builders Have No Typed API Contract
+    - [3748838] No Platform-Wide Maintenance Mode — No Way to Gracefully Drain and Pause All Requests
+    - [3750735] No Entitlement Cache — Every Request Hits Billing Service to Check Plan Features
+    - [3752527] Cron Jobs Scheduled in UTC But Space Configs May Specify Local Time — Silent Schedule Drift
+    - [3754402] GDPR Article 20 Data Portability Not Implemented — No Structured Export of User Data
+    - [3756278] No Canary or Gradual Rollout for Capability Manifest Changes — All Spaces Get New Config Simultaneously
+    - [3758133] No Secret Scanning in CI — Developer Could Commit API Keys or Tokens to the Repo
+    - [3759936] Audit Log Queries Have No Indexed Timestamp — Admin Audit Scans Are Full-Table on Analytics Engine
+  - [3761245] Appendix AA — Nineteenth Pass
+    - [3762545] No Enterprise SSO + SCIM Provisioning — B2B Multi-Tenant Sales Are Blocked
+    - [3764426] No Sales Tax / VAT Calculation or Remittance — Selling Internationally Is a Legal Liability
+    - [3766298] No Dunning Workflow for Failed Renewals — 2–5% Monthly Revenue Churns Silently
+    - [3768077] No Usage-Based Metering or Overage Pricing — Only Fixed Tiers and Credit Packs Exist
+    - [3769895] No Invoice or Receipt Generation — Tax Compliance and Enterprise Expense Trails Missing
+    - [3771590] No MFA, Passkeys, or Step-Up Auth — Credential Compromise Is the Likely Breach Path
+    - [3773407] No Email Verification at Signup — Typo'd Addresses Create Orphan Accounts and GDPR Issues
+    - [3775120] Marketplace Earnings Tracked but No Payout Mechanism — Publishers Cannot Get Paid
+    - [3776852] Naive Direct Email Send — No Templates, Versioning, or Deliverability Management
+    - [3778661] DIY console.log Error Logging — No Grouping, Sourcemaps, or Alert Routing Across 22 Workers
+    - [3780520] KV-Backed Feature Flags Are Eventually Consistent — Unsafe Rollouts and No Kill-Switch
+    - [3782341] Analytics Engine Is a Raw Event Dump — No Funnels, Cohorts, or Retention for Builders
+    - [3784108] DIY Per-Space Key Derivation Has No Rotation, Versioning, or Access Audit
+    - [3785945] CF AI Gateway Alone Has No Cost-Aware Routing, Fallback Analytics, or Together AI Coverage
+    - [3787810] Workers Logs Retain Only 3 Days and Analytics Engine Has No Full-Text Search
+    - [3789569] SandboxDO Execution Has No Resource, OOM, or Timeout Telemetry
+    - [3791261] Cron-Polled Canary Rollout Has No Real-Time Automated Rollback
+    - [3793019] CF Container 2–3s Cold Boot and No Cross-Run Persistence — No Threshold for External Sandboxes
+    - [3794766] No Voice or Audio I/O Anywhere — Agents Cannot Do Phone or Real-Time Voice
+    - [3796444] Naive Text Extraction Loses Tables, Forms, and Scanned Content — RAG Quality Collapses on Real Documents
+    - [3798214] Pessimistic SQLite File Locks Serialize Multi-User Editing — No CRDT Merge
+    - [3799835] Multi-Layer Memory Is Hand-Rolled in SQLite With No Justification vs. Specialist Platforms
+    - [3801637] In-Memory Presence Map Is Lost on DO Hibernation — "Who's Here" Breaks
+    - [3803233] generate_pdf Tool Has No Specified Library, Template Engine, or Output Contract
+    - [3804903] Indirect Prompt Injection — Untrusted Tool/Web/Email Content Is Merged Into Instructions
+    - [3806857] RAG Document Poisoning — Uploaded Documents Can Inject Instructions Into Every Agent Turn
+    - [3808643] SSRF via Agent Tools, MCP Endpoints, and Webhook Configs — Internal Metadata and Services Exposed
+    - [3810502] Inbound Email Body Injected Verbatim Into Agent Context — Anyone Can Hijack an Email Agent
+    - [3812261] Sub-Agent Results Not Schema-Validated — Confused-Deputy and Result Injection
+    - [3814079] Generated Artifacts Have No CSP and Could Exfiltrate via External Fetches
+    - [3815748] Zero-Click Data Exfiltration via Rendered Markdown Images
+    - [3817406] MCP Tool Descriptions Cached Indefinitely — Poisoned Definitions Persist
+    - [3819097] No Outbound Data-Loss Prevention — Hijacked Agent Can POST Secrets, and Tool Errors Leak PII to Logs
+    - [3820896] Only One Alarm Per Durable Object — Competing setAlarm() Calls Clobber Each Other
+    - [3822596] blockConcurrencyWhile() Can Deadlock If Init Touches the Input Gate
+    - [3824240] storage.put() Values Over 128KB Fail — No Size Guard Means Silent State Corruption
+    - [3825942] Workflow step.do() Return Values Must Be JSON-Serializable — Date/Map/Set/BigInt Silently Break
+    - [3827610] Renaming or Reordering step.do() Calls Breaks Replay — Completed Steps Re-Execute
+    - [3829274] Queue Messages Over 128KB Are Rejected — Large Tool Results Silently Lost
+    - [3830902] Queue Batch Size Has No Effect on DO-Routed Messages — False Throughput Assumptions
+    - [3832512] No Dead-Letter Queue Consumer — Failed Billing/Provisioning Events Vanish After 4 Days
+    - [3834220] Overlapping Cron Executions Not Prevented — A Slow Sweeper Run Corrupts State
+    - [3835878] No SLA, Status Page, or Incident Response Process — Enterprise Trust Cannot Be Established
+    - [3837631] No i18n, Localization, Multi-Currency, or RTL — Global Markets Are Inaccessible
+    - [3839271] No Accessibility Compliance — Legal Exposure and Excluded Users
+    - [3840975] Durable Objects Are Single-Region With No Cross-Region Failover or Tested Backups
+    - [3842697] No Per-Tenant Data Residency — EU Personal Data Is Not Guaranteed to Stay in the EU
+    - [3844469] No SOC 2 / HIPAA / DPA Path — Enterprise and Regulated Sales Are Impossible
+    - [3846240] No Consent Management or Age Verification — GDPR/ePrivacy and COPPA Non-Compliance
+    - [3847931] No ToS or Privacy-Policy Templates for Builders — Liability Flows Back to the Platform
+  - [3849013] Appendix AB — Twentieth Pass
+    - [3850079] Agent Definition Has No Version History or Diff Viewer
+    - [3851919] No A/B Testing Harness for Agent Definition Versions
+    - [3853866] Builders Cannot Author Per-Agent Regression Test Suites
+    - [3855742] No Automated CI/CD Pipeline for Agent Definition Changes
+    - [3857655] Skills Have No Semantic Versioning — Agent Definitions Cannot Pin to a Version
+    - [3859522] No Model Routing A/B Experiment for Base-vs-Fine-Tuned Comparison
+    - [3861378] No Prompt Sensitivity Analysis Tool for Builders
+    - [3863275] LLM-as-Judge Evaluator Has No Calibration or Confidence Reporting
+    - [3865164] No Per-Turn Cost Attribution Breakdown for Builders
+    - [3867030] No Blue-Green or Canary Deployment Strategy for Worker Code Itself
+    - [3868935] No Conversation Replay or Step-by-Step Agent Trace Viewer
+    - [3870940] No LLM Call Inspector — Builders Cannot See Exact Prompts Sent to the Model
+    - [3872856] No Synthetic Monitoring or Health Check Endpoints for Workers
+    - [3874722] No Load Test Harness — Platform Has No Documented Baseline Throughput or Capacity Targets
+    - [3876690] No Chaos Engineering Framework — Fault Injection Testing Is Absent from Staging
+    - [3878575] No Automated Quality Degradation Alerting or Rollback on Metric Drop
+    - [3880497] No Per-Agent Performance Dashboard — Builders Cannot See Latency, Cost, or Error Rates by Agent
+    - [3882385] CF Analytics Data Is Collected But No Operational Dashboard Is Wired for the Naelao Team
+    - [3884281] No Post-Generation Output Content Moderation Pipeline
+    - [3886428] No beforeToolCall() Policy Interceptor — LLM-Generated Tool Arguments Execute Without Validation
+    - [3888444] Tool Results Forwarded to LLM Unsanitised — Web Content Carries Prompt Injection Payloads
+    - [3890531] No Per-Space Outbound Email Rate Limit or Reply-Loop Guard
+    - [3892477] No Platform-Enforced maxSteps Ceiling — Prompt Injection Can Drive Unbounded Billed Iterations
+    - [3894454] Marketplace Ratings Are Sybil-Attackable — Publishers Can Self-Rate Unlimited Times
+    - [3896489] No Semantic Shutdown Trigger for Hallucination or Loop Detection Beyond Iteration Count
+    - [3898554] Builders Have No Cohort, Funnel, or LTV Analytics for Their End-Users
+    - [3900596] Conversation Analytics Are Raw Counts — No Topic Clustering, Trend Detection, or Failure Analysis
+    - [3902655] No Agent Behaviour Analytics — Tool Usage, Unused Tools, and Missing Capabilities Are Invisible
+    - [3904648] No Space Clone Endpoint — Builders Cannot Duplicate a Production Space for Staging or Client Delivery
+    - [3906689] No Cross-Account Space Migration — Builder Work Is Locked to the Origin Account
+    - [3908657] No Point-in-Time Restore for SpaceDO SQLite — Corruption Means Permanent Data Loss
+    - [3910652] No Builder Config Export Bundle — Agent Definitions and Workflows Have No Portable Format
+    - [3912608] Browser Automation Sessions Not Isolated — Agent A Can Read Agent B's Session Cookies
+    - [3914590] Screenshots Stored in R2 Without Application-Layer Encryption — Sensitive UI Contents Exposed
+    - [3916617] Browser Automation Has No robots.txt Enforcement or Terms-of-Service Compliance Guard
+    - [3918708] Rendered Page Content Forwarded to LLM Without Script or Prompt-Injection Sanitisation
+    - [3920775] No Resumable Upload for Large Files — Worker 128MB Body Limit Silently Rejects Large Payloads
+    - [3922824] Mid-Cycle Plan Changes Have No Proration — Builders Are Over- or Under-Charged on Upgrades
+    - [3924874] Builder API Keys Have No Expiry, Rotation Workflow, or Theft Detection
+    - [3926977] Auth Endpoints Have No Credential Stuffing or Brute-Force Protection
+    - [3929059] No Credit Note or Partial Refund Issuance Flow for Billing Disputes
+    - [3931104] Free Tier Hard Limits Enforced Without Warning — Users Hit a Wall Mid-Conversation
+    - [3933154] Account Suspension Has No Grace Period Notification or Data Retention Window
+    - [3935256] Retry Backoff Uses Uniform Exponential Delay — Thundering Herd on Upstream Recovery
+    - [3937304] No Account-Level Admission Controller — One Tenant Can Exhaust the Global Container and Browser Budget
+    - [3939420] No GitHub Actions CI/CD Pipeline for Gradual Worker Deployment with Automated Quality Gates
+    - [3941468] No Subrequest Budget Enforcement — Workers Can Silently Fail When the 1000/Request Hard Limit Is Hit
+    - [3943532] Screenshots and Artifacts Served from R2 Without CDN Caching or Image Optimisation
+    - [3945556] Vectorize Index Per-Account Limit Will Block Scaling Beyond ~100 RAG-Enabled Spaces
+    - [3947691] Published Builder Templates Have No Versioning or Rollback Mechanism
+  - [3949201] Appendix AC — Twenty-First Pass
+    - [3950279] Constraint Engine Is Conceptually Defined But Has No DSL Syntax, Registry, or Solver
+    - [3952569] Product Admin Role Has No Permission Matrix — Can Access Security-Sensitive Manifest Fields
+    - [3954813] Tenancy Mode Switching Has No Safe Transition Validation — Downgrade with Active Users Is Destructive
+    - [3957020] Template Config Changes Have No Defined Propagation Policy to Already-Deployed Spaces
+    - [3959276] Space Type Schema Changes Have No Migration Path for Templates Built on the Old Schema
+    - [3961569] Disabling a Capability Silently Orphans Live Data With No Cleanup or Warning
+    - [3963764] BillingStrategy/Tenancy Compatibility Not Enforced — Incoherent Billing Configs Are Silently Accepted
+    - [3965924] No Configuration Audit Trail — Who Changed What Capability and When Is Unrecorded
+    - [3967979] Space-Level Capability Config Has No Version Pinning — Builder Capability Updates Affect All Spaces Immediately
+    - [3970209] validateManifest() Is Not Wired to Any API Endpoint — Invalid Configurations Are Silently Accepted
+    - [3972550] KV-Based Rate Limiting Is Fundamentally Broken Under Concurrent Load — 60-Second Stale Reads Allow Burst Bypass
+    - [3974905] SpaceDO Single-Writer Serializes ALL Product Operations — No Write-Sharding Strategy for High-Traffic Products
+    - [3977223] Child-DO SaaS Topology Has No Autoprovisioning, Naming Convention, Routing Table, or Lifecycle Hooks
+    - [3979572] HybridQueryDO Solves Read Federation Only — Write Scalability Across Child DOs Is Completely Unaddressed
+    - [3981941] Analytics Engine Write Cost at Scale Is Never Modeled — Projected at $375K/Month at 1M Users
+    - [3984291] Space Registry DO Becomes a Hot Read-Only Bottleneck Under Millions of Concurrent Space Lookups
+    - [3986452] RateLimitDO Is Itself a Serialisation Bottleneck — All Concurrent Rate Checks Queue on One DO Per Key
+    - [3988663] Cron-Based Sweepers Iterate O(N) Over All Products — Will Not Complete Within 1-Minute Cron Window at Scale
+    - [3990985] SpaceDO User Registry Grows Without Bound in SaaS Products With Millions of End-Users
+    - [3993188] Builder Pricing Tiers Do Not Account for Turso, Analytics Engine, R2 Egress, or Container Costs
+    - [3995651] Turso Topology Decision Is Undocumented — Per-Product vs Per-User DB Choice Left Implicit
+    - [3998011] No Routing Table Schema for spaceId/userId to Turso Endpoint and Auth-Token Mapping
+    - [4000325] No Zero-Downtime Migration Saga from SpaceDO SQLite to Turso — Data Stranded at Switchover
+    - [4002619] @libsql/client Cold-Start HTTP Latency Stacks on LLM Latency — No Connection Warm-Up Strategy
+    - [4004988] Turso Per-User DB Pricing Not Modeled — 1M Users × $0.20/DB/Month Is an Unexpected Cost Cliff
+    - [4007245] Turso DB Backup Strategy Not Documented — Unclear Whether Naelao Relies on Turso Built-In or Must Implement Its Own
+    - [4009534] Turso Auth-Token Storage, Rotation, and Per-DB Scoping Are Not Defined
+    - [4011789] Cold Conversation Archival from SpaceDO SQLite to R2 Has No Defined Threshold, Format, or Search Path
+    - [4014181] Credit Read-Check-Deduct Is Not Atomic Across Service Binding Hops — Overdraft Is Possible at Scale
+    - [4016546] Analytics Engine Write Failure Means Free Tokens — Token Consumption Not Rolled Back on Billing Event Loss
+    - [4018887] No Batch Strategy for Stripe API Calls — Rate Limit (100 req/sec) Creates a Bottleneck at Millions of Events
+    - [4021188] No Documented Process to Reconcile Analytics Engine Usage Data Against Stripe Invoices
+    - [4023468] Two-Sided Ledger Has No Trace ID Linking Wholesale and Retail Sides — Reconciliation Is Impossible
+    - [4025779] Sub-Space Billing Rollup Cron Loses Usage Accrued Between Snapshot Read and Next Write
+    - [4028069] Builder Revenue Share Monthly Reconciliation Process Is Undefined — Publishers May Never Be Paid
+    - [4030417] Millions of Simultaneous Debit Events Cannot All Be Processed Synchronously in WalletDO
+    - [4032789] No WebSocket Gateway Layer — All Long-Lived Connections Terminate Directly at DOs Without Connection Management
+    - [4035262] DO WebSocket Connection Capacity Is Undocumented — Platform Has No Known Scale Ceiling for Simultaneous Connections Per Product
+    - [4037602] DO Hibernation Drops WebSocket Connections Without Graceful Client Handoff or Reconnect Guidance
+    - [4039929] Reconnect Storm Jitter Strategy Is Documented (G-X16) But Not Implemented in DO Hydration Code
+    - [4042246] WebSocket State Sync Broadcasts Full State Object on Every Change — Quadratic Memory and Bandwidth at Scale
+    - [4044508] WebSocket Upgrade Requests Are Not Routed to a Regionally Co-Located DO — Global Users Suffer Additive Latency
+    - [4046902] CF Smart Placement Is Not Configured for DOs — DOs Are Pinned at First Access With No Ongoing Optimisation
+    - [4049155] Sub-Agent Fan-Out Has No Account-Level Parallelism Ceiling — Recursive Spawning Creates Exponential Workflow Instances
+    - [4051480] Millions of Products With Dedicated Queues May Hit Undocumented CF Queue Per-Account Ceiling
+    - [4053704] SpaceDO Conversation Data Has No Defined Archival Threshold or Cleanup Path — Storage Grows Without Bound
+    - [4055979] No Custom Domain Routing for Builder Products — Builders Cannot Map myapp.com to Their Naelao Space
+    - [4058385] Simultaneous Mass Space Creation Floods SpaceDO SQLite Schema Init — No Creation Rate Throttle
+    - [4060777] Naelao Has No Cross-Platform Aggregate Analytics — Cannot See Total Users, Revenue, or Churn Across All Spaces
+    - [4063029] No Circuit Breaker or Fallback for a Hot SpaceDO Under Viral Traffic — Platform Has No Load Shedding
+  - [4064790] Appendix AD — Twenty-Second Pass
+    - [4065896] No Refresh Token Rotation or Reuse Detection — A Stolen Refresh Token Grants Indefinite Access
+    - [4067980] Session Revocation Uses Eventually-Consistent KV — Revoked Tokens Stay Valid for Up to 60 Seconds Across Regions
+    - [4070149] No Multi-Device Session Registry — Users Cannot See or Revoke Sessions on Other Devices
+    - [4072180] JWT Signing Key Has No Rotation Mechanism (JWKS) — A Leaked Signing Key Cannot Be Retired Without Logging Everyone Out
+    - [4074343] End-User Authentication Provider Is Not Abstracted Per Product — Each Builder Product Cannot Choose Its Own Auth Method
+    - [4076531] Password Reset and Account Recovery Flow Is Unspecified — No Secure Token Generation, Expiry, or Single-Use Enforcement
+    - [4078843] Auth Verification Hits naelao-auth on Every Request — Single Point of Failure and Latency Tax at Scale
+    - [4080966] No Session Fixation Protection — Session Identifier Is Not Regenerated After Privilege Change
+    - [4082938] RAG Uses Pure Vector Search With No Keyword (BM25) Hybrid — Exact-Term and Acronym Queries Fail
+    - [4085089] No Cross-Encoder Reranking Stage — Top-K Vector Results Are Used Raw Without Relevance Re-Scoring
+    - [4087231] Document Embedding Is Generated Sequentially — Ingesting a Large Document Set Is O(N) Slow and Blocks
+    - [4089381] No Per-Space Embedding Cost Tracking or Quota — Knowledge Base Ingestion Is an Unmetered Cost Sink
+    - [4091468] Fixed-Size Chunking Splits Mid-Sentence and Mid-Structure — Degrades Retrieval Quality on Structured Documents
+    - [4093731] GDPR Erasure Has No Atomic Multi-Store Saga With Retry and Verification — Deletion Partially Fails Silently
+    - [4096076] Deleted Data Persists in Backups Indefinitely — Restoring a Backup Resurrects "Erased" Personal Data
+    - [4098357] Turso Point-in-Time-Recovery Snapshots Are Not Purged on Erasure — Personal Data Recoverable From Turso Backups
+    - [4100482] Per-Space Data Encryption Keys Have No Rotation Policy or Re-Encryption Workflow
+    - [4102681] Master Key Rotation Has No Ceremony or Versioning — A Compromised Master Key Cannot Be Retired Without Re-Encrypting Everything
+    - [4104923] No Audit Log of Credential/Secret Decryption — SOC 2 and GDPR Art. 32 Cannot Be Satisfied
+    - [4107053] Audit Logs Are Stored in Mutable Tables — No Tamper-Evidence or Append-Only Guarantee
+    - [4109167] Soft-Delete vs Hard-Delete Lifecycle Is Undefined — Unclear When Data Is Recoverable vs Permanently Gone
+    - [4111442] Container Image Build, Versioning, and Publish Pipeline Is Unspecified
+    - [4113660] Container Images Are Not Vulnerability-Scanned Before Listing — Supply-Chain Risk in the Marketplace
+    - [4115785] FUSE-R2 Filesystem Has No Concurrent-Write Conflict Resolution — Two Containers Writing the Same File Corrupt It
+    - [4118030] Container Crash Mid-FUSE-Write Leaves Partial/Corrupt R2 Objects With No Rollback
+    - [4120135] Container Outbound Network Egress Has No Allow-List — Sandboxed Code Can Exfiltrate Data or Attack Internal Services
+    - [4122427] Containers in a Shared Pool Have No Network Isolation From Each Other
+    - [4124584] Remote MCP Server OAuth Flow Has No Callback Handler or Token-Exchange Implementation
+    - [4126797] MCP Hub Opens a Fresh Connection Per Tool Call With No Pooling or Keepalive — High Latency and Connection Churn
+    - [4128970] No MCP Server Health Checks, Circuit Breaker, or Failover — A Down MCP Server Hangs Every Agent Turn That Uses It
+    - [4131193] MCP Hub Supports Only HTTP Proxy — No stdio or SSE Transport, and Tool Results Cannot Stream Past the 30s Worker Limit
+    - [4133451] No Live-Fleet Schema Migration Runner — Millions of Hibernating DOs Wake With Stale Schemas
+    - [4135721] DO Migrations Have No Failure Handling or Rollback — A Bad Migration Bricks Every DO That Applies It
+    - [4137938] Public API POST Endpoints Have No Idempotency-Key Standard — Network Retries Create Duplicate Resources and Charges
+    - [4140151] No Structured Logging Standard — Logs Are Free-Form and Cannot Be Correlated or Queried Across Workers
+    - [4142365] W3C Trace Context Is Designed But Not Wired Through All Workers, Queues, and DO Hops
+    - [4144625] API Versioning Has a /v1/ Prefix But No Lifecycle, Deprecation Policy, or Breaking-Change Detection
+    - [4146894] No Outbound Webhook Delivery System — Agent Results Cannot Reliably Reach Builder Backend Systems
+    - [4149280] Outbound Webhook Endpoints Are Not Verified — Misconfigured or Malicious URLs Receive Data or Enable SSRF
+    - [4151457] Voice Pipeline Has No Concurrency Model or Call Admission — Simultaneous Calls Are Unbounded and Unbudgeted
+    - [4153730] Voice Turn-Taking Uses a Hardcoded End-of-Turn Threshold With No Barge-In / Interruption Handling
+    - [4156055] Space Creation Marks Spaces "Ready" Before Provisioning Completes — Users Hit a Half-Built Space
+    - [4158336] No Default Data Seeding or First-Run Experience — New Spaces Are Empty With No Guidance
+    - [4160477] Notification Idempotency Key Is Written After Delivery — A Crash Mid-Send Causes Duplicate or Lost Notifications
+    - [4162730] No Per-Channel Circuit Breaker or Escalation Chain — A Failing Channel Silently Drops Critical Notifications
+    - [4165002] Memory Decay Fields Exist in the Schema But No Job Ever Applies Decay — Stale Facts Accumulate Equal Priority
+    - [4167260] Real-Time Presence Is Held in an In-Memory Map and Is Lost on DO Hibernation
+    - [4169508] No Public Client SDK or OpenAPI Spec — Builders Must Reverse-Engineer the REST API With No Typed Contract
+    - [4171756] No Cross-Store Referential Integrity Reconciliation — SQLite, R2, and Vectorize Drift Out of Sync Over Time
+    - [4174199] No Graceful Degradation Map — A Single Dependency Outage (Vectorize/Analytics/Stripe) Fails Entire Agent Turns
+  - [4176099] Appendix AE — Twenty-Third Pass
+    - [4177199] Builder Dashboard Has No Architecture — Framework, State Management, and Real-Time Updates Are Undefined
+    - [4179396] The No-Code Configuration UI Is Not Specified — Builders Have No Visual Way to Toggle Capabilities
+    - [4181662] Embeddable Space-Assistant Widget Has No Embed Spec — Script Tag, iframe, CSP, and Isolation Undefined
+    - [4183815] Widget ↔ Host postMessage Protocol Is Unspecified — Cross-Origin Identity and Event Bridging Have No Contract
+    - [4185979] Client-Side Streaming Has No Reconnect, Mid-Stream Token Refresh, or Backpressure Handling
+    - [4188175] White-Label Theming Has No Design-Token System — Builders Cannot Apply Custom Branding to Their Product
+    - [4190282] Frontend Build/Deploy Pipeline Is Undefined — No CF Pages Config, Env Injection, or Preview Deploys
+    - [4192397] No Client-Side Error Boundaries, Retry Strategy, or Frontend Error Reporting
+    - [4194466] No Responsive/Mobile Strategy or PWA Offline Support for End-User Products
+    - [4196492] No Client/Server State Sync Model — Optimistic Updates and DO State Reconciliation Are Undefined
+    - [4198622] No Channel Formatting Layer — Rich Output Cannot Render as Slack Blocks, Discord Embeds, or WhatsApp Templates
+    - [4200734] No Cross-Channel Identity Resolution — The Same Person on Slack, Email, and Web Is Treated as Three Strangers
+    - [4202839] Channel-Specific API Rate Limits Are Not Modeled — Outbound Sends Hit Slack/Discord/WhatsApp Limits and Get Dropped
+    - [4204919] Channel Bot Tokens Have No Refresh, Rotation, or Revocation Handling — Integrations Silently Die
+    - [4206971] No Per-Conversation Message Ordering Guarantee Across Channel Delivery
+    - [4209059] Inbound/Outbound Media and Attachments Are Not Normalized Across Channels
+    - [4211129] No Channel Adapter Interface — Adding a New Channel Requires Hand-Coding a Bespoke Handler From Scratch
+    - [4213214] Web Chat Widget Conversations Are Not Persisted or Resumable Across Sessions/Devices
+    - [4215316] Multi-Agent DAG Has No Partial-Failure Handling — One Failed Sub-Agent Has Undefined Effect on the Whole Plan
+    - [4217572] Concurrent Sub-Agent Result Aggregation Is Unspecified — Merged Context Is Lossy or Incorrect
+    - [4219747] Human-in-the-Loop Approval Mid-Orchestration Has No Pause/Resume Semantics for the Whole DAG
+    - [4221942] Cancelling an Orchestration Does Not Cascade to Spawned Sub-Agents — Orphaned Runs Keep Burning Credits
+    - [4224107] Orchestrations Cannot Be Paused and Resumed — Long Plans Have No Suspend State
+    - [4226170] Tasks Exceeding the 1000-Step Workflow Limit Have No Transparent Continuation Chaining
+    - [4228362] No Pre-Execution Cost/Resource Estimate for a Proposed DAG — Builders and Users Approve Blindly
+    - [4230454] Marketplace Has No Search Infrastructure — Users Cannot Find Agents, Templates, Skills, or Containers
+    - [4232573] No Ranking or Recommendation Algorithm — Listing Order Is Arbitrary and There Are No "You Might Like" Surfaces
+    - [4234686] Installing a Template or Agent Has No Dependency Resolution — Missing Capabilities/Skills Cause Broken Installs
+    - [4236928] Install/Uninstall Lifecycle Is Undefined — No Clean Uninstall, Update, or Rollback of Marketplace Assets
+    - [4238992] No Public, SEO-Indexable Marketplace Listing Pages — Zero Organic Discovery
+    - [4241081] No Editorial Curation, Featuring, or Collections Mechanism for the Marketplace
+    - [4243035] Publishers Have No Listing Analytics — Impressions, Installs, Conversion, and Churn Are Invisible
+    - [4245065] No Multi-Region Read-Replica Strategy — Global Reads Pay Full Cross-Region Latency to a Single-Region DO
+    - [4247302] No Deploy-Order/Dependency-Graph Management for 22 Interdependent Workers
+    - [4249395] No Environment Promotion or Config-Drift Detection Between Staging and Production
+    - [4251443] No Platform-Wide Maintenance Mode or Graceful Degradation Switch
+    - [4253568] No Worker Bundle Size Budget Management — Workers Will Hit the Size Limit as Features Accrete
+    - [4255616] No Coordinated Secret Rotation Across 22 Workers — Rotating a Shared Secret Requires Risky Manual Coordination
+    - [4257770] CF Resources (KV, R2, Queues, Vectorize, DOs) Are Not Provisioned via Infrastructure-as-Code
+    - [4259940] No Cross-Worker Version Compatibility Handling — Deploy Skew Breaks Service-Binding Contracts Mid-Rollout
+    - [4262092] No Cron/Scheduled-Task Registry or Observability — Scheduled Jobs Fail Silently
+    - [4264161] Background Job Queues Have No Fair Scheduling — One Heavy Tenant Starves All Others' Jobs
+    - [4266246] No Per-Space Resource Quota Visibility or Enforcement Across All Stores
+    - [4268400] Large Data Exports Buffer in Worker Memory — Exports for Big Spaces Hit the 128MB Memory Limit and Fail
+    - [4270521] Plan Entitlements Are Not Enforced Consistently — Capabilities Gated in the UI But Reachable via the API
+    - [4272682] No Per-Store Backup/Restore Runbook With RTO/RPO Targets — Recovery Is Improvised During an Incident
+    - [4274826] No End-to-End Synthetic Journey Monitoring — Outages Are Detected by Users, Not the Platform
+    - [4277028] No Integration Test Harness for the Full Service-Binding Mesh — Only Unit Tests or Prod
+    - [4279161] No Automated Tenant-Isolation Verification — Cross-Tenant Leakage Regressions Can Ship Undetected
+    - [4281354] No Unified Configuration / Feature-Flag Store With Safe, Consistent Propagation
+  - [4282932] Appendix AF — Full System File-Tree Map
+  - [4305712] Appendix AG — Additional Technical Gaps (50 items)
+    - [4306924] No Runtime Tier Escalation Path for In-Flight Agent Tasks
+    - [4308934] Zero Per-Tier Infrastructure Cost Rate-Card — Agents Cannot Make Cost-Aware Tier Decisions
+    - [4310956] Browser Tier Sessions Are Stateless Per-Request — Multi-Step Workflows Relaunch Chrome for Every Tool Call
+    - [4313078] Browser Tier Has Zero Guidance for Handling reCAPTCHA, Cloudflare Bot Management, or CAPTCHA Bypass
+    - [4315144] Cloudflare Container Eviction Timeline Beyond "10-Minute Sleep" Is Undocumented — Stale Refs Accumulate
+    - [4317221] Episodic-to-Semantic Memory Promotion Has No Trigger, No Timeline, and No Scheduled Job
+    - [4319390] Resuming a Conversation Days Later Replays Raw Message History — No Episodic Replay or Summary Injection
+    - [4321494] Agent Is Never Informed When Its Context Has Been Silently Truncated — Continuity Breaks Invisibly
+    - [4323551] No Export Pathway for Agent Memory — GDPR Article 20 Data Portability Right Unimplemented
+    - [4325664] No REST Endpoint or Query Builder UI for Builders to Query Their Analytics Engine Data
+    - [4327753] No CSV or Parquet Export for Builder Analytics — Builders Cannot Perform Offline Analysis
+    - [4329772] No Backpressure or Throttling When Analytics Engine Write Quota Is Exceeded
+    - [4331766] No Automated Migration Path When a Space Type's Schema Changes for Existing Spaces
+    - [4333856] Builders Cannot Fork or Derive Custom Space Type Variants — One-Size-Fits-All Blueprint Constraint
+    - [4335830] No Specification on Whether Template Updates Auto-Apply to Existing Spaces or Stay Pinned at Selection Time
+    - [4337860] Agent Chat UI and Builder Canvas Have No Keyboard Navigation, Focus Traps, or ARIA Labels
+    - [4340015] Streaming Agent Responses Have No aria-live Regions — Screen Readers Cannot Announce Incremental Output
+    - [4342121] CSS Layout Is Entirely LTR-Hardcoded — Arabic, Hebrew, and Farsi Users See Broken Mirrored UI
+    - [4344161] No Translation Infrastructure — Builder-Defined Content Strings Are Hardcoded and Cannot Be Localised
+    - [4346293] All Date, Time, Currency, and Number Values Are Hardcoded to US Locale — Incorrect in 190+ Countries
+    - [4348393] No Distributed Tracing Across 22 Workers and Durable Objects — Requests Are Invisible Beyond One Hop
+    - [4350492] No PagerDuty or Opsgenie Integration — Critical Production Alerts Only Go to Slack Without Escalation
+    - [4352589] No Registry or Dead-Man-Switch Alerting for Sweeper, Billing, and Categorizer Cron Jobs
+    - [4354670] WalletDO Uses a Single Running Balance — No Double-Entry Journal, No Audit Trail for Financial Disputes
+    - [4356931] No REVERSAL Ledger Entry Type or Refund Workflow — Credits Cannot Be Partially Refunded
+    - [4358977] Monthly spent_this_month Reset Is a Non-Atomic Direct Mutation — Partial Failure Leaves Balance Corrupted
+    - [4361104] No Invoice Template, PDF Generation, or R2 Storage Path — Builders Cannot Provide Receipts to End-Users
+    - [4363182] No Proration Logic for Plan Upgrades or Downgrades Mid-Billing-Cycle
+    - [4365278] No Deferred vs. Earned Revenue Distinction — Prepaid Credit Purchases Incorrectly Recognised as Immediate Revenue
+    - [4367412] No Virus Scanning or Content Moderation for Builder-Uploaded Images, PDFs, and Binaries
+    - [4369586] No Content Policy Layer Beyond Base LLM Safety — Adversarial Prompts Can Override Agent Behaviour
+    - [4371802] No Per-Agent CPU, Memory, or Execution-Time Quotas — Malicious Builders Can Trigger Infinite Spawn Loops
+    - [4373975] Secrets Passed to Sandboxes as Environment Variables Are Readable by Any Code Running in the Container
+    - [4376231] No Detection for Repeated Free-Tier Signups, Trial Resets, or Credit Grant Exploitation
+    - [4378335] No DNS Ownership Challenge Before Domain Activation — Builders Can Claim Any Domain Including Competitor Sites
+    - [4380462] Custom Domains Serve Without Valid TLS Certificate During DNS Propagation — Browser Security Errors
+    - [4382567] No Conflict Detection or Resolution for Two Builders Claiming the Same Custom Domain
+    - [4384588] No Periodic DNS Health Checks — Stale or Broken Custom Domain Routing Goes Undetected
+    - [4386615] Custom Domain Reservation Is Never Released When a Builder Account Is Deleted
+    - [4388699] No Causal Ordering Guarantee Across Queue → DO → WebSocket Pipeline — Retried Messages Can Arrive Out of Sequence
+    - [4390820] No Idempotency Keys Enforced Across Workers and DOs — At-Least-Once Queue Delivery Causes Duplicate Side Effects
+    - [4392929] Streaming LLM Response Chunks Have No Sequence Numbers — Out-of-Order Delivery Corrupts Displayed Text
+    - [4395049] Dead-Letter Queue Messages Are Auto-Discarded After 4 Days — Builders Never Notified of Permanent Processing Failures
+    - [4397198] No Version Tags or Compatibility Layer on Queue Messages — Consumer Schema Changes Break In-Flight Messages
+    - [4399318] No Deduplication, PII Scrubbing, or Format Validation Before Fine-Tune Data Upload to Together AI
+    - [4401525] Long Fine-Tune Jobs Loop Toward the CF Workflow 1000-Step Limit with No Recovery Path
+    - [4403629] No Traffic-Splitting Mechanism Between Fine-Tuned Model and Base Model for Evaluation
+    - [4405709] Approved Fine-Tuned Models Are Registered Once with No Version History or Rollback Capability
+    - [4407871] Together AI Fine-Tune Jobs Called Directly, Bypassing the Billing Proxy — Costs Completely Untracked
+    - [4410087] No Test Double for ctx.storage.sql.exec() — DO Unit Tests Require Live Miniflare or Cannot Run
+  - [4411693] Appendix AH — Additional Technical Gaps (50 items)
+    - [4412880] No Versioned Tool Registry — Breaking Schema Changes Silently Break All Deployed Agents Calling Old Signatures
+    - [4415049] No Circuit Breaker or Fast-Fail for Flaky MCP Servers — One Unavailable Server Stalls All Dependent Agents
+    - [4417266] No Caching Policy Distinguishes Read-Only Tools from Side-Effectful Tools — Duplicate Actions or Stale Reads
+    - [4419444] Unbounded Parallel Tool Execution Per Agent — One Agent Can Launch Hundreds of Concurrent MCP Calls
+    - [4421666] No Per-Space Tool Allowlist — Any Agent Can Call Any Installed Tool Including Payment and Credential Tools
+    - [4423860] Tools That Take Minutes Block the LLM Context Window — No Job-ID Polling or Callback Pattern for Long Tasks
+    - [4426062] All MCP Server Credentials Encrypted With One Shared Platform Key — Single Key Compromise Decrypts All Tenant Credentials
+    - [4428263] No Storage Path, Encryption Spec, or Retention Policy for Voice Call Recordings
+    - [4430594] No STUN/TURN Server Specified — WebRTC Voice Calls Fail for Users Behind Symmetric NAT
+    - [4432720] No Audio Codec, Bitrate, or Packet Loss Concealment Strategy Specified for Voice Calls
+    - [4434853] No Multi-Party Voice Design — Architecture Supports Only One-on-One Agent-User Audio
+    - [4436961] No Defined Pipeline or Latency SLA Between Voice Call End and Transcript Availability in Agent Memory
+    - [4439232] No Per-Builder Data Residency Control — EU Personal Data Cannot Be Guaranteed to Stay in the EU
+    - [4441516] No Per-Space Encryption Key Hierarchy — One Platform Key Encrypts All Tenant Data; Breach Affects All
+    - [4443876] Shared KV Namespaces With Prefix-Only Isolation — Any Worker Bug That Omits the spaceId Prefix Reads Cross-Tenant Data
+    - [4446167] DO IDs Formed by Concatenating spaceId + ':' + subId — Colons in Component IDs Produce Identical DO IDs Across Tenants
+    - [4448359] No Audit Log for MCP Credential Access — SOC 2 CC6 and GDPR Article 32 Compliance Blocked
+    - [4450574] Security and Billing Audit Logs Stored in Mutable SQLite — Attackers With DO Access Can Rewrite History
+    - [4452758] Webhook Payload Shapes Have No Version Field — Consumer Schema Changes Break Existing Subscribers Without Notice
+    - [4454967] Only JavaScript/TypeScript SDK Exists — Python, Go, and Ruby Builders Cannot Integrate Without Raw HTTP
+    - [4457081] No OAuth Token Vault for Third-Party Integrations — Builders Cannot Connect Google Workspace, Slack, or GitHub to Their Spaces
+    - [4459300] Builders Cannot Export or Import Their Entire Space — No Portable Archive Format for Backup or Migration
+    - [4461448] No Capacity Design for Simultaneous Webhook Delivery to 1M Endpoints — Fan-Out Pipeline Undefined
+    - [4463776] No Re-Indexing Migration Strategy When the Embedding Model Changes — All Existing Vectors Become Incompatible
+    - [4466085] Cosine Similarity Is the Sole Ranking Signal for RAG Retrieval — No Reranker to Improve Precision
+    - [4468331] Fixed 512-Token Chunking With 50-Token Overlap Degrades Retrieval for Structured Documents
+    - [4470591] Each Document Update Adds New Vectors Without Deleting Old Ones — Stale Chunks Accumulate and Degrade Search Quality
+    - [4472868] Image Uploads Stored in R2 But Never Indexed for Visual or Semantic Search — Images Are Invisible to Agent Retrieval
+    - [4475142] Retrieved Chunks and Conversation History Compete Unmanaged for the LLM Context Window Token Budget
+    - [4477374] No Backpressure on LLM Token Stream — Slow WebSocket Consumers Cause Unbounded Server-Side Buffer Growth
+    - [4479670] System Prompts Have No Version History or Traffic-Split Capability — Builders Cannot Safely Iterate on Prompts
+    - [4481857] No Documented Rollback Procedure for a Bad Worker Deployment — Production Incidents Require Manual Intervention
+    - [4484158] JWT Signing Key Rotation Immediately Invalidates All Outstanding Tokens — Auth Outage on Every Key Rotation
+    - [4486284] Staging May Share Production Durable Objects, KV Namespaces, or Analytics Engine — Tests Do Not Reflect Production Behaviour
+    - [4488505] Every wrangler Deploy Is a Simultaneous Feature Release — No Dark Launch or Kill-Switch Capability
+    - [4490639] Full Monorepo Rebuild on Every CI Push — No Turborepo Remote Cache, Wasting 5-10 Minutes Per Pipeline
+    - [4492707] No Semver Management for @naelao/* Shared Packages — Transitive Dependency Updates Break Silently
+    - [4494914] No Endpoint to Compile All Personal Data Held About a User — GDPR Article 15 Compliance Blocked
+    - [4497187] No In-Platform DPA Signing Flow — Enterprise Builders Must Sign DPA Outside the Platform via Manual Process
+    - [4499346] Enterprise Builders Cannot Export Audit Logs to Their SIEM — Security Events Are Trapped in Platform Analytics
+    - [4501679] No Enumeration of Missing SOC 2 Type II Controls — Platform Cannot Be Certified Without a Remediation Roadmap
+    - [4503922] No Documented Rate Limits on the Builder Management Plane API — Scrapers and Bugs Can Overwhelm Platform
+    - [4506163] All Tool Failures Use the Same Global Retry Policy — Side-Effectful Tools Retried Without Idempotency Checks Cause Duplicate Actions
+    - [4508375] Knowledge Base Uses Vector-Only Search — Exact-Match Queries for IDs, SKUs, and Acronyms Fail to Retrieve Relevant Results
+    - [4510644] Malicious Tool Response Payloads Can Inject Instructions Into Agent LLM Context — Tool Results Are Trusted Without Sanitisation
+    - [4513122] No Maintenance Window Mechanism — Scheduled Maintenance Causes Full Platform Outage for All Builder Products
+    - [4515474] Builder Analytics Dashboard Has No Data Staleness Indicator — Builders Make Decisions on Data of Unknown Age
+    - [4517696] No Cycle Detection in Agent Tool-Call Graph — Circular Tool Dependencies Can Drive Infinite Agent Loops
+    - [4520009] All Agent Roles Can Query Any Knowledge Base Section — No Scoped Access to Sensitive Knowledge Segments
+    - [4522308] Single-Document Sequential Embedding Causes Rate-Limit Hits and Slow Ingestion for Large Knowledge Bases
+  - [4523963] Appendix AI — Additional Technical Gaps (50 items)
+    - [4525176] Marketplace and Builder Product Pages Are Not Server-Side Rendered — Invisible to Search Engines
+    - [4527503] No Public Directory for End-Users to Browse Available Builder Products — Discovery Only via Direct URL
+    - [4529731] Generated Builder Product Pages Cannot Be Indexed by Google — No SSR, No Meta Tags, No Structured Data
+    - [4531917] No Reserved Slug Blocklist — Attackers Can Claim Brand Names as Naelao Subdomains for Phishing
+    - [4534116] Builders Are Never KYC-Onboarded for Stripe Connect Payouts — Revenue Accumulates With No Withdrawal Path
+    - [4536383] Builders Cannot Implement Per-Usage Pricing for Their End-Users — No Metering API or Stripe Meters Integration
+    - [4538653] No Time-Limited Trial State Machine for Builder End-User Products — Trial Expiry Cannot Be Enforced
+    - [4540830] No Handler for Stripe Dispute Webhooks on Builder Product Charges — Disputes Always Lost by Default
+    - [4543149] No Built-In MRR, ARR, Churn, and LTV Metrics for Builder Products — Builders Cannot Measure Revenue Health
+    - [4545361] Platform Emails Sent Without SPF/DKIM/DMARC Configuration — Delivered to Spam by Major Email Providers
+    - [4547636] Hard Email Bounces Are Never Recorded — Invalid Addresses Remain Active and Damage Platform Sender Reputation
+    - [4549935] All End-User Notification Emails Are Naelao-Branded — Builders Cannot White-Label Emails From Their Products
+    - [4552098] No Per-Space Push Notification Rate Limit — Buggy Agent Can Exhaust Platform FCM/APNs Quotas Affecting All Tenants
+    - [4554257] No Notification Inbox — End-Users Cannot Access Past Notifications and Miss Asynchronous Agent Completions
+    - [4556530] No Notification Preference Center — End-Users Cannot Set Quiet Hours, Channel Preferences, or Opt-Out
+    - [4558748] Password Reset and Agent Digest Emails Share the Same Queue — Critical Emails Delayed by Low-Priority Bulk Mail
+    - [4560992] No Anti-Loop Headers on Outbound Emails — Auto-Responders Create Unbounded Reply Storms
+    - [4563164] No Scoped API Key Management for Builders — All Keys Have Full Access, No Read-Only or Limited-Scope Keys
+    - [4565415] No Test Mode That Skips Credit Deduction and Suppresses Real Emails and Webhooks
+    - [4567638] No Public Changelog or Proactive Breaking Change Notifications — Builders Discover API Changes at Runtime
+    - [4569871] Builder CLI Missing Core Operations — No naelao logs, naelao test, or naelao spaces Commands
+    - [4572142] Agent-Rendered HTML Artifacts Have No CSP — XSS in Agent Output Enables Full Data Exfiltration
+    - [4574416] Third-Party Scripts Loaded Without SRI Hashes — CDN Compromise Enables Platform-Wide Script Injection
+    - [4576673] No Strict-Transport-Security Header — HTTP Downgrade Attacks Possible on First Visit
+    - [4578897] No Automated Dependency Vulnerability Scanning — Known CVEs in npm Packages Go Undetected
+    - [4581127] No External Security Assessment or Bug Bounty Program — Zero External Validation of Security Posture
+    - [4583461] The Space-Assistant Embeddable Widget Has No CSP or Origin Isolation — Third-Party Contexts Can Steal Session Tokens
+    - [4585801] Messages Composed Offline Are Lost on Connection Drop — No Client-Side Persistence or Background Sync
+    - [4588075] Critical Alerts Sent Only via Push — Device Offline or Push Disabled Causes Permanent Loss of Billing and Security Alerts
+    - [4590331] No URL Scheme or Dynamic Link Infrastructure — Mobile Users Cannot Share Links to Specific Conversations or Spaces
+    - [4592616] New Builders Start With a Blank Canvas and No Guided Setup — High Abandonment Rate From Zero-to-Value Friction
+    - [4594922] No Searchable Template Catalog — Builders Cannot Browse or One-Click Apply Community Templates
+    - [4597155] Builders Cannot Publish Custom Sub-Agents for Other Builders to Import — No Agent Composability Ecosystem
+    - [4599412] No Automated Three-Way Revenue Split Between Platform, Builder, and App Developer on Monetised Events
+    - [4601727] Authentication Tokens Issued Before Email Ownership Is Verified — Account Takeover via Email Typo
+    - [4603987] End-Users Cannot Search Across Multiple Builder Spaces They Are Members Of — Discovery Requires Direct Navigation
+    - [4606279] Mobile File Upload Path Lacks Native Camera Picker and iCloud/Google Drive Access
+    - [4608599] Builder Canvas Has No Touch Gestures — Tablet Users Cannot Pinch-to-Zoom or Navigate by Touch
+    - [4610784] Platform Admin Panel Has Broken User-Ban Functionality and Cannot Perform Key Maintenance Operations
+    - [4613127] CORS May Be Configured Permissively — Wildcard or Over-Broad Origins Allow Cross-Site Authenticated Requests
+    - [4615482] No Platform Primitive for Builders to Sell Recurring Subscription Plans to Their End-Users
+    - [4617764] No Read-Receipt or Delivery Confirmation for Critical Notifications — Platform Cannot Verify User Was Reached
+    - [4620076] Service Bindings Between Workers Do Not Resolve Locally — Cross-Worker Integration Testing Requires Remote Deployment
+    - [4622304] No Referral Program or Cross-Space Collaboration Mechanism — Spaces Operate as Isolated Silos
+    - [4624582] Password Reset Links Delayed by Bulk Email Queue — 15-Minute Token Expiry Creates Auth Failures
+    - [4626891] Builder Can Create Spaces and Spend Credits Before Verifying Email — Fraudulent Accounts Exploit Credits Without Valid Contact
+    - [4629195] Builders Cannot Define Named Analytics Event Types With Schemas — Custom Events Use Positional Arrays Without Documentation
+    - [4631445] No Custom WAF Rules Beyond Cloudflare Default Ruleset — Platform-Specific Attack Patterns Go Unblocked
+    - [4633732] Agent Failures Return Generic Error Toasts With No Request ID, Stack Trace, or Structured Debug Context
+    - [4635971] No Builder Community Forum or Discord — Builders Work in Isolation With No Peer Support or Template Sharing
+  - [4637659] Appendix AJ — Real-time Collaboration, Federation, Edge Caching, Capacity Planning, Observability & Data Portability Gaps
+    - [4638785] Slow-Client WebSocket Starvation Blocks Entire SpaceDO
+    - [4640687] No Live Cursor / Multiplayer Presence Protocol for Co-Editing
+    - [4642616] Optimistic UI Updates Lack Server Reconciliation on Conflict
+    - [4644494] No Ephemeral Collaboration Session Invite (View-Only / Guest Editor)
+    - [4646338] No Per-Field Change History or Diff Viewer for Space Config
+    - [4648172] Space Configuration Has No Git-Like Version Control with Branching
+    - [4650042] Silent Lock Collision — Builders Receive No Notification on Edit Conflict
+    - [4651915] WebSocket Reconnect Has No Missed-Event Replay
+    - [4653860] No LangChain / LlamaIndex Adapter Export for Naelao Agents
+    - [4655695] Naelao Cannot Act as an OAuth2 Provider for External Applications
+    - [4657674] REST-Only API — No GraphQL for Complex Client Queries
+    - [4659639] No Zapier / Make.com Trigger and Action Definitions
+    - [4661583] No OpenAPI Schema Auto-Generation for Builder-Exposed Worker Endpoints
+    - [4663487] Space Type JSON Schema Not Exported for External Tooling
+    - [4665429] No Import Path from Competing Builder Platforms
+    - [4667282] No ActivityPub / Fediverse Federation for Builder Product Discovery
+    - [4669127] KV Cache Invalidation Pagination Gap — Keys >1000 Never Purged
+    - [4671058] MCP Tool Schema Cache Has No Version-Based Invalidation
+    - [4672993] No Surrogate Key / Cache Tag Purging for Builder Content Updates
+    - [4674915] No Cache Warming Strategy — Cold-Start Thundering Herd After Deployment
+    - [4676819] Static Assets Have No Content-Hashed Fingerprinting
+    - [4678733] Cache Poisoning via Query String Manipulation
+    - [4680755] No Edge-Side Partial Caching for Personalized Pages
+    - [4682695] Per-Space CPU and DO Alarm Budget Is Completely Undefined
+    - [4684716] Builder-Tier Quota Ledger Is Fragmented Across KV, SQL, and Pre-Reservation
+    - [4686796] No Account-Level Throttle on Space Creation Rate
+    - [4688778] No CPU Anomaly Detection or Kill Switch for Cryptomining in Sandboxes
+    - [4690878] No Per-Upload Size Limit or Free-Tier R2 Storage Cap
+    - [4692862] CF Workflow Concurrency Quota Per Builder Is Unbounded
+    - [4694886] No IP/ASN-Level Rate Limiting for Unauthenticated Marketplace Scraping
+    - [4696885] No Per-Space Custom DDoS Mitigation Rules Beyond Global CF WAF
+    - [4698948] No Signed Metered Usage Logs for Chargeback Fraud Evidence
+    - [4701002] No Hard Concurrency Limit on WebSocket Connections Per SpaceDO
+    - [4703057] Trace ID Not Propagated Across Service Bindings, Queues, and DO RPC
+    - [4705196] No Error Budgets or Per-Service-Tier SLO Definitions
+    - [4707221] No PagerDuty / OpsGenie On-Call Integration or Escalation Policy
+    - [4709242] No Chaos Engineering Framework for Fault Injection Testing
+    - [4711335] No CPU Profiling or Flame Graph Infrastructure for DO Hot Paths
+    - [4713379] Builder Dashboard Shows Only Aggregate Metrics — No Per-Agent Observability
+    - [4715359] No Per-Tenant Cost Attribution for R2, Vectorize, CF AI, and Workers
+    - [4717398] No Scheduled Synthetic Monitoring Canary Transactions
+    - [4719495] No Runtime Dependency Health Checks Before Accepting Traffic
+    - [4721602] No Central Registry for Scheduled Tasks — Silent Job Death Undetected
+    - [4723673] Feature Flag State Has No Per-Tenant Observability or Safe Rollback
+    - [4725858] No Litigation Hold / Preservation Order Support
+    - [4727897] No Continuous DO SQLite Backup — Daily Export Is Undocumented and Unimplemented
+    - [4730027] No YAML/JSON Config Import for Infrastructure-as-Code Space Definitions
+    - [4732144] No Cross-Service Cascade Delete on Account or Space Deletion
+    - [4734297] No Automated Disaster Recovery Drill or Restore Validation
+    - [4736347] Audit Log Has No Immutability Guarantee or SIEM Streaming Export
+  - [4737906] Appendix AK — AI Model Management, Space Type Marketplace, End-User UX, i18n, PCI DSS & Platform Governance Gaps
+    - [4739056] No AI-Generated Content Disclosure (EU AI Act Article 50)
+    - [4741114] No Automated Red-Teaming of Builder Agents Before Public Deployment
+    - [4743120] RAG Pipeline Has No Cross-Encoder Reranking After Vector Retrieval
+    - [4745141] No Agent Tool Call Confirmation Mode for Destructive or Irreversible Operations
+    - [4747204] No Bias Detection or Fairness Testing in Agent Output Pipelines
+    - [4749291] Long-Term Agent Memory Has No Garbage Collection or Compaction
+    - [4751365] No Toxicity or Quality Scoring Gate Between LLM Output and End-User Delivery
+    - [4753459] No Task-Complexity-Based LLM Model Selection (Routing by Difficulty)
+    - [4755590] Space Type Has No Semantic Versioning or Breaking-Change Rollout Strategy
+    - [4757754] Space Type Creators Have No Analytics Dashboard or Install Metrics
+    - [4759776] No Automated Security Audit Pipeline for Space Types Before Marketplace Listing
+    - [4761985] Space Type Has No Licensing Framework or IP Ownership Clarity
+    - [4764106] No Space Type Forking or Community Derivation Mechanics
+    - [4766121] No DMCA Takedown Process for Space Types or Builder Products
+    - [4768257] No Paid Space Type Monetization Rails — Creators Cannot Charge for Templates
+    - [4770305] No Editorial Curation or Featured Placement for the Space Type Marketplace
+    - [4772388] End-Users Cannot View or Revoke Active Device Sessions Within a Space
+    - [4774418] End-Users Cannot Self-Manage Their Subscriptions Within a Builder Space
+    - [4776577] Builder-Configurable End-User Onboarding Wizard Is Not a Platform Feature
+    - [4778667] End-Users Have No Granular Notification Preferences Within a Builder Space
+    - [4780778] End-Users Cannot Submit a Data Deletion Request Within a Space
+    - [4782892] End-Users Have No Self-Service Billing Portal Within a Builder Space
+    - [4784885] No Secure Account Recovery Flow for End-Users With Lost Credentials
+    - [4787029] Builder Products Launch Empty With No Default Guidance or Example Content
+    - [4789028] No Builder Product UI Localization Framework for Multi-Language Products
+    - [4791143] No RTL (Right-to-Left) Layout Support for Arabic, Hebrew, and Farsi Products
+    - [4793239] Builder Products Support Only USD — No Multi-Currency Pricing or Billing
+    - [4795415] Semantic and Full-Text Search Are Not Locale-Aware
+    - [4797619] Agent Response Strings Have No ICU Message Format or Plural Rule Support
+    - [4799753] No VAT / GST / Sales Tax Calculation Per Jurisdiction for Builder End-User Billing
+    - [4801822] Cron Jobs and Time-Based Policies Are UTC-Only With No Timezone Support
+    - [4803928] No Translation Management Workflow for Builder Space Content
+    - [4806017] PCI DSS Scope Is Undefined — Platform May Unknowingly Be In SAQ D Scope
+    - [4808214] No Explicit Policy Preventing Card Data From Reaching Naelao Workers
+    - [4810442] No SCA / PSD2 / 3D Secure 2 Compliance for European End-User Payments
+    - [4812590] No PCI Requirement 10 Audit Logging for Cardholder Data Environment Access
+    - [4814756] No Stripe Radar Fraud Scoring for End-User Subscription Payments
+    - [4816868] No Payment Security Testing in the CI/CD Pipeline
+    - [4818938] No Annual PCI SAQ Completion, Vulnerability Scanning, or Penetration Test Program
+    - [4821081] No CSAM Detection or Mandatory NCMEC CyberTipline Reporting Pipeline
+    - [4823276] No GIFCT Terrorist Content Hash Database Integration
+    - [4825493] EU AI Act Article 13 Transparency Obligations for High-Risk AI Systems
+    - [4827766] Builder Account Suspension Has No Grace Period, Data Preservation, or Reactivation Flow
+    - [4829987] No Platform Appeals Process for Builders Disputing Content Removals or Suspensions
+    - [4832259] No Cross-Space Centralized Content Moderation Queue
+    - [4834466] No Government / Law Enforcement Data Disclosure Process (MLAT, Court Orders)
+    - [4836684] No Detection System for AI-Generated Content Spam Published via Agents
+    - [4838957] No End-User Content Flagging Mechanism Within Builder Products
+    - [4841141] No Age Verification or COPPA / GDPR-K Compliance for Minor Users
+    - [4843379] No Platform Transparency Report or Public Content Policy Documentation
+  - [4845059] Appendix AL — Network Security, Container Supply Chain, Developer Portal, Analytics Pipeline, IaC/DevOps & Database Scaling Gaps
+    - [4846229] CF Access JWT Is Not Session-Bound — Stolen Token Valid Across Any Context
+    - [4848281] Service Binding Internal Calls Have No Mutual TLS or Listener Hostname Verification
+    - [4850478] WebSocket Origin Validation Uses Weak Allowlist Logic — Subdomain Spoofing Bypass
+    - [4852702] No Cloudflare Tunnel for Admin Worker — Internal Admin Endpoints May Be Internet-Exposed
+    - [4854939] No DNS Rebinding Attack Prevention on WebSocket Upgrade Requests
+    - [4857038] HTTP Request Smuggling via Proxy Path Normalization Between CF Edge and Workers
+    - [4859193] No Certificate Pinning for Outbound HTTPS from Workers to External APIs
+    - [4861377] Container Network Policy Declared in Manifest But Runtime Enforcement Is Undefined
+    - [4863555] No Source IP Allowlisting for Inbound Webhooks From External Services
+    - [4865670] No Container Image Signing or Provenance Verification Before Execution
+    - [4867898] Container Marketplace Approval Claims Scanning But No Scanner Technology Is Specified
+    - [4870120] No seccomp or AppArmor Syscall Filtering for Container Runtime
+    - [4872321] Builder Containers Run as Root — No Rootless Execution Policy
+    - [4874438] No Enforced Container-to-Container Network Isolation
+    - [4876664] No Read-Only Root Filesystem Enforcement — Containers Can Write Anywhere
+    - [4878793] No Container Image Size Limit — Unbounded Registry Storage Consumption
+    - [4880973] Secrets Injection Into Containers Exposes Credentials in Environment Variables
+    - [4883165] No Container Escape or Breakout Monitoring — No eBPF or Kernel Tracing
+    - [4885418] No Interactive API Documentation — Builders Cannot Try API Calls from Docs
+    - [4887619] No API Deprecation Notice or Migration Warning System
+    - [4889754] No Automatic SDK Generation from OpenAPI Spec for TypeScript, Python, and Go
+    - [4891858] No Developer Changelog With Breaking Change Classification
+    - [4893927] API Error Responses Are Not Standardized — No RFC 7807 Problem Details
+    - [4896140] No X-Request-ID Correlation Header Returned by Workers
+    - [4898315] No Webhook Test Delivery Tool in Builder Dashboard
+    - [4900442] No Multi-Worker Local Development Emulator — Service Bindings Don't Resolve Locally
+    - [4902607] No Funnel or Conversion Analysis for Builder Products
+    - [4904786] No Cohort or Retention Analysis — Builder Cannot See User Retention Over Time
+    - [4906953] No Builder-Facing A/B Testing Framework for Agent Configuration
+    - [4909209] No Custom Event Tracking SDK for Builder-Defined Business Events
+    - [4911381] Analytics Engine index1-Only Indexed Field Causes Silent Dashboard Query Failures
+    - [4913651] No Event Schema Versioning — Analytics Schema Changes Break Historical Dashboards
+    - [4915728] No Session Replay or User Journey Visualization for Builder Products
+    - [4917836] Analytics Engine Events Cannot Be Deleted — GDPR Per-User Erasure Is Impossible
+    - [4920042] No Terraform or Pulumi IaC for Cloudflare Resource Provisioning
+    - [4922238] Wrangler Version Is Unpinned — Surprise Breaking Changes From Automatic Upgrades
+    - [4924442] No Environment-Specific Configuration Injection in the Deployment Pipeline
+    - [4926621] DO SQLite Schema Migrations Have No Rollback Strategy
+    - [4928795] No Blue-Green or Gradual Traffic Split Deployment for Cloudflare Workers
+    - [4930934] No Cross-Worker API Contract Testing in CI Pipeline
+    - [4933053] No Infrastructure Drift Detection — Manual CF Dashboard Changes Silently Diverge From IaC
+    - [4935275] DO SQLite 10GB Limit Has No Approaching-Limit Warning or Automated Migration
+    - [4937567] Hot-Spot SpaceDO Serializes All Reads — No Horizontal Read Scale Pattern
+    - [4939902] WAL Mode Status in DO SQLite Is Undocumented — Concurrent Behavior Is Unknown
+    - [4942197] N+1 Query Pattern in Agent List and Thread List Endpoints
+    - [4944367] LIKE Full Table Scan on Knowledge Keyword Search and Missing Indexes on High-Frequency Tables
+    - [4946656] Turso Migration Threshold Undefined — No Automated Trigger for DO-to-Turso Promotion
+    - [4948882] No Cross-DO Federated Query Pattern — HybridQueryDO Is a Stub With No Implementation
+    - [4951095] Multi-Step DO Alarm Handlers Not Wrapped in SQLite Transactions — Partial State on Failure
+    - [4953313] SpaceDO SQLite Lacks Composite Indexes for Multi-Column Queries — Slow at Scale
+  - [4954986] Appendix AM — Naelao UI Builder System: Component Library, Config Architecture, AI Agent, Live Preview, Design System & Component Ecosystem 
+    - [4956233] No Formal Component Completeness Spec — Missing Capability Coverage Catalogue
+    - [4958525] Streaming Text Component Has No Token-by-Token Progressive Disclosure or Backpressure
+    - [4960684] No Tool Call Visualization Component — Tool Invocations Are Invisible to End-Users
+    - [4962819] No Thinking / Chain-of-Thought Display Component
+    - [4964910] No Multi-Modal Output Component — Images, Audio, and Files in Chat Thread Not Handled
+    - [4967114] No Code Block Component With Syntax Highlighting, Copy, and Execution Output
+    - [4969226] No Workflow Progress Visualization Component for Multi-Step Agent Pipelines
+    - [4971364] No Structured Data Table Component for LLM-Generated Tabular Output
+    - [4973559] Voice Input Component Lacks Push-to-Talk UI, Waveform Visualization, and Transcription Display
+    - [4975798] No Agent Handoff Indicator Component — Silent Agent Transfers Confuse End-Users
+    - [4978002] Component Config Schema Has No Versioning — Platform Updates Break Existing Builder Configs
+    - [4980282] No Config Schema Validation — Invalid Props Accepted and Silently Crash Components at Runtime
+    - [4982442] No Config Diff Preview — Builder Cannot See What Changes Before Applying
+    - [4984507] Component Config Stored as Opaque JSON — No TypeScript Types, No Editor Autocomplete
+    - [4986638] No Prop Dependency Rules — Enabling Feature X That Requires Feature Y Breaks Silently
+    - [4988831] No Default Config Inheritance From Space Type — Every Space Starts From a Blank Config
+    - [4991041] No Config Environment Override — Staging and Production Must Share Identical UI Configs
+    - [4993149] No Bulk Config Apply — Changing a Design Token Requires Saving Each Component Individually
+    - [4995282] No Config Rollback — Applying a Bad Component Config Has No Undo Mechanism
+    - [4997395] Config Persistence Is Not Atomic — Partial Saves Leave UI in Inconsistent State
+    - [4999547] UI Builder Agent Has No Capability Map — May Suggest Non-Existent Components
+    - [5001865] UI Builder Agent Output Is Not Schema-Validated Before Application — Hallucinated Props Crash UI
+    - [5004056] UI Builder Agent Has No Memory of Prior Design Decisions — Each Session Restarts Blind
+    - [5006227] UI Builder Agent Cannot Show a Preview of Its Suggestion Before Applying to Live Product
+    - [5008365] Prompt Injection via Builder Natural-Language Input to UI Builder Agent
+    - [5010717] UI Builder Agent Has No Undo/Redo — Agent Suggestions Cannot Be Rolled Back
+    - [5012908] UI Builder Agent Cannot Import From Figma or Extract Design Tokens From Existing Brand
+    - [5015088] UI Builder Agent Cannot Propose A/B Variant Configs for Comparison
+    - [5017223] UI Builder Agent Provides No Design Rationale — Cannot Explain Why It Chose a Layout
+    - [5019384] UI Builder Agent Session Context Window Not Managed — Long Sessions Lose Early Design Decisions
+    - [5021599] Component Preview Renders in Same Origin as Builder Dashboard — No Sandbox Isolation
+    - [5023810] Live Preview Shows Placeholder Data — Not Connected to Real Space Data
+    - [5025935] No Responsive Preview — Builder Cannot See Mobile vs Tablet vs Desktop Layouts
+    - [5028020] Preview-to-Production Rendering Parity Not Guaranteed
+    - [5030234] No Interactive Testing in Preview — Cannot Click Buttons, Submit Forms, or Chat in Preview
+    - [5032285] No Dark Mode Preview Toggle in Builder Editor
+    - [5034278] Preview Performance Is Not Representative — Components Load Eagerly in Preview
+    - [5036424] One Broken Component Crashes the Entire Preview — No Error Boundary
+    - [5038592] No Design Token Standard — CSS Variables Use Arbitrary Names With No Convention
+    - [5040701] Theme Tokens Do Not Cascade — Changing Primary Color Does Not Update Derived Colors
+    - [5042865] No Theme Token Validation — Invalid Color Values Accepted, Silently Break Rendering
+    - [5045008] CSS Custom Property Value Injection Attack via Theme Tokens
+    - [5047233] No Dark/Light Mode Theme Pair Management in ThemeConfig
+    - [5049328] No Font Loading Optimization — Google Fonts Loaded Without font-display:swap or Preconnect
+    - [5051520] Theme Changes Applied Directly to Live Users With No Preview-First Gate
+    - [5053611] No Brand Consistency Checker — Conflicting Colors Produce Illegible UI Without Warning
+    - [5055843] No Component Accessibility Audit Pipeline — WCAG 2.1 AA Compliance Not Verified Per Component
+    - [5058123] No Component Storybook or Living Documentation — Builders Cannot Discover All Available Components
+    - [5060301] Mobile Layout Has Hardcoded Breakpoints — No Builder-Configurable Responsive System
+    - [5062542] No Component Performance Budget — Heavy Components Have No Load Time SLA
+  - [5064301] Appendix AN — Advanced Billing, Search Infrastructure, Multi-Agent Orchestration, Knowledge Base Deep, Scalability Limits & Enterprise B2B (
+    - [5064881] G-AN01: Revenue Recognition: ASC 606 / IFRS 15 Deferred Revenue Tracking [CRITICAL]
+    - [5066377] G-AN02: Payment Dispute / Chargeback Handling: Stripe Webhook + Evidence Submission [HIGH]
+    - [5067706] G-AN03: 3-Way Revenue Split for Non-Subscription Payment Types (One-Time, Metered) [HIGH]
+    - [5069041] G-AN04: Annual Billing Pro-ration on Mid-Cycle Upgrade / Downgrade [MEDIUM]
+    - [5070341] G-AN05: Builder Payout Scheduling: Stripe Connect Transfer Timing and Minimum Threshold [HIGH]
+    - [5071695] G-AN06: Tax Calculation Integration: Stripe Tax or TaxJar for Jurisdictional Compliance [CRITICAL]
+    - [5073042] G-AN07: Billing Portal: Builder Self-Service Plan Management via Stripe Billing Portal [MEDIUM]
+    - [5074266] G-AN08: Failed Payment Recovery: Dunning Email Sequence with Smart Retry [HIGH]
+    - [5075625] G-AN09: Usage Metering Idempotency: Preventing Double-Count on Worker Retry [CRITICAL]
+    - [5076899] G-AN10: Billing Data Export: GDPR Article 20 Data Portability for Builders [MEDIUM]
+    - [5078116] G-AN11: Search-as-You-Type / Autocomplete: Debounced Prefix Query Architecture [HIGH]
+    - [5079405] G-AN12: Federated Multi-Knowledge-Base Search: Cross-Space Query Routing [HIGH]
+    - [5080694] G-AN13: Search Ranking Anti-Spam: Preventing SpaceType Keyword Stuffing [MEDIUM]
+    - [5081978] G-AN14: Search Analytics: Per-Builder Query Performance and Zero-Result Tracking [MEDIUM]
+    - [5083246] G-AN15: SSR Marketplace Search: Crawlable Search Results for SEO [HIGH]
+    - [5084501] G-AN16: Knowledge Base Re-indexing on Document Update: Stale Vector Detection [HIGH]
+    - [5085869] G-AN17: Search Personalization: Per-User Query History and Preference Signals [LOW]
+    - [5087136] G-AN18: Search Index Quota Management: Per-Builder Vectorize Namespace Isolation [HIGH]
+    - [5088397] G-AN19: Full-Text Search Fallback: BM25 for Exact-Match Queries Vectorize Misses [MEDIUM]
+    - [5089648] G-AN20: Search Cold Start: Vectorize Index Warming After KV Namespace Eviction [MEDIUM]
+    - [5090898] G-AN21: Agent Handoff Context Loss: Passing Conversation State Between Sub-Agents [CRITICAL]
+    - [5092223] G-AN22: Agent Consensus / Voting: Multi-Agent Agreement Protocol for High-Stakes Actions [HIGH]
+    - [5093503] G-AN23: Workflow Pause/Resume: Human Approval Checkpoint Surviving DO Hibernation [CRITICAL]
+    - [5094911] G-AN24: Sub-Agent Output Schema Enforcement: Preventing Instruction Injection via Agent Output [CRITICAL]
+    - [5096338] G-AN25: Agent Loop Detection: Preventing Infinite Orchestrator–Sub-Agent Cycles [HIGH]
+    - [5097651] G-AN26: Agent Memory Scoping: Preventing Cross-Space Memory Leakage Between Builders [CRITICAL]
+    - [5098925] G-AN27: Long-Running Agent Task: CF Worker 30s CPU Limit Bypass via Workflow [HIGH]
+    - [5100195] G-AN28: Agent Tool Authorization: Per-Agent Tool Permission Scopes [HIGH]
+    - [5101460] G-AN29: Agent Observability: Per-Agent Trace, Cost, and Latency Breakdown [MEDIUM]
+    - [5102722] G-AN30: Agent Versioning: Blue/Green Deployment for Agent Prompt/Config Changes [MEDIUM]
+    - [5104053] G-AN31: Structured Data Ingestion: CSV, Excel, JSON Table to Knowledge Base Pipeline [HIGH]
+    - [5105422] G-AN32: Live / Dynamic Knowledge Sources: RSS Feed, API Polling, Web Crawl Sync [HIGH]
+    - [5106686] G-AN33: Per-Document Access Control: Segment KB by End-User Role or Tier [HIGH]
+    - [5107948] G-AN34: Knowledge Graph Construction: Entity Extraction and Relationship Indexing [MEDIUM]
+    - [5109338] G-AN35: Confidential Document Handling: Preventing KB Content from Appearing in LLM Logs [CRITICAL]
+    - [5110678] G-AN36: Citation Quality: Source Attribution and Hallucination Reduction via Grounding [HIGH]
+    - [5112050] G-AN37: KB Versioning: Snapshot and Rollback for Knowledge Base State [MEDIUM]
+    - [5113328] G-AN38: KB Chunking Strategy: Semantic Chunking vs Fixed-Size for Different Content Types [MEDIUM]
+    - [5114686] G-AN39: Embedding Model Migration: Changing Vector Models Without Full Re-indexing [HIGH]
+    - [5115991] G-AN40: KB Multi-Lingual Support: Language-Aware Embedding and Query Expansion [MEDIUM]
+    - [5117298] G-AN41: Geographic DO Placement: Controlling DO Location for Data Residency [CRITICAL]
+    - [5118686] G-AN42: Global Space Registry: Fast Routing to Space's Home DO Region [HIGH]
+    - [5120015] G-AN43: DO Cold Start Latency: 2–3s Pre-Warming Strategy for User-Facing Spaces [HIGH]
+    - [5121325] G-AN44: Vectorize 10-Shard Limit: Platform-Scale Vector Search Architecture [CRITICAL]
+    - [5122661] G-AN45: Worker 128MB Memory Limit: Streaming Large Document Processing [HIGH]
+    - [5123931] G-AN46: DO SQLite Connection Pool: Parallel Query Contention Under High Concurrency [HIGH]
+    - [5125305] G-AN47: Rate Limiting Precision: Token Bucket vs Sliding Window for API Fairness [MEDIUM]
+    - [5126703] G-AN48: Custom Data Processing Agreement: Per-Enterprise Builder DPA Workflow [CRITICAL]
+    - [5128121] G-AN49: IP Allowlisting: Enterprise Builder Network Access Control for End-Users [HIGH]
+    - [5129464] G-AN50: Air-Gapped / Private Deployment: Self-Hosted Naelao for Regulated Industries [HIGH]
+  - [5130828] Appendix AO — Real-Time Collaboration, Builder Observability, Content Moderation, Marketplace Discovery, End-User Privacy & CI/CD Pipeline (
+    - [5131466] G-AO01: Collaborative Agent Prompt Editing: CRDT Merge for Concurrent System Prompt Changes [HIGH]
+    - [5132894] G-AO02: WebSocket Heartbeat Protocol: Connection Health and Dead Connection Cleanup [HIGH]
+    - [5134210] G-AO03: Build Preview Sync: Real-Time UI Preview Propagation to All Collaborating Builders [MEDIUM]
+    - [5135482] G-AO04: Concurrent Edit Conflict Notification: Informing Builders of Simultaneous Changes [MEDIUM]
+    - [5136871] G-AO05: Session Affinity for Collaborative Editing: Routing Team Members to Same DO Instance [HIGH]
+    - [5138268] G-AO06: Presence Reconciliation: Re-Announcing Presence After DO Hibernation Wake [MEDIUM]
+    - [5139662] G-AO07: Collaborative SpaceType Authoring: Multi-Builder SpaceType Draft Workflow [MEDIUM]
+    - [5141021] G-AO08: Team Invitation and Role Assignment: Multi-Builder Workspace Management [HIGH]
+    - [5142394] G-AO09: Per-Space SLI Dashboard: Builder-Visible Uptime and Error Rate for Their AI Product [HIGH]
+    - [5143745] G-AO10: Builder SLA Commitment: Configurable Uptime Guarantee per Space Tier [MEDIUM]
+    - [5145037] G-AO11: LLM Provider Circuit Breaker: Automatic Fallback on API Failure or Rate Limit [CRITICAL]
+    - [5146446] G-AO12: Postmortem Template and Blameless Incident Review Workflow [LOW]
+    - [5147769] G-AO13: Per-Space Error Budget Tracking: Builder Quota Burn Rate Visibility [MEDIUM]
+    - [5149111] G-AO14: Builder Space Cost Dashboard: Real-Time LLM Token and Infra Spend Attribution [HIGH]
+    - [5150448] G-AO15: Human-in-the-Loop Escalation: Borderline Content Review Queue with SLA [HIGH]
+    - [5151884] G-AO16: Builder Content Policy Enforcement: Per-Space Acceptable Use Rules with Automated Check [HIGH]
+    - [5153358] G-AO17: Runtime Prompt Injection Detection: Live Adversarial Input Classifier [CRITICAL]
+    - [5154853] G-AO18: Jailbreak Circuit Breaker: Automatic Space Quarantine on Repeated Policy Violations [HIGH]
+    - [5156283] G-AO19: Removed Content Data Cleanup: Cascading PII Deletion After Moderation Removal [HIGH]
+    - [5157732] G-AO20: SpaceType Recommendation Engine: Collaborative Filtering for Marketplace Discovery [HIGH]
+    - [5159181] G-AO21: SpaceType Ratings and Reviews: Social Proof Infrastructure [HIGH]
+    - [5160664] G-AO22: Affiliate and Referral Program: Builder Growth Mechanics [MEDIUM]
+    - [5161980] G-AO23: Freemium Trial for Spaces: Time-Limited End-User Access to Premium Spaces [HIGH]
+    - [5163382] G-AO24: Marketplace Conversion Funnel Analytics: Views to Install to Active User Tracking [HIGH]
+    - [5164786] G-AO25: Category Taxonomy and Tagging: Standardized SpaceType Classification [MEDIUM]
+    - [5166190] G-AO26: Editorial Curation Program: Featured Collections and Quality Certification [MEDIUM]
+    - [5167612] G-AO27: SpaceType Bundle: Packaging Multiple SpaceTypes for One-Click Install [MEDIUM]
+    - [5168959] G-AO28: Trending Algorithm: Real-Time SpaceType Popularity Ranking [MEDIUM]
+    - [5170332] G-AO29: SpaceType A/B Testing: Marketplace Listing Optimization for Conversion [LOW]
+    - [5171713] G-AO30: End-User Right to Access: GDPR Article 15 Conversation History Export [CRITICAL]
+    - [5173153] G-AO31: End-User Right to Erasure: GDPR Article 17 Message Deletion Within a Space [CRITICAL]
+    - [5174597] G-AO32: Consent Management: End-User Data Collection Consent Within Builder Spaces [HIGH]
+    - [5176017] G-AO33: Per-Space Data Retention Policy: Configurable End-User Data Lifecycle [HIGH]
+    - [5177512] G-AO34: Cookie and Tracking Consent: Embedded Space Compliance with ePrivacy Directive [HIGH]
+    - [5178982] G-AO35: CCPA Opt-Out: End-User Right to Opt Out of Data Sale or Sharing [HIGH]
+    - [5180409] G-AO36: Privacy Policy Display Requirement: Mandatory Privacy Notice for Builder Spaces [MEDIUM]
+    - [5181746] G-AO37: COPPA Controls: Minor Protection Within Builder Spaces [CRITICAL]
+    - [5183183] G-AO38: Parental Consent Flow: GDPR-K Verifiable Parental Consent for Under-13 Spaces [HIGH]
+    - [5184596] G-AO39: Canary Rollout Sweeper Wiring: processCanaryRollouts Not Connected to Alarm System [CRITICAL]
+    - [5186110] G-AO40: Deployment Ordering Enforcement: Dependency-Graph-Ordered Worker Deploy [CRITICAL]
+    - [5187522] G-AO41: Vectorize Test Namespace Isolation: CI Test Suite Cannot Use Production Index [HIGH]
+    - [5188947] G-AO42: LLM Mock/Stub for CI Tests: Deterministic AI Response Simulation [HIGH]
+    - [5190410] G-AO43: Stripe Test Mode Isolation: Preventing Test Webhooks from Hitting Production Handlers [CRITICAL]
+    - [5191920] G-AO44: Performance Regression CI Gate: P95 Latency Enforcement Before Deploy [HIGH]
+    - [5193322] G-AO45: Contract Testing: API Compatibility Between Workers and Stripe/LLM Providers [HIGH]
+    - [5194643] G-AO46: Shadow Traffic Testing: Production Request Mirroring for Safe Schema Migration [HIGH]
+    - [5196003] G-AO47: WebSocket Integration Tests: Hibernation Recovery and Reconnection Scenarios [HIGH]
+    - [5197415] G-AO48: DO SQLite Migration Tests: Schema Upgrade and Rollback Validation [HIGH]
+    - [5198818] G-AO49: Analytics Engine Query Schema Validation: CI Check for AE Query Correctness [MEDIUM]
+    - [5200277] G-AO50: Blue-Green Deployment Strategy: Zero-Downtime SpaceType Version Rollout [HIGH]
+  - [5201745] Appendix AP — Payment Infrastructure, Developer Experience, AI Model Management, Notifications, Compliance Deep & Platform Resilience (G-AP0
+    - [5202365] G-AP01: Multi-Currency Pricing: FX Conversion, Settlement, and Revenue Reporting [HIGH]
+    - [5203888] G-AP02: Builder Earnings Wallet: Pre-Payout Holding Account with Ledger [HIGH]
+    - [5205395] G-AP03: Stripe Connect KYC Pending: Handling Restricted Account Capabilities [HIGH]
+    - [5206890] G-AP04: Alternative Payment Methods: SEPA, ACH, iDEAL for Non-Card Markets [HIGH]
+    - [5208348] G-AP05: Subscription Pause vs. Cancel: Distinct States with Different Revenue Treatment [MEDIUM]
+    - [5209888] G-AP06: Plan Grandfathering: Legacy Pricing Protection on Plan Changes [MEDIUM]
+    - [5211320] G-AP07: Reverse Charge VAT: B2B Tax ID Collection and VIES Validation [HIGH]
+    - [5212754] G-AP08: Payment Provider Abstraction: Interface for Multi-Processor Support [HIGH]
+    - [5214222] G-AP09: Builder API Key Management: Scoped Keys with Rotation and Audit Log [HIGH]
+    - [5215667] G-AP10: naelao logs: Real-Time Log Streaming CLI Command [HIGH]
+    - [5217108] G-AP11: Hot Reload for Space Config: Instant Preview Without Redeploy [HIGH]
+    - [5218515] G-AP12: VS Code Extension: Naelao Space Development IDE Integration [MEDIUM]
+    - [5219991] G-AP13: Webhook Testing Tool: Local Webhook Delivery for Space Development [HIGH]
+    - [5221450] G-AP14: TypeScript Type Generation: Auto-Generated Types from Space API and Tool Schemas [HIGH]
+    - [5222909] G-AP15: Local Debug Mode: Structured Trace Viewer for Space Development [MEDIUM]
+    - [5224301] G-AP16: Builder SDK for Custom Integrations: Naelao API Client Library [HIGH]
+    - [5225769] G-AP17: API Versioning and Deprecation Notices: Breaking Change Communication to Builders [HIGH]
+    - [5227184] G-AP18: Builder Sandbox Environment: Isolated Test Space for Integration Development [HIGH]
+    - [5228645] G-AP19: BYOK Key Lifecycle: Rotation, Revocation, and Expiry Alerts for Builder API Keys [CRITICAL]
+    - [5230208] G-AP20: Model Deprecation Notification: Automated Alert on LLM Provider Model Retirement [HIGH]
+    - [5231651] G-AP21: Per-Agent Model Selection UI: Fine-Grained Model Choice per Agent Role [HIGH]
+    - [5233079] G-AP22: Model Cost Impact: Per-Model Pricing in Builder Margin Calculator [HIGH]
+    - [5234504] G-AP23: Context Window Overflow: Dynamic Token Budgeting for Long Conversations [CRITICAL]
+    - [5236031] G-AP24: Multimodal Input Routing: Vision and Audio Model Integration [HIGH]
+    - [5237484] G-AP25: Streaming Response Format Normalization: Unified SSE Across All LLM Providers [HIGH]
+    - [5239014] G-AP26: Model A/B Testing: Compare Two Models on Quality and Cost for Same Agent [MEDIUM]
+    - [5240419] G-AP27: Email Template Management: Versioned, Builder-Customizable Transactional Templates [HIGH]
+    - [5241917] G-AP28: Builder-Branded Emails to End-Users: Custom From-Address and Template Customization [HIGH]
+    - [5243419] G-AP29: In-App Notification Center: Builder Dashboard Notification Inbox [MEDIUM]
+    - [5244848] G-AP30: Email Deliverability: SPF/DKIM Automation and Bounce Handling [HIGH]
+    - [5246323] G-AP31: Push Notification Sequence Guarantees: Order-Preserving Critical Event Delivery [HIGH]
+    - [5247824] G-AP32: SMS and Voice Notification Integration: Twilio for Critical Escalations [MEDIUM]
+    - [5249317] G-AP33: Notification Analytics: Delivery Rate, Open Rate, and Click Tracking [MEDIUM]
+    - [5250760] G-AP34: Legal Hold: Preventing Data Deletion Under Active Litigation Hold [CRITICAL]
+    - [5252253] G-AP35: eDiscovery Export: Structured Data Export for Legal and Regulatory Requests [HIGH]
+    - [5253722] G-AP36: Data Classification Labels: PII, PHI, and Confidential Tagging at Rest [HIGH]
+    - [5255237] G-AP37: Compliance Dashboard: Real-Time Certification and Control Status [MEDIUM]
+    - [5256674] G-AP38: SOC 2 Evidence Automation: Continuous Control Monitoring and Evidence Collection [HIGH]
+    - [5258164] G-AP39: HIPAA BAA and PHI Mode: Signed Business Associate Agreement Workflow [CRITICAL]
+    - [5259683] G-AP40: Immutable Audit Log: Hash-Chained Append-Only Implementation [CRITICAL]
+    - [5261234] G-AP41: Builder Dashboard i18n: Naelao Admin Interface Translated for Global Builders [MEDIUM]
+    - [5262756] G-AP42: Space UI Language Selection: Per-End-User Locale for Builder Products [HIGH]
+    - [5264249] G-AP43: Core Web Vitals Monitoring: Embedded Space Performance for End-User UX [MEDIUM]
+    - [5265728] G-AP44: Progressive Web App: Offline Mode for Spaces with Service Worker Caching [LOW]
+    - [5267160] G-AP45: SpaceType Version Compatibility Matrix: Upgrade Path for Existing Installers [HIGH]
+    - [5268640] G-AP46: Platform Status Page Automation: Incident Detection to Status Update Pipeline [HIGH]
+    - [5270172] G-AP47: Builder Offboarding: Data Export and Account Closure Workflow [HIGH]
+    - [5271750] G-AP48: Disaster Recovery: Cross-Region DO State Recovery Plan [CRITICAL]
+    - [5273220] G-AP49: Error Message Localization: User-Facing Errors in End-User's Language [MEDIUM]
+    - [5274714] G-AP50: Builder Community and Support: In-Product Help, Docs, and Feedback Loop [LOW]
+  - [5276259] Appendix AQ — Marketplace Ecosystem, WebSocket Protocol, Storage Scaling, Access Control, MCP/Plugin Ecosystem & End-User Authentication (G-
+    - [5276924] G-AQ01: SpaceType License Framework: MIT, Commercial, and Per-Seat Licensing Models [HIGH]
+    - [5278431] G-AQ02: Review Bombing Defense: Sybil-Resistant Rating System for SpaceType Marketplace [HIGH]
+    - [5279933] G-AQ03: Private and Invite-Only SpaceTypes: Restricted Distribution Channels [HIGH]
+    - [5281373] G-AQ04: DMCA and IP Takedown: Safe Harbor Process for Infringing SpaceTypes [HIGH]
+    - [5282820] G-AQ05: Builder End-User Monetization: Revenue Share on End-User Actions Within a Space [HIGH]
+    - [5284265] G-AQ06: SpaceType Quality Gate: Automated Validation Before Marketplace Publish [HIGH]
+    - [5285819] G-AQ07: SpaceType Builder Verified Program: Trust Badges for Vetted Publishers [MEDIUM]
+    - [5287246] G-AQ08: JWT Refresh Mid-WebSocket Session: In-Band Token Renewal Without Disconnect [CRITICAL]
+    - [5288765] G-AQ09: In-Flight Message Recovery on WebSocket Reconnect [HIGH]
+    - [5290304] G-AQ10: Message-Level Idempotency for Tool Calls Over WebSocket [CRITICAL]
+    - [5291815] G-AQ11: WebSocket Compression: permessage-deflate for High-Volume Token Streaming [MEDIUM]
+    - [5293285] G-AQ12: Per-Connection WebSocket Rate Limiting: Preventing Abuse by Individual Clients [HIGH]
+    - [5294792] G-AQ13: WebSocket Proxy Keepalive: Preventing Mid-Request TCP Teardown by Proxies [MEDIUM]
+    - [5296233] G-AQ14: Partial Message Handling: Binary Frame Support in DO WebSocket Handler [HIGH]
+    - [5297694] G-AQ15: R2 Storage Lifecycle Policy: Archival and Cost Optimization for Old Objects [HIGH]
+    - [5299182] G-AQ16: Per-Builder R2 Storage Quota: Enforcement and Overage Billing [HIGH]
+    - [5300577] G-AQ17: KV Storage Constraints: Value Size Limits and Namespace Capacity Planning [MEDIUM]
+    - [5302070] G-AQ18: Multipart Upload: Handling Files Larger Than 100MB in Knowledge Base and Storage [HIGH]
+    - [5303604] G-AQ19: R2 CORS Configuration: Direct Browser Upload Without Worker Proxy [HIGH]
+    - [5305140] G-AQ20: Storage Cost Attribution: Per-Builder and Per-Space R2 Cost Tracking [MEDIUM]
+    - [5306559] G-AQ21: R2 Event Notifications: Triggering Processing Pipelines on File Upload [MEDIUM]
+    - [5308040] G-AQ22: End-User Role Permission Matrix: Fine-Grained RBAC Within Builder Spaces [HIGH]
+    - [5309622] G-AQ23: Permission Inheritance for Parent/Child Spaces: Hierarchical Space Topology [HIGH]
+    - [5311094] G-AQ24: Admin Impersonation: Scoped Support Access with Builder Consent and Audit [CRITICAL]
+    - [5312775] G-AQ25: Periodic Access Certification: Quarterly Review of Builder and Team Access [HIGH]
+    - [5314285] G-AQ26: Break-Glass Emergency Access: Audited Bypass for Critical Incident Response [HIGH]
+    - [5315867] G-AQ27: SCIM 2.0 Provisioning: Enterprise Identity Provider Integration for User Lifecycle [HIGH]
+    - [5317360] G-AQ28: MCP Server Rate Limiting: Per-Tool and Per-Server Resource Quotas [HIGH]
+    - [5318805] G-AQ29: MCP Tool Result Size Limits: Preventing Memory Exhaustion from Oversized Results [HIGH]
+    - [5320258] G-AQ30: MCP Server Backwards Compatibility: Versioning for Installed Apps [HIGH]
+    - [5321706] G-AQ31: MCP Container Sandbox Isolation: Untrusted MCP Servers in Isolated Execution [CRITICAL]
+    - [5323244] G-AQ32: Third-Party OAuth App Registration: Naelao as OAuth 2.0 Provider for Integrations [HIGH]
+    - [5324782] G-AQ33: Zapier and Make.com Native Integration: No-Code Automation for Builder Workflows [MEDIUM]
+    - [5326260] G-AQ34: MCP Server Health Monitoring: Circuit Breaker for Unresponsive Tool Servers [HIGH]
+    - [5327715] G-AQ35: MCP Server Marketplace: Discovery and Rating System for Third-Party Tools [MEDIUM]
+    - [5329148] G-AQ36: Passkeys / WebAuthn: Passwordless End-User Authentication for Spaces [HIGH]
+    - [5330678] G-AQ37: Social Login for End-Users: Google, Apple, and GitHub Sign-In Within Spaces [HIGH]
+    - [5332206] G-AQ38: Anonymous to Authenticated Account Upgrade: Preserving Session History on Signup [HIGH]
+    - [5333652] G-AQ39: End-User MFA for High-Security Spaces: TOTP and SMS OTP [HIGH]
+    - [5335170] G-AQ40: Session Duration Management: Builder-Configurable Token Expiry Per Space [HIGH]
+    - [5336635] G-AQ41: Device Trust and Remember-This-Device for End-Users [MEDIUM]
+    - [5338118] G-AQ42: Account Recovery Without Password: Secure Recovery Flow for Locked Accounts [HIGH]
+    - [5339553] G-AQ43: External Auth Migration: Importing Users from Existing Auth Systems [HIGH]
+    - [5341061] G-AQ44: API Gateway: Centralized Rate Limiting, Auth, and Request Tracing [HIGH]
+    - [5342556] G-AQ45: Response Caching: Edge Cache for Deterministic Space API Responses [HIGH]
+    - [5344041] G-AQ46: CDN for Static Space Assets: Edge-Served JS, CSS, and Image Assets [HIGH]
+    - [5345560] G-AQ47: Global Load Distribution: Smart Routing of Space Traffic Across CF Regions [MEDIUM]
+    - [5347064] G-AQ48: Space Health Monitoring: End-User-Perspective Availability Checks [HIGH]
+    - [5348587] G-AQ49: Request Replay: Debugging Failed Requests with Full Context [MEDIUM]
+    - [5350070] G-AQ50: Space Analytics Export: Bulk Data Pipeline for BI Tool Integration [MEDIUM]
+  - [5351554] Appendix AR — Space Embed Security, Billing Edge Cases, Agent Quality Evals, Builder Onboarding, CF Platform Gaps & Platform Growth Analytic
+    - [5352282] G-AR01: CSP frame-ancestors: Clickjacking Protection for Externally Embedded Spaces [CRITICAL]
+    - [5353894] G-AR02: postMessage Origin Validation: Preventing Token Injection via Untrusted Parent Frame [CRITICAL]
+    - [5355441] G-AR03: Anonymous Embed Token: Time-Limited JWT for Unauthenticated Space Embedding [HIGH]
+    - [5356922] G-AR04: Custom Domain SSL: DNS Takeover Protection and Certificate Auto-Renewal [HIGH]
+    - [5358482] G-AR05: White-Label Definition: What Naelao Branding Is Suppressed and How [HIGH]
+    - [5360040] G-AR06: Web Component Embed Option: Custom Element for Shadow DOM-Isolated Space Embedding [MEDIUM]
+    - [5361585] G-AR07: SSR for Embedded Spaces: Server-Side Rendered Initial HTML for Performance [HIGH]
+    - [5363097] G-AR08: Embed Analytics: Tracking Embed Performance and Builder Usage Patterns [MEDIUM]
+    - [5364559] G-AR09: Per-Space Monthly LLM Spend Cap: Hard Ceiling to Prevent Runaway AI Costs [HIGH]
+    - [5366068] G-AR10: Builder Spending Alerts: Configurable Cost Thresholds with Multi-Channel Notification [HIGH]
+    - [5367581] G-AR11: End-User Prepaid Credit Bundles: Self-Service Credit Purchase for Pay-Per-Use Spaces [HIGH]
+    - [5369144] G-AR12: Volume Discount Tiers: Enterprise Token Bundle Pricing for Large Builders [MEDIUM]
+    - [5370627] G-AR13: Accounting Software Integration: QuickBooks and Xero Export for Builder Finances [MEDIUM]
+    - [5372065] G-AR14: Financial Reconciliation: Naelao Internal Revenue Report and Variance Analysis [HIGH]
+    - [5373615] G-AR15: Builder Eval Framework: Automated LLM Quality Benchmarks for Builder Agents [CRITICAL]
+    - [5375220] G-AR16: Hallucination and Faithfulness Detection: Grounding Score vs Retrieved KB Context [HIGH]
+    - [5376812] G-AR17: Quality Gate: Minimum Response Quality Threshold Before Delivery [HIGH]
+    - [5378333] G-AR18: System Prompt A/B Testing: Data-Driven Quality Comparison Between Prompt Versions [HIGH]
+    - [5379880] G-AR19: Agent Behavior Regression Tests: Automated Detection of Prompt-Change Regressions [HIGH]
+    - [5381361] G-AR20: Response Diversity: Detecting and Preventing Repetitive/Stuck Agent Responses [MEDIUM]
+    - [5382890] G-AR21: Interactive Onboarding Wizard: Step-by-Step First Space Creation Flow [HIGH]
+    - [5384420] G-AR22: Setup Checklist: Progress Tracking for Space Configuration Milestones [HIGH]
+    - [5385937] G-AR23: Demo Spaces: Pre-Built Explorable Spaces for Builder Discovery [MEDIUM]
+    - [5387399] G-AR24: Email Onboarding Sequence: Day 1, Day 3, Day 7 Activation Drip Campaign [HIGH]
+    - [5388916] G-AR25: Empty State Experience: Guided First Interaction in a New Space [HIGH]
+    - [5390431] G-AR26: Builder Activation Tracking: Funnel Analytics for Naelao's Own Growth Team [HIGH]
+    - [5391910] G-AR27: Tail Workers: Real-Time Log Processing Without Logpush Overhead [MEDIUM]
+    - [5393402] G-AR28: Worker Bundle Size Budget: Build-Time Size Enforcement to Prevent Deploy Failures [HIGH]
+    - [5394875] G-AR29: CF AI Gateway Together AI Bypass: Routing All LLM Calls Through Cost-Tracking Gateway [HIGH]
+    - [5396405] G-AR30: CF Zero Trust Admin Audit: Device Posture Checks and Access Logging for Internal Tools [HIGH]
+    - [5397955] G-AR31: Unbound Worker Declaration: CPU Limit Enforcement for DO-LLM Calls [HIGH]
+    - [5399494] G-AR32: Platform Product Analytics: Naelao's Own Builder Cohort and Retention Tracking [CRITICAL]
+    - [5401028] G-AR33: Builder Health Score: Churn Risk Detection and Customer Success Automation [HIGH]
+    - [5402528] G-AR34: NPS and CSAT Collection: Builder Satisfaction Measurement Infrastructure [HIGH]
+    - [5404071] G-AR35: Feature Adoption Tracking: Dashboard Feature Usage Instrumentation [MEDIUM]
+    - [5405559] G-AR36: Self-Serve Upgrade Prompts: Contextual Plan Upgrade CTAs Based on Usage Signals [HIGH]
+    - [5407160] G-AR37: Customer Success Automation: At-Risk Builder Playbooks and Intervention Triggers [HIGH]
+    - [5408680] G-AR38: Platform A/B Testing: Feature Flag Experimentation for Naelao's Own Growth [MEDIUM]
+    - [5410235] G-AR39: Space Clone / Fork: Duplicating a Space Config for Iteration and Recovery [HIGH]
+    - [5411664] G-AR40: Prompt Library: Reusable System Prompt Components and Persona Templates [MEDIUM]
+    - [5413153] G-AR41: Webhook Reliability: Guaranteed Delivery with Exponential Backoff and DLQ [HIGH]
+    - [5414666] G-AR42: Cost Forecasting: Projected Monthly Spend Based on Current Usage Trajectory [MEDIUM]
+    - [5416046] G-AR43: Bot Detection: CAPTCHA for Space Sign-Up and Sensitive Actions [HIGH]
+    - [5417518] G-AR44: Agent Prompt Context Window Calculator: Pre-Call Token Count and Truncation Preview [MEDIUM]
+    - [5419005] G-AR45: GraphQL API Option: Flexible Query Interface for Builder Integrations [LOW]
+    - [5420480] G-AR46: Custom Error Pages: Builder-Branded Error Responses for Space Failures [MEDIUM]
+    - [5421894] G-AR47: Space Import/Export: Portable Space Configuration Format [HIGH]
+    - [5423450] G-AR48: Builder Admin Dashboard: Global Search for Managing Many Spaces and Configs [MEDIUM]
+    - [5424832] G-AR49: Platform Changelog: In-App Release Notes and Breaking Change Notifications [MEDIUM]
+    - [5426267] G-AR50: Multi-Workspace Support: Builders Managing Multiple Organizations in One Account [MEDIUM]
+  - [5427907] Appendix AS — Infrastructure Security, Voice/Multimodal, Platform Governance, Performance, GitOps & Community Ecosystem (G-AS01–G-AS50)
+    - [5428553] G-AS01: Bug Bounty and Responsible Disclosure Program [HIGH]
+    - [5430028] G-AS02: Custom WAF Rules: Platform-Specific Attack Pattern Blocking [HIGH]
+    - [5431503] G-AS03: SSRF Prevention: Blocking Private IP Access from Outbound Worker HTTP Calls [CRITICAL]
+    - [5433087] G-AS04: Dependency Audit and SBOM: CI Security Gate for Third-Party Packages [HIGH]
+    - [5434670] G-AS05: Secret Rotation Automation: Zero-Downtime Coordinated Secret Rotation [HIGH]
+    - [5436238] G-AS06: CORS Hardening: Strict Origin Allowlist on All Authenticated Endpoints [HIGH]
+    - [5437873] G-AS07: Platform-Level DDoS Mitigation: Custom Rate Limiting Beyond CF Default [HIGH]
+    - [5439428] G-AS08: Voice Agent Latency SLA: Round-Trip Time Budget for Natural Conversation [HIGH]
+    - [5440925] G-AS09: Call Recording Storage and Retention: VAPI Recording Pipeline [HIGH]
+    - [5442492] G-AS10: Voice Session State Persistence: Continuity Across Multiple Calls [HIGH]
+    - [5443899] G-AS11: TTS Voice Persona Customization: Builder-Selectable Voice Characters [HIGH]
+    - [5445421] G-AS12: Image Generation Pipeline: DALL-E and Flux Integration for Creative AI Products [HIGH]
+    - [5446952] G-AS13: OCR and Document Parsing: Layout-Aware PDF Ingestion for Structured Content [HIGH]
+    - [5448541] G-AS14: Video Understanding: Frame Extraction and Video-to-Knowledge Ingestion [MEDIUM]
+    - [5450044] G-AS15: Screen Share for Technical Support Spaces: Real-Time Screen View Protocol [LOW]
+    - [5451571] G-AS16: Platform Terms of Service and AUP: Builder Obligation to Pass-Through End-User Terms [HIGH]
+    - [5453127] G-AS17: GDPR Article 30 Records of Processing Activities for Naelao Platform [CRITICAL]
+    - [5454752] G-AS18: Data Protection Officer: DPO Appointment and Contact Mechanism [HIGH]
+    - [5456200] G-AS19: DSA Transparency Report: Digital Services Act Obligations for Platform [HIGH]
+    - [5457767] G-AS20: AI Liability Framework: Liability Allocation Between Builder, Platform, and End-User [CRITICAL]
+    - [5459402] G-AS21: Naelao Trademark Guidelines: Builder Usage Rules for Naelao Brand [MEDIUM]
+    - [5460890] G-AS22: Governing Law and Dispute Resolution: Jurisdiction and Arbitration Clause in ToS [HIGH]
+    - [5462481] G-AS23: LLM Semantic Response Cache: Deduplication of Identical and Near-Identical Queries [HIGH]
+    - [5464089] G-AS24: Time-to-First-Token Optimization: Streaming Latency Reduction Techniques [HIGH]
+    - [5465666] G-AS25: CF AI Gateway Cache Monitoring: Hit Rate Dashboard and Fallback Alerting [MEDIUM]
+    - [5467156] G-AS26: External API Connection Reuse: HTTP Keep-Alive for LLM and MCP Server Calls [MEDIUM]
+    - [5468739] G-AS27: SpaceDO Lazy Component Initialization: On-Demand Subsystem Activation [MEDIUM]
+    - [5470228] G-AS28: GitOps Workflow: Space Config Sync from Git Repository to Naelao [HIGH]
+    - [5471791] G-AS29: Config Drift Detection: Alert When Live Space Config Diverges from Git Source [HIGH]
+    - [5473306] G-AS30: Multi-Environment Space Management: Dev/Staging/Production with Config Parity [HIGH]
+    - [5474909] G-AS31: Space Config Diff: Visual Comparison Between Config Versions or Environments [MEDIUM]
+    - [5476356] G-AS32: Space Config Rollback via CLI/API: Restore Previous Configuration Version [HIGH]
+    - [5477825] G-AS33: Terraform Provider: Infrastructure-as-Code for Naelao Space Management [MEDIUM]
+    - [5479388] G-AS34: Agency and Reseller Partner Program: White-Label Platform for Agencies [HIGH]
+    - [5480959] G-AS35: White-Label Reseller: Full Platform Rebranding for OEM Partners [HIGH]
+    - [5482544] G-AS36: Startup Program: Discounted Access for Early-Stage Builders [MEDIUM]
+    - [5484075] G-AS37: Public Roadmap: Builder Transparency on Platform Direction [HIGH]
+    - [5485559] G-AS38: Feature Request Voting: Builder-Driven Product Prioritization [MEDIUM]
+    - [5487134] G-AS39: Developer Grants and Hackathon Program: Community Innovation Incentives [MEDIUM]
+    - [5488698] G-AS40: Open-Source Contribution Program: Community-Driven SDK and Tooling Development [LOW]
+    - [5490260] G-AS41: Runtime Environment Variables: Dynamic Config for Spaces Without Redeploy [HIGH]
+    - [5491852] G-AS42: Event-Driven Automation: Space Triggers Based on Conditions [HIGH]
+    - [5493414] G-AS43: LLM Cost Compression: Prompt Summarization to Reduce Token Usage [MEDIUM]
+    - [5494994] G-AS44: Space Template Inheritance: Creating Spaces That Extend Parent Templates [MEDIUM]
+    - [5496495] G-AS45: Space API Documentation: Auto-Generated Docs for Builder's Public Space API [MEDIUM]
+    - [5498012] G-AS46: Custom Middleware Pipeline: Per-Request Processing Hooks for Spaces [MEDIUM]
+    - [5499540] G-AS47: Platform API Rate Limit Observability: Builder Visibility into Rate Limit State [LOW]
+    - [5501052] G-AS48: Space Health History: 90-Day Uptime History Chart for Builder Status Pages [MEDIUM]
+    - [5502540] G-AS49: Graceful Space Degradation: Partial Functionality on Subsystem Failure [HIGH]
+    - [5504144] G-AS50: Naelao Public API SLA: Platform-Level Uptime Guarantee for Builder Integrations [HIGH]
+  - [5505612] Appendix AT — Advanced AI/ML Ops, CF Platform, API Ecosystem, Space Architecture, Security & Platform Economics
+  - [5564530] Appendix AU — CF Platform Limits, Mobile/PWA, Builder Auth, Marketplace, Billing, AI Patterns & Operations
+  - [5628541] Appendix AV — SpaceType Composition, Billing Analytics, Multi-Tenancy, Webhooks, RAG Quality & CF Platform
+  - [5695617] Appendix AW — Compliance Certifications, Observability, Content Processing, Access Control, Privacy, Notifications, Dev Tools & Scaling
+  - [5763106] Appendix AX — Agent Orchestration, Feature Flags, Rate Limiting, KB Advanced, API Security, Multimodal, i18n, Monetization
+  - [5832122] Appendix AY — Human-in-the-Loop, Platform KPIs, Frontend Patterns, End-User UX, DO Patterns, Events & Automation
+  - [5901571] Appendix AZ — Agent State Machines, Cost Modeling, Recommendations, Caching, Marketplace, Performance, Compliance, Integrations, Moderation,
+  - [5954755] Appendix BA — Multi-Tenancy Hardening, Real-Time Collaboration, SpaceType Patterns, Operational Excellence, End-User Advanced, Security Hard
+  - [6010198] Appendix BB — LLM Ops Advanced, Multi-Language, KB Advanced, Billing Advanced, ML Ops, Security Hardening, Reliability Engineering, Data Gov
+  - [6068098] Appendix BC — Agent Workflow Advanced, Space Shell UI, Auth Patterns, Data Storage, Media Processing, Ecosystem, End-User Features, Infrastr
+  - [6126375] Appendix BD — Agent Trust & Safety, Protocol Advanced, AIOps, Storage Patterns, Agent Capabilities, Pricing Advanced, Compliance, Ops & Supp
+  - [6186125] Appendix BE — CF Platform Limits, Emerging Tech, Builder Experience, QA Infrastructure, Security Final Layer, End-User Engagement, Cross-Cut
+  - [6245885] Appendix A — First Pass — Core Platform Architecture
+    - [6246986] No Deterministic Lockfile Pinning — Dependency Drift Breaks All Workers
+    - [6248766] Missing turbo.json Cache Inputs for Workers — Stale CF Worker Bundles in CI
+    - [6250450] No Path Aliases Defined — Cross-Package Imports Use Fragile Relative Paths
+    - [6252142] No Shared wrangler.base.toml — Every Worker Duplicates CF Account Config
+    - [6253885] Workers Use `export default` Object — Missing `scheduled` and `queue` Handler Exports
+    - [6255637] Service Binding Calls Lack Retry Logic — A Single Downstream Hiccup Cascades
+    - [6257325] DO Name Derivation Not Centralised — Naming Drift Across Workers Causes Lost DOs
+    - [6259062] DO Alarm Not Registered on Hydration — In-Memory Watchdogs Are Lost After Hibernation
+    - [6260870] DO SQLite Migration System Lacks Version Locking — Concurrent Requests Run Multiple Migrations
+    - [6262728] No Bundle Size Budget Enforced — Workers Can Silently Exceed 10MB CF Limit
+    - [6264433] Worker `Env` Interface Not Validated at Startup — Missing Secrets Cause Silent Runtime Failures
+    - [6266197] Middleware Registered After Routes — Security Middleware May Not Run on Some Paths
+    - [6267904] Unhandled Promise Rejections in Workers Are Silently Dropped
+    - [6269658] No Structured Logging — console.log Strings Are Not Searchable in CF Logpush
+    - [6271381] Health Endpoint Returns Static 200 — Does Not Verify Bindings Are Functional
+    - [6273034] Compatibility Flags Not Explicitly Set — Future CF Runtime Breakage Is Silent
+    - [6274783] DO Request Queue Not Bounded — Memory Exhaustion Under Traffic Spike
+    - [6276489] No Circular Dependency Detection — Package Graph Can Become Tangled
+    - [6278133] No Subrequest Budget Tracking — Complex Requests Silently Hit 1000 Subrequest Limit
+    - [6279898] Biome Not Configured for CF Workers Globals — `caches`, `WebSocketPair` Flagged as Unknown
+    - [6281645] No Lazy Initialization for Heavy Worker Setup — Cold Start Latency Spikes on First Request
+    - [6283362] Service Binding Requests Not Authenticated — Internal Workers Are Reachable Without Auth
+    - [6285164] No DO State Export Mechanism — Tenant Erasure and Migration Are Blocked
+    - [6286873] No API Version Routing — Breaking Changes Cannot Be Deployed Gradually
+    - [6288543] Next.js Apps Not Configured for CF Pages Edge Runtime — Server Components May Fail
+    - [6290269] Dead Letter Queue Not Wired to Alerting — Failed Messages Silently Accumulate
+    - [6291995] R2 Bucket CORS Not Configured — Browser Direct Uploads and Downloads Are Blocked
+    - [6293733] Single Vectorize Index — No Namespace Isolation Between Development and Production
+    - [6295451] D1 Shard Selection Not Deterministic Across All Workers — Cross-Shard Queries Break
+    - [6297192] No Analytics Write-Rate Limiter — 25M Rows/Day Cap Not Enforced
+    - [6298845] Workflows Not Idempotent — Replay on Failure Runs Steps Multiple Times
+    - [6300519] KV Namespace Has No Key Enumeration Strategy — Cleanup of Expired Keys Is Impossible
+    - [6302207] No CSRF Protection on State-Mutating API Routes — Cross-Site Request Forgery Is Possible
+    - [6304015] R2 Objects Not Encrypted at Application Layer — CF-Managed Encryption Is the Only Layer
+    - [6305790] No Memory Footprint Monitoring in DOs — 128MB Limit Causes Silent Evictions
+    - [6307502] Queue Consumer Processes Messages Out of Order — Dependent Events Are Mis-Sequenced
+    - [6309184] No Graceful Shutdown Handling — In-Flight Requests Are Dropped During Deploys
+    - [6310934] Branded ID Types Not Used Consistently — Raw Strings Accepted Where IDs Are Expected
+    - [6312631] No Distributed Tracing — Request Spans Are Not Connected Across Workers
+    - [6314368] No Feature Flag System — All Features Are Deployed to All Tenants Simultaneously
+    - [6316080] Dev and Prod KV Namespaces Share the Same Namespace IDs — Dev Data Corrupts Prod Lookups
+    - [6317789] No Dependency Vulnerability Scanning — Compromised npm Package Reaches Production
+    - [6319471] SpaceDO and AgentDO Accept Unbounded Concurrent SQL Writes — WAL Checkpoint Stalls
+    - [6321198] No Multipart Upload Support — Files Over 100MB Cannot Be Ingested into KB
+    - [6322903] No JWT Refresh Token Flow — Users Are Logged Out After Token Expiry
+    - [6324608] Dashboard Has No Cache Layer — Every Request Hits the CF Worker — No Static Generation
+    - [6326297] No Secret Rotation Mechanism — Compromised JWT_SECRET Requires Emergency Redeploy
+    - [6328016] No Consumer-Driven Contract Tests — Worker API Changes Break Dependent Workers
+    - [6329738] KV Cache Has No Stampede Protection — Cold Cache Thundering Herd Kills D1
+    - [6331530] No Operational Runbooks — On-Call Engineers Cannot Diagnose Incidents
+  - [6332640] Appendix B — Second Pass — Authentication, Authorization & Identity
+    - [6333740] JWT Signed with HMAC-SHA256 — No Algorithm Pinning — Algorithm Confusion Attack
+    - [6335392] Passwords Hashed with SHA-256 — Not a Password Hashing Algorithm — Trivially Crackable
+    - [6337177] JWT Revocation Requires KV — KV Eventual Consistency Allows ~60s Token Reuse After Logout
+    - [6338925] RBAC Has Only 4 Roles and 14 Permissions — Cannot Model Complex Enterprise Permission Trees
+    - [6340633] API Keys Have No Rotation Mechanism — Compromised Keys Require Deletion and Redistribution
+    - [6342333] No Multi-Factor Authentication — Account Takeover via Password Reuse Is Trivial
+    - [6344061] No Email Verification on Registration — Anyone Can Register With Any Email Address
+    - [6345786] JWT Claims Not Fully Validated — Missing `iss`, `aud`, `nbf` Checks
+    - [6347461] Password Reset Links Are Not Single-Use — Reuse After Reset Is Possible
+    - [6349127] No OAuth2/OIDC Provider — Cannot Support Social Login or Enterprise SSO Without It
+    - [6350887] Tenant ID Is Trust-Passed From Headers — Downstream Workers Can Be Spoofed
+    - [6352671] No Concurrent Session Limit — Credential Stuffing Creates Unlimited Sessions
+    - [6354344] API Keys Have No Scope Restriction — A Single Key Has Full Account Access
+    - [6356048] Login Endpoint Has No Brute-Force Protection — Credential Stuffing Is Unlimited
+    - [6357821] JWT HMAC Secret Minimum Length Not Enforced — Short Secrets Are Brute-Forceable
+    - [6359498] Docs and SDK Recommend Storing JWT in localStorage — XSS Can Steal Tokens
+    - [6361167] No User Data Export or Right-to-Erasure Implementation — GDPR Non-Compliance
+    - [6362860] No Permission Change Audit Log — RBAC Escalation Is Undetectable
+    - [6364511] Enterprise Orgs Cannot Enforce SSO-Only Login — Members Can Bypass SSO via Email/Password
+    - [6366219] No Team Invitation Flow — Admin Cannot Add Members Without Sharing Credentials
+    - [6367867] Rate Limits Are Per-IP Only — VPN Users and Shared IPs Are Unfairly Penalized
+    - [6369549] Sessions Never Expire on Inactivity — Idle Sessions Persist Indefinitely
+    - [6371204] No Automatic API Key Rotation on Public Commit Detection
+    - [6372884] Space-Level Access Control Not Implemented — All Org Members Can Access All Spaces
+    - [6374555] No Secret Scanning Pre-commit Hook — Secrets Can Be Committed to the Repo
+    - [6376184] OAuth2 Code Flow Missing PKCE — Authorization Code Interception Attack
+    - [6377867] No Service Account Concept — Automated Systems Share Human User Credentials
+    - [6379566] No Password Strength Enforcement at Runtime — Weak Passwords Are Accepted
+    - [6381239] Audit Log Is Mutable — D1 Rows Can Be Updated or Deleted — Forensics Are Unreliable
+    - [6382943] JWT Tokens Logged in Plain Text in Error Messages — Tokens Exposed in Log Aggregators
+    - [6384596] Tenant Creation Has No Approval Flow — Spam Orgs Created at Scale
+    - [6386270] No Identity Federation Between Builder Auth and End-User Auth
+    - [6387988] No Magic Link Authentication — Email/Password Is Only Auth Method for End-Users
+    - [6389678] JWT Claims Not Enriched With Plan Tier at Verification — Every Request Hits D1 for Plan Data
+    - [6391400] No Credential Stuffing Detection — High-Volume Login Failures Are Not Anomaly-Detected
+    - [6393106] JWT Payload Growing Without Size Limit — Large Scopes Arrays Increase Request Size by KB
+    - [6394794] SAML SP-Initiated Flow Missing — SSO Only Works When IdP Redirects to Naelao
+    - [6396552] No Bot Protection on Public Endpoints — Scraping and Enumeration Are Unrestricted
+    - [6398244] Access Tokens Not Bound to Client — Token Theft Enables Full Account Takeover
+    - [6399889] Billing Permission Not Separated From Admin — Any Admin Can Change Payment Method
+    - [6401500] End-User Sessions Not Isolated From Builder Sessions — Same Session Table for Both
+    - [6403225] Audit Log Has No Real-Time Alert Triggers — Security Events Not Surfaced Immediately
+    - [6404901] Password Reset Endpoint Leaks User Existence via Timing Difference
+    - [6406585] No SOC 2 Compliance Controls Documented or Enforced in Code
+    - [6408263] No JWKS Endpoint — Third-Party Services Cannot Verify Platform-Issued JWTs
+    - [6410011] No Device Fingerprinting — Session Can Be Used From Any Device After Cookie Theft
+    - [6411669] No Emergency Break-Glass Admin Access Procedure
+    - [6413334] Security Headers Not Applied to Auth Endpoints — Auth Pages Vulnerable to Clickjacking
+    - [6414991] No Admin Impersonation Feature — Support Cannot Diagnose User Issues Without Credentials
+    - [6416709] No Anonymous Session Support — End-Users Must Create an Account Before Chatting
+  - [6417867] Appendix C — Third Pass — Configuration, Secrets & Environment Management
+    - [6418991] No Secret Versioning — A Rotated Secret Immediately Invalidates All Active Sessions
+    - [6420670] Single wrangler.toml With No Environment Sections — Dev Changes Risk Production
+    - [6422341] No Platform-Wide Feature Flag Store — Every New Feature Ships to All Tenants at Once
+    - [6424042] Secrets Injected Into wrangler.toml via Comments — Secrets Accidentally Committed
+    - [6425780] Worker Config Not Validated — Bad Config Values Cause Silent Runtime Failures
+    - [6427470] Workers Deployed to Single CF Region — No Multi-Region Config for Low-Latency Globally
+    - [6429138] `.dev.vars` Not in .gitignore — Local Development Secrets May Be Committed
+    - [6430704] D1-Backed Config Has No Cache Invalidation — Stale Config Served for Up to 5 Minutes
+    - [6432445] Plan Limits Hardcoded in `quota.ts` — A Plan Change Requires a Code Deploy
+    - [6434088] Secrets Generated Without Minimum Entropy Validation — Weak Secrets Accepted
+    - [6435781] Cron Triggers Not Defined in wrangler.toml — Scheduled Tasks Never Run in Production
+    - [6437432] Third-Party API Keys (Anthropic, Stripe, Resend) Not Namespaced by Environment
+    - [6439117] SpaceType Manifest JSON Not Schema-Validated at Save Time — Malformed Config Breaks Spaces
+    - [6440894] No Canonical List of Required Environment Variables — Setup Is Undocumented
+    - [6442613] Anthropic Model Versions Not Pinned — A Model Deprecation Silently Breaks All Spaces
+    - [6444382] KV Namespace Names Are Inconsistent — Bindings Don't Follow a Convention
+    - [6446015] No Terraform State for CF Resources — Manual CF Dashboard Changes Drift From IaC
+    - [6447779] Analytics Event Sampling Rate Not Configurable — Either All or No Events Written
+    - [6449454] D1 Database IDs Not Managed — Hardcoded UUIDs in wrangler.toml Will Differ Across Environments
+    - [6451221] SpaceType Has No Default Config for New Spaces — Spaces Start With Null Config
+    - [6452934] Queue Consumer Max Retries and Visibility Timeout Not Configured Optimally
+    - [6454652] R2 Objects Have No Lifecycle Rules — Storage Grows Without Bound
+    - [6456301] SpaceType Has Version Field But No Deployment/Rollback Mechanism
+    - [6458070] Worker Memory Usage Not Monitored — Workers May Silently Hit 128MB Limit
+    - [6459769] No Fallback Model When Primary Claude Model Is Unavailable — LLM Calls Fail Hard
+    - [6461462] Stripe Live and Test Keys Not Separated by Environment — Live Charges in Staging
+    - [6463103] System Prompt Template Variables Not Sanitized — Template Injection Enables Prompt Injection
+    - [6464952] Health Check Does Not Verify All Required Bindings Are Present at Startup
+    - [6466669] No Per-Space End-User Configuration Exposed to Runtime — Spaces Cannot Customise Behaviour
+    - [6468356] No Pre/Post-Build Hooks in Wrangler — Custom Asset Processing Not Supported
+    - [6470036] No Per-Tenant Resource Quotas Enforced at Storage Layer — Storage Abuse Possible
+    - [6471765] SpaceType System Prompt Supports Only English — Multi-Language Spaces Not Configurable
+    - [6473506] Worker Routes Not Configured — Workers Are Accessed by Worker Name URL, Not Custom Domain
+    - [6475203] Analytics Engine Data Retention Not Configured — Old Data Accumulates Indefinitely
+    - [6476908] D1 Migrations Run Manually — No Automated Migration Runner in CI/CD
+    - [6478654] Worker CPU Time Limit Not Monitored — Expensive Operations Near the 50ms CPU Limit
+    - [6480339] Builder Cannot Restrict Which Plan Tiers Can Access Their SpaceType
+    - [6481969] CF Account Limits Not Documented or Monitored — Platform Hits Hard Limits Silently
+    - [6483661] No LLM Token Budget Enforcement — A Single Runaway Agent Can Exhaust Monthly Token Budget
+    - [6485434] CF Pages Environment Variables Not Separated by Branch — Preview Deployments Use Prod Config
+    - [6487157] SpaceType Cannot Define Which Tools Are Enabled — All Tools Are Always Available
+    - [6488874] Worker Version Not Included in Request Headers — Debugging Requires Manual Version Lookup
+    - [6490596] KB Config in SpaceType Manifest Not Validated Against Vectorize Index Capacity
+    - [6492252] LLM Gateway Has No Locale/Timezone Injection — Responses Ignore User Context
+    - [6493920] Builder Seat Count Not Tracked — Org Billing Based on Subs, Not Actual Users
+    - [6495579] No SpaceType Deprecation Flow — Old SpaceTypes With Security Issues Cannot Be Forced-Updated
+    - [6497288] Analytics Event Schema Not Versioned — Schema Changes Break Historical Queries
+    - [6498992] Poison Message Handling Not Defined — A Single Malformed Message Blocks Queue Processing
+    - [6500749] Rate Limiter DO Not Bound to All Workers — Some Workers Have No Rate Limiting
+    - [6502441] No SpaceType Sandbox Preview — Builders Cannot Test Their SpaceType Before Publishing
+  - [6503530] Appendix I — Ninth Pass — Integration, Inter-Worker Communication & Service Mesh
+    - [6504655] Service Binding Requests Carry No Identity — Downstream Workers Cannot Authorise Callers
+    - [6506390] Router Does Not Load-Balance Across Multiple Worker Instances — Hot Tenants Overwhelm One Worker
+    - [6508071] Knowledge Worker and Spaces Worker Share Vectorize Index Without Namespace Isolation
+    - [6509707] Agent Runtime Does Not Call Knowledge Worker for KB Retrieval — Agents Have No Access to KB
+    - [6511359] Agent Token Usage Not Reported to Billing Worker — Usage-Based Billing Inaccurate
+    - [6513017] Analytics Events Not Emitted From Most Workers — Coverage Is Incomplete
+    - [6514651] Multiple Workers Publish to the Same Queue Without Message Type Routing — Consumers Process Wrong Message Types
+    - [6516362] CF Workflows Cannot Call Service Bindings — Must Use HTTP Fetch Against Worker Routes
+    - [6518141] SpaceDO Does Not Receive Knowledge Worker Indexing Completion — Spaces Unaware When KB Is Ready
+    - [6519847] Router Does Not Propagate CF Request Context (Country, IP, Bot Score) to Downstream Workers
+    - [6521555] Agent Runs Not Associated With Sessions — Session Message History Missing Agent Responses
+    - [6523205] Dashboard Uses Polling for Session Updates — WebSocket Gateway Not Used
+    - [6524894] Billing Worker Does Not Enforce Quota Before Space Operations — Quota Exceeded Silently
+    - [6526587] Knowledge Worker Vectorize Writes Not Transactional — Partial Ingestion on Failure Leaves Orphaned Vectors
+    - [6528362] Portal Does Not Pass Builder Auth Context to Space — End-User Cannot Be Pre-Authenticated
+    - [6530064] Usage Events Not Linked to Billing Events — Cannot Reconcile Token Usage Against Invoice
+    - [6531740] No MCP Hub Worker — Agents Cannot Connect to External MCP Tool Servers
+    - [6533461] SpaceDO Schema Migration Does Not Handle Pre-Existing Data — Old Sessions Lose Metadata
+    - [6535128] No Notification Worker — Platform Cannot Send Emails, Push Notifications, or Webhooks
+    - [6536850] No Threads Worker — Long-Running Multi-Turn Conversations Cannot Be Managed
+    - [6538543] No Stripe Connect Integration — Builders Cannot Monetize Their Spaces
+    - [6540175] No Search Worker — Cross-Space Content Discovery Not Available
+    - [6541868] No Credentials Worker — External Service Credentials Cannot Be Stored Securely per Space
+    - [6543634] Portal Loads SpaceType Config on Every Request — No Caching Causes Repeated D1 Reads
+    - [6545243] No Admin Worker — Platform Operations Require Direct Database Access
+    - [6546933] No Apps Registry Worker — Builders Cannot Install Third-Party Integrations Into Their Spaces
+    - [6548610] No Sweeper Worker — Orphaned Resources (Sessions, Vectors, Files) Accumulate Forever
+    - [6550300] No Shared Queue Schema — Each Worker Invents Its Own Message Format
+    - [6551995] No Feedback Worker — End-User Thumbs Up/Down Not Collected or Analysed
+    - [6553669] No Marketplace Worker — SpaceType Discovery and Publishing Flow Not Implemented
+    - [6555386] No Portal Router Worker — Multi-Tenant Subdomain Routing Not Implemented
+    - [6557051] Stripe Webhook Delivery Failures Not Retried — Payment Events Silently Dropped
+    - [6558823] SpaceDO Cannot Broadcast Events to Multiple Connected Clients — WebSocket Fanout Missing
+    - [6560540] No Eval Worker — SpaceType Quality Cannot Be Measured Against Ground Truth
+    - [6562238] No Synthetics Worker — Uptime and Latency of All Workers Not Continuously Monitored
+    - [6563898] SpaceDO Does Not Hand Off Session to AgentDO — Sessions Are Stateless API Calls
+    - [6565580] No Channels Worker — Spaces Cannot Receive Input From External Channels (Email, Slack, API)
+    - [6567309] Token Usage Metered to Stripe With Up to 1-Hour Delay — Real-Time Usage Not Visible
+    - [6568968] No Triggers Worker — Spaces Cannot Execute Scheduled or Event-Driven Actions
+    - [6570690] No Artifact Worker — Agent Output Files Cannot Be Stored and Retrieved
+    - [6572401] No Browser Worker — Agents Cannot Browse the Web or Scrape Pages
+    - [6574090] No Mini-AGI Worker — Agents Cannot Spawn Sub-Agents or Plan Multi-Step Tasks
+    - [6575782] No Together AI Worker — Only Anthropic Is Available as LLM Provider — No Fallback
+    - [6577475] No Assistant Worker — Platform-Level AI Help Is Not Available to Builders
+    - [6579166] No Provisioner Worker — SpaceType → Space Provisioning Is Direct Database Insert Without Setup
+    - [6580953] DOs Have No Event Log — State Changes Cannot Be Reconstructed for Debugging
+    - [6582648] Presigned URL Expiry Too Short for Large File Uploads — Uploads Fail After 15 Minutes
+    - [6584385] Auth Worker JWT Issuance Not Idempotent — Double-Submit on Slow Connection Issues Two Tokens
+    - [6586078] No Response Caching for Idempotent Endpoints — CF Cache Not Leveraged
+    - [6587819] SpaceDO Has No Read Path Optimisation — All Queries Go Through the Single Writer
+  - [6588961] Appendix AF — Twenty-Fourth Pass — API Design, Developer Experience & Platform Maturity
+    - [6590084] No API Deprecation Policy or Version Lifecycle — Breaking Changes Shipped Without Warning
+    - [6591783] List Endpoints Use Offset Pagination — Performance Degrades for Large Result Sets
+    - [6593547] Rate Limits Have No Burst Allowance — Legitimate Burst Traffic Is Rejected
+    - [6595293] No Official Client SDK — Builders Must Hand-Roll HTTP Clients
+    - [6596958] No OpenAPI Specification — API Is Undocumented and Untestable by External Tools
+    - [6598608] REST-Only API Cannot Express Complex Relationship Queries — Multiple Roundtrips for Dashboard
+    - [6600280] Mutating Endpoints Lack Idempotency Key Support — Network Retries Cause Duplicate Operations
+    - [6602015] Agent Responses Are Not Streamed — Users Wait for Full Response Before Seeing Anything
+    - [6603719] No Batch API — N Resources Require N HTTP Requests
+    - [6605399] No Outbound Webhook System — Builders Cannot Receive Real-Time Events in Their Applications
+    - [6607099] No Data Residency Controls — EU Customer Data May Be Processed in US Regions
+    - [6608791] Error Codes Not Standardised Across Workers — Same Error Has Different Codes in Different Workers
+    - [6610544] API Does Not Support Content Negotiation — JSON Only, No MessagePack or CBOR
+    - [6612277] CORS Configuration Too Permissive — Any Origin Can Call the API With Credentials
+    - [6614039] Request Body Validation Returns Only the First Error — Users Cannot Fix All Errors at Once
+    - [6615685] Token Usage Counter Not Persisted Atomically — Race Conditions Cause Usage Undercount
+    - [6617428] Large API Responses Not Compressed — High Bandwidth Cost for Message History Payloads
+    - [6619125] Tenant Headers Can Be Spoofed via Proxy — No Signature on Internal Headers
+    - [6620824] API Documentation Has No Request/Response Examples — Integration Is Slow and Error-Prone
+    - [6622508] Internal CF Metadata API Not Blocked — SSRF in http_get Tool Exposes CF Worker Tokens
+    - [6624296] No Content Policy Enforcement on KB Documents — CSAM or Illegal Content Can Be Uploaded
+    - [6625981] No Analytics Query API — Builders Cannot Query Their Own Usage Data
+    - [6627596] No Application-Level DDoS Protection Beyond CF WAF — Sophisticated Attacks Get Through
+    - [6629306] Portal Uses Short-Poll for Agent Run Status — 1s Polling Creates 60 D1 Reads per Minute
+    - [6630975] D1 Schema Not Used to Generate TypeScript Types — Manual Type Definitions Drift From Schema
+    - [6632702] Hard Deletes Used Throughout — Deleted Resources Cannot Be Recovered — GDPR and Business Logic Conflict
+    - [6634401] No Load Testing Suite — Scalability Claims Are Unverified
+    - [6636099] Cache-Control Headers Missing or Incorrect — Browsers Cache Private Data or Re-Fetch Public Data
+    - [6637767] API Key Last-Used Timestamp Not Tracked — Cannot Identify Dormant Keys
+    - [6639422] WebSocket API Not Documented — Real-Time Events Have No Contract
+    - [6640999] No Service Level Objectives Defined or Monitored — SLA Promises Are Unenforceable
+    - [6642699] KV Keys Too Long for Complex Resource Paths — CF KV Has 512 Byte Key Length Limit
+    - [6644458] PII in Request Logs Not Scrubbed — Email Addresses and Names in Plaintext in Logs
+    - [6646201] Agent Tool Contracts Not Tested — Tool Input/Output Schemas Can Drift
+    - [6647861] No SpaceType Fork Capability — Builders Must Recreate SpaceTypes From Scratch
+    - [6649496] Messages Support Only Text Content — Images, Files, and Tool Results Not Rendered
+    - [6651197] Request Timeouts Not Propagated to Downstream Calls — Slow Upstream Blocks Worker Slot
+    - [6652916] No KB Reindex Endpoint — Updated Documents Are Never Re-Chunked or Re-Embedded
+    - [6654632] Tool Registry Is Hardcoded in AgentDO — New Tools Require Code Deployment
+    - [6656335] Subscription Upgrades/Downgrades Not Prorated — Customers Overpay or Underpay
+    - [6658069] No Funnel Analytics — Cannot Track Builder Activation or End-User Engagement
+    - [6659733] No Session Search — Cannot Find Conversations by Content
+    - [6661387] Outbound Webhooks Not Verified by Default — Builders May Accept Forged Webhooks
+    - [6663168] No A/B Testing Between SpaceType Versions — Cannot Measure Impact of Changes
+    - [6664885] No Bulk Data Export — Tenants Cannot Export All Their Data
+    - [6666570] API Error Messages Are English-Only — Non-English Builders Cannot Localise Their Error Handling
+    - [6668222] Rate Limit Headers Missing — Clients Cannot Implement Proactive Backoff
+    - [6669900] No HIPAA-Ready Configuration — Healthcare Customers Cannot Use the Platform
+    - [6671662] No API Playground — Builders Cannot Test API Calls Without Writing Code
+    - [6673333] Usage-Based Billing Not Wired End-to-End — Token Usage Not Reflected in Stripe Invoices
+  - [6674833] Script-First General Agent Architecture
+    - [6675416] Table of Contents
+    - [6676975] 1. The Core Insight
+    - [6679139] 2. The Shape of the Loop
+    - [6680933] 3. Why "Script CRUD + Run" Is Enough
+    - [6683230] 4. The Skill Library
+    - [6688229] 5. The Escalation Ladder
+    - [6693809] 6. Parameterization: From Trace to Skill
+    - [6699928] 7. Skills Calling Skills — The Growth Mechanism
+    - [6703003] 8. The Execution Ladder
+    - [6707807] 9. Environment Observation as a Script
+    - [6712232] 10. Version History and Drift Detection
+    - [6715311] 11. The Agent Configuration Surface
+    - [6718766] 12. Prebuilt Script and Skill Catalogue
+    - [6724859] 13. Agent Profiles — Composing Configurations
+    - [6730237] 14. MCP Integration Without Hardcoded Tools
+    - [6732781] 15. The Default Naelao Agent
+    - [6735077] 16. Implementation Notes

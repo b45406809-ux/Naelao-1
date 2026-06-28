@@ -1,0 +1,28 @@
+name = "naelao-admin"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "PLACEHOLDER_D1_ID"
+
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_events"
+
+[[queues.consumers]]
+queue = "naelao-dlq"
+binding = "DLQ"
+max_batch_size = 10
+max_retries = 0
+
+[vars]
+ENVIRONMENT = "development"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
+
+[env.production]
+vars = { ENVIRONMENT = "production" }

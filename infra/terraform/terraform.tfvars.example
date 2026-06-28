@@ -1,0 +1,13 @@
+# Copy this to terraform.tfvars and fill in your values.
+# NEVER commit terraform.tfvars — it contains secrets.
+
+cloudflare_api_token = "your-cloudflare-api-token"
+account_id           = "your-cloudflare-account-id"
+environment          = "staging"   # or "production"
+
+# Secrets — set via CF Workers Secrets in production, not in this file
+platform_secret  = "generate-with-openssl-rand-hex-32"
+jwt_secret       = "generate-with-openssl-rand-hex-32"
+encrypt_kek      = "generate-with-openssl-rand-hex-32"
+anthropic_api_key = "sk-ant-..."
+stripe_api_key   = "sk_test_..."

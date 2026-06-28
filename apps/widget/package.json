@@ -1,0 +1,16 @@
+{
+  "name": "@naelao/widget",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zero-dependency embeddable chat widget (<naelao-chat> custom element)",
+  "main": "dist/naelao-chat.js",
+  "scripts": {
+    "build": "esbuild src/naelao-chat.ts --bundle --minify --target=es2020 --format=iife --outfile=dist/naelao-chat.js",
+    "build:dev": "esbuild src/naelao-chat.ts --bundle --sourcemap --target=es2020 --format=iife --outfile=dist/naelao-chat.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "esbuild": "^0.24.0"
+  }
+}

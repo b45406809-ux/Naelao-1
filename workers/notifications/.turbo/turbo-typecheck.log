@@ -1,0 +1,4 @@
+
+> @naelao/notifications-worker@0.1.0 typecheck /home/user/Naelao-1/workers/notifications
+> tsc --noEmit
+
