@@ -41,6 +41,15 @@ export interface WhopCommunityPost {
   replies: number;
 }
 
+// Exponential backoff retry on transient failures (429 / 5xx). Mutations carry a
+// deterministic Idempotency-Key, so a retry can never double-execute (§08 / WG-14).
+const MAX_RETRIES = 3;
+const BACKOFF_MS = [2000, 4000, 8000];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function whopRequest<T>(
   config: WhopClientConfig,
   method: string,
@@ -58,18 +67,31 @@ async function whopRequest<T>(
     headers["Idempotency-Key"] = idempotencyKey;
   }
 
-  const resp = await fetch(`${WHOP_API_BASE}${path}`, {
-    method,
-    headers,
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
+  let lastErr = "";
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const resp = await fetch(`${WHOP_API_BASE}${path}`, {
+      method,
+      headers,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
 
-  if (!resp.ok) {
+    if (resp.ok) {
+      return resp.json<T>();
+    }
+
     const text = await resp.text().catch(() => "");
-    throw new Error(`Whop API ${method} ${path} failed: HTTP ${resp.status} — ${text.slice(0, 300)}`);
+    lastErr = `HTTP ${resp.status} — ${text.slice(0, 300)}`;
+
+    // Retry only on rate-limit / server errors; other 4xx are terminal.
+    const retryable = resp.status === 429 || resp.status >= 500;
+    if (!retryable || attempt === MAX_RETRIES) {
+      throw new Error(`Whop API ${method} ${path} failed: ${lastErr}`);
+    }
+    await sleep(BACKOFF_MS[attempt] ?? 8000);
   }
 
-  return resp.json<T>();
+  // Unreachable, but satisfies the type checker.
+  throw new Error(`Whop API ${method} ${path} failed: ${lastErr}`);
 }
 
 // ── Company + Product ─────────────────────────────────────────────────────────

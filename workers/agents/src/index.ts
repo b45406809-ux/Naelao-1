@@ -950,14 +950,17 @@ async function handleScheduled(env: AgentsEnv): Promise<void> {
         console.warn(`[scheduled] Observe failed for ${userId}:`, err);
       }
 
-      // Trigger the cycle with the fresh snapshot
+      // Trigger the cycle with the fresh snapshot. The nightly cron runs the safe,
+      // model-free observe action (Level 1) — the cheap repeat the script engine is
+      // built around; deliberate publishing/pricing actions are triggered explicitly.
       await bizDO.fetch(new Request("http://do/cycle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           api_key: env.ANTHROPIC_API_KEY,
           observe_snapshot: snapshot,
-          task_description: "Nightly cycle: review community engagement, post an update if warranted, check revenue delta",
+          action: "observe_whop_snapshot",
+          task_description: "Nightly cycle: observe Whop product state and record baseline",
         }),
       }));
     } catch (err) {

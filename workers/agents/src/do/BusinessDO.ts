@@ -15,6 +15,23 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import { moderateText } from "@naelao/moderation";
+import {
+  getHostAction,
+  PUBLISH_ACTION_NAMES,
+  type HostAction,
+  type HostActionResult,
+} from "../whop/actions.js";
+import {
+  computeStability,
+  isDemoted,
+  structuralFingerprint,
+  costCents,
+  overDailyCap,
+  DAILY_ACTION_CAP,
+  BREAKER_THRESHOLD,
+  BREAKER_COOLDOWN_MS,
+} from "../whop/cycle-logic.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -57,24 +74,16 @@ export interface FiberState {
 
 interface BusinessRow { key: string; value: string }
 
-// ── Stability score helper ────────────────────────────────────────────────────
-
-function computeStability(entry: Pick<ScriptRegistryEntry, "success_count" | "failure_count" | "patch_history">): number {
-  const total = entry.success_count + entry.failure_count;
-  if (total === 0) return 1.0;
-  const recentPatches = entry.patch_history.filter(
-    p => p.timestamp > Date.now() - 10 * 86400_000
-  ).length;
-  return (entry.success_count / total) * (1 / (1 + recentPatches));
-}
-
 // ── BusinessDO ────────────────────────────────────────────────────────────────
 
 export interface BusinessDOEnv {
   PLATFORM_SECRET: string;
+  WHOP_API_KEY: string;
   BUSINESS_R2: R2Bucket;
   ANALYTICS?: AnalyticsEngineDataset;
+  HITL_APPROVAL_DO?: DurableObjectNamespace;
 }
+
 
 export class BusinessDO extends DurableObject<BusinessDOEnv> {
   private initialized = false;
@@ -282,6 +291,7 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
     const body = await request.json<{
       observe_snapshot?: Record<string, unknown>;
       task_description?: string;
+      params?: Record<string, unknown>;
       api_key: string;
       model?: string;
     }>();
@@ -289,11 +299,16 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
     const cycleId = crypto.randomUUID();
     const autonomyTier = parseInt(this.getCfg("autonomy_tier") ?? "1", 10) as AutonimyTier;
 
+    // Whole-cycle mutex (WG-11): reject a second cycle while one is running.
+    if (this.getCfg("fiber_status") === "running") {
+      return Response.json({ error: "cycle_already_running" }, { status: 409 });
+    }
+
     this.setCfg("fiber_status", "running");
     this.setCfg("last_cycle_at", String(Date.now()));
 
     this.ctx.waitUntil(
-      this.runCycleAsync(cycleId, body.observe_snapshot ?? {}, body.task_description ?? "", body.api_key, body.model ?? "claude-haiku-4-5-20251001", autonomyTier)
+      this.runCycleAsync(cycleId, body.observe_snapshot ?? {}, body.task_description ?? "", body.params ?? {}, (body as { action?: string }).action, body.api_key, body.model ?? "claude-haiku-4-5-20251001", autonomyTier)
     );
 
     return Response.json({ cycle_id: cycleId, status: "started", autonomy_tier: autonomyTier });
@@ -303,6 +318,8 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
     cycleId: string,
     observeSnapshot: Record<string, unknown>,
     taskDescription: string,
+    params: Record<string, unknown>,
+    requestedAction: string | undefined,
     apiKey: string,
     model: string,
     autonomyTier: AutonimyTier,
@@ -313,18 +330,27 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
         ? observeSnapshot
         : { timestamp: Date.now(), source: "whop", data: {} };
 
+      // evaluate(): compute deltas vs. the most recent stored R2 baseline (WG-08/WG-24)
+      const { revenueDelta, engagementDelta } = await this.computeDeltas(snapshot);
+
       // STEP 2: FINGERPRINT — deterministic hash of structural parts
       const fingerprint = this.computeFingerprint(snapshot);
 
-      // STEP 3: FIND — name-based lookup in flat registry
+      // STEP 3: FIND — name-based lookup in flat registry (already demotion-filtered)
       const candidates = this.findScripts(fingerprint, taskDescription);
 
-      let actionResult: { success: boolean; output: string; script_name?: string; level: number };
+      let actionResult: { success: boolean; output: string; script_name?: string; level: number; data?: Record<string, unknown> };
 
-      const topCandidate = candidates[0];
-      if (topCandidate && topCandidate.stability_score >= 0.7) {
-        // LEVEL 1: Direct execution — no model call
-        actionResult = await this.executeScriptLevel1(topCandidate, snapshot, cycleId, autonomyTier, apiKey);
+      // decide(): pick the action for this cycle. A caller may name one explicitly;
+      // otherwise default to the safe, always-valid observe repeat (the cheap path
+      // the nightly cron takes) rather than an arbitrary top candidate.
+      const topCandidate = requestedAction
+        ? candidates.find(c => c.name === requestedAction)
+        : (candidates.find(c => c.name === "observe_whop_snapshot") ?? candidates[0]);
+      const hostAction = topCandidate ? getHostAction(topCandidate.name) : undefined;
+      if (topCandidate && hostAction && topCandidate.stability_score >= 0.7) {
+        // LEVEL 1: Direct execution against the real Whop API — no model call.
+        actionResult = await this.executeScriptLevel1(topCandidate, hostAction, params, cycleId, autonomyTier);
       } else if (topCandidate) {
         // LEVEL 2: Cheap patch call
         actionResult = await this.executeScriptLevel2(topCandidate, snapshot, fingerprint, cycleId, autonomyTier, apiKey, model);
@@ -338,8 +364,17 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
       // STEP 6: VERIFY — re-observe (simplified: check for success flag)
       const verified = actionResult.success;
 
-      // Record outcome
-      this.logOutcome(cycleId, taskDescription || (actionResult.script_name ?? "cycle"), actionResult.output, null, null);
+      // report(): record the outcome with the measured deltas
+      this.logOutcome(
+        cycleId,
+        taskDescription || (actionResult.script_name ?? "cycle"),
+        actionResult.output,
+        revenueDelta,
+        engagementDelta,
+      );
+
+      // report(): refresh the R2 baseline for tomorrow's delta (WG-24/WG-25)
+      await this.writeBaseline(snapshot, actionResult.data);
 
       // Emit analytics
       if (this.env.ANALYTICS) {
@@ -360,59 +395,90 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
     }
   }
 
-  // LEVEL 1 — direct execution, no model call
+  // LEVEL 1 — direct execution against the real Whop API, no model call.
+  // Dispatches through the fixed host-action allow-list (WG-02): the script's name
+  // selects a host function; its code is NEVER eval'd. The gates (autonomy, daily
+  // cap, output moderation, breaker, idempotency) wrap the real call.
   private async executeScriptLevel1(
     entry: ScriptRegistryEntry,
-    _snapshot: Record<string, unknown>,
+    action: HostAction,
+    params: Record<string, unknown>,
     cycleId: string,
     autonomyTier: AutonimyTier,
-    _apiKey: string,
-  ): Promise<{ success: boolean; output: string; script_name: string; level: number }> {
-    // Autonomy gate: check if this action is allowed at current tier
-    const allowed = this.checkAutonomy(entry.name, autonomyTier);
-    if (!allowed) {
-      return { success: false, output: `Action '${entry.name}' requires higher autonomy tier (current: ${autonomyTier})`, script_name: entry.name, level: 1 };
+  ): Promise<{ success: boolean; output: string; script_name: string; level: number; data?: Record<string, unknown> }> {
+    const name = entry.name;
+
+    // GATE 1 — autonomy tier. Blocked → route to the human approval queue (WG-16).
+    if (!this.checkAutonomy(name, autonomyTier)) {
+      await this.requestApproval(cycleId, name, "autonomy_tier", params);
+      this.logOutcome(cycleId, "pending_approval", `Action '${name}' needs approval at tier ${autonomyTier}`, null, null);
+      return { success: false, output: `Action '${name}' requires higher autonomy tier (queued for approval)`, script_name: name, level: 1 };
     }
 
-    // Idempotency check: has this script run this cycle already?
-    const idKey = `${cycleId}:${entry.name}`;
+    // GATE 2 — daily action cap on publishing actions (WG-17).
+    if (action.kind === "publish" && overDailyCap(this.publishCountLast24h())) {
+      this.logOutcome(cycleId, "deferred_cap", `Daily action cap (${DAILY_ACTION_CAP}) reached; deferred '${name}'`, null, null);
+      return { success: false, output: `Daily action cap reached; '${name}' deferred to next cycle`, script_name: name, level: 1 };
+    }
+
+    // GATE 3 — output moderation on any content before it's published (WG-30).
+    if (action.kind === "publish" && action.contentParam) {
+      const content = String(params[action.contentParam] ?? "");
+      const verdict = moderateText(content);
+      if (!verdict.allowed) {
+        await this.requestApproval(cycleId, name, "content_moderation", params);
+        this.logOutcome(cycleId, "content_blocked", `Content flagged (${verdict.flags.map(f => f.type).join(",")}); queued for approval`, null, null);
+        return { success: false, output: `Content blocked by moderation; queued for approval`, script_name: name, level: 1 };
+      }
+    }
+
+    // GATE 4 — circuit breaker for the Whop connector (WG-14).
+    if (action.kind !== "internal" && this.breakerOpen()) {
+      this.logOutcome(cycleId, "breaker_open", `Whop circuit breaker open; skipped '${name}'`, null, null);
+      return { success: false, output: `Whop circuit breaker open; skipped '${name}'`, script_name: name, level: 1 };
+    }
+
+    // GATE 5 — idempotency. Deterministic key ties retries + WAL + Whop dedup (WG-15).
+    const idKey = `${cycleId}:${name}`;
     const existing = this.ctx.storage.sql
       .exec(`SELECT id FROM tool_call_log WHERE id = ?`, idKey)
       .toArray();
     if (existing.length > 0) {
-      return { success: true, output: "Already executed (idempotent skip)", script_name: entry.name, level: 1 };
+      return { success: true, output: "Already executed (idempotent skip)", script_name: name, level: 1 };
     }
 
-    // Log intent before execution (WAL pattern)
+    // WAL — record intent BEFORE the side-effecting call (WG-09).
     this.ctx.storage.sql.exec(
       `INSERT INTO tool_call_log (id, cycle_id, tool_name, params_hash, status, created_at)
        VALUES (?, ?, ?, ?, 'running', ?)`,
-      idKey, cycleId, entry.name, "direct", Date.now()
+      idKey, cycleId, name, action.kind, Date.now()
     );
 
-    // Execute the script code (Tier 2: evaluate in isolate)
-    let output = "";
-    let success = false;
+    // EXECUTE — the real host action.
     try {
-      // For v0, scripts are TypeScript strings stored in the registry.
-      // Real execution would use a Dynamic Worker isolate. Here we log intent and mark success.
-      output = `[Level 1] Executed script '${entry.name}' directly`;
-      success = true;
-      this.ctx.storage.sql.exec(
-        `UPDATE tool_call_log SET status = 'completed', result = ?, completed_at = ? WHERE id = ?`,
-        output, Date.now(), idKey
+      const result: HostActionResult = await action.run(
+        { whop: { apiKey: this.env.WHOP_API_KEY }, productId: this.getCfg("whop_product_id") ?? "", cycleId },
+        params,
       );
-      this.updateScriptStats(entry.name, true);
+
+      this.ctx.storage.sql.exec(
+        `UPDATE tool_call_log SET status = ?, result = ?, completed_at = ? WHERE id = ?`,
+        result.success ? "completed" : "failed", result.output, Date.now(), idKey
+      );
+      this.updateScriptStats(name, result.success);
+      if (action.kind !== "internal") this.breakerRecord(result.success);
+
+      return { success: result.success, output: `[Level 1] ${result.output}`, script_name: name, level: 1, ...(result.data ? { data: result.data } : {}) };
     } catch (err) {
-      output = String(err);
+      const output = String(err);
       this.ctx.storage.sql.exec(
         `UPDATE tool_call_log SET status = 'failed', result = ?, completed_at = ? WHERE id = ?`,
         output, Date.now(), idKey
       );
-      this.updateScriptStats(entry.name, false);
+      this.updateScriptStats(name, false);
+      if (action.kind !== "internal") this.breakerRecord(false);
+      return { success: false, output: `[Level 1] ${output}`, script_name: name, level: 1 };
     }
-
-    return { success, output, script_name: entry.name, level: 1 };
   }
 
   // LEVEL 2 — cheap patch call (fast/small model)
@@ -458,8 +524,9 @@ The environment has drifted slightly. Identify what changed and produce a minima
         }),
       });
       if (resp.ok) {
-        const data = await resp.json<{ content: Array<{ type: string; text: string }> }>();
+        const data = await resp.json<{ content: Array<{ type: string; text: string }>; usage?: { input_tokens?: number; output_tokens?: number } }>();
         patchResult = data.content.find(b => b.type === "text")?.text ?? "";
+        this.recordCost(2, "claude-haiku-4-5-20251001", data.usage);
       }
     } catch (err) {
       console.warn("[BusinessDO] Level 2 patch call failed:", err);
@@ -524,8 +591,9 @@ Return ONLY the TypeScript function.`;
       });
 
       if (resp.ok) {
-        const data = await resp.json<{ content: Array<{ type: string; text: string }> }>();
+        const data = await resp.json<{ content: Array<{ type: string; text: string }>; usage?: { input_tokens?: number; output_tokens?: number } }>();
         const newCode = data.content.find(b => b.type === "text")?.text ?? "";
+        this.recordCost(3, model, data.usage);
 
         if (newCode) {
           // Save as new version
@@ -594,8 +662,9 @@ Execute this task and report what you did. Be specific and actionable.`;
       });
 
       if (resp.ok) {
-        const data = await resp.json<{ content: Array<{ type: string; text: string }> }>();
+        const data = await resp.json<{ content: Array<{ type: string; text: string }>; usage?: { input_tokens?: number; output_tokens?: number } }>();
         const output = data.content.find(b => b.type === "text")?.text ?? "";
+        this.recordCost(4, model, data.usage);
 
         if (output) {
           // STEP 7: DISTILL — compile trace into a parameterized script
@@ -666,8 +735,9 @@ Return a JSON object with exactly these fields:
 
       if (!resp.ok) return;
 
-      const data = await resp.json<{ content: Array<{ type: string; text: string }> }>();
+      const data = await resp.json<{ content: Array<{ type: string; text: string }>; usage?: { input_tokens?: number; output_tokens?: number } }>();
       const raw = data.content.find(b => b.type === "text")?.text ?? "";
+      this.recordCost(4, "claude-haiku-4-5-20251001", data.usage);
 
       // Extract JSON from response
       const jsonMatch = raw.match(/\{[\s\S]*\}/);
@@ -726,6 +796,9 @@ Return a JSON object with exactly these fields:
     })).filter(s => {
       // Simple precondition: fingerprint must be non-empty to match scripts
       if (!fingerprint) return false;
+      // Auto-demotion (WG-31): a falling success rate or frequent recent patches pulls
+      // a script out of Level-1 candidacy so it's forced to re-derive at L2+/L3.
+      if (isDemoted(s)) return false;
       // If script has a fingerprint schema, do a rough match
       try {
         const schema = JSON.parse(s.fingerprint_schema) as Record<string, unknown>;
@@ -736,15 +809,7 @@ Return a JSON object with exactly these fields:
   }
 
   private computeFingerprint(snapshot: Record<string, unknown>): string {
-    // Extract structural keys only (not values) for a stable fingerprint
-    const structural = Object.keys(snapshot).sort().join(",");
-    // Simple hash (FNV-1a 32-bit)
-    let h = 0x811c9dc5;
-    for (let i = 0; i < structural.length; i++) {
-      h ^= structural.charCodeAt(i);
-      h = (h * 0x01000193) >>> 0;
-    }
-    return h.toString(16);
+    return structuralFingerprint(snapshot);
   }
 
   private updateScriptStats(name: string, success: boolean): void {
@@ -772,6 +837,134 @@ Return a JSON object with exactly these fields:
     if (tier === 2) return !scriptName.includes("pricing") && !scriptName.includes("feature_") && !scriptName.includes("tool_");
     // Tier 3 (Operate): everything
     return true;
+  }
+
+  // ── Daily action cap (WG-17) ──────────────────────────────────────────────
+  private publishCountLast24h(): number {
+    const since = Date.now() - 86400_000;
+    const placeholders = PUBLISH_ACTION_NAMES.map(() => "?").join(",");
+    if (!placeholders) return 0;
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT COUNT(*) AS cnt FROM outcome_log WHERE timestamp > ? AND action_type IN (${placeholders})`,
+        since, ...PUBLISH_ACTION_NAMES,
+      )
+      .toArray() as { cnt: number }[];
+    return rows[0]?.cnt ?? 0;
+  }
+
+  // ── Whop circuit breaker (WG-14) — stored in business_config, never KV ────
+  private breakerOpen(): boolean {
+    const openUntil = parseInt(this.getCfg("whop_breaker_open_until") ?? "0", 10);
+    return openUntil > Date.now();
+  }
+
+  private breakerRecord(success: boolean): void {
+    if (success) {
+      this.setCfg("whop_breaker_failures", "0");
+      this.setCfg("whop_breaker_open_until", "0");
+      return;
+    }
+    const failures = parseInt(this.getCfg("whop_breaker_failures") ?? "0", 10) + 1;
+    this.setCfg("whop_breaker_failures", String(failures));
+    if (failures >= BREAKER_THRESHOLD) {
+      this.setCfg("whop_breaker_open_until", String(Date.now() + BREAKER_COOLDOWN_MS));
+      this.setCfg("whop_breaker_failures", "0"); // reset count; half-open after cooldown
+    }
+  }
+
+  // ── Human approval queue wiring (WG-16) ───────────────────────────────────
+  private async requestApproval(
+    cycleId: string,
+    actionName: string,
+    reason: string,
+    params: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.env.HITL_APPROVAL_DO) return; // best-effort; no UI built this pass
+    try {
+      const userId = this.getCfg("user_id") ?? "unknown";
+      const id = this.env.HITL_APPROVAL_DO.idFromName(`hitl:business:${userId}`);
+      await this.env.HITL_APPROVAL_DO.get(id).fetch(
+        new Request("http://do/requests", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            run_id: cycleId,
+            session_id: userId,
+            tool_name: actionName,
+            tool_input: params,
+            action_description: `Whop business action '${actionName}' requires approval (${reason})`,
+          }),
+        }),
+      );
+    } catch (err) {
+      console.warn("[BusinessDO] approval request failed (non-fatal):", err);
+    }
+  }
+
+  // ── Token-cost tracking (WG-21) ───────────────────────────────────────────
+  private recordCost(level: number, model: string, usage: { input_tokens?: number; output_tokens?: number } | undefined): void {
+    const input = usage?.input_tokens ?? 0;
+    const output = usage?.output_tokens ?? 0;
+    const cents = costCents(model, input, output);
+
+    const prev = parseFloat(this.getCfg("cost_cents_30d") ?? "0");
+    this.setCfg("cost_cents_30d", String(prev + cents));
+
+    if (this.env.ANALYTICS) {
+      try {
+        this.env.ANALYTICS.writeDataPoint({
+          blobs: ["business.cost", this.getCfg("user_id") ?? "", String(level), model],
+          doubles: [input, output, cents],
+          indexes: [this.getCfg("user_id") ?? "unknown"],
+        });
+      } catch { /* best-effort */ }
+    }
+  }
+
+  // ── R2 baseline + 24h deltas (WG-24/WG-25) ────────────────────────────────
+  private baselineKey(): string {
+    const userId = this.getCfg("user_id") ?? "unknown";
+    const day = new Date().toISOString().slice(0, 10); // yyyy-mm-dd
+    return `baseline/${userId}/${day}.json`;
+  }
+
+  private extractTotals(snapshot: Record<string, unknown>, actionData?: Record<string, unknown>): { revenue: number; engagement: number } {
+    const rev = (snapshot["revenue"] ?? actionData?.["revenue"]) as { total_revenue?: number } | null | undefined;
+    const revenue = typeof rev?.total_revenue === "number" ? rev.total_revenue : 0;
+    const engagement = typeof actionData?.["engagement_score"] === "number" ? actionData["engagement_score"] as number : 0;
+    return { revenue, engagement };
+  }
+
+  private async computeDeltas(snapshot: Record<string, unknown>): Promise<{ revenueDelta: number | null; engagementDelta: number | null }> {
+    try {
+      const userId = this.getCfg("user_id") ?? "unknown";
+      // Read the most recent prior baseline (list newest-first under this user's prefix).
+      const listing = await this.env.BUSINESS_R2.list({ prefix: `baseline/${userId}/` });
+      const newest = listing.objects.sort((a, b) => b.key.localeCompare(a.key))[0];
+      if (!newest) return { revenueDelta: null, engagementDelta: null };
+      const obj = await this.env.BUSINESS_R2.get(newest.key);
+      if (!obj) return { revenueDelta: null, engagementDelta: null };
+      const prior = JSON.parse(await obj.text()) as { revenue?: number; engagement?: number };
+      const now = this.extractTotals(snapshot);
+      return {
+        revenueDelta: now.revenue - (prior.revenue ?? 0),
+        engagementDelta: now.engagement - (prior.engagement ?? 0),
+      };
+    } catch (err) {
+      console.warn("[BusinessDO] computeDeltas failed (non-fatal):", err);
+      return { revenueDelta: null, engagementDelta: null };
+    }
+  }
+
+  private async writeBaseline(snapshot: Record<string, unknown>, actionData?: Record<string, unknown>): Promise<void> {
+    try {
+      const totals = this.extractTotals(snapshot, actionData);
+      const body = JSON.stringify({ ...totals, snapshot, written_at: Date.now() });
+      await this.env.BUSINESS_R2.put(this.baselineKey(), body);
+    } catch (err) {
+      console.warn("[BusinessDO] writeBaseline failed (non-fatal):", err);
+    }
   }
 
   // ── Outcome log ───────────────────────────────────────────────────────────
