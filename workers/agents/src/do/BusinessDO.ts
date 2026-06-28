@@ -86,10 +86,10 @@ export interface BusinessDOEnv {
   BUSINESS_R2: R2Bucket;
   ANALYTICS?: AnalyticsEngineDataset;
   HITL_APPROVAL_DO?: DurableObjectNamespace;
-  // Optional Tier-5 container that builds + tests the micro-tool's code (WG-01).
-  // Contract: POST { code, version } → { built, tests_passed, logs }. When absent,
-  // a tool version cannot leave `building` — the safe outcome (§02 gate holds).
-  TOOL_SANDBOX?: Fetcher;
+  // Tier-5 build/test container, fronted by ToolSandboxDO (CF Container). The agent
+  // spins one up on demand: POST /build { code } → { built, tests_passed, logs }.
+  // When absent (local dev), a tool version cannot leave `building` — §02 gate holds.
+  TOOL_SANDBOX?: DurableObjectNamespace;
 }
 
 interface ToolVersionRow {
@@ -636,7 +636,9 @@ Write ONE community post: concrete, helpful, no hype, no financial/investment ad
     }
 
     try {
-      const resp = await this.env.TOOL_SANDBOX.fetch(new Request("http://sandbox/build", {
+      // Spin up (or reuse) this business's Tier-5 container and build + test there.
+      const sandbox = this.env.TOOL_SANDBOX.get(this.env.TOOL_SANDBOX.idFromName(`sandbox:${userId}`));
+      const resp = await sandbox.fetch(new Request("http://sandbox/build", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ code, version }),

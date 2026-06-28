@@ -23,6 +23,10 @@ class_name = "ProductDO"
 name = "BUSINESS_DO"
 class_name = "BusinessDO"
 
+[[durable_objects.bindings]]
+name = "TOOL_SANDBOX"
+class_name = "ToolSandboxDO"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["NaelaoAgentDO"]
@@ -39,16 +43,22 @@ new_classes = ["TaskDO"]
 tag = "v4"
 new_classes = ["ProductDO", "BusinessDO"]
 
+[[migrations]]
+tag = "v5"
+new_classes = ["ToolSandboxDO"]
+
 [[r2_buckets]]
 binding = "BUSINESS_R2"
 bucket_name = "naelao-business-scripts"
 
-# Tier-5 micro-tool build/test container (WG-01). Optional: when unbound, a tool
-# version cannot leave `building` and therefore can never deploy — the §02 gate
-# holds safely. Wire this to a Cloudflare Container service when one exists.
-# [[services]]
-# binding = "TOOL_SANDBOX"
-# service = "naelao-tool-sandbox"
+# Tier-5 micro-tool build/test compute (WG-01). A Cloudflare Container attached to
+# ToolSandboxDO — the agent spins it up on demand to build + test the micro-tool's
+# code (Node, and Python for scripts that need it), and it sleeps when idle.
+[[containers]]
+class_name = "ToolSandboxDO"
+image = "./Dockerfile.toolsandbox"
+max_instances = 5
+# instance_type = "basic"   # bump for heavier build/test workloads
 
 [[workflows]]
 name = "AgentTaskWorkflow"

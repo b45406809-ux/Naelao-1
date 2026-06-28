@@ -17,6 +17,7 @@ import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
 import { ProductDO } from "./do/ProductDO.js";
 import { BusinessDO } from "./do/BusinessDO.js";
+import { ToolSandboxDO } from "./do/ToolSandboxDO.js";
 import { observeWhopBusiness, createWhopProduct, registerAffiliate } from "./whop/client.js";
 import { devCatalog, productCatalog } from "./catalog.js";
 import { canAccessBusiness } from "./access.js";
@@ -26,6 +27,7 @@ export { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 export { TaskDO } from "./do/TaskDO.js";
 export { ProductDO } from "./do/ProductDO.js";
 export { BusinessDO } from "./do/BusinessDO.js";
+export { ToolSandboxDO } from "./do/ToolSandboxDO.js";
 export { AgentTaskWorkflow } from "./workflows/AgentTaskWorkflow.js";
 
 // ── Env interface ─────────────────────────────────────────────────────────────
@@ -42,6 +44,7 @@ export interface AgentsEnv {
   TASK_DO: DurableObjectNamespace<TaskDO>;
   PRODUCT_DO: DurableObjectNamespace<ProductDO>;
   BUSINESS_DO: DurableObjectNamespace<BusinessDO>;
+  TOOL_SANDBOX: DurableObjectNamespace<ToolSandboxDO>;
   BUSINESS_R2: R2Bucket;
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
