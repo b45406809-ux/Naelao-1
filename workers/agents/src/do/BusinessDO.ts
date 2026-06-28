@@ -38,6 +38,7 @@ import { postCommunityUpdate } from "../whop/client.js";
 import { nextToolState, canDeploy, type ToolState, type ToolEvent } from "../whop/tool-lifecycle.js";
 import { SKILLS, skillsForTier, renderSkillsPrompt } from "../whop/skills.js";
 import { safetyFloor } from "../safety.js";
+import { getManifest } from "../launchpad/manifest.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -987,13 +988,16 @@ Return ONLY the TypeScript function.`;
       return { success: false, output: `[Level 4] Task requires Autonomy Tier ≥ 2 to execute live. Drafted: "${taskDescription}"`, level: 4 };
     }
 
-    const systemPrompt = `You are Naelao Agent running a nightly business cycle for a Whop business.
+    const manifest = getManifest(this.getCfg("template_id"));
+    const systemPrompt = `You are a Naelao ${manifest.kind === "assistant" ? "Space Assistant" : "business agent"} running a cycle.
+${manifest.instructions}
+
 Your job: ${taskDescription}
 
-Current business state:
-- Whop Product ID: ${this.getCfg("whop_product_id") ?? "not configured"}
+Current state:
+- Whop Product ID: ${this.getCfg("whop_product_id") ?? "n/a (custom or non-Whop)"}
 - Autonomy Tier: ${autonomyTier} (1=Draft, 2=Publish, 3=Operate)
-- Template: ${this.getCfg("template_id") ?? "whop-businesses-v1"}
+- Template/bundle: ${manifest.id} (${manifest.name})
 
 Environment snapshot:
 ${JSON.stringify(snapshot, null, 2).slice(0, 2000)}
@@ -1489,119 +1493,13 @@ Return a JSON object with exactly these fields:
 
   // ── Pre-seeded script registry (§14: hand-seed 5–10 action types before launch) ─
 
+  // Seed the agent's script registry from its MANIFEST (de-hardcoded). The niche is
+  // data: Whop seeds its 7 scripts, custom seeds none (pure L4), an assistant seeds
+  // its channel scripts. Same engine, different bundle (the Voyager starting library).
   private handleSeedScripts(): Response {
-    const SEEDS: Array<{
-      name: string; description: string; code: string;
-      tier: 1 | 2 | 5; preconditions: string[];
-    }> = [
-      {
-        name: "observe_whop_snapshot",
-        description: "Pull current Whop product state: revenue metrics, community activity, and product visibility",
-        code: `
-// Observe: fetch Whop product snapshot
-const productId = state.whop_product_id;
-const [metrics, posts, product] = await Promise.allSettled([
-  whop.getRevenueMetrics(config, productId),
-  whop.getCommunityActivity(config, productId, 5),
-  whop.getWhopProduct(config, productId),
-]);
-return {
-  revenue: metrics.status === 'fulfilled' ? metrics.value : null,
-  recent_posts: posts.status === 'fulfilled' ? posts.value.posts : [],
-  visibility: product.status === 'fulfilled' ? product.value.visibility : 'unknown',
-  timestamp: Date.now(),
-};
-`.trim(),
-        tier: 2,
-        preconditions: ["whop_product_id is set", "whop API key available"],
-      },
-      {
-        name: "post_community_update",
-        description: "Post a content update to the Whop community feed — value/tip/announcement",
-        code: `
-// Post community update
-const content = params.content; // parameterized — model fills this in at L4
-const idKey = \`post:\${cycleId}\`;
-return whop.postCommunityUpdate(config, { product_id: state.whop_product_id, content, idempotency_key: idKey });
-`.trim(),
-        tier: 2,
-        preconditions: ["autonomy_tier >= 2", "content param provided"],
-      },
-      {
-        name: "check_community_engagement",
-        description: "Read recent community posts and surface reply/like count for the agent to act on",
-        code: `
-// Check engagement: list recent posts
-const activity = await whop.getCommunityActivity(config, state.whop_product_id, 10);
-const topPost = activity.posts.sort((a, b) => (b.likes + b.replies) - (a.likes + a.replies))[0];
-return { total_posts: activity.total, top_post: topPost ?? null, engagement_score: activity.posts.reduce((s, p) => s + p.likes + p.replies, 0) };
-`.trim(),
-        tier: 2,
-        preconditions: ["whop_product_id is set"],
-      },
-      {
-        name: "check_revenue_delta",
-        description: "Compare current revenue metrics against the last stored baseline and return delta",
-        code: `
-// Revenue delta check
-const current = await whop.getRevenueMetrics(config, state.whop_product_id);
-const baseline = state.revenue_baseline ?? current;
-return {
-  revenue_delta: current.total_revenue - (baseline.total_revenue ?? 0),
-  subscriber_delta: current.subscriber_count - (baseline.subscriber_count ?? 0),
-  current,
-};
-`.trim(),
-        tier: 2,
-        preconditions: ["whop_product_id is set"],
-      },
-      {
-        name: "draft_welcome_post",
-        description: "Draft a welcome post for new community members — queued for human review (Tier 1 safe)",
-        code: `
-// Draft welcome post (Tier 1: saves as draft, does NOT post)
-const draft = \`Welcome to the community! 🎉 This week we're covering: \${params.topic}. Reply with your biggest challenge and I'll address it in the next update.\`;
-return { draft, action: 'draft', requires_approval: true };
-`.trim(),
-        tier: 2,
-        preconditions: ["always allowed — Tier 1 safe"],
-      },
-      {
-        name: "update_product_visibility",
-        description: "Set the Whop product visibility (visible/hidden) — requires Tier 3 autonomy",
-        code: `
-// Update visibility — guarded by autonomy check in executeScriptLevel1
-const visibility = params.visibility as 'visible' | 'hidden' | 'archived';
-const idKey = \`visibility:\${cycleId}\`;
-return whop.updateWhopProductVisibility(config, state.whop_product_id, visibility, idKey);
-`.trim(),
-        tier: 2,
-        preconditions: ["autonomy_tier >= 3", "visibility param provided"],
-      },
-      {
-        name: "log_cycle_outcome",
-        description: "Write a structured outcome entry to the outcome_log after a completed cycle",
-        code: `
-// Outcome log — always runs last in a cycle
-const entry = {
-  cycle_id: cycleId,
-  action_type: params.action_type,
-  action_detail: params.action_detail ?? '',
-  revenue_delta_24h: params.revenue_delta ?? null,
-  engagement_delta_24h: params.engagement_delta ?? null,
-  template_version: state.template_version ?? '1',
-  timestamp: Date.now(),
-};
-// Caller writes to DB via logOutcome(); this script captures the intent.
-return { logged: true, entry };
-`.trim(),
-        tier: 1,
-        preconditions: ["always safe — read-only DB write"],
-      },
-    ];
-
+    const manifest = getManifest(this.getCfg("template_id"));
     let seeded = 0;
-    for (const s of SEEDS) {
+    for (const s of manifest.seed_scripts) {
       const now = Date.now();
       this.ctx.storage.sql.exec(
         `INSERT OR IGNORE INTO scripts
@@ -1612,6 +1510,6 @@ return { logged: true, entry };
       );
       seeded++;
     }
-    return Response.json({ seeded, names: SEEDS.map(s => s.name) }, { status: 201 });
+    return Response.json({ seeded, names: manifest.seed_scripts.map(s => s.name), manifest: manifest.id }, { status: 201 });
   }
 }

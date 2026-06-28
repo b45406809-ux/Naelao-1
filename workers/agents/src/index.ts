@@ -23,6 +23,7 @@ import { devCatalog, productCatalog } from "./catalog.js";
 import { canAccessBusiness } from "./access.js";
 import { safetyFloor } from "./safety.js";
 import { shouldPromote } from "./whop/cycle-logic.js";
+import { listManifests } from "./launchpad/manifest.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -710,6 +711,20 @@ app.get("/catalog/dev", async (c) => {
 });
 
 app.get("/catalog/product", async (c) => c.json(productCatalog()));
+
+// GET /catalog/manifests — the agent bundles (niche/assistant definitions as data).
+// Founder-only: this is the de-hardcoded "agent definitions" layer.
+app.get("/catalog/manifests", async (c) => {
+  const { role } = getCallerIdentity(c);
+  if (role !== "admin" && role !== "owner") return c.json({ error: "forbidden" }, 403);
+  return c.json({
+    manifests: listManifests().map(m => ({
+      id: m.id, kind: m.kind, name: m.name, description: m.description,
+      skills: m.skills, capabilities: m.capabilities, channels: m.channels ?? [],
+      seed_script_count: m.seed_scripts.length, cost_multiplier: m.cost_multiplier,
+    })),
+  });
+});
 
 // ── ProductDO routes — /product/* ─────────────────────────────────────────────
 
