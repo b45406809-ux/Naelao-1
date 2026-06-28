@@ -567,6 +567,174 @@ async function dispatchTool(
   }
 }
 
+// ── §86 AgentPress Error Processor — 30+ typed error catalog ─────────────────
+
+export interface ProcessedError {
+  code: string;
+  category: "tool" | "llm" | "system" | "security" | "network";
+  agentMessage: string;
+  shouldRetry: boolean;
+  isFatal: boolean;
+}
+
+export function processAgentException(
+  error: Error,
+  context: { toolName?: string; stderr?: string } = {}
+): ProcessedError {
+  const msg = error.message;
+
+  // Security
+  if (msg.includes("path traversal") || msg.includes("..") && msg.includes("blocked")) {
+    return { code: "ERR_PATH_TRAVERSAL", category: "security",
+      agentMessage: "Security Error: Path traversal blocked. Only access files inside your permitted workspace.",
+      shouldRetry: false, isFatal: false };
+  }
+  if (msg.includes("Wallet denied") || msg.includes("insufficient credits")) {
+    return { code: "ERR_WALLET_EMPTY", category: "security",
+      agentMessage: "Payment Error: Insufficient funds. Stop task and ask user to add funds.",
+      shouldRetry: false, isFatal: true };
+  }
+  if (msg.includes("blocked range") || msg.includes("not in the allowlist")) {
+    return { code: "ERR_SSRF_BLOCKED", category: "security",
+      agentMessage: "Security Error: URL blocked (internal network or not allowlisted). Only access external public URLs.",
+      shouldRetry: false, isFatal: false };
+  }
+
+  // Tool syntax
+  if (msg.includes("JSON parse error") || msg.includes("malformed XML") || msg.includes("Unexpected token")) {
+    return { code: "ERR_TOOL_SYNTAX", category: "llm",
+      agentMessage: "Tool Error: Malformed JSON/XML in tool call. Match the exact schema. No markdown wrappers.",
+      shouldRetry: true, isFatal: false };
+  }
+  if (msg.includes("missing required parameter") || msg.includes("is required")) {
+    return { code: "ERR_MISSING_PARAM", category: "tool",
+      agentMessage: `Tool Error: ${msg}. Review tool definition and retry.`,
+      shouldRetry: false, isFatal: false };
+  }
+  if (msg.includes("Unknown tool")) {
+    return { code: "ERR_UNKNOWN_TOOL", category: "tool",
+      agentMessage: `Tool Error: ${msg}. Only use tools from the provided tool list.`,
+      shouldRetry: false, isFatal: false };
+  }
+
+  // File system
+  if (msg.includes("ENOENT") || msg.includes("File not found") || msg.includes("no such file")) {
+    const hasAbsPath = /^\/[a-z]|\/workspace|\/home/.test(msg);
+    return { code: "ERR_FILE_NOT_FOUND", category: "tool",
+      agentMessage: hasAbsPath
+        ? "Tool Error: File not found — absolute path used. Use paths relative to workspace root."
+        : "Tool Error: File not found. List the directory first to verify the path.",
+      shouldRetry: false, isFatal: false };
+  }
+  if (msg.includes("EACCES") || msg.includes("Permission denied")) {
+    return { code: "ERR_FILE_PERMISSION", category: "security",
+      agentMessage: "Tool Error: Permission denied. Cannot access outside workspace.",
+      shouldRetry: false, isFatal: false };
+  }
+  if (msg.includes("EISDIR") || msg.includes("Is a directory")) {
+    return { code: "ERR_IS_DIRECTORY", category: "tool",
+      agentMessage: "Tool Error: Path is a directory not a file. Use list_directory or provide a specific file path.",
+      shouldRetry: false, isFatal: false };
+  }
+  if (msg.includes("ENOSPC") || msg.includes("no space left")) {
+    return { code: "ERR_DISK_FULL", category: "system",
+      agentMessage: "System Error: Workspace storage full. Delete unused files before proceeding.",
+      shouldRetry: false, isFatal: false };
+  }
+
+  // Code execution
+  if (context.toolName === "execute_python" && (msg.includes("Exit code: 1") || msg.includes("SyntaxError"))) {
+    if (msg.includes("SyntaxError")) {
+      return { code: "ERR_PYTHON_SYNTAX", category: "tool",
+        agentMessage: `Syntax Error: ${msg}\n\nRewrite with correct Python 3 syntax.`,
+        shouldRetry: false, isFatal: false };
+    }
+    return { code: "ERR_PYTHON_CRASH", category: "tool",
+      agentMessage: `Execution Error: Python crashed.\nStderr:\n${context.stderr ?? ""}\n\nFix and rewrite.`,
+      shouldRetry: false, isFatal: false };
+  }
+  if (context.toolName === "execute_bash" && msg.includes("Exit code:")) {
+    return { code: "ERR_BASH_NONZERO", category: "tool",
+      agentMessage: `Execution Error: Bash command failed.\nStderr: ${context.stderr ?? ""}\n\nAnalyze and fix.`,
+      shouldRetry: false, isFatal: false };
+  }
+  if (msg.includes("command not found")) {
+    const cmd = msg.match(/'(.+?)': command not found/)?.[1] ?? "command";
+    return { code: "ERR_COMMAND_NOT_FOUND", category: "tool",
+      agentMessage: `Execution Error: '${cmd}' not installed. Install with apt-get or npm, then retry.`,
+      shouldRetry: false, isFatal: false };
+  }
+  if (msg.includes("ModuleNotFoundError") || msg.includes("Cannot find module")) {
+    const mod = msg.match(/No module named '(.+?)'|Cannot find module '(.+?)'/)?.[1] ?? "unknown";
+    return { code: "ERR_MODULE_NOT_FOUND", category: "tool",
+      agentMessage: `Module Error: '${mod}' not installed. Run: pip install ${mod} or npm install ${mod}.`,
+      shouldRetry: false, isFatal: false };
+  }
+  if (msg.toLowerCase().includes("timeout")) {
+    return { code: "ERR_EXEC_TIMEOUT", category: "system",
+      agentMessage: "Timeout Error: Command timed out. Break into smaller steps or use background mode.",
+      shouldRetry: false, isFatal: false };
+  }
+
+  // Network / API
+  if (msg.includes("429") || msg.includes("Too Many Requests") || msg.includes("rate limit")) {
+    return { code: "ERR_RATE_LIMIT", category: "network",
+      agentMessage: "Network Error: Rate limited (429). Pause before retrying or reduce call frequency.",
+      shouldRetry: true, isFatal: false };
+  }
+  if (msg.includes("401") || msg.includes("Unauthorized")) {
+    return { code: "ERR_API_UNAUTHORIZED", category: "network",
+      agentMessage: "Auth Error: 401 Unauthorized. Credential may be expired. Ask user to re-enter API key.",
+      shouldRetry: false, isFatal: false };
+  }
+  if (msg.includes("403") || msg.includes("Forbidden")) {
+    return { code: "ERR_API_FORBIDDEN", category: "network",
+      agentMessage: "Auth Error: 403 Forbidden. Credential lacks required permissions. Inform user to grant access.",
+      shouldRetry: false, isFatal: false };
+  }
+  if (msg.includes("404") || msg.includes("Not Found")) {
+    return { code: "ERR_API_NOT_FOUND", category: "network",
+      agentMessage: "Resource Error: 404 Not Found. Resource ID may be wrong or deleted. Verify before retry.",
+      shouldRetry: false, isFatal: false };
+  }
+  if (msg.includes("500") || msg.includes("Internal Server Error")) {
+    return { code: "ERR_API_SERVER_ERROR", category: "network",
+      agentMessage: "External API Error: 500 server error (not your fault). Wait 30s and retry once.",
+      shouldRetry: true, isFatal: false };
+  }
+  if (msg.includes("502") || msg.includes("503") || msg.includes("Bad Gateway") || msg.includes("Service Unavailable")) {
+    return { code: "ERR_API_GATEWAY", category: "network",
+      agentMessage: "Network Error: Service temporarily unavailable (502/503). Retry after a brief wait.",
+      shouldRetry: true, isFatal: false };
+  }
+  if (msg.includes("ECONNREFUSED") || msg.includes("ECONNRESET") || msg.includes("network error")) {
+    return { code: "ERR_NETWORK", category: "network",
+      agentMessage: "Network Error: Connection failed. Check if the service is reachable and retry.",
+      shouldRetry: true, isFatal: false };
+  }
+  if (msg.includes("SSL") || msg.includes("certificate")) {
+    return { code: "ERR_TLS", category: "network",
+      agentMessage: "TLS Error: SSL certificate issue. Do not disable verification — inform the user.",
+      shouldRetry: false, isFatal: false };
+  }
+
+  // LLM errors
+  if (msg.includes("context_length_exceeded") || msg.includes("maximum context")) {
+    return { code: "ERR_CONTEXT_OVERFLOW", category: "llm",
+      agentMessage: "Context Error: Message history too long. Summarize earlier context or start a new session.",
+      shouldRetry: false, isFatal: false };
+  }
+  if (msg.includes("overloaded") || msg.includes("capacity")) {
+    return { code: "ERR_LLM_OVERLOADED", category: "llm",
+      agentMessage: "LLM Error: Model overloaded. Retry in a moment.",
+      shouldRetry: true, isFatal: false };
+  }
+
+  return { code: "ERR_UNKNOWN", category: "system",
+    agentMessage: `Unexpected error: ${msg}. If this persists, break the task into smaller steps.`,
+    shouldRetry: false, isFatal: false };
+}
+
 // ── NaelaoAgentDO ────────────────────────────────────────────────────────────
 
 export interface AgentDOEnv {
@@ -583,11 +751,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private ensureInit(): void {
     if (this.initialized) return;
 
-    // WAL mode + schema
     this.ctx.storage.sql.exec("PRAGMA journal_mode=WAL");
     this.ctx.storage.sql.exec("PRAGMA synchronous=NORMAL");
     this.ctx.storage.sql.exec("PRAGMA cache_size=-16384");
 
+    // Core agent runs
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS agent_runs (
         id           TEXT PRIMARY KEY,
@@ -604,15 +772,101 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
       )
     `);
-    // G-AZ01: Migrate existing tables that lack fsm_state
-    try {
-      this.ctx.storage.sql.exec(`ALTER TABLE agent_runs ADD COLUMN fsm_state TEXT NOT NULL DEFAULT 'IDLE'`);
-    } catch { /* column already exists — ignore */ }
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_runs_session ON agent_runs(session_id, created_at DESC)`);
+    try { this.ctx.storage.sql.exec(`ALTER TABLE agent_runs ADD COLUMN fsm_state TEXT NOT NULL DEFAULT 'IDLE'`); } catch { /* exists */ }
 
+    // WAL: write-before-execute for crash recovery
     this.ctx.storage.sql.exec(`
-      CREATE INDEX IF NOT EXISTS idx_runs_session
-        ON agent_runs(session_id, created_at DESC)
+      CREATE TABLE IF NOT EXISTS run_wal (
+        id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        run_id      TEXT NOT NULL,
+        tool_name   TEXT NOT NULL,
+        tool_args   TEXT NOT NULL,
+        status      TEXT NOT NULL DEFAULT 'pending',
+        result      TEXT,
+        started_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+        finished_at INTEGER
+      )
     `);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_wal_run ON run_wal(run_id, started_at)`);
+
+    // Background fibers
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS fibers (
+        id         TEXT PRIMARY KEY,
+        name       TEXT NOT NULL,
+        status     TEXT NOT NULL DEFAULT 'running',
+        snapshot   TEXT,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      )
+    `);
+
+    // Sessions + message tree
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        id         TEXT PRIMARY KEY,
+        thread_id  TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      )
+    `);
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id          TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        session_id  TEXT NOT NULL REFERENCES sessions(id),
+        parent_id   TEXT REFERENCES messages(id),
+        role        TEXT NOT NULL,
+        content     TEXT NOT NULL,
+        tool_name   TEXT,
+        token_count INTEGER DEFAULT 0,
+        created_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      )
+    `);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, created_at)`);
+    try {
+      this.ctx.storage.sql.exec(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+          content, session_id UNINDEXED, content=messages, content_rowid=rowid
+        )
+      `);
+    } catch { /* FTS5 not available */ }
+
+    // Token replay buffer for WS reconnection
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS token_buffer (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id     TEXT NOT NULL,
+        delta      TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      )
+    `);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_token_run ON token_buffer(run_id, id)`);
+
+    // Agent memory (typed JSON entries, never flat Markdown)
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS agent_memory (
+        key        TEXT NOT NULL,
+        category   TEXT NOT NULL,
+        value      TEXT NOT NULL,
+        confidence REAL DEFAULT 1.0,
+        created_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+        updated_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+        PRIMARY KEY (key, category)
+      )
+    `);
+
+    // Plan steps
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS plan_steps (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id     TEXT NOT NULL,
+        step_text  TEXT NOT NULL,
+        status     TEXT DEFAULT 'pending',
+        order_idx  INTEGER NOT NULL,
+        updated_at INTEGER DEFAULT (unixepoch('now') * 1000)
+      )
+    `);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_plan_run ON plan_steps(run_id, order_idx)`);
 
     this.initialized = true;
   }
@@ -623,10 +877,70 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const url = new URL(request.url);
     const method = request.method;
 
+    // WebSocket upgrade
+    if (request.headers.get("Upgrade") === "websocket") {
+      return this.handleWebSocket(request);
+    }
+
     try {
+      // POST /warm — pre-warm DO (creates tables, returns status)
+      if (method === "POST" && url.pathname === "/warm") {
+        return Response.json({ status: "warm", ts: Date.now() });
+      }
+
       // POST /run
       if (method === "POST" && url.pathname === "/run") {
         return this.handleRun(request);
+      }
+
+      // POST /cancel — cancel all active runs for this DO
+      if (method === "POST" && url.pathname === "/cancel") {
+        return this.handleCancelAll();
+      }
+
+      // GET /status
+      if (method === "GET" && url.pathname === "/status") {
+        return this.handleStatus();
+      }
+
+      // GET /fiber-status?runId=
+      if (method === "GET" && url.pathname === "/fiber-status") {
+        return this.handleFiberStatus(url.searchParams.get("runId") ?? "");
+      }
+
+      // GET /replay?runId=&after=
+      if (method === "GET" && url.pathname === "/replay") {
+        return this.handleReplay(
+          url.searchParams.get("runId") ?? "",
+          parseInt(url.searchParams.get("after") ?? "0", 10)
+        );
+      }
+
+      // POST /approval/:approvalId/decide
+      const approvalMatch = url.pathname.match(/^\/approval\/([^/]+)\/decide$/);
+      if (method === "POST" && approvalMatch?.[1]) {
+        return this.handleApprovalDecide(approvalMatch[1], request);
+      }
+
+      // GET /memory
+      if (method === "GET" && url.pathname === "/memory") {
+        return this.handleGetMemory(url.searchParams.get("category"));
+      }
+
+      // POST /memory
+      if (method === "POST" && url.pathname === "/memory") {
+        return this.handlePostMemory(request);
+      }
+
+      // GET /session/:sessionId/search?q=
+      const searchMatch = url.pathname.match(/^\/session\/([^/]+)\/search$/);
+      if (method === "GET" && searchMatch?.[1]) {
+        return this.handleSessionSearch(searchMatch[1], url.searchParams.get("q") ?? "");
+      }
+
+      // POST /heartbeat
+      if (method === "POST" && url.pathname === "/heartbeat") {
+        return Response.json({ status: "ok", ts: Date.now() });
       }
 
       // GET /runs/:runId
@@ -651,6 +965,38 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { error_code: "internal_error", message: String(err) },
         { status: 500 }
       );
+    }
+  }
+
+  // ── WebSocket ─────────────────────────────────────────────────────────────
+
+  private handleWebSocket(_request: Request): Response {
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+    this.ctx.acceptWebSocket(server);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+    try {
+      const data = JSON.parse(typeof message === "string" ? message : new TextDecoder().decode(message));
+      if (data.type === "ping") {
+        ws.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+      }
+    } catch {
+      ws.send(JSON.stringify({ type: "error", message: "Invalid JSON" }));
+    }
+  }
+
+  override webSocketClose(ws: WebSocket, code: number, reason: string): void {
+    console.log(`[AgentDO] WebSocket closed code=${code} reason=${reason}`);
+    ws.close(code, reason);
+  }
+
+  private broadcastWs(event: Record<string, unknown>): void {
+    const msg = JSON.stringify(event);
+    for (const ws of this.ctx.getWebSockets()) {
+      try { ws.send(msg); } catch { /* client disconnected */ }
     }
   }
 
@@ -1245,6 +1591,135 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       createdAt: run.created_at,
       updatedAt: run.updated_at,
     });
+  }
+
+  // ── POST /cancel (global — cancel all active runs) ───────────────────────
+
+  private handleCancelAll(): Response {
+    const now = new Date().toISOString();
+    this.ctx.storage.sql.exec(
+      `UPDATE agent_runs SET status = 'cancelled', error = 'Cancelled', updated_at = ? WHERE status = 'running'`,
+      now
+    );
+    this.broadcastWs({ type: "run_cancelled", ts: Date.now() });
+    return Response.json({ status: "ok", cancelled_at: now });
+  }
+
+  // ── GET /status ───────────────────────────────────────────────────────────
+
+  private handleStatus(): Response {
+    const fibers = this.ctx.storage.sql
+      .exec(`SELECT id, name, status, created_at FROM fibers ORDER BY created_at DESC LIMIT 20`)
+      .toArray() as { id: string; name: string; status: string; created_at: number }[];
+
+    const walPending = (this.ctx.storage.sql
+      .exec(`SELECT COUNT(*) as cnt FROM run_wal WHERE status = 'pending'`)
+      .toArray() as { cnt: number }[])[0]?.cnt ?? 0;
+
+    const activeRuns = (this.ctx.storage.sql
+      .exec(`SELECT COUNT(*) as cnt FROM agent_runs WHERE status = 'running'`)
+      .toArray() as { cnt: number }[])[0]?.cnt ?? 0;
+
+    const bufferSize = (this.ctx.storage.sql
+      .exec(`SELECT COUNT(*) as cnt FROM token_buffer`)
+      .toArray() as { cnt: number }[])[0]?.cnt ?? 0;
+
+    return Response.json({ fibers, wal_pending: walPending, active_runs: activeRuns, buffer_size: bufferSize, ts: Date.now() });
+  }
+
+  // ── GET /fiber-status?runId= ──────────────────────────────────────────────
+
+  private handleFiberStatus(runId: string): Response {
+    if (!runId) return Response.json({ error: "runId required" }, { status: 400 });
+    const fiber = (this.ctx.storage.sql
+      .exec(`SELECT * FROM fibers WHERE id = ?`, runId)
+      .toArray() as { id: string; name: string; status: string; snapshot: string | null; created_at: number; updated_at: number }[])[0];
+    if (!fiber) return Response.json({ error: "not_found" }, { status: 404 });
+    return Response.json(fiber);
+  }
+
+  // ── GET /replay?runId=&after= ─────────────────────────────────────────────
+
+  private handleReplay(runId: string, afterId: number): Response {
+    if (!runId) return Response.json({ error: "runId required" }, { status: 400 });
+    const tokens = this.ctx.storage.sql
+      .exec(`SELECT id, delta, created_at FROM token_buffer WHERE run_id = ? AND id > ? ORDER BY id LIMIT 1000`, runId, afterId)
+      .toArray() as { id: number; delta: string; created_at: number }[];
+    return Response.json({ tokens, count: tokens.length });
+  }
+
+  // ── POST /approval/:approvalId/decide ────────────────────────────────────
+
+  private async handleApprovalDecide(approvalId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ approved: boolean; reason?: string }>().catch(() => ({ approved: false }));
+    if (this.env.HITL_APPROVAL_DO) {
+      const doId = this.env.HITL_APPROVAL_DO.idFromName(`hitl:${approvalId}`);
+      const stub = this.env.HITL_APPROVAL_DO.get(doId);
+      await stub.fetch(`http://do/requests/${approvalId}/decide`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).catch(() => {});
+    }
+    this.broadcastWs({ type: "approval_decided", approval_id: approvalId, approved: body.approved, ts: Date.now() });
+    return Response.json({ approval_id: approvalId, approved: body.approved });
+  }
+
+  // ── GET /memory ───────────────────────────────────────────────────────────
+
+  private handleGetMemory(category: string | null): Response {
+    const rows = category
+      ? this.ctx.storage.sql.exec(`SELECT * FROM agent_memory WHERE category = ? ORDER BY updated_at DESC`, category)
+          .toArray() as { key: string; category: string; value: string; confidence: number }[]
+      : this.ctx.storage.sql.exec(`SELECT * FROM agent_memory ORDER BY category, updated_at DESC`)
+          .toArray() as { key: string; category: string; value: string; confidence: number }[];
+    const entries = rows.map(r => ({ ...r, value: (() => { try { return JSON.parse(r.value); } catch { return r.value; } })() }));
+    return Response.json({ entries, count: entries.length });
+  }
+
+  // ── POST /memory ──────────────────────────────────────────────────────────
+
+  private async handlePostMemory(request: Request): Promise<Response> {
+    const body = await request.json<{ key: string; category: string; value: unknown; confidence?: number }>();
+    if (!body.key || !body.category || body.value === undefined) {
+      return Response.json({ error: "key, category, value required" }, { status: 400 });
+    }
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO agent_memory (key, category, value, confidence, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(key, category) DO UPDATE SET value = excluded.value, confidence = excluded.confidence, updated_at = excluded.updated_at`,
+      body.key, body.category, JSON.stringify(body.value), body.confidence ?? 1.0, now, now
+    );
+    return Response.json({ key: body.key, category: body.category, saved: true });
+  }
+
+  // ── GET /session/:sessionId/search?q= ────────────────────────────────────
+
+  private handleSessionSearch(sessionId: string, query: string): Response {
+    if (!query) return Response.json({ results: [] });
+    try {
+      const rows = this.ctx.storage.sql
+        .exec(
+          `SELECT m.id, m.role, m.content, m.created_at FROM messages_fts f
+           JOIN messages m ON m.rowid = f.rowid
+           WHERE messages_fts MATCH ? AND f.session_id = ?
+           ORDER BY rank LIMIT 20`,
+          query, sessionId
+        )
+        .toArray() as { id: string; role: string; content: string; created_at: number }[];
+      return Response.json({ results: rows, count: rows.length });
+    } catch {
+      // FTS5 not available — fallback to LIKE
+      const rows = this.ctx.storage.sql
+        .exec(
+          `SELECT id, role, content, created_at FROM messages
+           WHERE session_id = ? AND content LIKE ? ORDER BY created_at DESC LIMIT 20`,
+          sessionId, `%${query}%`
+        )
+        .toArray() as { id: string; role: string; content: string; created_at: number }[];
+      return Response.json({ results: rows, count: rows.length });
+    }
   }
 
   // ── POST /runs/:runId/cancel ──────────────────────────────────────────────
