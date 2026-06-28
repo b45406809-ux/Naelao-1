@@ -78,6 +78,14 @@ export function overDailyCap(publishCountLast24h: number, cap: number = DAILY_AC
   return publishCountLast24h >= cap;
 }
 
+/**
+ * Promotion criteria (cross-agent learning): a script is worth spreading to every
+ * other agent only once it's genuinely proven on the business that derived it.
+ */
+export function shouldPromote(entry: { stability_score: number; success_count: number }): boolean {
+  return entry.stability_score >= 0.8 && entry.success_count >= 5;
+}
+
 export type AutonomyTier = 1 | 2 | 3;
 export type PublishDecision = "publish" | "draft_for_approval" | "blocked_moderation" | "deferred_cap";
 

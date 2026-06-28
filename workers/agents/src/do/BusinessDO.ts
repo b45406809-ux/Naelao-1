@@ -37,6 +37,7 @@ import {
 import { postCommunityUpdate } from "../whop/client.js";
 import { nextToolState, canDeploy, type ToolState, type ToolEvent } from "../whop/tool-lifecycle.js";
 import { SKILLS, skillsForTier, renderSkillsPrompt } from "../whop/skills.js";
+import { safetyFloor } from "../safety.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -332,7 +333,7 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
 
   private async handlePatchConfig(request: Request): Promise<Response> {
     const body = await request.json<Record<string, string | number>>();
-    const WRITABLE = ["whop_product_id", "affiliate_registration_id", "template_id", "template_version", "user_id"];
+    const WRITABLE = ["whop_product_id", "affiliate_registration_id", "template_id", "template_version", "user_id", "custom_business", "cost_multiplier"];
     for (const [k, v] of Object.entries(body)) {
       if (WRITABLE.includes(k)) this.setCfg(k, String(v));
     }
@@ -970,6 +971,14 @@ Return ONLY the TypeScript function.`;
     apiKey: string,
     model: string,
   ): Promise<{ success: boolean; output: string; level: number }> {
+    // SAFETY FLOOR — the custom / no-template path runs here on a free-form goal.
+    // The template-agnostic floor must hold regardless of what the goal describes.
+    const floor = safetyFloor(taskDescription);
+    if (!floor.allowed) {
+      this.logOutcome(cycleId, "safety_blocked", floor.reason ?? "blocked by safety floor", null, null);
+      return { success: false, output: `[Level 4] Blocked: ${floor.reason}`, level: 4 };
+    }
+
     // Tier 1 draft: no live actions without approval
     if (autonomyTier === 1) {
       return { success: false, output: `[Level 4] Task requires Autonomy Tier ≥ 2 to execute live. Drafted: "${taskDescription}"`, level: 4 };

@@ -21,6 +21,12 @@ import { ToolSandboxDO } from "./do/ToolSandboxDO.js";
 import { observeWhopBusiness, createWhopProduct, registerAffiliate } from "./whop/client.js";
 import { devCatalog, productCatalog } from "./catalog.js";
 import { canAccessBusiness } from "./access.js";
+import { safetyFloor } from "./safety.js";
+import { shouldPromote } from "./whop/cycle-logic.js";
+
+function safeParse(s: string): unknown {
+  try { return JSON.parse(s); } catch { return {}; }
+}
 
 export { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 export { HITLApprovalDO } from "./do/HITLApprovalDO.js";
@@ -818,6 +824,34 @@ app.delete("/business/:userId/scripts/:name", async (c) => {
   return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/scripts/${name}`, { method: "DELETE" }));
 });
 
+// POST /business/:userId/scripts/:name/promote — spread a proven script to ALL agents.
+// Reads the script from this business, checks it's proven, writes it to the shared
+// registry. The cross-agent flywheel: one agent learns, every agent benefits.
+app.post("/business/:userId/scripts/:name/promote", async (c) => {
+  const { userId, name } = c.req.param();
+  const biz = await getBusinessDO(c.env, userId);
+  const sres = await biz.fetch(new Request(`http://do/scripts/${name}`));
+  if (!sres.ok) return c.json({ error: "script_not_found" }, 404);
+  const s = await sres.json<{ name: string; description: string; code: string; fingerprint_schema: string; parameters: string; tier: number; stability_score: number; success_count: number }>();
+  if (!shouldPromote(s)) {
+    return c.json({ promoted: false, reason: "not yet proven (needs stability ≥ 0.8 and ≥ 5 successes)" }, 409);
+  }
+  return (await getProductDO(c.env)).fetch(new Request("http://do/shared-scripts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: s.name, description: s.description, code: s.code,
+      fingerprint_schema: safeParse(s.fingerprint_schema), parameters: safeParse(s.parameters),
+      tier: s.tier, source_user: userId,
+    }),
+  }));
+});
+
+// GET /product/shared-scripts — the cross-agent skill library
+app.get("/product/shared-scripts", async (c) => {
+  return (await getProductDO(c.env)).fetch(new Request("http://do/shared-scripts"));
+});
+
 app.get("/business/:userId/autonomy", async (c) => {
   const { userId } = c.req.param();
   return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/autonomy"));
@@ -911,19 +945,36 @@ app.post("/business/:userId/onboard", async (c) => {
     product_description: string;
     price_usd: number;
     billing_period: "monthly" | "one_time";
+    template_id?: string; // "whop-businesses" (default, official) | "custom" (no template → L4)
   }>();
 
   if (!body.product_name || !body.price_usd) {
     return Response.json({ error: "product_name and price_usd required" }, { status: 400 });
   }
 
-  // 1b. Niche guardrail (§11/WG-32): block out-of-scope niches and unsafe copy
-  // BEFORE any Whop product is created. Deny-list screen + general moderation.
-  const niche = screenNiche(body.product_name, body.product_description ?? "");
-  if (!niche.allowed) {
-    return Response.json({ error: niche.reason, blocked: true }, { status: 422 });
+  const isCustom = body.template_id === "custom";
+  const copy = `${body.product_name}\n${body.product_description ?? ""}`;
+
+  // 1a. SAFETY FLOOR — template-agnostic. Runs for EVERY path (official template OR
+  // custom/no-template), blocking dangerous/regulated categories before anything is
+  // created. This is the prerequisite for the custom path to exist at all.
+  const floor = safetyFloor(copy);
+  if (!floor.allowed) {
+    return Response.json({ error: floor.reason, blocked: true, category: floor.category }, { status: 422 });
   }
-  const copyVerdict = moderateText(`${body.product_name}\n${body.product_description ?? ""}`);
+
+  // 1b. Niche guardrail (§11/WG-32): the official Whop template has extra, niche-
+  // specific guardrails. The custom path skips these (they're template-specific) but
+  // is still bounded by the safety floor above.
+  if (!isCustom) {
+    const niche = screenNiche(body.product_name, body.product_description ?? "");
+    if (!niche.allowed) {
+      return Response.json({ error: niche.reason, blocked: true }, { status: 422 });
+    }
+  }
+
+  // 1c. General content moderation on the copy (always).
+  const copyVerdict = moderateText(copy);
   if (!copyVerdict.allowed) {
     return Response.json(
       { error: "Product copy flagged by moderation", flags: copyVerdict.flags.map(f => f.type), blocked: true },
@@ -962,7 +1013,10 @@ app.post("/business/:userId/onboard", async (c) => {
     console.warn(`[onboard] Affiliate registration failed for ${userId}:`, err);
   }
 
-  // 4. Save Whop product ID + affiliate ID to BusinessDO
+  // 4. Save Whop product ID + affiliate ID to BusinessDO. A custom business carries
+  // a higher cost multiplier because it runs on Level-4 live reasoning (no curated
+  // playbook) — so "custom" is mechanically more expensive than the official template,
+  // charged closer to its real token cost rather than as an invented pricing tier.
   const bizDO = await getBusinessDO(env, userId);
   await bizDO.fetch(new Request("http://do/config", {
     method: "PATCH",
@@ -970,14 +1024,33 @@ app.post("/business/:userId/onboard", async (c) => {
     body: JSON.stringify({
       whop_product_id: product.id,
       affiliate_registration_id: affiliate?.id ?? null,
-      template_id: "whop-businesses-v1",
+      template_id: isCustom ? "custom" : "whop-businesses-v1",
       template_version: "1",
       user_id: userId,
+      custom_business: isCustom ? "true" : "false",
+      cost_multiplier: isCustom ? "3" : "1",
     }),
   }));
 
-  // 5. Seed script registry with common action types
+  // 5. Seed script registry with the built-in action types, then inherit any
+  // proven scripts other agents have promoted to the shared library (cross-agent
+  // learning — a new business starts with what the fleet has already figured out).
   await bizDO.fetch(new Request("http://do/scripts/seed", { method: "POST" }));
+  try {
+    const sharedResp = await (await getProductDO(env)).fetch(new Request("http://do/shared-scripts"));
+    if (sharedResp.ok) {
+      const { scripts } = await sharedResp.json<{ scripts: Array<{ name: string; description: string; code: string; fingerprint_schema: string; parameters: string; tier: number }> }>();
+      for (const s of scripts) {
+        await bizDO.fetch(new Request("http://do/scripts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: s.name, description: s.description, code: s.code, fingerprint_schema: safeParse(s.fingerprint_schema), parameters: safeParse(s.parameters), tier: s.tier }),
+        }));
+      }
+    }
+  } catch (err) {
+    console.warn(`[onboard] shared-script inheritance failed for ${userId}:`, err);
+  }
 
   // 6. Register user in ProductDO businesses list (for nightly cron)
   await (await getProductDO(env)).fetch(new Request("http://do/businesses", {

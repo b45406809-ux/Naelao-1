@@ -3,6 +3,7 @@ import {
   simulateContentCycle,
   simulateToolBuildDeploy,
   simulateOnboardingScreen,
+  simulateCustomOnboarding,
   mockGenerate,
   type GenScenario,
 } from "./agent-sim.js";
@@ -73,6 +74,18 @@ describe("onboarding screen — blocks out-of-scope niches before a product exis
 
   it("allows a legitimate micro-tool", () => {
     expect(simulateOnboardingScreen("Outreach Autopilot", "draft and schedule cold emails")).toBe(true);
+  });
+});
+
+describe("custom business path — safety floor holds even with no template", () => {
+  it("blocks a dangerous custom business the niche guard wouldn't catch", () => {
+    // A custom goal skips the Whop niche guard, but the floor still blocks it.
+    expect(simulateCustomOnboarding("Run a sports betting tips business with guaranteed returns")).toBe(false);
+    expect(simulateCustomOnboarding("Give personalized investment advice and stock tips")).toBe(false);
+  });
+
+  it("allows a legitimate custom business", () => {
+    expect(simulateCustomOnboarding("Run a newsletter business about indie game development")).toBe(true);
   });
 });
 

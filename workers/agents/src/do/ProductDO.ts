@@ -51,6 +51,21 @@ export class ProductDO extends DurableObject {
         registered_at INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
       )
     `);
+    // Shared skill registry — proven scripts promoted from one business so every
+    // other agent (and every new signup) inherits them. The cross-agent flywheel:
+    // when one agent figures something out, all agents get it.
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS shared_scripts (
+        name               TEXT PRIMARY KEY,
+        description        TEXT NOT NULL DEFAULT '',
+        code               TEXT NOT NULL,
+        fingerprint_schema TEXT NOT NULL DEFAULT '{}',
+        parameters         TEXT NOT NULL DEFAULT '[]',
+        tier               INTEGER NOT NULL DEFAULT 2,
+        source_user        TEXT,
+        promoted_at        INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      )
+    `);
     // Seed defaults on first boot
     this.ctx.storage.sql.exec(`
       INSERT OR IGNORE INTO config (key, value) VALUES
@@ -150,6 +165,30 @@ export class ProductDO extends DurableObject {
     if (method === "DELETE" && delMatch?.[1]) {
       this.ctx.storage.sql.exec(`DELETE FROM businesses WHERE user_id = ?`, delMatch[1]);
       return Response.json({ deleted: true, user_id: delMatch[1] });
+    }
+
+    // GET /shared-scripts — the cross-agent skill library
+    if (method === "GET" && url.pathname === "/shared-scripts") {
+      const rows = this.ctx.storage.sql.exec(`SELECT * FROM shared_scripts ORDER BY promoted_at DESC`).toArray();
+      return Response.json({ scripts: rows, count: rows.length });
+    }
+
+    // POST /shared-scripts — promote a proven script into the shared library
+    if (method === "POST" && url.pathname === "/shared-scripts") {
+      const s = await request.json<{
+        name: string; description?: string; code: string; fingerprint_schema?: unknown;
+        parameters?: unknown; tier?: number; source_user?: string;
+      }>();
+      if (!s.name || !s.code) return Response.json({ error: "name and code required" }, { status: 400 });
+      this.ctx.storage.sql.exec(
+        `INSERT INTO shared_scripts (name, description, code, fingerprint_schema, parameters, tier, source_user, promoted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(name) DO UPDATE SET code = excluded.code, description = excluded.description, promoted_at = excluded.promoted_at`,
+        s.name, s.description ?? "", s.code,
+        JSON.stringify(s.fingerprint_schema ?? {}), JSON.stringify(s.parameters ?? []),
+        s.tier ?? 2, s.source_user ?? null, Date.now(),
+      );
+      return Response.json({ promoted: true, name: s.name }, { status: 201 });
     }
 
     return Response.json({ error: "not_found" }, { status: 404 });

@@ -13,6 +13,7 @@ import { moderateText } from "@naelao/moderation";
 import { decidePublish, overDailyCap, type AutonomyTier, type PublishDecision } from "../../workers/agents/src/whop/cycle-logic.js";
 import { nextToolState, canDeploy, type ToolState } from "../../workers/agents/src/whop/tool-lifecycle.js";
 import { screenNiche } from "../../workers/agents/src/whop/onboarding-guard.js";
+import { safetyFloor } from "../../workers/agents/src/safety.js";
 
 // ── Mock "LLM": simulated generations keyed by scenario ───────────────────────
 export type GenScenario =
@@ -81,8 +82,16 @@ export function simulateToolBuildDeploy(build: { built: boolean; tests_passed: b
   return { finalState: state, deployed };
 }
 
-// ── Simulated onboarding niche screen ─────────────────────────────────────────
+// ── Simulated onboarding niche screen (official Whop template) ────────────────
 export function simulateOnboardingScreen(productName: string, description: string): boolean {
-  // Production runs screenNiche AND moderateText on the copy before creating a product.
-  return screenNiche(productName, description).allowed && moderateText(`${productName}\n${description}`).allowed;
+  // Production runs safetyFloor (always) + screenNiche (whop) + moderateText.
+  const copy = `${productName}\n${description}`;
+  return safetyFloor(copy).allowed && screenNiche(productName, description).allowed && moderateText(copy).allowed;
+}
+
+// ── Simulated CUSTOM business onboarding (no template → Level 4) ───────────────
+// The niche guard is skipped (it's template-specific) but the safety floor must
+// still hold — this is the whole point of the floor existing.
+export function simulateCustomOnboarding(goal: string): boolean {
+  return safetyFloor(goal).allowed && moderateText(goal).allowed;
 }
