@@ -87,14 +87,23 @@ spec), and it slots under the same engine because the engine is manifest-driven.
   Routes under `/business/:userId/subspaces[/…]` and `/threads/:tid/messages`. A
   sub-space carries its own `manifest_id` — its assistant bundle.
 
+- **Channel adapters + per-user sessions** (`launchpad/channels.ts` + BusinessDO):
+  one `ChannelAdapter` interface (email/slack/discord) normalizing inbound and
+  formatting outbound; `channel_sessions` keyed per (channel, channel_user_id) with an
+  `unanswered` heartbeat queue. Routes under `/business/:userId/channels/*`.
+
 **Appendix corrections baked in:**
 - DO SQLite with `?` placeholders only (not Postgres — flagged across dozens of bugs).
 - Sub-space **depth limit enforced in code** (`MAX_SUBSPACE_DEPTH`, @2068786), parent_id
   immutable, atomic create (DO single-thread).
 - Thread messages **`ORDER BY created_at, id`** (@2028732) and a **content size cap**
   (`MAX_MESSAGE_BYTES`, @2030468 — no 10 MB OOM).
+- **Channel adapter interface** (@4211129) instead of bespoke per-channel handlers;
+  **outbound formatting layer** (@4198622); **per-user channel sessions** so two Slack
+  users don't share one session (@3245389/@2908507/@1995937); **bot-echo filtering** and
+  **external-id dedup** (no duplicate-send on re-delivery).
 
-**Next (Launchpad-only):** per-sub-space assistant *instances* with a heartbeat cron;
-channel capability implementations (per-user channel sessions — appendix @3245389) and a
-channel adapter interface (@4211129); SSE streaming for threads. All slot into the same
-manifest-driven engine.
+**Next (Launchpad-only):** the assistant **heartbeat loop** that drains the unanswered
+queue and replies via `formatOutbound` (per-sub-space assistant instances on a cron);
+cross-channel **identity resolution** (@4200734); **SSE streaming** for threads. All slot
+into the same manifest-driven engine.

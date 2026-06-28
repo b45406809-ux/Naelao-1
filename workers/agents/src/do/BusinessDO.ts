@@ -39,6 +39,7 @@ import { nextToolState, canDeploy, type ToolState, type ToolEvent } from "../who
 import { SKILLS, skillsForTier, renderSkillsPrompt } from "../whop/skills.js";
 import { safetyFloor } from "../safety.js";
 import { getManifest } from "../launchpad/manifest.js";
+import { getAdapter, isChannelType } from "../launchpad/channels.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -259,6 +260,35 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
       CREATE INDEX IF NOT EXISTS idx_tmsg_thread ON thread_messages(thread_id, created_at, id);
     `);
 
+    // Channel sessions — keyed per (channel, channel_user_id), NOT per channel type
+    // (appendix @3245389: channel-type-only keys made all Slack users share one
+    // session → cross-user bleed). One session per person per channel.
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS channel_sessions (
+        id              TEXT PRIMARY KEY,
+        channel         TEXT NOT NULL,
+        channel_user_id TEXT NOT NULL,
+        created_at      INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+        last_seen       INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+        UNIQUE (channel, channel_user_id)
+      )
+    `);
+    // Channel messages — inbound/outbound, deduped on the channel-native external_id
+    // (appendix: idempotency key written after delivery caused duplicate sends).
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS channel_messages (
+        id          TEXT PRIMARY KEY,
+        session_id  TEXT NOT NULL REFERENCES channel_sessions(id),
+        direction   TEXT NOT NULL,
+        text        TEXT NOT NULL,
+        external_id TEXT,
+        answered    INTEGER NOT NULL DEFAULT 0,
+        created_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+        UNIQUE (direction, external_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_chmsg_session ON channel_messages(session_id, created_at);
+    `);
+
     this.initialized = true;
   }
 
@@ -321,6 +351,12 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
         if (method === "GET") return this.handleListThreadMessages(threadMsgMatch[1]);
         if (method === "POST") return this.handleAddThreadMessage(threadMsgMatch[1], request);
       }
+
+      // Channels (assistant ingress) — inbound ingest, sessions, heartbeat
+      const chInboundMatch = url.pathname.match(/^\/channels\/([^/]+)\/inbound$/);
+      if (method === "POST" && chInboundMatch?.[1]) return this.handleChannelInbound(chInboundMatch[1], request);
+      if (method === "GET" && url.pathname === "/channels/sessions") return this.handleListChannelSessions();
+      if (method === "GET" && url.pathname === "/channels/unanswered") return this.handleChannelUnanswered();
 
       // GET /outcome-log
       if (method === "GET" && url.pathname === "/outcome-log") return this.handleGetOutcomeLog(url);
@@ -1640,6 +1676,62 @@ Return a JSON object with exactly these fields:
       id, threadId, role, content, Date.now(),
     );
     return Response.json({ id, thread_id: threadId, role }, { status: 201 });
+  }
+
+  // ── Channels (assistant ingress) ────────────────────────────────────────────
+
+  private async handleChannelInbound(type: string, request: Request): Promise<Response> {
+    if (!isChannelType(type)) return Response.json({ error: "unknown_channel" }, { status: 400 });
+    const adapter = getAdapter(type);
+    if (!adapter) return Response.json({ error: "unknown_channel" }, { status: 400 });
+
+    const body = await request.json<{ raw?: Record<string, unknown> }>().catch(() => ({} as { raw?: Record<string, unknown> }));
+    const norm = adapter.normalizeInbound(body.raw ?? {});
+    if (!norm) return Response.json({ ignored: true }); // not an actionable message (bot echo, etc.)
+
+    // Resolve or create the PER-USER session (unique on channel + channel_user_id).
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT id FROM channel_sessions WHERE channel = ? AND channel_user_id = ?`, norm.channel, norm.channel_user_id)
+      .toArray() as { id: string }[];
+    let sessionId: string;
+    if (rows[0]) {
+      sessionId = rows[0].id;
+      this.ctx.storage.sql.exec(`UPDATE channel_sessions SET last_seen = ? WHERE id = ?`, Date.now(), sessionId);
+    } else {
+      sessionId = crypto.randomUUID();
+      this.ctx.storage.sql.exec(
+        `INSERT INTO channel_sessions (id, channel, channel_user_id, created_at, last_seen) VALUES (?, ?, ?, ?, ?)`,
+        sessionId, norm.channel, norm.channel_user_id, Date.now(), Date.now(),
+      );
+    }
+
+    // Store inbound, deduped on (direction, external_id) — re-delivered events no-op.
+    const msgId = crypto.randomUUID();
+    this.ctx.storage.sql.exec(
+      `INSERT OR IGNORE INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at)
+       VALUES (?, ?, 'inbound', ?, ?, 0, ?)`,
+      msgId, sessionId, norm.text, norm.external_id, norm.timestamp,
+    );
+
+    return Response.json({ session_id: sessionId, queued: true });
+  }
+
+  private handleListChannelSessions(): Response {
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT id, channel, channel_user_id, created_at, last_seen FROM channel_sessions ORDER BY last_seen DESC LIMIT 200`)
+      .toArray();
+    return Response.json({ sessions: rows, count: rows.length });
+  }
+
+  // Heartbeat surface: inbound messages awaiting a reply (the assistant's work queue).
+  private handleChannelUnanswered(): Response {
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT m.id, m.session_id, s.channel, s.channel_user_id, m.text, m.created_at
+             FROM channel_messages m JOIN channel_sessions s ON s.id = m.session_id
+             WHERE m.direction = 'inbound' AND m.answered = 0
+             ORDER BY m.created_at ASC LIMIT 100`)
+      .toArray();
+    return Response.json({ pending: rows, count: rows.length });
   }
 
   // Seed the agent's script registry from its MANIFEST (de-hardcoded). The niche is

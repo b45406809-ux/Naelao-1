@@ -919,6 +919,22 @@ app.post("/business/:userId/threads/:tid/messages", async (c) => {
   }));
 });
 
+// Channels (assistant ingress) — inbound webhook, sessions, heartbeat queue
+app.post("/business/:userId/channels/:type/inbound", async (c) => {
+  const { userId, type } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/channels/${type}/inbound`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(await c.req.json().catch(() => ({}))),
+  }));
+});
+app.get("/business/:userId/channels/sessions", async (c) => {
+  const { userId } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/channels/sessions"));
+});
+app.get("/business/:userId/channels/unanswered", async (c) => {
+  const { userId } = c.req.param();
+  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/channels/unanswered"));
+});
+
 // Kill switch — pause / resume the whole business
 app.post("/business/:userId/pause", async (c) => {
   const { userId } = c.req.param();
