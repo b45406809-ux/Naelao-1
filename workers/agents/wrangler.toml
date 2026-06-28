@@ -15,6 +15,14 @@ class_name = "HITLApprovalDO"
 name = "TASK_DO"
 class_name = "TaskDO"
 
+[[durable_objects.bindings]]
+name = "PRODUCT_DO"
+class_name = "ProductDO"
+
+[[durable_objects.bindings]]
+name = "BUSINESS_DO"
+class_name = "BusinessDO"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["NaelaoAgentDO"]
@@ -26,6 +34,14 @@ new_classes = ["HITLApprovalDO"]
 [[migrations]]
 tag = "v3"
 new_classes = ["TaskDO"]
+
+[[migrations]]
+tag = "v4"
+new_classes = ["ProductDO", "BusinessDO"]
+
+[[r2_buckets]]
+binding = "BUSINESS_R2"
+bucket_name = "naelao-business-scripts"
 
 [[workflows]]
 name = "AgentTaskWorkflow"

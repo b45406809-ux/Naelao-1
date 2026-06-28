@@ -14,10 +14,14 @@ import { detectPromptInjection } from "@naelao/moderation";
 import { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
+import { ProductDO } from "./do/ProductDO.js";
+import { BusinessDO } from "./do/BusinessDO.js";
 
 export { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 export { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 export { TaskDO } from "./do/TaskDO.js";
+export { ProductDO } from "./do/ProductDO.js";
+export { BusinessDO } from "./do/BusinessDO.js";
 export { AgentTaskWorkflow } from "./workflows/AgentTaskWorkflow.js";
 
 // ── Env interface ─────────────────────────────────────────────────────────────
@@ -30,6 +34,9 @@ export interface AgentsEnv {
   NAELAO_AGENT_DO: DurableObjectNamespace<NaelaoAgentDO>;
   HITL_APPROVAL_DO: DurableObjectNamespace<HITLApprovalDO>;
   TASK_DO: DurableObjectNamespace<TaskDO>;
+  PRODUCT_DO: DurableObjectNamespace<ProductDO>;
+  BUSINESS_DO: DurableObjectNamespace<BusinessDO>;
+  BUSINESS_R2: R2Bucket;
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
   AGENTS_WORKER: Fetcher;
@@ -661,6 +668,112 @@ app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/reject", asy
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+});
+
+// ── ProductDO routes — /product/* ─────────────────────────────────────────────
+
+function getProductDO(env: AgentsEnv) {
+  const id = env.PRODUCT_DO.idFromName("product");
+  return env.PRODUCT_DO.get(id);
+}
+
+function getBusinessDO(env: AgentsEnv, userId: string) {
+  const id = env.BUSINESS_DO.idFromName(`business:${userId}`);
+  return env.BUSINESS_DO.get(id);
+}
+
+app.get("/product/config", async (c) => {
+  return getProductDO(c.env).fetch(new Request("http://do/config"));
+});
+
+app.patch("/product/config", async (c) => {
+  return getProductDO(c.env).fetch(new Request("http://do/config", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(await c.req.json()),
+  }));
+});
+
+app.get("/product/signup-gate", async (c) => {
+  return getProductDO(c.env).fetch(new Request("http://do/signup-gate"));
+});
+
+// ── BusinessDO routes — /business/:userId/* ───────────────────────────────────
+
+app.get("/business/:userId/status", async (c) => {
+  const { userId } = c.req.param();
+  return getBusinessDO(c.env, userId).fetch(new Request("http://do/status"));
+});
+
+app.patch("/business/:userId/config", async (c) => {
+  const { userId } = c.req.param();
+  return getBusinessDO(c.env, userId).fetch(new Request("http://do/config", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(await c.req.json()),
+  }));
+});
+
+app.post("/business/:userId/cycle", async (c) => {
+  const { userId } = c.req.param();
+  return getBusinessDO(c.env, userId).fetch(new Request("http://do/cycle", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...(await c.req.json<Record<string, unknown>>()), api_key: c.env.ANTHROPIC_API_KEY }),
+  }));
+});
+
+app.get("/business/:userId/outcome-log", async (c) => {
+  const { userId } = c.req.param();
+  const limit = c.req.query("limit") ?? "50";
+  return getBusinessDO(c.env, userId).fetch(new Request(`http://do/outcome-log?limit=${limit}`));
+});
+
+app.get("/business/:userId/scripts", async (c) => {
+  const { userId } = c.req.param();
+  return getBusinessDO(c.env, userId).fetch(new Request("http://do/scripts"));
+});
+
+app.post("/business/:userId/scripts", async (c) => {
+  const { userId } = c.req.param();
+  return getBusinessDO(c.env, userId).fetch(new Request("http://do/scripts", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(await c.req.json()),
+  }));
+});
+
+app.get("/business/:userId/scripts/:name", async (c) => {
+  const { userId, name } = c.req.param();
+  return getBusinessDO(c.env, userId).fetch(new Request(`http://do/scripts/${name}`));
+});
+
+app.patch("/business/:userId/scripts/:name", async (c) => {
+  const { userId, name } = c.req.param();
+  return getBusinessDO(c.env, userId).fetch(new Request(`http://do/scripts/${name}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(await c.req.json()),
+  }));
+});
+
+app.delete("/business/:userId/scripts/:name", async (c) => {
+  const { userId, name } = c.req.param();
+  return getBusinessDO(c.env, userId).fetch(new Request(`http://do/scripts/${name}`, { method: "DELETE" }));
+});
+
+app.get("/business/:userId/autonomy", async (c) => {
+  const { userId } = c.req.param();
+  return getBusinessDO(c.env, userId).fetch(new Request("http://do/autonomy"));
+});
+
+app.patch("/business/:userId/autonomy", async (c) => {
+  const { userId } = c.req.param();
+  return getBusinessDO(c.env, userId).fetch(new Request("http://do/autonomy", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(await c.req.json()),
+  }));
 });
 
 // ── Error handler ─────────────────────────────────────────────────────────────
