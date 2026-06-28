@@ -1,0 +1,790 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Naelao — Whop Businesses: Launchpad Template Spec</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;0,9..144,700;1,9..144,300&family=DM+Mono:wght@400;500&family=Inter:wght@300;400;500;600&display=swap"
+    rel="stylesheet">
+  <style>
+    :root {
+      --bg: #060D1A;
+      --bg2: #0A1524;
+      --bg3: #0E1D30;
+      --bg4: #12253C;
+      --brd: #182E48;
+      --brd2: #1F3C5C;
+      --or: #E8692A;
+      --bl: #3B82F6;
+      --tl: #14B8A6;
+      --gr: #22C55E;
+      --pu: #A855F7;
+      --rd: #EF4444;
+      --am: #F59E0B;
+      --tx: #E2E8F0;
+      --dim: #94A3B8;
+      --mt: #475569;
+      --hd: #F8FAFC;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body { background: var(--bg); color: var(--tx); font-family: 'Inter', sans-serif; font-size: 15px; line-height: 1.75; overflow-x: hidden; }
+    .page { max-width: 1040px; margin: 0 auto; padding: 0 32px 120px; }
+
+    .nav { position: sticky; top: 0; z-index: 200; background: rgba(6,13,26,.96); backdrop-filter: blur(16px); border-bottom: 1px solid var(--brd); display: flex; align-items: center; height: 48px; padding: 0 32px; }
+    .nav-brand { font-family: 'Fraunces', serif; font-size: 20px; font-weight: 700; color: var(--hd); margin-right: 24px; white-space: nowrap; letter-spacing: -.01em; }
+    .nav-brand em { color: var(--or); font-style: normal; }
+    .nav-links { display: flex; overflow-x: auto; scrollbar-width: none; }
+    .nav-links::-webkit-scrollbar { display: none; }
+    .navl { font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--mt); padding: 0 13px; height: 48px; display: flex; align-items: center; text-decoration: none; border-right: 1px solid var(--brd); white-space: nowrap; transition: color .15s, background .15s; }
+    .navl:hover { color: var(--or); background: rgba(232,105,42,.05); }
+
+    .hero { padding: 64px 0 48px; border-bottom: 1px solid var(--brd); margin-bottom: 56px; }
+    .hero-ey { font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: .24em; color: var(--or); text-transform: uppercase; margin-bottom: 18px; }
+    .hero-title { font-family: 'Fraunces', serif; font-size: clamp(40px,7vw,68px); font-weight: 700; color: var(--hd); line-height: 1; letter-spacing: -.03em; margin-bottom: 18px; }
+    .hero-title em { color: var(--or); font-style: normal; }
+    .hero-sub { font-family: 'Fraunces', serif; font-size: 19px; font-weight: 300; font-style: italic; color: var(--dim); max-width: 700px; line-height: 1.55; margin-bottom: 30px; }
+    .tags { display: flex; flex-wrap: wrap; gap: 7px; }
+    .tg { font-family: 'DM Mono', monospace; font-size: 10px; padding: 4px 10px; border-radius: 3px; border: 1px solid var(--brd2); color: var(--mt); background: var(--bg2); }
+    .tg.or { border-color: rgba(232,105,42,.45); color: var(--or); }
+    .tg.gr { border-color: rgba(34,197,94,.35); color: var(--gr); }
+    .tg.rd { border-color: rgba(239,68,68,.35); color: var(--rd); }
+
+    .toc { background: var(--bg2); border: 1px solid var(--brd); border-left: 3px solid var(--or); border-radius: 8px; padding: 22px 26px; margin-bottom: 56px; }
+    .toc-lbl { font-family: 'DM Mono', monospace; font-size: 9.5px; letter-spacing: .2em; text-transform: uppercase; color: var(--or); margin-bottom: 14px; }
+    .toc-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 3px 24px; }
+    .ti { font-size: 12px; color: var(--dim); padding: 2.5px 0; }
+    .ti a { color: var(--dim); text-decoration: none; transition: color .15s; }
+    .ti a:hover { color: var(--or); }
+    .ti-n { color: var(--mt); font-family: 'DM Mono', monospace; font-size: 10px; margin-right: 6px; }
+
+    .sec { margin-bottom: 76px; padding-top: 8px; }
+    .sec-ey { font-family: 'DM Mono', monospace; font-size: 10px; letter-spacing: .18em; color: var(--or); text-transform: uppercase; margin-bottom: 10px; display: block; }
+    h2 { font-family: 'Fraunces', serif; font-size: 32px; font-weight: 600; color: var(--hd); line-height: 1.15; letter-spacing: -.02em; margin-bottom: 16px; }
+    h3 { font-family: 'Fraunces', serif; font-size: 20px; font-weight: 600; color: var(--hd); line-height: 1.3; margin: 36px 0 12px; }
+    h4 { font-size: 11px; font-weight: 600; color: var(--tx); text-transform: uppercase; letter-spacing: .12em; margin: 22px 0 8px; font-family: 'Inter', sans-serif; }
+    .bar { width: 40px; height: 2px; background: var(--or); margin-bottom: 22px; }
+
+    p { color: var(--tx); margin-bottom: 15px; font-size: 14.5px; line-height: 1.8; }
+    p.lead { font-size: 16.5px; line-height: 1.65; font-weight: 300; margin-bottom: 24px; color: var(--dim); }
+    strong { color: var(--hd); font-weight: 600; }
+    em { color: var(--dim); }
+    a { color: #7DD3FC; }
+
+    .box { border-radius: 7px; padding: 18px 22px; margin: 20px 0; border-left: 3px solid; }
+    .box-or { background: rgba(232,105,42,.06); border-color: var(--or); }
+    .box-bl { background: rgba(59,130,246,.06); border-color: var(--bl); }
+    .box-gr { background: rgba(34,197,94,.06); border-color: var(--gr); }
+    .box-rd { background: rgba(239,68,68,.06); border-color: var(--rd); }
+    .box-am { background: rgba(245,158,11,.06); border-color: var(--am); }
+    .box-pu { background: rgba(168,85,247,.06); border-color: var(--pu); }
+    .box-lbl { font-family: 'DM Mono', monospace; font-size: 9.5px; letter-spacing: .18em; text-transform: uppercase; margin-bottom: 8px; font-weight: 500; }
+    .box-or .box-lbl { color: var(--or); }
+    .box-bl .box-lbl { color: var(--bl); }
+    .box-gr .box-lbl { color: var(--gr); }
+    .box-rd .box-lbl { color: var(--rd); }
+    .box-am .box-lbl { color: var(--am); }
+    .box-pu .box-lbl { color: var(--pu); }
+    .box p, .box li { margin-bottom: 6px; font-size: 13.5px; }
+    .box p:last-child { margin-bottom: 0; }
+
+    .t { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 12.5px; }
+    .t th { background: var(--bg3); padding: 9px 12px; text-align: left; font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--mt); border-bottom: 1px solid var(--brd2); font-weight: 400; }
+    .t td { padding: 9px 12px; border-bottom: 1px solid var(--brd); vertical-align: top; line-height: 1.55; color: var(--dim); }
+    .t tr:last-child td { border-bottom: none; }
+    .t .tl { color: var(--tx); font-weight: 500; font-size: 12px; }
+    .t .mono { font-family: 'DM Mono', monospace; font-size: 11px; color: #7DD3FC; }
+    .t .gr { color: var(--gr); }
+    .t .rd { color: var(--rd); }
+    .t .am { color: var(--am); }
+
+    pre { background: #04090F; border: 1px solid var(--brd2); border-radius: 8px; padding: 16px 20px; overflow-x: auto; margin: 14px 0; font-family: 'DM Mono', monospace; font-size: 11.5px; line-height: 1.65; }
+    pre code { color: #7DD3FC; }
+    .ic { background: var(--bg3); border: 1px solid var(--brd); border-radius: 3px; padding: 1px 6px; font-family: 'DM Mono', monospace; font-size: 11px; color: #7DD3FC; }
+    .cm { color: #4B6A8A; }
+
+    ul.fl { list-style: none; margin: 12px 0; padding: 0; }
+    ul.fl li { padding: 7px 0 7px 22px; position: relative; font-size: 13.5px; color: var(--dim); border-bottom: 1px solid var(--brd); line-height: 1.58; }
+    ul.fl li:last-child { border-bottom: none; }
+    ul.fl li::before { content: '—'; position: absolute; left: 0; color: var(--mt); }
+
+    .g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 18px 0; }
+    .g3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin: 18px 0; }
+    .card { background: var(--bg2); border: 1px solid var(--brd); border-radius: 8px; padding: 18px; position: relative; overflow: hidden; }
+    .card::after { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--or); }
+    .card.gr::after { background: var(--gr); }
+    .card.rd::after { background: var(--rd); }
+    .card.bl::after { background: var(--bl); }
+    .card.am::after { background: var(--am); }
+    .card-lbl { font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: .14em; text-transform: uppercase; color: var(--mt); margin-bottom: 8px; }
+    .card h5 { font-size: 14px; font-weight: 600; color: var(--hd); margin-bottom: 6px; }
+    .card p { font-size: 12.5px; color: var(--dim); margin-bottom: 0; }
+
+    .phases { display: flex; flex-direction: column; gap: 9px; margin: 18px 0; }
+    .ph { display: grid; grid-template-columns: 46px 1fr; gap: 0; background: var(--bg2); border: 1px solid var(--brd); border-radius: 8px; overflow: hidden; }
+    .ph-n { background: var(--bg3); display: flex; align-items: center; justify-content: center; font-family: 'Fraunces', serif; font-size: 22px; font-weight: 700; color: var(--brd2); border-right: 1px solid var(--brd); }
+    .ph-w { padding: 14px 18px; }
+    .ph-name { font-size: 13px; font-weight: 600; color: var(--tx); margin-bottom: 4px; }
+    .ph-desc { font-size: 12.5px; color: var(--mt); line-height: 1.55; }
+
+    .loop { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; align-items: center; }
+    .loop-step { background: var(--bg2); border: 1px solid var(--brd2); border-radius: 20px; padding: 7px 14px; font-family: 'DM Mono', monospace; font-size: 10.5px; letter-spacing: .04em; color: var(--tx); }
+    .loop-step.model { border-color: var(--or); color: var(--or); }
+    .loop-arrow { color: var(--mt); font-size: 13px; }
+
+    .footer { border-top: 1px solid var(--brd); margin-top: 60px; padding-top: 24px; font-family: 'DM Mono', monospace; font-size: 10.5px; color: var(--mt); letter-spacing: .04em; }
+  </style>
+</head>
+
+<body>
+
+  <nav class="nav">
+    <div class="nav-brand">na<em>e</em>lao</div>
+    <div class="nav-links">
+      <a class="navl" href="#scope">Scope</a>
+      <a class="navl" href="#tiers">Tiers</a>
+      <a class="navl" href="#product">Product</a>
+      <a class="navl" href="#architecture">Architecture</a>
+      <a class="navl" href="#script-engine">Script Engine</a>
+      <a class="navl" href="#data-model">Data Model</a>
+      <a class="navl" href="#whop-integration">Whop Integration</a>
+      <a class="navl" href="#autonomy-ladder">Autonomy Ladder</a>
+      <a class="navl" href="#monetization">Monetization</a>
+      <a class="navl" href="#build-sequence">Build Sequence</a>
+      <a class="navl" href="#deferred">Deferred</a>
+      <a class="navl" href="#guardrails">Guardrails</a>
+      <a class="navl" href="#infra-footprint">Infra Footprint</a>
+      <a class="navl" href="#flywheel-data">Flywheel Data</a>
+      <a class="navl" href="#open-decisions">Open Decisions</a>
+      <a class="navl" href="#resolved-gaps">Resolved Gaps</a>
+    </div>
+  </nav>
+
+  <div class="page">
+
+    <div class="hero">
+      <div class="hero-ey">Naelao · Launchpad Space Type · Template Spec v0.3</div>
+      <h1 class="hero-title">Whop <em>Businesses</em></h1>
+      <p class="hero-sub">One builder. One template. One product the builder runs on themselves first. AI-built micro-tools, bundled with a community, sold to the make-money-online audience that already lives on Whop — run by a script-first agent loop so token cost falls as the business matures.</p>
+      <div class="tags">
+        <span class="tg or">v0 scope</span>
+        <span class="tg">launchpad space type</span>
+        <span class="tg">single template</span>
+        <span class="tg gr">dogfood-first</span>
+        <span class="tg">script-first execution</span>
+        <span class="tg">cloudflare workers + durable objects</span>
+        <span class="tg rd">not the full naelao spec</span>
+      </div>
+    </div>
+
+    <div class="toc">
+      <div class="toc-lbl">Contents</div>
+      <div class="toc-grid">
+        <div class="ti"><span class="ti-n">00</span><a href="#scope">Scope — what this document covers, and doesn't</a></div>
+        <div class="ti"><span class="ti-n">01</span><a href="#tiers">The three-tier model, collapsed for v0</a></div>
+        <div class="ti"><span class="ti-n">02</span><a href="#product">The product: micro-tool + community</a></div>
+        <div class="ti"><span class="ti-n">03</span><a href="#architecture">Architecture: durable layer vs. hardcoded logic</a></div>
+        <div class="ti"><span class="ti-n">04</span><a href="#script-engine">The script-first execution engine, scoped to v0</a></div>
+        <div class="ti"><span class="ti-n">05</span><a href="#data-model">Data model</a></div>
+        <div class="ti"><span class="ti-n">06</span><a href="#whop-integration">Whop integration</a></div>
+        <div class="ti"><span class="ti-n">07</span><a href="#autonomy-ladder">Autonomy ladder</a></div>
+        <div class="ti"><span class="ti-n">08</span><a href="#monetization">Monetization</a></div>
+        <div class="ti"><span class="ti-n">09</span><a href="#build-sequence">Build sequence</a></div>
+        <div class="ti"><span class="ti-n">10</span><a href="#deferred">Explicitly deferred</a></div>
+        <div class="ti"><span class="ti-n">11</span><a href="#guardrails">Guardrails & risk</a></div>
+        <div class="ti"><span class="ti-n">12</span><a href="#infra-footprint">Minimal infra footprint</a></div>
+        <div class="ti"><span class="ti-n">13</span><a href="#flywheel-data">Data capture for the future flywheel</a></div>
+        <div class="ti"><span class="ti-n">14</span><a href="#open-decisions">Open decisions</a></div>
+        <div class="ti"><span class="ti-n">15</span><a href="#resolved-gaps">Resolved technical gaps — the gaps this spec left implicit, and their fixes</a></div>
+      </div>
+    </div>
+
+    <!-- 00 SCOPE -->
+    <section class="sec" id="scope">
+      <span class="sec-ey">00 / Scope</span>
+      <h2>What this document covers — and doesn't</h2>
+      <div class="bar"></div>
+      <p class="lead">This is not the Naelao platform spec. It's the build spec for exactly one thing inside it: the Whop Businesses template, under the Launchpad space type, run by exactly one builder.</p>
+      <p>Naelao's eventual shape is <strong>Naelao → Builder → Users</strong> — an infra layer that many builders launch branded products on top of. That model is correct, but it's a future-state. Everything generic about it (a marketplace of templates, configurable tenancy modes, team/role management for builders' end users) is intentionally absent from this document, because it would be designed against zero evidence right now. This spec scopes down to: <strong>one builder (the founder), one space type (Launchpad), one template (Whop Businesses), one product type (AI-built micro-tool + community)</strong> — built well enough to prove the loop works before any of that generic layer gets built.</p>
+      <div class="box box-or">
+        <div class="box-lbl">Working rule</div>
+        <p>Generalize on the third example, not the first. The first time something is built, it's built concrete and hardcoded. The second reveals what's actually shared. Don't pay the cost of an abstraction for a population of builders, tenants, or teams that doesn't exist yet. This rule applies just as much to the agent's internal execution machinery (§04) as it does to the builder/tenancy layer.</p>
+      </div>
+    </section>
+
+    <!-- 01 TIERS -->
+    <section class="sec" id="tiers">
+      <span class="sec-ey">01 / The Three-Tier Model</span>
+      <h2>Collapsed to one builder, for now</h2>
+      <div class="bar"></div>
+      <p>The full model has three tiers. v0 keeps the shape but shrinks the population at each layer to the minimum that lets the loop run end-to-end.</p>
+      <div class="g3">
+        <div class="card">
+          <div class="card-lbl">Tier 0</div>
+          <h5>Naelao</h5>
+          <p>The infra: agent runtime, durable session layer, Whop connector, minimal billing. Shared by every business instance regardless of who "owns" it.</p>
+        </div>
+        <div class="card gr">
+          <div class="card-lbl">Tier 1 — v0: just you</div>
+          <h5>Builder</h5>
+          <p>One Launchpad signup flow, one template (Whop Businesses), no template picker UI, no tenancy-mode selector, no team/role config.</p>
+        </div>
+        <div class="card bl">
+          <div class="card-lbl">Tier 2 — v0: you, then a few</div>
+          <h5>Users</h5>
+          <p>Phase 0: the founder, running their own Whop business. Phase 1: a handful of real signups, one business per user, no config screens.</p>
+        </div>
+      </div>
+      <p>Everything that makes Tier 1 "a real builder platform" in the original spec — other people building other templates, white-label rebrand depth, SSO, custom domains — has no reason to exist while there is exactly one builder. It gets built when a second builder is real, not before.</p>
+    </section>
+
+    <!-- 02 PRODUCT -->
+    <section class="sec" id="product">
+      <span class="sec-ey">02 / The Product</span>
+      <h2>AI-built micro-tool + community, sold on Whop</h2>
+      <div class="bar"></div>
+      <p class="lead">A small, genuinely functional tool (content repurposing, outreach automation, niche research, a simple bot) bundled with a support community, sold to the same hustle / make-money-online audience that already dominates Whop's Discover surface.</p>
+      <h4>Why this shape, specifically</h4>
+      <ul class="fl">
+        <li><strong>Objectively verifiable value.</strong> A tool either works or it doesn't — that's a much easier zero-audience sell than a course or signal service, which lean on trust in a specific person's brand that a faceless AI-run product doesn't have.</li>
+        <li><strong>Digital, not physical.</strong> No inventory, no shipping, no fulfillment failure modes — the agent can build the entire product, not just market something it can't manufacture demand for.</li>
+        <li><strong>Built-in distribution.</strong> Whop's own Discover page and affiliate network reduce dependence on the end-customer (or us) having an ad budget — the single biggest failure mode in zero-capital "AI runs a business" products.</li>
+        <li><strong>Avoids the riskiest sub-niches on purpose.</strong> Trading-signal and betting-pick communities are common on Whop and explicitly out of scope — unlicensed-financial-advice and gambling-promotion exposure isn't worth the TAM.</li>
+      </ul>
+      <div class="box box-rd">
+        <div class="box-lbl">Non-negotiable</div>
+        <p>The tool must actually work — tested, real functionality, not a thin prompt-wrapper that looks good in a demo. A product that fakes its value (the failure mode that already damaged trust in this category once) is a faster way to zero than slow growth is.</p>
+      </div>
+    </section>
+
+    <!-- 03 ARCHITECTURE -->
+    <section class="sec" id="architecture">
+      <span class="sec-ey">03 / Architecture</span>
+      <h2>Durable layer vs. hardcoded business logic</h2>
+      <div class="bar"></div>
+      <p>Two different things both get called "the agent" in conversation — they need to stay structurally separate from day one, even though only one template exists.</p>
+      <div class="g2">
+        <div class="card">
+          <div class="card-lbl">Build for real, now</div>
+          <h5>The durable execution layer</h5>
+          <p>Session/message history, checkpointing, resumable state after a Worker eviction, idempotent retries. Generic shape, not niche-specific — this is a reliability requirement the moment one agent runs unattended over time, regardless of template count.</p>
+        </div>
+        <div class="card gr">
+          <div class="card-lbl">Hardcode on purpose, for v0</div>
+          <h5>The business-logic module</h5>
+          <p>What the agent decides each cycle, how it talks to Whop, what "good" means for this niche. Template-specific. No generic Space Type interface, no plugin system — just a clearly separated module that reads/writes into the durable layer's state.</p>
+        </div>
+      </div>
+      <h4>Why the separation matters later</h4>
+      <p>The durable layer's schema must stay generic — conversation history, a state blob, timestamps — and never quietly absorb assumptions specific to the Whop Businesses template. That's what makes it possible to add a second template later, or upgrade the business logic, without touching how already-running businesses execute.</p>
+      <pre><code><span class="cm">// durable layer — generic, niche-agnostic</span>
+BusinessDO.state = {
+  fiber_id, messages[], checkpoints[],
+  tool_call_log[], template_id, template_version,
+  status, created_at, last_run_at
+}
+
+<span class="cm">// business-logic module — hardcoded, niche-specific</span>
+whopBusinessesV1.runNightlyCycle(state) {
+  evaluate(state) → decide(state) → act(state) → report(state)
+}</code></pre>
+      <p>The <span class="mono ic">act()</span> step is where most of the token cost lives, because most nights it's repeating a small set of action types it has done before. §04 covers how it avoids paying full reasoning cost for that repetition.</p>
+    </section>
+
+    <!-- 04 SCRIPT ENGINE -->
+    <section class="sec" id="script-engine">
+      <span class="sec-ey">04 / The Script Engine</span>
+      <h2>Script-first execution, scoped to v0</h2>
+      <div class="bar"></div>
+      <p class="lead">Source: <em>Script-First General Agent Architecture</em> (Naelao internal design doc). The core insight is directly relevant here and the full system is not — this section adopts the former and explicitly bounds the latter.</p>
+
+      <h4>The core insight, applied to one nightly cycle</h4>
+      <p>A Whop business doing this template repeats a small set of action types night after night — post content, check community replies, run the tool's test suite, adjust a listing. Re-deriving each of those from scratch with a full reasoning call is the dominant token cost, and the monthly fee in §08 has to cover that cost with zero room to subsidize a loss. <strong>Token spend should scale with novelty, not with how many nights the business has been running.</strong> That's the whole argument for building this now rather than treating it as generalization to defer — it's not solving a future builder's problem, it's solving this template's own unit economics from week one.</p>
+
+      <h4>The loop, as it runs inside <span class="mono ic">act()</span></h4>
+      <div class="loop">
+        <span class="loop-step">OBSERVE</span><span class="loop-arrow">→</span>
+        <span class="loop-step">FINGERPRINT</span><span class="loop-arrow">→</span>
+        <span class="loop-step">FIND</span><span class="loop-arrow">→</span>
+        <span class="loop-step model">GATE</span><span class="loop-arrow">→</span>
+        <span class="loop-step">EXECUTE</span><span class="loop-arrow">→</span>
+        <span class="loop-step">VERIFY</span><span class="loop-arrow">→</span>
+        <span class="loop-step model">DISTILL</span>
+      </div>
+      <table class="t">
+        <tr><th>Step</th><th>What it means for this template</th></tr>
+        <tr><td class="tl">Observe</td><td>Pull current Whop product state, community activity, and the tool's own telemetry.</td></tr>
+        <tr><td class="tl">Fingerprint</td><td>Hash the structural parts of that snapshot — not raw content, just what would tell you the environment changed in a way that matters.</td></tr>
+        <tr><td class="tl">Find</td><td>Look up a matching cached script by name/tag in this business's own small script registry — not semantic search, see below.</td></tr>
+        <tr><td class="tl am">Gate</td><td>Match → execute directly. Drift → cheap patch call. No match or patch fails → full reasoning.</td></tr>
+        <tr><td class="tl">Execute</td><td>Run the script at the right compute tier (below).</td></tr>
+        <tr><td class="tl">Verify</td><td>Re-observe, check the action actually landed — the post appeared, the test suite passed.</td></tr>
+        <tr><td class="tl am">Distill</td><td>If a live reasoning run succeeded, compile it into a new named, parameterized script before the session closes.</td></tr>
+      </table>
+
+      <h4>What's deliberately small at v0</h4>
+      <div class="box box-gr">
+        <div class="box-lbl">Build now — minimal version</div>
+        <p><strong>A flat, named script registry per BusinessDO</strong> — a few dozen entries at most, looked up by name and a simple precondition check, not embeddings. <strong>A scoped escalation ladder</strong> — Level 1 direct execution (no model call), Level 2 a cheap patch call (fast/cheap model) when something drifted slightly, Level 3 a full reasoning call when the patch doesn't hold, Level 4 full live reasoning when nothing in the registry matches at all, always followed by an attempt to distill on success. <strong>Three compute tiers</strong> — Tier 1 (R2 reads, near-zero cost, for cached baselines), Tier 2 (V8 isolate, for Whop API calls and content generation), Tier 5 (container, for actually building and testing the micro-tool's code — the non-negotiable from §02 that it must demonstrably work).</p>
+      </div>
+      <div class="box box-rd">
+        <div class="box-lbl">Defer — not yet justified</div>
+        <p>Semantic search over script embeddings (CF Vectorize) — unnecessary until the registry is large enough that name-based lookup stops being enough. A space-level shared registry across multiple businesses — Phase 1+ concern, see §09. Browser execution (Tier 4) — Whop's developer API covers what this template needs; no DOM automation required at v0. Generalized agent "profiles" for unrelated agent types (a Cowork-style desktop agent, a marketplace/MCP agent) — those belong to space types that don't exist yet. MCP-without-hardcoded-tools generality — there's no app marketplace to connect to.</p>
+      </div>
+
+      <h4>Why this isn't the same mistake as the rest of the original platform spec</h4>
+      <p>Most of what got cut earlier (Apps marketplace, Mini-AGI builder, the generic Skills System) was generalizing for a population of builders and templates that doesn't exist. This is different: it's a cost-control mechanism for the one template that does exist, and it's the thing standing between "the monthly fee covers token cost" and "it doesn't." Week one will mostly hit Level 4 — full reasoning, expensive. That's expected. The cost curve only improves if distillation actually runs every time, which is why it's built in from the start rather than retrofitted once the bill is already a problem.</p>
+
+      <div class="box box-bl">
+        <div class="box-lbl">Disambiguation</div>
+        <p>This section is about <em>how cheaply and reliably</em> an action executes. §07's Autonomy Ladder is about <em>how much the agent may do without a human approving it first</em>. They compose, but they're independent axes — a Level 1 cached script still can't exceed whatever autonomy tier the business is set to.</p>
+      </div>
+    </section>
+
+    <!-- 05 DATA MODEL -->
+    <section class="sec" id="data-model">
+      <span class="sec-ey">05 / Data Model</span>
+      <h2>One ProductDO. One BusinessDO per running instance.</h2>
+      <div class="bar"></div>
+      <table class="t">
+        <tr><th>Object</th><th>Cardinality in v0</th><th>Holds</th></tr>
+        <tr><td class="tl">ProductDO</td><td class="mono">singleton</td><td>Branding (logo/name), the one template config, billing entity. No tenancy-mode field — there's no second mode yet.</td></tr>
+        <tr><td class="tl">BusinessDO</td><td class="mono">one per running Whop business</td><td>Fiber/session state, Whop product ID, affiliate registration ID, <span class="mono">template_version</span>, action→outcome log, and its own flat script registry (§04).</td></tr>
+        <tr><td class="tl">User → Business</td><td class="mono">1 : 1</td><td>Hardcoded for v0. Multi-business-per-user, limits, and roles are Phase 2 concerns — see §10.</td></tr>
+      </table>
+      <p>If a kill switch for "is signup open" is needed, it's a single boolean on the ProductDO — not a configuration system.</p>
+    </section>
+
+    <!-- 06 WHOP INTEGRATION -->
+    <section class="sec" id="whop-integration">
+      <span class="sec-ey">06 / Whop Integration</span>
+      <h2>What the agent actually calls</h2>
+      <div class="bar"></div>
+      <ul class="fl">
+        <li><strong>Create company/product</strong> — via the Whop developer API, configured with the customer's chosen name/branding at onboarding.</li>
+        <li><strong>Register affiliate-of-record</strong> — Naelao's Whop company is enrolled as an affiliate on each new product with a commission override. Reuses Whop's existing payout/attribution rails instead of building a custom Stripe-style splitter.</li>
+        <li><strong>Post content / manage community</strong> — the niche-specific actions the agent takes each cycle, routed through the script engine in §04.</li>
+        <li><strong>Pull revenue metrics</strong> — feeds both the customer dashboard and the data-capture log in §13.</li>
+      </ul>
+      <div class="box box-am">
+        <div class="box-lbl">Cannot be automated</div>
+        <p>Identity/KYC and connecting a real payout method on Whop. This is the one onboarding step that stays manual — the same reason comparable products still make the founder connect a wallet themselves.</p>
+      </div>
+      <div class="box box-am">
+        <div class="box-lbl">Platform-dependency risk</div>
+        <p>Whop's terms include fraud/abuse review and can adjust or withhold commissions. Automated, at-scale affiliate registration needs to look like — and be — real value delivered, not gaming the attribution system. Read the current affiliate developer terms before architecting around them; they can change.</p>
+      </div>
+    </section>
+
+    <!-- 07 AUTONOMY LADDER -->
+    <section class="sec" id="autonomy-ladder">
+      <span class="sec-ey">07 / Autonomy Ladder</span>
+      <h2>How much the agent can do without a human</h2>
+      <div class="bar"></div>
+      <p>One configurable ceiling per business, not a generic permissions system. Concrete tiers for this template:</p>
+      <table class="t">
+        <tr><th>Tier</th><th>Agent may do unattended</th><th>Requires approval</th></tr>
+        <tr><td class="tl gr">1 — Draft</td><td>Draft content, propose tool changes</td><td class="am">Everything before it's published</td></tr>
+        <tr><td class="tl am">2 — Publish</td><td>Publish content & community posts up to a daily action cap</td><td class="am">Pricing changes, core tool functionality</td></tr>
+        <tr><td class="tl rd">3 — Operate</td><td>Iterate tool features and adjust pricing within a pre-set bound</td><td class="am">Anything outside the pre-set bound</td></tr>
+      </table>
+      <p>Start every business — including the founder's own — at Tier 1 or 2. Tier 3 is earned once the agent's judgment has actually been observed, not assumed. (This is a trust/risk ceiling, separate from the cost/reliability mechanics in §04 — see the disambiguation note there.)</p>
+    </section>
+
+    <!-- 08 MONETIZATION -->
+    <section class="sec" id="monetization">
+      <span class="sec-ey">08 / Monetization</span>
+      <h2>Monthly fee + commission</h2>
+      <div class="bar"></div>
+      <ul class="fl">
+        <li><strong>Monthly fee:</strong> sized to ≥ real LLM/token cost per customer plus a buffer. With zero capital, there's no ability to subsidize a customer who never converts — the fee alone must never run at a loss. §04's escalation ladder is the main lever for making this hold over time as Level 4 calls become rarer per business.</li>
+        <li><strong>Commission:</strong> a percentage of the customer's actual Whop revenue once their business earns money, collected automatically through the affiliate-of-record mechanism in §06 rather than self-reported.</li>
+      </ul>
+      <div class="box box-rd">
+        <div class="box-lbl">Payment safety</div>
+        <p>Every Whop API call and billing action must be idempotent. A retry after a Worker eviction must know whether the first attempt already succeeded — re-running a payment or a Whop write twice is the one bug class that turns into real money lost, not just a logged error.</p>
+      </div>
+    </section>
+
+    <!-- 09 BUILD SEQUENCE -->
+    <section class="sec" id="build-sequence">
+      <span class="sec-ey">09 / Build Sequence</span>
+      <h2>Phases</h2>
+      <div class="bar"></div>
+      <div class="phases">
+        <div class="ph">
+          <div class="ph-n">0</div>
+          <div class="ph-w">
+            <div class="ph-name">Dogfood</div>
+            <div class="ph-desc">The founder is the only user, running one real Whop business through the agent loop. Script registry starts empty — expect mostly Level 4 (full reasoning) in week one. Proves whether the loop converts before anyone else's money or credentials are involved.</div>
+          </div>
+        </div>
+        <div class="ph">
+          <div class="ph-n">1</div>
+          <div class="ph-w">
+            <div class="ph-name">Limited real users</div>
+            <div class="ph-desc">A small number of real signups. Still one business per user, no teams, no admin roles, no config screens beyond branding and autonomy tier. Worth revisiting whether proven scripts should be promoted to a shared, space-level registry now that more than one business exists.</div>
+          </div>
+        </div>
+        <div class="ph">
+          <div class="ph-n">2</div>
+          <div class="ph-w">
+            <div class="ph-name">Generalize — only once proven</div>
+            <div class="ph-desc">Multi-business-per-user, tenancy-mode picker, team/role management, second template, semantic script search if the registry has actually grown large enough to need it. Built from real examples, not designed in advance.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 10 DEFERRED -->
+    <section class="sec" id="deferred">
+      <span class="sec-ey">10 / Explicitly Deferred</span>
+      <h2>Not built in v0 — and why that's fine</h2>
+      <div class="bar"></div>
+      <table class="t">
+        <tr><th>Deferred</th><th>Build it when…</th></tr>
+        <tr><td class="tl">Apps + MCP marketplace</td><td>There's more than one seller.</td></tr>
+        <tr><td class="tl">Mini-AGI generative builder</td><td>Fixed templates stop covering what builders need.</td></tr>
+        <tr><td class="tl">Sites / Enterprise space types</td><td>A real customer asks, not before.</td></tr>
+        <tr><td class="tl">Full cross-domain skill library (Vectorize embeddings)</td><td>The per-business registry (§04) actually outgrows name-based lookup.</td></tr>
+        <tr><td class="tl">Generic Dynamic Workflows engine</td><td>Template #2 reveals what's actually shared vs. template-specific.</td></tr>
+        <tr><td class="tl">Browser execution tier (Tier 4)</td><td>A future template needs DOM automation Whop's API can't cover.</td></tr>
+        <tr><td class="tl">Generalized agent profiles (Cowork, marketplace agents)</td><td>Those space types are actually being built.</td></tr>
+        <tr><td class="tl">Team / role management</td><td>An actual customer is a team, not an individual hustler.</td></tr>
+        <tr><td class="tl">Multi-business-per-user, limits config</td><td>Phase 1 users are asking for a second business.</td></tr>
+        <tr><td class="tl">Tenancy-mode picker (multitenant / SaaS / one-person)</td><td>A second builder, other than the founder, actually exists.</td></tr>
+      </table>
+    </section>
+
+    <!-- 11 GUARDRAILS -->
+    <section class="sec" id="guardrails">
+      <span class="sec-ey">11 / Guardrails & Risk</span>
+      <h2>What not to let slide</h2>
+      <div class="bar"></div>
+      <ul class="fl">
+        <li>No trading-signal or betting-pick sub-niches — financial-advice and gambling-promotion exposure isn't worth it.</li>
+        <li>No automated identity/KYC shortcuts on the Whop payout connection.</li>
+        <li>Every business runs at the lowest autonomy tier until observed behavior earns more — including the founder's own.</li>
+        <li>Version-pin every <span class="mono ic">template_version</span> on the BusinessDO. Future business-logic changes route to new signups only; live businesses keep running on the version they started on unless deliberately migrated.</li>
+        <li>A cached script with a falling success rate or frequent recent patches is a signal to tighten its preconditions or pull it for re-derivation — not a script to keep quietly re-running because it's cheap.</li>
+        <li>The tool sold must work, demonstrably, before it's sold to anyone else.</li>
+      </ul>
+    </section>
+
+    <!-- 12 INFRA FOOTPRINT -->
+    <section class="sec" id="infra-footprint">
+      <span class="sec-ey">12 / Minimal Infra Footprint</span>
+      <h2>What actually gets deployed</h2>
+      <div class="bar"></div>
+      <table class="t">
+        <tr><th>Component</th><th>Count</th><th>Purpose</th></tr>
+        <tr><td class="tl">Workers</td><td class="mono">4–6</td><td>Router/entrypoint, agent worker, auth, dashboard/config UI.</td></tr>
+        <tr><td class="tl">Durable Object classes</td><td class="mono">2</td><td><span class="mono">ProductDO</span> (singleton), <span class="mono">BusinessDO</span> (one per running business, including its script registry).</td></tr>
+        <tr><td class="tl">R2</td><td class="mono">1 bucket</td><td>Per-business script storage and observe-baseline snapshots — Tier 1 reads (§04).</td></tr>
+        <tr><td class="tl">Container runtime</td><td class="mono">on demand</td><td>Tier 5 — building and testing the micro-tool's actual code. Warm-reused within a session, not kept running otherwise.</td></tr>
+        <tr><td class="tl">Vectorize</td><td class="mono">not used in v0</td><td>Deferred per §04/§10 until the script registry justifies semantic search.</td></tr>
+        <tr><td class="tl">Billing</td><td class="mono">1 integration</td><td>Monthly fee + Whop affiliate commission — no custom payment-splitting engine.</td></tr>
+        <tr><td class="tl">Auth</td><td class="mono">native sessions only</td><td>No SAML/OIDC — nobody's asked for it.</td></tr>
+      </table>
+      <p>Everything in the original 22-Worker / 14-DO topology beyond this is either a different space type not yet built, or a concern already cut in §10.</p>
+    </section>
+
+    <!-- 13 FLYWHEEL DATA -->
+    <section class="sec" id="flywheel-data">
+      <span class="sec-ey">13 / Data Capture for the Future Flywheel</span>
+      <h2>Cheap to log now, expensive to retrofit later</h2>
+      <div class="bar"></div>
+      <p>The long-term thesis — proprietary "what actually makes money" data, eventually feeding a specialized model trained on top of a frontier base model — needs scale to mean anything, but the logging itself costs almost nothing to build in from day one. The script registry in §04 is itself part of this asset: a mature library of scripts that reliably grow a Whop business is a second, compounding form of the same proprietary knowledge, not just the outcome log below.</p>
+      <pre><code>BusinessDO.outcome_log.push({
+  cycle_id, action_type, action_detail,
+  revenue_delta_24h, engagement_delta_24h,
+  template_version, timestamp
+})</code></pre>
+      <p>Keep this schema generic — action → outcome — so it stays reusable across whatever template #2 eventually is, instead of silently encoding Whop-Businesses-specific assumptions.</p>
+    </section>
+
+    <!-- 14 OPEN DECISIONS -->
+    <section class="sec" id="open-decisions">
+      <span class="sec-ey">14 / Open Decisions</span>
+      <h2>Still unresolved — resolve by building, not more planning</h2>
+      <div class="bar"></div>
+      <ul class="fl">
+        <li>Exact micro-tool category for the founder's own first business (Phase 0).</li>
+        <li>Monthly fee amount — needs real token-cost-per-cycle measurement first, not a guess.</li>
+        <li>Commission percentage — bounded by Whop's own ~5.5%+ take rate, needs to leave the end customer a margin worth the fee.</li>
+        <li>Whether Phase 1 signups are invite-only or open — affects how much of §11's guardrails need to be airtight on day one versus iterated on.</li>
+        <li>Which 5–10 action types are worth hand-seeding as scripts before launch, versus letting the first live runs distill them naturally.</li>
+      </ul>
+    </section>
+
+    <!-- 15 RESOLVED TECHNICAL GAPS -->
+    <section class="sec" id="resolved-gaps">
+      <span class="sec-ey">15 / Resolved Technical Gaps</span>
+      <h2>The gaps this spec left implicit — and their fixes</h2>
+      <div class="bar"></div>
+      <p class="lead">§00–§14 describe <em>what</em> Whop Businesses v0 is and <em>why</em> it is scoped the way it is. They deliberately stop short of the implementation detail an engineer needs to build it without guessing. This section closes that distance: every place the spec names a mechanism but doesn't define it, or assumes a behavior the rest of the document depends on, is enumerated here with a concrete, buildable resolution that holds to Naelao's platform invariants (DO SQLite positional placeholders, HMAC-named DOs, moderation on every LLM call, idempotency on every paid write).</p>
+
+      <div class="box box-or">
+        <div class="box-lbl">How to read this</div>
+        <p>Each gap has an ID (<span class="mono ic">WG-01</span> … <span class="mono ic">WG-33</span>), the section it derives from, the missing detail, and the resolution. <strong>Resolved in code</strong> means it is already built on branch <span class="mono ic">claude/naelao-missing-gaps-pass-713ruz</span>; <strong>Specified</strong> means the design is fixed here and ready to build. These do not change v0 scope — they make the existing scope precise.</p>
+      </div>
+
+      <h3>A · Execution engine — §03 / §04</h3>
+      <p>The script-first loop is the spec's central mechanism and its largest source of under-specification. The OBSERVE→FINGERPRINT→FIND→GATE→EXECUTE→VERIFY→DISTILL pipeline names seven steps; the prose details two of them.</p>
+      <table class="t">
+        <tr><th>ID</th><th>The gap</th><th>Resolution</th><th>State</th></tr>
+        <tr>
+          <td class="mono">WG-01</td>
+          <td class="tl">§04 names <strong>Tier 5 (container)</strong> as the only place the micro-tool's code is actually built and tested — the §02 non-negotiable — but never says what the runtime is or how it's invoked.</td>
+          <td>Tier 5 = a Cloudflare Container bound to the agents worker, invoked from <span class="mono">BusinessDO</span> via a typed RPC with a hard <span class="mono">30s</span> wall-clock cap and a JSON <span class="mono">{stdout, stderr, exit_code, artifacts[]}</span> return. Built artifacts (the tool bundle) are written to <span class="mono">BUSINESS_R2</span> under <span class="mono">tool/{userId}/{version}/</span>. Container is warm-reused within a session, destroyed on session close.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-02</td>
+          <td class="tl">§04 stores scripts as TypeScript and executes them — but a <strong>distilled (LLM-written) script running with live Whop credentials</strong> is arbitrary-code execution and the spec never sandboxes it.</td>
+          <td>Stored scripts never <span class="mono">eval()</span> in the DO isolate. Script <span class="mono">code</span> is a declarative plan over a fixed allow-list of host functions (<span class="mono">whop.*</span>, <span class="mono">r2.*</span>, <span class="mono">log.*</span>) injected at run time; anything outside the allow-list is unreachable. Tier 5 code execution happens only inside the container, never in the DO.</td>
+          <td class="rd">Specified — security-critical</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-03</td>
+          <td class="tl">§04 says a successful Level 4 run is distilled into a new script "before the session closes" — but is silent on whether that script is <strong>trusted to auto-run next time</strong> or needs review.</td>
+          <td>Distillation always writes with a <span class="mono">draft_</span> name prefix. A <span class="mono">draft_</span> script is never selected by FIND for direct (Level 1) execution and is gated to autonomy Tier&nbsp;1 regardless of business tier, until a human (or N successful supervised runs) promotes it by removing the prefix.</td>
+          <td class="gr">Resolved in code</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-04</td>
+          <td class="tl">§04's FIND/GATE turns on a <strong>fingerprint</strong> and on telling "drift" (Level&nbsp;2) from "no match" (Level&nbsp;4) — but neither the fingerprint's contents nor the drift threshold is defined.</td>
+          <td>Fingerprint = FNV-1a 32-bit hash over the <em>sorted structural keys</em> of the observe snapshot (not values): product visibility, presence of revenue block, post-count bucket. GATE: exact fingerprint hit + <span class="mono">stability_score ≥ 0.7</span> → Level&nbsp;1; same structural keys, changed value bucket → Level&nbsp;2 patch; no key-set match → Level&nbsp;4.</td>
+          <td class="gr">Resolved in code</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-05</td>
+          <td class="tl">§04's VERIFY step ("check the action actually landed") has <strong>no failure path</strong> — what happens when the post didn't appear or the test suite failed is unspecified.</td>
+          <td>Failed VERIFY decrements the script's <span class="mono">success</span> ratio, records a <span class="mono">patch_history</span> entry, and escalates one ladder rung (L1→L2→L3→L4). A Level&nbsp;4 verify failure logs an <span class="mono">outcome_log</span> error row and ends the cycle without retry — never silently re-runs the side-effecting action.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-06</td>
+          <td class="tl">§04's DISTILL is named but not specified: which model compiles the trace, what the prompt shape is, what's saved.</td>
+          <td>Distillation runs in <span class="mono">ctx.waitUntil()</span> (so the session closes promptly) with a cheap model (Haiku) given a compile prompt: the successful action trace → a named, parameterized TypeScript function over the host allow-list. Saved as <span class="mono">draft_{action}</span> per WG-03. Distillation failure is non-fatal — the action already succeeded.</td>
+          <td class="gr">Resolved in code</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-07</td>
+          <td class="tl">§04 says scripts are "looked up by name and a simple precondition check" — but §05's data model has no tag field and the match algorithm is undefined.</td>
+          <td>FIND = single SQL pass over the per-DO <span class="mono">scripts</span> table, excluding <span class="mono">draft_%</span>, ordered by <span class="mono">stability_score DESC, last_used DESC</span>, filtered by a fingerprint-schema check. No tags column is added (spec drift avoided); the schema match subsumes tagging for v0.</td>
+          <td class="gr">Resolved in code</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-08</td>
+          <td class="tl">§03's cycle is <span class="mono">evaluate → decide → act → report</span>, but only <span class="mono">act()</span> is described (it's §04). The other three steps have no definition.</td>
+          <td><span class="mono">evaluate()</span> = build the observe snapshot + compute deltas vs. the stored baseline; <span class="mono">decide()</span> = rank candidate action types for the cycle against autonomy tier and daily cap; <span class="mono">act()</span> = the §04 ladder per chosen action; <span class="mono">report()</span> = write <span class="mono">outcome_log</span> rows + emit analytics + refresh the R2 baseline. All four are pure functions over the generic durable state.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-09</td>
+          <td class="tl">§03 promises "resumable state after a Worker eviction," but the cycle is multi-step with side effects — <strong>resume granularity</strong> is undefined, risking a re-sent Whop write after eviction mid-EXECUTE.</td>
+          <td>Each side-effecting step writes to <span class="mono">tool_call_log</span> with a deterministic id (WG-15) <em>before</em> the call and marks it <span class="mono">completed</span> after. On resume, any <span class="mono">running</span> row is re-checked against Whop (read) rather than re-issued; <span class="mono">completed</span> rows are skipped. Checkpoint granularity = one row per side effect.</td>
+          <td class="gr">Resolved in code</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-10</td>
+          <td class="tl">The entire loop is a "nightly cycle," but no section says <strong>what fires it</strong>.</td>
+          <td>A Cron Trigger (<span class="mono">0 2 * * *</span> UTC) on the agents worker. The scheduled handler pulls the active-business list from <span class="mono">ProductDO</span>, observes each Whop snapshot, and dispatches one cycle per <span class="mono">BusinessDO</span>, skipping any already <span class="mono">running</span>.</td>
+          <td class="gr">Resolved in code</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-11</td>
+          <td class="tl">Nothing prevents a <strong>manual cycle and the cron cycle</strong> (or two crons) from running the same business concurrently — a payment-safety hazard the idempotency note half-addresses.</td>
+          <td>A whole-cycle mutex: <span class="mono">fiber_status='running'</span> is set on cycle entry and checked by every dispatcher (cron and manual). DO single-threaded execution makes the check-and-set atomic; a second cycle is rejected, not queued.</td>
+          <td class="gr">Resolved in code</td>
+        </tr>
+      </table>
+
+      <div class="box box-rd">
+        <div class="box-lbl">Security-critical — WG-02</div>
+        <p>The single most dangerous gap: an LLM-distilled script that runs with a customer's real Whop credentials and can move real money. The resolution (declarative plan over a fixed host allow-list, never <span class="mono ic">eval</span> in the DO, container-only code execution) must be in place <em>before</em> distillation is ever enabled in production — not retrofitted after the first distilled script runs.</p>
+      </div>
+
+      <h3>B · Whop integration — §06</h3>
+      <table class="t">
+        <tr><th>ID</th><th>The gap</th><th>Resolution</th><th>State</th></tr>
+        <tr>
+          <td class="mono">WG-12</td>
+          <td class="tl">§06 says "via the Whop developer API" but never states <strong>whose API key</strong> — the customer's own, or Naelao's platform key acting on their behalf. The two imply different onboarding and ToS posture.</td>
+          <td>v0 uses a single Naelao platform key (<span class="mono">WHOP_API_KEY</span>, a Workers Secret) acting as the affiliate-of-record and product creator. Per-customer keys are deferred with multi-builder (§10). The key is validated at startup and never logged.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-13</td>
+          <td class="tl">§06 lists only <strong>outbound</strong> calls. Inbound Whop events — a sale, a refund, a cancellation, a dispute — have no ingestion path, so revenue/commission accounting can only ever poll and can't react to refunds.</td>
+          <td>A <span class="mono">POST /webhooks/whop</span> route on the agents worker: HMAC-verify the signature, dedupe on Whop's event id, and write a row to <span class="mono">outcome_log</span> (sale/refund/cancel). Polling (WG-24) remains the baseline; webhooks make refunds and clawbacks reactive.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-14</td>
+          <td class="tl">§06 mandates idempotency but says nothing about <strong>rate limits, transient failures, or backoff</strong> on the Whop connector.</td>
+          <td>The <span class="mono">whopRequest()</span> wrapper retries <span class="mono">429/5xx</span> with exponential backoff (2s→4s→8s, max 3) and a per-DO circuit breaker in DO storage (not KV — KV's ~60s consistency is unsafe for breakers). Non-idempotent writes carry the WG-15 key so a retry can't double-execute.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-15</td>
+          <td class="tl">"Every Whop API call must be idempotent" (§08) but the <strong>idempotency-key derivation</strong> is undefined — a wrong scheme (e.g. random per attempt) silently defeats the guarantee.</td>
+          <td>Keys are deterministic from <span class="mono">{action}:{userId}:{cycleId}</span>, so every retry of the same logical action within a cycle reproduces the same key. The key is both the Whop <span class="mono">Idempotency-Key</span> header and the <span class="mono">tool_call_log</span> primary key, tying WG-09 and Whop-side dedup to one value.</td>
+          <td class="gr">Resolved in code</td>
+        </tr>
+      </table>
+
+      <h3>C · Autonomy & approval — §07</h3>
+      <table class="t">
+        <tr><th>ID</th><th>The gap</th><th>Resolution</th><th>State</th></tr>
+        <tr>
+          <td class="mono">WG-16</td>
+          <td class="tl">Tiers 1–2 require human approval before publishing, but the spec never says <strong>how an approval request reaches the human</strong> or comes back — making Tier 1 a dead end.</td>
+          <td>Reuse the existing <span class="mono">HITLApprovalDO</span>: a blocked action creates an approval request keyed to the business, surfaced in the dashboard approval queue (WG-28) and via a notification. The cycle records the pending action and ends; the approved action runs on the next cycle (or immediately on approve).</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-17</td>
+          <td class="tl">§07 Tier 2 allows publishing "up to a <strong>daily action cap</strong>" — the number is never given, yet the loop must enforce it.</td>
+          <td>Default cap = <span class="mono">3</span> published actions / 24h, stored as <span class="mono">daily_action_cap</span> in <span class="mono">business_config</span> (overridable per business). Enforced by counting <span class="mono">outcome_log</span> publish rows in the trailing 24h before each publish; over cap → defer to next cycle.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-18</td>
+          <td class="tl">§07 Tier 3 may "adjust pricing within a <strong>pre-set bound</strong>" — the bound has no format, owner, or storage location.</td>
+          <td><span class="mono">pricing_bound</span> JSON in <span class="mono">business_config</span>: <span class="mono">{min_usd, max_usd, max_step_pct, max_changes_per_30d}</span>, set by the human at onboarding/upgrade. The pricing action reads it and rejects any change outside all four bounds before calling Whop.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-19</td>
+          <td class="tl">If a Tier-1 draft needs approval and the human <strong>never responds</strong>, the spec doesn't say whether it expires, blocks, or piles up.</td>
+          <td>Approval requests carry a <span class="mono">72h</span> TTL (DO alarm). On expiry the request is marked <span class="mono">expired</span>, the draft is retained but not published, and the next cycle proceeds with other action types — a stale approval never blocks the whole loop.</td>
+          <td class="am">Specified</td>
+        </tr>
+      </table>
+
+      <h3>D · Monetization — §08</h3>
+      <table class="t">
+        <tr><th>ID</th><th>The gap</th><th>Resolution</th><th>State</th></tr>
+        <tr>
+          <td class="mono">WG-20</td>
+          <td class="tl">§08 names a "monthly fee" but no <strong>billing integration or dunning</strong> path — and a business that keeps running on a failed payment is exactly the loss §08 says must never happen.</td>
+          <td>Stripe subscription for the monthly fee (the existing billing worker). On <span class="mono">invoice.payment_failed</span>, the business is moved to <span class="mono">suspended</span> in <span class="mono">business_config</span>; the cron dispatcher skips suspended businesses, so no token cost accrues on a non-paying customer. Reactivated on successful payment.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-21</td>
+          <td class="tl">"The fee alone must never run at a loss" and "spend should scale with novelty" (§04/§08) — but there's <strong>no per-cycle token-cost measurement</strong> to verify either claim.</td>
+          <td>Every model call records <span class="mono">input/output tokens</span> and the resolved ladder level into an analytics data point and a running <span class="mono">cost_cents_30d</span> counter on the DO. The dashboard surfaces cost-per-cycle and the L4-share trend — the actual signal that distillation is lowering cost over time.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-22</td>
+          <td class="tl">Commission is "collected automatically through affiliate-of-record" — but <strong>reconciliation</strong> (expected vs. paid, refunds, clawbacks) is unaddressed.</td>
+          <td>Whop payout webhooks (WG-13) post commission events to <span class="mono">outcome_log</span> as <span class="mono">revenue_delta</span> rows; a refund posts a negative delta. A periodic reconcile job compares Whop-reported affiliate earnings against the logged expectation and flags drift for review — no self-reported numbers enter Naelao's books.</td>
+          <td class="am">Specified</td>
+        </tr>
+      </table>
+
+      <h3>E · Data model, isolation & infra — §05 / §12 / §13</h3>
+      <table class="t">
+        <tr><th>ID</th><th>The gap</th><th>Resolution</th><th>State</th></tr>
+        <tr>
+          <td class="mono">WG-23</td>
+          <td class="tl">§05 says "one BusinessDO per running business" but never specifies <strong>DO naming or tenant isolation</strong> — a security gap the moment Phase 1 has more than one user.</td>
+          <td>BusinessDO id = <span class="mono">HMAC-SHA256(userId, PLATFORM_SECRET):business:{userId}</span> via the shared <span class="mono">getDOName()</span>, so DO names are unguessable and one user can't address another's DO. Every route carries the caller's id from the verified JWT; the router scopes all access to it.</td>
+          <td class="rd">Specified — security-critical</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-24</td>
+          <td class="tl">§13's <span class="mono">revenue_delta_24h</span> / <span class="mono">engagement_delta_24h</span> require a <strong>baseline from 24h prior</strong> — but the delta of tonight's action isn't known until tomorrow, and the spec gives no measurement mechanism.</td>
+          <td>Two-phase: the cycle writes the action row tonight with <span class="mono">null</span> deltas, and stores a revenue/engagement baseline snapshot in R2 keyed by timestamp. A follow-up pass 24h later (next cron tick) backfills the deltas by diffing against the stored baseline. Deltas are eventually-complete, never fabricated at action time.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-25</td>
+          <td class="tl">§12 lists R2 for "observe-baseline snapshots — Tier 1 reads" but no <strong>key convention or format</strong> for those snapshots.</td>
+          <td>Baselines at <span class="mono">baseline/{userId}/{yyyy-mm-dd}.json</span> (the observe snapshot + revenue/engagement totals); built tool artifacts at <span class="mono">tool/{userId}/{version}/</span>; cached script bodies at <span class="mono">script/{userId}/{name}.ts</span>. Tier-1 reads hit R2 directly, near-zero cost per §04.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-26</td>
+          <td class="tl">§11 says live businesses "keep running on the version they started on unless <strong>deliberately migrated</strong>" — but "migrated" has no mechanism.</td>
+          <td>A <span class="mono">POST /business/:userId/migrate</span> admin route: it pins the new <span class="mono">template_version</span>, runs a version-specific migration function over <span class="mono">business_config</span>, and leaves the script registry intact (scripts re-validate against the new fingerprint schema on next FIND). Migration is opt-in per business, never automatic.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-27</td>
+          <td class="tl">§12 lists an auth worker ("native sessions only") but never describes <strong>login, token, or session storage</strong>.</td>
+          <td>Magic-link email sign-in (no passwords for v0), issuing an HS256 JWT (algorithm pinned, any other <span class="mono">alg</span> rejected) with the user id; sessions tracked for revocation in KV. Reuses the platform auth package — no SAML/OIDC, matching the spec.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-28</td>
+          <td class="tl">§12 lists a "dashboard/config UI" worker but no <strong>scope</strong> — yet it's the only human touchpoint for the approvals WG-16 depends on.</td>
+          <td>Minimum surface: cycle/outcome history, the approval queue (approve/reject), autonomy-tier control, pricing-bound + daily-cap config, and the cost/L4-share charts from WG-21. No template picker, no team management (deferred §10).</td>
+          <td class="am">Specified</td>
+        </tr>
+      </table>
+
+      <h3>F · Product lifecycle & safety — §02 / §11</h3>
+      <table class="t">
+        <tr><th>ID</th><th>The gap</th><th>Resolution</th><th>State</th></tr>
+        <tr>
+          <td class="mono">WG-29</td>
+          <td class="tl">§02 requires the agent to "build the entire product" and §04 builds/tests it in a container — but <strong>where the finished micro-tool is hosted</strong> so paying customers can use it is never addressed.</td>
+          <td>The built tool deploys as its own Cloudflare Worker (Dynamic Worker / artifact pattern) addressed under the business's portal route; its bundle lives in R2 (WG-25). Whop sells <em>access</em>; the tool runs on Naelao infra, with its lifecycle (deploy, version, roll back) owned by the BusinessDO.</td>
+          <td class="am">Specified</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-30</td>
+          <td class="tl">The agent posts generated content to real communities, but §11's guardrails cover <strong>niches, not per-post content</strong> — no moderation before publish, contrary to the platform's output-safety invariant.</td>
+          <td><span class="mono">moderateOutput()</span> runs on every piece of agent-generated content before any Whop publish; flagged content is blocked and routed to the approval queue instead of posted. Input moderation likewise runs before each reasoning call. Non-negotiable, matching the platform-wide rule.</td>
+          <td class="rd">Specified — security-critical</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-31</td>
+          <td class="tl">§11 says a script with a "falling success rate or frequent recent patches" is a signal — but gives <strong>no threshold and no action</strong>.</td>
+          <td>Concrete rule: <span class="mono">stability_score &lt; 0.5</span> OR <span class="mono">&ge; 3</span> patches in the trailing 10 runs → the script is auto-demoted (excluded from Level&nbsp;1, forced to re-derive at Level&nbsp;3+ on next use) and flagged in the dashboard. <span class="mono">stability_score</span> already encodes both signals.</td>
+          <td class="gr">Resolved in code</td>
+        </tr>
+        <tr>
+          <td class="mono">WG-32</td>
+          <td class="tl">§11 forbids trading-signal / betting sub-niches but gives <strong>no enforcement</strong> — is it a classifier, a human gate, or a policy note?</td>
+          <td>A moderation/classification check on the product description and niche at onboarding (before the Whop product is created), plus a deny-list of niche keywords. A flagged niche blocks onboarding pending human review — enforced at the gate, not left to good intentions.</td>
+          <td class="am">Specified</td>
+        </tr>
+      </table>
+
+      <h3>G · Build sequence — §09</h3>
+      <table class="t">
+        <tr><th>ID</th><th>The gap</th><th>Resolution</th><th>State</th></tr>
+        <tr>
+          <td class="mono">WG-33</td>
+          <td class="tl">Phase 0 "proves whether the loop <strong>converts</strong>" before Phase 1 — but "converts" has no definition or threshold.</td>
+          <td>Phase-0 exit criteria, measurable from the existing logs: the founder's own business reaches (a) ≥ 1 paying Whop member, (b) a 30-day token cost below the planned monthly fee (WG-21), and (c) L4-share trending down across the month. All three from <span class="mono">outcome_log</span> + cost counters — no new instrumentation.</td>
+          <td class="am">Specified</td>
+        </tr>
+      </table>
+
+      <div class="box box-gr">
+        <div class="box-lbl">Status summary</div>
+        <p><strong>Resolved in code</strong> (already on the working branch): WG-03, WG-04, WG-06, WG-07, WG-09, WG-10, WG-11, WG-15, WG-31 — the script-engine core, the nightly cron, cycle locking, deterministic idempotency keys, and script-health demotion. <strong>Specified, ready to build:</strong> the remaining 24 — Tier-5 container, Whop webhooks/backoff, the HITL approval surface, billing + dunning, tenant-isolated DO naming, delta backfill, and per-post moderation.</p>
+      </div>
+
+      <div class="box box-am">
+        <div class="box-lbl">Scope discipline</div>
+        <p>None of these resolutions widen v0. They make the <em>existing</em> one-builder / one-template scope buildable without re-deriving a decision per file. Anything that would generalize for builders, tenants, or templates that don't exist yet stays in §10 where the spec already put it.</p>
+      </div>
+    </section>
+
+    <div class="footer">NAELAO · LAUNCHPAD SPACE TYPE · WHOP BUSINESSES TEMPLATE · v0.3 — SCOPED, GAPS RESOLVED</div>
+
+  </div>
+
+</body>
+</html>
