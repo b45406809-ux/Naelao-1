@@ -18,6 +18,8 @@ import { TaskDO } from "./do/TaskDO.js";
 import { ProductDO } from "./do/ProductDO.js";
 import { BusinessDO } from "./do/BusinessDO.js";
 import { observeWhopBusiness, createWhopProduct, registerAffiliate } from "./whop/client.js";
+import { devCatalog, productCatalog } from "./catalog.js";
+import { canAccessBusiness } from "./access.js";
 
 export { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 export { HITLApprovalDO } from "./do/HITLApprovalDO.js";
@@ -81,6 +83,17 @@ function validateEnv(env: AgentsEnv): void {
 const app = new Hono<{ Bindings: AgentsEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+
+// Tenant isolation at the API layer: a user may only touch their own business;
+// the founder (admin/owner) has dev access to any. Complements HMAC DO names.
+app.use("/business/:userId/*", async (c, next) => {
+  const { userId: authedUserId, role } = getCallerIdentity(c);
+  const pathUserId = c.req.param("userId");
+  if (!canAccessBusiness(authedUserId, role, pathUserId)) {
+    return c.json({ error: "forbidden", message: "You can only access your own business" }, 403);
+  }
+  return next();
+});
 
 // Extract caller identity from request headers (set by router after JWT validation)
 function getCallerIdentity(c: {
@@ -674,6 +687,20 @@ app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/reject", asy
     body: JSON.stringify(body),
   });
 });
+
+// ── Catalog (roadmap / coming-soon) ───────────────────────────────────────────
+// Dev/builder view (founder-only): platform space types + templates, others shown
+// as "coming soon". Product view (any authed user): the one live Whop-business
+// niche + others as "coming soon". Read-only — not a configuration system.
+app.get("/catalog/dev", async (c) => {
+  const { role } = getCallerIdentity(c);
+  if (role !== "admin" && role !== "owner") {
+    return c.json({ error: "forbidden", message: "Builder/dev catalog is founder-only" }, 403);
+  }
+  return c.json(devCatalog());
+});
+
+app.get("/catalog/product", async (c) => c.json(productCatalog()));
 
 // ── ProductDO routes — /product/* ─────────────────────────────────────────────
 

@@ -234,7 +234,11 @@ async function proxyTo(
     const sig = await signHmac(`internal:${claims.tid}:${ts}`, platformSecret);
     headers.set("x-naelao-internal-token", `t=${ts},v1=${sig}`);
   }
-  return worker.fetch(new Request(req.url, {
+  // Strip the /v1 mount prefix so downstream workers (which define routes WITHOUT
+  // /v1, e.g. /spaces, /business) actually match. Mirrors the auth-route rewrite.
+  const u = new URL(req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return worker.fetch(new Request(u.toString(), {
     method: req.method,
     headers,
     body: req.body,
@@ -257,6 +261,12 @@ api.all("/spaces/:spaceId/sessions/*", async (c) =>
 api.all("/spaces/:spaceId/sessions", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
+
+// Launchpad / Whop Businesses (the one live niche) → agents worker.
+// Catalog (roadmap), product config, and per-user business endpoints.
+api.all("/catalog/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/product/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/business/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
 app.route("/v1", api);
 
