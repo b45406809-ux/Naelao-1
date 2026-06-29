@@ -36,6 +36,44 @@ This is the active plan. If anything further down conflicts, this wins.
 6. **Launchpad SpaceType (§11)** is defined as data in
    `workers/agents/src/launchpad/spacetype.ts` (5 templates + core agent_definitions).
 
+### ⚠️ SPEC OVERRIDES — later appendixes supersede the early sections (verified top-to-bottom)
+These three were read wrong in earlier passes by trusting the *top* of the spec. The **bottom
+appendixes are authoritative** and override the early framing. Always confirm against these:
+
+7. **No community SpaceTypes — Naelao authors all of them** (spec byte ~896493:
+   *"Space Types are exclusively authored by Naelao. Community developers publish Apps or Space
+   Templates instead."*). Model = **Naelao builds SpaceType → builder configures a product →
+   users interact**. The early `createSpace` "community types from apps-registry" branch is dead.
+   The authoritative provisioner is the **10-step transactional one at byte ~899k** (manifest from
+   `SpaceTypeRegistryDO`, cached in KV, rollback on failure, Space Assistant init) — NOT the early
+   inline version and NOT a separate provisioning queue.
+
+8. **Agents are SCRIPT-NATIVE — the bottom appendix "Script-First General Agent Architecture"
+   (byte ~6672k) is authoritative and overrides the early NaelaoAgentDO / ReAct / hardcoded-tools
+   framing.** Load-bearing facts:
+   - The agent's **entire tool surface is 6 ops**: `script.create / read / update / delete / find /
+     run`. **Nothing else is hardcoded** — no browser/email/MCP/file tool. Every capability is a
+     **script in a library** (Voyager / CodeAct). Loop: `OBSERVE → FINGERPRINT → FIND → GATE →
+     EXECUTE → VERIFY → DISTILL`; the model only wakes for DIAGNOSE/REASON/DISTILL.
+   - **MCP is the `mcp-connector` prebuilt script** (`mcp.register/call/list_tools`), not a hardcoded
+     integration. (MCP Apps marketplace is ON HOLD — agents reach MCP through this script later.)
+   - **Channels, heartbeats, notifications are scripts** (`notifications` prebuilt). Space Assistant
+     = same engine + channel/heartbeat scripts. **Threads** become a default read/run-only script
+     that cannot be removed (same pattern as other built-in features).
+   - **An agent is defined by 4 R2 files** — `agents.md`, `system-prompt.md`, `scripts.json`,
+     `skills.json` — under `spaces/{spaceId}/agents/{agentId}/`. NOT a DB row. Composed via
+     **Profiles** (Default Naelao Agent, Code, Browser, Vertical Niche, Cowork Desktop, Marketplace).
+   - **Skill library** in R2 (`spaces/{spaceId}/scripts/{name}/SCRIPT.md + code.ts + versions/`),
+     versioned, with embeddings in **Vectorize** for `script.find`. **Execution ladder** Tier 1–5
+     (R2 / V8 isolate / npm / CF Browser / Container), auto-routed per script `requires_tier`.
+   - The engine lives **inside `NaelaoAgentDO`** as a behavior module (`workers/agents/src/script-engine/`).
+   - `SpaceDO.agent_definitions` (added in an earlier pass) models the **early** layer; repurpose it
+     as the *space-level installed-scripts registry index*, not agent behavior.
+
+9. **Lemon Squeezy is PRIMARY billing, Stripe is "future"** (Appendix H, byte ~2261k):
+   provider-agnostic `BillingProvider` interface + `NormalizedBillingEvent`. Launchpad's order
+   trigger is a **Lemon Squeezy webhook**, not Stripe.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

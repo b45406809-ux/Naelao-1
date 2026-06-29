@@ -146,6 +146,68 @@ into `NaelaoAgentDO`:
 
 ---
 
+## A1.7 Authoritative reconciliation — Script-First is the agent model (not an addition)
+
+> **Correction (this pass).** Earlier passes (and an earlier version of this appendix) framed the
+> script-first engine as an *addition* layered on a ReAct/hardcoded-tools `NaelaoAgentDO`. Reading
+> the spec top-to-bottom, the **bottom appendix "Script-First General Agent Architecture" (byte
+> ~6672k) is authoritative** and *replaces* the early agent framing. It is the agent model, not an
+> add-on. This section records the binding facts; the engine is implemented in
+> `workers/agents/src/script-engine/`.
+
+**The 6-op tool surface (complete).** `script.create(name, code, metadata)`, `script.read(name)`,
+`script.update(name, patch, reason)`, `script.delete(name)`, `script.find(query, fingerprint?)`,
+`script.run(name, params)`. There are **no** other hardcoded tools. Browser, filesystem, API,
+container, comms and MCP are **scripts**, not built-ins.
+
+**The loop.** `OBSERVE → FINGERPRINT → FIND → GATE → EXECUTE → VERIFY → DISTILL`. The reasoning
+model participates only in GATE→DIAGNOSE/REASON and DISTILL. OBSERVE/FINGERPRINT are themselves
+scripts. Escalation ladder L1 (run match) → L2 (cheap patch) → L3 (re-derive) → L4 (live reason +
+distill). Token spend scales with novelty, trending toward ~0 as the library matures.
+
+**Skill library (R2).** `spaces/{spaceId}/scripts/{name}/` → `SCRIPT.md` (current metadata),
+`code.ts` (current code), `versions/v{n}.ts` + `v{n}.meta.json` (full history, never overwritten).
+`ScriptMetadata` carries identity, retrieval (`description`, `embedding_vector`, `tags`),
+preconditions (`fingerprint_schema`, `preconditions`), `parameters`, `calls` (skill graph),
+`requires_tier`, and health (`success_count`, `failure_count`, `patch_history`, `stability_score`).
+
+**`script.find`.** Embed query → Vectorize ANN (top-K 10) → filter by `fingerprint_schema`
+compatibility + `domain` → sort by `stability_score × semantic_similarity` → top 3 with confidence.
+Confidence < 0.5 ⇒ treat as no match ⇒ Level 4. This is Naelao's native "skill that finds skills".
+
+**Execution ladder (auto-routed by `requires_tier`).** T1 direct R2 (file ops, fingerprint reads);
+T2 V8 isolate / Dynamic Worker (TS, HTTP fetch, web-search, call_api); T3 npm (isolate + package
+resolution); T4 CF Browser Rendering (DOM, click/fill/screenshot — via `naelao-browser` proxy,
+agents never get raw CDP); T5 Container / SandboxDO (Python, bash, native bins, multi-container via
+`mountBucket`). The agent calls `script.run`; the orchestrator picks the tier.
+
+**Agent config = 4 R2 files** under `spaces/{spaceId}/agents/{agentId}/`: `agents.md` (identity +
+behavioral/escalation rules), `system-prompt.md` (role/domain/tone), `scripts.json`
+(`prebuilt[]`, `space_scripts[]`, `agent_scripts:"auto"`, `startup_observe`), `skills.json`
+(SKILL.md knowledge docs loaded into context). **Profiles** compose these: Default Naelao Agent,
+Code, Browser, Vertical Niche, Cowork Desktop, Community/Marketplace.
+
+**Prebuilt catalogue.** Infra: `r2-workspace`, `sandbox-container`, `dynamic-workflow`,
+`sub-agent`. Browser: `browser-use`, `vision-delegate`. Data/compute: `web-search`, `code-exec`,
+`knowledge-base`, `file-manager`. Comms: `notifications`, `mcp-connector`. Launchpad subset
+(this build, MCP/browser deferred): `r2-workspace`, `web-search`, `file-manager`, `knowledge-base`,
+`notifications`, `sub-agent`, `dynamic-workflow`.
+
+**MCP without hardcoded tools.** `mcp-connector` script: `mcp.register(server_url, auth)` then
+`mcp.call(server, tool, params)` / `mcp.list_tools(server)`. Every Naelao App (MCP server + UI)
+becomes available to any agent through this one script — no platform changes. **On hold this pass.**
+
+**No community SpaceTypes.** SpaceTypes are Naelao-authored only (spec byte ~896493). Community
+publishes **Apps** (MCP) or **Space Templates**. Provisioning is the **10-step transactional
+provisioner** (byte ~899k): manifest from `SpaceTypeRegistryDO` (KV-cached) → init SpaceDO → platform
+DOs → R2 prefixes → space-type init → workflow templates → external portal → custom (n/a, community
+retired) → **Space Assistant init** → record install; rollback via `deprovisionSpace` on any failure.
+
+**Billing.** Lemon Squeezy primary, Stripe future (Appendix H, byte ~2261k); provider-agnostic
+`BillingProvider` + `NormalizedBillingEvent`. Launchpad order trigger = Lemon Squeezy webhook.
+
+---
+
 ## A1.6 Cross-reference
 
 - Engine/manifest narrative: `docs/LAUNCHPAD_ARCHITECTURE.md`
