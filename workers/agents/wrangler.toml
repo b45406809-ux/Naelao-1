@@ -60,6 +60,19 @@ image = "./Dockerfile.toolsandbox"
 max_instances = 5
 # instance_type = "basic"   # bump for heavier build/test workloads
 
+# Script-first engine (authoritative agent model; spec appendix ~6672k):
+# skill library + agent 4-file config + agent workspace, all keyed by space.
+# Layout: spaces/{spaceId}/scripts/..., spaces/{spaceId}/agents/..., spaces/{spaceId}/workspace/...
+[[r2_buckets]]
+binding = "SCRIPTS_R2"
+bucket_name = "naelao-agent-scripts"
+
+# Vectorize index for script.find semantic search (spec §16). Optional — the engine
+# degrades to a tag/text scan when absent.
+[[vectorize]]
+binding = "SCRIPTS_VECTORIZE"
+index_name = "naelao-agent-scripts"
+
 [[workflows]]
 name = "AgentTaskWorkflow"
 class_name = "AgentTaskWorkflow"
@@ -87,6 +100,10 @@ service = "naelao-spaces"
 [[services]]
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
+
+[[services]]
+binding = "NOTIFICATIONS_WORKER"
+service = "naelao-notifications"
 
 [vars]
 ENVIRONMENT = "development"

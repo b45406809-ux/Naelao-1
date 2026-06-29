@@ -5,13 +5,20 @@ import {
   LAUNCHPAD_CORE_AGENTS,
   agentsForTemplate,
 } from "../../agents/src/launchpad/spacetype.js";
+import {
+  writeAgentConfig,
+  launchpadAgentToProfile,
+  DEFAULT_NAELAO_AGENT,
+} from "../../agents/src/script-engine/index.js";
 
 interface Env {
   ENVIRONMENT: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
   SPACES_KV: KVNamespace;
-  SPACES_WORKER: Fetcher; // Service binding to naelao-spaces (for SpaceDO agent_definitions)
+  SPACES_WORKER: Fetcher; // Service binding to naelao-spaces (for SpaceDO agent_definitions registry index)
+  /** Skill library / agent-config R2 bucket (script-first engine — the authoritative agent model). */
+  SCRIPTS_R2: R2Bucket;
 }
 
 interface ProvisionMessage {
@@ -30,58 +37,85 @@ function validateEnv(env: Env): void {
 }
 
 /**
- * Install Launchpad agent_definitions into the space's SpaceDO.
- * Called during provisioning when spaceTypeId === 'launchpad'.
- * Per spec §11 and CLAUDE.md: SpaceDO owns agent_definitions.
+ * Install Launchpad agents into a new space (authoritative agent model — spec appendix
+ * ~6672k). For each agent we:
+ *   1. Write the four R2 config files (agents.md, system-prompt.md, scripts.json,
+ *      skills.json) from its profile — THIS is what actually defines the agent the
+ *      script-first engine loads (agent-config.ts / profiles.ts).
+ *   2. Register the agent in SpaceDO `agent_definitions` as the space-level registry
+ *      INDEX (repurposed per CLAUDE.md #8 — index of installed agents, not behavior).
+ * Every space also gets the Default Naelao Agent (spec §15).
  */
-async function installLaunchpadAgentDefs(
+async function installLaunchpadAgents(
   spaceId: string,
   tenantId: string,
   templateId: string | undefined,
   env: Env
 ): Promise<void> {
-  // Resolve which agents to install: template-specific subset, or all core agents
-  const agentsToInstall = templateId
-    ? agentsForTemplate(templateId)
-    : LAUNCHPAD_CORE_AGENTS;
+  // Resolve which agents to install: template-specific subset, or all core agents.
+  const agentsToInstall = templateId ? agentsForTemplate(templateId) : LAUNCHPAD_CORE_AGENTS;
+
+  // Default Naelao Agent — shipped to every space (spec §15).
+  await writeAgentConfig(env.SCRIPTS_R2, spaceId, DEFAULT_NAELAO_AGENT.agentId, DEFAULT_NAELAO_AGENT.config);
+  await registerAgentIndex(spaceId, tenantId, DEFAULT_NAELAO_AGENT.agentId, "Naelao Agent", "General-purpose agent", null, env);
 
   for (const agentDef of agentsToInstall) {
-    const payload = {
-      id: `${spaceId}:${agentDef.id}`,
-      space_id: spaceId,
-      name: agentDef.name,
-      description: agentDef.description,
-      config: {
-        system_prompt: agentDef.system_prompt,
-        model: agentDef.model,
-        allowed_skills: agentDef.allowed_skills,
-        trigger: agentDef.trigger,
-        requires_approval_for: agentDef.requires_approval_for,
-        max_spend_per_action_usd: agentDef.max_spend_per_action_usd,
-        resource_tier: agentDef.resource_tier,
-        spacetype_id: "launchpad",
-        template_id: templateId ?? null,
-      },
-    };
+    // 1. Write the four R2 config files from the agent's profile.
+    const profile = launchpadAgentToProfile(agentDef);
+    await writeAgentConfig(env.SCRIPTS_R2, spaceId, profile.agentId, profile.config);
 
-    const resp = await env.SPACES_WORKER.fetch(
-      new Request(`http://spaces-worker/spaces/${spaceId}/agent-definitions`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-naelao-tenant-id": tenantId,
-          "x-naelao-internal": "provisioner",
-        },
-        body: JSON.stringify(payload),
-      })
+    // 2. Register in the SpaceDO registry index.
+    await registerAgentIndex(
+      spaceId,
+      tenantId,
+      profile.agentId,
+      agentDef.name,
+      agentDef.description,
+      templateId ?? null,
+      env
     );
+  }
+}
 
-    if (!resp.ok) {
-      const err = await resp.text();
-      throw new Error(
-        `Failed to install agent_definition '${agentDef.id}' into space '${spaceId}': ${err}`
-      );
-    }
+/** Register an installed agent in SpaceDO `agent_definitions` as a lightweight index row. */
+async function registerAgentIndex(
+  spaceId: string,
+  tenantId: string,
+  agentId: string,
+  name: string,
+  description: string,
+  templateId: string | null,
+  env: Env
+): Promise<void> {
+  const payload = {
+    id: `${spaceId}:${agentId}`,
+    space_id: spaceId,
+    name,
+    description,
+    config: {
+      // Index only — the behavior lives in the 4 R2 files. We record where to find it.
+      agent_id: agentId,
+      config_path: `spaces/${spaceId}/agents/${agentId}/`,
+      spacetype_id: "launchpad",
+      template_id: templateId,
+    },
+  };
+
+  const resp = await env.SPACES_WORKER.fetch(
+    new Request(`http://spaces-worker/spaces/${spaceId}/agent-definitions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal": "provisioner",
+      },
+      body: JSON.stringify(payload),
+    })
+  );
+
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error(`Failed to register agent '${agentId}' in space '${spaceId}': ${err}`);
   }
 }
 
@@ -129,9 +163,10 @@ async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
     now
   ).run();
 
-  // Step 5: Install SpaceType-specific agent_definitions into SpaceDO
+  // Step 5: Install SpaceType agents — write the 4 R2 config files (the agent definition
+  // the script-first engine loads) + register each in the SpaceDO index.
   if (spaceTypeId === "launchpad") {
-    await installLaunchpadAgentDefs(spaceId, tenantId, templateId, env);
+    await installLaunchpadAgents(spaceId, tenantId, templateId, env);
   }
 
   // Step 6: Mark space as active

@@ -14,6 +14,19 @@ export interface Env {
   PLATFORM_DB: D1Database;
   SPACE_DO: DurableObjectNamespace<SpaceDO>;
   EXPORTS_BUCKET: R2Bucket;
+  /** Producer to the provisioning queue — consumed by naelao-provisioner. */
+  PROVISION_QUEUE?: Queue<ProvisionMessage>;
+}
+
+/** Message enqueued on space creation; consumed by the provisioner (installs agents etc.). */
+interface ProvisionMessage {
+  type: "space_provision" | "space_deprovision";
+  spaceId: string;
+  tenantId: string;
+  spaceTypeId: string;
+  spaceName: string;
+  templateId?: string;
+  requestedAt: string;
 }
 
 // Plan-tier space limits (G-I13: quota enforcement)
@@ -154,6 +167,8 @@ app.post("/spaces", async (c) => {
   const body = await c.req.json<{
     name: string;
     spacetype_id: string;
+    /** For Launchpad: the selected product template (e.g. "creator-store"). */
+    template_id?: string;
     config_overrides?: Record<string, unknown>;
   }>();
 
@@ -201,23 +216,48 @@ app.post("/spaces", async (c) => {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
 
+  // Persist the selected template in config so the space record is self-describing.
+  const configJson = JSON.stringify({
+    ...(body.config_overrides ?? {}),
+    ...(body.template_id ? { template_id: body.template_id } : {}),
+  });
+
+  // Create as 'provisioning'; the provisioner installs agents (4 R2 config files), then
+  // flips the space to 'active'. Falls back to immediate 'active' if no queue is bound
+  // (e.g. local dev without the provisioning queue).
+  const initialStatus = c.env.PROVISION_QUEUE ? "provisioning" : "active";
+
   await c.env.PLATFORM_DB.prepare(
     `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, created_at, updated_at, created_by)
-     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       id,
       tenantId,
       body.spacetype_id,
       body.name,
-      JSON.stringify(body.config_overrides ?? {}),
+      initialStatus,
+      configJson,
       now,
       now,
       userId
     )
     .run();
 
-  return c.json({ id, name: body.name, status: "active", created_at: now }, 201);
+  // Enqueue provisioning (installs SpaceType agents, KB, welcome message, Space Assistant).
+  if (c.env.PROVISION_QUEUE) {
+    await c.env.PROVISION_QUEUE.send({
+      type: "space_provision",
+      spaceId: id,
+      tenantId,
+      spaceTypeId: body.spacetype_id,
+      spaceName: body.name,
+      ...(body.template_id ? { templateId: body.template_id } : {}),
+      requestedAt: now,
+    });
+  }
+
+  return c.json({ id, name: body.name, status: initialStatus, created_at: now }, 201);
 });
 
 // ── GET /spaces/:id ─────────────────────────────────────────────────────────

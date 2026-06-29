@@ -46,3 +46,9 @@ database_id = "PLACEHOLDER_D1_ID"
 [[r2_buckets]]
 binding = "EXPORTS_BUCKET"
 bucket_name = "naelao-exports"
+
+# Producer to the provisioning queue — on space creation we enqueue a space_provision
+# message; naelao-provisioner consumes it and installs the SpaceType's agents.
+[[queues.producers]]
+binding = "PROVISION_QUEUE"
+queue = "naelao-provisioning-queue"

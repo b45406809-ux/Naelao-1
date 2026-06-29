@@ -12,6 +12,13 @@ import type { LlmTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
+import {
+  ScriptToolSurface,
+  runScriptLoop,
+  loadAgentConfig,
+  type ScriptEngineEnv,
+} from "../script-engine/index.js";
+import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
 
 // ── G-AZ01: Agent FSM states and valid transitions ───────────────────────────
 
@@ -743,6 +750,18 @@ export interface AgentDOEnv {
   SPACES_WORKER: Fetcher;
   HITL_APPROVAL_DO?: DurableObjectNamespace; // G-AY01: optional — HITL support
   ANALYTICS?: AnalyticsEngineDataset;         // G-AZ09: unit economics tracking
+  // ── Script-first engine bindings (authoritative agent model; spec appendix ~6672k) ──
+  /** R2 bucket holding the skill library + agent config + workspace. */
+  SCRIPTS_R2?: R2Bucket;
+  /** Vectorize index for script.find (optional — engine degrades to text scan). */
+  SCRIPTS_VECTORIZE?: VectorizeIndex;
+  /** Workers AI — embeddings for script.find and free-tier reasoning. */
+  AI?: Ai;
+  /** Notifications worker — owner/customer notifications + HITL surface. */
+  NOTIFICATIONS_WORKER?: Fetcher;
+  /** AI Gateway identity (spec §15). */
+  NAELAO_ACCOUNT_ID?: string;
+  NAELAO_GATEWAY_ID?: string;
 }
 
 export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
@@ -893,6 +912,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return this.handleRun(request);
       }
 
+      // POST /script/run — script-first loop (authoritative agent model)
+      if (method === "POST" && url.pathname === "/script/run") {
+        return this.handleScriptRun(request);
+      }
+
       // POST /cancel — cancel all active runs for this DO
       if (method === "POST" && url.pathname === "/cancel") {
         return this.handleCancelAll();
@@ -1025,6 +1049,78 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         "Agent timeout",
         now,
         row.id
+      );
+    }
+  }
+
+  // ── POST /script/run ────────────────────────────────────────────────────────
+  // The authoritative script-first agent model (spec appendix ~6672k). Loads the agent's
+  // 4-file config from R2, then runs OBSERVE→FINGERPRINT→FIND→GATE→EXECUTE→VERIFY→DISTILL.
+
+  private buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string): ScriptEngineEnv | null {
+    if (!this.env.SCRIPTS_R2) return null;
+    const env: ScriptEngineEnv = {
+      scriptsBucket: this.env.SCRIPTS_R2,
+      spaceId,
+      agentId,
+      tenantId,
+    };
+    if (this.env.SCRIPTS_VECTORIZE) {
+      env.vectorIndex = this.env.SCRIPTS_VECTORIZE as unknown as NonNullable<ScriptEngineEnv["vectorIndex"]>;
+    }
+    if (this.env.AI) env.embedder = new WorkersAIEmbedder(this.env.AI);
+    if (this.env.KNOWLEDGE_WORKER) env.knowledgeWorker = this.env.KNOWLEDGE_WORKER;
+    if (this.env.SPACES_WORKER) env.spacesWorker = this.env.SPACES_WORKER;
+    if (this.env.NOTIFICATIONS_WORKER) env.notificationsWorker = this.env.NOTIFICATIONS_WORKER;
+    return env;
+  }
+
+  private async handleScriptRun(request: Request): Promise<Response> {
+    const body = await request.json<{
+      goal: string;
+      spaceId: string;
+      agentId: string;
+      tenantId: string;
+      apiKey: string;
+      model?: string;
+    }>();
+
+    if (!body.goal || !body.spaceId || !body.agentId) {
+      return Response.json({ error: "goal, spaceId, and agentId are required" }, { status: 400 });
+    }
+
+    const engineEnv = this.buildScriptEngineEnv(body.spaceId, body.agentId, body.tenantId ?? "");
+    if (!engineEnv) {
+      return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
+    }
+
+    // Load the agent's 4-file config; without it the agent is not provisioned.
+    const config = await loadAgentConfig(engineEnv.scriptsBucket, body.spaceId, body.agentId);
+    if (!config) {
+      return Response.json({ error: `agent '${body.agentId}' is not provisioned in space '${body.spaceId}'` }, { status: 404 });
+    }
+
+    const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
+    const reasoner = new GatewayReasoner({
+      apiKey: body.apiKey,
+      gateway: {
+        accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder",
+        gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
+      },
+      ctx: { spaceId: body.spaceId, agentId: body.agentId, model: body.model ?? "claude-haiku-4-5-20251001" },
+      ...(body.model ? { model: body.model } : {}),
+    });
+
+    try {
+      const result = await runScriptLoop(engineEnv, tools, reasoner, config.scripts.prebuilt, {
+        goal: body.goal,
+        startupObserve: config.scripts.startup_observe,
+      });
+      return Response.json(result);
+    } catch (err) {
+      return Response.json(
+        { error: err instanceof Error ? err.message : String(err) },
+        { status: 500 }
       );
     }
   }
