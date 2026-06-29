@@ -1,4 +1,9 @@
 // Stripe Meters API calls, proration, subscription lifecycle helpers
+//
+// Provider-agnostic billing (spec Appendix H): Lemon Squeezy is the primary provider,
+// Stripe is a future addition. See ./providers. The Stripe helpers below remain for
+// usage-metering until the Stripe BillingProvider lands.
+export * from "./providers/index.js";
 
 export interface StripeConfig {
   secretKey: string;
