@@ -1,13 +1,17 @@
 // G-Q01: Space Provisioning Queue Worker — handles space_provision and space_deprovision messages
 import { Hono } from "hono";
 import { errorResponse, requestId } from "@naelao/http";
+import {
+  LAUNCHPAD_CORE_AGENTS,
+  agentsForTemplate,
+} from "../../agents/src/launchpad/spacetype.js";
 
 interface Env {
   ENVIRONMENT: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
   SPACES_KV: KVNamespace;
-  SPACES_API_URL: string;
+  SPACES_WORKER: Fetcher; // Service binding to naelao-spaces (for SpaceDO agent_definitions)
 }
 
 interface ProvisionMessage {
@@ -16,6 +20,8 @@ interface ProvisionMessage {
   tenantId: string;
   spaceTypeId: string;
   spaceName: string;
+  /** For Launchpad: which template was selected (e.g. "creator-store") */
+  templateId?: string;
   requestedAt: string;
 }
 
@@ -23,8 +29,64 @@ function validateEnv(env: Env): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
 }
 
+/**
+ * Install Launchpad agent_definitions into the space's SpaceDO.
+ * Called during provisioning when spaceTypeId === 'launchpad'.
+ * Per spec §11 and CLAUDE.md: SpaceDO owns agent_definitions.
+ */
+async function installLaunchpadAgentDefs(
+  spaceId: string,
+  tenantId: string,
+  templateId: string | undefined,
+  env: Env
+): Promise<void> {
+  // Resolve which agents to install: template-specific subset, or all core agents
+  const agentsToInstall = templateId
+    ? agentsForTemplate(templateId)
+    : LAUNCHPAD_CORE_AGENTS;
+
+  for (const agentDef of agentsToInstall) {
+    const payload = {
+      id: `${spaceId}:${agentDef.id}`,
+      space_id: spaceId,
+      name: agentDef.name,
+      description: agentDef.description,
+      config: {
+        system_prompt: agentDef.system_prompt,
+        model: agentDef.model,
+        allowed_skills: agentDef.allowed_skills,
+        trigger: agentDef.trigger,
+        requires_approval_for: agentDef.requires_approval_for,
+        max_spend_per_action_usd: agentDef.max_spend_per_action_usd,
+        resource_tier: agentDef.resource_tier,
+        spacetype_id: "launchpad",
+        template_id: templateId ?? null,
+      },
+    };
+
+    const resp = await env.SPACES_WORKER.fetch(
+      new Request(`http://spaces-worker/spaces/${spaceId}/agent-definitions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal": "provisioner",
+        },
+        body: JSON.stringify(payload),
+      })
+    );
+
+    if (!resp.ok) {
+      const err = await resp.text();
+      throw new Error(
+        `Failed to install agent_definition '${agentDef.id}' into space '${spaceId}': ${err}`
+      );
+    }
+  }
+}
+
 async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
-  const { spaceId, tenantId, spaceTypeId, spaceName } = msg;
+  const { spaceId, tenantId, spaceTypeId, spaceName, templateId } = msg;
   const now = new Date().toISOString();
 
   // Step 1: Mark space as provisioning
@@ -50,7 +112,7 @@ async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
 
   const config = spaceType ? JSON.parse(spaceType.config_json) as Record<string, unknown> : {};
 
-  // Step 4: Write default welcome message to D1 (the SpaceDO will load it on first access)
+  // Step 4: Write default welcome message to D1
   const welcomeMessageId = crypto.randomUUID();
   const welcomeContent = typeof config["welcome_message"] === "string"
     ? config["welcome_message"]
@@ -67,7 +129,12 @@ async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
     now
   ).run();
 
-  // Step 5: Mark space as active
+  // Step 5: Install SpaceType-specific agent_definitions into SpaceDO
+  if (spaceTypeId === "launchpad") {
+    await installLaunchpadAgentDefs(spaceId, tenantId, templateId, env);
+  }
+
+  // Step 6: Mark space as active
   await env.PLATFORM_DB.prepare(
     "UPDATE spaces SET status = 'active', updated_at = ? WHERE id = ? AND tenant_id = ?"
   ).bind(now, spaceId, tenantId).run();

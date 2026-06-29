@@ -416,6 +416,56 @@ app.post("/spaces/:spaceId/me/injection", async (c) => {
   return c.json(result, doRes.status as 200 | 400);
 });
 
+// ── SpaceDO agent_definitions proxy ─────────────────────────────────────────
+// Forward /spaces/:spaceId/agent-definitions* to the SpaceDO.
+// Per spec §11 and CLAUDE.md: SpaceDO owns agent_definitions.
+app.all("/spaces/:spaceId/agent-definitions*", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+
+  const doId = c.env.SPACE_DO.idFromName(
+    await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET)
+  );
+  const stub = c.env.SPACE_DO.get(doId);
+
+  const url = new URL(c.req.url);
+  const doPath = url.pathname.replace(`/spaces/${spaceId}`, "");
+  const doUrl = new URL(doPath + url.search, "http://space-do");
+
+  return stub.fetch(
+    new Request(doUrl.toString(), {
+      method: c.req.method,
+      headers: c.req.raw.headers,
+      body: c.req.raw.body,
+    })
+  );
+});
+
+// ── SpaceDO members proxy ────────────────────────────────────────────────────
+app.all("/spaces/:spaceId/members*", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+
+  const doId = c.env.SPACE_DO.idFromName(
+    await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET)
+  );
+  const stub = c.env.SPACE_DO.get(doId);
+
+  const url = new URL(c.req.url);
+  const doPath = url.pathname.replace(`/spaces/${spaceId}`, "");
+  const doUrl = new URL(`${doPath}?space_id=${spaceId}${url.search ? "&" + url.search.slice(1) : ""}`, "http://space-do");
+
+  return stub.fetch(
+    new Request(doUrl.toString(), {
+      method: c.req.method,
+      headers: c.req.raw.headers,
+      body: c.req.raw.body,
+    })
+  );
+});
+
 // ── SpaceDO session proxy ────────────────────────────────────────────────────
 // Forward /spaces/:spaceId/sessions/* to the SpaceDO for that space
 app.all("/spaces/:spaceId/sessions*", async (c) => {

@@ -179,7 +179,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.param("sessionId");
 
-  const body = await c.req.json<{ goal: string }>();
+  const body = await c.req.json<{ goal: string; agent_definition_id?: string }>();
   if (!body.goal || typeof body.goal !== "string") {
     throw badRequest("goal is required and must be a string");
   }
@@ -265,10 +265,61 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     toolsConfig = [];
   }
 
-  // Resolve system prompt template
-  const systemPrompt =
+  // Resolve system prompt: agent_definition_id overrides SpaceType-level config (§11)
+  let systemPrompt =
     spaceTypeRow.system_prompt_template ??
     "You are a helpful assistant. Answer the user's questions accurately and concisely.";
+
+  if (body.agent_definition_id) {
+    try {
+      const defResp = await c.env.SPACES_WORKER.fetch(
+        new Request(
+          `http://spaces-worker/spaces/${spaceId}/agent-definitions/${encodeURIComponent(body.agent_definition_id)}`,
+          {
+            method: "GET",
+            headers: {
+              "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal": "agents",
+            },
+          }
+        )
+      );
+      if (defResp.ok) {
+        const defData = await defResp.json<{
+          data?: {
+            config_json?: string;
+            config?: {
+              system_prompt?: string;
+              model?: string;
+              allowed_skills?: string[];
+            };
+          };
+        }>();
+        const def = defData.data;
+        if (def) {
+          const defConfig =
+            def.config ??
+            (def.config_json ? (safeParse(def.config_json) as typeof def.config) : undefined);
+          if (defConfig?.system_prompt) {
+            systemPrompt = defConfig.system_prompt;
+          }
+          if (defConfig?.model) {
+            modelConfig = { ...modelConfig, model: defConfig.model };
+          }
+          if (defConfig?.allowed_skills && defConfig.allowed_skills.length > 0) {
+            // Filter toolsConfig to only skills the agent is allowed to use
+            const allowed = new Set(defConfig.allowed_skills);
+            if (toolsConfig.length > 0) {
+              toolsConfig = toolsConfig.filter((t) => allowed.has(t.name));
+            }
+          }
+        }
+      }
+    } catch {
+      // agent_definition resolution is best-effort; fall back to SpaceType config
+      console.warn(`[agents] Failed to resolve agent_definition_id=${body.agent_definition_id}, using SpaceType defaults`);
+    }
+  }
 
   // Fetch KB context from knowledge worker (G-D04)
   let kbContext = "";

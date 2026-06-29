@@ -112,6 +112,70 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 7,
+    // SpaceDO owns agent_definitions per spec §11 / CLAUDE.md direction.
+    // Each definition is the config for one installed agent (system_prompt, model, skills, triggers).
+    description: "agent_definitions table",
+    up: `
+      CREATE TABLE IF NOT EXISTS agent_definitions (
+        id               TEXT PRIMARY KEY,
+        space_id         TEXT NOT NULL,
+        name             TEXT NOT NULL,
+        description      TEXT NOT NULL DEFAULT '',
+        config_json      TEXT NOT NULL DEFAULT '{}',
+        version          INTEGER NOT NULL DEFAULT 1,
+        enabled          INTEGER NOT NULL DEFAULT 1,
+        created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_defs_space ON agent_definitions(space_id);
+    `,
+  },
+  {
+    version: 8,
+    // threads and space_members: spec-canonical tables (SpaceDO owns threads + members).
+    // threads replaces the earlier "sessions" concept in the full spec; both coexist here.
+    description: "threads and space_members tables",
+    up: `
+      CREATE TABLE IF NOT EXISTS threads (
+        id         TEXT PRIMARY KEY,
+        space_id   TEXT NOT NULL,
+        user_id    TEXT,
+        project_id TEXT,
+        title      TEXT,
+        status     TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_threads_space ON threads(space_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_threads_project ON threads(project_id) WHERE project_id IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS space_members (
+        space_id   TEXT NOT NULL,
+        user_id    TEXT NOT NULL,
+        role       TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner','admin','editor','member','viewer')),
+        joined_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (space_id, user_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_members_user ON space_members(user_id);
+    `,
+  },
+  {
+    version: 9,
+    // billing credits table — SpaceDO owns per-space credit balance (spec §51 / CLAUDE.md)
+    description: "space_credits billing table",
+    up: `
+      CREATE TABLE IF NOT EXISTS space_credits (
+        space_id          TEXT PRIMARY KEY,
+        balance_credits   INTEGER NOT NULL DEFAULT 0,
+        daily_spent       INTEGER NOT NULL DEFAULT 0,
+        daily_limit       INTEGER NOT NULL DEFAULT 0,
+        last_reset_date   TEXT NOT NULL DEFAULT (date('now')),
+        updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -239,6 +303,44 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // POST /me/injection — G-AO17: record an injection attempt, return rate-limited status
       if (method === "POST" && url.pathname === "/me/injection") {
         return this.recordInjectionAttempt(request);
+      }
+
+      // ── agent_definitions endpoints ───────────────────────────────────────────
+      // GET /agent-definitions?space_id=
+      if (method === "GET" && url.pathname === "/agent-definitions") {
+        return this.listAgentDefinitions(url.searchParams);
+      }
+      // POST /agent-definitions
+      if (method === "POST" && url.pathname === "/agent-definitions") {
+        return this.createAgentDefinition(request);
+      }
+      // GET /agent-definitions/:id
+      const agentDefGetMatch = url.pathname.match(/^\/agent-definitions\/([^/]+)$/);
+      if (method === "GET" && agentDefGetMatch?.[1]) {
+        return this.getAgentDefinition(agentDefGetMatch[1]);
+      }
+      // PATCH /agent-definitions/:id
+      if (method === "PATCH" && agentDefGetMatch?.[1]) {
+        return this.updateAgentDefinition(agentDefGetMatch[1], request);
+      }
+      // DELETE /agent-definitions/:id
+      if (method === "DELETE" && agentDefGetMatch?.[1]) {
+        return this.deleteAgentDefinition(agentDefGetMatch[1]);
+      }
+
+      // ── space_members endpoints ───────────────────────────────────────────────
+      // GET /members?space_id=
+      if (method === "GET" && url.pathname === "/members") {
+        return this.listMembers(url.searchParams);
+      }
+      // POST /members
+      if (method === "POST" && url.pathname === "/members") {
+        return this.addMember(request);
+      }
+      // DELETE /members/:userId
+      const memberMatch = url.pathname.match(/^\/members\/([^/]+)$/);
+      if (method === "DELETE" && memberMatch?.[1]) {
+        return this.removeMember(memberMatch[1]);
       }
 
       return Response.json(
@@ -631,6 +733,154 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     console.log(`[gdpr][erasure] user=${userId} sessions=${sessionsDeleted} messages=${messagesDeleted} at=${erasedAt}`);
 
     return Response.json({ erased: true, sessions_deleted: sessionsDeleted, messages_deleted: messagesDeleted, erased_at: erasedAt });
+  }
+
+  // ── agent_definitions methods ────────────────────────────────────────────────
+
+  private listAgentDefinitions(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id");
+    interface AgentDefRow {
+      id: string; space_id: string; name: string; description: string;
+      config_json: string; version: number; enabled: number; created_at: string; updated_at: string;
+    }
+    const rows = spaceId
+      ? queryAll<AgentDefRow>(
+          this.ctx.storage.sql as never,
+          "SELECT * FROM agent_definitions WHERE space_id = ? ORDER BY created_at ASC",
+          spaceId
+        )
+      : queryAll<AgentDefRow>(
+          this.ctx.storage.sql as never,
+          "SELECT * FROM agent_definitions ORDER BY created_at ASC"
+        );
+    return Response.json({ data: rows.map(r => ({ ...r, config: JSON.parse(r.config_json) as unknown })) });
+  }
+
+  private async createAgentDefinition(request: Request): Promise<Response> {
+    const body = await request.json<{
+      id?: string;
+      space_id: string;
+      name: string;
+      description?: string;
+      config: Record<string, unknown>;
+    }>();
+    if (!body.space_id || !body.name || !body.config) {
+      return Response.json(
+        { error_code: "bad_request", message: "space_id, name, and config are required" },
+        { status: 400 }
+      );
+    }
+    const id = body.id ?? crypto.randomUUID();
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO agent_definitions (id, space_id, name, description, config_json, version, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         description = excluded.description,
+         config_json = excluded.config_json,
+         version = agent_definitions.version + 1,
+         updated_at = excluded.updated_at`,
+      id,
+      body.space_id,
+      body.name,
+      body.description ?? "",
+      JSON.stringify(body.config),
+      now,
+      now
+    );
+    return Response.json({ id, space_id: body.space_id, name: body.name, created_at: now }, { status: 201 });
+  }
+
+  private getAgentDefinition(id: string): Response {
+    interface AgentDefRow {
+      id: string; space_id: string; name: string; description: string;
+      config_json: string; version: number; enabled: number; created_at: string; updated_at: string;
+    }
+    const row = queryOne<AgentDefRow>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM agent_definitions WHERE id = ?",
+      id
+    );
+    if (!row) {
+      return Response.json({ error_code: "not_found", message: "Agent definition not found" }, { status: 404 });
+    }
+    return Response.json({ ...row, config: JSON.parse(row.config_json) as unknown });
+  }
+
+  private async updateAgentDefinition(id: string, request: Request): Promise<Response> {
+    const body = await request.json<{
+      name?: string;
+      description?: string;
+      config?: Record<string, unknown>;
+      enabled?: boolean;
+    }>();
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE agent_definitions SET
+         name        = COALESCE(?, name),
+         description = COALESCE(?, description),
+         config_json = COALESCE(?, config_json),
+         enabled     = COALESCE(?, enabled),
+         version     = version + 1,
+         updated_at  = ?
+       WHERE id = ?`,
+      body.name ?? null,
+      body.description ?? null,
+      body.config ? JSON.stringify(body.config) : null,
+      body.enabled !== undefined ? (body.enabled ? 1 : 0) : null,
+      now,
+      id
+    );
+    return Response.json({ id, updated_at: now });
+  }
+
+  private deleteAgentDefinition(id: string): Response {
+    execute(this.ctx.storage.sql as never, "DELETE FROM agent_definitions WHERE id = ?", id);
+    return Response.json({ deleted: true, id });
+  }
+
+  // ── space_members methods ────────────────────────────────────────────────────
+
+  private listMembers(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id");
+    interface MemberRow { space_id: string; user_id: string; role: string; joined_at: string; }
+    const rows = spaceId
+      ? queryAll<MemberRow>(
+          this.ctx.storage.sql as never,
+          "SELECT * FROM space_members WHERE space_id = ? ORDER BY joined_at ASC",
+          spaceId
+        )
+      : [];
+    return Response.json({ data: rows });
+  }
+
+  private async addMember(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id: string; user_id: string; role?: string }>();
+    if (!body.space_id || !body.user_id) {
+      return Response.json(
+        { error_code: "bad_request", message: "space_id and user_id are required" },
+        { status: 400 }
+      );
+    }
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO space_members (space_id, user_id, role, joined_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(space_id, user_id) DO UPDATE SET role = excluded.role`,
+      body.space_id,
+      body.user_id,
+      body.role ?? "member",
+      now
+    );
+    return Response.json({ space_id: body.space_id, user_id: body.user_id, role: body.role ?? "member" }, { status: 201 });
+  }
+
+  private removeMember(userId: string): Response {
+    execute(this.ctx.storage.sql as never, "DELETE FROM space_members WHERE user_id = ?", userId);
+    return Response.json({ deleted: true, user_id: userId });
   }
 
   // G-AO17: Record a prompt injection attempt for a user and check if they are now rate-limited.
