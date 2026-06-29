@@ -3,6 +3,42 @@
 ## What is Naelao
 A Cloudflare-native AI agent platform. Builders create SpaceTypes (blueprints) and configure Templates (no coding — builders select/configure only). End-users interact via Space shell. Designed for millions of builders and millions of Spaces.
 
+## ⭐ CURRENT DIRECTION — READ FIRST (supersedes older framing below)
+This is the active plan. If anything further down conflicts, this wins.
+
+1. **Build the ORIGINAL spec, not the niche.** The canonical spec is
+   `naelao_expanded_gaps_resolved.html` (6.8 MB). The smaller
+   `naelao_whop_businesses_spec.html` was written under the assumption we were only
+   shipping the Whop niche — that assumption is **abandoned**. We are building the whole
+   product as the original spec describes.
+2. **Script-native agents + Space Assistants are our ADDITION on top of the original
+   spec** — not a replacement. We keep the original spec's `NaelaoAgentDO` (the agent
+   runtime as its own DO) and `SpaceDO` (owns structure), and run our script-first engine
+   as the agent's *behavior* inside `NaelaoAgentDO`. These additions are documented in
+   **`docs/spec-appendix/A1-script-agents-and-space-assistants.md`** (keep it updated).
+3. **We start with the Launchpad SpaceType — but we build each component FULLY.** "Start
+   with Launchpad" scopes *which* components we touch (the ones Launchpad needs and things
+   related), NOT how completely we build them. If Launchpad needs `NaelaoAgentDO`, build
+   the whole `NaelaoAgentDO` properly — never a Launchpad-only stub. Same for `SpaceDO`,
+   provisioning, billing, etc. One SpaceType at a time; each part built as the spec says.
+4. **Architecture ground rules (the niche pass violated these — being corrected):**
+   - Agents are their **own DO** (`NaelaoAgentDO`), addressed `space:project:thread`.
+   - `SpaceDO` owns threads, members, sub-spaces, **`agent_definitions`**, billing.
+   - A **project is a grouping of threads within a space** — NOT a sub-space/workspace.
+   - SpaceType differences live in config / agent definitions / manifests — never DB tables.
+   - `BusinessDO` (a whop-niche monolith that re-implemented the agent loop + structure) is
+     being **decomposed/retired**: agent loop → `NaelaoAgentDO`, structure → `SpaceDO`,
+     script engine → a reusable behavior module.
+5. **HOW TO READ THE SPEC — critical.** The original spec is written top-to-bottom as a
+   running log: later sections contain **updates, appendixes, and fixes** that override
+   earlier ones. Before building anything (e.g. `SpaceDO`), search and read the **entire**
+   spec for that topic top-to-bottom — do NOT implement the first mention you find.
+6. **Launchpad SpaceType (§11)** is defined as data in
+   `workers/agents/src/launchpad/spacetype.ts` (5 templates + core agent_definitions).
+
+> **Keep this section current.** As direction evolves, update this block and the appendix,
+> and commit — future sessions rely on it.
+
 ## Critical Distinction
 - **SpaceType** = blueprint / product definition (what the Space IS)
 - **Template** = configurable selection a builder makes (no coding ever)
@@ -10,7 +46,7 @@ A Cloudflare-native AI agent platform. Builders create SpaceTypes (blueprints) a
 
 ## Stack
 - CF Workers (router, auth, spaces, agents, knowledge, billing, etc.)
-- CF Durable Objects + DO SQLite (SpaceDO, AgentDO, sessions, memory)
+- CF Durable Objects + DO SQLite (`SpaceDO` = structure/agent_definitions, `NaelaoAgentDO` = agent runtime, sessions, memory)
 - CF R2 (KB documents, exports, backups, artifacts)
 - CF Vectorize (KB semantic search — shared multi-tenant index with spaceId filter)
 - CF KV (circuit breakers, config cache, session revocation, portal routes)
@@ -57,8 +93,9 @@ DO hibernation kills ALL in-memory state — always persist to SQLite.
 - `tests/` — integration, e2e, contract, isolation, load tests
 
 ## Git
-Branch: `claude/naelao-missing-gaps-pass-713ruz`
-Commit after every working subsystem. Push after every commit.
+**Active branch: `claude/naelao-missing-gaps-pass-8vkakf`** — work here; do NOT push to any
+other branch without explicit permission. Commit after every working subsystem; push after
+every commit. (Older branch `...-713ruz` is superseded.)
 
 ## Build Progress
 - [x] Phase 0: Scaffold (root workspace, packages, workers structure)
@@ -82,8 +119,17 @@ Commit after every working subsystem. Push after every commit.
 - [x] All 14 packages: types, auth, db, http, rag, security, llm-gateway, config, crypto, logger, tracing, idempotency, webhooks, analytics-schema, entitlements, tool-runtime, billing-core, moderation, testing, client-sdk, agent-sdk
 
 ## Spec Reference
-Full gap specification: `/home/user/Naelao-1/naelao_expanded_gaps_resolved.html`
+**Canonical spec:** `/home/user/Naelao-1/naelao_expanded_gaps_resolved.html` (6.8 MB).
 2260+ numbered gaps (G-A01 through G-BE50). Each gap has:
 - The Gap: what is missing
 - Required Fix: exact implementation to build
 When implementing, cite the gap ID you are fulfilling.
+
+**Read it top-to-bottom for any topic** — later sections add updates/appendixes/fixes that
+override earlier ones (see CURRENT DIRECTION #5). It's a binary-matching file; use
+`grep -a` / `python3` to extract a section, and read the whole topic before coding.
+
+- `naelao_whop_businesses_spec.html` — the abandoned niche-only assumption. Do not build to it.
+- `docs/spec-appendix/A1-script-agents-and-space-assistants.md` — our additions (script
+  engine, Space Assistants, capability kernel, manifests). Keep current.
+- `docs/SPEC_HEADER_INDEX.md` — section index into the canonical spec.
