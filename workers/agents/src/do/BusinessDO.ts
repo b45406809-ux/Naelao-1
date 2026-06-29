@@ -40,6 +40,7 @@ import { SKILLS, skillsForTier, renderSkillsPrompt } from "../whop/skills.js";
 import { safetyFloor } from "../safety.js";
 import { getManifest } from "../launchpad/manifest.js";
 import { getAdapter, isChannelType } from "../launchpad/channels.js";
+import { resolveAnthropicUrl, resolveAnthropicHeaders, callWorkersAI, type AIClientContext, type LLMProvider } from "../shared/ai-client.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,8 @@ export interface ScriptRegistryEntry {
   fingerprint_schema: string;  // JSON schema the observe snapshot must match
   parameters: Array<{ name: string; type: string; required: boolean; default?: unknown }>;
   tier: 1 | 2 | 5;            // compute tier (1=R2, 2=isolate, 5=container)
+  /** Credential names required before L1 execution — captured via HITL if missing. */
+  required_credentials?: string[];
   success_count: number;
   failure_count: number;
   patch_history: Array<{ version: number; reason: string; timestamp: number; type: string }>;
@@ -87,6 +90,11 @@ interface BusinessRow { key: string; value: string }
 export interface BusinessDOEnv {
   PLATFORM_SECRET: string;
   WHOP_API_KEY: string;
+  // CF AI Gateway (spec §15) — set both for gateway routing; "placeholder" = direct.
+  NAELAO_ACCOUNT_ID?: string;
+  NAELAO_GATEWAY_ID?: string;
+  // CF Workers AI — for free-tier agents and sub-agent vision calls.
+  AI?: Ai;
   BUSINESS_R2: R2Bucket;
   ANALYTICS?: AnalyticsEngineDataset;
   HITL_APPROVAL_DO?: DurableObjectNamespace;
@@ -101,7 +109,8 @@ const MAX_SUBSPACE_DEPTH = 5;            // @2068786 — bound the sub-space tre
 const MAX_MESSAGE_BYTES = 256 * 1024;    // @2030468 — cap message content (no 10MB OOM)
 
 interface SubspaceRow { id: string; parent_id: string | null; name: string; manifest_id: string | null; depth: number; created_at: number }
-interface ThreadRow { id: string; subspace_id: string; title: string; created_at: number }
+interface ProjectRow { id: string; subspace_id: string; name: string; description: string | null; created_at: number }
+interface ThreadRow { id: string; subspace_id: string; project_id: string | null; title: string; created_at: number }
 
 interface ToolVersionRow {
   version: number;
@@ -158,22 +167,25 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
     // Script registry — flat, name-based (not Vectorize; deferred per §10)
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS scripts (
-        name              TEXT PRIMARY KEY,
-        description       TEXT NOT NULL DEFAULT '',
-        code              TEXT NOT NULL,
-        preconditions     TEXT NOT NULL DEFAULT '[]',
-        fingerprint_schema TEXT NOT NULL DEFAULT '{}',
-        parameters        TEXT NOT NULL DEFAULT '[]',
-        tier              INTEGER NOT NULL DEFAULT 2,
-        success_count     INTEGER NOT NULL DEFAULT 0,
-        failure_count     INTEGER NOT NULL DEFAULT 0,
-        patch_history     TEXT NOT NULL DEFAULT '[]',
-        last_used         INTEGER DEFAULT 0,
-        stability_score   REAL NOT NULL DEFAULT 1.0,
-        created_at        INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
-        updated_at        INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+        name                 TEXT PRIMARY KEY,
+        description          TEXT NOT NULL DEFAULT '',
+        code                 TEXT NOT NULL,
+        preconditions        TEXT NOT NULL DEFAULT '[]',
+        fingerprint_schema   TEXT NOT NULL DEFAULT '{}',
+        parameters           TEXT NOT NULL DEFAULT '[]',
+        tier                 INTEGER NOT NULL DEFAULT 2,
+        required_credentials TEXT NOT NULL DEFAULT '[]',
+        success_count        INTEGER NOT NULL DEFAULT 0,
+        failure_count        INTEGER NOT NULL DEFAULT 0,
+        patch_history        TEXT NOT NULL DEFAULT '[]',
+        last_used            INTEGER DEFAULT 0,
+        stability_score      REAL NOT NULL DEFAULT 1.0,
+        created_at           INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+        updated_at           INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
       )
     `);
+    // Migration: add required_credentials column to existing scripts tables.
+    try { this.ctx.storage.sql.exec(`ALTER TABLE scripts ADD COLUMN required_credentials TEXT NOT NULL DEFAULT '[]'`); } catch { /* already exists */ }
 
     // Action → outcome log (generic schema, not Whop-specific)
     this.ctx.storage.sql.exec(`
@@ -222,10 +234,8 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
       )
     `);
 
-    // Sub-space tree (the spec's Product → Sub-Spaces hierarchy). A "workspace"/
-    // "project" IS a sub-space. Each can carry its own assistant manifest. DO SQLite
-    // with ? placeholders (NOT Postgres — appendix flagged this repeatedly); parent_id
-    // is immutable; depth is enforced in code (appendix @2068786).
+    // Sub-space tree (the spec's Product → Sub-Spaces hierarchy). parent_id is
+    // immutable; depth is enforced in code (appendix @2068786).
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS subspaces (
         id          TEXT PRIMARY KEY,
@@ -237,15 +247,47 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
       );
       CREATE INDEX IF NOT EXISTS idx_subspace_parent ON subspaces(parent_id);
     `);
+
+    // Multi-user sub-space (spec §27): collaborators invited by the owner.
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS subspace_members (
+        id          TEXT PRIMARY KEY,
+        subspace_id TEXT NOT NULL REFERENCES subspaces(id),
+        user_id     TEXT NOT NULL,
+        role        TEXT NOT NULL DEFAULT 'member',
+        invited_by  TEXT,
+        joined_at   INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+        UNIQUE (subspace_id, user_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_ssmember_ss ON subspace_members(subspace_id);
+    `);
+
+    // Projects layer (spec §27/§33): Sub-Space → Project → Thread.
+    // One SandboxDO per project (shared container across all threads in the project).
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS projects (
+        id          TEXT PRIMARY KEY,
+        subspace_id TEXT NOT NULL REFERENCES subspaces(id),
+        name        TEXT NOT NULL,
+        description TEXT,
+        created_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      );
+      CREATE INDEX IF NOT EXISTS idx_proj_ss ON projects(subspace_id);
+    `);
+
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS threads (
         id          TEXT PRIMARY KEY,
         subspace_id TEXT NOT NULL REFERENCES subspaces(id),
+        project_id  TEXT REFERENCES projects(id),
         title       TEXT NOT NULL DEFAULT 'New thread',
         created_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
       );
       CREATE INDEX IF NOT EXISTS idx_thread_subspace ON threads(subspace_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_thread_project  ON threads(project_id);
     `);
+    // Migration: add project_id to existing threads tables.
+    try { this.ctx.storage.sql.exec(`ALTER TABLE threads ADD COLUMN project_id TEXT REFERENCES projects(id)`); } catch { /* already exists */ }
     // Thread messages — ORDER BY created_at,id on read (appendix @2028732: out-of-order
     // render without it). Content size is capped at insert (appendix @2030468: a 10MB
     // message OOMs the DO).
@@ -309,6 +351,36 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
     );
   }
 
+  // ── LLM routing (spec §15) ───────────────────────────────────────────────
+  //
+  // Resolves where to send model calls.  Default: platform Anthropic via CF AI
+  // Gateway (tracking, caching, rate-limits).  Free-tier / override: CF Workers AI.
+  // BYOK: user's own Anthropic key fetched from credentials worker (future).
+
+  private getLLMUrl(apiKey: string, ctx?: AIClientContext): { url: string; headers: Record<string, string> } {
+    const provider = (this.getCfg("llm_provider") ?? "platform") as LLMProvider;
+    const opts = {
+      accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder",
+      gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
+    };
+    const uid = this.getCfg("user_id") ?? undefined;
+    const aid = this.getCfg("template_id") ?? undefined;
+    const effectiveCtx: AIClientContext = {
+      spaceId: this.getCfg("user_id") ?? "unknown",
+      ...(uid !== undefined ? { userId: uid } : {}),
+      ...(aid !== undefined ? { agentId: aid } : {}),
+      ...ctx,
+    };
+    // cf-workers-ai uses the AI binding, not a fetch URL — handled at call site
+    if (provider === "cf-workers-ai") {
+      return { url: "", headers: {} };
+    }
+    return {
+      url:     resolveAnthropicUrl(opts),
+      headers: resolveAnthropicHeaders(apiKey, opts, effectiveCtx),
+    };
+  }
+
   // ── HTTP routing ──────────────────────────────────────────────────────────
 
   override async fetch(request: Request): Promise<Response> {
@@ -346,6 +418,25 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
         if (method === "GET") return this.handleListThreads(subThreadsMatch[1]);
         if (method === "POST") return this.handleCreateThread(subThreadsMatch[1], request);
       }
+      // Projects (spec §27/§33): Sub-Space → Project → Thread
+      const subProjectsMatch = url.pathname.match(/^\/subspaces\/([^/]+)\/projects$/);
+      if (subProjectsMatch?.[1]) {
+        if (method === "GET") return this.handleListProjects(subProjectsMatch[1]);
+        if (method === "POST") return this.handleCreateProject(subProjectsMatch[1], request);
+      }
+      const projThreadsMatch = url.pathname.match(/^\/projects\/([^/]+)\/threads$/);
+      if (projThreadsMatch?.[1]) {
+        if (method === "GET") return this.handleListProjectThreads(projThreadsMatch[1]);
+        if (method === "POST") return this.handleCreateProjectThread(projThreadsMatch[1], request);
+      }
+      // Multi-user sub-space members
+      const ssMembersMatch = url.pathname.match(/^\/subspaces\/([^/]+)\/members$/);
+      if (ssMembersMatch?.[1]) {
+        if (method === "GET") return this.handleListMembers(ssMembersMatch[1]);
+        if (method === "POST") return this.handleInviteMember(ssMembersMatch[1], request);
+      }
+      const ssMemberDelMatch = url.pathname.match(/^\/subspaces\/([^/]+)\/members\/([^/]+)$/);
+      if (ssMemberDelMatch?.[1] && ssMemberDelMatch[2] && method === "DELETE") return this.handleRemoveMember(ssMemberDelMatch[1], ssMemberDelMatch[2]);
       const threadMsgMatch = url.pathname.match(/^\/threads\/([^/]+)\/messages$/);
       if (threadMsgMatch?.[1]) {
         if (method === "GET") return this.handleListThreadMessages(threadMsgMatch[1]);
@@ -439,7 +530,7 @@ export class BusinessDO extends DurableObject<BusinessDOEnv> {
 
   private async handlePatchConfig(request: Request): Promise<Response> {
     const body = await request.json<Record<string, string | number>>();
-    const WRITABLE = ["whop_product_id", "affiliate_registration_id", "template_id", "template_version", "user_id", "custom_business", "cost_multiplier", "goal"];
+    const WRITABLE = ["whop_product_id", "affiliate_registration_id", "template_id", "template_version", "user_id", "custom_business", "cost_multiplier", "goal", "llm_provider", "autonomy_tier"];
     for (const [k, v] of Object.entries(body)) {
       if (WRITABLE.includes(k)) this.setCfg(k, String(v));
     }
@@ -680,9 +771,10 @@ ${JSON.stringify(snapshot).slice(0, 1200)}
 Write ONE community post: concrete, helpful, no hype, no financial/investment advice, no guarantees of income. 80–160 words. Return only the post text.`;
 
     try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      const { url, headers } = this.getLLMUrl(apiKey, { spaceId: this.getCfg("user_id") ?? "unknown", model, skipCache: true });
+      const resp = await fetch(url, {
         method: "POST",
-        headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        headers,
         body: JSON.stringify({ model, max_tokens: 512, messages: [{ role: "user", content: prompt }] }),
       });
       if (!resp.ok) return "";
@@ -835,9 +927,10 @@ Spec: ${spec}
 Write a single self-contained TypeScript module that implements the tool as a Cloudflare Worker (export default { fetch }). It must include real, working functionality (not a stub or prompt-wrapper) and a small set of inline tests in an exported \`runTests()\` that returns { passed: boolean, results: string[] }. No external network calls except where the spec requires. Return ONLY the TypeScript module.`;
 
     try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      const { url: llmUrl, headers: llmHeaders } = this.getLLMUrl(apiKey, { spaceId: this.getCfg("user_id") ?? "unknown", model });
+      const resp = await fetch(llmUrl, {
         method: "POST",
-        headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        headers: llmHeaders,
         body: JSON.stringify({ model, max_tokens: 4096, messages: [{ role: "user", content: prompt }] }),
       });
       if (!resp.ok) return "";
@@ -965,13 +1058,10 @@ The environment has drifted slightly. Identify what changed and produce a minima
 
     let patchResult = "";
     try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      const llm2 = this.getLLMUrl(apiKey, { spaceId: this.getCfg("user_id") ?? "unknown", model: "claude-haiku-4-5-20251001", skipCache: true });
+      const resp = await fetch(llm2.url, {
         method: "POST",
-        headers: {
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json",
-        },
+        headers: llm2.headers,
         body: JSON.stringify({
           model: "claude-haiku-4-5-20251001",
           max_tokens: 256,
@@ -1031,13 +1121,10 @@ Then write a completely new TypeScript function for this task that will work in 
 Return ONLY the TypeScript function.`;
 
     try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      const llm3 = this.getLLMUrl(apiKey, { spaceId: this.getCfg("user_id") ?? "unknown", model, skipCache: true });
+      const resp = await fetch(llm3.url, {
         method: "POST",
-        headers: {
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json",
-        },
+        headers: llm3.headers,
         body: JSON.stringify({
           model,
           max_tokens: 1024,
@@ -1112,13 +1199,10 @@ Autonomy rules:
 Execute this task and report what you did. Be specific and actionable.`;
 
     try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      const llm4 = this.getLLMUrl(apiKey, { spaceId: this.getCfg("user_id") ?? "unknown", model, skipCache: true });
+      const resp = await fetch(llm4.url, {
         method: "POST",
-        headers: {
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json",
-        },
+        headers: llm4.headers,
         body: JSON.stringify({
           model,
           max_tokens: 2048,
@@ -1185,13 +1269,10 @@ Return a JSON object with exactly these fields:
 }`;
 
     try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      const llmD = this.getLLMUrl(apiKey, { spaceId: this.getCfg("user_id") ?? "unknown", model: "claude-haiku-4-5-20251001" });
+      const resp = await fetch(llmD.url, {
         method: "POST",
-        headers: {
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "content-type": "application/json",
-        },
+        headers: llmD.headers,
         body: JSON.stringify({
           model: "claude-haiku-4-5-20251001",
           max_tokens: 2048,
@@ -1622,12 +1703,19 @@ Return a JSON object with exactly these fields:
     }
 
     const id = crypto.randomUUID();
+    const now = Date.now();
     // parent_id is set once and never updated — sub-space placement is immutable.
     this.ctx.storage.sql.exec(
       `INSERT INTO subspaces (id, parent_id, name, manifest_id, depth, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-      id, body.parent_id ?? null, name, body.manifest_id ?? null, depth, Date.now(),
+      id, body.parent_id ?? null, name, body.manifest_id ?? null, depth, now,
     );
-    return Response.json({ id, name, parent_id: body.parent_id ?? null, depth, manifest_id: body.manifest_id ?? null }, { status: 201 });
+    // Auto-create a default project for this sub-space (spec §33).
+    const defaultProjectId = crypto.randomUUID();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO projects (id, subspace_id, name, description, created_at) VALUES (?, ?, 'Default', NULL, ?)`,
+      defaultProjectId, id, now,
+    );
+    return Response.json({ id, name, parent_id: body.parent_id ?? null, depth, manifest_id: body.manifest_id ?? null, default_project_id: defaultProjectId }, { status: 201 });
   }
 
   private subspaceExists(id: string): boolean {
@@ -1643,14 +1731,19 @@ Return a JSON object with exactly these fields:
 
   private async handleCreateThread(subspaceId: string, request: Request): Promise<Response> {
     if (!this.subspaceExists(subspaceId)) return Response.json({ error: "subspace_not_found" }, { status: 404 });
-    const body = await request.json<{ title?: string }>().catch(() => ({} as { title?: string }));
+    const body = await request.json<{ title?: string; project_id?: string }>().catch(() => ({} as { title?: string; project_id?: string }));
     const title = (body.title ?? "New thread").trim().slice(0, 200) || "New thread";
+    // Validate project_id if provided
+    if (body.project_id) {
+      const proj = this.ctx.storage.sql.exec(`SELECT 1 FROM projects WHERE id = ? AND subspace_id = ?`, body.project_id, subspaceId).toArray();
+      if (!proj.length) return Response.json({ error: "project_not_found" }, { status: 404 });
+    }
     const id = crypto.randomUUID();
     this.ctx.storage.sql.exec(
-      `INSERT INTO threads (id, subspace_id, title, created_at) VALUES (?, ?, ?, ?)`,
-      id, subspaceId, title, Date.now(),
+      `INSERT INTO threads (id, subspace_id, project_id, title, created_at) VALUES (?, ?, ?, ?, ?)`,
+      id, subspaceId, body.project_id ?? null, title, Date.now(),
     );
-    return Response.json({ id, subspace_id: subspaceId, title }, { status: 201 });
+    return Response.json({ id, subspace_id: subspaceId, project_id: body.project_id ?? null, title }, { status: 201 });
   }
 
   private threadExists(id: string): boolean {
@@ -1681,6 +1774,91 @@ Return a JSON object with exactly these fields:
       id, threadId, role, content, Date.now(),
     );
     return Response.json({ id, thread_id: threadId, role }, { status: 201 });
+  }
+
+  // ── Projects (spec §27/§33) ────────────────────────────────────────────────
+
+  private handleListProjects(subspaceId: string): Response {
+    if (!this.subspaceExists(subspaceId)) return Response.json({ error: "subspace_not_found" }, { status: 404 });
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT * FROM projects WHERE subspace_id = ? ORDER BY created_at ASC LIMIT 200`, subspaceId)
+      .toArray() as unknown as ProjectRow[];
+    return Response.json({ projects: rows, count: rows.length });
+  }
+
+  private async handleCreateProject(subspaceId: string, request: Request): Promise<Response> {
+    if (!this.subspaceExists(subspaceId)) return Response.json({ error: "subspace_not_found" }, { status: 404 });
+    const body = await request.json<{ name?: string; description?: string }>().catch(() => ({} as { name?: string; description?: string }));
+    const name = (body.name ?? "").trim().slice(0, 120);
+    if (!name) return Response.json({ error: "name required" }, { status: 400 });
+    const id = crypto.randomUUID();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO projects (id, subspace_id, name, description, created_at) VALUES (?, ?, ?, ?, ?)`,
+      id, subspaceId, name, body.description ?? null, Date.now(),
+    );
+    return Response.json({ id, subspace_id: subspaceId, name, description: body.description ?? null }, { status: 201 });
+  }
+
+  private handleListProjectThreads(projectId: string): Response {
+    const proj = this.ctx.storage.sql.exec(`SELECT 1 FROM projects WHERE id = ?`, projectId).toArray();
+    if (!proj.length) return Response.json({ error: "project_not_found" }, { status: 404 });
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT * FROM threads WHERE project_id = ? ORDER BY created_at DESC LIMIT 200`, projectId)
+      .toArray() as unknown as ThreadRow[];
+    return Response.json({ threads: rows, count: rows.length });
+  }
+
+  private async handleCreateProjectThread(projectId: string, request: Request): Promise<Response> {
+    const proj = this.ctx.storage.sql
+      .exec(`SELECT subspace_id FROM projects WHERE id = ?`, projectId)
+      .toArray() as { subspace_id: string }[];
+    if (!proj[0]) return Response.json({ error: "project_not_found" }, { status: 404 });
+    const body = await request.json<{ title?: string }>().catch(() => ({} as { title?: string }));
+    const title = (body.title ?? "New thread").trim().slice(0, 200) || "New thread";
+    const id = crypto.randomUUID();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO threads (id, subspace_id, project_id, title, created_at) VALUES (?, ?, ?, ?, ?)`,
+      id, proj[0].subspace_id, projectId, title, Date.now(),
+    );
+    return Response.json({ id, subspace_id: proj[0].subspace_id, project_id: projectId, title }, { status: 201 });
+  }
+
+  // ── Multi-user sub-space members ────────────────────────────────────────────
+
+  private handleListMembers(subspaceId: string): Response {
+    if (!this.subspaceExists(subspaceId)) return Response.json({ error: "subspace_not_found" }, { status: 404 });
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT id, subspace_id, user_id, role, invited_by, joined_at FROM subspace_members WHERE subspace_id = ? ORDER BY joined_at ASC`, subspaceId)
+      .toArray();
+    return Response.json({ members: rows, count: rows.length });
+  }
+
+  private async handleInviteMember(subspaceId: string, request: Request): Promise<Response> {
+    if (!this.subspaceExists(subspaceId)) return Response.json({ error: "subspace_not_found" }, { status: 404 });
+    const body = await request.json<{ user_id?: string; role?: string; invited_by?: string }>().catch(() => ({} as { user_id?: string; role?: string; invited_by?: string }));
+    if (!body.user_id) return Response.json({ error: "user_id required" }, { status: 400 });
+    const role = ["owner", "editor", "member"].includes(body.role ?? "") ? body.role! : "member";
+    const id = crypto.randomUUID();
+    try {
+      this.ctx.storage.sql.exec(
+        `INSERT INTO subspace_members (id, subspace_id, user_id, role, invited_by, joined_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        id, subspaceId, body.user_id, role, body.invited_by ?? null, Date.now(),
+      );
+    } catch (err) {
+      // UNIQUE(subspace_id, user_id) violation
+      if (String(err).includes("UNIQUE")) return Response.json({ error: "already_member" }, { status: 409 });
+      throw err;
+    }
+    return Response.json({ id, subspace_id: subspaceId, user_id: body.user_id, role }, { status: 201 });
+  }
+
+  private handleRemoveMember(subspaceId: string, memberId: string): Response {
+    if (!this.subspaceExists(subspaceId)) return Response.json({ error: "subspace_not_found" }, { status: 404 });
+    const result = this.ctx.storage.sql
+      .exec(`DELETE FROM subspace_members WHERE id = ? AND subspace_id = ?`, memberId, subspaceId);
+    const deleted = (result as unknown as { rowsWritten?: number })?.rowsWritten ?? 0;
+    if (!deleted) return Response.json({ error: "member_not_found" }, { status: 404 });
+    return Response.json({ deleted: true });
   }
 
   // ── Channels (assistant ingress) ────────────────────────────────────────────
@@ -1770,9 +1948,10 @@ ${inbound.slice(0, 2000)}
 
 Reply helpfully and concisely in the assistant's voice. If you cannot answer confidently from what you know, reply with exactly: ESCALATE`;
     try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+      const llmA = this.getLLMUrl(apiKey, { spaceId: this.getCfg("user_id") ?? "unknown", model, skipCache: true });
+      const resp = await fetch(llmA.url, {
         method: "POST",
-        headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        headers: llmA.headers,
         body: JSON.stringify({ model, max_tokens: 512, messages: [{ role: "user", content: prompt }] }),
       });
       if (!resp.ok) return "";

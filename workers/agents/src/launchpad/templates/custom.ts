@@ -13,6 +13,7 @@ export const CUSTOM_MANIFEST: AgentManifest = {
   name: "Custom business",
   description: "A business defined entirely by the user's free-text goal; the agent figures out how to build and run it.",
   cost_multiplier: 3,
+  free_tier_eligible: false,
   skills: ["observe-first", "verify-landed", "improve-tool"],
   capabilities: ["build_tool", "observe", "log_cycle_outcome"],
   instructions:

@@ -90,6 +90,14 @@ service = "naelao-agents"
 
 [vars]
 ENVIRONMENT = "development"
+# CF AI Gateway — every LLM call routes through this (spec §15).
+# Override with real values via `wrangler secret put` in production.
+NAELAO_ACCOUNT_ID = "placeholder"
+NAELAO_GATEWAY_ID = "naelao-gateway"
+
+# CF Workers AI — used by free-tier agents and sub-agent vision tasks.
+[[ai]]
+binding = "AI"
 
 [env.staging]
 vars = { ENVIRONMENT = "staging" }

@@ -45,6 +45,12 @@ export interface AgentsEnv {
   PLATFORM_SECRET: string;
   WHOP_API_KEY: string;
   NAELAO_WHOP_COMPANY_ID: string;
+  // CF AI Gateway — spec §15. Every LLM call routes through the gateway.
+  // Set to "placeholder" in dev; override with real values in production secrets.
+  NAELAO_ACCOUNT_ID: string;
+  NAELAO_GATEWAY_ID: string;
+  // CF Workers AI — for free-tier agents and sub-agent vision tasks.
+  AI: Ai;
   PLATFORM_DB: D1Database;
   NAELAO_AGENT_DO: DurableObjectNamespace<NaelaoAgentDO>;
   HITL_APPROVAL_DO: DurableObjectNamespace<HITLApprovalDO>;
@@ -1025,6 +1031,17 @@ app.post("/business/:userId/onboard", async (c) => {
   const isCustom = body.template_id === "custom";
   const copy = `${body.product_name}\n${body.product_description ?? ""}`;
 
+  // Free-tier gate: custom (L4) business requires a paid plan.
+  if (isCustom) {
+    try {
+      const checker = new EntitlementsChecker(env.PLATFORM_DB);
+      const tier = await checker.getTenantTier(userId);
+      if (tier === "free") {
+        return Response.json({ error: "custom_business_requires_paid_plan", upgrade_required: true }, { status: 403 });
+      }
+    } catch { /* DB unavailable in dev — allow through */ }
+  }
+
   // 1a. SAFETY FLOOR — template-agnostic. Runs for EVERY path (official template OR
   // custom/no-template), blocking dangerous/regulated categories before anything is
   // created. This is the prerequisite for the custom path to exist at all.
@@ -1094,6 +1111,13 @@ app.post("/business/:userId/onboard", async (c) => {
   // a higher cost multiplier because it runs on Level-4 live reasoning (no curated
   // playbook) — so "custom" is mechanically more expensive than the official template,
   // charged closer to its real token cost rather than as an invented pricing tier.
+  // Determine free-tier defaults before configuring the DO.
+  let isFree = false;
+  try {
+    const checker = new EntitlementsChecker(env.PLATFORM_DB);
+    isFree = (await checker.getTenantTier(userId)) === "free";
+  } catch { /* DB unavailable in dev */ }
+
   const bizDO = await getBusinessDO(env, userId);
   await bizDO.fetch(new Request("http://do/config", {
     method: "PATCH",
@@ -1106,6 +1130,10 @@ app.post("/business/:userId/onboard", async (c) => {
       user_id: userId,
       custom_business: isCustom ? "true" : "false",
       cost_multiplier: isCustom ? "3" : "1",
+      // Free-tier: use CF Workers AI (cheaper) and start at tier 2 so the agent
+      // acts autonomously, earns revenue, and covers cost without user approval clicks.
+      llm_provider: isFree ? "cf-workers-ai" : "platform",
+      autonomy_tier: isFree ? "2" : "1",
       // For a custom business the free-text description IS the agent's goal (L4).
       ...(isCustom ? { goal: body.product_description ?? body.product_name } : {}),
     }),
@@ -1152,7 +1180,8 @@ app.post("/business/:userId/onboard", async (c) => {
     affiliate_id: affiliate?.id ?? null,
     template_id: isCustom ? "custom" : "whop-businesses-v1",
     template_version: "1",
-    autonomy_tier: 1,
+    autonomy_tier: isFree ? 2 : 1,
+    llm_provider: isFree ? "cf-workers-ai" : "platform",
   }, { status: 201 });
 });
 

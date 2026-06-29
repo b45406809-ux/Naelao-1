@@ -11,6 +11,7 @@ export const WHOP_MANIFEST: AgentManifest = {
   name: "Whop Businesses",
   description: "AI-built micro-tool + community, sold on Whop, run by a script-first agent loop.",
   cost_multiplier: 1,
+  free_tier_eligible: true,
   skills: ["observe-first", "community-post", "verify-landed", "pricing-guarded", "improve-tool"],
   capabilities: [
     "observe_whop_snapshot", "post_community_update", "check_community_engagement",

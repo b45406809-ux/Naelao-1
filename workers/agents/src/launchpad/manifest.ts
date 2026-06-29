@@ -43,6 +43,8 @@ export interface AgentManifest {
   channels?: string[];
   /** Cost multiplier — custom / L4-heavy bundles cost more (charged near real cost). */
   cost_multiplier: number;
+  /** Free-tier users may onboard with this manifest without a paid plan. */
+  free_tier_eligible: boolean;
 }
 
 import { WHOP_MANIFEST } from "./templates/whop-businesses.js";
@@ -60,6 +62,10 @@ export const CAPABILITY_KERNEL: ReadonlySet<string> = new Set([
   "observe", "build_tool", "search_knowledge",
   // assistant / channels
   "read_channel", "reply_in_channel", "escalate_to_human",
+  // projects + collaboration (spec §27/§33)
+  "create_project", "create_thread_in_project", "read_project_threads",
+  // peer-agent configuration
+  "configure_agent", "configure_llm_provider",
 ]);
 
 // ── Base inheritance (appendix @3617022: "No Base/Standard Space Type or Manifest
