@@ -24,6 +24,7 @@ import { dynamicWorkflow } from "./dynamic-workflow.js";
 import { commerce } from "./commerce.js";
 import { storefront } from "./storefront.js";
 import { businessEmail } from "./business-email.js";
+import { mcpConnector } from "./mcp-connector.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -59,6 +60,8 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [commerce.name]: commerce,
   [storefront.name]: storefront,
   [businessEmail.name]: businessEmail,
+  // Connector layer: reach any external platform over MCP (Whop, Gumroad, Beehiiv, …).
+  [mcpConnector.name]: mcpConnector,
 };
 
 /**

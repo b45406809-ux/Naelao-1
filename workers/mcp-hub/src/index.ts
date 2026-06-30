@@ -6,6 +6,42 @@ interface Env {
   ENVIRONMENT: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
+  /** Credentials worker — resolves auth_secret_name → plaintext at call time (never stored here). */
+  CREDENTIALS_WORKER?: Fetcher;
+}
+
+// Hosts that are external payment processors (incl. Naelao's own LS). A connector may never be
+// registered against these — money-in is reserved to the prebuilt commerce script. Mirrors
+// workers/agents/src/script-engine/reserved-capabilities.ts (kept in sync; defense-in-depth).
+const RESERVED_PAYMENT_HOSTS: readonly string[] = [
+  "api.stripe.com", "stripe.com", "js.stripe.com", "checkout.stripe.com",
+  "api.paypal.com", "paypal.com", "paypalobjects.com",
+  "squareup.com", "connect.squareup.com",
+  "api.paddle.com", "paddle.com", "checkout.paddle.com",
+  "braintreegateway.com", "api.braintreegateway.com",
+  "razorpay.com", "api.razorpay.com", "api.checkout.com", "gr4vy.com",
+  "commerce.coinbase.com", "api.coinbase.com",
+  "api.lemonsqueezy.com", "lemonsqueezy.com",
+];
+
+function isReservedPaymentHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return RESERVED_PAYMENT_HOSTS.some((p) => h === p || h.endsWith(`.${p}`));
+}
+
+/**
+ * Short-lived per-request HMAC credential token (mirrors workers/credentials generateCredentialToken).
+ * Format: "t=<unix>,aid=<agentId>,v1=<hmac-hex>"; HMAC payload "<spaceId>:<agentId>:<timestamp>".
+ * The credentials worker verifies signature + spaceId + 60s freshness before returning plaintext.
+ */
+async function generateCredentialToken(platformSecret: string, spaceId: string, agentId: string): Promise<string> {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(platformSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${spaceId}:${agentId}:${timestamp}`));
+  const hex = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `t=${timestamp},aid=${agentId},v1=${hex}`;
 }
 
 interface McpServer {
@@ -69,16 +105,39 @@ function validateMcpUrl(rawUrl: string): { ok: true; url: URL } | { ok: false; m
   return { ok: true, url: u };
 }
 
-// Build auth headers for an MCP server
-function buildAuthHeaders(server: McpServer): Record<string, string> {
+/**
+ * Resolve a credential reference (auth_secret_name → encrypted vault → plaintext) through the
+ * credentials worker, then build the auth headers for the upstream MCP server. The plaintext is
+ * fetched per call and never persisted in mcp_servers — the row only holds the credential NAME.
+ * agentId scopes the short-lived credential token (for the vault's audit trail).
+ */
+async function buildAuthHeaders(server: McpServer, env: Env, agentId: string): Promise<Record<string, string>> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  // Note: credential resolution would require credentials worker service binding.
-  // For now, bearer token/api_key can be passed directly via auth_secret_name.
-  if (server.auth_type === "bearer" && server.auth_secret_name !== null) {
-    headers["Authorization"] = `Bearer ${server.auth_secret_name}`;
-  } else if (server.auth_type === "api_key" && server.auth_secret_name !== null) {
-    headers["X-API-Key"] = server.auth_secret_name;
+  if (server.auth_type === "none" || !server.auth_secret_name) return headers;
+
+  if (!env.CREDENTIALS_WORKER) {
+    throw new Error("Credential resolution requires CREDENTIALS_WORKER binding");
   }
+  const token = await generateCredentialToken(env.PLATFORM_SECRET, server.space_id, agentId);
+  const resp = await env.CREDENTIALS_WORKER.fetch(
+    new Request(
+      `http://credentials/v1/internal/spaces/${server.space_id}/credentials/${encodeURIComponent(server.auth_secret_name)}/plaintext`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": server.tenant_id,
+          "x-naelao-credential-token": token,
+        },
+      }
+    )
+  );
+  if (!resp.ok) {
+    throw new Error(`Failed to resolve credential '${server.auth_secret_name}' (${resp.status})`);
+  }
+  const { value } = await resp.json<{ value: string }>();
+  if (server.auth_type === "bearer") headers["Authorization"] = `Bearer ${value}`;
+  else if (server.auth_type === "api_key") headers["X-API-Key"] = value;
   return headers;
 }
 
@@ -117,6 +176,16 @@ app.post("/v1/spaces/:spaceId/mcp-servers", async (c) => {
   const urlValidation = validateMcpUrl(body.url);
   if (!urlValidation.ok) {
     return c.json({ error_code: "bad_request", message: urlValidation.message }, 400);
+  }
+
+  // Reserved-capability guard (defense-in-depth — the mcp-connector prebuilt also checks):
+  // a payment processor may not be registered as a connector. Money-in is reserved to the
+  // prebuilt commerce script so the platform fee is always captured.
+  if (isReservedPaymentHost(urlValidation.url.hostname)) {
+    return c.json({
+      error_code: "reserved_capability",
+      message: "Payment processors cannot be registered as MCP connectors; money-in is reserved to Naelao commerce.",
+    }, 403);
   }
 
   const id = crypto.randomUUID();
@@ -198,7 +267,12 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
     return c.json({ error_code: "not_found", message: "MCP server not found or disabled" }, 404);
   }
 
-  const headers = buildAuthHeaders(server);
+  let headers: Record<string, string>;
+  try {
+    headers = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
+  } catch (err) {
+    return c.json({ error_code: "credential_error", message: (err as Error).message }, 502);
+  }
 
   const mcpPayload = {
     jsonrpc: "2.0",
@@ -257,7 +331,12 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
     return c.json({ error_code: "bad_request", message: "tool_name is required" }, 400);
   }
 
-  const headers = buildAuthHeaders(server);
+  let headers: Record<string, string>;
+  try {
+    headers = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
+  } catch (err) {
+    return c.json({ error_code: "credential_error", message: (err as Error).message }, 502);
+  }
 
   const mcpPayload = {
     jsonrpc: "2.0",

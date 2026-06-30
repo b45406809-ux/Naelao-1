@@ -240,12 +240,22 @@ Code, Browser, Vertical Niche, Cowork Desktop, Community/Marketplace.
 **Prebuilt catalogue.** Infra: `r2-workspace`, `sandbox-container`, `dynamic-workflow`,
 `sub-agent`. Browser: `browser-use`, `vision-delegate`. Data/compute: `web-search`, `code-exec`,
 `knowledge-base`, `file-manager`. Comms: `notifications`, `mcp-connector`. Launchpad subset
-(this build, MCP/browser deferred): `r2-workspace`, `web-search`, `file-manager`, `knowledge-base`,
-`notifications`, `sub-agent`, `dynamic-workflow`.
+(this build, browser deferred): `r2-workspace`, `web-search`, `file-manager`, `knowledge-base`,
+`notifications`, `sub-agent`, `dynamic-workflow`, `commerce`, `storefront`, `business-email`,
+`mcp-connector`.
 
-**MCP without hardcoded tools.** `mcp-connector` script: `mcp.register(server_url, auth)` then
-`mcp.call(server, tool, params)` / `mcp.list_tools(server)`. Every Naelao App (MCP server + UI)
-becomes available to any agent through this one script — no platform changes. **On hold this pass.**
+**MCP without hardcoded tools — BUILT (the connector layer).** `mcp-connector` prebuilt script:
+`mcp.register(name, url, auth_type?, credential_name?)`, `mcp.list_servers()`,
+`mcp.list_tools(server)`, `mcp.call(server, tool, params)`. It bridges the agent's 6-op surface to
+the `naelao-mcp-hub` worker (registry + SSRF guard + `tools/list`/`tools/call` proxy). A connector's
+secret is stored in the encrypted **credentials** vault (AES-256-GCM, per-space HKDF key); the hub
+resolves `auth_secret_name` → plaintext at call time via a short-lived HMAC credential token — the
+agent never sees it. **Every external platform (Whop, Gumroad, Beehiiv, Cal.com, Etsy, …) is an MCP
+server registration + distilled wrapper scripts — not a hardcoded integration.** Reserved-capability
+guard applies twice (prebuilt + hub, defense-in-depth): you may not register a payment processor as a
+connector, nor call a tool whose name is money-in — income stays on the reserved commerce path.
+(The MCP **Apps marketplace** — discovery, 3rd-party billing, security review — remains on hold; the
+connector mechanism itself is live.)
 
 **No community SpaceTypes.** SpaceTypes are Naelao-authored only (spec byte ~896493). Community
 publishes **Apps** (MCP) or **Space Templates**. Provisioning is the **10-step transactional
@@ -255,6 +265,16 @@ retired) → **Space Assistant init** → record install; rollback via `deprovis
 
 **Billing.** Lemon Squeezy primary, Stripe future (Appendix H, byte ~2261k); provider-agnostic
 `BillingProvider` + `NormalizedBillingEvent`. Launchpad order trigger = Lemon Squeezy webhook.
+
+**Two monetization models coexist (A + B), keyed on where the sale happens (mutually exclusive
+per sale, so one space can run both):**
+- **(B) Storefront model** — sale happens *on Naelao* → LS checkout → Naelao takes `naelaoFeeBps`.
+  Reserved-capability guard applies (money-in only via the prebuilt commerce script).
+- **(A) Automation-layer model** — sale already happened *on a connected platform* (Whop/Gumroad/…)
+  reached via `mcp-connector` → the agent only *reads* the order and does the labor (fulfil, support,
+  market) → Naelao monetizes via the subscription/seat, **not** a transaction fee. The reserved guard
+  is irrelevant because money never touches Naelao. The connector tool guard still forbids using a
+  connector to *collect* money (that would be model B, which must go through commerce).
 
 ---
 

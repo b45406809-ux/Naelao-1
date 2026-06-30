@@ -69,9 +69,13 @@ function skillToPrebuilt(skill: string): string[] {
     case "file-manager":
       return ["file-manager", "r2-workspace"];
     case "crm-tool":
-      // CRM is a Naelao App (MCP) — deferred this build. Approximate with knowledge-base
-      // so support agents can still ground answers; real CRM arrives via mcp-connector.
-      return ["knowledge-base"];
+      // CRM is reached over MCP via the connector (plus knowledge-base for grounding).
+      return ["mcp-connector", "knowledge-base"];
+    case "mcp":
+    case "connector":
+    case "mcp-connector":
+      // External-platform connectors (Whop, Gumroad, Beehiiv, Cal.com, …) over MCP.
+      return ["mcp-connector"];
     case "stripe-app":
       // Money-in is reserved to Naelao's Lemon Squeezy store via the commerce prebuilt
       // (reserved-capabilities.ts). The legacy "stripe-app" skill maps to it — a builder

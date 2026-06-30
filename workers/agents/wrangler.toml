@@ -110,6 +110,11 @@ service = "naelao-notifications"
 binding = "BILLING_WORKER"
 service = "naelao-billing"
 
+# MCP hub — external-platform connector registry + tool proxy (mcp-connector prebuilt).
+[[services]]
+binding = "MCP_HUB"
+service = "naelao-mcp-hub"
+
 [vars]
 ENVIRONMENT = "development"
 # CF AI Gateway — every LLM call routes through this (spec §15).
@@ -135,6 +140,10 @@ service = "naelao-spaces"
 [[env.staging.services]]
 binding = "BILLING_WORKER"
 service = "naelao-billing"
+
+[[env.staging.services]]
+binding = "MCP_HUB"
+service = "naelao-mcp-hub"
 
 [env.production]
 vars = { ENVIRONMENT = "production" }

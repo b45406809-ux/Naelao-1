@@ -8,11 +8,25 @@ binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "PLACEHOLDER_D1_ID"
 
+# Credentials worker — resolves an MCP server's auth_secret_name → plaintext at call time
+# (AES-256-GCM vault). The secret is never stored in mcp_servers; only its name is.
+[[services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
+
 [vars]
 ENVIRONMENT = "development"
 
 [env.staging]
 vars = { ENVIRONMENT = "staging" }
 
+[[env.staging.services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+[[env.production.services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"

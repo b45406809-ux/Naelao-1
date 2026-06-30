@@ -3,6 +3,8 @@ import {
   findReservedViolation,
   assertNoReservedViolation,
   RESERVED_CAPABILITIES,
+  isReservedPaymentHost,
+  isReservedToolName,
 } from "../../workers/agents/src/script-engine/reserved-capabilities.js";
 
 // The "Naelao always gets its cut" guarantee: builders/agents may author any script EXCEPT
@@ -71,5 +73,38 @@ describe("reserved-capability guard (income-wallet protection)", () => {
     for (const cap of ["create_checkout", "charge_customer", "payout", "wallet_withdraw"]) {
       expect(RESERVED_CAPABILITIES.has(cap)).toBe(true);
     }
+  });
+
+  // ── Connector-layer guards: an MCP connector may not be a payment processor, nor may a
+  //    connector tool collect money. Income stays on the reserved commerce path.
+  describe("mcp-connector reserved guards", () => {
+    it("blocks registering a payment processor as a connector (full URL)", () => {
+      expect(isReservedPaymentHost("https://api.stripe.com/v1")).toBe(true);
+      expect(isReservedPaymentHost("https://checkout.paddle.com")).toBe(true);
+      expect(isReservedPaymentHost("https://api.lemonsqueezy.com")).toBe(true);
+    });
+
+    it("blocks payment hosts on subdomains", () => {
+      expect(isReservedPaymentHost("https://foo.stripe.com/x")).toBe(true);
+    });
+
+    it("allows a legitimate platform connector (Whop, Beehiiv, Cal.com)", () => {
+      expect(isReservedPaymentHost("https://api.whop.com/graphql")).toBe(false);
+      expect(isReservedPaymentHost("https://api.beehiiv.com/v2")).toBe(false);
+      expect(isReservedPaymentHost("https://api.cal.com")).toBe(false);
+    });
+
+    it("blocks calling a money-in tool name", () => {
+      expect(isReservedToolName("create_checkout")).toBe(true);
+      expect(isReservedToolName("charge_customer")).toBe(true);
+      expect(isReservedToolName("issue_payout")).toBe(true);
+      expect(isReservedToolName("collectPayment")).toBe(true);
+    });
+
+    it("allows a normal connector tool name", () => {
+      expect(isReservedToolName("list_orders")).toBe(false);
+      expect(isReservedToolName("get_member")).toBe(false);
+      expect(isReservedToolName("post_announcement")).toBe(false);
+    });
   });
 });

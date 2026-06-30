@@ -157,6 +157,35 @@ export function findReservedViolation(input: {
   return null;
 }
 
+/**
+ * True if a URL/host is an external payment processor (or Naelao's own LS). Used by the
+ * mcp-connector to refuse registering a payment endpoint as a connector — money-in is reserved
+ * to the prebuilt commerce script. Accepts a full URL or a bare hostname.
+ */
+export function isReservedPaymentHost(urlOrHost: string): boolean {
+  let host = urlOrHost.toLowerCase();
+  try {
+    host = new URL(urlOrHost).hostname.toLowerCase();
+  } catch {
+    // Not a full URL — treat the input as a host/substring.
+  }
+  return EXTERNAL_PAYMENT_HOSTS.some((h) => host === h || host.endsWith(`.${h}`) || host.includes(h));
+}
+
+/**
+ * True if an MCP tool name looks like a money-in capability (charge/checkout/payout/etc.).
+ * Used by the mcp-connector to refuse calling a connector tool that would collect money outside
+ * Naelao's reserved commerce path. Matches the reserved capability set plus common verbs.
+ */
+export function isReservedToolName(toolName: string): boolean {
+  const n = toolName.toLowerCase().replace(/[^a-z]/g, "_");
+  for (const cap of RESERVED_CAPABILITIES) {
+    if (n.includes(cap)) return true;
+  }
+  return /(create|start|new|capture|collect)_?(payment|checkout|charge|invoice|payout|subscription)/.test(n)
+    || /\b(charge|payout|refund|withdraw)\b/.test(toolName.toLowerCase());
+}
+
 /** Throw a tagged error if the script violates the reserved-capability policy. */
 export function assertNoReservedViolation(input: {
   name: string;

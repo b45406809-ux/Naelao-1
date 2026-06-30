@@ -762,6 +762,8 @@ export interface AgentDOEnv {
   NOTIFICATIONS_WORKER?: Fetcher;
   /** Billing worker — holds Lemon Squeezy creds; the only money-in path (commerce script). */
   BILLING_WORKER?: Fetcher;
+  /** MCP hub worker — external-platform connector registry + tool proxy (mcp-connector). */
+  MCP_HUB?: Fetcher;
   /** AI Gateway identity (spec §15). */
   NAELAO_ACCOUNT_ID?: string;
   NAELAO_GATEWAY_ID?: string;
@@ -1076,6 +1078,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (this.env.SPACES_WORKER) env.spacesWorker = this.env.SPACES_WORKER;
     if (this.env.NOTIFICATIONS_WORKER) env.notificationsWorker = this.env.NOTIFICATIONS_WORKER;
     if (this.env.BILLING_WORKER) env.billingWorker = this.env.BILLING_WORKER;
+    if (this.env.MCP_HUB) env.mcpHubWorker = this.env.MCP_HUB;
 
     // Wire HITL gateway (spec §10 / CLAUDE.md task #10): polls HITLApprovalDO per space.
     if (this.env.HITL_APPROVAL_DO) {
