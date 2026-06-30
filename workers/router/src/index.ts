@@ -272,6 +272,10 @@ api.all("/catalog/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"),
 api.all("/product/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 api.all("/business/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
+// External-platform connectors (catalogue + connect flow) → agents worker.
+api.all("/connectors/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/connectors", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+
 app.route("/v1", api);
 
 // ── Error handler ────────────────────────────────────────────────────────────

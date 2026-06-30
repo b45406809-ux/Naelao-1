@@ -442,3 +442,51 @@ export async function getBillingSubscription(): Promise<{
     "/billing/subscription"
   );
 }
+
+// ── Connectors (external-platform connector layer; "Whop first, rest coming soon") ──
+
+export interface ConnectorOperation {
+  name: string;
+  description: string;
+  kind: "read" | "write";
+}
+
+export interface Connector {
+  id: string;
+  name: string;
+  category: string;
+  status: "available" | "coming_soon";
+  summary: string;
+  docs_url?: string;
+  auth: { type: "bearer" | "api_key" | "none"; credential_name: string };
+  mcp_endpoint?: string;
+  operations?: ConnectorOperation[];
+  /** Present on the status endpoint: whether this space has already connected it. */
+  connected?: boolean;
+}
+
+/** The read-only catalogue (Whop available, the rest coming_soon). */
+export async function listConnectors(): Promise<Connector[]> {
+  const res = await apiFetch<{ connectors: Connector[] }>("/connectors");
+  return res.connectors ?? [];
+}
+
+/** The catalogue annotated with which connectors this space has already connected. */
+export async function getConnectorStatus(spaceId: string): Promise<Connector[]> {
+  const res = await apiFetch<{ connectors: Connector[] }>(
+    `/connectors/status?space_id=${encodeURIComponent(spaceId)}`
+  );
+  return res.connectors ?? [];
+}
+
+/** Store the builder's API key in the vault and register the platform as an MCP server. */
+export async function connectPlatform(
+  platform: string,
+  spaceId: string,
+  apiKey: string
+): Promise<{ connected: boolean; platform: string; server_id: string }> {
+  return apiFetch(`/connectors/${encodeURIComponent(platform)}/connect`, {
+    method: "POST",
+    body: JSON.stringify({ space_id: spaceId, api_key: apiKey }),
+  });
+}

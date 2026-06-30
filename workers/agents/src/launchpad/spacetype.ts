@@ -49,6 +49,13 @@ export interface LaunchpadTemplate {
   /** Marketplace skills the template needs wired (Stripe, email, etc.). */
   skills: string[];
   free_tier_eligible: boolean;
+  /** External-platform connectors this template wires (ids in the connector catalogue). */
+  connectors?: string[];
+  /**
+   * When true the dashboard renders the template greyed out as "Coming soon" — selectable once
+   * its connector/shim ships. "Whop first, everything else coming soon" lives as this flag.
+   */
+  coming_soon?: boolean;
 }
 
 export interface LaunchpadSpaceType {
@@ -159,6 +166,21 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-support-v1", "launchpad-content-v1"],
     skills: ["email-tool", "web-search", "file-manager"],
     free_tier_eligible: true,
+  },
+  // ── Platform-connector templates ("Whop first, everything else coming soon") ──
+  // A platform template wires an external creator platform via the connector catalogue +
+  // mcp-connector. Whop is live; the rest of the catalogue surfaces as coming_soon in the UI.
+  {
+    id: "whop-seller",
+    name: "Whop Seller",
+    description:
+      "Run an existing Whop business on autopilot. Agents read your Whop memberships, members, and " +
+      "orders and handle support + community updates — Whop keeps processing the payments (automation " +
+      "layer; you're billed for the labor, not a cut of the sale).",
+    agents: ["launchpad-support-v1", "launchpad-content-v1"],
+    skills: ["mcp-connector", "email-tool", "web-search"],
+    connectors: ["whop"],
+    free_tier_eligible: false,
   },
 ];
 

@@ -24,6 +24,7 @@ import { canAccessBusiness } from "./access.js";
 import { safetyFloor } from "./safety.js";
 import { shouldPromote } from "./whop/cycle-logic.js";
 import { listManifests } from "./launchpad/manifest.js";
+import { CONNECTOR_CATALOGUE, getConnector } from "./connectors/catalogue.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -62,6 +63,10 @@ export interface AgentsEnv {
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
   AGENTS_WORKER: Fetcher;
+  /** MCP hub — connector registry + tool proxy (for the connect flow + status). */
+  MCP_HUB?: Fetcher;
+  /** Credentials vault — stores a connector's API key (only the name is referenced elsewhere). */
+  CREDENTIALS_WORKER?: Fetcher;
   AGENT_CACHE: KVNamespace;
   ANALYTICS: AnalyticsEngineDataset;
   AGENT_TASK_WORKFLOW: { create(opts: { id?: string; params?: unknown }): Promise<void> };
@@ -851,6 +856,126 @@ app.get("/catalog/manifests", async (c) => {
       seed_script_count: m.seed_scripts.length, cost_multiplier: m.cost_multiplier,
     })),
   });
+});
+
+// ── Connectors — the external-platform connector layer (catalogue + connect flow) ──
+// "Whop first, everything else coming soon." The catalogue is Naelao-authored data; a
+// connector is reached purely through mcp-connector / mcp-hub (not hardcoded). Routed here
+// from the router under /connectors/* (top-level, so it doesn't collide with /spaces/*).
+
+// GET /connectors — the read-only catalogue (Whop available, rest coming_soon).
+app.get("/connectors", async (c) => {
+  return c.json({ connectors: CONNECTOR_CATALOGUE });
+});
+
+// GET /connectors/status?space_id= — catalogue annotated with which are already connected
+// for the space (i.e. registered as an MCP server in the hub).
+app.get("/connectors/status", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const spaceId = c.req.query("space_id") ?? "";
+  if (!spaceId) throw badRequest("space_id is required");
+
+  const connectedNames = new Set<string>();
+  if (c.env.MCP_HUB) {
+    try {
+      const resp = await c.env.MCP_HUB.fetch(
+        new Request(`http://mcp-hub/v1/spaces/${spaceId}/mcp-servers`, {
+          headers: { "x-naelao-tenant-id": tenantId },
+        })
+      );
+      if (resp.ok) {
+        const { data } = await resp.json<{ data?: Array<{ name: string }> }>();
+        for (const s of data ?? []) connectedNames.add(s.name);
+      }
+    } catch {
+      // Best-effort — status falls back to "not connected" if the hub is unreachable.
+    }
+  }
+
+  return c.json({
+    connectors: CONNECTOR_CATALOGUE.map((conn) => ({
+      ...conn,
+      connected: connectedNames.has(conn.id),
+    })),
+  });
+});
+
+// POST /connectors/:platform/connect — store the builder's API key in the vault and register
+// the platform as an MCP server. The agent then reaches it via script.run("mcp.call", …). The
+// key is stored under the connector's credential_name; the hub resolves it at call time, so the
+// agent never sees it. Idempotent: an existing server with the same name is reused.
+app.post("/connectors/:platform/connect", async (c) => {
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const platform = c.req.param("platform");
+  const connector = getConnector(platform);
+  if (!connector) throw notFound("Connector");
+  if (connector.status !== "available") {
+    return c.json({ error_code: "coming_soon", message: `${connector.name} is coming soon` }, 409);
+  }
+  if (!c.env.MCP_HUB || !c.env.CREDENTIALS_WORKER) {
+    return c.json({ error_code: "unavailable", message: "Connector services are not bound" }, 503);
+  }
+
+  interface ConnectBody { space_id: string; api_key: string; mcp_url?: string }
+  const body = await c.req.json<ConnectBody>().catch(() => ({ space_id: "", api_key: "" } as ConnectBody));
+  if (!body.space_id) throw badRequest("space_id is required");
+  if (connector.auth.type !== "none" && !body.api_key) throw badRequest("api_key is required for this connector");
+
+  // 1. Store the API key in the encrypted vault under the connector's credential name.
+  if (connector.auth.type !== "none") {
+    const credResp = await c.env.CREDENTIALS_WORKER.fetch(
+      new Request(`http://credentials/v1/spaces/${body.space_id}/credentials`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+        body: JSON.stringify({
+          name: connector.auth.credential_name,
+          value: body.api_key,
+          description: `${connector.name} API key (connector)`,
+        }),
+      })
+    );
+    if (!credResp.ok && credResp.status !== 409) {
+      const msg = await credResp.text();
+      return c.json({ error_code: "credential_store_failed", message: msg }, 502);
+    }
+  }
+
+  // 2. Reuse an existing MCP server with this name, else register a new one.
+  const listResp = await c.env.MCP_HUB.fetch(
+    new Request(`http://mcp-hub/v1/spaces/${body.space_id}/mcp-servers`, {
+      headers: { "x-naelao-tenant-id": tenantId },
+    })
+  );
+  let serverId: string | null = null;
+  if (listResp.ok) {
+    const { data } = await listResp.json<{ data?: Array<{ id: string; name: string }> }>();
+    serverId = (data ?? []).find((s) => s.name === connector.id)?.id ?? null;
+  }
+
+  if (!serverId) {
+    const regResp = await c.env.MCP_HUB.fetch(
+      new Request(`http://mcp-hub/v1/spaces/${body.space_id}/mcp-servers`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId },
+        body: JSON.stringify({
+          name: connector.id,
+          url: body.mcp_url ?? connector.mcp_endpoint,
+          auth_type: connector.auth.type,
+          auth_secret_name: connector.auth.credential_name,
+        }),
+      })
+    );
+    if (!regResp.ok) {
+      const msg = await regResp.text();
+      return c.json({ error_code: "register_failed", message: msg }, 502);
+    }
+    const reg = await regResp.json<{ id: string }>();
+    serverId = reg.id;
+  }
+
+  return c.json({ connected: true, platform: connector.id, server_id: serverId }, 201);
 });
 
 // ── ProductDO routes — /product/* ─────────────────────────────────────────────

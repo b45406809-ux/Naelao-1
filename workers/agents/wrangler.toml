@@ -115,6 +115,11 @@ service = "naelao-billing"
 binding = "MCP_HUB"
 service = "naelao-mcp-hub"
 
+# Credentials vault — stores a connector's API key (the connect flow); only the name is referenced.
+[[services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
+
 [vars]
 ENVIRONMENT = "development"
 # CF AI Gateway — every LLM call routes through this (spec §15).
@@ -145,6 +150,10 @@ service = "naelao-billing"
 binding = "MCP_HUB"
 service = "naelao-mcp-hub"
 
+[[env.staging.services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
 
@@ -159,3 +168,11 @@ service = "naelao-spaces"
 [[env.production.services]]
 binding = "BILLING_WORKER"
 service = "naelao-billing"
+
+[[env.production.services]]
+binding = "MCP_HUB"
+service = "naelao-mcp-hub"
+
+[[env.production.services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
