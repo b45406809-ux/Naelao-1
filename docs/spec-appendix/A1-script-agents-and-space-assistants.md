@@ -142,7 +142,11 @@ into `NaelaoAgentDO`:
 - **Naelao-native hosting**: CF Pages sites under `*.naelao.com`, chargeable, admin-
   configurable (self-host vs Naelao-host).
 - **Space collaboration**: roles, task boards, and project deduplication (admin's assistant
-  broadcasts "this already exists" to member assistants).
+  broadcasts "this already exists" to member assistants). **Settled in A1.8** — assistant is
+  the operator over shared `ProjectDO` state (locks + presence + dedup), not a per-user fork.
+- **Reseller / `tenant` membership**: `parent_tenant_id` account hierarchy + wholesale
+  invoicing + client-portfolio dashboard (spec G-AS34/G-AS35). Schema landed (`productConfig`);
+  the billing subsystem is a separate build — see A1.8.
 
 ---
 
@@ -213,4 +217,96 @@ retired) → **Space Assistant init** → record install; rollback via `deprovis
 - Engine/manifest narrative: `docs/LAUNCHPAD_ARCHITECTURE.md`
 - Custom-business path: `docs/CUSTOM_BUSINESS.md`
 - Original spec section index: `docs/SPEC_HEADER_INDEX.md`
+
+---
+
+## A1.8 Company topology, membership & the reseller (SaaS) model
+
+This section settles the "is it built for humans or agents?" / "what is a worker?" /
+"how do two users collaborate?" / "can my customers create their own businesses?"
+questions. All of it is grounded in the original spec — citations inline.
+
+### The hierarchy (corrected notation)
+
+A **business = a top-level Space** (Launchpad SpaceType). One user can own **many**
+businesses = many top-level spaces, reached via a **space switcher**. **Sub-spaces are
+departments** *within* one business — never businesses themselves (spec §72 Mini-AGI,
+Enterprise data grants keyed by `sub_space`).
+
+```
+Space (= business)
+├── Space Assistant          ← coordinator / interface; NOT a container of projects
+├── Projects                 ← groupings of threads (the "task system")
+│   └── Threads
+│       └── Agents run here  (addressed space:project:thread)
+└── Sub-spaces (departments) ← each is itself a Space with its own Assistant + projects
+```
+
+The assistant is a **sibling coordinator at the space level**, not a parent of projects.
+Agents live *in threads*. This mirrors Polsia's proven three layers (chat-agent
+strategist → task system → specialized agents); we add departments-as-sub-spaces and a
+script-native agent, so we are strictly more capable than a flat model.
+
+### The assistant is the operator, not the company
+
+Spec §05 (byte ~116k): *"One assistant per user per Space by default. Admin can raise
+this limit."* The **company state is shared** and space-level — `SpaceDO` (members,
+structure, billing) + `ProjectDO` workspaces (file **locks**, **version history**,
+**real-time presence**, byte ~399k/§12) + threads + KB. Each user's assistant
+(`assistants/{userId}/`, byte ~411k) is a personal chief-of-staff acting **on** that
+shared company — it is **not** a private fork of the company. Two members' assistants do
+not build two companies because they read/write the *same* `ProjectDO`. Coordination =
+file locks + presence + **project deduplication** (admin's assistant broadcasts "this
+already exists"). This resolves the "two assistants = two companies" concern.
+
+`assistantMode` (productConfig knob): `per-user` (default; best permission scoping +
+personal channels) or `shared` (single space-owned assistant — Polsia-style one CEO chat;
+the "admin lowers the limit" variant).
+
+### Two distinct populations — team vs customers (the SaaS boundary)
+
+- **Team members** = people invited into the space → `SpaceDO` members with roles
+  (owner/admin/editor/member). They operate the business, each gets an assistant, appear
+  in the org chart.
+- **Customers (SaaS)** = people who sign up via the **external portal**
+  (`authModel: "customer-auth"`) → portal customer records gated by **Lemon Squeezy**
+  entitlements. They are **NOT** `SpaceDO` members, have no assistant, are not in the org
+  chart. **Hard rule: never make product customers into SpaceDO members** — that collapse
+  is what turns a clean business into "everyone is staff."
+
+### "Customers create their OWN businesses" = the reseller model (spec G-AS34/G-AS35)
+
+What the builder described — *customers join my product to create their own businesses,
+Polsia-style* — is the spec's **Agency / White-Label Reseller program** (byte ~5.48M):
+*"Agency account type: single login, manages multiple client workspaces, consolidated
+billing"* (G-AS34); *"reseller buys Naelao platform access at wholesale, sells to their
+customers at retail (margin is reseller's)"* (G-AS35).
+
+This is expressed as **one per-product setting, `membershipModel`**, with three values
+(all configured via UI, never code — see `SpaceTypeProductConfig` in
+`workers/spaces/src/do/SpaceTypeRegistryDO.ts`):
+
+| `membershipModel` | A joiner becomes | Mechanism |
+|---|---|---|
+| `team`   | a `SpaceDO` member of the builder's space (shared business) | default collaboration |
+| `tenant` | owner of their **own new space** under the builder's account | account hierarchy (`parent_tenant_id`) + reseller billing |
+| `hybrid` | a team member who may **also** create their own businesses | `team` + `userPermissions.canCreateSpace` |
+
+**`tenant` requires** an **account hierarchy**: each customer = a **child tenant**
+(`parent_tenant_id = builder`), fully isolated by the existing `{tenantId}:` namespacing;
+the customer creates a space of a **Naelao-authored** SpaceType the builder exposes via
+`allowedChildSpaceTypes` (CLAUDE.md #7 — no community SpaceTypes); provisioning reuses the
+**10-step provisioner** with `tenant_id = childTenant`. Billing relationship is the
+`billingRelationship` knob: `reseller` (wholesale→retail, builder invoices — G-AS35),
+`referral` (Naelao bills, builder takes a cut), or `platform` (no resale).
+
+### Build scope
+
+- **Now (done):** `SpaceTypeProductConfig` schema (`membershipModel`, `assistantMode`,
+  `allowedChildSpaceTypes`, `billingRelationship`, `userPermissions`) on the manifest;
+  Launchpad defaults to `team` / `per-user` / `platform`. `team` + `shared`/`per-user`
+  work on what's already built.
+- **Later (own task):** the `tenant`/reseller subsystem — `parent_tenant_id` account
+  hierarchy, consolidated/wholesale invoicing, and the client-portfolio dashboard
+  (G-AS34/G-AS35). Not part of the Launchpad pass; must not be smuggled in.
 - Launchpad SpaceType definition (§11): `workers/agents/src/launchpad/` manifests + templates

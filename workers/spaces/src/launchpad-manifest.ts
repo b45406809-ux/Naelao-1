@@ -71,6 +71,24 @@ export const LAUNCHPAD_MANIFEST: NaelaoSpaceTypeManifestV2 = {
     },
   },
 
+  // Default: a single business operated by an invited team, one assistant per member.
+  // Builders flip membershipModel→"tenant"/"hybrid" to resell (let customers create
+  // their own businesses, Polsia-style), and assistantMode→"shared" for one CEO chat.
+  productConfig: {
+    membershipModel: "team",
+    assistantMode: "per-user",
+    allowPublicSignup: false,
+    allowedChildSpaceTypes: ["launchpad"],
+    billingRelationship: "platform",
+    userPermissions: {
+      canCreateSpace: false,
+      canCreateSubSpaces: true,
+      canCreateProjects: true,
+      maxThreadsPerUser: null,
+      maxCreditsPerMonth: null,
+    },
+  },
+
   lifecycle: {}, // No custom provisioner/deprovisioner hooks for Launchpad
 
   marketplace: {

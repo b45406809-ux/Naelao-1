@@ -92,6 +92,65 @@ export interface NaelaoSpaceTypeManifestV2 {
     trialDays: number;
     capabilities: string[];
   };
+
+  // ── Product Config (spec byte ~1.464M `productConfig`) ─────────────────────
+  // Builder-tunable, per-product behaviour. Defaults preserve the single-business
+  // team model; `tenant`/`hybrid` enable the reseller model (spec G-AS34/G-AS35).
+  productConfig?: SpaceTypeProductConfig;
+}
+
+/**
+ * Per-product configuration a builder selects (UI only — never code).
+ *
+ * Two orthogonal axes decided here:
+ *  1. membershipModel — what a person who *joins this product* becomes.
+ *  2. assistantMode   — whether each member gets a personal Space Assistant
+ *     (spec §05 default "one per user per Space") or a single shared one.
+ */
+export interface SpaceTypeProductConfig {
+  /**
+   * What a user who signs up to this product becomes:
+   *  - "team":   a SpaceDO member of the builder's own space (shared business).
+   *  - "tenant": owner of their OWN newly-provisioned space under the builder's
+   *              account (Polsia-style — they join to create their own business).
+   *              Implemented via the Agency/Reseller account hierarchy (G-AS34/35).
+   *  - "hybrid": a team member who may ALSO create their own businesses.
+   */
+  membershipModel: "team" | "tenant" | "hybrid";
+
+  /**
+   * Space Assistant cardinality (spec §05 "one per user per Space by default.
+   * Admin can raise this limit." — `shared` lowers it to a single space-owned one).
+   */
+  assistantMode: "per-user" | "shared";
+
+  /** Allow anyone to self-serve sign up to the product portal. */
+  allowPublicSignup: boolean;
+
+  /**
+   * For tenant/hybrid: which Naelao-authored SpaceTypes a customer is allowed to
+   * instantiate (per CLAUDE.md #7, all SpaceTypes are Naelao-authored; the builder
+   * only chooses which ones to expose). Ignored for "team".
+   */
+  allowedChildSpaceTypes?: string[];
+
+  /**
+   * Billing relationship for tenant/hybrid child businesses:
+   *  - "reseller":  Naelao bills the builder wholesale; builder sets retail and
+   *                 keeps the margin + owns invoicing (spec G-AS35).
+   *  - "referral":  Naelao bills each customer directly; builder takes a rev-share.
+   *  - "platform":  no resale — child tenants are billed exactly like any builder.
+   */
+  billingRelationship?: "reseller" | "referral" | "platform";
+
+  /** Per-member capability flags (spec `productConfig.userPermissions`). */
+  userPermissions?: {
+    canCreateSpace?: boolean; // hybrid: members may provision their own businesses
+    canCreateSubSpaces?: boolean; // may create departments (sub-spaces)
+    canCreateProjects?: boolean;
+    maxThreadsPerUser?: number | null;
+    maxCreditsPerMonth?: number | null;
+  };
 }
 
 interface SpaceTypeListing {
