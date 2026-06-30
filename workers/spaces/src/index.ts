@@ -4,6 +4,7 @@ import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
+import { cfSaasConfig, createCustomHostname, getCustomHostname } from "./cf-saas.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
@@ -21,6 +22,9 @@ export interface Env {
   EXPORTS_BUCKET: R2Bucket;
   /** Producer to the provisioning queue — consumed by naelao-provisioner. */
   PROVISION_QUEUE?: Queue<ProvisionMessage>;
+  /** Cloudflare for SaaS custom-hostname provisioning (deploy-time secrets; optional). */
+  CF_API_TOKEN?: string;
+  CF_SAAS_ZONE_ID?: string;
 }
 
 /** Message enqueued on space creation; consumed by the provisioner (installs agents etc.). */
@@ -853,16 +857,38 @@ app.post("/internal/business-services", async (c) => {
     if (!body.custom_domain) return c.json({ error_code: "bad_request", message: "custom_domain is required" }, 400);
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
+
+    // Apply step: when the deploy-time CF token + SaaS zone are configured, add the domain as
+    // a Cloudflare-for-SaaS custom hostname (TXT DCV) so CF issues a cert. Otherwise record
+    // the intent + CNAME instructions (dev path) — the apply runs later when secrets land.
+    const cf = cfSaasConfig(c.env);
+    let cfHostnameId: string | null = null;
+    let validationRecords: unknown[] = [];
+    if (cf) {
+      try {
+        const result = await createCustomHostname(cf, body.custom_domain);
+        cfHostnameId = result.id;
+        validationRecords = result.validation_records;
+      } catch (err) {
+        console.error(`[cf-saas] custom hostname create failed for ${body.custom_domain}:`, (err as Error).message);
+        return c.json({ error_code: "cf_saas_failed", message: (err as Error).message }, 502);
+      }
+    }
+
     await c.env.PLATFORM_DB.prepare(
-      `INSERT INTO business_services (id, space_id, tenant_id, kind, custom_domain, status, created_at, updated_at)
-       VALUES (?, ?, ?, 'custom_domain', ?, 'pending_dns', ?, ?)
-       ON CONFLICT(space_id, kind) DO UPDATE SET custom_domain = excluded.custom_domain, status = 'pending_dns', updated_at = excluded.updated_at`
-    ).bind(id, body.space_id, tenantId, body.custom_domain, now, now).run();
+      `INSERT INTO business_services (id, space_id, tenant_id, kind, custom_domain, cf_hostname_id, status, created_at, updated_at)
+       VALUES (?, ?, ?, 'custom_domain', ?, ?, 'pending_dns', ?, ?)
+       ON CONFLICT(space_id, kind) DO UPDATE SET custom_domain = excluded.custom_domain, cf_hostname_id = excluded.cf_hostname_id, status = 'pending_dns', updated_at = excluded.updated_at`
+    ).bind(id, body.space_id, tenantId, body.custom_domain, cfHostnameId, now, now).run();
+
     return c.json({
       kind: "custom_domain",
       custom_domain: body.custom_domain,
       status: "pending_dns",
+      cf_hostname_id: cfHostnameId,
+      // Route record (CNAME to the fallback origin) + any DCV validation records from CF.
       dns: { type: "CNAME", name: body.custom_domain, value: `fallback.${STOREFRONT_ROOT}` },
+      validation_records: validationRecords,
     }, 201);
   }
 
@@ -918,6 +944,41 @@ app.get("/internal/business-services", async (c) => {
     "SELECT * FROM business_services WHERE space_id = ? AND kind = ?"
   ).bind(spaceId, kind).first();
   return c.json(row ?? null);
+});
+
+// GET /internal/business-services/custom-domain-status?space_id= — poll CF for cert/DCV
+// status and flip the record to 'active' once Cloudflare reports the hostname active.
+app.get("/internal/business-services/custom-domain-status", async (c) => {
+  if (!c.req.header("x-naelao-internal")) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  const spaceId = c.req.query("space_id") ?? "";
+  const row = await c.env.PLATFORM_DB.prepare(
+    "SELECT cf_hostname_id, custom_domain, status FROM business_services WHERE space_id = ? AND kind = 'custom_domain'"
+  ).bind(spaceId).first<{ cf_hostname_id: string | null; custom_domain: string | null; status: string }>();
+  if (!row) return c.json({ error_code: "not_found", message: "No custom domain for this space" }, 404);
+
+  const cf = cfSaasConfig(c.env);
+  if (!cf || !row.cf_hostname_id) {
+    // Dev path: nothing to poll — report what we have.
+    return c.json({ custom_domain: row.custom_domain, status: row.status, ssl_status: "unknown", validation_records: [] });
+  }
+
+  try {
+    const result = await getCustomHostname(cf, row.cf_hostname_id);
+    const active = result.status === "active" && result.ssl_status === "active";
+    if (active && row.status !== "active") {
+      await c.env.PLATFORM_DB.prepare(
+        "UPDATE business_services SET status = 'active', updated_at = ? WHERE space_id = ? AND kind = 'custom_domain'"
+      ).bind(new Date().toISOString(), spaceId).run();
+    }
+    return c.json({
+      custom_domain: result.hostname,
+      status: active ? "active" : "pending_dns",
+      ssl_status: result.ssl_status,
+      validation_records: result.validation_records,
+    });
+  } catch (err) {
+    return c.json({ error_code: "cf_saas_failed", message: (err as Error).message }, 502);
+  }
 });
 
 // ── Internal: SpaceType manifest registry (spec §62) ────────────────────────

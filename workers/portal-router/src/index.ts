@@ -181,42 +181,68 @@ function money(cents: number, currency: string): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2 }).format(cents / 100);
 }
 
-function renderStorefront(spaceName: string, products: StorefrontProduct[]): string {
+interface StorefrontBrand {
+  brandColor?: string | undefined;
+  tagline?: string | undefined;
+}
+
+function renderStorefront(spaceName: string, products: StorefrontProduct[], brand: StorefrontBrand = {}): string {
+  const accent = /^#[0-9a-fA-F]{6}$/.test(brand.brandColor ?? "") ? brand.brandColor! : "#4f46e5";
   const cards = products.length === 0
-    ? `<p class="empty">This store has no products yet.</p>`
-    : products.map((p) => `
-      <div class="card">
-        <h3>${esc(p.name)}</h3>
-        <p class="desc">${esc(p.description)}</p>
+    ? `<div class="empty"><p>This store is opening soon.</p><span>No products are available yet — check back shortly.</span></div>`
+    : products.map((p) => {
+        const free = p.price_cents === 0;
+        return `
+      <article class="card">
+        <div class="card-body">
+          <h3>${esc(p.name)}</h3>
+          ${p.description ? `<p class="desc">${esc(p.description)}</p>` : ""}
+        </div>
         <div class="row">
-          <span class="price">${money(p.price_cents, p.currency)}</span>
+          <span class="price">${free ? "Free" : money(p.price_cents, p.currency)}</span>
           <form method="POST" action="/storefront/checkout">
             <input type="hidden" name="product_id" value="${esc(p.id)}" />
-            <button type="submit">Buy</button>
+            <button type="submit">${free ? "Get it" : "Buy"}</button>
           </form>
         </div>
-      </div>`).join("");
+      </article>`;
+      }).join("");
   return `<!doctype html><html lang="en"><head><meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="index,follow" />
 <title>${esc(spaceName)}</title>
 <style>
-  :root{--brand:#4f46e5}
-  *{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f8fafc;color:#0f172a}
-  header{padding:48px 24px;text-align:center;background:#fff;border-bottom:1px solid #e2e8f0}
-  header h1{margin:0;font-size:28px}
-  main{max-width:880px;margin:0 auto;padding:32px 24px;display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:20px}
-  .card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:20px;display:flex;flex-direction:column}
-  .card h3{margin:0 0 6px}.desc{color:#64748b;font-size:14px;flex:1}
-  .row{display:flex;align-items:center;justify-content:space-between;margin-top:16px}
+  :root{--brand:${accent};--bg:#f6f7fb;--ink:#0f172a;--muted:#64748b;--line:#e6e8ee}
+  *{box-sizing:border-box}html,body{margin:0}
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Inter,sans-serif;background:var(--bg);color:var(--ink);line-height:1.5}
+  header{padding:64px 24px 56px;text-align:center;background:
+    radial-gradient(1200px 400px at 50% -120px, color-mix(in srgb, var(--brand) 16%, white), transparent), #fff;
+    border-bottom:1px solid var(--line)}
+  header h1{margin:0;font-size:clamp(26px,5vw,38px);letter-spacing:-.02em}
+  header p{margin:10px auto 0;max-width:560px;color:var(--muted);font-size:15px}
+  main{max-width:960px;margin:-28px auto 0;padding:0 24px 48px;
+    display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,260px),1fr));gap:18px}
+  .card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:22px;display:flex;flex-direction:column;
+    box-shadow:0 1px 2px rgba(15,23,42,.04);transition:box-shadow .15s,transform .15s}
+  .card:hover{box-shadow:0 8px 24px rgba(15,23,42,.08);transform:translateY(-2px)}
+  .card-body{flex:1}.card h3{margin:0 0 8px;font-size:17px}
+  .desc{color:var(--muted);font-size:14px;margin:0}
+  .row{display:flex;align-items:center;justify-content:space-between;margin-top:18px;gap:12px}
   .price{font-weight:700;font-size:18px}
-  button{background:var(--brand);color:#fff;border:0;border-radius:8px;padding:8px 18px;font-weight:600;cursor:pointer}
-  .empty{grid-column:1/-1;text-align:center;color:#94a3b8;padding:48px}
-  footer{text-align:center;color:#94a3b8;font-size:12px;padding:24px}
+  button{background:var(--brand);color:#fff;border:0;border-radius:10px;padding:9px 20px;font-weight:600;font-size:14px;cursor:pointer}
+  button:hover{filter:brightness(.95)}
+  .empty{grid-column:1/-1;text-align:center;color:var(--muted);padding:64px 24px;background:#fff;border:1px dashed var(--line);border-radius:16px}
+  .empty p{font-weight:600;color:var(--ink);margin:0 0 6px}.empty span{font-size:14px}
+  footer{text-align:center;color:#94a3b8;font-size:12px;padding:28px}
+  footer a{color:inherit}
 </style></head>
 <body>
-  <header><h1>${esc(spaceName)}</h1></header>
+  <header>
+    <h1>${esc(spaceName)}</h1>
+    ${brand.tagline ? `<p>${esc(brand.tagline)}</p>` : ""}
+  </header>
   <main>${cards}</main>
-  <footer>Powered by Naelao</footer>
+  <footer>Powered by <a href="https://naelao.com">Naelao</a></footer>
 </body></html>`;
 }
 
@@ -227,13 +253,25 @@ app.get("/storefront", async (c) => {
   if (!sf) return c.html("<h1>Store not found</h1>", 404);
 
   const space = await c.env.PLATFORM_DB.prepare(
-    "SELECT name FROM spaces WHERE id = ?"
-  ).bind(sf.spaceId).first<{ name: string }>();
+    "SELECT name, config_json FROM spaces WHERE id = ?"
+  ).bind(sf.spaceId).first<{ name: string; config_json: string | null }>();
   const { results } = await c.env.PLATFORM_DB.prepare(
     "SELECT id, name, description, price_cents, currency FROM launchpad_products WHERE space_id = ? AND status = 'published' ORDER BY created_at DESC LIMIT 100"
   ).bind(sf.spaceId).all<StorefrontProduct>();
 
-  return c.html(renderStorefront(space?.name ?? "Store", results));
+  // Optional storefront branding from the space config (brand_color / tagline).
+  let brand: StorefrontBrand = {};
+  if (space?.config_json) {
+    try {
+      const cfg = JSON.parse(space.config_json) as { brand_color?: string; tagline?: string; storefront?: { brand_color?: string; tagline?: string } };
+      brand = {
+        brandColor: cfg.storefront?.brand_color ?? cfg.brand_color,
+        tagline: cfg.storefront?.tagline ?? cfg.tagline,
+      };
+    } catch { /* ignore malformed config */ }
+  }
+
+  return c.html(renderStorefront(space?.name ?? "Store", results, brand));
 });
 
 // POST /storefront/checkout — initiate a (reserved) money-in checkout for a product.

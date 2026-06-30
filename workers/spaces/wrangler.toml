@@ -6,6 +6,12 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 ENVIRONMENT = "development"
 
+# Cloudflare for SaaS custom-hostname provisioning (storefront custom domains).
+# Set the real values at deploy time as secrets:
+#   wrangler secret put CF_API_TOKEN      (zone-scoped: SSL and Certificates: Edit)
+#   wrangler secret put CF_SAAS_ZONE_ID   (the naelao.com SaaS zone id)
+# When unset, custom-domain requests are recorded as pending_dns (no live API call).
+
 [[durable_objects.bindings]]
 name = "SPACE_DO"
 class_name = "SpaceDO"

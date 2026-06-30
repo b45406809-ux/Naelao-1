@@ -1,0 +1,57 @@
+# Deploy-time secrets & config
+
+Everything below is supplied at deploy time via `wrangler secret put` (never committed). The
+code paths that use them are already built and degrade to a safe dev path when a secret is
+absent — so the full flow is testable end-to-end locally without any of these.
+
+## Lemon Squeezy — the single money-in processor (all three payer classes)
+
+`api.lemonsqueezy.com` is reserved to Naelao's store (reserved-capability guard). Set these
+on **`naelao-billing`**:
+
+| Secret | What it is | Used by |
+|---|---|---|
+| `LEMON_SQUEEZY_API_KEY` | LS API key for Naelao's store | checkout creation (`/internal/commerce/checkout`, `/internal/seats/checkout`) |
+| `LEMON_SQUEEZY_STORE_ID` | Naelao's LS store id | checkout creation |
+| `LEMON_SQUEEZY_WEBHOOK_SECRET` | LS webhook signing secret | `POST /webhooks/lemon-squeezy` signature verification |
+| `LAUNCHPAD_FEE_BPS` *(var, optional)* | platform fee in basis points (default `500` = 5%) | order + seat fee capture |
+
+### Variant ids (per product / per seat)
+LS checkouts target a **variant**. Two ways to map them:
+
+- **Products**: set `ls_variant_id` on the product row — `PATCH /spaces/:id/products/:productId { ls_variant_id }` (dashboard publish flow). Until set (or when LS creds are absent) the checkout endpoint returns a dev placeholder URL so the flow is testable.
+- **Seats**: set `productConfig.memberBilling.lsVariantId` in the SpaceType manifest (or per-space `config_json.productConfig` override).
+
+> A future enhancement can auto-create the LS product/variant on publish via the LS API; today the variant id is supplied by the builder/admin. The reserved-capability guarantee holds either way — checkout only ever runs through `naelao-billing`.
+
+## Cloudflare for SaaS — storefront custom domains
+
+Set on **`naelao-spaces`** (only needed for the opt-in custom-domain feature; `{slug}.naelao.com` subdomains need nothing — they're covered by the zone wildcard cert):
+
+| Secret | What it is |
+|---|---|
+| `CF_API_TOKEN` | zone-scoped token with **SSL and Certificates: Edit** on the SaaS zone |
+| `CF_SAAS_ZONE_ID` | the `naelao.com` SaaS zone id (the fallback-origin zone) |
+
+When set, `POST /internal/business-services { kind: "custom_domain" }` calls
+`POST /zones/{zone}/custom_hostnames` (TXT DCV) and returns the validation records; poll
+`GET /internal/business-services/custom-domain-status` until `status: active`. When unset, the
+domain is recorded as `pending_dns` with CNAME instructions (no live API call).
+
+The customer CNAMEs their domain → the fallback origin (the `naelao-portal-router` Worker),
+which resolves the Host against `business_services` and serves their storefront.
+
+## Service-binding topology (wrangler `[[services]]`, already declared)
+
+```
+naelao-portal-router ── BILLING_WORKER ──▶ naelao-billing      (storefront checkout)
+naelao-billing       ── SPACES_WORKER  ──▶ naelao-spaces       (seat → member activation)
+naelao-billing       ── AGENTS_WORKER  ──▶ naelao-agents       (wake fulfilment agent)
+naelao-agents        ── BILLING_WORKER ──▶ naelao-billing      (commerce script money-in)
+naelao-agents        ── SPACES_WORKER  ──▶ naelao-spaces       (business-services, products)
+```
+
+## Other platform secrets (pre-existing)
+
+`PLATFORM_SECRET`, `JWT_SECRET` (router/auth), `ANTHROPIC_API_KEY` (agents), Stripe keys
+(builder-plan billing alternative) — unchanged by this work.
