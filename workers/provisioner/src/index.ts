@@ -21,6 +21,7 @@ import { errorResponse, requestId } from "@naelao/http";
 import {
   LAUNCHPAD_CORE_AGENTS,
   agentsForTemplate,
+  getLaunchpadTemplate,
 } from "../../agents/src/launchpad/spacetype.js";
 import {
   writeAgentConfig,
@@ -28,6 +29,8 @@ import {
   businessServicePrebuilts,
   DEFAULT_NAELAO_AGENT,
 } from "../../agents/src/script-engine/index.js";
+import { SkillLibrary } from "../../agents/src/script-engine/skill-library.js";
+import { inheritTemplateSkills } from "../../agents/src/script-engine/federation.js";
 import type { AgentConfig } from "../../agents/src/script-engine/index.js";
 import type { NaelaoSpaceTypeManifestV2 } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
 import { resolveTenancy } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
@@ -143,6 +146,31 @@ async function registerAgentIndex(
   if (!resp.ok) {
     throw new Error(`Failed to register agent '${agentId}' in space '${spaceId}': ${await resp.text()}`);
   }
+}
+
+/** Merge a first-run onboarding record into the space's config_json (read-merge-write). */
+interface OnboardingState {
+  template_id: string;
+  status: "pending" | "complete";
+  projects: string[];
+  setup_scripts: string[];
+  created_at: string;
+}
+async function mergeOnboarding(
+  env: Env,
+  spaceId: string,
+  tenantId: string,
+  onboarding: OnboardingState
+): Promise<void> {
+  const row = await env.PLATFORM_DB.prepare(
+    "SELECT config_json FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(spaceId, tenantId).first<{ config_json: string | null }>();
+  let cfg: Record<string, unknown> = {};
+  try { cfg = JSON.parse(row?.config_json ?? "{}") as Record<string, unknown>; } catch { /* keep {} */ }
+  cfg["onboarding"] = onboarding;
+  await env.PLATFORM_DB.prepare(
+    "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
+  ).bind(JSON.stringify(cfg), new Date().toISOString(), spaceId, tenantId).run();
 }
 
 // ── 10-step transactional provisioner ───────────────────────────────────────
@@ -282,6 +310,34 @@ async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
       await installLaunchpadAgents(spaceId, tenantId, templateId, manifest, env);
     }
     provisioned.push("agents");
+
+    // Step 9b: Template bootstrap — inherit the shared template skill library (federated
+    // learning) so the space starts with what the fleet has learned, then record the first-run
+    // onboarding state (credential/preference prompts + projects) for the dashboard wizard.
+    if (spaceTypeId === "launchpad" && templateId) {
+      try {
+        const spaceLib = new SkillLibrary(env.SCRIPTS_R2, spaceId);
+        const templateLib = SkillLibrary.forTemplate(env.SCRIPTS_R2, templateId);
+        const res = await inheritTemplateSkills(templateLib, spaceLib);
+        if (res.inherited.length > 0) {
+          console.log(`[provisioner] inherited ${res.inherited.length} shared skill(s) into ${spaceId} from template ${templateId}`);
+        }
+      } catch (err) {
+        console.warn(`[provisioner] skill inheritance failed for ${spaceId}:`, (err as Error).message);
+      }
+
+      const tpl = getLaunchpadTemplate(templateId);
+      if (tpl?.bootstrap) {
+        await mergeOnboarding(env, spaceId, tenantId, {
+          template_id: templateId,
+          status: "pending",
+          projects: tpl.bootstrap.projects ?? [],
+          setup_scripts: tpl.bootstrap.setup_scripts ?? [],
+          created_at: now,
+        });
+      }
+      provisioned.push("bootstrap");
+    }
 
     // Step 10: Record install in SpaceTypeRegistryDO + flip space to 'active'
     await env.SPACES_WORKER.fetch(
