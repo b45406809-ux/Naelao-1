@@ -51,6 +51,28 @@ naelao-agents        ── BILLING_WORKER ──▶ naelao-billing      (commer
 naelao-agents        ── SPACES_WORKER  ──▶ naelao-spaces       (business-services, products)
 ```
 
+## Connectors — external-platform integrations
+
+A connector is reached over MCP through `naelao-mcp-hub`. The builder's platform key is stored in
+the **credentials** vault (`{PLATFORM}_API_KEY`); the hub resolves it at call time, so the agent
+never sees it. Connecting is `POST /connectors/:platform/connect { space_id, api_key }`.
+
+### Whop (live connector — needs its MCP shim deployed)
+
+The Whop connector points at `https://mcp.naelao.com/connectors/whop` (catalogue `mcp_endpoint`).
+Deploy the **`naelao-connector-whop`** worker (`workers/connector-whop/`) behind that route:
+
+- `wrangler deploy --env production`, then map `mcp.naelao.com/connectors/whop*` to it (route or
+  custom domain). mcp-hub calls `${mcp_endpoint}/mcp` with the builder's Whop key as a Bearer token.
+- The shim holds **no secrets** — the key arrives per request from the vault via mcp-hub.
+- Exposes read tools (memberships/members/products/payments/plans) + write tools
+  (send_message/post_announcement). **No money-in tool** — Whop processes payments (model A).
+- Webhooks: the builder points their Whop webhook at
+  `https://<router>/v1/connectors/whop/webhook/{spaceId}` and stores the signing secret as the
+  `WHOP_WEBHOOK_SECRET` credential (collected by the Whop-seller onboarding wizard).
+
+Adding the next connector (Gumroad, …) is a catalogue row + a sibling shim worker — no core changes.
+
 ## Other platform secrets (pre-existing)
 
 `PLATFORM_SECRET`, `JWT_SECRET` (router/auth), `ANTHROPIC_API_KEY` (agents), Stripe keys
