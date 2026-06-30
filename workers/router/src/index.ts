@@ -262,6 +262,10 @@ api.all("/spaces/:spaceId/sessions", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 
+// Reseller / partner endpoints → spaces worker (G-AS34/G-AS35)
+api.all("/reseller/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/reseller", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+
 // Launchpad / Whop Businesses (the one live niche) → agents worker.
 // Catalog (roadmap), product config, and per-user business endpoints.
 api.all("/catalog/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));

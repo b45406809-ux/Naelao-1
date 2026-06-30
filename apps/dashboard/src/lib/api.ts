@@ -261,6 +261,32 @@ export async function revokeApiKey(id: string): Promise<void> {
   return apiFetch<void>(`/settings/api-keys/${id}`, { method: "DELETE" });
 }
 
+// ── Reseller / client portfolio ──────────────────────────────────────────────
+
+export interface ResellerClient {
+  child_tenant_id: string;
+  child_owner_user_id: string;
+  status: string;
+  created_at: string;
+  space_count: number;
+}
+
+export interface ResellerClientsResponse {
+  clients: ResellerClient[];
+  client_count: number;
+  current_period: string;
+  billing: {
+    retail: number;
+    wholesale: number;
+    margin: number;
+    events: number;
+  };
+}
+
+export async function getResellerClients(): Promise<ResellerClientsResponse> {
+  return apiFetch<ResellerClientsResponse>("/reseller/clients");
+}
+
 // ── Billing ──────────────────────────────────────────────────────────────────
 
 export async function createBillingCheckout(planTier: string): Promise<{ url: string }> {

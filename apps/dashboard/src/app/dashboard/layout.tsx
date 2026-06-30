@@ -15,6 +15,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Overview", href: "/dashboard", icon: "◻" },
   { label: "SpaceTypes", href: "/dashboard/spacetypes", icon: "◈" },
   { label: "Spaces", href: "/dashboard/spaces", icon: "⬡" },
+  { label: "Clients", href: "/dashboard/clients", icon: "◑" },
   { label: "Settings", href: "/dashboard/settings", icon: "⚙" },
 ];
 
