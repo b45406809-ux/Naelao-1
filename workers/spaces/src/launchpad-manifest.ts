@@ -75,7 +75,9 @@ export const LAUNCHPAD_MANIFEST: NaelaoSpaceTypeManifestV2 = {
   // Builders flip membershipModel→"tenant"/"hybrid" to resell (let customers create
   // their own businesses, Polsia-style), and assistantMode→"shared" for one CEO chat.
   productConfig: {
+    tenancy: "team",
     membershipModel: "team",
+    agencyShell: false,
     assistantMode: "per-user",
     allowPublicSignup: false,
     allowedChildSpaceTypes: ["launchpad"],

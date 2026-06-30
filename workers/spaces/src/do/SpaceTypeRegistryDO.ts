@@ -109,6 +109,22 @@ export interface NaelaoSpaceTypeManifestV2 {
  */
 export interface SpaceTypeProductConfig {
   /**
+   * Tenancy — the data-topology contract (spec G-Y15 CRITICAL, G-Y16). This is the
+   * authoritative dimension that maps to a DO topology + isolation strategy:
+   *  - "single": one owner, one SpaceDO. No sub-spaces.
+   *  - "team":   one shared SpaceDO; sub-spaces (departments) live inside it, isolated
+   *              by space_id in the SpaceDO `spaces` registry. Shared members.
+   *  - "saas":   product root + per-end-user isolation — each customer business is its
+   *              OWN SpaceDO under its OWN child tenant (structural isolation, not a
+   *              WHERE clause). The root holds only the user registry + billing.
+   *
+   * Relationship to membershipModel: tenancy is the topology, membershipModel is the
+   * join semantics. team→team, tenant→saas, hybrid→saas. Defaults to "team" when
+   * omitted so existing manifests keep the single shared-business behaviour.
+   */
+  tenancy?: "single" | "team" | "saas";
+
+  /**
    * What a user who signs up to this product becomes:
    *  - "team":   a SpaceDO member of the builder's own space (shared business).
    *  - "tenant": owner of their OWN newly-provisioned space under the builder's
@@ -117,6 +133,14 @@ export interface SpaceTypeProductConfig {
    *  - "hybrid": a team member who may ALSO create their own businesses.
    */
   membershipModel: "team" | "tenant" | "hybrid";
+
+  /**
+   * Agency-shell flag (spec §49 Scenario B). When true, the root product space is an
+   * internal admin shell and its child spaces may use DIFFERENT space types (mixed-type
+   * sub-spaces). When false (default), all sub-spaces inherit the parent's space type.
+   * End-users can never create agency shells.
+   */
+  agencyShell?: boolean;
 
   /**
    * Space Assistant cardinality (spec §05 "one per user per Space by default.
@@ -152,6 +176,12 @@ export interface SpaceTypeProductConfig {
     maxCreditsPerMonth?: number | null;
   };
 }
+
+// resolveTenancy lives in the pure ./tenancy module (no cloudflare:workers import) so it
+// is unit-testable and reusable by the provisioner. Re-exported here for callers that
+// already import from the registry DO module.
+export { resolveTenancy } from "../tenancy.js";
+export type { Tenancy } from "../tenancy.js";
 
 interface SpaceTypeListing {
   id: string;

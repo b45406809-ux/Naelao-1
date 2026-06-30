@@ -176,6 +176,54 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 10,
+    // Space hierarchy registry (spec §10 SpaceDO schema + §49 Sub-Space Architecture,
+    // G-Y15/G-Y16). This DO is one product's complete database; the `spaces` table is
+    // the product's space registry: the root space (depth 0) plus its in-DO sub-spaces
+    // (departments, depth 1-2) for tenancy_mode='team'. Sub-spaces share this SQLite and
+    // are isolated by the space_id column already carried on threads/messages — no RLS,
+    // because the DO instance boundary is the product boundary.
+    //
+    // For tenancy_mode='saas' the per-end-user business is its OWN SpaceDO (own SQLite),
+    // so it has its OWN `spaces` registry rooted at that business; cross-business isolation
+    // is structural. cross_space_grants records explicit cross-sub-space access within a
+    // product (e.g. Litigation may read M&A's knowledge) — checkCrossSpacePermission()
+    // defaults to DENIED on any error and never silently permits.
+    description: "spaces registry + cross_space_grants (hierarchy + tenancy)",
+    up: `
+      CREATE TABLE IF NOT EXISTS spaces (
+        id            TEXT PRIMARY KEY,
+        parent_id     TEXT REFERENCES spaces(id),
+        name          TEXT NOT NULL,
+        space_type    TEXT NOT NULL,
+        tenancy_mode  TEXT NOT NULL DEFAULT 'team'
+                        CHECK (tenancy_mode IN ('single','team','saas')),
+        agency_shell  INTEGER NOT NULL DEFAULT 0,
+        depth         INTEGER NOT NULL DEFAULT 0 CHECK (depth <= 2),
+        scenario_type TEXT,
+        status        TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active','suspended','deleted')),
+        settings      TEXT NOT NULL DEFAULT '{}',
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_spaces_parent ON spaces(parent_id);
+
+      CREATE TABLE IF NOT EXISTS cross_space_grants (
+        id                 TEXT PRIMARY KEY,
+        granting_space_id  TEXT NOT NULL,
+        receiving_space_id TEXT NOT NULL,
+        grant_type         TEXT NOT NULL
+                             CHECK (grant_type IN ('read-knowledge','read-threads','full-access')),
+        granted_by         TEXT NOT NULL,
+        granted_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        expires_at         TEXT,
+        revoked_at         TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_csg_receiving ON cross_space_grants(receiving_space_id);
+      CREATE INDEX IF NOT EXISTS idx_csg_granting ON cross_space_grants(granting_space_id);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -210,6 +258,31 @@ interface AgentStateRow {
   current_fsm_state: string;
   goal_stack: string;
   context_json: string;
+}
+
+interface SpaceRow {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  space_type: string;
+  tenancy_mode: string;
+  agency_shell: number;
+  depth: number;
+  scenario_type: string | null;
+  status: string;
+  settings: string;
+  created_at: string;
+}
+
+interface CrossSpaceGrantRow {
+  id: string;
+  granting_space_id: string;
+  receiving_space_id: string;
+  grant_type: string;
+  granted_by: string;
+  granted_at: string;
+  expires_at: string | null;
+  revoked_at: string | null;
 }
 
 // ── G-F03: Negative auth result cache ────────────────────────────────────────
@@ -341,6 +414,48 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const memberMatch = url.pathname.match(/^\/members\/([^/]+)$/);
       if (method === "DELETE" && memberMatch?.[1]) {
         return this.removeMember(memberMatch[1]);
+      }
+
+      // ── space registry / hierarchy endpoints ──────────────────────────────────
+      // POST /spaces — register the root space row (idempotent; provisioner calls this)
+      if (method === "POST" && url.pathname === "/spaces") {
+        return this.upsertRootSpace(request);
+      }
+      // GET /spaces — list all spaces in this product registry (root + sub-spaces)
+      if (method === "GET" && url.pathname === "/spaces") {
+        return this.listSpaceRows();
+      }
+      // POST /sub-spaces — create an in-DO sub-space (department) under a parent
+      if (method === "POST" && url.pathname === "/sub-spaces") {
+        return this.createSubSpaceRow(request);
+      }
+      // GET /spaces/:id — fetch a single space row (meta)
+      const spaceRowMatch = url.pathname.match(/^\/spaces\/([^/]+)$/);
+      if (method === "GET" && spaceRowMatch?.[1]) {
+        return this.getSpaceRow(spaceRowMatch[1]);
+      }
+      // PATCH /spaces/:id — update status / settings (suspend a department, etc.)
+      if (method === "PATCH" && spaceRowMatch?.[1]) {
+        return this.updateSpaceRow(spaceRowMatch[1], request);
+      }
+
+      // ── cross-space access grants (spec §49 checkPermission path) ─────────────
+      // POST /cross-space-grants
+      if (method === "POST" && url.pathname === "/cross-space-grants") {
+        return this.grantCrossSpace(request);
+      }
+      // GET /cross-space-grants?space_id= — grants visible to a space
+      if (method === "GET" && url.pathname === "/cross-space-grants") {
+        return this.listCrossSpaceGrants(url.searchParams);
+      }
+      // DELETE /cross-space-grants/:id
+      const grantMatch = url.pathname.match(/^\/cross-space-grants\/([^/]+)$/);
+      if (method === "DELETE" && grantMatch?.[1]) {
+        return this.revokeCrossSpace(grantMatch[1]);
+      }
+      // GET /cross-space-check?user_id=&requesting_space_id=&target_space_id=&grant_type=
+      if (method === "GET" && url.pathname === "/cross-space-check") {
+        return this.checkCrossSpace(url.searchParams);
       }
 
       return Response.json(
@@ -919,5 +1034,266 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
 
     return Response.json({ recorded: true, attempts_last_hour: count, rate_limited: rateLimited });
+  }
+
+  // ── space registry / hierarchy methods (spec §10 SpaceDO + §49) ──────────────
+
+  // POST /spaces — register/refresh the root space row. Idempotent: the provisioner
+  // calls this at step N so the SpaceDO knows its own tenancy + agency_shell. depth=0.
+  private async upsertRootSpace(request: Request): Promise<Response> {
+    const body = await request.json<{
+      id: string;
+      name: string;
+      space_type: string;
+      tenancy_mode?: "single" | "team" | "saas";
+      agency_shell?: boolean;
+      settings?: Record<string, unknown>;
+    }>();
+    if (!body.id || !body.name || !body.space_type) {
+      return Response.json({ error_code: "bad_request", message: "id, name, space_type are required" }, { status: 400 });
+    }
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO spaces (id, parent_id, name, space_type, tenancy_mode, agency_shell, depth, scenario_type, status, settings, created_at)
+       VALUES (?, NULL, ?, ?, ?, ?, 0, NULL, 'active', ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name,
+         space_type = excluded.space_type,
+         tenancy_mode = excluded.tenancy_mode,
+         agency_shell = excluded.agency_shell,
+         settings = excluded.settings`,
+      body.id,
+      body.name,
+      body.space_type,
+      body.tenancy_mode ?? "team",
+      body.agency_shell ? 1 : 0,
+      JSON.stringify(body.settings ?? {}),
+      new Date().toISOString()
+    );
+    return Response.json({ id: body.id, depth: 0, status: "active" }, { status: 201 });
+  }
+
+  private listSpaceRows(): Response {
+    const rows = queryAll<SpaceRow>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM spaces WHERE status != 'deleted' ORDER BY depth ASC, created_at ASC"
+    );
+    return Response.json({ data: rows.map(this.serializeSpaceRow) });
+  }
+
+  // POST /sub-spaces — create an in-DO sub-space (department) for tenancy_mode='team'.
+  // Enforces: parent exists, depth <= 2, mixed space_type only when parent.agency_shell,
+  // end-user sessions (forceParentType=true) always inherit the parent's space_type.
+  private async createSubSpaceRow(request: Request): Promise<Response> {
+    const body = await request.json<{
+      id?: string;
+      parent_id: string;
+      name: string;
+      space_type?: string;
+      scenario_type?: "organizational" | "agency-child" | "user-workspace";
+      force_parent_type?: boolean;
+      settings?: Record<string, unknown>;
+    }>();
+    if (!body.parent_id || !body.name) {
+      return Response.json({ error_code: "bad_request", message: "parent_id and name are required" }, { status: 400 });
+    }
+
+    const parent = queryOne<SpaceRow>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM spaces WHERE id = ? AND status != 'deleted'",
+      body.parent_id
+    );
+    if (!parent) {
+      return Response.json({ error_code: "not_found", message: "Parent space not found" }, { status: 404 });
+    }
+
+    // Depth: platform reserves depth 3; sub-spaces cannot nest more than 2 levels (§49).
+    if (parent.depth >= 2) {
+      return Response.json(
+        { error_code: "max_depth_exceeded", message: "Sub-spaces cannot be nested more than 2 levels deep." },
+        { status: 400 }
+      );
+    }
+
+    // Mixed-type rule (§49): only an agency_shell parent may host a different space_type.
+    // End-user-originated requests can never select a type and never create agency shells.
+    let effectiveType: string;
+    if (body.force_parent_type) {
+      effectiveType = parent.space_type;
+    } else if (body.space_type && body.space_type !== parent.space_type) {
+      if (!parent.agency_shell) {
+        return Response.json({
+          error_code: "mixed_space_type_not_permitted",
+          message: `Mixed space types are only permitted when the parent space is an agency shell. ` +
+                   `Parent ${parent.id} is type '${parent.space_type}'.`,
+        }, { status: 400 });
+      }
+      effectiveType = body.space_type;
+    } else {
+      effectiveType = parent.space_type;
+    }
+
+    const id = body.id ?? crypto.randomUUID();
+    const depth = parent.depth + 1;
+    const scenario = body.scenario_type ?? (parent.agency_shell ? "agency-child" : "organizational");
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO spaces (id, parent_id, name, space_type, tenancy_mode, agency_shell, depth, scenario_type, status, settings, created_at)
+       VALUES (?, ?, ?, ?, ?, 0, ?, ?, 'active', ?, ?)`,
+      id,
+      parent.id,
+      body.name,
+      effectiveType,
+      parent.tenancy_mode,
+      depth,
+      scenario,
+      JSON.stringify(body.settings ?? {}),
+      now
+    );
+    return Response.json(
+      { id, parent_id: parent.id, name: body.name, space_type: effectiveType, depth, scenario_type: scenario, status: "active", created_at: now },
+      { status: 201 }
+    );
+  }
+
+  private getSpaceRow(id: string): Response {
+    const row = queryOne<SpaceRow>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM spaces WHERE id = ?",
+      id
+    );
+    if (!row) return Response.json({ error_code: "not_found", message: "Space not found" }, { status: 404 });
+    return Response.json(this.serializeSpaceRow(row));
+  }
+
+  private async updateSpaceRow(id: string, request: Request): Promise<Response> {
+    const body = await request.json<{ status?: string; name?: string; settings?: Record<string, unknown> }>();
+    if (body.status && !["active", "suspended", "deleted"].includes(body.status)) {
+      return Response.json({ error_code: "bad_request", message: "Invalid status" }, { status: 400 });
+    }
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE spaces SET
+         status   = COALESCE(?, status),
+         name     = COALESCE(?, name),
+         settings = COALESCE(?, settings)
+       WHERE id = ?`,
+      body.status ?? null,
+      body.name ?? null,
+      body.settings ? JSON.stringify(body.settings) : null,
+      id
+    );
+    return Response.json({ id, updated: true });
+  }
+
+  private serializeSpaceRow(row: SpaceRow): Record<string, unknown> {
+    return {
+      ...row,
+      agency_shell: row.agency_shell === 1,
+      settings: (() => { try { return JSON.parse(row.settings) as unknown; } catch { return {}; } })(),
+    };
+  }
+
+  // ── cross-space grants (§49 checkPermission — fail closed) ───────────────────
+
+  private async grantCrossSpace(request: Request): Promise<Response> {
+    const body = await request.json<{
+      granting_space_id: string;
+      receiving_space_id: string;
+      grant_type: "read-knowledge" | "read-threads" | "full-access";
+      granted_by: string;
+      expires_at?: string;
+    }>();
+    if (!body.granting_space_id || !body.receiving_space_id || !body.grant_type || !body.granted_by) {
+      return Response.json({ error_code: "bad_request", message: "granting_space_id, receiving_space_id, grant_type, granted_by are required" }, { status: 400 });
+    }
+    if (body.granting_space_id === body.receiving_space_id) {
+      return Response.json({ error_code: "bad_request", message: "Cannot grant a space access to itself" }, { status: 400 });
+    }
+    const id = crypto.randomUUID();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO cross_space_grants (id, granting_space_id, receiving_space_id, grant_type, granted_by, granted_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      id, body.granting_space_id, body.receiving_space_id, body.grant_type, body.granted_by, new Date().toISOString(), body.expires_at ?? null
+    );
+    return Response.json({ id, grant_type: body.grant_type }, { status: 201 });
+  }
+
+  private listCrossSpaceGrants(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id");
+    const rows = spaceId
+      ? queryAll<CrossSpaceGrantRow>(
+          this.ctx.storage.sql as never,
+          `SELECT * FROM cross_space_grants
+           WHERE (granting_space_id = ? OR receiving_space_id = ?) AND revoked_at IS NULL
+           ORDER BY granted_at DESC`,
+          spaceId, spaceId
+        )
+      : queryAll<CrossSpaceGrantRow>(
+          this.ctx.storage.sql as never,
+          "SELECT * FROM cross_space_grants WHERE revoked_at IS NULL ORDER BY granted_at DESC"
+        );
+    return Response.json({ data: rows });
+  }
+
+  private revokeCrossSpace(id: string): Response {
+    execute(
+      this.ctx.storage.sql as never,
+      "UPDATE cross_space_grants SET revoked_at = ? WHERE id = ?",
+      new Date().toISOString(), id
+    );
+    return Response.json({ revoked: true, id });
+  }
+
+  // GET /cross-space-check — THE CRITICAL PATH (§49). Default DENIED on any error.
+  // A user gets access if they are a direct member of the target space, OR a valid
+  // (unexpired, unrevoked) grant exists from the requesting space to the target.
+  private checkCrossSpace(params: URLSearchParams): Response {
+    const userId = params.get("user_id") ?? "";
+    const requestingSpaceId = params.get("requesting_space_id") ?? "";
+    const targetSpaceId = params.get("target_space_id") ?? "";
+    const grantType = params.get("grant_type") ?? "read-knowledge";
+
+    try {
+      if (!userId || !targetSpaceId) {
+        return Response.json({ permitted: false, reason: "user_id and target_space_id are required", grant_type: null }, { status: 400 });
+      }
+
+      // Direct membership of the target space → permitted.
+      const member = queryOne<{ role: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?",
+        targetSpaceId, userId
+      );
+      if (member) {
+        return Response.json({ permitted: true, reason: `Direct member with role '${member.role}'.`, grant_type: null });
+      }
+
+      // Valid cross-space grant from requesting → target.
+      const now = new Date().toISOString();
+      const grant = queryOne<{ id: string; grant_type: string }>(
+        this.ctx.storage.sql as never,
+        `SELECT id, grant_type FROM cross_space_grants
+         WHERE granting_space_id = ? AND receiving_space_id = ?
+           AND (grant_type = ? OR grant_type = 'full-access')
+           AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+         LIMIT 1`,
+        targetSpaceId, requestingSpaceId, grantType, now
+      );
+      if (!grant) {
+        return Response.json({
+          permitted: false,
+          reason: `User ${userId} is not a member of ${targetSpaceId} and no '${grantType}' grant exists from ${requestingSpaceId}.`,
+          grant_type: null,
+        });
+      }
+      return Response.json({ permitted: true, reason: `Cross-space grant '${grant.grant_type}' applies.`, grant_type: grant.grant_type });
+    } catch (err) {
+      // ANY unexpected error → DENIED. Never permit on error.
+      console.error("[SpaceDO] checkCrossSpace UNEXPECTED ERROR — defaulting to DENIED", err);
+      return Response.json({ permitted: false, reason: "Permission check failed; access denied as a safety default.", grant_type: null });
+    }
   }
 }

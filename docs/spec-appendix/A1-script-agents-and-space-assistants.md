@@ -300,6 +300,34 @@ the customer creates a space of a **Naelao-authored** SpaceType the builder expo
 `billingRelationship` knob: `reseller` (wholesale→retail, builder invoices — G-AS35),
 `referral` (Naelao bills, builder takes a cut), or `platform` (no resale).
 
+### Tenancy is the data-topology contract (spec G-Y15/G-Y16)
+
+`membershipModel` answers *what a joiner becomes*; **`tenancy`** answers *what the data
+topology is* — the first-class manifest dimension the spec demands (G-Y15 CRITICAL). They
+map: `team→team`, `tenant→saas`, `hybrid→saas`. `resolveTenancy()`
+(`workers/spaces/src/tenancy.ts`, pure + unit-tested) derives it, preferring an explicit
+`tenancy` field and falling back to the membershipModel inference so legacy configs still
+resolve.
+
+| `tenancy` | Topology | Where sub-spaces live |
+|---|---|---|
+| `single` | one owner, one `SpaceDO` | none |
+| `team`   | one shared `SpaceDO` | **departments = rows in that DO's `spaces` registry**, isolated by `space_id` (no RLS — the DO boundary is the product boundary) |
+| `saas`   | product root + **per-end-user child `SpaceDO`** (G-Y16) | each customer business is its **own** DO/SQLite/R2 under its **own** child tenant — structural isolation, never a `WHERE` clause; the wholesaler's root DB is never over-populated |
+
+**This is the answer to the wholesale question.** When a wholesaler's customer "starts a
+business," they get their **own top-level Space = own `SpaceDO` = own child tenant** (the
+`POST /reseller/spaces` flow, `scenario_type='user-workspace'`, linked to the parent via
+`parent_space_id` + `tenant_hierarchy`). The wholesaler keeps **admin control** over the
+portfolio without holding the data: `GET /reseller/clients[/:id]`, suspend/reactivate
+(cascades to the child's spaces), and **promote-to-product** (severs lineage — in our
+per-tenant-DO model there is *no* data migration because the business was always isolated).
+**Departments** *inside* any one business (team or a saas customer's business) are in-DO
+sub-spaces created by `POST /spaces/:id/sub-spaces` — depth ≤ 2, mixed space-types only when
+the parent is an `agencyShell`, end-user callers always inherit the parent type (spec §49).
+Cross-department reads need an explicit **cross-space grant**
+(`SpaceDO.checkCrossSpace`, fail-closed — defaults to DENIED on any error, §49).
+
 ### Build scope
 
 - **Done:** `SpaceTypeProductConfig` schema (`membershipModel`, `assistantMode`,
@@ -321,6 +349,22 @@ the customer creates a space of a **Naelao-authored** SpaceType the builder expo
     = clamped rev-share %, `platform` = no-op; refunds reverse. Wired into the Lemon
     Squeezy webhook (`workers/billing/src/lemon-squeezy.ts`) to write `reseller_ledger`
     rows. 10 unit tests in `tests/unit/reseller-attribution.test.ts`.
-- **Remaining (frontend only):** the client-portfolio **dashboard UI** in `apps/dashboard`
-  — a thin consumer of `GET /reseller/clients` (the API is built).
+- **Done — tenancy topology & space hierarchy (G-Y15/G-Y16, §49), built generically for
+  every SpaceType (not Launchpad-only):**
+  - **`tenancy` dimension** on `SpaceTypeProductConfig` + `agencyShell`; `resolveTenancy()`
+    in the pure `workers/spaces/src/tenancy.ts` (5 unit tests in
+    `tests/unit/space-tenancy.test.ts`). Provisioner step 5b seeds the manifest tenancy +
+    `agency_shell` onto the D1 `spaces` row and registers the SpaceDO root-space row.
+  - **D1 hierarchy columns** — `infra/migrations/0034_space_hierarchy.sql`:
+    `parent_space_id`, `depth`, `tenancy_mode`, `agency_shell`, `scenario_type` on `spaces`.
+  - **SpaceDO `spaces` registry + `cross_space_grants`** — migration v10
+    (`workers/spaces/src/do/SpaceDO.ts`): in-DO department hierarchy (depth ≤ 2, mixed-type
+    gated by agency_shell, end-user type-forcing) + fail-closed cross-space permission check.
+  - **Endpoints** (spaces worker): `POST/GET /spaces/:id/sub-spaces`,
+    `PATCH /spaces/:id/sub-spaces/:subId`, cross-space grant CRUD + `/cross-space-check`,
+    `POST /spaces/:id/registry` (internal); reseller admin
+    `GET /reseller/clients/:id`, `POST .../status` (suspend/reactivate, cascades),
+    `POST .../promote`. `POST /reseller/spaces` now stamps the saas hierarchy columns.
+  - **Dashboard UI** — `apps/dashboard` clients page: drill-down drawer with the client's
+    businesses, suspend/reactivate, and promote-to-product (with irreversible confirm).
 - Launchpad SpaceType definition (§11): `workers/agents/src/launchpad/` manifests + templates

@@ -538,6 +538,147 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
   );
 });
 
+// ── Space hierarchy: registry, sub-spaces (departments), cross-space grants ──
+// (spec §10 SpaceDO registry, §49 Sub-Space Architecture, G-Y15/G-Y16).
+//
+// Two distinct creation flows, deliberately kept separate:
+//  • Departments (in-DO sub-spaces) — POST /spaces/:id/sub-spaces. Rows in the parent's
+//    SpaceDO `spaces` registry, isolated by space_id. depth 1-2. Used by team tenancy and
+//    by departments WITHIN a saas business. Generic across every space type.
+//  • New isolated businesses (saas per-end-user) — POST /reseller/spaces (below). Each gets
+//    its OWN child tenant + OWN SpaceDO (structural isolation, G-Y16). That is how a
+//    wholesaler's customer "starts a business": their own space, never a row in the
+//    wholesaler's DB — so the parent is never over-populated.
+
+/** Get the SpaceDO stub for a (spaceId, tenantId), HMAC-named to prevent enumeration. */
+async function spaceDoStub(env: Env, spaceId: string, tenantId: string) {
+  const doId = env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, env.PLATFORM_SECRET));
+  return env.SPACE_DO.get(doId);
+}
+
+/** Forward a request to a path on the SpaceDO, preserving method/headers/body. */
+async function forwardToSpaceDO(
+  stub: ReturnType<Env["SPACE_DO"]["get"]>,
+  path: string,
+  method: string,
+  body?: BodyInit | null,
+): Promise<Response> {
+  return stub.fetch(new Request(`http://space-do${path}`, {
+    method,
+    headers: { "content-type": "application/json" },
+    ...(body !== undefined && body !== null ? { body } : {}),
+  }));
+}
+
+// POST /spaces/:spaceId/registry — internal: seed/refresh the root space row.
+// Called by the provisioner (step 5b) with the manifest tenancy + agency_shell.
+app.post("/spaces/:spaceId/registry", async (c) => {
+  if (c.req.header("x-naelao-internal") !== "provisioner") {
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  }
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/spaces", "POST", c.req.raw.body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// GET /spaces/:spaceId/sub-spaces — list the product's space registry (root + departments).
+app.get("/spaces/:spaceId/sub-spaces", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/spaces", "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// POST /spaces/:spaceId/sub-spaces — create a department (in-DO sub-space).
+// Gated by the product's userPermissions.canCreateSubSpaces. End-user (non-builder)
+// callers always inherit the parent space_type (force_parent_type) and can never pick a type.
+app.post("/spaces/:spaceId/sub-spaces", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId, role } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+
+  // Resolve the product (D1) to gate on productConfig + know the parent space_type.
+  const product = await c.env.PLATFORM_DB.prepare(
+    "SELECT spacetype_id, config_json, tenancy_mode FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
+  ).bind(spaceId, tenantId).first<{ spacetype_id: string; config_json: string | null; tenancy_mode: string }>();
+  if (!product) throw notFound("Space");
+
+  const pc = await loadEffectiveProductConfig(c.env, product.spacetype_id, product.config_json);
+  if (pc?.userPermissions?.canCreateSubSpaces === false) {
+    return c.json({ error_code: "not_allowed", message: "Sub-spaces are disabled for this product" }, 403);
+  }
+
+  const body = await c.req.json<{
+    parent_id?: string;
+    name: string;
+    space_type?: string;
+    settings?: Record<string, unknown>;
+  }>();
+  if (!body.name) return c.json({ error_code: "bad_request", message: "name is required" }, 400);
+
+  // Builders (owner/admin) may select a type (subject to agency_shell rules in the DO);
+  // end-user roles are forced to the parent's type.
+  const isBuilder = role === "owner" || role === "admin";
+  const payload = {
+    parent_id: body.parent_id ?? spaceId,
+    name: body.name,
+    scenario_type: "organizational" as const,
+    ...(isBuilder && body.space_type ? { space_type: body.space_type } : { force_parent_type: true }),
+    ...(body.settings ? { settings: body.settings } : {}),
+  };
+
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/sub-spaces", "POST", JSON.stringify(payload));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// PATCH /spaces/:spaceId/sub-spaces/:subId — update a department (status/name/settings).
+app.patch("/spaces/:spaceId/sub-spaces/:subId", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const subId = c.req.param("subId");
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/spaces/${subId}`, "PATCH", c.req.raw.body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// ── Cross-space access grants (spec §49 checkPermission) ─────────────────────
+app.all("/spaces/:spaceId/cross-space-grants/:grantId?", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const grantId = c.req.param("grantId");
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+
+  const url = new URL(c.req.url);
+  const doPath = grantId
+    ? `/cross-space-grants/${grantId}`
+    : `/cross-space-grants${url.search}`;
+  const res = await forwardToSpaceDO(
+    stub,
+    doPath,
+    c.req.method,
+    c.req.method === "POST" ? c.req.raw.body : undefined
+  );
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// GET /spaces/:spaceId/cross-space-check?user_id=&requesting_space_id=&target_space_id=&grant_type=
+app.get("/spaces/:spaceId/cross-space-check", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const url = new URL(c.req.url);
+  const res = await forwardToSpaceDO(stub, `/cross-space-check${url.search}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // ── Internal: SpaceType manifest registry (spec §62) ────────────────────────
 // These routes are called by the provisioner via SPACES_WORKER service binding.
 // They are NOT exposed to end-users — caller identity is validated by the internal header.
@@ -703,10 +844,13 @@ app.post("/reseller/spaces", async (c) => {
     ...(body.config_overrides ?? {}),
     ...(body.template_id ? { template_id: body.template_id } : {}),
   });
+  // The child business is its OWN top-level space under its OWN tenant (saas per-end-user
+  // isolation, G-Y16): own SpaceDO, own SQLite. parent_space_id links it to the reseller's
+  // product for portfolio/promotion queries; scenario_type marks it a user-created business.
   await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, created_at, updated_at, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(spaceId, childTenantId, body.spacetype_id, body.name, initialStatus, configJson, now, now, userId).run();
+    `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, parent_space_id, depth, tenancy_mode, scenario_type, created_at, updated_at, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'saas', 'user-workspace', ?, ?, ?)`
+  ).bind(spaceId, childTenantId, body.spacetype_id, body.name, initialStatus, configJson, body.reseller_product_space_id, now, now, userId).run();
 
   // 5. Record the hierarchy on first business for this child tenant.
   if (!existing) {
@@ -761,6 +905,97 @@ app.get("/reseller/clients", async (c) => {
     current_period: period,
     billing: rollup ?? { retail: 0, wholesale: 0, margin: 0, events: 0 },
   });
+});
+
+/** Assert the caller's tenant is the parent reseller of childTenantId; returns the row or null. */
+async function assertResellerParent(
+  env: Env,
+  parentTenantId: string,
+  childTenantId: string
+): Promise<{ child_tenant_id: string; parent_tenant_id: string; child_space_id: string; status: string } | null> {
+  return env.PLATFORM_DB.prepare(
+    "SELECT child_tenant_id, parent_tenant_id, child_space_id, status FROM tenant_hierarchy WHERE child_tenant_id = ? AND parent_tenant_id = ?"
+  ).bind(childTenantId, parentTenantId).first();
+}
+
+// GET /reseller/clients/:childTenantId — one client's businesses + lineage (drill-down).
+app.get("/reseller/clients/:childTenantId", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const childTenantId = c.req.param("childTenantId");
+
+  const hierarchy = await assertResellerParent(c.env, tenantId, childTenantId);
+  if (!hierarchy) return c.json({ error_code: "not_found", message: "Client not found in your portfolio" }, 404);
+
+  const { results: spaces } = await c.env.PLATFORM_DB.prepare(
+    "SELECT id, name, spacetype_id, status, tenancy_mode, created_at FROM spaces WHERE tenant_id = ? AND status != 'deleted' ORDER BY created_at DESC"
+  ).bind(childTenantId).all();
+
+  return c.json({
+    child_tenant_id: childTenantId,
+    parent_tenant_id: hierarchy.parent_tenant_id,
+    status: hierarchy.status,
+    spaces,
+    space_count: spaces.length,
+  });
+});
+
+// POST /reseller/clients/:childTenantId/status — suspend / reactivate a client.
+// The reseller (parent) controls their customers' access: suspending cascades to the
+// child's spaces so no agent runs while suspended. Child data is untouched (reversible).
+app.post("/reseller/clients/:childTenantId/status", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const childTenantId = c.req.param("childTenantId");
+  const body = await c.req.json<{ status: "active" | "suspended" }>();
+  if (body.status !== "active" && body.status !== "suspended") {
+    return c.json({ error_code: "bad_request", message: "status must be 'active' or 'suspended'" }, 400);
+  }
+
+  const hierarchy = await assertResellerParent(c.env, tenantId, childTenantId);
+  if (!hierarchy) return c.json({ error_code: "not_found", message: "Client not found in your portfolio" }, 404);
+
+  const now = new Date().toISOString();
+  await c.env.PLATFORM_DB.prepare(
+    "UPDATE tenant_hierarchy SET status = ? WHERE child_tenant_id = ? AND parent_tenant_id = ?"
+  ).bind(body.status, childTenantId, tenantId).run();
+
+  // Cascade to the child's spaces (suspend → 'suspended', reactivate → 'active').
+  const spaceStatus = body.status === "suspended" ? "suspended" : "active";
+  await c.env.PLATFORM_DB.prepare(
+    "UPDATE spaces SET status = ?, updated_at = ? WHERE tenant_id = ? AND status NOT IN ('deleted')"
+  ).bind(spaceStatus, now, childTenantId).run();
+
+  return c.json({ child_tenant_id: childTenantId, status: body.status, updated_at: now });
+});
+
+// POST /reseller/clients/:childTenantId/promote — detach a client business to a standalone
+// product (spec §49 promote-to-product). In our per-tenant-DO model there is NO data
+// migration: the business is already its own SpaceDO under its own tenant, so promotion
+// just severs the reseller lineage. One-way; requires explicit acknowledgement.
+app.post("/reseller/clients/:childTenantId/promote", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const childTenantId = c.req.param("childTenantId");
+  const body = await c.req.json<{ acknowledge_irreversible: boolean }>();
+  if (body.acknowledge_irreversible !== true) {
+    return c.json({ error_code: "acknowledgement_required", message: "acknowledge_irreversible must be true" }, 400);
+  }
+
+  const hierarchy = await assertResellerParent(c.env, tenantId, childTenantId);
+  if (!hierarchy) return c.json({ error_code: "not_found", message: "Client not found in your portfolio" }, 404);
+
+  const now = new Date().toISOString();
+  // Sever lineage: mark hierarchy terminated + clear parent_space_id on the child's spaces.
+  await c.env.PLATFORM_DB.prepare(
+    "UPDATE tenant_hierarchy SET status = 'terminated' WHERE child_tenant_id = ? AND parent_tenant_id = ?"
+  ).bind(childTenantId, tenantId).run();
+  await c.env.PLATFORM_DB.prepare(
+    "UPDATE spaces SET parent_space_id = NULL, scenario_type = NULL, depth = 0, updated_at = ? WHERE tenant_id = ?"
+  ).bind(now, childTenantId).run();
+
+  console.log(`[reseller][promote] child=${childTenantId} detached from parent=${tenantId} at=${now}`);
+  return c.json({ promoted: true, child_tenant_id: childTenantId, promoted_at: now, note: "Business detached from reseller; now an independent product." });
 });
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));

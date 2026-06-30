@@ -287,6 +287,76 @@ export async function getResellerClients(): Promise<ResellerClientsResponse> {
   return apiFetch<ResellerClientsResponse>("/reseller/clients");
 }
 
+export interface ResellerClientSpace {
+  id: string;
+  name: string;
+  spacetype_id: string;
+  status: string;
+  tenancy_mode: string;
+  created_at: string;
+}
+
+export interface ResellerClientDetail {
+  child_tenant_id: string;
+  parent_tenant_id: string;
+  status: string;
+  spaces: ResellerClientSpace[];
+  space_count: number;
+}
+
+export async function getResellerClient(childTenantId: string): Promise<ResellerClientDetail> {
+  return apiFetch<ResellerClientDetail>(`/reseller/clients/${encodeURIComponent(childTenantId)}`);
+}
+
+export async function setResellerClientStatus(
+  childTenantId: string,
+  status: "active" | "suspended"
+): Promise<{ child_tenant_id: string; status: string }> {
+  return apiFetch(`/reseller/clients/${encodeURIComponent(childTenantId)}/status`, {
+    method: "POST",
+    body: JSON.stringify({ status }),
+  });
+}
+
+export async function promoteResellerClient(
+  childTenantId: string
+): Promise<{ promoted: boolean; child_tenant_id: string }> {
+  return apiFetch(`/reseller/clients/${encodeURIComponent(childTenantId)}/promote`, {
+    method: "POST",
+    body: JSON.stringify({ acknowledge_irreversible: true }),
+  });
+}
+
+// ── Sub-spaces (departments) + cross-space grants ────────────────────────────
+
+export interface SubSpace {
+  id: string;
+  parent_id: string | null;
+  name: string;
+  space_type: string;
+  tenancy_mode: string;
+  agency_shell: boolean;
+  depth: number;
+  scenario_type: string | null;
+  status: string;
+  created_at: string;
+}
+
+export async function listSubSpaces(spaceId: string): Promise<SubSpace[]> {
+  const res = await apiFetch<{ data: SubSpace[] }>(`/spaces/${spaceId}/sub-spaces`);
+  return res.data ?? [];
+}
+
+export async function createSubSpace(
+  spaceId: string,
+  data: { name: string; parent_id?: string }
+): Promise<SubSpace> {
+  return apiFetch<SubSpace>(`/spaces/${spaceId}/sub-spaces`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
 // ── Billing ──────────────────────────────────────────────────────────────────
 
 export async function createBillingCheckout(planTier: string): Promise<{ url: string }> {

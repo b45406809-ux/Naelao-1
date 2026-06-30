@@ -28,6 +28,7 @@ import {
   DEFAULT_NAELAO_AGENT,
 } from "../../agents/src/script-engine/index.js";
 import type { NaelaoSpaceTypeManifestV2 } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
+import { resolveTenancy } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
 
 interface Env {
   ENVIRONMENT: string;
@@ -190,6 +191,39 @@ async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
         console.warn(`[provisioner] SpaceDO init hook failed for ${spaceId}: ${await initResp.text()}`);
       }
       provisioned.push("spacedo_init_hook");
+    }
+
+    // Step 5b: Seed tenancy topology (spec G-Y15). Persist the manifest's tenancy +
+    // agency_shell on the D1 spaces row (drives reseller portfolio + sub-space rules)
+    // and register the SpaceDO root-space row (the product's space registry, depth 0).
+    {
+      const tenancy = resolveTenancy(manifest.productConfig);
+      const agencyShell = manifest.productConfig?.agencyShell === true;
+      await env.PLATFORM_DB.prepare(
+        "UPDATE spaces SET tenancy_mode = ?, agency_shell = ? WHERE id = ? AND tenant_id = ?"
+      ).bind(tenancy, agencyShell ? 1 : 0, spaceId, tenantId).run();
+
+      const rootResp = await env.SPACES_WORKER.fetch(
+        new Request(`http://spaces-worker/spaces/${spaceId}/registry`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-naelao-tenant-id": tenantId,
+            "x-naelao-internal": "provisioner",
+          },
+          body: JSON.stringify({
+            id: spaceId,
+            name: spaceName,
+            space_type: spaceTypeId,
+            tenancy_mode: tenancy,
+            agency_shell: agencyShell,
+          }),
+        })
+      );
+      if (!rootResp.ok) {
+        console.warn(`[provisioner] root-space registry seed failed for ${spaceId}: ${await rootResp.text()}`);
+      }
+      provisioned.push("space_registry");
     }
 
     // Step 6: Register workflow templates (stored in KV for the triggers worker to pick up)
