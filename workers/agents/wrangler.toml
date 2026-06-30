@@ -73,6 +73,20 @@ bucket_name = "naelao-agent-scripts"
 binding = "SCRIPTS_VECTORIZE"
 index_name = "naelao-agent-scripts"
 
+# Vectorize index for the Memory OS semantic layer (episodic facts promoted to long-term
+# semantic memory, queried by embedding + user_id filter). Separate vector space/lifecycle
+# from the skill-library index above.
+[[vectorize]]
+binding = "MEMORY_VECTORIZE"
+index_name = "naelao-agent-memory"
+
+# CF Worker Loader (beta) — dynamically spins up a fresh V8 isolate per script.run call for
+# execution Tiers 2-4 (script-engine/code-runner.ts). Not yet in @cloudflare/workers-types;
+# typed locally there. Optional — Tiers 2-4 degrade to "unavailable" without it (Tier 1 R2
+# ops always work; Tier 5 container is unaffected).
+[[worker_loaders]]
+binding = "LOADER"
+
 [[workflows]]
 name = "AgentTaskWorkflow"
 class_name = "AgentTaskWorkflow"
@@ -87,7 +101,8 @@ binding = "ANALYTICS"
 dataset = "naelao_agent_events"
 
 [triggers]
-# 02:00 daily → nightly business cycle; hourly → poll webhook-less connectors (e.g. Gumroad).
+# 02:00 daily → nightly business cycle; hourly → poll webhook-less connectors (e.g. Gumroad)
+# + drain each space's channel heartbeat (unanswered messages) + Memory OS maintenance.
 crons = ["0 2 * * *", "0 * * * *"]
 
 [[services]]
@@ -120,6 +135,12 @@ service = "naelao-mcp-hub"
 [[services]]
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
+
+# CF Browser Rendering proxy — Tier 4 of the execution ladder (code-runner.ts). Agents never
+# get raw CDP; all browser ops are mediated by this Worker's SSRF guard + rate controls.
+[[services]]
+binding = "BROWSER_WORKER"
+service = "naelao-browser"
 
 [vars]
 ENVIRONMENT = "development"
@@ -155,6 +176,10 @@ service = "naelao-mcp-hub"
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
 
+[[env.staging.services]]
+binding = "BROWSER_WORKER"
+service = "naelao-browser"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
 
@@ -177,3 +202,7 @@ service = "naelao-mcp-hub"
 [[env.production.services]]
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
+
+[[env.production.services]]
+binding = "BROWSER_WORKER"
+service = "naelao-browser"

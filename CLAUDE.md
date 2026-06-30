@@ -73,6 +73,16 @@ appendixes are authoritative** and override the early framing. Always confirm ag
 9. **Lemon Squeezy is PRIMARY billing, Stripe is "future"** (Appendix H, byte ~2261k):
    provider-agnostic `BillingProvider` interface + `NormalizedBillingEvent`. Launchpad's order
    trigger is a **Lemon Squeezy webhook**, not Stripe.
+10. **Execution Ladder Tiers 2-5, the multi-channel gateway, Memory OS, and sub-agents are now
+    BUILT** (`workers/agents/src/script-engine/code-runner.ts`, `memory-os.ts`,
+    `sub-agent-output.ts`; `launchpad/channels.ts` signature verification + the
+    `/v1/channels/:channel/inbound/:spaceId` gateway). The engine can now actually *execute*
+    distilled Tier 2-5 scripts (CF Worker Loader / browser proxy / container), not just route
+    to them; Space Assistants have a real signature-verified Slack/Discord/email ingress, not
+    just an adapter; agents have episodic+semantic memory (Memory OS) and self-managed memory
+    via the `memory` prebuilt; sub-agent fan-out is real (batched `agent.spawn`, isolated
+    per-child budget, capped at 16 concurrent like Claude Code's own pattern). Full detail:
+    `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.11-A1.12.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

@@ -20,6 +20,16 @@ import {
   type ScriptEngineEnv,
 } from "../script-engine/index.js";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
+import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
+import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
+import { isChannelType, getAdapter, type NormalizedInbound } from "../launchpad/channels.js";
+import {
+  sanitizeSubAgentOutput,
+  safeJsonParse,
+  budgetToMaxSteps,
+  MAX_SUB_AGENTS_PER_SPAWN,
+  DEFAULT_SUB_AGENT_BUDGET_TOKENS,
+} from "../script-engine/sub-agent-output.js";
 
 // ── G-AZ01: Agent FSM states and valid transitions ───────────────────────────
 
@@ -767,6 +777,18 @@ export interface AgentDOEnv {
   /** AI Gateway identity (spec §15). */
   NAELAO_ACCOUNT_ID?: string;
   NAELAO_GATEWAY_ID?: string;
+  // ── Execution ladder Tiers 2-5 (spec bottom appendix §8 / code-runner.ts) ──
+  /** CF Worker Loader (beta) — backs Tiers 2-4 (V8 isolate, npm-best-effort, browser). */
+  LOADER?: WorkerLoaderBinding;
+  /** naelao-browser service binding — Tier 4 (CF Browser Rendering proxy). */
+  BROWSER_WORKER?: Fetcher;
+  /** ToolSandboxDO namespace — Tier 5 (CF Container, full Linux). */
+  TOOL_SANDBOX?: DurableObjectNamespace;
+  /** Vectorize index for the Memory OS semantic layer (episodic→semantic promotion). */
+  MEMORY_VECTORIZE?: VectorizeIndex;
+  /** Self-binding — lets a running agent spawn sibling/child NaelaoAgentDO instances as
+   *  sub-agents (script-engine/prebuilt/sub-agent.ts's agent.spawn/receive/terminate ops). */
+  NAELAO_AGENT_DO?: DurableObjectNamespace<NaelaoAgentDO>;
 }
 
 export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
@@ -892,6 +914,55 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     `);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_plan_run ON plan_steps(run_id, order_idx)`);
 
+    // Memory OS — Layer 3 (structured facts) + the episodic feeder for Layer 5 (semantic).
+    initMemorySchema(this.ctx.storage.sql);
+
+    // Multi-channel gateway (spec @4211129/@3190360/@3245389) — per-(channel,channel_user_id)
+    // sessions so two Slack/Discord/email users on the same space never bleed into one thread.
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS channel_sessions (
+        id              TEXT PRIMARY KEY,
+        channel         TEXT NOT NULL,
+        channel_user_id TEXT NOT NULL,
+        created_at      INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+        last_seen       INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      )
+    `);
+    this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_session_user ON channel_sessions(channel, channel_user_id)`);
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS channel_messages (
+        id          TEXT PRIMARY KEY,
+        session_id  TEXT NOT NULL REFERENCES channel_sessions(id),
+        direction   TEXT NOT NULL, -- 'inbound' | 'outbound'
+        text        TEXT NOT NULL,
+        external_id TEXT,
+        answered    INTEGER NOT NULL DEFAULT 0,
+        created_at  INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      )
+    `);
+    this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_msg_dedupe ON channel_messages(session_id, direction, external_id)`);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_msg_unanswered ON channel_messages(direction, answered, created_at)`);
+
+    // Sub-agents (spec §12.1 / Pattern 3 "Sub-Agent Coordination") — fan-out tracking +
+    // parent-liveness so a spawned child's result is never orphaned (fixes "Sub-agents have
+    // no parent-liveness link" — spawning is synchronous/awaited from the parent's own
+    // request, so there is no window where the parent can disappear out from under a child).
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS sub_agents (
+        id            TEXT PRIMARY KEY,
+        parent_run_id TEXT NOT NULL,
+        goal          TEXT NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'running', -- running|done|failed|terminated
+        budget_tokens INTEGER NOT NULL DEFAULT 20000,
+        tokens_used   INTEGER NOT NULL DEFAULT 0,
+        result        TEXT,
+        error         TEXT,
+        created_at    INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+        updated_at    INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+      )
+    `);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_sub_agents_parent ON sub_agents(parent_run_id)`);
+
     this.initialized = true;
   }
 
@@ -970,6 +1041,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // POST /heartbeat
       if (method === "POST" && url.pathname === "/heartbeat") {
         return Response.json({ status: "ok", ts: Date.now() });
+      }
+
+      // POST /memory/maintenance { spaceId } — decay structured facts, promote episodic →
+      // semantic, prune the unbounded log. Called from the assistant heartbeat / a daily
+      // cron, not inline with a request (spec gaps: decay never applied, no promotion trigger).
+      if (method === "POST" && url.pathname === "/memory/maintenance") {
+        return this.handleMemoryMaintenance(request);
+      }
+
+      // Multi-channel gateway — already signature-verified by the worker boundary
+      // (POST /v1/channels/:channel/inbound/:spaceId in index.ts) before reaching here.
+      const channelInboundMatch = url.pathname.match(/^\/channels\/([^/]+)\/inbound$/);
+      if (method === "POST" && channelInboundMatch?.[1]) {
+        return this.handleChannelInbound(channelInboundMatch[1], request);
+      }
+      if (method === "GET" && url.pathname === "/channels/sessions") {
+        return this.handleListChannelSessions();
+      }
+      if (method === "GET" && url.pathname === "/channels/unanswered") {
+        return this.handleChannelUnanswered();
+      }
+      if (method === "POST" && url.pathname === "/channels/heartbeat") {
+        return this.handleChannelHeartbeat(request);
       }
 
       // GET /runs/:runId
@@ -1062,23 +1156,46 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // The authoritative script-first agent model (spec appendix ~6672k). Loads the agent's
   // 4-file config from R2, then runs OBSERVE→FINGERPRINT→FIND→GATE→EXECUTE→VERIFY→DISTILL.
 
-  private buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string): ScriptEngineEnv | null {
+  private buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string, userId?: string): ScriptEngineEnv | null {
     if (!this.env.SCRIPTS_R2) return null;
     const env: ScriptEngineEnv = {
       scriptsBucket: this.env.SCRIPTS_R2,
       spaceId,
       agentId,
       tenantId,
+      ...(userId ? { userId } : {}),
     };
     if (this.env.SCRIPTS_VECTORIZE) {
       env.vectorIndex = this.env.SCRIPTS_VECTORIZE as unknown as NonNullable<ScriptEngineEnv["vectorIndex"]>;
     }
     if (this.env.AI) env.embedder = new WorkersAIEmbedder(this.env.AI);
+    {
+      // Memory OS — backed by this DO's own SQLite + (optionally) MEMORY_VECTORIZE for the
+      // semantic layer. Always available (Layer 3 works with no Vectorize binding at all).
+      const memoryEmbedder = this.env.AI ? new WorkersAIEmbedder(this.env.AI) : undefined;
+      env.memoryStore = buildMemoryStore({
+        sql: this.ctx.storage.sql,
+        spaceId,
+        ...(this.env.MEMORY_VECTORIZE
+          ? { vectorIndex: this.env.MEMORY_VECTORIZE as unknown as NonNullable<ScriptEngineEnv["vectorIndex"]> }
+          : {}),
+        ...(memoryEmbedder ? { embedder: memoryEmbedder } : {}),
+      });
+    }
     if (this.env.KNOWLEDGE_WORKER) env.knowledgeWorker = this.env.KNOWLEDGE_WORKER;
     if (this.env.SPACES_WORKER) env.spacesWorker = this.env.SPACES_WORKER;
     if (this.env.NOTIFICATIONS_WORKER) env.notificationsWorker = this.env.NOTIFICATIONS_WORKER;
     if (this.env.BILLING_WORKER) env.billingWorker = this.env.BILLING_WORKER;
     if (this.env.MCP_HUB) env.mcpHubWorker = this.env.MCP_HUB;
+
+    // Execution ladder Tiers 2-5 (code-runner.ts) — degrades tier-by-tier when a binding
+    // (LOADER / BROWSER_WORKER / TOOL_SANDBOX) is absent; Tier 1 (R2) never needs this.
+    env.codeRunner = buildCodeRunner({
+      ...(this.env.LOADER ? { loader: this.env.LOADER } : {}),
+      ...(this.env.BROWSER_WORKER ? { browserWorker: this.env.BROWSER_WORKER } : {}),
+      ...(this.env.PLATFORM_SECRET ? { platformSecret: this.env.PLATFORM_SECRET } : {}),
+      ...(this.env.TOOL_SANDBOX ? { toolSandbox: this.env.TOOL_SANDBOX } : {}),
+    });
 
     // Wire HITL gateway (spec §10 / CLAUDE.md task #10): polls HITLApprovalDO per space.
     if (this.env.HITL_APPROVAL_DO) {
@@ -1124,6 +1241,110 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     return env;
   }
 
+  // ── Sub-agents (spec "Advanced Agent SDK Patterns" §3 Sub-Agent Coordination) ───────────
+  // A running agent can fan out to N child NaelaoAgentDO instances in one agent.spawn call —
+  // the script loop's GATE→EXECUTE step issues ONE tool call per turn, so concurrency comes
+  // from spawning a *batch* of tasks together (mirrors "send one message with several Task
+  // calls" in Claude Code's subagent pattern) rather than from N separate spawn calls.
+  //
+  // Each child gets ITS OWN budget (never inherited from the parent — fixes "Sub-Agent Token
+  // Budget Not Isolated From Parent"), and spawning is `await`ed synchronously inside the
+  // parent's own request, so there is no window where the parent's response completes while a
+  // child is still in flight — fixes "Sub-agents have no parent-liveness link" structurally,
+  // not by polling. A hard cap on batch size (MAX_SUB_AGENTS_PER_SPAWN, deliberately the same
+  // order of magnitude as Claude Code's own ~16-subagent fan-out) bounds the blast radius
+  // (fixes "Sub-Agent Fan-Out Has No Account-Level Parallelism Ceiling").
+
+  private buildOrchestrationHooks(
+    spaceId: string,
+    agentId: string,
+    tenantId: string,
+    apiKey: string,
+    parentRunId: string
+  ): import("../script-engine/types.js").OrchestrationHooks {
+    if (!this.env.NAELAO_AGENT_DO) return {};
+    const agentDO = this.env.NAELAO_AGENT_DO;
+
+    return {
+      spawnSubAgent: async (config) => {
+        const rawTasks = Array.isArray((config as { tasks?: unknown[] }).tasks)
+          ? ((config as { tasks: Array<Record<string, unknown>> }).tasks)
+          : [config];
+        const tasks = rawTasks.slice(0, MAX_SUB_AGENTS_PER_SPAWN);
+
+        const spawned = await Promise.all(
+          tasks.map(async (t) => {
+            const subId = crypto.randomUUID();
+            const goal = String(t["goal"] ?? "");
+            const budgetTokens = typeof t["budget_tokens"] === "number" ? (t["budget_tokens"] as number) : DEFAULT_SUB_AGENT_BUDGET_TOKENS;
+            const maxSteps = budgetToMaxSteps(budgetTokens);
+            const now = Date.now();
+            this.ctx.storage.sql.exec(
+              `INSERT INTO sub_agents (id, parent_run_id, goal, status, budget_tokens, tokens_used, created_at, updated_at) VALUES (?, ?, ?, 'running', ?, 0, ?, ?)`,
+              subId, parentRunId, goal, budgetTokens, now, now
+            );
+            if (!goal) {
+              this.ctx.storage.sql.exec(`UPDATE sub_agents SET status='failed', error=?, updated_at=? WHERE id=?`, "missing goal", Date.now(), subId);
+              return { id: subId, ok: false, error: "missing goal" };
+            }
+            try {
+              const doId = agentDO.idFromName(`sub:${spaceId}:${subId}`);
+              const stub = agentDO.get(doId);
+              const resp = await stub.fetch(new Request("http://agent-do/script/run", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({
+                  goal,
+                  spaceId,
+                  agentId,
+                  tenantId,
+                  sessionId: `subagent-${subId}`,
+                  apiKey,
+                  ...(typeof t["model"] === "string" ? { model: t["model"] } : {}),
+                  context: { parent_run_id: parentRunId, sub_agent_id: subId, max_steps: maxSteps },
+                }),
+              }));
+              const body = await resp.json<{ result?: { ok: boolean; output?: unknown; tokens_used?: number; error?: string } }>().catch(() => ({}) as Record<string, never>);
+              const tokensUsed = body.result?.tokens_used ?? 0;
+              const ok = resp.ok && !!body.result?.ok;
+              const output = ok ? sanitizeSubAgentOutput(body.result?.output) : undefined;
+              this.ctx.storage.sql.exec(
+                `UPDATE sub_agents SET status = ?, tokens_used = ?, result = ?, error = ?, updated_at = ? WHERE id = ?`,
+                ok ? "done" : "failed", tokensUsed, ok ? JSON.stringify(output) : null, ok ? null : (body.result?.error ?? `HTTP ${resp.status}`), Date.now(), subId
+              );
+              return { id: subId, ok, ...(ok ? { output } : { error: body.result?.error ?? `HTTP ${resp.status}` }) };
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              this.ctx.storage.sql.exec(`UPDATE sub_agents SET status='failed', error=?, updated_at=? WHERE id=?`, msg, Date.now(), subId);
+              return { id: subId, ok: false, error: msg };
+            }
+          })
+        );
+        return { id: spawned.map((s) => s.id).join(","), results: spawned } as unknown as { id: string };
+      },
+
+      receiveFromSubAgent: async (id) => {
+        const rows = this.ctx.storage.sql.exec(`SELECT * FROM sub_agents WHERE id = ?`, id).toArray() as Array<{
+          id: string; status: string; result: string | null; error: string | null; tokens_used: number;
+        }>;
+        const row = rows[0];
+        if (!row) return { ok: false, error: "unknown sub-agent id" };
+        return { ok: row.status === "done", status: row.status, output: row.result ? safeJsonParse(row.result) : undefined, error: row.error ?? undefined, tokens_used: row.tokens_used };
+      },
+
+      terminateSubAgent: async (id) => {
+        this.ctx.storage.sql.exec(`UPDATE sub_agents SET status = 'terminated', updated_at = ? WHERE id = ? AND status = 'running'`, Date.now(), id);
+      },
+
+      sendToSubAgent: async (_id, _task) => {
+        // Sub-agents in this build run to completion synchronously within agent.spawn — there
+        // is no still-running child to message. Fan out additional work via another
+        // agent.spawn({ tasks: [...] }) call instead.
+        return { ok: false, reason: "sub-agents run synchronously; spawn another batch instead of sending to a running one" };
+      },
+    };
+  }
+
   private async handleScriptRun(request: Request): Promise<Response> {
     const body = await request.json<{
       goal: string;
@@ -1131,6 +1352,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       agentId: string;
       tenantId?: string;
       sessionId?: string;
+      userId?: string;
       context?: Record<string, unknown>;
       apiKey?: string;
       model?: string;
@@ -1142,16 +1364,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const agentIdFromPath = new URL(request.url).pathname.match(/\/agents\/([^/]+)\//)?.[1];
     const agentId = body.agentId ?? agentIdFromPath ?? "naelao-agent";
     const sessionId = body.sessionId ?? `script-run-${Date.now()}`;
+    const userId = body.userId ?? request.headers.get("x-naelao-user-id") ?? undefined;
     const runId = crypto.randomUUID();
 
     if (!body.goal || !spaceId) {
       return Response.json({ error: "goal and spaceId are required" }, { status: 400 });
     }
 
-    const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId);
+    const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId);
     if (!engineEnv) {
       return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     }
+    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId);
 
     // Load the agent's 4-file config; without it the agent is not provisioned.
     const config = await loadAgentConfig(engineEnv.scriptsBucket, spaceId, agentId);
@@ -1174,12 +1398,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     });
 
     try {
+      const maxStepsFromContext = body.context?.["max_steps"];
       const result = await runScriptLoop(engineEnv, tools, reasoner, config.scripts.prebuilt, {
         goal: body.goal,
         startupObserve: config.scripts.startup_observe,
         requiresApprovalFor,
         runId,
         sessionId,
+        ...(typeof maxStepsFromContext === "number" ? { maxSteps: maxStepsFromContext } : {}),
       });
       return Response.json(result);
     } catch (err) {
@@ -1188,6 +1414,173 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { status: 500 }
       );
     }
+  }
+
+  private async handleMemoryMaintenance(request: Request): Promise<Response> {
+    this.ensureInit();
+    const body = await request.json<{ spaceId?: string }>().catch(() => ({}) as { spaceId?: string });
+    const spaceId = body.spaceId ?? request.headers.get("x-naelao-space-id") ?? "";
+    if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
+    const result = await runMemoryMaintenance({
+      sql: this.ctx.storage.sql,
+      spaceId,
+      ...(this.env.MEMORY_VECTORIZE
+        ? { vectorIndex: this.env.MEMORY_VECTORIZE as unknown as NonNullable<ScriptEngineEnv["vectorIndex"]> }
+        : {}),
+      ...(this.env.AI ? { embedder: new WorkersAIEmbedder(this.env.AI) } : {}),
+    });
+    return Response.json(result);
+  }
+
+  // ── Multi-channel gateway (spec @4211129/@3190360/@3245389) ─────────────────────────────
+  // Same one-shared-contract pattern as the connector layer: a ChannelAdapter normalizes
+  // any platform's payload, sessions are keyed per (channel, channel_user_id) so two Slack
+  // users never bleed into one thread, and the heartbeat drains the unanswered queue through
+  // the SAME script-first loop /script/run uses — channels are an ingress, not a parallel
+  // reply mechanism (CLAUDE.md: "channels, heartbeats are scripts").
+
+  private async handleChannelInbound(type: string, request: Request): Promise<Response> {
+    if (!isChannelType(type)) return Response.json({ error: "unknown_channel" }, { status: 400 });
+    const adapter = getAdapter(type);
+    if (!adapter) return Response.json({ error: "unknown_channel" }, { status: 400 });
+
+    const body = await request.json<{ raw?: Record<string, unknown> }>().catch(() => ({}) as { raw?: Record<string, unknown> });
+    const norm: NormalizedInbound | null = adapter.normalizeInbound(body.raw ?? {});
+    if (!norm) return Response.json({ ignored: true }); // bot echo / not actionable
+
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT id FROM channel_sessions WHERE channel = ? AND channel_user_id = ?`, norm.channel, norm.channel_user_id)
+      .toArray() as Array<{ id: string }>;
+    let sessionId: string;
+    if (rows[0]) {
+      sessionId = rows[0].id;
+      this.ctx.storage.sql.exec(`UPDATE channel_sessions SET last_seen = ? WHERE id = ?`, Date.now(), sessionId);
+    } else {
+      sessionId = crypto.randomUUID();
+      this.ctx.storage.sql.exec(
+        `INSERT INTO channel_sessions (id, channel, channel_user_id, created_at, last_seen) VALUES (?, ?, ?, ?, ?)`,
+        sessionId, norm.channel, norm.channel_user_id, Date.now(), Date.now()
+      );
+    }
+
+    // Dedupe on (session, direction, external_id) — re-delivered webhook events no-op.
+    this.ctx.storage.sql.exec(
+      `INSERT OR IGNORE INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at)
+       VALUES (?, ?, 'inbound', ?, ?, 0, ?)`,
+      crypto.randomUUID(), sessionId, norm.text, norm.external_id, norm.timestamp
+    );
+    return Response.json({ session_id: sessionId, queued: true });
+  }
+
+  private handleListChannelSessions(): Response {
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT id, channel, channel_user_id, created_at, last_seen FROM channel_sessions ORDER BY last_seen DESC LIMIT 200`)
+      .toArray();
+    return Response.json({ sessions: rows, count: rows.length });
+  }
+
+  private handleChannelUnanswered(): Response {
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT m.id, m.session_id, s.channel, s.channel_user_id, m.text, m.created_at
+         FROM channel_messages m JOIN channel_sessions s ON s.id = m.session_id
+         WHERE m.direction = 'inbound' AND m.answered = 0 ORDER BY m.created_at ASC LIMIT 100`
+      )
+      .toArray();
+    return Response.json({ pending: rows, count: rows.length });
+  }
+
+  /** Maps a channel + the matched channel_user_id to the notify.* op's expected params. */
+  private notifyParamsFor(channel: string, channelUserId: string, text: string): Record<string, unknown> {
+    if (channel === "email") return { to: channelUserId, subject: "Re: your message", body: text };
+    return { channel: channelUserId, message: text }; // slack / discord
+  }
+
+  // Drain the unanswered queue through the script-first loop: the goal asks for a grounded
+  // reply; if the model isn't confident it returns "ESCALATE" and the message stays queued
+  // for a human (honest escalation beats a confident wrong answer, per A1.3).
+  private async handleChannelHeartbeat(request: Request): Promise<Response> {
+    this.ensureInit();
+    type HeartbeatBody = { spaceId?: string; agentId?: string; tenantId?: string; apiKey?: string; model?: string; max?: number };
+    const body = await request.json<HeartbeatBody>().catch(() => ({}) as HeartbeatBody);
+    const spaceId = body.spaceId ?? request.headers.get("x-naelao-space-id") ?? "";
+    if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
+    const agentId = body.agentId ?? "naelao-agent";
+    const tenantId = body.tenantId ?? "";
+    const limit = Math.min(body.max ?? 5, 20);
+
+    const pending = this.ctx.storage.sql
+      .exec(
+        `SELECT m.id, m.session_id, s.channel, s.channel_user_id, m.text
+         FROM channel_messages m JOIN channel_sessions s ON s.id = m.session_id
+         WHERE m.direction = 'inbound' AND m.answered = 0 ORDER BY m.created_at ASC LIMIT ?`,
+        limit
+      )
+      .toArray() as Array<{ id: string; session_id: string; channel: string; channel_user_id: string; text: string }>;
+
+    if (pending.length === 0) return Response.json({ drained: 0, answered: 0, escalated: 0 });
+
+    const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId);
+    if (!engineEnv) return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
+    const config = await loadAgentConfig(engineEnv.scriptsBucket, spaceId, agentId);
+    if (!config) return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
+    const requiresApprovalFor = [...parseRequiresApprovalFor(config.agentsMd)];
+    const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
+    const reasoner = new GatewayReasoner({
+      apiKey: body.apiKey ?? "",
+      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway" },
+      ctx: { spaceId, agentId, model: body.model ?? "claude-haiku-4-5-20251001" },
+      ...(body.model ? { model: body.model } : {}),
+    });
+
+    let answered = 0;
+    let escalated = 0;
+    for (const msg of pending) {
+      // Untrusted inbound text — moderate before it ever reaches the reasoning prompt.
+      if (moderateInput(msg.text).blocked) { escalated++; continue; }
+
+      let result: Awaited<ReturnType<typeof runScriptLoop>>;
+      try {
+        result = await runScriptLoop(engineEnv, tools, reasoner, config.scripts.prebuilt, {
+          goal:
+            `A message arrived on ${msg.channel} from user ${msg.channel_user_id}: "${msg.text.slice(0, 2000)}". ` +
+            `Draft a helpful, grounded reply and send it via notify.${msg.channel} to "${msg.channel_user_id}". ` +
+            `If you cannot answer confidently, reply with exactly "ESCALATE" instead of guessing — do not send anything.`,
+          startupObserve: config.scripts.startup_observe,
+          requiresApprovalFor,
+          sessionId: msg.session_id,
+        });
+      } catch (err) {
+        result = { level: "L4", result: { ok: false, error: String(err), tier: 1, duration_ms: 0, tokens_used: 0 }, notes: [] };
+      }
+
+      const deliveredDirectly = result.script_name?.startsWith("notify.") && result.result?.ok;
+      if (deliveredDirectly) {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at) VALUES (?, ?, 'outbound', ?, NULL, 1, ?)`,
+          crypto.randomUUID(), msg.session_id, "(sent via notify)", Date.now()
+        );
+        this.ctx.storage.sql.exec(`UPDATE channel_messages SET answered = 1 WHERE id = ?`, msg.id);
+        answered++;
+        continue;
+      }
+
+      const text = typeof result.result?.output === "string" ? result.result.output.trim() : "";
+      if (!result.result?.ok || !text || text === "ESCALATE" || !moderateText(text).allowed) {
+        escalated++;
+        continue;
+      }
+      // The reasoner answered in text rather than calling notify.* itself — deliver it now.
+      const deliver = await tools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, text));
+      if (!deliver.ok) { escalated++; continue; }
+      this.ctx.storage.sql.exec(
+        `INSERT INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at) VALUES (?, ?, 'outbound', ?, NULL, 1, ?)`,
+        crypto.randomUUID(), msg.session_id, text, Date.now()
+      );
+      this.ctx.storage.sql.exec(`UPDATE channel_messages SET answered = 1 WHERE id = ?`, msg.id);
+      answered++;
+    }
+    return Response.json({ drained: pending.length, answered, escalated });
   }
 
   // ── POST /run ─────────────────────────────────────────────────────────────

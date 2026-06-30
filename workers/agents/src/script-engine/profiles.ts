@@ -51,6 +51,9 @@ ${BASE_AGENTS_MD}`,
         "notifications",
         "sub-agent",
         "dynamic-workflow",
+        "browser-use",
+        "code-exec",
+        "memory",
       ],
       agent_scripts: "auto",
       startup_observe: "observe_filesystem",
@@ -87,6 +90,12 @@ function skillToPrebuilt(skill: string): string[] {
       return ["storefront"];
     case "business-email":
       return ["business-email"];
+    case "browser":
+    case "browser-use":
+      return ["browser-use"];
+    case "code-exec":
+    case "sandbox":
+      return ["code-exec"];
     default:
       return [];
   }
@@ -115,6 +124,7 @@ export function launchpadAgentToProfile(def: LaunchpadAgentDefinition): { agentI
     for (const p of skillToPrebuilt(skill)) prebuilt.add(p);
   }
   prebuilt.add("notifications"); // owner/customer notifications + HITL surface
+  prebuilt.add("memory"); // episodic/semantic Memory OS — every agent self-manages memory
 
   const triggerNote =
     def.trigger.type === "schedule"

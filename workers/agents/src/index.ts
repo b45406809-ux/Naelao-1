@@ -29,6 +29,7 @@ import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./conne
 import { SkillLibrary } from "./script-engine/skill-library.js";
 import { promoteSkill, inheritTemplateSkills } from "./script-engine/federation.js";
 import { verifyWebhookSignature, normalizeWebhook, webhookGoal } from "./connectors/webhook-normalizer.js";
+import { isChannelType, getAdapter } from "./launchpad/channels.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -1058,6 +1059,117 @@ app.post("/connectors/:platform/webhook/:spaceId", async (c) => {
   return c.json({ ok: true, platform, event_type: normalized.event_type });
 });
 
+// The per-space credential name a channel's signing secret/public key is stored under
+// (collected by the channel-connect flow, resolved through the same vault as connectors).
+const CHANNEL_SECRET_CREDENTIAL: Record<string, string> = {
+  slack: "SLACK_SIGNING_SECRET",
+  discord: "DISCORD_PUBLIC_KEY",
+  email: "EMAIL_SIGNING_SECRET",
+};
+
+// POST /channels/:channel/connect — store the channel's signing secret in the vault and mark
+// it enabled in channel_links (the heartbeat cron's discovery roster). Mirrors
+// /connectors/:platform/connect. The builder gets the webhook URL back to paste into the
+// provider's console: https://<router>/v1/channels/:channel/inbound/:spaceId.
+app.post("/channels/:channel/connect", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const channel = c.req.param("channel");
+  if (!isChannelType(channel)) throw notFound("Channel");
+  if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
+
+  const body = await c.req.json<{ space_id: string; secret: string }>().catch(() => ({ space_id: "", secret: "" }));
+  if (!body.space_id) throw badRequest("space_id is required");
+  if (!body.secret) throw badRequest("secret is required (signing secret / public key)");
+
+  const credResp = await c.env.CREDENTIALS_WORKER.fetch(
+    new Request(`http://credentials/v1/spaces/${body.space_id}/credentials`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+      body: JSON.stringify({
+        name: CHANNEL_SECRET_CREDENTIAL[channel],
+        value: body.secret,
+        description: `${channel} channel signing secret`,
+      }),
+    })
+  );
+  if (!credResp.ok && credResp.status !== 409) {
+    return c.json({ error_code: "credential_store_failed", message: await credResp.text() }, 502);
+  }
+
+  await c.env.PLATFORM_DB.prepare(
+    `INSERT INTO channel_links (space_id, tenant_id, channel, enabled) VALUES (?, ?, ?, 1)
+     ON CONFLICT (space_id, channel) DO UPDATE SET enabled = 1`
+  ).bind(body.space_id, tenantId, channel).run();
+
+  return c.json({ connected: true, channel, webhook_path: `/v1/channels/${channel}/inbound/${body.space_id}` }, 201);
+});
+
+// POST /channels/:channel/inbound/:spaceId — generic, signature-verified channel ingress.
+// UNAUTHENTICATED at the HTTP layer (Slack/Discord/email providers can't carry a JWT); the
+// channel's own signature scheme IS the auth (ChannelAdapter.verifySignature). Mirrors the
+// connector webhook route above: resolve the space, resolve the per-space secret from the
+// vault, verify, normalize, forward to the owning NaelaoAgentDO's channel inbox.
+app.post("/channels/:channel/inbound/:spaceId", async (c) => {
+  const channel = c.req.param("channel");
+  const spaceId = c.req.param("spaceId");
+  if (!isChannelType(channel)) return c.json({ ok: true, skipped: "unknown_channel" });
+  const adapter = getAdapter(channel)!;
+
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT tenant_id, status FROM spaces WHERE id = ?"
+  ).bind(spaceId).first<{ tenant_id: string; status: string }>();
+  if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
+
+  const rawBody = await c.req.text();
+
+  if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
+  const credToken = await generateCredentialToken(c.env.PLATFORM_SECRET, spaceId, "naelao-agent");
+  const credName = CHANNEL_SECRET_CREDENTIAL[channel]!;
+  const secretResp = await c.env.CREDENTIALS_WORKER.fetch(
+    new Request(`http://credentials/v1/internal/spaces/${spaceId}/credentials/${encodeURIComponent(credName)}/plaintext`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": space.tenant_id, "x-naelao-credential-token": credToken },
+    })
+  );
+  if (!secretResp.ok) return c.json({ error_code: "no_channel_secret", message: "Channel signing secret not configured for this space" }, 400);
+  const { value: secret } = await secretResp.json<{ value: string }>();
+
+  const headers: Record<string, string> = {};
+  c.req.raw.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+  const valid = await adapter.verifySignature({ rawBody, headers, secret });
+  if (!valid) return c.json({ error_code: "invalid_signature" }, 401);
+
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed = JSON.parse(rawBody) as Record<string, unknown>;
+  } catch {
+    // Not JSON (e.g. a form-encoded inbound-email webhook) — fall back to form fields.
+    try {
+      parsed = Object.fromEntries(new URLSearchParams(rawBody));
+    } catch { /* leave empty — adapter.normalizeInbound returns null and we ack-ignore */ }
+  }
+
+  // Slack's Events API verification handshake — answer once the signature has checked out.
+  if (channel === "slack" && parsed["type"] === "url_verification") {
+    return c.json({ challenge: parsed["challenge"] });
+  }
+  // Slack wraps the actual message in `event`; Discord/email payloads are already top-level.
+  const raw = channel === "slack" && parsed["event"] ? (parsed["event"] as Record<string, unknown>) : parsed;
+
+  try {
+    const stub = await getAgentDOForSpace(c.env, space.tenant_id, spaceId, "naelao-agent", c.get("requestId"));
+    await stub.fetch(new Request(`http://agent-do/channels/${channel}/inbound`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ raw }),
+    }));
+  } catch (err) {
+    console.error(`[channels] inbound forward failed channel=${channel} space=${spaceId}:`, (err as Error).message);
+  }
+  return c.json({ ok: true });
+});
+
 // ── First-run bootstrap execution ─────────────────────────────────────────────
 // POST /spaces/:spaceId/bootstrap/complete — finishes the onboarding the provisioner recorded:
 // creates the template's projects in the SpaceDO, wakes the assistant to run the setup scripts,
@@ -1705,6 +1817,37 @@ async function pollConnectors(env: AgentsEnv): Promise<void> {
   }
 }
 
+// ── Channel heartbeat sweep (hourly cron) ─────────────────────────────────────────────────
+// Drains each space's unanswered channel queue through its agent's script loop, then runs
+// Memory OS maintenance for the same space (decay + episodic→semantic promotion) — one
+// "assistant tick" per space with channels configured, consistent with A1.3's heartbeat model.
+async function runChannelHeartbeats(env: AgentsEnv): Promise<void> {
+  const { results } = await env.PLATFORM_DB.prepare(
+    `SELECT DISTINCT cl.space_id AS space_id, cl.tenant_id AS tenant_id
+       FROM channel_links cl
+       JOIN spaces s ON s.id = cl.space_id AND s.status = 'active'
+      WHERE cl.enabled = 1`
+  ).all<{ space_id: string; tenant_id: string }>();
+
+  for (const row of results) {
+    try {
+      const stub = await getAgentDOForSpace(env, row.tenant_id, row.space_id, "naelao-agent");
+      await stub.fetch(new Request("http://agent-do/channels/heartbeat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ spaceId: row.space_id, agentId: "naelao-agent", tenantId: row.tenant_id, apiKey: env.ANTHROPIC_API_KEY }),
+      }));
+      await stub.fetch(new Request("http://agent-do/memory/maintenance", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ spaceId: row.space_id }),
+      }));
+    } catch (err) {
+      console.error(`[channels] heartbeat failed space=${row.space_id}:`, (err as Error).message);
+    }
+  }
+}
+
 async function handleScheduled(env: AgentsEnv): Promise<void> {
   // Fetch all registered business user IDs from ProductDO
   const productDO = await getProductDO(env);
@@ -1801,6 +1944,7 @@ export default {
     // Hourly cron → poll webhook-less connectors; daily cron → the nightly business cycle.
     if (controller.cron === "0 * * * *") {
       await pollConnectors(env);
+      await runChannelHeartbeats(env);
     } else {
       await handleScheduled(env);
     }

@@ -81,6 +81,40 @@ isn't HMAC-signed, so there's no webhook ingress — the agent polls sales on a 
 
 Adding the next connector after this is, again, a catalogue row + a sibling shim worker.
 
+## Execution ladder Tiers 2-5 (script-engine/code-runner.ts)
+
+| Binding | What it is | Tier |
+|---|---|---|
+| `LOADER` (`[[worker_loaders]]`) | CF Worker Loader — dynamically spins up a fresh V8 isolate per `script.run` call. Beta CF primitive; without it Tiers 2-4 report "unavailable" (Tier 1 R2 ops and Tier 5 container are unaffected). | 2, 3, 4 |
+| `BROWSER_WORKER` (`[[services]]` → `naelao-browser`) | The pre-existing CF Browser Rendering proxy, now reachable from inside a Tier-4 isolate via an injected `ctx.browser.navigate(...)` capability. | 4 |
+| `TOOL_SANDBOX` (`durable_objects.bindings` → `ToolSandboxDO`) | Already declared — its container harness gained a generic `POST /exec` route alongside the legacy `/build` route. | 5 |
+
+No new secrets — these are bindings, not credentials.
+
+## Memory OS (script-engine/memory-os.ts)
+
+| Binding | What it is |
+|---|---|
+| `MEMORY_VECTORIZE` (`[[vectorize]]` index `naelao-agent-memory`) | The semantic (Layer 5) recall index. Optional — Layer 3 (structured facts) works with no Vectorize binding at all; without it, episodic notes are simply never promoted to long-term semantic memory (decay/pruning still run). |
+
+## Multi-channel gateway (launchpad/channels.ts + the /v1/channels/:channel/inbound/:spaceId route)
+
+Same vault pattern as connectors — `POST /channels/:channel/connect { space_id, secret }`
+stores the channel's signing secret/public key under a fixed credential name, and the public
+webhook route resolves it at verification time:
+
+| Channel | Credential name | What `secret` is |
+|---|---|---|
+| `slack` | `SLACK_SIGNING_SECRET` | Slack app's Signing Secret (HMAC-SHA256) |
+| `discord` | `DISCORD_PUBLIC_KEY` | Discord app's Public Key, hex (Ed25519 — asymmetric, not a shared secret) |
+| `email` | `EMAIL_SIGNING_SECRET` | Inbound-parse provider's signing key (Mailgun-style HMAC) |
+
+Point the provider's webhook console at `https://<router>/v1/channels/:channel/inbound/:spaceId`
+(returned by the connect endpoint). Slack's Events API URL-verification handshake is answered
+automatically once the signature checks out. The hourly cron drains each connected space's
+unanswered queue (`channel_links` table, `0038_channel_links.sql`) through the agent's
+script-first loop.
+
 ## Other platform secrets (pre-existing)
 
 `PLATFORM_SECRET`, `JWT_SECRET` (router/auth), `ANTHROPIC_API_KEY` (agents), Stripe keys

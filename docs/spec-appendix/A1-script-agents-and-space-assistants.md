@@ -212,6 +212,131 @@ template (+ Zendesk/Intercom support connectors). **Voice agents** = the same ag
 telephony/TTS, the agent reasons over the transcript and calls scripts. No special-casing — voice is
 a channel, support is a profile.
 
+## A1.11 Execution substrate, multi-channel gateway, Memory OS & sub-agents — BUILT
+
+This closes the three gaps identified by comparing our Space Assistants against OpenClaw
+(execution agency) and Hermes Agent (self-improving, memory-first agents): the engine could
+*design* Tier 2-5 work and channel ingress but not yet *run* them, and had procedural memory
+(skills) without episodic/semantic memory or a self-managed memory tool.
+
+**Execution ladder Tiers 2-5 — `script-engine/code-runner.ts`.** Implements `TieredCodeRunner`
+for real:
+- **Tier 2/3** — a CF Worker Loader (`[[worker_loaders]]` binding `LOADER`) spins up a fresh V8
+  isolate per `script.run` call. Stored code is a single module exporting `run(args, ctx)`; the
+  runner appends a small `fetch` harness around it. Tier 3 best-effort resolves bare-specifier
+  imports from `esm.sh` as extra virtual modules (there is no real "npm install" inside an
+  isolate — documented as a real limitation, not papered over).
+- **Tier 4** — the same isolate, with `ctx.browser.navigate(...)` injected, proxied to the
+  pre-existing `naelao-browser` Worker (CF Browser Rendering + SSRF guard) via a new
+  `BROWSER_WORKER` service binding. Agents still never get raw CDP.
+- **Tier 5** — `ToolSandboxDO`'s container harness (`container/server.mjs`) gained a generic
+  `POST /exec { code, args }` route (esbuild-bundle → import → call `run(args,{})`), alongside
+  its existing `/build` route for the legacy micro-tool gate.
+- Wired into `NaelaoAgentDO.buildScriptEngineEnv` as `env.codeRunner`; degrades tier-by-tier,
+  never crashes, when a binding is absent.
+- New prebuilts **`browser-use`** (navigate/click/type/extract/screenshot, Tier 4) and
+  **`code-exec`** (`execute_python`/`execute_bash` → Tier 5; `run_js` → Tier 2, codemode) ship
+  in the Default Naelao Agent. `run_js` re-applies the reserved-capability guard at call time
+  (ad hoc code bypasses `script.create`, so it must not bypass the money-in guard too).
+
+**Multi-channel gateway — `launchpad/channels.ts` + the new public ingress.** The
+`ChannelAdapter` interface (normalize/format) already existed; this pass added the missing
+half — **verified, public ingress**: `verifySignature()` per channel (Slack HMAC-SHA256,
+Discord Ed25519, email HMAC/Mailgun-style), a public route
+`POST /v1/channels/:channel/inbound/:spaceId` (router registers it before the JWT gate, same
+pattern as the connector webhook), and `POST /channels/:channel/connect` to store the signing
+secret in the vault + mark `channel_links` (the heartbeat cron's discovery roster,
+`0038_channel_links.sql`). `NaelaoAgentDO` gained `channel_sessions`/`channel_messages` tables
+(per-(channel, channel_user_id) sessions — two Slack users never bleed into one thread) and a
+`/channels/heartbeat` route that drains the unanswered queue through the **same script-first
+loop** `/script/run` uses (goal: draft + send a reply via `notify.<channel>`, or reply exactly
+`"ESCALATE"` rather than guess). The hourly cron now also calls `runChannelHeartbeats()`.
+Channels are an *ingress*, not a parallel reply mechanism, per CLAUDE.md's "channels are
+scripts."
+
+**Memory OS — `script-engine/memory-os.ts`.** Layer 3 (Structured Facts: entity/relation/
+attribute triples, `trust_score`/`decay_rate`) and the episodic feeder for Layer 5 (Vectorize
+semantic recall), both scoped by `user_id` (empty-string sentinel = space-level) so shared-
+assistant mode can never merge two users' memories (the "Shared Agent Mode Memory Namespace
+Collision" gap). `runMemoryMaintenance()` — called from the same hourly heartbeat sweep —
+**applies decay** (trust_score shrinks per `decay_rate` per day of inactivity, pruned below a
+floor: "decay_rate field defined but never applied" + "grows without bound," both fixed),
+**promotes** high-importance unpromoted episodic notes into Vectorize ("episodic→semantic
+promotion has no trigger," fixed), and prunes the unbounded episodic log to a retention cap.
+The new **`memory` prebuilt** (`memory.remember` / `memory.recall` / `memory.forget`) is the
+missing Hermes pattern — the agent can explicitly write/query memory mid-task instead of it
+being something only the host silently injects — and ships in every agent by default.
+Layers 1 (Workspace/R2) and 2 (Sessions/FTS5) already existed; Layer 4 (Fabric, cross-session
+LLM-driven consolidation) and Layer 6 (LLM Wiki) remain open (A1.5).
+
+**Sub-agents — real spawn/receive/terminate.** `NaelaoAgentDO.buildOrchestrationHooks()`
+implements the `OrchestrationHooks` the `sub-agent` prebuilt already called (previously always
+"unavailable" — no host had wired them). `agent.spawn` accepts a **batch** of tasks
+(`{ tasks: [{goal, budget_tokens?, model?}, ...] }`) and spawns them **concurrently** via
+`Promise.all` against sibling `NaelaoAgentDO` instances (`idFromName(`sub:{spaceId}:{subId}`)`)
+— see A1.12 for why batching is the chosen shape for parallelism here. Each child gets its own
+budget (`budget_tokens` → a coarse step ceiling via `budgetToMaxSteps`, never inherited from
+the parent — fixes "Sub-Agent Token Budget Not Isolated From Parent"); spawning is `await`ed
+synchronously inside the parent's own request, so a child can never be orphaned by the parent's
+response completing first (fixes "Sub-agents have no parent-liveness link" structurally, not by
+polling); a fleet-wide batch cap (`MAX_SUB_AGENTS_PER_SPAWN = 16`, deliberately the same order
+of magnitude as Claude Code's own subagent fan-out) bounds the blast radius (fixes "No
+Account-Level Parallelism Ceiling"); every child's output is wrapped in
+`<untrusted_subagent_result>` and moderation-scanned before the parent ever sees it (fixes
+"Sub-Agent Output Schema Enforcement" — output is data, never instructions). `agent.receive`
+polls the new `sub_agents` table; `agent.terminate` marks a row terminated; `agent.send` is
+intentionally a no-op explainer (children run to completion synchronously in this build —
+fan out another batch instead of messaging a "running" one).
+
+## A1.12 Vertical / specialized agents & sub-agent fan-out — how it composes
+
+**A vertical agent is a Profile, not a new code path.** "Customer service agent," "voice
+agent," "legal-vertical agent," "sales-outreach agent" are all the SAME `NaelaoAgentDO` +
+script engine, configured by the 4-file agent config (`agents.md`, `system-prompt.md`,
+`scripts.json`, `skills.json`) that `script-engine/profiles.ts` composes. Specializing an
+agent is choosing: (1) which **prebuilt scripts** it's allowed (`scripts.json.prebuilt`,
+e.g. a voice agent enables a voice channel connector + `notifications`; a coding agent enables
+`code-exec` + `browser-use`; neither needs the other), (2) its **system prompt** (role/domain/
+tone), (3) its **behavioral rules** in `agents.md` (escalation thresholds, `requires_approval_for`),
+and (4) its **skills.json** knowledge docs. None of this is a fork of the engine — adding a new
+"kind" of agent is authoring a Profile (`launchpadAgentToProfile`-style function) or a Template
+`bootstrap.agents` entry (A1.10), never a new DO class or a new loop.
+
+**Where this composition happens:** `SpaceTypeRegistryDO`'s manifest → `provisioner` installs
+the space's `agent_definitions` → each one is realized as a Profile → written out as the 4 R2
+files under `spaces/{spaceId}/agents/{agentId}/`. A builder configuring a vertical agent via
+the dashboard is choosing prebuilt-script checkboxes and filling in prompt/instruction fields
+— never writing code (the platform's standing security requirement).
+
+**Sub-agents vs. specialized agents — different axes.** A *specialized agent* is a long-lived
+identity (own R2 config, own thread history, own escalation rules) a builder configures once.
+A *sub-agent* (A1.11) is ephemeral — spawned mid-task by another agent's `agent.spawn`,
+addressed `sub:{spaceId}:{subId}`, runs one goal to completion, and is gone. A specialized
+agent's *work* can itself fan out into sub-agents (e.g. a "research agent" Profile whose
+`agents.md` instructs it to `agent.spawn` one sub-task per source); the two concepts compose
+freely.
+
+**Why batched `agent.spawn` instead of N separate spawn calls (Claude Code parity, adapted).**
+Claude Code's own multi-agent pattern is: an orchestrator issues several `Task` tool calls in
+one assistant turn, and they run in parallel because nothing blocks between them — "send one
+message with multiple Task tool calls," explicitly *not* serial spawn-then-wait-then-spawn.
+Our `OBSERVE→FINGERPRINT→FIND→GATE→EXECUTE→VERIFY→DISTILL` loop's GATE→EXECUTE step issues
+**one** `script.run` per turn (`ReasonDecision` is a single `run`/`patch`/`distill`/`answer`/
+`give_up`), so N separate `agent.spawn` calls across N turns would be serial, not parallel —
+the loop has no batched-tool-call concept the way a chat-completions tool-use turn does. The
+fix that preserves the loop's one-decision-per-turn shape while still delivering real
+concurrency: `agent.spawn` itself accepts an **array** of tasks and the host fans them out
+together via `Promise.all`. One tool call, N children running concurrently — functionally
+equivalent to Claude Code's "one message, multiple Task calls," expressed as the loop's single
+op rather than a batch of ops. `MAX_SUB_AGENTS_PER_SPAWN = 16` deliberately mirrors the rough
+scale Claude Code runs at, not picked arbitrarily.
+
+**What this does NOT yet do (open, tracked):** incremental streaming of a sub-agent's progress
+back to the parent before it finishes (spec gap "Sub-Agent Results Block Parent"); a real
+per-token meter for `budget_tokens` (today it's a coarse step-count proxy, documented as such);
+`parentAgent()`/notify-parent-of-progress for long-running children; an account-level (not
+just per-spawn-call) concurrency ceiling across a tenant's *simultaneous* sub-agent trees.
+
 ## A1.5 Open follow-ups (tracked, not yet built)
 
 - **Credential hierarchy**: per-user (default) + per-space (shared, e.g. company email) +

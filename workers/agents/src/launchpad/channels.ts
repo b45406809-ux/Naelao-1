@@ -31,12 +31,52 @@ export interface OutboundMessage {
   text: string;
 }
 
+/** What a channel's webhook verifier needs — varies by channel (HMAC vs Ed25519 vs none). */
+export interface SignatureInput {
+  rawBody: string;
+  headers: Record<string, string>;
+  /** The space's per-channel signing secret (Slack signing secret / Discord public key / …). */
+  secret: string;
+}
+
 export interface ChannelAdapter {
   type: ChannelType;
   /** Normalize a raw channel payload; returns null if it isn't an actionable message. */
   normalizeInbound(raw: Record<string, unknown>): NormalizedInbound | null;
   /** Format an outbound message into the channel-native shape. */
   formatOutbound(msg: OutboundMessage): Record<string, unknown>;
+  /**
+   * Verify an inbound webhook actually came from this channel before any normalization
+   * happens (spec "Outbound Webhooks Not Verified by Default" — applies symmetrically to
+   * inbound channel ingress). Fail-closed: any error during verification is "not verified."
+   */
+  verifySignature(input: SignatureInput): Promise<boolean>;
+}
+
+async function hmacSha256Hex(secret: string, message: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(message));
+  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const clean = hex.length % 2 === 0 ? hex : `0${hex}`;
+  const out = new Uint8Array(clean.length / 2);
+  for (let i = 0; i < out.length; i++) out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  return out;
 }
 
 function str(o: Record<string, unknown>, k: string): string | undefined {
@@ -56,6 +96,20 @@ const emailAdapter: ChannelAdapter = {
   formatOutbound(msg) {
     return { body: msg.text, content_type: "text/plain" };
   },
+  // Mailgun-style inbound: HMAC-SHA256(timestamp + token, signing_key) — the shared scheme
+  // for inbound-parse webhooks that support signing at all (most do, modeled on Mailgun's).
+  async verifySignature({ headers, secret }) {
+    const timestamp = headers["x-mailgun-timestamp"] ?? headers["x-timestamp"];
+    const token = headers["x-mailgun-token"] ?? headers["x-token"];
+    const signature = headers["x-mailgun-signature"] ?? headers["x-signature"];
+    if (!timestamp || !token || !signature || !secret) return false;
+    try {
+      const expected = await hmacSha256Hex(secret, `${timestamp}${token}`);
+      return timingSafeEqual(expected, signature.toLowerCase());
+    } catch {
+      return false;
+    }
+  },
 };
 
 const slackAdapter: ChannelAdapter = {
@@ -72,6 +126,20 @@ const slackAdapter: ChannelAdapter = {
   formatOutbound(msg) {
     return { text: msg.text, blocks: [{ type: "section", text: { type: "mrkdwn", text: msg.text } }] };
   },
+  // Slack signing: HMAC-SHA256("v0:{timestamp}:{rawBody}", signing_secret) vs X-Slack-Signature
+  // (prefixed "v0="). Reject requests older than 5 minutes to block replay.
+  async verifySignature({ rawBody, headers, secret }) {
+    const timestamp = headers["x-slack-request-timestamp"];
+    const signature = headers["x-slack-signature"];
+    if (!timestamp || !signature || !secret) return false;
+    if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return false;
+    try {
+      const expected = `v0=${await hmacSha256Hex(secret, `v0:${timestamp}:${rawBody}`)}`;
+      return timingSafeEqual(expected, signature);
+    } catch {
+      return false;
+    }
+  },
 };
 
 const discordAdapter: ChannelAdapter = {
@@ -87,6 +155,31 @@ const discordAdapter: ChannelAdapter = {
   },
   formatOutbound(msg) {
     return { content: msg.text };
+  },
+  // Discord signing: Ed25519 over (timestamp + rawBody) vs X-Signature-Ed25519, verified
+  // against the application's public key (hex). `secret` here IS the public key, not a
+  // shared HMAC secret — Discord's scheme is asymmetric.
+  async verifySignature({ rawBody, headers, secret }) {
+    const signature = headers["x-signature-ed25519"];
+    const timestamp = headers["x-signature-timestamp"];
+    if (!signature || !timestamp || !secret) return false;
+    try {
+      const key = await crypto.subtle.importKey(
+        "raw",
+        hexToBytes(secret),
+        { name: "Ed25519" },
+        false,
+        ["verify"]
+      );
+      return await crypto.subtle.verify(
+        "Ed25519",
+        key,
+        hexToBytes(signature),
+        new TextEncoder().encode(timestamp + rawBody)
+      );
+    } catch {
+      return false;
+    }
   },
 };
 

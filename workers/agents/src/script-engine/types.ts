@@ -197,6 +197,44 @@ export interface OrchestrationHooks {
   workflowStatus?(id: string): Promise<unknown>;
 }
 
+// ── Memory OS (spec "Space Assistants — OpenClaw + CF Thinker + Memory OS", byte ~141822) ──
+// Layer 3 (Structured Facts) + Layer 5 (Vector DB) of the 6-layer pipeline, implemented as
+// NaelaoAgentDO SQLite + Vectorize and injected here the same way codeRunner/hitlGateway are.
+// Layers 1 (Workspace/R2) and 2 (Sessions/FTS5) already exist (r2-workspace, messages_fts).
+
+/** A single recalled memory, regardless of which layer it came from. */
+export interface MemoryRecallResult {
+  id: string;
+  layer: "structured_fact" | "episodic" | "semantic";
+  text: string;
+  /** entity/relation/attribute when layer === "structured_fact". */
+  entity?: string;
+  relation?: string;
+  attribute?: string;
+  score: number;
+  user_id?: string;
+}
+
+export interface MemoryStore {
+  /**
+   * Layer 3: remember a durable fact (entity/relation/attribute triple) OR Layer 5-bound
+   * episodic note when entity/relation/attribute are omitted (free-text, scored by
+   * `importance` for later promotion to semantic memory).
+   */
+  remember(entry: {
+    userId?: string;
+    text: string;
+    entity?: string;
+    relation?: string;
+    attribute?: string;
+    /** 0-1; gates promotion to the Vectorize semantic layer. Default 0.5. */
+    importance?: number;
+  }): Promise<{ id: string }>;
+  /** Surgical recall (spec "Pre-Flight Check"): structured facts + episodic + semantic, merged. */
+  recall(query: { userId?: string; text: string; limit?: number }): Promise<MemoryRecallResult[]>;
+  forget(id: string): Promise<void>;
+}
+
 /**
  * HITL (Human-in-the-Loop) gateway interface (spec §10 / CLAUDE.md task #10).
  * Injected by NaelaoAgentDO when HITL_APPROVAL_DO is bound; absent in unit tests.
@@ -240,8 +278,14 @@ export interface ScriptEngineEnv {
   orchestration?: OrchestrationHooks;
   /** HITL approval gateway — present when HITLApprovalDO is wired up. */
   hitlGateway?: HITLGateway;
+  /** Memory OS (structured facts + episodic + semantic recall) — present when the host DO
+   *  has initialized its memory tables. Absent in environments that haven't wired it yet. */
+  memoryStore?: MemoryStore;
   /** Identity for scoping R2 keys + Vectorize filters. */
   spaceId: string;
   agentId: string;
   tenantId: string;
+  /** The end-user this run is on behalf of (set per /script/run call). Scopes the user model
+   *  (Memory OS) and per-(channel,user) sessions. Absent for space-level/system-triggered runs. */
+  userId?: string;
 }

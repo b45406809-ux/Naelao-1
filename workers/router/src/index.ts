@@ -134,6 +134,18 @@ app.all("/v1/connectors/:platform/webhook/:spaceId", async (c) => {
   );
 });
 
+// ── Public multi-channel ingress (unauthenticated; the channel's own signature is the auth) ──
+// Slack/Discord/inbound-email providers can't carry a JWT either — same pattern as connectors
+// above, registered before the authenticated api group. The agents worker verifies the
+// channel-specific signature (HMAC for Slack/email, Ed25519 for Discord) before acting on it.
+app.all("/v1/channels/:channel/inbound/:spaceId", async (c) => {
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.AGENTS_WORKER.fetch(
+    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+  );
+});
+
 // ── Protected API routes ─────────────────────────────────────────────────────
 const api = new Hono<{ Bindings: Env }>();
 api.use(
@@ -295,6 +307,10 @@ api.all("/connectors", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims")
 // Federated template learning (promote / inherit shared skills) → agents worker.
 api.all("/skills/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 api.all("/templates/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+
+// Multi-channel gateway connect flow (authenticated; the public inbound webhook is registered
+// above, before the JWT gate) → agents worker.
+api.all("/channels/:channel/connect", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
 app.route("/v1", api);
 

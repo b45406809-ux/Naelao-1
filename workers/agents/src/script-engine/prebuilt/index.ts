@@ -6,11 +6,11 @@
  * script.run(opName, params). Operations are bundled platform code (not stored per-agent
  * in R2) — the agent's distilled scripts compose them.
  *
- * This build ships the Launchpad subset:
- *   r2-workspace, web-search, file-manager, knowledge-base, notifications,
- *   sub-agent, dynamic-workflow
- * Deferred per CLAUDE.md CURRENT DIRECTION #8: browser-use, vision-delegate, code-exec,
- * sandbox-container, mcp-connector.
+ * Catalogue: r2-workspace, web-search, file-manager, knowledge-base, notifications,
+ *   sub-agent, dynamic-workflow, commerce, storefront, business-email, mcp-connector,
+ *   browser-use (Tier 4), code-exec (Tier 2/5), memory (episodic/semantic Memory OS).
+ * Deferred: vision-delegate (Workers AI vision model wiring — needs a multimodal model
+ * binding decision, tracked separately from the Tier 2-5 execution substrate).
  */
 
 import type { ScriptDomain, ExecutionTier, ScriptEngineEnv } from "../types.js";
@@ -25,6 +25,9 @@ import { commerce } from "./commerce.js";
 import { storefront } from "./storefront.js";
 import { businessEmail } from "./business-email.js";
 import { mcpConnector } from "./mcp-connector.js";
+import { browserUse } from "./browser-use.js";
+import { codeExec } from "./code-exec.js";
+import { memory } from "./memory.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -62,6 +65,11 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [businessEmail.name]: businessEmail,
   // Connector layer: reach any external platform over MCP (Whop, Gumroad, Beehiiv, …).
   [mcpConnector.name]: mcpConnector,
+  // Execution ladder Tiers 2/4/5: real browser + sandboxed code execution.
+  [browserUse.name]: browserUse,
+  [codeExec.name]: codeExec,
+  // Memory OS: episodic log + semantic recall + user model (Hermes-pattern self-managed memory).
+  [memory.name]: memory,
 };
 
 /**
@@ -82,4 +90,18 @@ export function buildOperationMap(
   return map;
 }
 
-export { r2Workspace, fileManager, webSearch, knowledgeBase, notifications, subAgent, dynamicWorkflow, commerce, storefront, businessEmail };
+export {
+  r2Workspace,
+  fileManager,
+  webSearch,
+  knowledgeBase,
+  notifications,
+  subAgent,
+  dynamicWorkflow,
+  commerce,
+  storefront,
+  businessEmail,
+  browserUse,
+  codeExec,
+  memory,
+};
