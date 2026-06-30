@@ -24,6 +24,12 @@ max_retries = 3
 max_concurrency = 50
 dead_letter_queue = "naelao-billing-events-dlq"
 
+# Primary billing: Lemon Squeezy webhook dispatcher → wakes NaelaoAgentDO
+# Set LEMON_SQUEEZY_WEBHOOK_SECRET and LEMON_SQUEEZY_API_KEY via wrangler secret put
+[[services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
 [vars]
 ENVIRONMENT = "development"
 STRIPE_PUBLISHABLE_KEY = ""
@@ -31,5 +37,13 @@ STRIPE_PUBLISHABLE_KEY = ""
 [env.staging]
 vars = { ENVIRONMENT = "staging" }
 
+[[env.staging.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+[[env.production.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"

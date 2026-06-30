@@ -5,7 +5,7 @@ import {
   notFound,
   requestId,
 } from "@naelao/http";
-// G-D05: Billing worker — Stripe webhooks, checkout, portal, subscription sync, quota enforcement
+// G-D05: Billing worker — Stripe webhooks, Lemon Squeezy webhooks, checkout, subscription sync
 import { Hono } from "hono";
 import { checkQuota, incrementUsage, invalidateQuotaCache } from "./quota.js";
 import {
@@ -14,6 +14,7 @@ import {
   createCustomer,
   verifyStripeWebhook,
 } from "./stripe.js";
+import { handleLemonSqueezyWebhook } from "./lemon-squeezy.js";
 
 export interface BillingEnv {
   ENVIRONMENT: string;
@@ -24,6 +25,12 @@ export interface BillingEnv {
   PLATFORM_DB: D1Database;
   QUOTA_CACHE: KVNamespace;
   BILLING_EVENTS: Queue;
+  // Lemon Squeezy (primary billing provider — spec Appendix H / CLAUDE.md #9)
+  LEMON_SQUEEZY_WEBHOOK_SECRET?: string;
+  LEMON_SQUEEZY_API_KEY?: string;
+  LEMON_SQUEEZY_STORE_ID?: string;
+  // Service binding to agents worker — billing events wake the Space Assistant agent
+  AGENTS_WORKER?: Fetcher;
 }
 
 // ── Stripe event type stubs ───────────────────────────────────────────────────
@@ -377,6 +384,23 @@ app.post("/billing/usage", async (c) => {
   });
 
   return c.json({ recorded: true, id }, 201);
+});
+
+// ── POST /webhooks/lemon-squeezy ─────────────────────────────────────────────
+// Primary billing provider (spec Appendix H). Unauthenticated — LS calls this directly.
+// On payment/subscription events, wakes the Space Assistant agent via NaelaoAgentDO.
+app.post("/webhooks/lemon-squeezy", async (c) => {
+  if (!c.env.AGENTS_WORKER) {
+    // No agents worker bound (local dev without full stack) — still return 200
+    return c.json({ ok: true, skipped: true, reason: "AGENTS_WORKER not bound" });
+  }
+  return handleLemonSqueezyWebhook(c.req.raw, {
+    ...(c.env.LEMON_SQUEEZY_WEBHOOK_SECRET ? { LEMON_SQUEEZY_WEBHOOK_SECRET: c.env.LEMON_SQUEEZY_WEBHOOK_SECRET } : {}),
+    ...(c.env.LEMON_SQUEEZY_API_KEY ? { LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY } : {}),
+    ...(c.env.LEMON_SQUEEZY_STORE_ID ? { LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID } : {}),
+    AGENTS_WORKER: c.env.AGENTS_WORKER,
+    PLATFORM_DB: c.env.PLATFORM_DB,
+  });
 });
 
 // ── POST /webhooks/stripe ─────────────────────────────────────────────────────

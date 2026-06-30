@@ -26,6 +26,12 @@ class_name = "FeatureFlagDO"
 name = "TRANSACTION_COORDINATOR_DO"
 class_name = "TransactionCoordinatorDO"
 
+# SpaceTypeRegistryDO — global singleton, one instance for the whole platform.
+# Space Types are exclusively authored by Naelao (spec §62 / CLAUDE.md #7).
+[[durable_objects.bindings]]
+name = "SPACE_TYPE_REGISTRY_DO"
+class_name = "SpaceTypeRegistryDO"
+
 [[migrations]]
 tag = "v2"
 new_classes = ["LockDO"]
@@ -38,6 +44,10 @@ new_classes = ["FeatureFlagDO"]
 tag = "v4"
 new_classes = ["TransactionCoordinatorDO"]
 
+[[migrations]]
+tag = "v5"
+new_classes = ["SpaceTypeRegistryDO"]
+
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
@@ -46,6 +56,11 @@ database_id = "PLACEHOLDER_D1_ID"
 [[r2_buckets]]
 binding = "EXPORTS_BUCKET"
 bucket_name = "naelao-exports"
+
+# KV for caching SpaceType manifests (TTL 1h — provisioner reads this before hitting the DO)
+[[kv_namespaces]]
+binding = "NAELAO_CONFIG_KV"
+id = "REPLACE_WITH_KV_ID"
 
 # Producer to the provisioning queue — on space creation we enqueue a space_provision
 # message; naelao-provisioner consumes it and installs the SpaceType's agents.

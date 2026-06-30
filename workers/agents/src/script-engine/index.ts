@@ -23,6 +23,7 @@ export { ScriptToolSurface } from "./tool-surface.js";
 export { runObserve, observeFilesystem, observeApi } from "./observe.js";
 export {
   runScriptLoop,
+  parseRequiresApprovalFor,
   DEFAULT_ESCALATION,
   type Reasoner,
   type ReasonDecision,

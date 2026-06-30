@@ -6,6 +6,8 @@ interface Env {
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
   SESSIONS_QUEUE: Queue;
+  /** Direct service binding to agents worker — cron triggers call /script/run (spec §9). */
+  AGENTS_WORKER?: Fetcher;
 }
 
 interface TriggerRow {
@@ -111,12 +113,34 @@ export default {
     const now = new Date().toISOString();
     ctx.waitUntil(Promise.all(triggers.map(async (trigger) => {
       try {
-        await env.SESSIONS_QUEUE.send({
-          type: "space_trigger",
-          spaceId: trigger.space_id,
-          tenantId: trigger.tenant_id,
-          message: trigger.message_template,
-        });
+        if (env.AGENTS_WORKER) {
+          // Preferred path: call the agent directly via script/run (spec §9 / CLAUDE.md #8).
+          // The default agent for any space is "naelao-agent" (DEFAULT_NAELAO_AGENT profile).
+          await env.AGENTS_WORKER.fetch(
+            new Request("http://agents-worker/agents/naelao-agent/script/run", {
+              method: "POST",
+              headers: {
+                "content-type": "application/json",
+                "x-naelao-space-id": trigger.space_id,
+                "x-naelao-tenant-id": trigger.tenant_id,
+                "x-naelao-internal": "triggers",
+              },
+              body: JSON.stringify({
+                goal: trigger.message_template,
+                sessionId: `cron-${trigger.id}-${Date.now()}`,
+                context: { trigger: "schedule", trigger_id: trigger.id, cron_expr: trigger.cron_expr },
+              }),
+            })
+          );
+        } else {
+          // Fallback: send to sessions queue for async processing
+          await env.SESSIONS_QUEUE.send({
+            type: "space_trigger",
+            spaceId: trigger.space_id,
+            tenantId: trigger.tenant_id,
+            message: trigger.message_template,
+          });
+        }
         await env.PLATFORM_DB.prepare(
           "UPDATE triggers SET last_run_at = ? WHERE id = ?"
         ).bind(now, trigger.id).run();

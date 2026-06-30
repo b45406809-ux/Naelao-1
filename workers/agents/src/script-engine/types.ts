@@ -197,6 +197,25 @@ export interface OrchestrationHooks {
   workflowStatus?(id: string): Promise<unknown>;
 }
 
+/**
+ * HITL (Human-in-the-Loop) gateway interface (spec §10 / CLAUDE.md task #10).
+ * Injected by NaelaoAgentDO when HITL_APPROVAL_DO is bound; absent in unit tests.
+ */
+export interface HITLGateway {
+  /**
+   * Pause execution and wait for a human to approve or reject the named action.
+   * Polls HITLApprovalDO (or the host equivalent) until resolved or timed out (28s).
+   * Returns { approved: true } to proceed, { approved: false } to abort.
+   */
+  requestApproval(params: {
+    runId: string;
+    sessionId: string;
+    actionName: string;
+    actionInput: Record<string, unknown>;
+    description: string;
+  }): Promise<{ approvalId: string; approved: boolean; reason?: string }>;
+}
+
 /** Everything the engine needs from the host (NaelaoAgentDO) to operate. */
 export interface ScriptEngineEnv {
   /** R2 bucket holding the skill library (spaces/{spaceId}/scripts/...). */
@@ -215,6 +234,8 @@ export interface ScriptEngineEnv {
   notificationsWorker?: Fetcher;
   /** Host-provided primitives for sub-agent / workflow prebuilt scripts. */
   orchestration?: OrchestrationHooks;
+  /** HITL approval gateway — present when HITLApprovalDO is wired up. */
+  hitlGateway?: HITLGateway;
   /** Identity for scoping R2 keys + Vectorize filters. */
   spaceId: string;
   agentId: string;

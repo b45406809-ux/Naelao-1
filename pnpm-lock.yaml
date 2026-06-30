@@ -615,6 +615,9 @@ importers:
 
   workers/billing:
     dependencies:
+      '@naelao/billing-core':
+        specifier: workspace:*
+        version: link:../../packages/billing-core
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http

@@ -2,17 +2,22 @@ import { Hono } from "hono";
 import { errorResponse, requestId, notFound } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import type { SpaceDO } from "./do/SpaceDO.js";
+import type { SpaceTypeRegistryDO } from "./do/SpaceTypeRegistryDO.js";
+import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
 export { FeatureFlagDO } from "./do/FeatureFlagDO.js";
 export { TransactionCoordinatorDO } from "./do/TransactionCoordinatorDO.js";
+export { SpaceTypeRegistryDO } from "./do/SpaceTypeRegistryDO.js";
 
 export interface Env {
   ENVIRONMENT: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
   SPACE_DO: DurableObjectNamespace<SpaceDO>;
+  SPACE_TYPE_REGISTRY_DO: DurableObjectNamespace<SpaceTypeRegistryDO>;
+  NAELAO_CONFIG_KV: KVNamespace;
   EXPORTS_BUCKET: R2Bucket;
   /** Producer to the provisioning queue — consumed by naelao-provisioner. */
   PROVISION_QUEUE?: Queue<ProvisionMessage>;
@@ -531,6 +536,71 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
       body: c.req.raw.body,
     })
   );
+});
+
+// ── Internal: SpaceType manifest registry (spec §62) ────────────────────────
+// These routes are called by the provisioner via SPACES_WORKER service binding.
+// They are NOT exposed to end-users — caller identity is validated by the internal header.
+
+function getRegistryDO(env: Env): ReturnType<typeof env.SPACE_TYPE_REGISTRY_DO.get> {
+  return env.SPACE_TYPE_REGISTRY_DO.get(
+    env.SPACE_TYPE_REGISTRY_DO.idFromName("global-space-type-registry")
+  );
+}
+
+// GET /internal/space-types/:id — load manifest (KV-cached 1h for fast provisioning)
+app.get("/internal/space-types/:id", async (c) => {
+  if (c.req.header("x-naelao-internal") !== "provisioner") {
+    return c.json({ error: "forbidden" }, 403);
+  }
+  const typeId = c.req.param("id");
+  const cacheKey = `space-type-manifest:${typeId}`;
+
+  const cached = await c.env.NAELAO_CONFIG_KV.get(cacheKey, "json");
+  if (cached) return c.json(cached);
+
+  const registry = getRegistryDO(c.env);
+  const resp = await registry.fetch(new Request(`http://registry/type/${typeId}`));
+  if (!resp.ok) return c.json({ error: "not_found" }, 404);
+
+  const manifest = await resp.json<unknown>();
+  await c.env.NAELAO_CONFIG_KV.put(cacheKey, JSON.stringify(manifest), { expirationTtl: 3600 });
+  return c.json(manifest);
+});
+
+// POST /internal/space-types/:id/record-install — called at end of provisioning (step 10)
+app.post("/internal/space-types/:id/record-install", async (c) => {
+  if (c.req.header("x-naelao-internal") !== "provisioner") {
+    return c.json({ error: "forbidden" }, 403);
+  }
+  const typeId = c.req.param("id");
+  const body = await c.req.json<{ spaceId: string; version: string }>();
+  const registry = getRegistryDO(c.env);
+  await registry.fetch(new Request("http://registry/record-install", {
+    method: "POST",
+    body: JSON.stringify({ typeId, spaceId: body.spaceId, version: body.version }),
+  }));
+  return c.json({ ok: true });
+});
+
+// POST /internal/space-types/seed — Naelao platform use only: seed built-in manifests
+// Called once at deploy/bootstrap time to seed the Launchpad manifest.
+app.post("/internal/space-types/seed", async (c) => {
+  if (c.req.header("x-naelao-platform-secret") !== c.env.PLATFORM_SECRET) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+  const registry = getRegistryDO(c.env);
+  const results = [];
+  for (const manifest of [LAUNCHPAD_MANIFEST]) {
+    const resp = await registry.fetch(new Request("http://registry/register", {
+      method: "POST",
+      body: JSON.stringify({ manifest, authorId: "naelao" }),
+    }));
+    results.push({ id: manifest.id, ...(await resp.json<object>()) });
+    // Bust KV cache so next provisioner call sees the new manifest
+    await c.env.NAELAO_CONFIG_KV.delete(`space-type-manifest:${manifest.id}`);
+  }
+  return c.json({ seeded: results });
 });
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));

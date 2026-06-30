@@ -18,11 +18,60 @@ import type {
   FindCandidate,
   ScriptMetadata,
   EscalationLevel,
+  HITLGateway,
 } from "./types.js";
 import { ScriptToolSurface } from "./tool-surface.js";
 import { runObserve } from "./observe.js";
 import { fingerprintSimilarity, isMatch, isPartial } from "./fingerprint.js";
 import { FIND_CONFIDENCE_FLOOR } from "./script-find.js";
+
+/**
+ * Parse the `requires_approval_for:` section from agents.md.
+ * Looks for a fenced block or a yaml-list after the heading, e.g.:
+ *   ## requires_approval_for
+ *   - delete_file
+ *   - send_email
+ */
+export function parseRequiresApprovalFor(agentsMd: string): Set<string> {
+  const result = new Set<string>();
+  const match = agentsMd.match(/##\s*requires_approval_for\s*\n((?:[ \t]*-[ \t]+\S+\s*\n?)+)/i);
+  if (!match?.[1]) return result;
+  for (const line of match[1].split("\n")) {
+    const item = line.replace(/^\s*-\s*/, "").trim();
+    if (item) result.add(item);
+  }
+  return result;
+}
+
+/**
+ * Gate an action against the HITL policy. Returns true if execution should proceed.
+ * When hitlGateway is absent or the action is not gated, always returns true (proceed).
+ */
+async function hitlGate(
+  actionName: string,
+  actionInput: Record<string, unknown>,
+  gatedActions: Set<string>,
+  gateway: HITLGateway | undefined,
+  runId: string,
+  sessionId: string,
+  notes: string[]
+): Promise<boolean> {
+  if (!gatedActions.has(actionName) || !gateway) return true;
+  notes.push(`HITL gate: requesting approval for '${actionName}'`);
+  const { approved, reason, approvalId } = await gateway.requestApproval({
+    runId,
+    sessionId,
+    actionName,
+    actionInput,
+    description: `The agent wants to run '${actionName}'. Review the parameters and approve or reject.`,
+  });
+  if (approved) {
+    notes.push(`HITL ${approvalId}: approved → proceeding`);
+    return true;
+  }
+  notes.push(`HITL ${approvalId}: rejected (${reason ?? "no reason"}) → aborting action`);
+  return false;
+}
 
 /** A decision the reasoning model returns when the library has no ready answer. */
 export type ReasonDecision =
@@ -70,6 +119,16 @@ export interface RunLoopOptions {
   escalation?: Partial<EscalationConfig>;
   /** Cap on EXECUTE attempts within one pass (prevents runaway). */
   maxSteps?: number;
+  /**
+   * Action names that require human approval before execution (from agents.md
+   * `requires_approval_for:` block — parsed by NaelaoAgentDO and passed here).
+   * When env.hitlGateway is present and the chosen action name is in this set,
+   * the loop pauses and waits for HITLApprovalDO to resolve it before running.
+   */
+  requiresApprovalFor?: string[];
+  /** Opaque run/session identifiers forwarded to the HITL gateway. */
+  runId?: string;
+  sessionId?: string;
 }
 
 /**
@@ -87,6 +146,9 @@ export async function runScriptLoop(
 ): Promise<LoopResult> {
   const cfg: EscalationConfig = { ...DEFAULT_ESCALATION, ...opts.escalation };
   const notes: string[] = [];
+  const gatedActions = new Set(opts.requiresApprovalFor ?? []);
+  const runId = opts.runId ?? crypto.randomUUID();
+  const sessionId = opts.sessionId ?? "unknown";
 
   // 1-2. OBSERVE + FINGERPRINT
   const snapshot = await runObserve(env, opts.startupObserve, opts.observeArgs ?? {});
@@ -116,7 +178,13 @@ export async function runScriptLoop(
   // 5-7. EXECUTE / VERIFY / DISTILL per level.
   switch (level) {
     case "L1": {
-      const result = await tools.run(top!.name, paramsFor(top!, opts.goal));
+      const params = paramsFor(top!, opts.goal);
+      // HITL gate before execution
+      const allowed = await hitlGate(top!.name, params, gatedActions, env.hitlGateway, runId, sessionId, notes);
+      if (!allowed) {
+        return { level, script_name: top!.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes };
+      }
+      const result = await tools.run(top!.name, params);
       notes.push(`L1 run ${top!.name}: ${result.ok ? "ok" : "fail"}`);
       return { level, script_name: top!.name, result, notes };
     }
@@ -133,7 +201,12 @@ export async function runScriptLoop(
       });
       if (decision.action === "patch") {
         await tools.update(decision.name, { code: decision.code }, decision.reason);
-        const result = await tools.run(decision.name, paramsFor(top!, opts.goal));
+        const params = paramsFor(top!, opts.goal);
+        const allowed = await hitlGate(decision.name, params, gatedActions, env.hitlGateway, runId, sessionId, notes);
+        if (!allowed) {
+          return { level, script_name: decision.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes };
+        }
+        const result = await tools.run(decision.name, params);
         notes.push(`L2 patched ${decision.name}: ${result.ok ? "ok" : "fail"}`);
         // Automatic rollback on immediate failure (spec §10.3).
         if (!result.ok) {
@@ -167,11 +240,14 @@ export async function runScriptLoop(
         lastDecision = decision;
 
         if (decision.action === "run") {
+          // HITL gate before execution
+          const allowed = await hitlGate(decision.name, decision.params, gatedActions, env.hitlGateway, runId, sessionId, notes);
+          if (!allowed) {
+            return { level, script_name: decision.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes };
+          }
           const result = await tools.run(decision.name, decision.params);
           notes.push(`${level} run ${decision.name}: ${result.ok ? "ok" : "fail"}`);
           if (!result.ok) continue; // let the reasoner try another step
-          // VERIFY passed → keep going only if the reasoner wants to; treat a successful
-          // run as the terminal action for this simple driver.
           return { level, script_name: decision.name, result, notes };
         }
 

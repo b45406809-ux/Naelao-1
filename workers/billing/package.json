@@ -12,6 +12,7 @@
   "dependencies": {
     "@naelao/types": "workspace:*",
     "@naelao/http": "workspace:*",
+    "@naelao/billing-core": "workspace:*",
     "hono": "^4.6.0"
   },
   "devDependencies": {

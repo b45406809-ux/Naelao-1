@@ -15,11 +15,24 @@ database_id = "PLACEHOLDER_D1_ID"
 binding = "SESSIONS_QUEUE"
 queue = "naelao-channel-sessions"
 
+# Preferred: call agents worker directly for cron-triggered script/run (spec §9)
+[[services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
 [vars]
 ENVIRONMENT = "development"
 
 [env.staging]
 vars = { ENVIRONMENT = "staging" }
 
+[[env.staging.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+[[env.production.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"

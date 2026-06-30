@@ -15,6 +15,7 @@ import { moderateText } from "@naelao/moderation";
 import {
   ScriptToolSurface,
   runScriptLoop,
+  parseRequiresApprovalFor,
   loadAgentConfig,
   type ScriptEngineEnv,
 } from "../script-engine/index.js";
@@ -1072,6 +1073,48 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (this.env.KNOWLEDGE_WORKER) env.knowledgeWorker = this.env.KNOWLEDGE_WORKER;
     if (this.env.SPACES_WORKER) env.spacesWorker = this.env.SPACES_WORKER;
     if (this.env.NOTIFICATIONS_WORKER) env.notificationsWorker = this.env.NOTIFICATIONS_WORKER;
+
+    // Wire HITL gateway (spec §10 / CLAUDE.md task #10): polls HITLApprovalDO per space.
+    if (this.env.HITL_APPROVAL_DO) {
+      const hitlDO = this.env.HITL_APPROVAL_DO;
+      env.hitlGateway = {
+        requestApproval: async (params) => {
+          const doId = hitlDO.idFromName(`hitl:${spaceId}`);
+          const stub = hitlDO.get(doId);
+
+          // Create approval request
+          const createResp = await stub.fetch(new Request("http://hitl/requests", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              run_id: params.runId,
+              session_id: params.sessionId,
+              tool_name: params.actionName,
+              tool_input: params.actionInput,
+              action_description: params.description,
+            }),
+          }));
+          const { approval_id } = await createResp.json<{ approval_id: string }>();
+
+          // Poll for resolution (28s — HITLApprovalDO auto-rejects at 30s)
+          const deadline = Date.now() + 28_000;
+          while (Date.now() < deadline) {
+            await new Promise<void>((r) => setTimeout(r, 2_000));
+            const pollResp = await stub.fetch(new Request(`http://hitl/requests/${approval_id}`));
+            const row = await pollResp.json<{ status: string; reject_reason?: string | null }>();
+            if (row.status !== "pending") {
+              return {
+                approvalId: approval_id,
+                approved: row.status === "approved",
+                ...(row.reject_reason ? { reason: row.reject_reason } : {}),
+              };
+            }
+          }
+          return { approvalId: approval_id, approved: false, reason: "HITL polling timeout" };
+        },
+      };
+    }
+
     return env;
   }
 
@@ -1080,34 +1123,47 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       goal: string;
       spaceId: string;
       agentId: string;
-      tenantId: string;
-      apiKey: string;
+      tenantId?: string;
+      sessionId?: string;
+      context?: Record<string, unknown>;
+      apiKey?: string;
       model?: string;
     }>();
 
-    if (!body.goal || !body.spaceId || !body.agentId) {
-      return Response.json({ error: "goal, spaceId, and agentId are required" }, { status: 400 });
+    // Also accept spaceId / agentId / tenantId from internal request headers (set by billing/triggers)
+    const spaceId = body.spaceId ?? request.headers.get("x-naelao-space-id") ?? "";
+    const tenantId = body.tenantId ?? request.headers.get("x-naelao-tenant-id") ?? "";
+    const agentIdFromPath = new URL(request.url).pathname.match(/\/agents\/([^/]+)\//)?.[1];
+    const agentId = body.agentId ?? agentIdFromPath ?? "naelao-agent";
+    const sessionId = body.sessionId ?? `script-run-${Date.now()}`;
+    const runId = crypto.randomUUID();
+
+    if (!body.goal || !spaceId) {
+      return Response.json({ error: "goal and spaceId are required" }, { status: 400 });
     }
 
-    const engineEnv = this.buildScriptEngineEnv(body.spaceId, body.agentId, body.tenantId ?? "");
+    const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId);
     if (!engineEnv) {
       return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     }
 
     // Load the agent's 4-file config; without it the agent is not provisioned.
-    const config = await loadAgentConfig(engineEnv.scriptsBucket, body.spaceId, body.agentId);
+    const config = await loadAgentConfig(engineEnv.scriptsBucket, spaceId, agentId);
     if (!config) {
-      return Response.json({ error: `agent '${body.agentId}' is not provisioned in space '${body.spaceId}'` }, { status: 404 });
+      return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
     }
+
+    // Parse requires_approval_for from agents.md (spec §10 / CLAUDE.md task #10)
+    const requiresApprovalFor = [...parseRequiresApprovalFor(config.agentsMd)];
 
     const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
     const reasoner = new GatewayReasoner({
-      apiKey: body.apiKey,
+      apiKey: body.apiKey ?? "",
       gateway: {
         accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder",
         gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
       },
-      ctx: { spaceId: body.spaceId, agentId: body.agentId, model: body.model ?? "claude-haiku-4-5-20251001" },
+      ctx: { spaceId, agentId, model: body.model ?? "claude-haiku-4-5-20251001" },
       ...(body.model ? { model: body.model } : {}),
     });
 
@@ -1115,6 +1171,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const result = await runScriptLoop(engineEnv, tools, reasoner, config.scripts.prebuilt, {
         goal: body.goal,
         startupObserve: config.scripts.startup_observe,
+        requiresApprovalFor,
+        runId,
+        sessionId,
       });
       return Response.json(result);
     } catch (err) {

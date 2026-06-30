@@ -31,6 +31,12 @@ service = "naelao-spaces"
 binding = "SCRIPTS_R2"
 bucket_name = "naelao-agent-scripts"
 
+# Portal slug→spaceId mapping written during external portal provisioning (step 7).
+# Read by naelao-portal-router worker at request time. Optional — skipped if unbound.
+[[kv_namespaces]]
+binding = "PORTAL_KV"
+id = "REPLACE_WITH_PORTAL_KV_ID"
+
 [vars]
 ENVIRONMENT = "development"
 
