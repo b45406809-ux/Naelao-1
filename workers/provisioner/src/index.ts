@@ -25,8 +25,10 @@ import {
 import {
   writeAgentConfig,
   launchpadAgentToProfile,
+  businessServicePrebuilts,
   DEFAULT_NAELAO_AGENT,
 } from "../../agents/src/script-engine/index.js";
+import type { AgentConfig } from "../../agents/src/script-engine/index.js";
 import type { NaelaoSpaceTypeManifestV2 } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
 import { resolveTenancy } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
 
@@ -78,17 +80,27 @@ async function installLaunchpadAgents(
   spaceId: string,
   tenantId: string,
   templateId: string | undefined,
+  manifest: NaelaoSpaceTypeManifestV2,
   env: Env
 ): Promise<void> {
   const agentsToInstall = templateId ? agentsForTemplate(templateId) : LAUNCHPAD_CORE_AGENTS;
 
+  // Manifest-gated business primitives (commerce/storefront/business-email). Merged into
+  // every installed agent so the owner's assistant can run the storefront and the
+  // fulfilment agent can take payment via the reserved commerce script.
+  const extraPrebuilt = businessServicePrebuilts(manifest.productConfig);
+  const withServices = (cfg: AgentConfig): AgentConfig =>
+    extraPrebuilt.length === 0
+      ? cfg
+      : { ...cfg, scripts: { ...cfg.scripts, prebuilt: [...new Set([...cfg.scripts.prebuilt, ...extraPrebuilt])] } };
+
   // Default Naelao Agent — every space gets this (spec §15)
-  await writeAgentConfig(env.SCRIPTS_R2, spaceId, DEFAULT_NAELAO_AGENT.agentId, DEFAULT_NAELAO_AGENT.config);
+  await writeAgentConfig(env.SCRIPTS_R2, spaceId, DEFAULT_NAELAO_AGENT.agentId, withServices(DEFAULT_NAELAO_AGENT.config));
   await registerAgentIndex(spaceId, tenantId, DEFAULT_NAELAO_AGENT.agentId, "Naelao Agent", "General-purpose agent", null, env);
 
   for (const agentDef of agentsToInstall) {
     const profile = launchpadAgentToProfile(agentDef);
-    await writeAgentConfig(env.SCRIPTS_R2, spaceId, profile.agentId, profile.config);
+    await writeAgentConfig(env.SCRIPTS_R2, spaceId, profile.agentId, withServices(profile.config));
     await registerAgentIndex(
       spaceId, tenantId, profile.agentId, agentDef.name, agentDef.description,
       templateId ?? null, env
@@ -267,7 +279,7 @@ async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
 
     // Step 9: Install agents — write 4 R2 config files per agent + register index in SpaceDO
     if (spaceTypeId === "launchpad") {
-      await installLaunchpadAgents(spaceId, tenantId, templateId, env);
+      await installLaunchpadAgents(spaceId, tenantId, templateId, manifest, env);
     }
     provisioned.push("agents");
 

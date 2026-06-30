@@ -23,8 +23,50 @@ export interface LemonSqueezyEnv {
   LEMON_SQUEEZY_WEBHOOK_SECRET?: string;
   LEMON_SQUEEZY_API_KEY?: string;
   LEMON_SQUEEZY_STORE_ID?: string;
+  LAUNCHPAD_FEE_BPS?: string;
   AGENTS_WORKER: Fetcher;
   PLATFORM_DB: D1Database;
+}
+
+/**
+ * Record a customer product order on payment.success, capturing the platform fee. Driven by
+ * the custom_data the commerce checkout carried (product_id, fee_bps). Idempotent on the
+ * provider event id so webhook retries don't double-write. Returns the order id (or null
+ * when this event is not a product sale — e.g. a builder's own plan subscription).
+ */
+async function recordProductOrder(
+  event: NormalizedBillingEvent,
+  env: LemonSqueezyEnv
+): Promise<string | null> {
+  if (event.type !== "payment.success") return null;
+  const custom = (event.metadata ?? {}) as Record<string, unknown>;
+  const productId = custom["product_id"] ? String(custom["product_id"]) : null;
+  if (!productId || !event.spaceId) return null; // not a Launchpad product sale
+
+  const space = await env.PLATFORM_DB.prepare(
+    "SELECT tenant_id FROM spaces WHERE id = ?"
+  ).bind(event.spaceId).first<{ tenant_id: string }>();
+  if (!space) return null;
+
+  const gross = event.amountCents ?? 0;
+  const feeBps = custom["fee_bps"] ? parseInt(String(custom["fee_bps"]), 10) : parseInt(env.LAUNCHPAD_FEE_BPS ?? "500", 10);
+  const fee = Math.round((gross * feeBps) / 10_000);
+  const net = Math.max(0, gross - fee);
+  const id = crypto.randomUUID();
+  const providerEventId = event.subscriptionId ?? `${event.type}:${event.customerId ?? ""}:${gross}:${productId}`;
+
+  // INSERT OR IGNORE on the unique provider_event_id index → idempotent.
+  await env.PLATFORM_DB.prepare(
+    `INSERT OR IGNORE INTO launchpad_orders
+       (id, space_id, tenant_id, product_id, customer_email, gross_cents, fee_cents, net_cents,
+        currency, ls_subscription_id, status, provider_event_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paid', ?)`
+  ).bind(
+    id, event.spaceId, space.tenant_id, productId, event.customerId ?? null,
+    gross, fee, net, event.currency ?? "USD", event.subscriptionId ?? null, providerEventId
+  ).run();
+  console.log(`[billing/ls] Recorded order space=${event.spaceId} product=${productId} gross=${gross}c fee=${fee}c`);
+  return id;
 }
 
 const GOAL_MAP: Record<NormalizedBillingEvent["type"], string> = {
@@ -57,7 +99,8 @@ async function wakeAgent(
   agentId: string,
   tenantId: string,
   event: NormalizedBillingEvent,
-  agentsWorker: Fetcher
+  agentsWorker: Fetcher,
+  orderId?: string | null
 ): Promise<void> {
   const goal = GOAL_MAP[event.type] ?? `Handle billing event: ${event.type}`;
   const sessionId = `billing-${event.type}-${Date.now()}`;
@@ -83,6 +126,7 @@ async function wakeAgent(
           amount_cents: event.amountCents,
           currency: event.currency,
           metadata: event.metadata,
+          ...(orderId ? { order_id: orderId } : {}),
         },
       }),
     })
@@ -204,8 +248,18 @@ export async function handleLemonSqueezyWebhook(
     console.error("[billing/ls] Reseller attribution failed:", (err as Error).message);
   }
 
-  // 5. Wake the Space Assistant agent asynchronously (ctx.waitUntil equivalent: fire-and-forget)
-  await wakeAgent(event.spaceId, agent.agentId, agent.tenantId, event, env.AGENTS_WORKER);
+  // 5. Record the product order + platform fee (idempotent). Only for Launchpad product
+  //    sales (custom_data.product_id present); plan/subscription events skip this.
+  let orderId: string | null = null;
+  try {
+    orderId = await recordProductOrder(event, env);
+  } catch (err) {
+    console.error("[billing/ls] Order recording failed:", (err as Error).message);
+  }
 
-  return Response.json({ ok: true, event_type: event.type, space_id: event.spaceId });
+  // 6. Wake the Space Assistant agent asynchronously (ctx.waitUntil equivalent: fire-and-forget).
+  //    Pass the order id so the fulfilment agent can look it up and deliver the product.
+  await wakeAgent(event.spaceId, agent.agentId, agent.tenantId, event, env.AGENTS_WORKER, orderId);
+
+  return Response.json({ ok: true, event_type: event.type, space_id: event.spaceId, order_id: orderId });
 }

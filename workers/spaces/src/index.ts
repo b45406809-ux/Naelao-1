@@ -679,6 +679,227 @@ app.get("/spaces/:spaceId/cross-space-check", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// ── Commerce: products / orders / revenue (spec §11; manifest-gated) ─────────
+// Reachable via the /spaces/* router proxy. Every route gates on the effective
+// productConfig.commerce.enabled so a SpaceType that did not opt in returns 403.
+
+/** Load the space (validating tenant ownership) + its effective commerce config. */
+async function loadCommerceContext(
+  c: { env: Env; req: { header: (h: string) => string | undefined } },
+  spaceId: string
+): Promise<
+  | { ok: true; tenantId: string; commerce: NonNullable<SpaceTypeProductConfig["commerce"]> }
+  | { ok: false; status: 401 | 403 | 404; error_code: string; message: string }
+> {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId) return { ok: false, status: 401, error_code: "unauthorized", message: "Missing tenant" };
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT spacetype_id, config_json FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
+  ).bind(spaceId, tenantId).first<{ spacetype_id: string; config_json: string | null }>();
+  if (!space) return { ok: false, status: 404, error_code: "not_found", message: "Space not found" };
+  const pc = await loadEffectiveProductConfig(c.env, space.spacetype_id, space.config_json);
+  if (!pc?.commerce?.enabled) {
+    return { ok: false, status: 403, error_code: "commerce_disabled", message: "Commerce is not enabled for this SpaceType" };
+  }
+  return { ok: true, tenantId, commerce: pc.commerce };
+}
+
+// GET /spaces/:spaceId/products
+app.get("/spaces/:spaceId/products", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const ctx = await loadCommerceContext(c, spaceId);
+  if (!ctx.ok) return c.json({ error_code: ctx.error_code, message: ctx.message }, ctx.status);
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    "SELECT * FROM launchpad_products WHERE space_id = ? AND status != 'archived' ORDER BY created_at DESC LIMIT 200"
+  ).bind(spaceId).all();
+  return c.json({ data: results, count: results.length, currency: ctx.commerce.defaultCurrency ?? "USD" });
+});
+
+// POST /spaces/:spaceId/products
+app.post("/spaces/:spaceId/products", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const ctx = await loadCommerceContext(c, spaceId);
+  if (!ctx.ok) return c.json({ error_code: ctx.error_code, message: ctx.message }, ctx.status);
+  const body = await c.req.json<{
+    name: string;
+    description?: string;
+    price_cents?: number;
+    currency?: string;
+    kind?: "one_time" | "subscription";
+    fulfillment_r2_key?: string;
+  }>();
+  if (!body.name) return c.json({ error_code: "bad_request", message: "name is required" }, 400);
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await c.env.PLATFORM_DB.prepare(
+    `INSERT INTO launchpad_products (id, space_id, tenant_id, name, description, price_cents, currency, kind, fulfillment_r2_key, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?)`
+  ).bind(
+    id, spaceId, ctx.tenantId, body.name, body.description ?? "",
+    Math.max(0, Math.round(body.price_cents ?? 0)),
+    body.currency ?? ctx.commerce.defaultCurrency ?? "USD",
+    body.kind ?? "one_time", body.fulfillment_r2_key ?? null, now, now
+  ).run();
+  return c.json({ id, name: body.name, status: "draft", created_at: now }, 201);
+});
+
+// PATCH /spaces/:spaceId/products/:id  (edit / publish / archive)
+app.patch("/spaces/:spaceId/products/:id", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const productId = c.req.param("id");
+  const ctx = await loadCommerceContext(c, spaceId);
+  if (!ctx.ok) return c.json({ error_code: ctx.error_code, message: ctx.message }, ctx.status);
+  const body = await c.req.json<{
+    name?: string; description?: string; price_cents?: number;
+    status?: "draft" | "published" | "archived"; fulfillment_r2_key?: string; ls_variant_id?: string;
+  }>();
+  const now = new Date().toISOString();
+  const res = await c.env.PLATFORM_DB.prepare(
+    `UPDATE launchpad_products SET
+       name = COALESCE(?, name),
+       description = COALESCE(?, description),
+       price_cents = COALESCE(?, price_cents),
+       status = COALESCE(?, status),
+       fulfillment_r2_key = COALESCE(?, fulfillment_r2_key),
+       ls_variant_id = COALESCE(?, ls_variant_id),
+       updated_at = ?
+     WHERE id = ? AND space_id = ?`
+  ).bind(
+    body.name ?? null, body.description ?? null,
+    body.price_cents !== undefined ? Math.max(0, Math.round(body.price_cents)) : null,
+    body.status ?? null, body.fulfillment_r2_key ?? null, body.ls_variant_id ?? null,
+    now, productId, spaceId
+  ).run();
+  if (res.meta.changes === 0) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  return c.json({ id: productId, updated_at: now });
+});
+
+// DELETE /spaces/:spaceId/products/:id  (soft archive)
+app.delete("/spaces/:spaceId/products/:id", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const productId = c.req.param("id");
+  const ctx = await loadCommerceContext(c, spaceId);
+  if (!ctx.ok) return c.json({ error_code: ctx.error_code, message: ctx.message }, ctx.status);
+  const res = await c.env.PLATFORM_DB.prepare(
+    "UPDATE launchpad_products SET status = 'archived', updated_at = ? WHERE id = ? AND space_id = ?"
+  ).bind(new Date().toISOString(), productId, spaceId).run();
+  if (res.meta.changes === 0) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  return c.json({ archived: true, id: productId });
+});
+
+// GET /spaces/:spaceId/orders
+app.get("/spaces/:spaceId/orders", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const ctx = await loadCommerceContext(c, spaceId);
+  if (!ctx.ok) return c.json({ error_code: ctx.error_code, message: ctx.message }, ctx.status);
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT o.*, p.name AS product_name FROM launchpad_orders o
+       LEFT JOIN launchpad_products p ON p.id = o.product_id
+      WHERE o.space_id = ? ORDER BY o.created_at DESC LIMIT 200`
+  ).bind(spaceId).all();
+  return c.json({ data: results, count: results.length });
+});
+
+// GET /spaces/:spaceId/revenue — current-month rollup for the dashboard.
+app.get("/spaces/:spaceId/revenue", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const ctx = await loadCommerceContext(c, spaceId);
+  if (!ctx.ok) return c.json({ error_code: ctx.error_code, message: ctx.message }, ctx.status);
+  const period = new Date().toISOString().slice(0, 7);
+  const row = await c.env.PLATFORM_DB.prepare(
+    `SELECT COALESCE(SUM(gross_cents),0) AS gross, COALESCE(SUM(fee_cents),0) AS fees,
+            COALESCE(SUM(net_cents),0) AS net, COUNT(*) AS orders
+       FROM launchpad_orders
+      WHERE space_id = ? AND status IN ('paid','fulfilling','fulfilled') AND substr(created_at,1,7) = ?`
+  ).bind(spaceId, period).first<{ gross: number; fees: number; net: number; orders: number }>();
+  return c.json({
+    period,
+    currency: ctx.commerce.defaultCurrency ?? "USD",
+    gross_cents: row?.gross ?? 0,
+    fee_cents: row?.fees ?? 0,
+    net_cents: row?.net ?? 0,
+    order_count: row?.orders ?? 0,
+  });
+});
+
+// ── Internal: business services (storefront / business email / custom domain) ─
+// Called by the storefront + business-email prebuilt scripts (x-naelao-internal). Allocates
+// the Naelao-hosted handle ({slug}.naelao.com / hi@{slug}.naelao-mail.com), upserts a
+// business_services row, and (for custom_domain) records the Cloudflare-for-SaaS hostname.
+// Storefronts are one multitenant surface (CF Pages + portal Worker fallback origin); this
+// only registers the Host→space route, it does not deploy anything per tenant.
+
+const STOREFRONT_ROOT = "naelao.com";
+const EMAIL_ROOT = "naelao-mail.com";
+
+app.post("/internal/business-services", async (c) => {
+  const internal = c.req.header("x-naelao-internal");
+  if (!internal) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{
+    space_id: string;
+    kind: "storefront" | "business_email" | "custom_domain";
+    slug?: string;
+    custom_domain?: string;
+  }>();
+  if (!body.space_id || !body.kind) {
+    return c.json({ error_code: "bad_request", message: "space_id and kind are required" }, 400);
+  }
+
+  // Custom domain: opt-in. Records the hostname as pending DNS validation. The actual
+  // Cloudflare-for-SaaS custom_hostnames API call happens in the SaaS provisioner with the
+  // zone-scoped token; here we persist intent + the DNS target the owner must CNAME to.
+  if (body.kind === "custom_domain") {
+    if (!body.custom_domain) return c.json({ error_code: "bad_request", message: "custom_domain is required" }, 400);
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    await c.env.PLATFORM_DB.prepare(
+      `INSERT INTO business_services (id, space_id, tenant_id, kind, custom_domain, status, created_at, updated_at)
+       VALUES (?, ?, ?, 'custom_domain', ?, 'pending_dns', ?, ?)
+       ON CONFLICT(space_id, kind) DO UPDATE SET custom_domain = excluded.custom_domain, status = 'pending_dns', updated_at = excluded.updated_at`
+    ).bind(id, body.space_id, tenantId, body.custom_domain, now, now).run();
+    return c.json({
+      kind: "custom_domain",
+      custom_domain: body.custom_domain,
+      status: "pending_dns",
+      dns: { type: "CNAME", name: body.custom_domain, value: `fallback.${STOREFRONT_ROOT}` },
+    }, 201);
+  }
+
+  // Storefront / business email: allocate a Naelao handle from the slug (dedupe with a short
+  // suffix from the space id so two spaces can both want "shop").
+  const slug = (body.slug ?? "shop").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "shop";
+  const suffix = body.space_id.slice(0, 6);
+  const handle = body.kind === "storefront"
+    ? `${slug}-${suffix}.${STOREFRONT_ROOT}`
+    : `hi@${slug}-${suffix}.${EMAIL_ROOT}`;
+
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await c.env.PLATFORM_DB.prepare(
+    `INSERT INTO business_services (id, space_id, tenant_id, kind, naelao_handle, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+     ON CONFLICT(space_id, kind) DO UPDATE SET naelao_handle = excluded.naelao_handle, status = 'active', updated_at = excluded.updated_at`
+  ).bind(id, body.space_id, tenantId, body.kind, handle, now, now).run();
+
+  // For a storefront, register the Host→space route the portal Worker resolves.
+  if (body.kind === "storefront") {
+    await c.env.NAELAO_CONFIG_KV.put(`portal-host:${handle}`, body.space_id);
+  }
+
+  return c.json({ kind: body.kind, naelao_handle: handle, status: "active" }, 201);
+});
+
+app.get("/internal/business-services", async (c) => {
+  if (!c.req.header("x-naelao-internal")) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  const spaceId = c.req.query("space_id") ?? "";
+  const kind = c.req.query("kind") ?? "";
+  const row = await c.env.PLATFORM_DB.prepare(
+    "SELECT * FROM business_services WHERE space_id = ? AND kind = ?"
+  ).bind(spaceId, kind).first();
+  return c.json(row ?? null);
+});
+
 // ── Internal: SpaceType manifest registry (spec §62) ────────────────────────
 // These routes are called by the provisioner via SPACES_WORKER service binding.
 // They are NOT exposed to end-users — caller identity is validated by the internal header.

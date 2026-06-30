@@ -760,6 +760,8 @@ export interface AgentDOEnv {
   AI?: Ai;
   /** Notifications worker — owner/customer notifications + HITL surface. */
   NOTIFICATIONS_WORKER?: Fetcher;
+  /** Billing worker — holds Lemon Squeezy creds; the only money-in path (commerce script). */
+  BILLING_WORKER?: Fetcher;
   /** AI Gateway identity (spec §15). */
   NAELAO_ACCOUNT_ID?: string;
   NAELAO_GATEWAY_ID?: string;
@@ -1073,6 +1075,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (this.env.KNOWLEDGE_WORKER) env.knowledgeWorker = this.env.KNOWLEDGE_WORKER;
     if (this.env.SPACES_WORKER) env.spacesWorker = this.env.SPACES_WORKER;
     if (this.env.NOTIFICATIONS_WORKER) env.notificationsWorker = this.env.NOTIFICATIONS_WORKER;
+    if (this.env.BILLING_WORKER) env.billingWorker = this.env.BILLING_WORKER;
 
     // Wire HITL gateway (spec §10 / CLAUDE.md task #10): polls HITLApprovalDO per space.
     if (this.env.HITL_APPROVAL_DO) {

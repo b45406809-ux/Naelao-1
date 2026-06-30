@@ -89,6 +89,18 @@ export const LAUNCHPAD_MANIFEST: NaelaoSpaceTypeManifestV2 = {
       maxThreadsPerUser: null,
       maxCreditsPerMonth: null,
     },
+    // Launchpad is a commerce SpaceType: owners sell digital products. Money-in routes
+    // through Naelao's Lemon Squeezy store with a 5% platform fee (reserved capability).
+    commerce: {
+      enabled: true,
+      defaultCurrency: "USD",
+      naelaoFeeBps: 500,
+      allowCustomDomain: true,
+    },
+    businessServices: {
+      storefront: true,
+      businessEmail: true,
+    },
   },
 
   lifecycle: {}, // No custom provisioner/deprovisioner hooks for Launchpad

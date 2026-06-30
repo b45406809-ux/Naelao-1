@@ -29,6 +29,8 @@ export interface BillingEnv {
   LEMON_SQUEEZY_WEBHOOK_SECRET?: string;
   LEMON_SQUEEZY_API_KEY?: string;
   LEMON_SQUEEZY_STORE_ID?: string;
+  /** Platform fee on customer product sales, basis points. Default 500 (5%). */
+  LAUNCHPAD_FEE_BPS?: string;
   // Service binding to agents worker — billing events wake the Space Assistant agent
   AGENTS_WORKER?: Fetcher;
 }
@@ -386,6 +388,61 @@ app.post("/billing/usage", async (c) => {
   return c.json({ recorded: true, id }, 201);
 });
 
+// ── POST /internal/commerce/checkout ─────────────────────────────────────────
+// Called by the reserved `commerce` prebuilt script (x-naelao-internal). The ONLY money-in
+// path: creates a Lemon Squeezy checkout on Naelao's store for a product, carrying
+// space_id + product_id + fee_bps in custom data so the webhook attributes the sale and
+// captures the platform fee. A builder can never reach this with their own processor.
+app.post("/internal/commerce/checkout", async (c) => {
+  if (c.req.header("x-naelao-internal") !== "commerce-script") {
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  }
+  const body = await c.req.json<{ space_id: string; product_id: string; customer_email?: string }>();
+  if (!body.space_id || !body.product_id) {
+    return c.json({ error_code: "bad_request", message: "space_id and product_id are required" }, 400);
+  }
+
+  const product = await c.env.PLATFORM_DB.prepare(
+    "SELECT id, name, price_cents, currency, ls_variant_id, status FROM launchpad_products WHERE id = ? AND space_id = ?"
+  ).bind(body.product_id, body.space_id).first<{
+    id: string; name: string; price_cents: number; currency: string; ls_variant_id: string | null; status: string;
+  }>();
+  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+  if (product.status !== "published") {
+    return c.json({ error_code: "not_purchasable", message: "Product is not published" }, 409);
+  }
+
+  const feeBps = parseInt(c.env.LAUNCHPAD_FEE_BPS ?? "500", 10);
+
+  // Without LS credentials (local/dev) return a deterministic placeholder so the flow is
+  // testable end-to-end; production carries real store creds in Workers Secrets.
+  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !product.ls_variant_id) {
+    return c.json({
+      checkout_url: `https://checkout.${"naelao.com"}/dev/${product.id}`,
+      product: { id: product.id, name: product.name, price_cents: product.price_cents, currency: product.currency },
+      fee_bps: feeBps,
+      dev: true,
+    });
+  }
+
+  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
+  const provider = new LemonSqueezyProvider({
+    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
+    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
+  });
+  const { url } = await provider.createCheckout({
+    spaceId: body.space_id,
+    variantOrPriceId: product.ls_variant_id,
+    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+    metadata: { product_id: product.id, fee_bps: String(feeBps) },
+  });
+  return c.json({
+    checkout_url: url,
+    product: { id: product.id, name: product.name, price_cents: product.price_cents, currency: product.currency },
+    fee_bps: feeBps,
+  });
+});
+
 // ── POST /webhooks/lemon-squeezy ─────────────────────────────────────────────
 // Primary billing provider (spec Appendix H). Unauthenticated — LS calls this directly.
 // On payment/subscription events, wakes the Space Assistant agent via NaelaoAgentDO.
@@ -398,6 +455,7 @@ app.post("/webhooks/lemon-squeezy", async (c) => {
     ...(c.env.LEMON_SQUEEZY_WEBHOOK_SECRET ? { LEMON_SQUEEZY_WEBHOOK_SECRET: c.env.LEMON_SQUEEZY_WEBHOOK_SECRET } : {}),
     ...(c.env.LEMON_SQUEEZY_API_KEY ? { LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY } : {}),
     ...(c.env.LEMON_SQUEEZY_STORE_ID ? { LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID } : {}),
+    ...(c.env.LAUNCHPAD_FEE_BPS ? { LAUNCHPAD_FEE_BPS: c.env.LAUNCHPAD_FEE_BPS } : {}),
     AGENTS_WORKER: c.env.AGENTS_WORKER,
     PLATFORM_DB: c.env.PLATFORM_DB,
   });

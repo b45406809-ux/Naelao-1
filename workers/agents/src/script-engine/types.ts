@@ -232,6 +232,8 @@ export interface ScriptEngineEnv {
   knowledgeWorker?: Fetcher;
   spacesWorker?: Fetcher;
   notificationsWorker?: Fetcher;
+  /** Billing worker — holds Lemon Squeezy creds + Naelao store; the only money-in path. */
+  billingWorker?: Fetcher;
   /** Host-provided primitives for sub-agent / workflow prebuilt scripts. */
   orchestration?: OrchestrationHooks;
   /** HITL approval gateway — present when HITLApprovalDO is wired up. */

@@ -73,11 +73,35 @@ function skillToPrebuilt(skill: string): string[] {
       // so support agents can still ground answers; real CRM arrives via mcp-connector.
       return ["knowledge-base"];
     case "stripe-app":
-      // Billing app (MCP) — deferred (Lemon Squeezy primary). No prebuilt yet.
-      return [];
+      // Money-in is reserved to Naelao's Lemon Squeezy store via the commerce prebuilt
+      // (reserved-capabilities.ts). The legacy "stripe-app" skill maps to it — a builder
+      // can never wire their own Stripe key.
+      return ["commerce"];
+    case "commerce":
+      return ["commerce"];
+    case "storefront":
+      return ["storefront"];
+    case "business-email":
+      return ["business-email"];
     default:
       return [];
   }
+}
+
+/**
+ * Extra prebuilt scripts a space's agents get from its manifest productConfig — kept
+ * manifest-gated (never hardcoded into the generic agent). commerce.enabled adds the
+ * reserved money-in script; businessServices adds the Naelao-hosted storefront/email.
+ */
+export function businessServicePrebuilts(productConfig: {
+  commerce?: { enabled?: boolean };
+  businessServices?: { storefront?: boolean; businessEmail?: boolean };
+} | null | undefined): string[] {
+  const out: string[] = [];
+  if (productConfig?.commerce?.enabled) out.push("commerce");
+  if (productConfig?.businessServices?.storefront) out.push("storefront");
+  if (productConfig?.businessServices?.businessEmail) out.push("business-email");
+  return out;
 }
 
 /** Build an agent profile from a Launchpad agent definition (§11 → §13 realization). */

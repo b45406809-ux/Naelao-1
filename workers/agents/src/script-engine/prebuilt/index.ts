@@ -21,6 +21,9 @@ import { knowledgeBase } from "./knowledge-base.js";
 import { notifications } from "./notifications.js";
 import { subAgent } from "./sub-agent.js";
 import { dynamicWorkflow } from "./dynamic-workflow.js";
+import { commerce } from "./commerce.js";
+import { storefront } from "./storefront.js";
+import { businessEmail } from "./business-email.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -52,6 +55,10 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [notifications.name]: notifications,
   [subAgent.name]: subAgent,
   [dynamicWorkflow.name]: dynamicWorkflow,
+  // Business primitives (spec §11): the only money-in path + Naelao-hosted storefront/email.
+  [commerce.name]: commerce,
+  [storefront.name]: storefront,
+  [businessEmail.name]: businessEmail,
 };
 
 /**
@@ -72,4 +79,4 @@ export function buildOperationMap(
   return map;
 }
 
-export { r2Workspace, fileManager, webSearch, knowledgeBase, notifications, subAgent, dynamicWorkflow };
+export { r2Workspace, fileManager, webSearch, knowledgeBase, notifications, subAgent, dynamicWorkflow, commerce, storefront, businessEmail };

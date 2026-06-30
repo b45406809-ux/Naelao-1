@@ -175,6 +175,30 @@ export interface SpaceTypeProductConfig {
     maxThreadsPerUser?: number | null;
     maxCreditsPerMonth?: number | null;
   };
+
+  /**
+   * Commerce — opt-in (manifest-gated, never hardcoded). When enabled, the SpaceType gets
+   * the product/order primitive and the prebuilt commerce script. Money-in always flows
+   * through Naelao's Lemon Squeezy store so the platform fee (naelaoFeeBps, basis points)
+   * is captured on every sale — see reserved-capabilities.ts.
+   */
+  commerce?: {
+    enabled: boolean;
+    defaultCurrency?: string;          // ISO 4217, default "USD"
+    /** Platform fee in basis points captured per customer order (e.g. 500 = 5%). */
+    naelaoFeeBps?: number;
+    /** Allow the owner to attach their own custom domain to the storefront (opt-in). */
+    allowCustomDomain?: boolean;
+  };
+
+  /**
+   * Business services the SpaceType offers as Naelao-provided, multitenant prebuilt scripts
+   * (so the agent never has to shop for third-party tools). Each reflects on billing.
+   */
+  businessServices?: {
+    storefront?: boolean;     // {slug}.naelao.com multitenant storefront (CF Pages + Worker)
+    businessEmail?: boolean;  // send/receive from a Naelao business address
+  };
 }
 
 // resolveTenancy lives in the pure ./tenancy module (no cloudflare:workers import) so it

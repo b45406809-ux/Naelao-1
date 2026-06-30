@@ -42,6 +42,7 @@ export {
   DEFAULT_NAELAO_AGENT,
   launchpadAgentToProfile,
   launchpadProfiles,
+  businessServicePrebuilts,
 } from "./profiles.js";
 export {
   PREBUILT_SCRIPTS,
