@@ -25,6 +25,8 @@ import { safetyFloor } from "./safety.js";
 import { shouldPromote } from "./whop/cycle-logic.js";
 import { listManifests } from "./launchpad/manifest.js";
 import { CONNECTOR_CATALOGUE, getConnector } from "./connectors/catalogue.js";
+import { SkillLibrary } from "./script-engine/skill-library.js";
+import { promoteSkill, inheritTemplateSkills } from "./script-engine/federation.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -67,6 +69,8 @@ export interface AgentsEnv {
   MCP_HUB?: Fetcher;
   /** Credentials vault — stores a connector's API key (only the name is referenced elsewhere). */
   CREDENTIALS_WORKER?: Fetcher;
+  /** Skill library R2 — space + shared-template skill libraries (federated learning). */
+  SCRIPTS_R2?: R2Bucket;
   AGENT_CACHE: KVNamespace;
   ANALYTICS: AnalyticsEngineDataset;
   AGENT_TASK_WORKFLOW: { create(opts: { id?: string; params?: unknown }): Promise<void> };
@@ -976,6 +980,71 @@ app.post("/connectors/:platform/connect", async (c) => {
   }
 
   return c.json({ connected: true, platform: connector.id, server_id: serverId }, 201);
+});
+
+// ── Federated template learning (A1.9) — promote / inherit shared skills ──────
+// A template is a living skill library: proven space skills are promoted up to the shared
+// template library, and spaces inherit it. Routed from the router under /skills* and
+// /templates* (top-level, so no collision with /spaces/* → spaces worker).
+
+/** Resolve a space's template id (from spaces.config_json.template_id), validating ownership. */
+async function resolveSpaceTemplate(env: AgentsEnv, spaceId: string, tenantId: string): Promise<string | null> {
+  const row = await env.PLATFORM_DB.prepare(
+    "SELECT config_json FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(spaceId, tenantId).first<{ config_json: string | null }>();
+  if (!row) return null;
+  const cfg = safeParse(row.config_json ?? "{}") as { template_id?: string };
+  return cfg.template_id ?? null;
+}
+
+// POST /skills/promote { space_id, name, template_id? } — promote a proven space skill to the
+// shared template library (gated: stability ≥ 0.8 and ≥ 5 successes).
+app.post("/skills/promote", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Skill library not bound" }, 503);
+  const body = await c.req.json<{ space_id: string; name: string; template_id?: string }>().catch(() => ({ space_id: "", name: "" } as { space_id: string; name: string; template_id?: string }));
+  if (!body.space_id || !body.name) throw badRequest("space_id and name are required");
+
+  const templateId = body.template_id ?? (await resolveSpaceTemplate(c.env, body.space_id, tenantId));
+  if (!templateId) return c.json({ error_code: "no_template", message: "Space has no template to promote into" }, 409);
+
+  const spaceLib = new SkillLibrary(c.env.SCRIPTS_R2, body.space_id);
+  const templateLib = SkillLibrary.forTemplate(c.env.SCRIPTS_R2, templateId);
+  const result = await promoteSkill(spaceLib, templateLib, body.name);
+  return c.json({ ...result, template_id: templateId }, result.promoted ? 201 : 409);
+});
+
+// GET /templates/:templateId/skills — list the shared template library (names + summaries).
+app.get("/templates/:templateId/skills", async (c) => {
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Skill library not bound" }, 503);
+  const templateId = c.req.param("templateId");
+  const templateLib = SkillLibrary.forTemplate(c.env.SCRIPTS_R2, templateId);
+  const names = await templateLib.list();
+  const skills = [];
+  for (const name of names) {
+    const meta = await templateLib.readMetadata(name);
+    if (meta) skills.push({ name: meta.name, description: meta.description, domain: meta.domain, version: meta.version, requires_tier: meta.requires_tier });
+  }
+  return c.json({ template_id: templateId, skills, count: skills.length });
+});
+
+// POST /skills/inherit { space_id, template_id? } — pull the shared template library into a space
+// (adds only skills the space lacks; never clobbers a space's own learned version).
+app.post("/skills/inherit", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Skill library not bound" }, 503);
+  const body = await c.req.json<{ space_id: string; template_id?: string }>().catch(() => ({ space_id: "" } as { space_id: string; template_id?: string }));
+  if (!body.space_id) throw badRequest("space_id is required");
+
+  const templateId = body.template_id ?? (await resolveSpaceTemplate(c.env, body.space_id, tenantId));
+  if (!templateId) return c.json({ error_code: "no_template", message: "Space has no template to inherit from" }, 409);
+
+  const spaceLib = new SkillLibrary(c.env.SCRIPTS_R2, body.space_id);
+  const templateLib = SkillLibrary.forTemplate(c.env.SCRIPTS_R2, templateId);
+  const result = await inheritTemplateSkills(templateLib, spaceLib);
+  return c.json({ ...result, template_id: templateId });
 });
 
 // ── ProductDO routes — /product/* ─────────────────────────────────────────────

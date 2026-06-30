@@ -276,6 +276,10 @@ api.all("/business/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims")
 api.all("/connectors/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 api.all("/connectors", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
+// Federated template learning (promote / inherit shared skills) → agents worker.
+api.all("/skills/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/templates/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+
 app.route("/v1", api);
 
 // ── Error handler ────────────────────────────────────────────────────────────

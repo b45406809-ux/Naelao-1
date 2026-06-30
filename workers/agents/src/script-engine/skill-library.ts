@@ -30,13 +30,30 @@ export function computeStabilityScore(m: Pick<ScriptMetadata, "success_count" | 
 }
 
 export class SkillLibrary {
+  /**
+   * A library is scoped either to a space (`spaces/{id}/scripts/…`, the agent's own learned
+   * skills) or to a template (`templates/{id}/scripts/…`, the SHARED library all spaces on that
+   * template inherit from and promote proven skills back into — federated learning, A1.9).
+   */
   constructor(
     private readonly bucket: R2Bucket,
-    private readonly spaceId: string
+    private readonly scopeId: string,
+    private readonly scope: "space" | "template" = "space"
   ) {}
 
+  /** Build a template-scoped (shared) library. */
+  static forTemplate(bucket: R2Bucket, templateId: string): SkillLibrary {
+    return new SkillLibrary(bucket, templateId, "template");
+  }
+
+  private root(): string {
+    return this.scope === "template"
+      ? `templates/${this.scopeId}/scripts`
+      : `spaces/${this.scopeId}/scripts`;
+  }
+
   private dir(name: string): string {
-    return `spaces/${this.spaceId}/scripts/${name}`;
+    return `${this.root()}/${name}`;
   }
 
   /** Reject names that could escape the script directory or collide with the layout. */
@@ -199,9 +216,9 @@ export class SkillLibrary {
     } while (cursor);
   }
 
-  /** List all script names in this space's library. */
+  /** List all script names in this library (space- or template-scoped). */
   async list(): Promise<string[]> {
-    const prefix = `spaces/${this.spaceId}/scripts/`;
+    const prefix = `${this.root()}/`;
     const names = new Set<string>();
     let cursor: string | undefined;
     do {
@@ -225,6 +242,31 @@ export class SkillLibrary {
     current.stability_score = computeStabilityScore(current);
     current.updated_at = Date.now();
     await this.bucket.put(`${this.dir(name)}/SCRIPT.md`, JSON.stringify(current, null, 2));
+  }
+
+  /**
+   * Import a script wholesale into this library (federated learning, A1.9): create it as v1 if
+   * absent, else lay a new version on top. Used to promote a proven space skill up to the shared
+   * template library, and to inherit shared template skills down into a new space. Provenance is
+   * preserved via `origin` and a patch_history note.
+   */
+  async import(metadata: ScriptMetadata, code: string | undefined, reason: string): Promise<ScriptMetadata> {
+    this.assertName(metadata.name);
+    if (await this.exists(metadata.name)) {
+      return this.update(metadata.name, { ...(code !== undefined ? { code } : {}), metadata }, reason, "re_derivation");
+    }
+    const now = Date.now();
+    const meta: ScriptMetadata = {
+      ...metadata,
+      version: 1,
+      created_at: now,
+      updated_at: now,
+      patch_history: [
+        { version: 1, created_at: now, patch_type: "initial", reason, success_count_at_patch: 0, failure_count_at_patch: 0 },
+      ],
+    };
+    await this.persistVersion(meta.name, meta, code);
+    return meta;
   }
 
   /** Write current pointers + archive the new version. */
