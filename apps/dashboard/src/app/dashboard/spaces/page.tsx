@@ -271,6 +271,12 @@ export default function SpacesPage() {
                   <td className="px-6 py-4 text-right">
                     <div className="inline-flex items-center gap-3">
                       <Link
+                        href={`/dashboard/spaces/${space.id}/commerce`}
+                        className="text-brand-600 hover:underline text-xs font-medium"
+                      >
+                        Commerce
+                      </Link>
+                      <Link
                         href={`/dashboard/spaces/${space.id}/kb`}
                         className="text-brand-600 hover:underline text-xs font-medium"
                       >

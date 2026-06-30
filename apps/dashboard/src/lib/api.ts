@@ -357,6 +357,73 @@ export async function createSubSpace(
   });
 }
 
+// ── Commerce (Launchpad: products / orders / revenue) ────────────────────────
+
+export interface Product {
+  id: string;
+  name: string;
+  description: string;
+  price_cents: number;
+  currency: string;
+  kind: "one_time" | "subscription";
+  fulfillment_r2_key: string | null;
+  status: "draft" | "published" | "archived";
+  created_at: string;
+}
+
+export interface Order {
+  id: string;
+  product_id: string | null;
+  product_name?: string | null;
+  customer_email: string | null;
+  gross_cents: number;
+  fee_cents: number;
+  net_cents: number;
+  currency: string;
+  status: string;
+  created_at: string;
+}
+
+export interface RevenueSummary {
+  period: string;
+  currency: string;
+  gross_cents: number;
+  fee_cents: number;
+  net_cents: number;
+  order_count: number;
+}
+
+export async function listProducts(spaceId: string): Promise<{ data: Product[]; currency: string }> {
+  return apiFetch<{ data: Product[]; currency: string }>(`/spaces/${spaceId}/products`);
+}
+
+export async function createProduct(
+  spaceId: string,
+  data: { name: string; description?: string; price_cents?: number; kind?: "one_time" | "subscription" }
+): Promise<Product> {
+  return apiFetch<Product>(`/spaces/${spaceId}/products`, { method: "POST", body: JSON.stringify(data) });
+}
+
+export async function updateProduct(
+  spaceId: string,
+  productId: string,
+  data: Partial<{ name: string; description: string; price_cents: number; status: "draft" | "published" | "archived" }>
+): Promise<{ id: string }> {
+  return apiFetch(`/spaces/${spaceId}/products/${productId}`, { method: "PATCH", body: JSON.stringify(data) });
+}
+
+export async function deleteProduct(spaceId: string, productId: string): Promise<void> {
+  return apiFetch<void>(`/spaces/${spaceId}/products/${productId}`, { method: "DELETE" });
+}
+
+export async function listOrders(spaceId: string): Promise<{ data: Order[] }> {
+  return apiFetch<{ data: Order[] }>(`/spaces/${spaceId}/orders`);
+}
+
+export async function getRevenue(spaceId: string): Promise<RevenueSummary> {
+  return apiFetch<RevenueSummary>(`/spaces/${spaceId}/revenue`);
+}
+
 // ── Billing ──────────────────────────────────────────────────────────────────
 
 export async function createBillingCheckout(planTier: string): Promise<{ url: string }> {

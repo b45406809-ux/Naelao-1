@@ -133,14 +133,51 @@ into `NaelaoAgentDO`:
 
 ---
 
+## A1.9 Commerce, business services & the "always get our cut" guarantee
+
+The point of friction the builder raised: *a builder must not be able to tell their agent
+"write a Stripe script with my key" and route income around Naelao.* Settled structurally
+via **reserved capabilities** (`workers/agents/src/script-engine/reserved-capabilities.ts`):
+
+- **Money-in is reserved.** `RESERVED_CAPABILITIES` (checkout, charge, payout, wallet, …) may
+  only be provided by Naelao's **prebuilt `commerce` script**, which holds the Lemon Squeezy
+  store credentials (Workers Secret) and bakes in the platform fee (`naelaoFeeBps`).
+  `ScriptToolSurface.create/update` **fail closed**: a user/agent script that references an
+  external payment host (Stripe/PayPal/… *and* `api.lemonsqueezy.com`), embeds a payment SDK,
+  or declares a reserved capability/domain is rejected. Builders keep full freedom to author
+  delivery, marketing, storefront-UI, and email scripts — just not the wallet. 9 unit tests.
+- **Business services are Naelao-provided multitenant prebuilts** (so the assistant never has
+  to shop third-party tools): `commerce`, `storefront`, `business-email`. All manifest-gated
+  via `productConfig.commerce` / `productConfig.businessServices`; the provisioner merges them
+  into installed agents (`businessServicePrebuilts`). A builder may still author their own
+  scripts for anything except the income wallet, and may opt into a custom domain.
+- **Storefront = one multitenant surface, not a Worker-per-tenant** (corrects the early
+  "dynamic-worker" wording). Confirmed against Cloudflare for SaaS docs: a CF **Pages** static
+  shell fronted by the portal **Worker as fallback origin**, routing by `Host` header.
+  `storefront.provision` allocates `{slug}-{id}.naelao.com` (covered by the zone wildcard cert
+  — no per-tenant cert) and registers a `portal-host:{host}→spaceId` KV route; custom domains
+  use the CF for SaaS `custom_hostnames` API (DV cert, customer CNAMEs to the fallback origin).
+- **Commerce data model** (`0035_commerce.sql`) is a generic, manifest-gated primitive:
+  `launchpad_products`, `launchpad_orders` (idempotent on `provider_event_id`),
+  `business_services`. Owner CRUD + revenue rollup in the spaces worker (gated on
+  `commerce.enabled`); the LS webhook writes the order + platform fee and wakes the fulfilment
+  agent with the `order_id`. Dashboard: `/dashboard/spaces/{id}/commerce` (products, orders,
+  revenue).
+- **Lemon Squeezy is the processor for all three payer classes**: customers buying products
+  (done — checkout→order→fulfilment), Naelao builders' plans (existing), and a builder's
+  space-members/seats (**remaining** — seat billing not yet wired).
+
 ## A1.5 Open follow-ups (tracked, not yet built)
 
 - **Credential hierarchy**: per-user (default) + per-space (shared, e.g. company email) +
   per-privileged-user overrides.
 - **MCP as scripts**: agents never connect to MCP directly; they write/use scripts that wrap
   MCP providers (Pipedream, Composio).
-- **Naelao-native hosting**: CF Pages sites under `*.naelao.com`, chargeable, admin-
-  configurable (self-host vs Naelao-host).
+- **Member/seat billing**: Lemon Squeezy billing for a builder's space-members (the third
+  payer class) — the customer-purchase and builder-plan paths are done.
+- **Storefront render + CF for SaaS apply step**: the portal Worker serving the multitenant
+  storefront UI from the `portal-host` route, and the zone-scoped `custom_hostnames` API call
+  (the data model + route registration + DNS instructions are built).
 - **Space collaboration**: roles, task boards, and project deduplication (admin's assistant
   broadcasts "this already exists" to member assistants). **Settled in A1.8** — assistant is
   the operator over shared `ProjectDO` state (locks + presence + dedup), not a per-user fork.
