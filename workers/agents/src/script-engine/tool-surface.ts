@@ -27,6 +27,7 @@ import { SkillLibrary } from "./skill-library.js";
 import { scriptFind, indexScriptEmbedding, removeScriptEmbedding } from "./script-find.js";
 import { runStoredScript } from "./execution-ladder.js";
 import { buildOperationMap, type PrebuiltOp, type PrebuiltScript } from "./prebuilt/index.js";
+import { assertNoReservedViolation } from "./reserved-capabilities.js";
 
 export class ScriptToolSurface {
   private readonly library: SkillLibrary;
@@ -56,6 +57,16 @@ export class ScriptToolSurface {
     code?: string;
     metadata: Partial<ScriptMetadata> & Pick<ScriptMetadata, "description" | "domain" | "requires_tier">;
   }): Promise<ScriptMetadata> {
+    // Income-wallet protection: a user/agent script may never collect money. Only the
+    // prebuilt commerce op (Naelao's Lemon Squeezy store) may — that is how the platform
+    // fee is guaranteed. Reject reserved-capability authoring at create time (fail-closed).
+    assertNoReservedViolation({
+      name: input.name,
+      code: input.code,
+      tags: input.metadata.tags,
+      domain: input.metadata.domain,
+    });
+
     // Embed at create time (spec §16) so script.find can retrieve it.
     if (this.env.embedder && !input.metadata.embedding_vector) {
       try {
@@ -82,6 +93,13 @@ export class ScriptToolSurface {
     patch: { code?: string; metadata?: Partial<ScriptMetadata> },
     reason: string
   ): Promise<ScriptMetadata> {
+    // Re-check on update so a benign script can't be edited into a money-in bypass.
+    assertNoReservedViolation({
+      name,
+      code: patch.code,
+      tags: patch.metadata?.tags,
+      domain: patch.metadata?.domain,
+    });
     const meta = await this.library.update(name, patch, reason);
     await indexScriptEmbedding(this.env, meta);
     return meta;
