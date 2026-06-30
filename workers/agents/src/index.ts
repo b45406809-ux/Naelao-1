@@ -168,6 +168,26 @@ function getTaskDO(env: AgentsEnv, spaceId: string): DurableObjectStub<TaskDO> {
   return env.TASK_DO.get(doId);
 }
 
+// Get the NaelaoAgentDO stub for a space-level agent, addressed by (spaceId, agentId)
+// rather than a session — used by the script-first /script/run entrypoint, which is woken
+// by webhooks/cron (no session exists yet). HMAC-named to prevent cross-tenant enumeration.
+async function getAgentDOForSpace(
+  env: AgentsEnv,
+  tenantId: string,
+  spaceId: string,
+  agentId: string,
+  reqId?: string
+): Promise<DurableObjectStub<NaelaoAgentDO>> {
+  const doName = await getDOName("agent", `${spaceId}:${agentId}`, tenantId, env.PLATFORM_SECRET);
+  const valid = await verifyDOTenantPrefix(doName, tenantId, env.PLATFORM_SECRET);
+  if (!valid) {
+    await recordCrossTenantProbe(env, tenantId, doName, reqId ?? "unknown");
+    throw new Error("Cross-tenant DO access denied");
+  }
+  const doId = env.NAELAO_AGENT_DO.idFromName(doName);
+  return env.NAELAO_AGENT_DO.get(doId);
+}
+
 // ── POST /spaces/:spaceId/sessions/:sessionId/agent/run ───────────────────────
 
 app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
@@ -489,6 +509,56 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   }
 
   return c.json(doBody, doResponse.status as 200 | 201 | 400 | 404 | 422 | 500);
+});
+
+// ── POST /agents/:agentId/script/run — script-first agent entrypoint ──────────
+// The authoritative agent model (spec appendix ~6672k). Woken by webhooks (Lemon Squeezy
+// order events), cron triggers, or the owner. Resolves the NaelaoAgentDO for (spaceId,
+// agentId) and runs OBSERVE→FINGERPRINT→FIND→GATE→EXECUTE→VERIFY→DISTILL inside it.
+//
+// Internal callers (billing/triggers) set x-naelao-internal + x-naelao-space-id and a
+// trusted x-naelao-tenant-id; owner-initiated calls arrive with the usual JWT-derived
+// headers. spaceId/tenantId may also come from the JSON body.
+app.post("/agents/:agentId/script/run", async (c) => {
+  const agentId = c.req.param("agentId");
+  interface ScriptRunBody {
+    goal: string;
+    spaceId?: string;
+    tenantId?: string;
+    sessionId?: string;
+    context?: Record<string, unknown>;
+    model?: string;
+  }
+  const body = await c.req.json<ScriptRunBody>().catch(() => ({ goal: "" } as ScriptRunBody));
+
+  const spaceId = body.spaceId ?? c.req.header("x-naelao-space-id") ?? "";
+  const tenantId = body.tenantId ?? getCallerIdentity(c).tenantId;
+
+  if (!body.goal || typeof body.goal !== "string") throw badRequest("goal is required");
+  if (body.goal.length > 10_000) throw badRequest("goal must not exceed 10,000 characters");
+  if (!spaceId) throw badRequest("spaceId is required (header x-naelao-space-id or body.spaceId)");
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, agentId, c.get("requestId"));
+  const doResp = await stub.fetch(
+    new Request("http://agent-do/script/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal: body.goal,
+        spaceId,
+        agentId,
+        tenantId,
+        ...(body.sessionId ? { sessionId: body.sessionId } : {}),
+        ...(body.context ? { context: body.context } : {}),
+        // Inject the platform LLM key so webhook/cron wakes (which carry none) can reason.
+        apiKey: c.env.ANTHROPIC_API_KEY,
+        ...(body.model ? { model: body.model } : {}),
+      }),
+    })
+  );
+  const doBody = await doResp.json<unknown>();
+  return c.json(doBody, doResp.status as 200 | 400 | 404 | 500 | 503);
 });
 
 // ── GET /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId ────────────────
