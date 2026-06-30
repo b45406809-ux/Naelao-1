@@ -15,6 +15,7 @@ import {
   verifyStripeWebhook,
 } from "./stripe.js";
 import { handleLemonSqueezyWebhook } from "./lemon-squeezy.js";
+import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
 
 export interface BillingEnv {
   ENVIRONMENT: string;
@@ -489,6 +490,50 @@ app.post("/internal/seats/checkout", async (c) => {
     metadata: { kind: "seat", fee_bps: String(feeBps), ...(body.user_id ? { user_id: body.user_id } : {}) },
   });
   return c.json({ checkout_url: url, seat_price_cents: cfg.seatPriceCents, currency: cfg.currency, fee_bps: feeBps });
+});
+
+// ── POST /internal/products/ls-variant ───────────────────────────────────────
+// Called by the spaces worker when a product is published for the first time and
+// ls_variant_id is not yet set. Creates a Lemon Squeezy product + default variant in
+// Naelao's store so the builder's storefront can immediately accept payments.
+// Dev path: returns a placeholder when LS creds are absent.
+app.post("/internal/products/ls-variant", async (c) => {
+  if (c.req.header("x-naelao-internal") !== "publish") {
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  }
+  const body = await c.req.json<{
+    name: string;
+    description?: string;
+    price_cents: number;
+    currency?: string;
+    kind: "one_time" | "subscription";
+  }>();
+  if (!body.name || body.price_cents === undefined || !body.kind) {
+    return c.json({ error_code: "bad_request", message: "name, price_cents, and kind are required" }, 400);
+  }
+
+  const cfg = lsProductsConfig(c.env);
+  if (!cfg) {
+    // Dev path — no LS creds; return deterministic placeholders so publish is testable.
+    return c.json({
+      ls_product_id: `dev-product-${Date.now()}`,
+      ls_variant_id: `dev-variant-${Date.now()}`,
+      dev: true,
+    });
+  }
+
+  try {
+    const result = await createLsProductVariant(cfg, {
+      name: body.name,
+      ...(body.description ? { description: body.description } : {}),
+      price_cents: body.price_cents,
+      kind: body.kind,
+    });
+    return c.json({ ls_product_id: result.lsProductId, ls_variant_id: result.lsVariantId });
+  } catch (err) {
+    console.error("[billing/ls-products] auto-create failed:", (err as Error).message);
+    return c.json({ error_code: "ls_api_failed", message: (err as Error).message }, 502);
+  }
 });
 
 // ── POST /webhooks/lemon-squeezy ─────────────────────────────────────────────

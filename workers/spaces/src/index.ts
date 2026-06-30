@@ -25,6 +25,8 @@ export interface Env {
   /** Cloudflare for SaaS custom-hostname provisioning (deploy-time secrets; optional). */
   CF_API_TOKEN?: string;
   CF_SAAS_ZONE_ID?: string;
+  /** Billing worker — called at publish time to auto-create LS product + variant. */
+  BILLING_WORKER?: Fetcher;
 }
 
 /** Message enqueued on space creation; consumed by the provisioner (installs agents etc.). */
@@ -775,6 +777,49 @@ app.patch("/spaces/:spaceId/products/:id", async (c) => {
     now, productId, spaceId
   ).run();
   if (res.meta.changes === 0) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+
+  // Auto-create LS product + variant when publishing for the first time (no ls_variant_id yet).
+  // Gated: only when status is being set to "published" and BILLING_WORKER is bound.
+  if (body.status === "published" && !body.ls_variant_id && c.env.BILLING_WORKER) {
+    const product = await c.env.PLATFORM_DB.prepare(
+      "SELECT name, description, price_cents, currency, kind, ls_variant_id FROM launchpad_products WHERE id = ? AND space_id = ?"
+    ).bind(productId, spaceId).first<{
+      name: string; description: string; price_cents: number; currency: string;
+      kind: "one_time" | "subscription"; ls_variant_id: string | null;
+    }>();
+
+    if (product && !product.ls_variant_id) {
+      try {
+        const lsResp = await c.env.BILLING_WORKER.fetch(
+          new Request("http://billing-worker/internal/products/ls-variant", {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-naelao-internal": "publish" },
+            body: JSON.stringify({
+              name: product.name,
+              description: product.description || undefined,
+              price_cents: product.price_cents,
+              currency: product.currency,
+              kind: product.kind,
+            }),
+          })
+        );
+        if (lsResp.ok) {
+          const ls = await lsResp.json<{ ls_product_id: string; ls_variant_id: string }>();
+          await c.env.PLATFORM_DB.prepare(
+            "UPDATE launchpad_products SET ls_variant_id = ?, ls_product_id = ?, updated_at = ? WHERE id = ?"
+          ).bind(ls.ls_variant_id, ls.ls_product_id, new Date().toISOString(), productId).run();
+          return c.json({ id: productId, updated_at: now, ls_variant_id: ls.ls_variant_id, ls_product_id: ls.ls_product_id });
+        } else {
+          const err = await lsResp.json<{ error_code: string; message: string }>().catch(() => ({ error_code: "unknown", message: "LS variant creation failed" }));
+          console.error(`[spaces/publish] LS variant auto-create failed for product=${productId}: ${err.message}`);
+          // Non-fatal: product is published but variant creation failed — builder can retry or supply manually.
+        }
+      } catch (err) {
+        console.error(`[spaces/publish] LS variant auto-create error product=${productId}:`, (err as Error).message);
+      }
+    }
+  }
+
   return c.json({ id: productId, updated_at: now });
 });
 

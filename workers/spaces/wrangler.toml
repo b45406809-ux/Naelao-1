@@ -73,3 +73,22 @@ id = "REPLACE_WITH_KV_ID"
 [[queues.producers]]
 binding = "PROVISION_QUEUE"
 queue = "naelao-provisioning-queue"
+
+# Billing worker — called at product publish time to auto-create LS product + variant.
+[[services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
+
+[[env.staging.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+[[env.production.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
