@@ -490,3 +490,36 @@ export async function connectPlatform(
     body: JSON.stringify({ space_id: spaceId, api_key: apiKey }),
   });
 }
+
+// ── Templates + first-run onboarding wizard ──────────────────────────────────
+
+export interface OnboardingPrompt {
+  id: string;
+  type: "credential" | "choice" | "text" | "boolean";
+  question: string;
+  connector?: string;
+  options?: string[];
+  required?: boolean;
+}
+
+export interface TemplateBootstrap {
+  prompts: OnboardingPrompt[];
+  projects?: string[];
+  setup_scripts?: string[];
+}
+
+export interface TemplateInfo {
+  id: string;
+  name: string;
+  description: string;
+  free_tier_eligible: boolean;
+  connectors: string[];
+  coming_soon: boolean;
+  bootstrap?: TemplateBootstrap;
+}
+
+/** Launchpad templates incl. their first-run bootstrap (the onboarding wizard reads this). */
+export async function getTemplates(): Promise<TemplateInfo[]> {
+  const res = await apiFetch<{ templates: TemplateInfo[] }>("/templates");
+  return res.templates ?? [];
+}
