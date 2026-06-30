@@ -4,6 +4,7 @@
 // Stripe is a future addition. See ./providers. The Stripe helpers below remain for
 // usage-metering until the Stripe BillingProvider lands.
 export * from "./providers/index.js";
+export * from "./reseller.js";
 
 export interface StripeConfig {
   secretKey: string;

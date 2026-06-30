@@ -16,8 +16,8 @@
  *     → fire "payment_failed" goal (dunning workflow)
  */
 
-import { LemonSqueezyProvider } from "@naelao/billing-core";
-import type { NormalizedBillingEvent } from "@naelao/billing-core";
+import { LemonSqueezyProvider, computeResellerAttribution, isLedgerEvent, billingPeriod } from "@naelao/billing-core";
+import type { NormalizedBillingEvent, BillingRelationship } from "@naelao/billing-core";
 
 export interface LemonSqueezyEnv {
   LEMON_SQUEEZY_WEBHOOK_SECRET?: string;
@@ -96,6 +96,64 @@ async function wakeAgent(
   }
 }
 
+/**
+ * If the billing event belongs to a child tenant under a reseller, attribute it to the
+ * parent and write a reseller-ledger entry (consolidated invoicing — spec G-AS34/G-AS35).
+ * No-op when the space's tenant is not a child tenant or the relationship is "platform".
+ */
+async function recordResellerAttribution(
+  event: NormalizedBillingEvent,
+  db: D1Database
+): Promise<void> {
+  if (!isLedgerEvent(event.type)) return;
+
+  // Resolve the space's tenant, then its parent reseller (if any).
+  const space = await db.prepare(
+    "SELECT tenant_id FROM spaces WHERE id = ?"
+  ).bind(event.spaceId).first<{ tenant_id: string }>();
+  if (!space) return;
+
+  const hierarchy = await db.prepare(
+    "SELECT parent_tenant_id FROM tenant_hierarchy WHERE child_tenant_id = ? AND status = 'active'"
+  ).bind(space.tenant_id).first<{ parent_tenant_id: string }>();
+  if (!hierarchy) return;
+
+  const reseller = await db.prepare(
+    "SELECT billing_relationship, wholesale_cents, referral_share_pct FROM reseller_accounts WHERE tenant_id = ? AND status = 'active'"
+  ).bind(hierarchy.parent_tenant_id).first<{
+    billing_relationship: string;
+    wholesale_cents: number | null;
+    referral_share_pct: number;
+  }>();
+  if (!reseller) return;
+
+  const attribution = computeResellerAttribution(event, {
+    billingRelationship: reseller.billing_relationship as BillingRelationship,
+    wholesaleCents: reseller.wholesale_cents,
+    referralSharePct: reseller.referral_share_pct,
+  });
+  if (!attribution) return;
+
+  await db.prepare(
+    `INSERT INTO reseller_ledger
+       (id, parent_tenant_id, child_tenant_id, child_space_id, event_type,
+        retail_cents, wholesale_cents, margin_cents, currency, period)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    crypto.randomUUID(),
+    hierarchy.parent_tenant_id,
+    space.tenant_id,
+    event.spaceId,
+    event.type,
+    attribution.retailCents,
+    attribution.wholesaleCents,
+    attribution.marginCents,
+    attribution.currency,
+    billingPeriod()
+  ).run();
+  console.log(`[billing/ls] Reseller ledger: parent=${hierarchy.parent_tenant_id} margin=${attribution.marginCents}c (${attribution.relationship})`);
+}
+
 /** Handle an inbound Lemon Squeezy webhook POST. */
 export async function handleLemonSqueezyWebhook(
   request: Request,
@@ -138,7 +196,15 @@ export async function handleLemonSqueezyWebhook(
     return Response.json({ ok: true, skipped: true });
   }
 
-  // 4. Wake the Space Assistant agent asynchronously (ctx.waitUntil equivalent: fire-and-forget)
+  // 4. Reseller attribution — if this space is a child tenant under a reseller, roll the
+  //    event up into the parent's consolidated ledger (G-AS34/G-AS35). Best-effort.
+  try {
+    await recordResellerAttribution(event, env.PLATFORM_DB);
+  } catch (err) {
+    console.error("[billing/ls] Reseller attribution failed:", (err as Error).message);
+  }
+
+  // 5. Wake the Space Assistant agent asynchronously (ctx.waitUntil equivalent: fire-and-forget)
   await wakeAgent(event.spaceId, agent.agentId, agent.tenantId, event, env.AGENTS_WORKER);
 
   return Response.json({ ok: true, event_type: event.type, space_id: event.spaceId });

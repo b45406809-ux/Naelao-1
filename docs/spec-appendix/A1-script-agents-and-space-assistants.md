@@ -302,11 +302,25 @@ the customer creates a space of a **Naelao-authored** SpaceType the builder expo
 
 ### Build scope
 
-- **Now (done):** `SpaceTypeProductConfig` schema (`membershipModel`, `assistantMode`,
+- **Done:** `SpaceTypeProductConfig` schema (`membershipModel`, `assistantMode`,
   `allowedChildSpaceTypes`, `billingRelationship`, `userPermissions`) on the manifest;
-  Launchpad defaults to `team` / `per-user` / `platform`. `team` + `shared`/`per-user`
-  work on what's already built.
-- **Later (own task):** the `tenant`/reseller subsystem — `parent_tenant_id` account
-  hierarchy, consolidated/wholesale invoicing, and the client-portfolio dashboard
-  (G-AS34/G-AS35). Not part of the Launchpad pass; must not be smuggled in.
+  Launchpad defaults to `team` / `per-user` / `platform`.
+- **Done — `tenant`/reseller subsystem backend (G-AS34/G-AS35):**
+  - **Account hierarchy** — `infra/migrations/0033_reseller_accounts.sql`:
+    `reseller_accounts` (per-reseller billing config), `tenant_hierarchy`
+    (child→parent lineage), `reseller_ledger` (consolidated rollup). Dedicated tables
+    keyed by `tenant_id` (kept off the `orgs`/`organizations` drift).
+  - **Customer self-serve provisioning** — `POST /reseller/spaces` (spaces worker):
+    resolves the reseller from the product space, gates on effective `productConfig`
+    (`membershipModel` ∈ tenant/hybrid, `allowPublicSignup`, `allowedChildSpaceTypes`),
+    mints/reuses a child tenant (`parent_tenant_id` = reseller), and runs the **same
+    10-step provisioner** with `tenant_id = childTenant`. `GET /reseller/clients`
+    returns the client portfolio + current-period billing rollup.
+  - **Billing attribution** — `packages/billing-core/src/reseller.ts`
+    (`computeResellerAttribution`): `reseller` = retail−wholesale margin, `referral`
+    = clamped rev-share %, `platform` = no-op; refunds reverse. Wired into the Lemon
+    Squeezy webhook (`workers/billing/src/lemon-squeezy.ts`) to write `reseller_ledger`
+    rows. 10 unit tests in `tests/unit/reseller-attribution.test.ts`.
+- **Remaining (frontend only):** the client-portfolio **dashboard UI** in `apps/dashboard`
+  — a thin consumer of `GET /reseller/clients` (the API is built).
 - Launchpad SpaceType definition (§11): `workers/agents/src/launchpad/` manifests + templates

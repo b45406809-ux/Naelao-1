@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { errorResponse, requestId, notFound } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import type { SpaceDO } from "./do/SpaceDO.js";
-import type { SpaceTypeRegistryDO } from "./do/SpaceTypeRegistryDO.js";
+import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
@@ -601,6 +601,166 @@ app.post("/internal/space-types/seed", async (c) => {
     await c.env.NAELAO_CONFIG_KV.delete(`space-type-manifest:${manifest.id}`);
   }
   return c.json({ seeded: results });
+});
+
+// ── Reseller / tenant membership (spec G-AS34/G-AS35; productConfig.membershipModel) ──
+// When a builder's product has membershipModel "tenant"|"hybrid", a customer who signs up
+// through that product creates their OWN business (a space under their own child tenant,
+// parented to the reseller). See docs/spec-appendix A1.8.
+
+/**
+ * Resolve the effective productConfig for a product space: the SpaceType manifest's
+ * productConfig, overlaid with any per-space override in spaces.config_json.productConfig.
+ */
+async function loadEffectiveProductConfig(
+  env: Env,
+  spaceTypeId: string,
+  spaceConfigJson: string | null
+): Promise<SpaceTypeProductConfig | null> {
+  let base: SpaceTypeProductConfig | null = null;
+  const cacheKey = `space-type-manifest:${spaceTypeId}`;
+  const cached = await env.NAELAO_CONFIG_KV.get(cacheKey, "json") as NaelaoSpaceTypeManifestV2 | null;
+  if (cached?.productConfig) {
+    base = cached.productConfig;
+  } else {
+    const registry = getRegistryDO(env);
+    const resp = await registry.fetch(new Request(`http://registry/type/${spaceTypeId}`));
+    if (resp.ok) {
+      const manifest = await resp.json<NaelaoSpaceTypeManifestV2>();
+      await env.NAELAO_CONFIG_KV.put(cacheKey, JSON.stringify(manifest), { expirationTtl: 3600 });
+      base = manifest.productConfig ?? null;
+    }
+  }
+  // Per-space override (builders tune membership per product without forking the manifest).
+  let override: Partial<SpaceTypeProductConfig> | undefined;
+  if (spaceConfigJson) {
+    try {
+      const cfg = JSON.parse(spaceConfigJson) as { productConfig?: Partial<SpaceTypeProductConfig> };
+      override = cfg.productConfig;
+    } catch { /* ignore malformed */ }
+  }
+  if (!base && !override) return null;
+  return { ...(base ?? {}), ...(override ?? {}) } as SpaceTypeProductConfig;
+}
+
+// POST /reseller/spaces — a customer creates their own business under a reseller's product.
+app.post("/reseller/spaces", async (c) => {
+  const { userId } = getCallerIdentity(c);
+  if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
+
+  const body = await c.req.json<{
+    reseller_product_space_id: string;
+    name: string;
+    spacetype_id: string;
+    template_id?: string;
+    config_overrides?: Record<string, unknown>;
+  }>();
+  if (!body.reseller_product_space_id || !body.name || !body.spacetype_id) {
+    return c.json(
+      { error_code: "bad_request", message: "reseller_product_space_id, name, spacetype_id are required" },
+      400
+    );
+  }
+
+  // 1. Resolve the reseller (parent tenant) from the product space.
+  const product = await c.env.PLATFORM_DB.prepare(
+    "SELECT tenant_id, spacetype_id, config_json FROM spaces WHERE id = ? AND status = 'active'"
+  ).bind(body.reseller_product_space_id).first<{ tenant_id: string; spacetype_id: string; config_json: string | null }>();
+  if (!product) return c.json({ error_code: "not_found", message: "Reseller product not found" }, 404);
+  const parentTenantId = product.tenant_id;
+
+  // 2. Load effective productConfig and gate the request.
+  const pc = await loadEffectiveProductConfig(c.env, product.spacetype_id, product.config_json);
+  if (!pc || (pc.membershipModel !== "tenant" && pc.membershipModel !== "hybrid")) {
+    return c.json({ error_code: "not_allowed", message: "This product does not allow customers to create their own businesses" }, 403);
+  }
+  if (!pc.allowPublicSignup) {
+    return c.json({ error_code: "signup_closed", message: "Public signup is disabled for this product" }, 403);
+  }
+  const allowed = pc.allowedChildSpaceTypes ?? [];
+  if (!allowed.includes(body.spacetype_id)) {
+    return c.json({ error_code: "spacetype_not_allowed", message: `SpaceType '${body.spacetype_id}' is not offered by this product` }, 403);
+  }
+
+  // 3. Find or mint the customer's child tenant (one per customer per reseller).
+  const existing = await c.env.PLATFORM_DB.prepare(
+    "SELECT child_tenant_id FROM tenant_hierarchy WHERE parent_tenant_id = ? AND child_owner_user_id = ? LIMIT 1"
+  ).bind(parentTenantId, userId).first<{ child_tenant_id: string }>();
+  const childTenantId = existing?.child_tenant_id ?? `ten_${crypto.randomUUID().replace(/-/g, "")}`;
+  const now = new Date().toISOString();
+
+  // Ensure a reseller_accounts row exists for the parent (lazily, from productConfig).
+  await c.env.PLATFORM_DB.prepare(
+    `INSERT INTO reseller_accounts (tenant_id, product_space_id, billing_relationship, wholesale_cents, referral_share_pct, updated_at)
+     VALUES (?, ?, ?, NULL, 0.0, ?)
+     ON CONFLICT(tenant_id) DO UPDATE SET product_space_id = excluded.product_space_id, updated_at = excluded.updated_at`
+  ).bind(parentTenantId, body.reseller_product_space_id, pc.billingRelationship ?? "platform", now).run();
+
+  // 4. Create the child business (space) under the child tenant.
+  const spaceId = crypto.randomUUID();
+  const initialStatus = c.env.PROVISION_QUEUE ? "provisioning" : "active";
+  const configJson = JSON.stringify({
+    ...(body.config_overrides ?? {}),
+    ...(body.template_id ? { template_id: body.template_id } : {}),
+  });
+  await c.env.PLATFORM_DB.prepare(
+    `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, created_at, updated_at, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(spaceId, childTenantId, body.spacetype_id, body.name, initialStatus, configJson, now, now, userId).run();
+
+  // 5. Record the hierarchy on first business for this child tenant.
+  if (!existing) {
+    await c.env.PLATFORM_DB.prepare(
+      `INSERT INTO tenant_hierarchy (child_tenant_id, parent_tenant_id, reseller_product_space_id, child_space_id, child_owner_user_id)
+       VALUES (?, ?, ?, ?, ?)`
+    ).bind(childTenantId, parentTenantId, body.reseller_product_space_id, spaceId, userId).run();
+  }
+
+  // 6. Provision under the CHILD tenant (reuses the 10-step provisioner unchanged).
+  if (c.env.PROVISION_QUEUE) {
+    await c.env.PROVISION_QUEUE.send({
+      type: "space_provision",
+      spaceId,
+      tenantId: childTenantId,
+      spaceTypeId: body.spacetype_id,
+      spaceName: body.name,
+      ...(body.template_id ? { templateId: body.template_id } : {}),
+      requestedAt: now,
+    });
+  }
+
+  return c.json({ tenant_id: childTenantId, space_id: spaceId, status: initialStatus, parent_tenant_id: parentTenantId }, 201);
+});
+
+// GET /reseller/clients — the calling reseller's client portfolio (G-AS34 dashboard data).
+app.get("/reseller/clients", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+
+  const { results: clients } = await c.env.PLATFORM_DB.prepare(
+    `SELECT h.child_tenant_id, h.child_owner_user_id, h.status, h.created_at,
+            COUNT(s.id) AS space_count
+       FROM tenant_hierarchy h
+       LEFT JOIN spaces s ON s.tenant_id = h.child_tenant_id AND s.status != 'deleted'
+      WHERE h.parent_tenant_id = ?
+      GROUP BY h.child_tenant_id
+      ORDER BY h.created_at DESC
+      LIMIT 200`
+  ).bind(tenantId).all();
+
+  const period = new Date().toISOString().slice(0, 7); // YYYY-MM
+  const rollup = await c.env.PLATFORM_DB.prepare(
+    `SELECT COALESCE(SUM(retail_cents),0) AS retail, COALESCE(SUM(wholesale_cents),0) AS wholesale,
+            COALESCE(SUM(margin_cents),0) AS margin, COUNT(*) AS events
+       FROM reseller_ledger WHERE parent_tenant_id = ? AND period = ?`
+  ).bind(tenantId, period).first<{ retail: number; wholesale: number; margin: number; events: number }>();
+
+  return c.json({
+    clients,
+    client_count: clients.length,
+    current_period: period,
+    billing: rollup ?? { retail: 0, wholesale: 0, margin: 0, events: 0 },
+  });
 });
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
