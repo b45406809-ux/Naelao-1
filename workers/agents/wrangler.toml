@@ -105,6 +105,11 @@ service = "naelao-agents"
 binding = "NOTIFICATIONS_WORKER"
 service = "naelao-notifications"
 
+# Billing worker — the reserved commerce script's only money-in path.
+[[services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
 [vars]
 ENVIRONMENT = "development"
 # CF AI Gateway — every LLM call routes through this (spec §15).
@@ -127,6 +132,10 @@ service = "naelao-knowledge"
 binding = "SPACES_WORKER"
 service = "naelao-spaces"
 
+[[env.staging.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
 
@@ -137,3 +146,7 @@ service = "naelao-knowledge"
 [[env.production.services]]
 binding = "SPACES_WORKER"
 service = "naelao-spaces"
+
+[[env.production.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"

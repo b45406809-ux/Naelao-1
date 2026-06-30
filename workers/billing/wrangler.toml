@@ -30,6 +30,11 @@ dead_letter_queue = "naelao-billing-events-dlq"
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
 
+# Seat purchases activate the member in SpaceDO via the spaces worker.
+[[services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
 [vars]
 ENVIRONMENT = "development"
 STRIPE_PUBLISHABLE_KEY = ""
@@ -41,9 +46,17 @@ vars = { ENVIRONMENT = "staging" }
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
 
+[[env.staging.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
 
 [[env.production.services]]
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
+
+[[env.production.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"

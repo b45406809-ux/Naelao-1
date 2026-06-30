@@ -163,9 +163,18 @@ via **reserved capabilities** (`workers/agents/src/script-engine/reserved-capabi
   `commerce.enabled`); the LS webhook writes the order + platform fee and wakes the fulfilment
   agent with the `order_id`. Dashboard: `/dashboard/spaces/{id}/commerce` (products, orders,
   revenue).
-- **Lemon Squeezy is the processor for all three payer classes**: customers buying products
-  (done — checkout→order→fulfilment), Naelao builders' plans (existing), and a builder's
-  space-members/seats (**remaining** — seat billing not yet wired).
+- **Lemon Squeezy is the processor for all three payer classes** (all wired): customers
+  buying products (checkout→order→fulfilment), Naelao builders' plans, and a builder's
+  space-members/seats. Seat billing = `productConfig.memberBilling { enabled, seatPriceCents,
+  lsVariantId, interval }`; the billing worker's `/internal/seats/checkout` runs the seat
+  charge through Naelao's store (reserved money-in, fee applies), and the LS webhook activates
+  the member in SpaceDO + records the fee in the revenue rollup. `commerce.seat_checkout` lets
+  the assistant mint a join link.
+- **Storefront rendering (multitenant)**: the portal-router Worker is the CF-for-SaaS fallback
+  origin. `GET /storefront` resolves the Host against `business_services` (naelao_handle or
+  custom_domain), renders the published-product storefront, and `POST /storefront/checkout`
+  initiates the reserved money-in checkout (redirect to Lemon Squeezy). Service bindings wired
+  (portal→billing, billing→spaces, agents→billing).
 
 ## A1.5 Open follow-ups (tracked, not yet built)
 

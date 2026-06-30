@@ -8,6 +8,16 @@ interface Env {
   PORTAL_ORIGIN: string;
   PORTAL_DOMAINS: KVNamespace;
   PLATFORM_DB: D1Database;
+  /** Billing worker — storefront buy/join buttons initiate the (reserved) money-in checkout. */
+  BILLING_WORKER?: Fetcher;
+}
+
+interface StorefrontProduct {
+  id: string;
+  name: string;
+  description: string;
+  price_cents: number;
+  currency: string;
 }
 
 interface DomainMapping {
@@ -141,6 +151,116 @@ app.delete("/v1/subdomains/:subdomain", async (c) => {
 
   await c.env.PORTAL_DOMAINS.delete(`subdomain:${subdomain}`);
   return c.json({ deleted: true });
+});
+
+// ── Storefront (spec §11) — the multitenant CF-for-SaaS surface ──────────────
+// This Worker is the fallback origin: all storefront hostnames (the {slug}.naelao.com
+// wildcard + opt-in custom hostnames) route here and are resolved by Host header against
+// business_services. The Worker renders the storefront and initiates checkout; money-in
+// always goes through the billing worker (Naelao's Lemon Squeezy store + platform fee).
+
+/** Resolve the storefront's space from a Host header via business_services. */
+async function resolveStorefront(
+  host: string,
+  env: Env
+): Promise<{ spaceId: string; tenantId: string } | null> {
+  const row = await env.PLATFORM_DB.prepare(
+    `SELECT space_id, tenant_id FROM business_services
+      WHERE status IN ('active','pending_dns')
+        AND ((kind = 'storefront' AND naelao_handle = ?1) OR (kind = 'custom_domain' AND custom_domain = ?1))
+      LIMIT 1`
+  ).bind(host).first<{ space_id: string; tenant_id: string }>();
+  return row ? { spaceId: row.space_id, tenantId: row.tenant_id } : null;
+}
+
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function money(cents: number, currency: string): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2 }).format(cents / 100);
+}
+
+function renderStorefront(spaceName: string, products: StorefrontProduct[]): string {
+  const cards = products.length === 0
+    ? `<p class="empty">This store has no products yet.</p>`
+    : products.map((p) => `
+      <div class="card">
+        <h3>${esc(p.name)}</h3>
+        <p class="desc">${esc(p.description)}</p>
+        <div class="row">
+          <span class="price">${money(p.price_cents, p.currency)}</span>
+          <form method="POST" action="/storefront/checkout">
+            <input type="hidden" name="product_id" value="${esc(p.id)}" />
+            <button type="submit">Buy</button>
+          </form>
+        </div>
+      </div>`).join("");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${esc(spaceName)}</title>
+<style>
+  :root{--brand:#4f46e5}
+  *{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f8fafc;color:#0f172a}
+  header{padding:48px 24px;text-align:center;background:#fff;border-bottom:1px solid #e2e8f0}
+  header h1{margin:0;font-size:28px}
+  main{max-width:880px;margin:0 auto;padding:32px 24px;display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:20px}
+  .card{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:20px;display:flex;flex-direction:column}
+  .card h3{margin:0 0 6px}.desc{color:#64748b;font-size:14px;flex:1}
+  .row{display:flex;align-items:center;justify-content:space-between;margin-top:16px}
+  .price{font-weight:700;font-size:18px}
+  button{background:var(--brand);color:#fff;border:0;border-radius:8px;padding:8px 18px;font-weight:600;cursor:pointer}
+  .empty{grid-column:1/-1;text-align:center;color:#94a3b8;padding:48px}
+  footer{text-align:center;color:#94a3b8;font-size:12px;padding:24px}
+</style></head>
+<body>
+  <header><h1>${esc(spaceName)}</h1></header>
+  <main>${cards}</main>
+  <footer>Powered by Naelao</footer>
+</body></html>`;
+}
+
+// GET /storefront — render the storefront for the requesting Host.
+app.get("/storefront", async (c) => {
+  const host = c.req.header("host") ?? "";
+  const sf = await resolveStorefront(host, c.env);
+  if (!sf) return c.html("<h1>Store not found</h1>", 404);
+
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT name FROM spaces WHERE id = ?"
+  ).bind(sf.spaceId).first<{ name: string }>();
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    "SELECT id, name, description, price_cents, currency FROM launchpad_products WHERE space_id = ? AND status = 'published' ORDER BY created_at DESC LIMIT 100"
+  ).bind(sf.spaceId).all<StorefrontProduct>();
+
+  return c.html(renderStorefront(space?.name ?? "Store", results));
+});
+
+// POST /storefront/checkout — initiate a (reserved) money-in checkout for a product.
+// Accepts form posts from the rendered storefront; redirects the buyer to Lemon Squeezy.
+app.post("/storefront/checkout", async (c) => {
+  const host = c.req.header("host") ?? "";
+  const sf = await resolveStorefront(host, c.env);
+  if (!sf) return c.json({ error_code: "not_found", message: "Store not found" }, 404);
+  if (!c.env.BILLING_WORKER) return c.json({ error_code: "unavailable", message: "checkout unavailable" }, 503);
+
+  const form = await c.req.parseBody();
+  const productId = String(form["product_id"] ?? "");
+  const email = form["email"] ? String(form["email"]) : undefined;
+  if (!productId) return c.json({ error_code: "bad_request", message: "product_id is required" }, 400);
+
+  // The portal is a trusted server-side caller; money-in still flows through the billing
+  // worker's reserved commerce checkout so the platform fee is applied.
+  const resp = await c.env.BILLING_WORKER.fetch(
+    new Request("http://billing-worker/internal/commerce/checkout", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-internal": "commerce-script", "x-naelao-tenant-id": sf.tenantId },
+      body: JSON.stringify({ space_id: sf.spaceId, product_id: productId, ...(email ? { customer_email: email } : {}) }),
+    })
+  );
+  if (!resp.ok) return c.json({ error_code: "checkout_failed", message: await resp.text() }, 502);
+  const { checkout_url } = await resp.json<{ checkout_url: string }>();
+  return c.redirect(checkout_url, 303);
 });
 
 // ALL /proxy — main ingress handler for incoming portal requests

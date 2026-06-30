@@ -25,7 +25,61 @@ export interface LemonSqueezyEnv {
   LEMON_SQUEEZY_STORE_ID?: string;
   LAUNCHPAD_FEE_BPS?: string;
   AGENTS_WORKER: Fetcher;
+  SPACES_WORKER?: Fetcher;
   PLATFORM_DB: D1Database;
+}
+
+/**
+ * Activate a paid seat (member/seat billing — the third payer class). On a seat payment,
+ * add the buyer to the space's members in SpaceDO and record the fee in launchpad_orders
+ * (so seat revenue shows in the same rollup). Returns the order id, or null when the event
+ * is not a seat purchase. Idempotent on the provider event id.
+ */
+async function recordSeatActivation(
+  event: NormalizedBillingEvent,
+  env: LemonSqueezyEnv
+): Promise<string | null> {
+  if (event.type !== "payment.success") return null;
+  const custom = (event.metadata ?? {}) as Record<string, unknown>;
+  if (custom["kind"] !== "seat" || !event.spaceId) return null;
+
+  const space = await env.PLATFORM_DB.prepare(
+    "SELECT tenant_id FROM spaces WHERE id = ?"
+  ).bind(event.spaceId).first<{ tenant_id: string }>();
+  if (!space) return null;
+
+  const gross = event.amountCents ?? 0;
+  const feeBps = custom["fee_bps"] ? parseInt(String(custom["fee_bps"]), 10) : parseInt(env.LAUNCHPAD_FEE_BPS ?? "500", 10);
+  const fee = Math.round((gross * feeBps) / 10_000);
+  const net = Math.max(0, gross - fee);
+  const id = crypto.randomUUID();
+  const providerEventId = event.subscriptionId ?? `seat:${event.customerId ?? ""}:${gross}:${event.spaceId}`;
+
+  await env.PLATFORM_DB.prepare(
+    `INSERT OR IGNORE INTO launchpad_orders
+       (id, space_id, tenant_id, product_id, customer_email, gross_cents, fee_cents, net_cents,
+        currency, ls_subscription_id, status, provider_event_id)
+     VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'paid', ?)`
+  ).bind(
+    id, event.spaceId, space.tenant_id, event.customerId ?? null,
+    gross, fee, net, event.currency ?? "USD", event.subscriptionId ?? null, providerEventId
+  ).run();
+
+  // Activate the member in SpaceDO (idempotent — addMember upserts).
+  const userId = custom["user_id"] ? String(custom["user_id"]) : (event.customerId ?? "");
+  if (env.SPACES_WORKER && userId) {
+    try {
+      await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${event.spaceId}/members`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": space.tenant_id, "x-naelao-internal": "billing" },
+        body: JSON.stringify({ space_id: event.spaceId, user_id: userId, role: "member" }),
+      }));
+    } catch (err) {
+      console.error("[billing/ls] Seat member activation failed:", (err as Error).message);
+    }
+  }
+  console.log(`[billing/ls] Seat activated space=${event.spaceId} user=${userId} gross=${gross}c fee=${fee}c`);
+  return id;
 }
 
 /**
@@ -248,11 +302,11 @@ export async function handleLemonSqueezyWebhook(
     console.error("[billing/ls] Reseller attribution failed:", (err as Error).message);
   }
 
-  // 5. Record the product order + platform fee (idempotent). Only for Launchpad product
-  //    sales (custom_data.product_id present); plan/subscription events skip this.
+  // 5. Record money-in (idempotent). A seat purchase activates a member; otherwise a
+  //    product sale is fulfilled. Plan/subscription events for the builder skip both.
   let orderId: string | null = null;
   try {
-    orderId = await recordProductOrder(event, env);
+    orderId = (await recordSeatActivation(event, env)) ?? (await recordProductOrder(event, env));
   } catch (err) {
     console.error("[billing/ls] Order recording failed:", (err as Error).message);
   }

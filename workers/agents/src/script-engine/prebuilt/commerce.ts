@@ -55,6 +55,12 @@ export const commerce: PrebuiltScript = {
         product_id: a["product_id"],
         ...(a["customer_email"] ? { customer_email: a["customer_email"] } : {}),
       }),
+    // Money-in (seats): a join link for member/seat billing — fee applies, same as products.
+    "commerce.seat_checkout": (a, c) =>
+      billing(c, "/internal/seats/checkout", {
+        ...(a["user_id"] ? { user_id: a["user_id"] } : {}),
+        ...(a["customer_email"] ? { customer_email: a["customer_email"] } : {}),
+      }),
     "commerce.list_products": (_a, c) => spaces(c, `/spaces/${c.env.spaceId}/products`),
     "commerce.get_order": (a, c) => spaces(c, `/spaces/${c.env.spaceId}/orders`).then((o) => {
       const orders = (o as { data?: Array<{ id: string }> }).data ?? [];

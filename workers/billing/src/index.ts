@@ -33,6 +33,8 @@ export interface BillingEnv {
   LAUNCHPAD_FEE_BPS?: string;
   // Service binding to agents worker — billing events wake the Space Assistant agent
   AGENTS_WORKER?: Fetcher;
+  // Service binding to spaces worker — seat purchases activate the member in SpaceDO
+  SPACES_WORKER?: Fetcher;
 }
 
 // ── Stripe event type stubs ───────────────────────────────────────────────────
@@ -443,6 +445,52 @@ app.post("/internal/commerce/checkout", async (c) => {
   });
 });
 
+// ── POST /internal/seats/checkout ────────────────────────────────────────────
+// The third money-in payer class: a builder charges someone to join their space (a seat).
+// Like product checkout, it runs through Naelao's Lemon Squeezy store so the platform fee
+// applies — a builder can't collect seat fees outside Naelao. Called by the portal "join"
+// flow and by the commerce.seat_checkout op (x-naelao-internal in {commerce-script,portal}).
+app.post("/internal/seats/checkout", async (c) => {
+  const internal = c.req.header("x-naelao-internal");
+  if (internal !== "commerce-script" && internal !== "portal") {
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  }
+  const body = await c.req.json<{ space_id: string; user_id?: string; customer_email?: string }>();
+  if (!body.space_id) return c.json({ error_code: "bad_request", message: "space_id is required" }, 400);
+
+  // Resolve the space's seat pricing from its effective productConfig (via spaces worker).
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
+  const cfgResp = await c.env.SPACES_WORKER.fetch(
+    new Request(`http://spaces-worker/internal/member-billing?space_id=${encodeURIComponent(body.space_id)}`, {
+      headers: { "x-naelao-internal": "billing" },
+    })
+  );
+  if (!cfgResp.ok) return c.json({ error_code: "not_configured", message: "Member billing is not enabled for this space" }, 409);
+  const cfg = await cfgResp.json<{ seatPriceCents: number; currency: string; lsVariantId?: string }>();
+
+  const feeBps = parseInt(c.env.LAUNCHPAD_FEE_BPS ?? "500", 10);
+
+  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !cfg.lsVariantId) {
+    return c.json({
+      checkout_url: `https://checkout.naelao.com/dev/seat/${body.space_id}`,
+      seat_price_cents: cfg.seatPriceCents, currency: cfg.currency, fee_bps: feeBps, dev: true,
+    });
+  }
+
+  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
+  const provider = new LemonSqueezyProvider({
+    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
+    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
+  });
+  const { url } = await provider.createCheckout({
+    spaceId: body.space_id,
+    variantOrPriceId: cfg.lsVariantId,
+    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+    metadata: { kind: "seat", fee_bps: String(feeBps), ...(body.user_id ? { user_id: body.user_id } : {}) },
+  });
+  return c.json({ checkout_url: url, seat_price_cents: cfg.seatPriceCents, currency: cfg.currency, fee_bps: feeBps });
+});
+
 // ── POST /webhooks/lemon-squeezy ─────────────────────────────────────────────
 // Primary billing provider (spec Appendix H). Unauthenticated — LS calls this directly.
 // On payment/subscription events, wakes the Space Assistant agent via NaelaoAgentDO.
@@ -457,6 +505,7 @@ app.post("/webhooks/lemon-squeezy", async (c) => {
     ...(c.env.LEMON_SQUEEZY_STORE_ID ? { LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID } : {}),
     ...(c.env.LAUNCHPAD_FEE_BPS ? { LAUNCHPAD_FEE_BPS: c.env.LAUNCHPAD_FEE_BPS } : {}),
     AGENTS_WORKER: c.env.AGENTS_WORKER,
+    ...(c.env.SPACES_WORKER ? { SPACES_WORKER: c.env.SPACES_WORKER } : {}),
     PLATFORM_DB: c.env.PLATFORM_DB,
   });
 });

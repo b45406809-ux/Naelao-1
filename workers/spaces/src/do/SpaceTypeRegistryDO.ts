@@ -199,6 +199,22 @@ export interface SpaceTypeProductConfig {
     storefront?: boolean;     // {slug}.naelao.com multitenant storefront (CF Pages + Worker)
     businessEmail?: boolean;  // send/receive from a Naelao business address
   };
+
+  /**
+   * Member/seat billing — the third Lemon Squeezy payer class. When enabled, a builder
+   * charges people to join their space (a seat). Seat checkouts run through Naelao's store
+   * exactly like product checkouts (reserved money-in → platform fee applies), so the
+   * builder can never collect seat fees outside Naelao.
+   */
+  memberBilling?: {
+    enabled: boolean;
+    seatPriceCents: number;
+    currency?: string;
+    /** Lemon Squeezy variant for the seat subscription/one-time charge in Naelao's store. */
+    lsVariantId?: string;
+    /** "subscription" (recurring seat) or "one_time" (lifetime seat). */
+    interval?: "subscription" | "one_time";
+  };
 }
 
 // resolveTenancy lives in the pure ./tenancy module (no cloudflare:workers import) so it

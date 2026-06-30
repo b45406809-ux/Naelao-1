@@ -890,6 +890,26 @@ app.post("/internal/business-services", async (c) => {
   return c.json({ kind: body.kind, naelao_handle: handle, status: "active" }, 201);
 });
 
+// GET /internal/member-billing?space_id= — resolve a space's seat pricing (for the billing
+// worker's seat checkout). Returns 404 when member billing is not enabled.
+app.get("/internal/member-billing", async (c) => {
+  if (!c.req.header("x-naelao-internal")) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  const spaceId = c.req.query("space_id") ?? "";
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(spaceId).first<{ spacetype_id: string; config_json: string | null }>();
+  if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const pc = await loadEffectiveProductConfig(c.env, space.spacetype_id, space.config_json);
+  const mb = pc?.memberBilling;
+  if (!mb?.enabled) return c.json({ error_code: "not_configured", message: "Member billing not enabled" }, 409);
+  return c.json({
+    seatPriceCents: mb.seatPriceCents,
+    currency: mb.currency ?? "USD",
+    ...(mb.lsVariantId ? { lsVariantId: mb.lsVariantId } : {}),
+    interval: mb.interval ?? "subscription",
+  });
+});
+
 app.get("/internal/business-services", async (c) => {
   if (!c.req.header("x-naelao-internal")) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
   const spaceId = c.req.query("space_id") ?? "";
