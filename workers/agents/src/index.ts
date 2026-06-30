@@ -27,6 +27,7 @@ import { listManifests } from "./launchpad/manifest.js";
 import { CONNECTOR_CATALOGUE, getConnector } from "./connectors/catalogue.js";
 import { SkillLibrary } from "./script-engine/skill-library.js";
 import { promoteSkill, inheritTemplateSkills } from "./script-engine/federation.js";
+import { verifyWebhookSignature, normalizeWebhook, webhookGoal } from "./connectors/webhook-normalizer.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -169,6 +170,18 @@ async function getAgentDO(
   }
   const doId = env.NAELAO_AGENT_DO.idFromName(doName);
   return env.NAELAO_AGENT_DO.get(doId);
+}
+
+// Short-lived HMAC credential token (mirrors workers/credentials generateCredentialToken) — lets
+// the agents worker resolve a vault secret (e.g. a connector webhook secret) for a space.
+async function generateCredentialToken(platformSecret: string, spaceId: string, agentId: string): Promise<string> {
+  const timestamp = Math.floor(Date.now() / 1000);
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(platformSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${spaceId}:${agentId}:${timestamp}`));
+  const hex = Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `t=${timestamp},aid=${agentId},v1=${hex}`;
 }
 
 // G-AX04: Get TaskDO stub — one DO per space for task state management
@@ -980,6 +993,68 @@ app.post("/connectors/:platform/connect", async (c) => {
   }
 
   return c.json({ connected: true, platform: connector.id, server_id: serverId }, 201);
+});
+
+// POST /connectors/:platform/webhook/:spaceId — generic inbound webhook ingress (#3).
+// UNAUTHENTICATED: external platforms can't carry a JWT, so the HMAC signature IS the auth. The
+// router forwards this public path without auth. Verifies the signature against the space's stored
+// webhook secret, normalizes the event to a common envelope, and wakes the space's agent.
+app.post("/connectors/:platform/webhook/:spaceId", async (c) => {
+  const platform = c.req.param("platform");
+  const spaceId = c.req.param("spaceId");
+  const connector = getConnector(platform);
+  if (!connector?.webhook) return c.json({ ok: true, skipped: "no_webhook_spec" });
+
+  // Resolve the space + its tenant; ignore events for unknown/inactive spaces (ack 200).
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT tenant_id, status FROM spaces WHERE id = ?"
+  ).bind(spaceId).first<{ tenant_id: string; status: string }>();
+  if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
+
+  const rawBody = await c.req.text();
+
+  // Resolve the webhook signing secret from the vault (the signature IS the auth).
+  if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
+  const credToken = await generateCredentialToken(c.env.PLATFORM_SECRET, spaceId, "naelao-agent");
+  const secretResp = await c.env.CREDENTIALS_WORKER.fetch(
+    new Request(`http://credentials/v1/internal/spaces/${spaceId}/credentials/${encodeURIComponent(connector.webhook.secret_credential_name)}/plaintext`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": space.tenant_id, "x-naelao-credential-token": credToken },
+    })
+  );
+  if (!secretResp.ok) return c.json({ error_code: "no_webhook_secret", message: "Webhook secret not configured for this space" }, 400);
+  const { value: secret } = await secretResp.json<{ value: string }>();
+
+  // Verify HMAC signature over the raw body.
+  const valid = await verifyWebhookSignature(
+    connector.webhook,
+    rawBody,
+    c.req.header(connector.webhook.signature_header) ?? null,
+    secret
+  );
+  if (!valid) return c.json({ error_code: "invalid_signature" }, 401);
+
+  // Normalize + wake the space's agent (same path as cron/LS triggers).
+  const normalized = normalizeWebhook(platform, connector.webhook, rawBody);
+  try {
+    const stub = await getAgentDOForSpace(c.env, space.tenant_id, spaceId, "naelao-agent", c.get("requestId"));
+    await stub.fetch(new Request("http://agent-do/script/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal: webhookGoal(normalized),
+        spaceId,
+        agentId: "naelao-agent",
+        tenantId: space.tenant_id,
+        sessionId: `webhook-${platform}-${Date.now()}`,
+        context: { trigger: "connector_webhook", platform, event_type: normalized.event_type, payload: normalized.payload },
+        apiKey: c.env.ANTHROPIC_API_KEY,
+      }),
+    }));
+  } catch (err) {
+    console.error(`[connectors/webhook] wake failed platform=${platform} space=${spaceId}:`, (err as Error).message);
+  }
+  return c.json({ ok: true, platform, event_type: normalized.event_type });
 });
 
 // ── Federated template learning (A1.9) — promote / inherit shared skills ──────

@@ -43,6 +43,15 @@ export interface ConnectorAuth {
   credential_name: string;
 }
 
+/** How a connector signs + shapes its inbound webhooks (consumed by the webhook normalizer). */
+export interface ConnectorWebhookSpec {
+  signature_header: string;
+  signature_encoding: "hex" | "base64";
+  signature_prefix?: string;
+  event_path: string;
+  secret_credential_name: string;
+}
+
 export interface ConnectorDefinition {
   id: string;
   name: string;
@@ -52,6 +61,8 @@ export interface ConnectorDefinition {
   /** Docs the builder/agent can consult. */
   docs_url?: string;
   auth: ConnectorAuth;
+  /** Inbound webhook signing/shape (absent when the platform has no webhooks). */
+  webhook?: ConnectorWebhookSpec;
   /**
    * Canonical MCP endpoint for the platform's shim (Naelao-hosted or a hosted gateway like
    * Composio/Pipedream). The connect flow may override per deploy via env. Absent for
@@ -75,6 +86,12 @@ const WHOP: ConnectorDefinition = {
   docs_url: "https://dev.whop.com/api-reference",
   auth: { type: "bearer", credential_name: "WHOP_API_KEY" },
   mcp_endpoint: "https://mcp.naelao.com/connectors/whop",
+  webhook: {
+    signature_header: "x-whop-signature",
+    signature_encoding: "hex",
+    event_path: "action",
+    secret_credential_name: "WHOP_WEBHOOK_SECRET",
+  },
   operations: [
     { name: "list_memberships", description: "List the company's memberships (active/expired).", kind: "read" },
     { name: "get_membership", description: "Get one membership by id (status, plan, member).", kind: "read" },

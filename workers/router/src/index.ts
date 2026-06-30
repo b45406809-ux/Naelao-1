@@ -123,6 +123,17 @@ app.all("/v1/auth/*", async (c) => {
   );
 });
 
+// ── Public connector webhook ingress (unauthenticated; HMAC signature is the auth) ──
+// External platforms (Whop, Gumroad, …) POST events here — they can't carry a JWT, so this is
+// registered BEFORE the authenticated api group. The agents worker verifies the signature.
+app.all("/v1/connectors/:platform/webhook/:spaceId", async (c) => {
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.AGENTS_WORKER.fetch(
+    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+  );
+});
+
 // ── Protected API routes ─────────────────────────────────────────────────────
 const api = new Hono<{ Bindings: Env }>();
 api.use(
