@@ -24,6 +24,7 @@ import { canAccessBusiness } from "./access.js";
 import { safetyFloor } from "./safety.js";
 import { shouldPromote } from "./whop/cycle-logic.js";
 import { listManifests } from "./launchpad/manifest.js";
+import { LAUNCHPAD_TEMPLATES } from "./launchpad/spacetype.js";
 import { CONNECTOR_CATALOGUE, getConnector } from "./connectors/catalogue.js";
 import { SkillLibrary } from "./script-engine/skill-library.js";
 import { promoteSkill, inheritTemplateSkills } from "./script-engine/federation.js";
@@ -1088,6 +1089,22 @@ app.post("/skills/promote", async (c) => {
   const templateLib = SkillLibrary.forTemplate(c.env.SCRIPTS_R2, templateId);
   const result = await promoteSkill(spaceLib, templateLib, body.name);
   return c.json({ ...result, template_id: templateId }, result.promoted ? 201 : 409);
+});
+
+// GET /templates — the Launchpad templates incl. their first-run bootstrap (the onboarding
+// wizard reads this: prompts to ask, projects to create, setup scripts to run, connectors to wire).
+app.get("/templates", async (c) => {
+  return c.json({
+    templates: LAUNCHPAD_TEMPLATES.map((t) => ({
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      free_tier_eligible: t.free_tier_eligible,
+      connectors: t.connectors ?? [],
+      coming_soon: t.coming_soon ?? false,
+      ...(t.bootstrap ? { bootstrap: t.bootstrap } : {}),
+    })),
+  });
 });
 
 // GET /templates/:templateId/skills — list the shared template library (names + summaries).

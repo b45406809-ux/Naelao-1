@@ -39,6 +39,36 @@ export interface LaunchpadAgentDefinition {
   resource_tier: "isolate" | "workspace" | "container";
 }
 
+/**
+ * A first-run setup question the onboarding wizard asks when a space is created from a template.
+ * Credentials route to the vault; choices/text/booleans become space preferences the agents read.
+ */
+export interface OnboardingPrompt {
+  id: string;
+  type: "credential" | "choice" | "text" | "boolean";
+  question: string;
+  /** For type "credential": the connector id whose key/secret is being collected. */
+  connector?: string;
+  /** For type "choice": the options offered. */
+  options?: string[];
+  required?: boolean;
+}
+
+/**
+ * Template bootstrap (the "as you start, everything is set up" flow). On space creation the
+ * provisioner installs the prebuilt agents (template.agents), seeds the skill library, then the
+ * Space Assistant runs this: ask the prompts (credentials + preferences), create the initial
+ * projects, and run the setup scripts to finish wiring the business.
+ */
+export interface TemplateBootstrap {
+  /** Questions asked on first run (credentials to connect, preferences to set). */
+  prompts: OnboardingPrompt[];
+  /** Initial projects (thread groups) to create in the space. */
+  projects?: string[];
+  /** Prebuilt script ops the assistant runs on start to finish setup. */
+  setup_scripts?: string[];
+}
+
 /** A Launchpad template: a pre-wired digital-business model the owner can pick. */
 export interface LaunchpadTemplate {
   id: string;
@@ -51,6 +81,8 @@ export interface LaunchpadTemplate {
   free_tier_eligible: boolean;
   /** External-platform connectors this template wires (ids in the connector catalogue). */
   connectors?: string[];
+  /** First-run setup flow: prompts (credentials + preferences), projects, setup scripts. */
+  bootstrap?: TemplateBootstrap;
   /**
    * When true the dashboard renders the template greyed out as "Coming soon" — selectable once
    * its connector/shim ships. "Whop first, everything else coming soon" lives as this flag.
@@ -134,6 +166,15 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-fulfillment-v1", "launchpad-support-v1"],
     skills: ["stripe-app", "email-tool", "file-manager"],
     free_tier_eligible: true,
+    bootstrap: {
+      prompts: [
+        { id: "brand_name", type: "text", question: "What's your store/brand name?", required: true },
+        { id: "product_type", type: "choice", question: "What do you mainly sell?", options: ["Courses", "Ebooks", "Templates", "Memberships"], required: true },
+        { id: "storefront_slug", type: "text", question: "Pick a storefront handle ({slug}.naelao.com).", required: true },
+      ],
+      projects: ["Products", "Orders", "Support"],
+      setup_scripts: ["storefront.provision"],
+    },
   },
   {
     id: "newsletter-business",
@@ -181,6 +222,37 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     skills: ["mcp-connector", "email-tool", "web-search"],
     connectors: ["whop"],
     free_tier_eligible: false,
+    bootstrap: {
+      prompts: [
+        { id: "whop_api_key", type: "credential", connector: "whop", question: "Connect your Whop account (API key).", required: true },
+        { id: "whop_webhook_secret", type: "credential", connector: "whop", question: "Paste your Whop webhook signing secret so we receive order/member events.", required: true },
+        { id: "reply_tone", type: "choice", question: "What tone should the support agent use?", options: ["Friendly", "Professional", "Playful"], required: false },
+        { id: "auto_reply", type: "boolean", question: "Let the agent auto-reply to common member questions (you review the rest)?", required: false },
+      ],
+      projects: ["Members", "Support", "Content"],
+      setup_scripts: ["mcp.list_tools"],
+    },
+  },
+  // Customer-service template — a support desk on autopilot. Same engine; the Support agent +
+  // channels (notifications) + KB grounding. Pairs with any connector (Whop, email, etc.).
+  {
+    id: "customer-service",
+    name: "Customer Service Desk",
+    description:
+      "An AI support desk: answers customer questions grounded in your knowledge base + order data " +
+      "across channels, escalates what it's unsure of, and drafts replies for review.",
+    agents: ["launchpad-support-v1"],
+    skills: ["email-tool", "web-search", "mcp-connector"],
+    free_tier_eligible: true,
+    bootstrap: {
+      prompts: [
+        { id: "escalation_email", type: "text", question: "Where should the agent escalate questions it can't answer?", required: true },
+        { id: "reply_tone", type: "choice", question: "Reply tone?", options: ["Friendly", "Professional", "Concise"], required: false },
+        { id: "autonomy", type: "choice", question: "How much can the agent send without review?", options: ["Draft everything for me", "Auto-send FAQs, draft the rest", "Auto-send most, escalate edge cases"], required: false },
+      ],
+      projects: ["Inbox", "Escalations", "FAQ"],
+      setup_scripts: ["knowledge-base.status"],
+    },
   },
 ];
 

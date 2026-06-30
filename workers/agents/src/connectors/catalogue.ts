@@ -26,7 +26,9 @@ export type ConnectorCategory =
   | "booking"
   | "marketplace"
   | "freelance"
-  | "social";
+  | "social"
+  | "voice"
+  | "support";
 
 export interface ConnectorOperation {
   /** The MCP tool name the agent calls via script.run("mcp.call", { server, tool, params }). */
@@ -140,6 +142,13 @@ export const CONNECTOR_CATALOGUE: ConnectorDefinition[] = [
   comingSoon("calendly", "Calendly", "booking", "Paid bookings and scheduling.", "CALENDLY_API_KEY"),
   // Marketplace
   comingSoon("etsy", "Etsy", "marketplace", "Digital downloads, templates and printables.", "ETSY_API_KEY", "https://developers.etsy.com"),
+  // Voice / telephony — a voice agent is the same engine reached over a voice channel connector.
+  comingSoon("vapi", "Vapi", "voice", "Voice agents over the phone — inbound/outbound calls, transcripts, actions.", "VAPI_API_KEY", "https://docs.vapi.ai"),
+  comingSoon("twilio", "Twilio", "voice", "Programmable voice + SMS — telephony for voice agents and notifications.", "TWILIO_AUTH_TOKEN"),
+  comingSoon("elevenlabs", "ElevenLabs", "voice", "Realtime voice (TTS/voice agents) for natural-sounding phone + in-app voice.", "ELEVENLABS_API_KEY"),
+  // Support / helpdesk — customer-service connectors the support agent drives.
+  comingSoon("zendesk", "Zendesk", "support", "Helpdesk tickets — read, reply, and resolve from the support agent.", "ZENDESK_API_TOKEN"),
+  comingSoon("intercom", "Intercom", "support", "Customer messaging + inbox the support agent operates.", "INTERCOM_ACCESS_TOKEN"),
 ];
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

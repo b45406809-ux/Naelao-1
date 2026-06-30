@@ -20,6 +20,8 @@ const CATEGORY_LABEL: Record<string, string> = {
   marketplace: "Marketplace",
   freelance: "Freelance",
   social: "Social",
+  voice: "Voice & Telephony",
+  support: "Support & Helpdesk",
 };
 
 function ConnectForm({ connector, spaceId, onDone }: { connector: Connector; spaceId: string; onDone: () => void }) {

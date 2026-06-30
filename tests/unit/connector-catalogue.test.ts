@@ -63,4 +63,37 @@ describe("connector catalogue", () => {
       }
     }
   });
+
+  it("voice + support connectors are catalogued as coming_soon", () => {
+    for (const id of ["vapi", "twilio", "elevenlabs", "zendesk", "intercom"]) {
+      expect(getConnector(id)?.status).toBe("coming_soon");
+    }
+    expect(getConnector("vapi")?.category).toBe("voice");
+    expect(getConnector("zendesk")?.category).toBe("support");
+  });
+
+  it("the Whop-seller template ships a first-run bootstrap (credential prompts + projects)", () => {
+    const tpl = getLaunchpadTemplate("whop-seller");
+    const b = tpl?.bootstrap;
+    expect(b?.prompts.some((p) => p.type === "credential" && p.connector === "whop")).toBe(true);
+    expect(b?.projects).toContain("Members");
+    expect((b?.setup_scripts ?? []).length).toBeGreaterThan(0);
+  });
+
+  it("ships a customer-service template (support agent + bootstrap)", () => {
+    const tpl = getLaunchpadTemplate("customer-service");
+    expect(tpl).not.toBeNull();
+    expect(tpl?.agents).toContain("launchpad-support-v1");
+    expect(tpl?.bootstrap?.prompts.some((p) => p.id === "escalation_email")).toBe(true);
+  });
+
+  it("every bootstrap credential prompt names a real connector", () => {
+    for (const tpl of LAUNCHPAD_TEMPLATES) {
+      for (const p of tpl.bootstrap?.prompts ?? []) {
+        if (p.type === "credential" && p.connector) {
+          expect(getConnector(p.connector), `${tpl.id} prompt ${p.id}`).not.toBeNull();
+        }
+      }
+    }
+  });
 });

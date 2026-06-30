@@ -176,6 +176,42 @@ via **reserved capabilities** (`workers/agents/src/script-engine/reserved-capabi
   initiates the reserved money-in checkout (redirect to Lemon Squeezy). Service bindings wired
   (portal→billing, billing→spaces, agents→billing).
 
+## A1.10 Connector layer, federated learning, webhooks & template bootstrap — BUILT
+
+**Connector catalogue (`workers/agents/src/connectors/catalogue.ts`).** "Whop first, everything
+else coming soon" as Naelao-authored DATA. Whop is `available` (bearer auth, MCP endpoint, read/write
+ops, webhook spec, **no money-in**); 20+ creator-economy platforms (Gumroad, Skool, Beehiiv,
+Substack, Cal.com, Etsy, Vapi/Twilio/ElevenLabs voice, Zendesk/Intercom support, …) are
+`coming_soon`. Reached through `mcp-connector`/`mcp-hub` — adding one is a catalogue row + its shim,
+never a code branch. Connect flow: `POST /connectors/:platform/connect` stores the key in the vault
++ registers the MCP server. (Whop's MCP shim itself is the remaining piece to make it *live*.)
+
+**Federated template learning (`script-engine/federation.ts`, A1.9 vision).** A template is a
+living shared skill library (`templates/{id}/scripts/…`). `promoteSkill` copies a *proven* space
+skill (stability ≥ 0.8, ≥ 5 successes) up to the shared library (health reset — it earns its own
+fleet record); `inheritTemplateSkills` pulls it down into spaces without clobbering a space's own
+learned version. Endpoints: `/skills/promote`, `/skills/inherit`, `GET /templates/:id/skills`.
+
+**Generic inbound-webhook normalizer (`connectors/webhook-normalizer.ts`).** One ingress for any
+platform's webhooks: HMAC-verify (secret from the vault) → normalize to a common envelope → wake the
+agent via `/script/run` (same path as cron + Lemon Squeezy). Public route
+`/v1/connectors/:platform/webhook/:spaceId` (signature is the auth). Each platform's signing/shape is
+a `WebhookSpec` on its connector — data, not code.
+
+**Template bootstrap (the "as you start, everything is set up" flow).** A template carries
+`bootstrap`: first-run `prompts` (credentials to connect + preference questions), initial `projects`,
+and `setup_scripts` the Space Assistant runs on start. Prebuilt agents are already installed by the
+provisioner (`template.agents`). `GET /templates` exposes this for the onboarding wizard.
+*Still to wire: the provisioner actually executing bootstrap on provision (create projects, run
+setup scripts, inherit shared skills) + the dashboard onboarding wizard UI.*
+
+**Voice agents & customer service.** Both are the SAME engine, not new SpaceTypes. **Customer
+service** = the Support agent profile + channels + KB grounding, shipped as the `customer-service`
+template (+ Zendesk/Intercom support connectors). **Voice agents** = the same agent reached over a
+*voice channel connector* (Vapi/Twilio/ElevenLabs, catalogued `coming_soon`): the connector handles
+telephony/TTS, the agent reasons over the transcript and calls scripts. No special-casing — voice is
+a channel, support is a profile.
+
 ## A1.5 Open follow-ups (tracked, not yet built)
 
 - **Credential hierarchy**: per-user (default) + per-space (shared, e.g. company email) +

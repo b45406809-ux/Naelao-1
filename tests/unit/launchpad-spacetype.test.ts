@@ -15,7 +15,7 @@ describe("Launchpad SpaceType (§11)", () => {
   it("is the launchpad space type with the five business-model templates + the Whop-seller platform template", () => {
     expect(LAUNCHPAD_SPACETYPE.id).toBe("launchpad");
     expect(LAUNCHPAD_TEMPLATES.map(t => t.id).sort()).toEqual(
-      ["coaching-community", "creator-store", "micro-saas", "newsletter-business", "service-agency", "whop-seller"],
+      ["coaching-community", "creator-store", "customer-service", "micro-saas", "newsletter-business", "service-agency", "whop-seller"],
     );
   });
 
