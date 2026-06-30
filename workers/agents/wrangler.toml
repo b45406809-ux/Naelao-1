@@ -87,7 +87,8 @@ binding = "ANALYTICS"
 dataset = "naelao_agent_events"
 
 [triggers]
-crons = ["0 2 * * *"]
+# 02:00 daily → nightly business cycle; hourly → poll webhook-less connectors (e.g. Gumroad).
+crons = ["0 2 * * *", "0 * * * *"]
 
 [[services]]
 binding = "KNOWLEDGE_WORKER"

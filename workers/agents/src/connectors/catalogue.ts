@@ -188,6 +188,15 @@ export function isConnectorAvailable(id: string): boolean {
   return getConnector(id)?.status === "available";
 }
 
+/**
+ * Available connectors that have NO webhook spec — these can't push events, so a cron poller
+ * wakes the agent to pull new activity (e.g. Gumroad's Ping isn't HMAC-signed → poll sales).
+ * Connectors WITH a webhook (e.g. Whop) are driven by the normalizer instead, not polled.
+ */
+export function pollableConnectorIds(): string[] {
+  return availableConnectors().filter((c) => !c.webhook).map((c) => c.id);
+}
+
 /** Validate at module load: ids unique, available connectors are fully specified, no money-in ops. */
 const MONEY_IN_OP = /(checkout|charge|payout|refund|withdraw|collect[_-]?payment|create[_-]?payment)/i;
 export function validateConnectorCatalogue(cat: ConnectorDefinition[] = CONNECTOR_CATALOGUE): void {

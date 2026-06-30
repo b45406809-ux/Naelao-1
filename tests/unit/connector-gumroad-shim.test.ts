@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { TOOLS, toolList } from "../../workers/connector-gumroad/src/index.js";
-import { getConnector, availableConnectors } from "../../workers/agents/src/connectors/catalogue.js";
+import { getConnector, availableConnectors, pollableConnectorIds } from "../../workers/agents/src/connectors/catalogue.js";
 
 // Connector #2 — proves the shim pattern repeats: a catalogue row flipped to available + a
 // sibling shim worker, no core changes.
@@ -34,5 +34,11 @@ describe("Gumroad MCP shim (connector #2)", () => {
     const ops = (getConnector("gumroad")?.operations ?? []).map((o) => o.name);
     for (const op of ops) expect(Object.keys(TOOLS), `op ${op}`).toContain(op);
     expect(toolList().length).toBe(Object.keys(TOOLS).length);
+  });
+
+  it("Gumroad is poll-based (no webhook) while Whop is webhook-driven", () => {
+    // The cron poller targets available connectors WITHOUT a webhook spec.
+    expect(pollableConnectorIds()).toContain("gumroad");
+    expect(pollableConnectorIds()).not.toContain("whop");
   });
 });
