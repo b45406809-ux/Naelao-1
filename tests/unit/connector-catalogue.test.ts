@@ -20,13 +20,13 @@ describe("connector catalogue", () => {
     expect(whop?.auth.credential_name).toBe("WHOP_API_KEY");
   });
 
-  it("availableConnectors() returns only Whop in this build", () => {
-    const avail = availableConnectors().map((c) => c.id);
-    expect(avail).toEqual(["whop"]);
+  it("availableConnectors() returns Whop + Gumroad in this build", () => {
+    const avail = availableConnectors().map((c) => c.id).sort();
+    expect(avail).toEqual(["gumroad", "whop"]);
   });
 
   it("the rest of the creator-economy platforms are coming_soon", () => {
-    for (const id of ["gumroad", "skool", "beehiiv", "substack", "calcom", "etsy"]) {
+    for (const id of ["skool", "beehiiv", "substack", "calcom", "etsy"]) {
       expect(isConnectorAvailable(id)).toBe(false);
       expect(getConnector(id)?.status).toBe("coming_soon");
     }

@@ -71,7 +71,15 @@ Deploy the **`naelao-connector-whop`** worker (`workers/connector-whop/`) behind
   `https://<router>/v1/connectors/whop/webhook/{spaceId}` and stores the signing secret as the
   `WHOP_WEBHOOK_SECRET` credential (collected by the Whop-seller onboarding wizard).
 
-Adding the next connector (Gumroad, …) is a catalogue row + a sibling shim worker — no core changes.
+### Gumroad (live connector — connector #2)
+
+Same pattern: deploy **`naelao-connector-gumroad`** (`workers/connector-gumroad/`) behind
+`mcp.naelao.com/connectors/gumroad`. Builders store their token as the `GUMROAD_ACCESS_TOKEN`
+credential; the shim accepts it via the Bearer header mcp-hub sends and appends it as Gumroad's
+`access_token` query param. Read-only tools (products/sales/subscribers). Gumroad's Ping webhook
+isn't HMAC-signed, so there's no webhook ingress — the agent polls sales on a cron instead.
+
+Adding the next connector after this is, again, a catalogue row + a sibling shim worker.
 
 ## Other platform secrets (pre-existing)
 

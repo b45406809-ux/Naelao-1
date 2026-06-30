@@ -106,6 +106,27 @@ const WHOP: ConnectorDefinition = {
   ],
 };
 
+const GUMROAD: ConnectorDefinition = {
+  id: "gumroad",
+  name: "Gumroad",
+  category: "course_product",
+  status: "available",
+  summary:
+    "Digital downloads, courses and memberships on Gumroad. The agent reads products, sales and " +
+    "subscribers and follows up with buyers — Gumroad keeps processing the payments.",
+  docs_url: "https://app.gumroad.com/api",
+  auth: { type: "bearer", credential_name: "GUMROAD_ACCESS_TOKEN" },
+  mcp_endpoint: "https://mcp.naelao.com/connectors/gumroad",
+  // Gumroad's "Ping" webhook isn't HMAC-signed, so it doesn't fit the signature normalizer;
+  // the agent polls sales on a cron instead (no `webhook` spec here, by design).
+  operations: [
+    { name: "list_products", description: "List the seller's products.", kind: "read" },
+    { name: "get_product", description: "Get one product by id.", kind: "read" },
+    { name: "list_sales", description: "List recent sales (read-only; Gumroad processes them).", kind: "read" },
+    { name: "list_subscribers", description: "List subscribers for a product.", kind: "read" },
+  ],
+};
+
 /** Coming-soon placeholders — UI greys these out. Authored as data so flipping one on is trivial. */
 function comingSoon(
   id: string,
@@ -120,8 +141,8 @@ function comingSoon(
 
 export const CONNECTOR_CATALOGUE: ConnectorDefinition[] = [
   WHOP,
+  GUMROAD,
   // Course / product platforms
-  comingSoon("gumroad", "Gumroad", "course_product", "Digital downloads, courses and memberships on Gumroad.", "GUMROAD_API_KEY", "https://gumroad.com/api"),
   comingSoon("stan-store", "Stan Store", "course_product", "Link-in-bio storefront, courses and bookings.", "STAN_API_KEY"),
   comingSoon("teachable", "Teachable", "course_product", "Online courses and coaching.", "TEACHABLE_API_KEY"),
   comingSoon("thinkific", "Thinkific", "course_product", "Courses, communities and memberships.", "THINKIFIC_API_KEY"),
