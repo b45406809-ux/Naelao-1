@@ -65,7 +65,7 @@ export default function OnboardingPage() {
           await connectPlatform(p.connector, spaceId, answers[p.id]!);
         }
       }
-      // 2. Preference prompts → persist on the space; mark onboarding complete (merge, don't clobber).
+      // 2. Preference prompts → persist on the space (merge, don't clobber config_json).
       const preferences: Record<string, string> = {};
       for (const p of prompts) {
         if (p.type !== "credential" && answers[p.id]) preferences[p.id] = answers[p.id]!;
@@ -73,11 +73,11 @@ export default function OnboardingPage() {
       const merged = {
         ...config,
         preferences: { ...(config["preferences"] as object ?? {}), ...preferences },
-        onboarding: { ...(onboarding ?? {}), status: "complete" },
       };
-      // PATCH /spaces/:id expects snake_case config_overrides (replaces config_json wholesale,
-      // so we send the fully merged object).
+      // PATCH /spaces/:id expects snake_case config_overrides (replaces config_json wholesale).
       await apiFetch(`/spaces/${spaceId}`, { method: "PATCH", body: JSON.stringify({ config_overrides: merged }) });
+      // 3. Run the bootstrap: create projects, run setup scripts, mark onboarding complete.
+      await apiFetch(`/spaces/${spaceId}/bootstrap/complete`, { method: "POST", body: "{}" });
       setDone(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Setup failed");

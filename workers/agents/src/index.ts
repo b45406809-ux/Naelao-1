@@ -1058,6 +1058,69 @@ app.post("/connectors/:platform/webhook/:spaceId", async (c) => {
   return c.json({ ok: true, platform, event_type: normalized.event_type });
 });
 
+// ── First-run bootstrap execution ─────────────────────────────────────────────
+// POST /spaces/:spaceId/bootstrap/complete — finishes the onboarding the provisioner recorded:
+// creates the template's projects in the SpaceDO, wakes the assistant to run the setup scripts,
+// and marks onboarding complete. Called by the dashboard wizard after credentials/preferences
+// are collected (which it does directly via connect + config PATCH).
+app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const spaceId = c.req.param("spaceId");
+
+  const row = await c.env.PLATFORM_DB.prepare(
+    "SELECT config_json FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(spaceId, tenantId).first<{ config_json: string | null }>();
+  if (!row) throw notFound("Space");
+  const cfg = (safeParse(row.config_json ?? "{}") as Record<string, unknown>) ?? {};
+  const onboarding = (cfg["onboarding"] as { projects?: string[]; setup_scripts?: string[]; status?: string } | undefined) ?? {};
+
+  // 1. Create the template's projects (idempotent on name) via the SpaceDO.
+  const createdProjects: string[] = [];
+  for (const name of onboarding.projects ?? []) {
+    try {
+      const r = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal": "agents" },
+        body: JSON.stringify({ name }),
+      }));
+      if (r.ok) createdProjects.push(name);
+    } catch (err) {
+      console.warn(`[bootstrap] project create failed (${name}) for ${spaceId}:`, (err as Error).message);
+    }
+  }
+
+  // 2. Wake the assistant to run the setup scripts (it executes them via its script engine).
+  const setupScripts = onboarding.setup_scripts ?? [];
+  if (setupScripts.length > 0) {
+    try {
+      const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
+      await stub.fetch(new Request("http://agent-do/script/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          goal: `Finish first-run setup for this space. Run these setup steps and confirm each: ${setupScripts.join(", ")}. ` +
+            `Use script.run for each (they are prebuilt op names or skills). Report what you set up.`,
+          spaceId, agentId: "naelao-agent", tenantId,
+          sessionId: `bootstrap-${Date.now()}`,
+          context: { trigger: "bootstrap", setup_scripts: setupScripts, projects: createdProjects },
+          apiKey: c.env.ANTHROPIC_API_KEY,
+        }),
+      }));
+    } catch (err) {
+      console.warn(`[bootstrap] setup-script wake failed for ${spaceId}:`, (err as Error).message);
+    }
+  }
+
+  // 3. Mark onboarding complete (merge, don't clobber).
+  cfg["onboarding"] = { ...onboarding, status: "complete" };
+  await c.env.PLATFORM_DB.prepare(
+    "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
+  ).bind(JSON.stringify(cfg), new Date().toISOString(), spaceId, tenantId).run();
+
+  return c.json({ ok: true, projects_created: createdProjects, setup_scripts: setupScripts });
+});
+
 // ── Federated template learning (A1.9) — promote / inherit shared skills ──────
 // A template is a living skill library: proven space skills are promoted up to the shared
 // template library, and spaces inherit it. Routed from the router under /skills* and

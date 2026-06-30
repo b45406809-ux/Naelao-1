@@ -273,6 +273,11 @@ api.all("/spaces/:spaceId/sessions", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 
+// First-run bootstrap (create projects + run setup scripts) → agents worker
+api.all("/spaces/:spaceId/bootstrap/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
 // Reseller / partner endpoints → spaces worker (G-AS34/G-AS35)
 api.all("/reseller/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 api.all("/reseller", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));

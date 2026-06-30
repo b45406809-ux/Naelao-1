@@ -224,6 +224,26 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_csg_granting ON cross_space_grants(granting_space_id);
     `,
   },
+  {
+    version: 11,
+    // Projects — "a project is a grouping of threads within a space" (CLAUDE.md). Threads
+    // already carry project_id; this is the registry the bootstrap/onboarding creates on first
+    // run (e.g. Whop-seller → Members / Support / Content). Not a sub-space (own DO/structure) —
+    // just a labelled grouping inside this space's DO.
+    description: "projects registry (thread grouping)",
+    up: `
+      CREATE TABLE IF NOT EXISTS projects (
+        id          TEXT PRIMARY KEY,
+        space_id    TEXT NOT NULL,
+        name        TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+        created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_projects_space ON projects(space_id, created_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_space_name ON projects(space_id, name);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -437,6 +457,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // PATCH /spaces/:id — update status / settings (suspend a department, etc.)
       if (method === "PATCH" && spaceRowMatch?.[1]) {
         return this.updateSpaceRow(spaceRowMatch[1], request);
+      }
+
+      // ── projects (thread grouping) ────────────────────────────────────────────
+      // GET /projects?space_id= — list projects
+      if (method === "GET" && url.pathname === "/projects") {
+        return this.listProjects(url.searchParams);
+      }
+      // POST /projects — create a project (idempotent on (space_id, name))
+      if (method === "POST" && url.pathname === "/projects") {
+        return this.createProject(request);
       }
 
       // ── cross-space access grants (spec §49 checkPermission path) ─────────────
@@ -996,6 +1026,39 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private removeMember(userId: string): Response {
     execute(this.ctx.storage.sql as never, "DELETE FROM space_members WHERE user_id = ?", userId);
     return Response.json({ deleted: true, user_id: userId });
+  }
+
+  // ── Projects (thread grouping) ──────────────────────────────────────────────
+  private listProjects(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const rows = queryAll<{ id: string; space_id: string; name: string; description: string; status: string; created_at: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, space_id, name, description, status, created_at FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at",
+      spaceId
+    );
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  private async createProject(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id: string; name: string; description?: string }>();
+    if (!body.space_id || !body.name) {
+      return Response.json({ error_code: "bad_request", message: "space_id and name are required" }, { status: 400 });
+    }
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    // Idempotent on (space_id, name) so re-running bootstrap doesn't duplicate projects.
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO projects (id, space_id, name, description, status, created_at) VALUES (?, ?, ?, ?, 'active', ?)
+       ON CONFLICT(space_id, name) DO NOTHING`,
+      id, body.space_id, body.name, body.description ?? "", now
+    );
+    const row = queryOne<{ id: string; name: string; status: string; created_at: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, name, status, created_at FROM projects WHERE space_id = ? AND name = ?",
+      body.space_id, body.name
+    );
+    return Response.json(row ?? { id, name: body.name, status: "active", created_at: now }, { status: 201 });
   }
 
   // G-AO17: Record a prompt injection attempt for a user and check if they are now rate-limited.
