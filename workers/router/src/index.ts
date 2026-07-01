@@ -249,6 +249,16 @@ async function proxyTo(
   platformSecret: string,
 ): Promise<Response> {
   const headers = new Headers(req.headers);
+  // B2 fix: strip client-supplied identity/internal headers UNCONDITIONALLY before setting
+  // them from verified claims below. Previously these were only overwritten inside
+  // `if (claims)`, so any route reachable without auth would forward the caller's own
+  // (attacker-controlled) x-naelao-tenant-id / x-naelao-role straight through to the
+  // downstream worker, which trusts them as-is.
+  headers.delete("x-naelao-tenant-id");
+  headers.delete("x-naelao-user-id");
+  headers.delete("x-naelao-role");
+  headers.delete("x-naelao-scopes");
+  headers.delete("x-naelao-internal-token");
   const ts = Date.now().toString();
   if (claims) {
     headers.set("x-naelao-tenant-id", claims.tid);

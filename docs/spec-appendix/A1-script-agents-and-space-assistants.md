@@ -1219,3 +1219,76 @@ tasks").** The no-code, TIME-driven counterpart to event_triggers:
 - `tests/unit/scheduled-jobs.test.ts` (12): CRUD (create/validate/list/patch/delete/ownership,
   against real SQLite via the actual migration) + dispatcher (fires when due, skips when not,
   passes params/projectId through, one failure doesn't block another space).
+
+---
+
+## A1.16.8 Direct-worker-ingress trust hole closed — BUILT
+
+A security audit (independent of the Space Assistant work) found that every internal worker
+trusted `x-naelao-tenant-id` / `x-naelao-user-id` / `x-naelao-role` headers **as-is**, with no
+verification that the request actually came through `naelao-router` — the one place that signs
+those headers off verified JWT claims. Three compounding gaps made this a real, not theoretical,
+hole:
+
+1. **No worker had `workers_dev = false`.** Every worker (spaces, agents, credentials,
+   knowledge, billing, provisioner, …) was reachable at its own public `*.workers.dev` URL by
+   default — bypassing the router, and every header check, entirely.
+2. **`proxyTo` (naelao-router) only overwrote identity headers when JWT claims were present.**
+   `workers/router/src/index.ts`: on an unauthenticated route, a client's own
+   `x-naelao-tenant-id`/`x-naelao-role` were forwarded to the downstream worker untouched —
+   one refactor away from a real tenant-spoofing bug even through the router itself.
+3. **The one "internal-only" check in the codebase (`/internal/triggers/fire`,
+   `workers/agents/src/index.ts`) compared `x-naelao-internal` against a static string
+   (`"spaces-trigger"`)** — anyone who could reach the worker could set that header themselves.
+   Several other `/internal/*` routes had an even weaker pattern (any truthy header value).
+
+**Fixed:**
+- `workers_dev = false` added to every `workers/*/wrangler.toml` except the workers that need
+  genuine public ingress with their OWN independent verification: `naelao-router` and
+  `naelao-portal-router` (the public API/portal surface itself), `naelao-agents` (the
+  signature-verified multi-channel gateway, `adapter.verifySignature`), `naelao-billing`
+  (Stripe/Lemon Squeezy webhook signature checks), and `naelao-ws-gateway` (WebSocket upgrades
+  do their own origin + tenant check, can't be relayed through a service-binding fetch).
+- `proxyTo` now unconditionally `headers.delete()`s all five identity/internal headers before
+  the `if (claims)` block sets them from verified JWT claims — no code path can forward a
+  client-supplied identity header through the router anymore.
+- New `packages/http` primitives: `mintInternalToken(secret, tenantId)` (mints the same
+  `t=<ts>,v1=<hmac>` token `proxyTo` always minted, for any worker-to-worker caller that talks
+  to another worker's service binding DIRECTLY, bypassing the router) and
+  `requireInternalHmac(getSecret)` (a Hono middleware verifying that token against the
+  request's own `x-naelao-tenant-id`, using the pre-existing but previously-unused
+  `verifyInternalToken`).
+- **`workers/credentials`**: the three public CRUD routes (`POST/GET/DELETE
+  /spaces/:spaceId/credentials[...]`) are now gated by `requireInternalHmac`. The internal
+  plaintext-resolution route (`/v1/internal/.../plaintext`) is untouched — it already has its
+  own independent, narrower-scoped HMAC (`generateCredentialToken`/`verifyCredentialToken`,
+  bound to one `agentId`+`spaceId`). Fixed the one non-router caller (agents worker's
+  connector-connect flow) to mint the token — and, in the same edit, a **pre-existing path
+  bug**: it was calling `/v1/spaces/...` against a worker whose public routes are registered
+  WITHOUT the `/v1` prefix, which would have 404'd on every real connector connect.
+- **`/internal/triggers/fire`** (agents worker): replaced the static-string check with
+  `verifyInternalToken` + an explicit `body.tenantId === header tenantId` cross-check (a valid
+  token for tenant A must not be usable to fire a script against tenant B's space, even though
+  the token itself verifies). `SpaceDO.fireMatchingTriggers` — the only caller — now mints the
+  token via `mintInternalToken(this.env.PLATFORM_SECRET, tenantId)`.
+
+**Explicitly out of scope for this pass (documented, not silently dropped):** the public
+`/spaces/:spaceId/...` and `/kb/...` route surfaces in `workers/spaces`/`workers/knowledge`
+are called directly (service-binding, bypassing the router) from ~15 call sites across
+`NaelaoAgentDO`, provisioner, billing, and several prebuilt scripts. Gating those the same way
+requires updating every one of those callers to mint a token — a larger, separate pass. Today
+they're protected by `workers_dev = false` (layer 1) but have no defense-in-depth HMAC check
+(layer 2) the way `/internal/triggers/fire` and the credentials CRUD routes now do. Tracked as
+a follow-up; not yet built.
+
+**Tests:**
+- `tests/unit/packages/http-internal-hmac.test.ts` (9): `requireInternalHmac` rejects no-token,
+  wrong-secret, tenant-mismatch, and expired-token requests; accepts a properly minted one;
+  `mintInternalToken`/`verifyInternalToken` round-trip.
+- `tests/unit/internal-triggers-fire.test.ts` (6): explicit regression proving the OLD
+  forgeable `x-naelao-internal: spaces-trigger` string is now rejected, plus the same
+  no-token/wrong-secret/tenant-mismatch/body-tenant-mismatch/valid-token matrix against the
+  real route.
+- `tests/unit/credential-hierarchy.test.ts` updated (still 20/20) to mint a real internal
+  token via the test-helper `req()`, proving the credentials worker's public routes now require
+  it end-to-end (real handler, not a mock).

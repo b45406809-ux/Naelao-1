@@ -7,7 +7,7 @@
 //   POST   /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/cancel
 
 import { Hono } from "hono";
-import { errorResponse, requestId, notFound, badRequest, unauthorized } from "@naelao/http";
+import { errorResponse, requestId, notFound, badRequest, unauthorized, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { getDOName, verifyDOTenantPrefix } from "@naelao/crypto";
 import { detectPromptInjection, moderateText } from "@naelao/moderation";
@@ -625,7 +625,12 @@ async function fireScriptDirectly(
 // so next time a user comes to that thread the conversation won't eat too much tokens" —
 // the trigger mechanism itself must not eat tokens either). Internal-only.
 app.post("/internal/triggers/fire", async (c) => {
-  if (c.req.header("x-naelao-internal") !== "spaces-trigger") {
+  // B3 fix: the old check was `x-naelao-internal !== "spaces-trigger"` — a static string
+  // anyone reaching this worker could set. Verified HMAC + tenant-match now, same mechanism
+  // as naelao-router's proxyTo and requireInternalHmac.
+  const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const validToken = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
+  if (!headerTenantId || !validToken) {
     return c.json({ error_code: "forbidden", message: "internal only" }, 403);
   }
   interface FireBody {
@@ -639,6 +644,11 @@ app.post("/internal/triggers/fire", async (c) => {
   const body = await c.req.json<FireBody>().catch(() => null);
   if (!body?.spaceId || !body.tenantId || !body.scriptName) {
     return c.json({ error_code: "bad_request", message: "spaceId, tenantId, and scriptName are required" }, 400);
+  }
+  // The signed token proves the caller legitimately acts for headerTenantId — body.tenantId
+  // must be the same tenant, never a caller-chosen value the token doesn't actually cover.
+  if (body.tenantId !== headerTenantId) {
+    return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
   }
   const doResp = await fireScriptDirectly(c.env, body, c.get("requestId"));
   const doBody = await doResp.json<unknown>();
@@ -1004,10 +1014,20 @@ app.post("/connectors/:platform/connect", async (c) => {
 
   // 1. Store the API key in the encrypted vault under the connector's credential name.
   if (connector.auth.type !== "none") {
+    // B1/B3 fix: credentials worker's public CRUD routes now require a verified internal
+    // token (requireInternalHmac) since this call bypasses the router (direct service
+    // binding). Also fixes a pre-existing path bug: the credentials worker registers this
+    // route WITHOUT a /v1 prefix (only its internal plaintext-resolution route has one) —
+    // the old "/v1/spaces/..." path here would have 404'd against the real worker.
+    const credInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
     const credResp = await c.env.CREDENTIALS_WORKER.fetch(
-      new Request(`http://credentials/v1/spaces/${body.space_id}/credentials`, {
+      new Request(`http://credentials/spaces/${body.space_id}/credentials`, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": credInternalToken,
+        },
         body: JSON.stringify({
           name: connector.auth.credential_name,
           value: body.api_key,

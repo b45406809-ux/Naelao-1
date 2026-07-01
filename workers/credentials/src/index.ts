@@ -6,7 +6,7 @@
 //   2. user-scope row for the acting user  — personal credential (the per-user default)
 //   3. space-scope row with is_override=0  — shared space-wide fallback
 // See resolveCredential() below and infra/migrations/0040_space_credentials.sql.
-import { badRequest, errorResponse, forbidden, notFound, requestId } from "@naelao/http";
+import { badRequest, errorResponse, forbidden, notFound, requestId, requireInternalHmac } from "@naelao/http";
 import { Hono } from "hono";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
@@ -266,6 +266,15 @@ app.use("*", async (c, next) => {
   validateEnv(c.env);
   await next();
 });
+
+// B1/B3 fix: the three public CRUD routes only ever trust x-naelao-tenant-id/-user-id/-role
+// as-is — with workers_dev disabled the router is the only path in, but this is the
+// defense-in-depth backstop (a misconfiguration or a future direct binding must not be able
+// to forge a tenant/role). The internal plaintext-resolution route below has its own,
+// independent HMAC scheme (generateCredentialToken/verifyCredentialToken, scoped to a single
+// agentId+spaceId) and is deliberately NOT covered by this — it's not proxied by the router.
+app.use("/spaces/:spaceId/credentials", requireInternalHmac((c) => (c as unknown as { env: CredentialsEnv }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/credentials/:credId", requireInternalHmac((c) => (c as unknown as { env: CredentialsEnv }).env.PLATFORM_SECRET));
 
 // POST /v1/spaces/:spaceId/credentials — create a credential.
 // Body: { name, value, description?, scope?: 'user'|'space' (default 'user'), is_override?: boolean }

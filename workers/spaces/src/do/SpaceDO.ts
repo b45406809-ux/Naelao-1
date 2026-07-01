@@ -7,6 +7,7 @@ import {
   findPossibleDuplicateProjects, isPresenceFresh, PRESENCE_FRESHNESS_WINDOW_MS,
 } from "@naelao/events";
 import type { TriggerRule, TriggerCondition, EventEnvelope, ConditionContext } from "@naelao/events";
+import { mintInternalToken } from "@naelao/http";
 
 function safeJsonParseObj(text: string): Record<string, unknown> {
   try {
@@ -1785,9 +1786,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const result = evaluateCondition(rule.condition, ctx);
         if (!result.matched) continue;
         const params = buildFireParams(rule.action, event, result);
+        // B3 fix: the static "x-naelao-internal: spaces-trigger" string was forgeable by
+        // anyone who could reach the agents worker directly. Mint the same HMAC token
+        // naelao-router's proxyTo attaches, verified by requireInternalHmac on the target route.
+        const internalToken = await mintInternalToken(this.env.PLATFORM_SECRET, tenantId);
         await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/triggers/fire", {
           method: "POST",
-          headers: { "content-type": "application/json", "x-naelao-internal": "spaces-trigger" },
+          headers: {
+            "content-type": "application/json",
+            "x-naelao-tenant-id": tenantId,
+            "x-naelao-internal-token": internalToken,
+          },
           body: JSON.stringify({
             spaceId: event.space_id,
             tenantId,

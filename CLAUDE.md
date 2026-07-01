@@ -192,6 +192,22 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     /spaces/:spaceId/scheduled-jobs`, and `runScheduledJobs` wired into the existing hourly
     cron — the no-code, TIME-driven counterpart to event_triggers (spec §05 cron-jobs.json).
     Full detail: appendix §A1.16.7.
+21. **Direct-worker-ingress trust hole closed (security audit, independent of the assistant
+    work).** Every internal worker trusted `x-naelao-tenant-id`/`-user-id`/`-role` headers
+    as-is with no verification the request came through `naelao-router` — and every worker was
+    reachable at its own public `workers.dev` URL, bypassing the router entirely.
+    `workers_dev = false` added everywhere except workers with their own independent public
+    ingress auth (`naelao-router`, `naelao-portal-router`, `naelao-agents`' signature-verified
+    channel gateway, `naelao-billing`'s webhook signatures, `naelao-ws-gateway`'s origin
+    check). `proxyTo` now strips identity headers unconditionally before setting them from
+    verified claims (previously only overwrote them when claims existed). New
+    `requireInternalHmac` middleware + `mintInternalToken` helper (`packages/http`) gate
+    credentials worker's public CRUD routes and `/internal/triggers/fire` (previously a
+    forgeable static-string check) with real HMAC verification, replacing/backstopping the
+    `workers_dev` fix. Explicitly NOT yet done: the public `/spaces/:id/...` and `/kb/...`
+    routes have ~15 direct (non-router) callers across NaelaoAgentDO/provisioner/billing that
+    would all need updating to add the same defense-in-depth layer — tracked as a follow-up,
+    not silently dropped. Full detail: appendix §A1.16.8.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
