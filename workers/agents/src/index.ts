@@ -552,6 +552,7 @@ app.post("/agents/:agentId/script/run", async (c) => {
     spaceId?: string;
     tenantId?: string;
     sessionId?: string;
+    projectId?: string;
     context?: Record<string, unknown>;
     model?: string;
   }
@@ -576,6 +577,7 @@ app.post("/agents/:agentId/script/run", async (c) => {
         agentId,
         tenantId,
         ...(body.sessionId ? { sessionId: body.sessionId } : {}),
+        ...(body.projectId ? { projectId: body.projectId } : {}),
         ...(body.context ? { context: body.context } : {}),
         // Inject the platform LLM key so webhook/cron wakes (which carry none) can reason.
         apiKey: c.env.ANTHROPIC_API_KEY,

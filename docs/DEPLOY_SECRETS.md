@@ -154,6 +154,15 @@ a project's default thread listing to include its sub-agent/channel subthreads. 
 progress polling is `GET /sub-agents?parent_run_id=` directly on the parent `NaelaoAgentDO` —
 same DO, no separate route to expose through the router yet (internal/debugging use for now).
 
+## Project-scoped workspace + the `lock` primitive (A1.15)
+
+No secrets, no new bindings — reuses `CONCURRENCY_DO` (above). Project scoping is a request
+field, not config: pass `projectId` in a `/script/run` body (or `x-naelao-project-id` header
+for internal callers) to run as a project-bound Naelao Agent instead of the space-wide Space
+Assistant. The `lock` prebuilt ships in every agent's default toolkit; an assistant wires a
+locking strategy into its agents purely via `agents.md`/skill instructions — no platform
+config needed to use it.
+
 ## Other platform secrets (pre-existing)
 
 `PLATFORM_SECRET`, `JWT_SECRET` (router/auth), `ANTHROPIC_API_KEY` (agents), Stripe keys

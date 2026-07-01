@@ -1221,7 +1221,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // The authoritative script-first agent model (spec appendix ~6672k). Loads the agent's
   // 4-file config from R2, then runs OBSERVE→FINGERPRINT→FIND→GATE→EXECUTE→VERIFY→DISTILL.
 
-  private buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string, userId?: string): ScriptEngineEnv | null {
+  private buildScriptEngineEnv(spaceId: string, agentId: string, tenantId: string, userId?: string, projectId?: string): ScriptEngineEnv | null {
     if (!this.env.SCRIPTS_R2) return null;
     const env: ScriptEngineEnv = {
       scriptsBucket: this.env.SCRIPTS_R2,
@@ -1229,6 +1229,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       agentId,
       tenantId,
       ...(userId ? { userId } : {}),
+      // Project-scoped workspace (every thread's agent in a project shares one R2 filesystem)
+      // vs. the Space Assistant's space-wide workspace — see workspacePrefix() in types.ts.
+      ...(projectId ? { projectId } : {}),
     };
     if (this.env.SCRIPTS_VECTORIZE) {
       env.vectorIndex = this.env.SCRIPTS_VECTORIZE as unknown as NonNullable<ScriptEngineEnv["vectorIndex"]>;
@@ -1303,6 +1306,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       };
     }
 
+    // Generic named-lock primitive (the `lock` prebuilt) — an assistant/agent composes its
+    // OWN concurrency strategy on top of this (e.g. "lock this CSV row before writing"; see
+    // A1.15). Keys are always prefixed by space (+ project, when scoped) HERE, server-side —
+    // structural isolation, not something a script has to remember: two different
+    // spaces/projects can never collide on the same literal lock name a script picks.
+    {
+      const lockNamespace = `lock:${spaceId}:${projectId ?? "_"}:`;
+      env.lockGateway = {
+        acquire: (params) =>
+          this.acquireConcurrencySlot(lockNamespace + params.key, params.holderId, params.limit ?? 1, params.ttlMs),
+        release: (params) => this.releaseConcurrencySlot(lockNamespace + params.key, params.holderId),
+        status: (key) => this.concurrencyStatus(lockNamespace + key),
+      };
+    }
+
     return env;
   }
 
@@ -1326,7 +1344,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     tenantId: string,
     apiKey: string,
     parentRunId: string,
-    parentThreadId?: string
+    parentThreadId?: string,
+    projectId?: string
   ): import("../script-engine/types.js").OrchestrationHooks {
     if (!this.env.NAELAO_AGENT_DO) return {};
     const agentDO = this.env.NAELAO_AGENT_DO;
@@ -1352,7 +1371,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
 
         try {
-          return await this.spawnSubAgentBatch(tasks, spaceId, agentId, tenantId, apiKey, parentRunId, parentThreadId, agentDO);
+          return await this.spawnSubAgentBatch(tasks, spaceId, agentId, tenantId, apiKey, parentRunId, parentThreadId, projectId, agentDO);
         } finally {
           await this.releaseConcurrencySlot(concurrencyKey, parentRunId);
         }
@@ -1369,18 +1388,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     };
   }
 
-  private async acquireConcurrencySlot(key: string, holderId: string, limit: number): Promise<{ granted: boolean; active: number; limit?: number }> {
-    if (!this.env.CONCURRENCY_DO) return { granted: true, active: 0 }; // ungated when unbound
+  private async acquireConcurrencySlot(key: string, holderId: string, limit: number, ttlMs?: number): Promise<{ granted: boolean; active: number; limit?: number; degraded?: boolean }> {
+    if (!this.env.CONCURRENCY_DO) return { granted: true, active: 0, degraded: true }; // ungated when unbound — flagged, not silent
     try {
       const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(key));
       const resp = await stub.fetch(new Request("http://concurrency-do/acquire", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ key, holder_id: holderId, limit }),
+        body: JSON.stringify({ key, holder_id: holderId, limit, ...(typeof ttlMs === "number" ? { ttl_ms: ttlMs } : {}) }),
       }));
       return await resp.json<{ granted: boolean; active: number; limit?: number }>();
     } catch {
-      return { granted: true, active: 0 }; // fail open — a down ConcurrencyDO must not wedge every agent run
+      return { granted: true, active: 0, degraded: true }; // fail open — a down ConcurrencyDO must not wedge every agent run
     }
   }
 
@@ -1398,6 +1417,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
+  private async concurrencyStatus(key: string): Promise<{ active: number }> {
+    if (!this.env.CONCURRENCY_DO) return { active: 0 };
+    try {
+      const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(key));
+      const resp = await stub.fetch(new Request(`http://concurrency-do/status?key=${encodeURIComponent(key)}`));
+      const body = await resp.json<{ active: number }>();
+      return { active: body.active };
+    } catch {
+      return { active: 0 };
+    }
+  }
+
   private async spawnSubAgentBatch(
     tasks: Array<Record<string, unknown>>,
     spaceId: string,
@@ -1406,6 +1437,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     apiKey: string,
     parentRunId: string,
     parentThreadId: string | undefined,
+    projectId: string | undefined,
     agentDO: DurableObjectNamespace<NaelaoAgentDO>
   ): Promise<{ id: string }> {
     const spawned = await Promise.all(
@@ -1427,6 +1459,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           id: subId,
           thread_kind: "sub_agent",
           ...(parentThreadId ? { parent_thread_id: parentThreadId } : {}),
+          ...(projectId ? { project_id: projectId } : {}),
           title: goal.slice(0, 120),
         });
         if (!goal) {
@@ -1446,6 +1479,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               tenantId,
               sessionId: `subagent-${subId}`,
               apiKey,
+              // A child shares its parent's project workspace — it's a subthread of the same
+              // project, not a different filesystem (spec: threads in a project share one R2
+              // workspace).
+              ...(projectId ? { projectId } : {}),
               ...(typeof t["model"] === "string" ? { model: t["model"] } : {}),
               context: {
                 parent_run_id: parentRunId,
@@ -1550,6 +1587,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       tenantId?: string;
       sessionId?: string;
       userId?: string;
+      projectId?: string;
       context?: Record<string, unknown>;
       apiKey?: string;
       model?: string;
@@ -1562,17 +1600,23 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const agentId = body.agentId ?? agentIdFromPath ?? "naelao-agent";
     const sessionId = body.sessionId ?? `script-run-${Date.now()}`;
     const userId = body.userId ?? request.headers.get("x-naelao-user-id") ?? undefined;
+    // Project-scoped workspace (spec: "a project is workspace-scoped, every thread's agent in
+    // it shares one filesystem") — absent means this run is the Space Assistant, operating
+    // space-wide. Never inferred; a caller that wants project scoping must say so explicitly.
+    const projectId = body.projectId ?? request.headers.get("x-naelao-project-id") ?? undefined;
     const runId = crypto.randomUUID();
 
     if (!body.goal || !spaceId) {
       return Response.json({ error: "goal and spaceId are required" }, { status: 400 });
     }
 
-    const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId);
+    const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId, projectId);
     if (!engineEnv) {
       return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     }
-    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId);
+    // A sub-agent spawned mid-task inherits the SAME project scoping as its parent — it's
+    // conceptually a subthread of the same project, not a different workspace.
+    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId);
 
     // Load the agent's 4-file config; without it the agent is not provisioned.
     const config = await loadAgentConfig(engineEnv.scriptsBucket, spaceId, agentId);
@@ -1902,6 +1946,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // maxTier is mutated per message below — memory.remember/recall and the surgical-recall
       // pre-flight then scope to THIS customer, not the space at large, across visits.
       engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}`;
+      // Project-scoped workspace — every customer thread in this customer-bot project shares
+      // the SAME R2 filesystem (e.g. a project-wide ledger.csv a no-code rule's run_script
+      // writes a row into per customer). Mutated per message like maxTier, since one heartbeat
+      // sweep can touch several projects.
+      if (msg.project_id) engineEnv.projectId = msg.project_id;
+      else delete engineEnv.projectId;
 
       // 1. No-code rules (spec: "after the customer says X, this happens") — checked before
       //    any reasoning at all. Zero token cost, deterministic, admin-authored.

@@ -8,17 +8,18 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
+import { workspacePrefix } from "../types.js";
 
 /** Resolve the workspace bucket (falls back to the scripts bucket if not separate). */
 function bucket(ctx: PrebuiltOpContext): R2Bucket {
   return ctx.env.workspaceBucket ?? ctx.env.scriptsBucket;
 }
 
-/** All workspace keys are scoped under the space's workspace prefix. */
+/** All workspace keys are scoped under the run's workspace prefix (space- or project-scoped). */
 function key(ctx: PrebuiltOpContext, path: string): string {
   const clean = String(path).replace(/^\/+/, "");
   if (clean.includes("..")) throw new Error(`Path traversal rejected: ${path}`);
-  return `spaces/${ctx.env.spaceId}/workspace/${clean}`;
+  return `${workspacePrefix(ctx.env)}${clean}`;
 }
 
 function reqStr(args: Record<string, unknown>, name: string): string {

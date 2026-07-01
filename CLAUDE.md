@@ -108,6 +108,18 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     `GET /sub-agents?parent_run_id=`, no WebSocket needed). `ConcurrencyDO` (spec §28) caps
     simultaneous sub-agent spawn trees per space, with the spec's own deadlock (TTL + alarm
     sweep) and check-then-insert-race gaps closed. Full detail: appendix §A1.14.
+13. **Project-scoped workspace + a generic `lock` primitive are now BUILT.** A project is
+    workspace-scoped: `workspacePrefix()` (single source of truth in `script-engine/types.ts`)
+    puts every thread's agent in the SAME project under one R2 filesystem
+    (`spaces/{id}/projects/{id}/workspace/`), while the Space Assistant stays space-wide
+    (`spaces/{id}/workspace/`) — never inferred, a run says which it wants via
+    `ScriptEngineEnv.projectId`. Concurrency (e.g. two customer threads writing a shared
+    `ledger.csv`) is deliberately NOT a bespoke Naelao-shipped mechanism — the new `lock`
+    prebuilt (`lock.acquire`/`release`/`status`, generalizing `ConcurrencyDO`) exposes a
+    generic named-lock primitive, and the *strategy* (row-level locking, priority, whatever)
+    lives entirely in scripts an assistant authors and wires into its agents' instructions.
+    Lock keys are always space/project-prefixed server-side, never left to a script to
+    remember. Full detail: appendix §A1.15.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

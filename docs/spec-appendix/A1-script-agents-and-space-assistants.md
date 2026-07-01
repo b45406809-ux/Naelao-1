@@ -497,6 +497,65 @@ Two spec gaps closed in the same build rather than left as known issues:
 Fails open when unbound or unreachable (a down `ConcurrencyDO` must not wedge every agent run)
 — same honest-degradation posture as every other optional binding in this build.
 
+## A1.15 Project-scoped workspace + the generic `lock` primitive — BUILT
+
+The builder's own framing: *"a project is workspace-scoped — every thread's agent in it
+shares one R2 filesystem. A WhatsApp support project's assistant could add a project
+instruction like 'log every complaint to ledger.csv,' write a script the agent uses to append
+to it, and that script locks the row it's writing so two customer threads writing
+concurrently can't clobber each other."*
+
+**Scope split.** `ScriptEngineEnv.projectId` (optional) decides the R2 workspace prefix — the
+single function `workspacePrefix(env)` in `types.ts` is the ONLY place this decision is made,
+called by every workspace-touching prebuilt (`r2-workspace`, `file-manager`,
+`observe_filesystem`) so the space/project boundary can't drift between them:
+- **Absent** (`spaces/{spaceId}/workspace/...`) — the **Space Assistant**, operating
+  space-wide. Nothing changed here from before this pass.
+- **Present** (`spaces/{spaceId}/projects/{projectId}/workspace/...`) — an ordinary
+  **Naelao Agent** thread. Every thread's agent in the SAME project resolves to the SAME
+  prefix regardless of which `agentId`/thread spawned it — that's the mechanism behind "every
+  thread's agent in a project shares one filesystem."
+
+Wired through `NaelaoAgentDO.buildScriptEngineEnv` (new `projectId` parameter),
+`handleScriptRun` (`body.projectId` / `x-naelao-project-id` header — never inferred, a caller
+that wants project scoping says so explicitly), the channel heartbeat (`engineEnv.projectId`
+mutated per message from `channel_sessions.project_id`, same pattern as `maxTier`/`userId` —
+this is what makes the WhatsApp-project-ledger scenario work end to end), and sub-agent
+spawning (a child inherits its parent's `projectId` — a spawned sub-agent is a subthread of
+the same project, not a different workspace).
+
+**The generic `lock` primitive — NOT a bespoke locking mechanism.** The row-locking strategy
+in the builder's scenario is deliberately NOT something Naelao ships as a fixed op (a
+`ledger.append_row` prebuilt would be exactly the kind of hardcoded tool this architecture
+avoids). Instead the platform exposes acquire/release/status as a generic primitive
+(`lock.acquire` / `lock.release` / `lock.status`, `workers/agents/src/script-engine/prebuilt/
+lock.ts`), and the assistant composes its OWN concurrency strategy on top of it: a script that
+takes a row number, calls `lock.acquire({key: "row:5", holder_id, limit: 1})`, aborts if not
+granted (or retries/queues, or preempts — the script's choice), writes, then
+`lock.release`s. The assistant tells its agents (via `agents.md` or a skill) to call that
+script instead of the raw `write_file` op — the row-ownership rule lives in the authored
+script, not in a platform-enforced schema.
+
+Backed by the same `ConcurrencyDO` as A1.14's sub-agent-tree gating, generalized: `holder_id`
+is required (no implicit identity — a script must be explicit about who's holding the lock,
+the same reasoning as requiring explicit ids elsewhere in Memory OS), default `limit: 1`
+(exclusive lock) is overridable for semaphore-style use, default TTL 60s (much shorter than
+the sub-agent-tree default — a lock-write-release cycle should be fast; a forgotten release is
+reclaimed quickly, not after 30 minutes). **Keys are always prefixed by space (+ project, when
+scoped) inside `buildScriptEngineEnv`** — never left to the calling script to remember — so two
+different spaces, or two different projects in the same space, can never collide on the same
+literal lock name a script happens to pick. Reports `degraded: true` (not a silent grant) when
+`CONCURRENCY_DO` is unbound, so a script that actually cares about correctness can detect the
+degradation instead of being lied to by an always-succeeds lock.
+
+**What this does NOT yet do (open, tracked):** the harder "halt/cancel an already-running
+competing script" primitive the builder also floated — `lock.acquire` returning `granted:
+false` covers "don't let a colliding write start," but actually interrupting a script already
+mid-execution (true preemption) needs either cooperative check-ins inside running scripts or a
+hard abort at the runner/isolate level, neither of which exists yet; project-level lifecycle
+triggers (e.g. "compact a thread when it goes idle and a new thread starts in the project") —
+tracked as the next piece of this same builder conversation, not yet built.
+
 ## A1.5 Open follow-ups (tracked, not yet built)
 
 - **Credential hierarchy**: per-user (default) + per-space (shared, e.g. company email) +

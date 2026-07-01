@@ -56,6 +56,7 @@ ${BASE_AGENTS_MD}`,
         "memory",
         "fabric",
         "wiki",
+        "lock",
       ],
       agent_scripts: "auto",
       startup_observe: "observe_filesystem",
@@ -129,6 +130,7 @@ export function launchpadAgentToProfile(def: LaunchpadAgentDefinition): { agentI
   prebuilt.add("memory"); // episodic/semantic Memory OS — every agent self-manages memory
   prebuilt.add("fabric"); // Layer 4 — cross-session consolidation
   prebuilt.add("wiki"); // Layer 6 — auto-curated concept vault
+  prebuilt.add("lock"); // generic named-lock primitive for script-composed concurrency
 
   const triggerNote =
     def.trigger.type === "schedule"

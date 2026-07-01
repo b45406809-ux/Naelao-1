@@ -280,6 +280,20 @@ export interface MemoryStore {
 }
 
 /**
+ * Generic named-lock primitive, exposed to scripts via the `lock` prebuilt. Deliberately
+ * minimal (acquire/release/status) — Naelao does not ship a bespoke locking mechanism per
+ * use case (e.g. "CSV row locking"); an assistant/agent composes its OWN concurrency
+ * strategy out of this primitive (a script that acquires a lock keyed by row number before
+ * writing, checks/aborts if not granted, releases after). Backed by ConcurrencyDO,
+ * generalized beyond its original sub-agent-tree-gating use.
+ */
+export interface LockGateway {
+  acquire(params: { key: string; holderId: string; limit?: number; ttlMs?: number }): Promise<{ granted: boolean; active: number; limit?: number; degraded?: boolean }>;
+  release(params: { key: string; holderId: string }): Promise<void>;
+  status(key: string): Promise<{ active: number }>;
+}
+
+/**
  * HITL (Human-in-the-Loop) gateway interface (spec §10 / CLAUDE.md task #10).
  * Injected by NaelaoAgentDO when HITL_APPROVAL_DO is bound; absent in unit tests.
  */
@@ -322,6 +336,9 @@ export interface ScriptEngineEnv {
   orchestration?: OrchestrationHooks;
   /** HITL approval gateway — present when HITLApprovalDO is wired up. */
   hitlGateway?: HITLGateway;
+  /** Generic named-lock primitive — present when CONCURRENCY_DO is wired up (the `lock`
+   *  prebuilt reports itself degraded, not unavailable, when absent — see LockGateway). */
+  lockGateway?: LockGateway;
   /** Memory OS (structured facts + episodic + semantic recall) — present when the host DO
    *  has initialized its memory tables. Absent in environments that haven't wired it yet. */
   memoryStore?: MemoryStore;
@@ -333,6 +350,14 @@ export interface ScriptEngineEnv {
    *  (Memory OS) and per-(channel,user) sessions. Absent for space-level/system-triggered runs. */
   userId?: string;
   /**
+   * The project this run is bound to, when it's an ordinary (project-scoped) Naelao Agent
+   * thread rather than the Space Assistant. Determines the R2 workspace prefix (see
+   * `workspacePrefix()` below) — every thread's agent in the SAME project shares one
+   * filesystem (e.g. a project-wide ledger.csv), while the Space Assistant's workspace stays
+   * space-wide. Absent = space-scoped (the Space Assistant, or a legacy unscoped run).
+   */
+  projectId?: string;
+  /**
    * Execution ladder ceiling (1-5) for this run — set on customer-facing bot projects
    * (SpaceDO `projects.execution_ceiling`) so a restricted bot can never use a tier above
    * what the admin configured (e.g. ceiling=2 means "talk and look things up, never touch a
@@ -340,4 +365,21 @@ export interface ScriptEngineEnv {
    * Enforced structurally in ScriptToolSurface — not a prompt instruction.
    */
   maxTier?: ExecutionTier;
+}
+
+/**
+ * The single place that decides whether a run's R2 workspace is space-scoped or
+ * project-scoped — every workspace-touching prebuilt (r2-workspace, file-manager,
+ * observe_filesystem) and any future one must call this rather than re-deriving the prefix,
+ * so the space/project boundary is enforced in exactly one place.
+ *
+ * Space-scoped (`env.projectId` absent) = the Space Assistant, or a legacy unscoped run.
+ * Project-scoped (`env.projectId` set) = an ordinary Naelao Agent thread — every thread's
+ * agent within the SAME project reads/writes the SAME filesystem (spec: a project is
+ * workspace-scoped; threads within it share one R2 workspace).
+ */
+export function workspacePrefix(env: Pick<ScriptEngineEnv, "spaceId" | "projectId">): string {
+  return env.projectId
+    ? `spaces/${env.spaceId}/projects/${env.projectId}/workspace/`
+    : `spaces/${env.spaceId}/workspace/`;
 }

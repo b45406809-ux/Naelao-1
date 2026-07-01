@@ -9,6 +9,7 @@
  */
 
 import type { ScriptEngineEnv, ObserveSnapshot } from "./types.js";
+import { workspacePrefix } from "./types.js";
 import { computeFingerprint } from "./fingerprint.js";
 
 /** observe_filesystem (spec §9.2) — hashes the workspace structure + recent changes. */
@@ -17,7 +18,7 @@ export async function observeFilesystem(
   path = ""
 ): Promise<ObserveSnapshot> {
   const bucket = env.workspaceBucket ?? env.scriptsBucket;
-  const prefix = `spaces/${env.spaceId}/workspace/${String(path).replace(/^\/+/, "")}`;
+  const prefix = `${workspacePrefix(env)}${String(path).replace(/^\/+/, "")}`;
   const objects: Array<{ key: string; size: number; modified: number }> = [];
   let cursor: string | undefined;
   do {

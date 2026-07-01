@@ -30,6 +30,7 @@ import { codeExec } from "./code-exec.js";
 import { memory } from "./memory.js";
 import { fabric } from "./fabric.js";
 import { wiki } from "./wiki.js";
+import { lock } from "./lock.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -75,6 +76,9 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // Memory OS Layer 4 (Fabric) + Layer 6 (LLM Wiki) — cross-session consolidation + curated vault.
   [fabric.name]: fabric,
   [wiki.name]: wiki,
+  // Generic named-lock primitive — the building block for script-composed concurrency
+  // strategies (e.g. CSV row locking), not a bespoke locking mechanism per use case.
+  [lock.name]: lock,
 };
 
 /**
@@ -111,4 +115,5 @@ export {
   memory,
   fabric,
   wiki,
+  lock,
 };
