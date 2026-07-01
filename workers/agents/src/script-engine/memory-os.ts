@@ -19,7 +19,7 @@
  *     exposes remember/recall/forget to the LLM, backed by the MemoryStore this module builds.
  */
 
-import type { Embedder, VectorIndex, MemoryStore, MemoryRecallResult } from "./types.js";
+import type { Embedder, VectorIndex, MemoryStore, MemoryRecallResult, FabricEntry, WikiArticle } from "./types.js";
 
 /** The minimal DO SQLite surface this module needs (matches `this.ctx.storage.sql`). */
 export interface SqlStorageLike {
@@ -45,6 +45,7 @@ const PROMOTE_BATCH_SIZE = 25;
 const EPISODIC_RETENTION_CAP = 500; // unpromoted, sub-threshold rows kept per (space)
 const DECAY_TICK_MS = 24 * 60 * 60 * 1000; // a fact decays at most once per day of inactivity
 const SEMANTIC_SCORE_FLOOR = 0.72; // spec's surgicalRecall threshold
+const FABRIC_SCORE_FLOOR = 0.7; // spec's surgicalRecall threshold for Fabric specifically
 
 export function initMemorySchema(sql: SqlStorageLike): void {
   sql.exec(`
@@ -76,6 +77,35 @@ export function initMemorySchema(sql: SqlStorageLike): void {
   `);
   sql.exec(`CREATE INDEX IF NOT EXISTS idx_episodic_user ON episodic_log(user_id, created_at DESC)`);
   sql.exec(`CREATE INDEX IF NOT EXISTS idx_episodic_promo ON episodic_log(promoted, importance)`);
+
+  // Layer 4 (Fabric) — spec's fabric_store, scoped per-user like every other layer here (the
+  // spec's AssistantDO is single-tenant per DO; ours shares one DO's SQLite across users in
+  // shared-assistant mode, so user_id joins the schema the same way it did for Layer 3).
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS fabric_store (
+      id           TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+      user_id      TEXT NOT NULL DEFAULT '',
+      session_id   TEXT NOT NULL,
+      summary      TEXT NOT NULL,
+      key_insights TEXT NOT NULL DEFAULT '[]',
+      created_at   INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
+    )
+  `);
+  sql.exec(`CREATE INDEX IF NOT EXISTS idx_fabric_user ON fabric_store(user_id, created_at DESC)`);
+  sql.exec(`CREATE INDEX IF NOT EXISTS idx_fabric_session ON fabric_store(session_id)`);
+
+  // Layer 6 (LLM Wiki) — spec's wiki_store. PK is (user_id, concept) rather than the spec's
+  // bare `concept TEXT PRIMARY KEY` for the same per-user-scoping reason as above.
+  sql.exec(`
+    CREATE TABLE IF NOT EXISTS wiki_store (
+      user_id       TEXT NOT NULL DEFAULT '',
+      concept       TEXT NOT NULL,
+      definition    TEXT NOT NULL,
+      relationships TEXT NOT NULL DEFAULT '[]',
+      updated_at    INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
+      PRIMARY KEY (user_id, concept)
+    )
+  `);
 }
 
 interface StructuredFactRow {
@@ -102,6 +132,62 @@ interface EpisodicRow {
 /** exactOptionalPropertyTypes helper: only include user_id when it's a real (non-sentinel) value. */
 function userIdField(v: string): { user_id: string } | Record<string, never> {
   return v ? { user_id: v } : {};
+}
+
+interface FabricStoreRow {
+  id: string;
+  user_id: string;
+  session_id: string;
+  summary: string;
+  key_insights: string;
+  created_at: number;
+}
+
+interface WikiStoreRow {
+  user_id: string;
+  concept: string;
+  definition: string;
+  relationships: string;
+  updated_at: number;
+}
+
+function toFabricEntry(r: FabricStoreRow, score: number): FabricEntry {
+  let keyInsights: string[] = [];
+  try {
+    keyInsights = JSON.parse(r.key_insights);
+  } catch {
+    /* leave empty on corrupt JSON rather than throw */
+  }
+  return { id: r.id, sessionId: r.session_id, summary: r.summary, keyInsights, score, createdAt: r.created_at };
+}
+
+function toWikiArticle(r: WikiStoreRow): WikiArticle {
+  let relationships: string[] = [];
+  try {
+    relationships = JSON.parse(r.relationships);
+  } catch {
+    /* leave empty on corrupt JSON rather than throw */
+  }
+  return { concept: r.concept, definition: r.definition, relationships, updatedAt: r.updated_at };
+}
+
+/**
+ * Heuristic relevance in [0,1] between a query and a Fabric entry's summary + key insights —
+ * term-overlap (Jaccard-style), not an embedding. Fabric is DO SQLite + R2 per spec, not a
+ * Vectorize-backed layer like Layer 5, so this stays a cheap local computation; an exact
+ * substring match scores 1.0 so a recognizable phrase always clears the 0.70 floor.
+ */
+function fabricRelevance(query: string, row: FabricStoreRow): number {
+  const haystack = `${row.summary} ${row.key_insights}`.toLowerCase();
+  const needle = query.toLowerCase().trim();
+  if (!needle) return 0;
+  if (haystack.includes(needle)) return 1;
+  const queryTerms = new Set(needle.split(/\s+/).filter((t) => t.length > 2));
+  if (queryTerms.size === 0) return 0;
+  const hayTerms = new Set(haystack.split(/\s+/));
+  let hits = 0;
+  for (const t of queryTerms) if (hayTerms.has(t)) hits++;
+  return hits / queryTerms.size;
 }
 
 export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
@@ -260,6 +346,80 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
           /* best-effort */
         }
       }
+    },
+
+    // ── Layer 4 (Fabric) ──────────────────────────────────────────────────────
+    async recordFabric(entry) {
+      const userId = scope(entry.userId);
+      const id = crypto.randomUUID();
+      opts.sql.exec(
+        `INSERT INTO fabric_store (id, user_id, session_id, summary, key_insights, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        id, userId, entry.sessionId, entry.summary, JSON.stringify(entry.keyInsights ?? []), Date.now()
+      );
+      return { id };
+    },
+
+    async recallFabric(query) {
+      const userId = scope(query.userId);
+      const limit = query.limit ?? 5;
+      const rows = opts.sql
+        .exec(
+          `SELECT * FROM fabric_store WHERE user_id IN (?, ?) ORDER BY created_at DESC LIMIT 100`,
+          userId, UNSCOPED
+        )
+        .toArray() as FabricStoreRow[];
+      return rows
+        .map((r) => toFabricEntry(r, fabricRelevance(query.text, r)))
+        .filter((f) => f.score > FABRIC_SCORE_FLOOR)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
+    },
+
+    async briefFabric(userId, limit = 5) {
+      const scoped = scope(userId);
+      const rows = opts.sql
+        .exec(
+          // rowid tiebreak — created_at is millisecond-resolution and two entries recorded in
+          // the same millisecond (common for fast automated post-run recording) would
+          // otherwise sort arbitrarily, silently breaking "most recent first".
+          `SELECT * FROM fabric_store WHERE user_id IN (?, ?) ORDER BY created_at DESC, rowid DESC LIMIT ?`,
+          scoped, UNSCOPED, limit
+        )
+        .toArray() as FabricStoreRow[];
+      return rows.map((r) => toFabricEntry(r, 0));
+    },
+
+    // ── Layer 6 (LLM Wiki) ────────────────────────────────────────────────────
+    async upsertWikiConcept(entry) {
+      const userId = scope(entry.userId);
+      opts.sql.exec(
+        `INSERT INTO wiki_store (user_id, concept, definition, relationships, updated_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(user_id, concept) DO UPDATE SET definition = excluded.definition, relationships = excluded.relationships, updated_at = excluded.updated_at`,
+        userId, entry.concept, entry.definition, JSON.stringify(entry.relationships ?? []), Date.now()
+      );
+      return { concept: entry.concept };
+    },
+
+    async lookupWikiConcept(userId, concept) {
+      const scoped = scope(userId);
+      const rows = opts.sql
+        .exec(`SELECT * FROM wiki_store WHERE user_id IN (?, ?) AND concept = ? ORDER BY user_id != '' DESC LIMIT 1`, scoped, UNSCOPED, concept)
+        .toArray() as WikiStoreRow[];
+      return rows[0] ? toWikiArticle(rows[0]) : null;
+    },
+
+    async searchWiki(query) {
+      const userId = scope(query.userId);
+      const limit = query.limit ?? 5;
+      const like = `%${query.text.replace(/[%_]/g, (c) => `\\${c}`)}%`;
+      const rows = opts.sql
+        .exec(
+          `SELECT * FROM wiki_store WHERE user_id IN (?, ?) AND (concept LIKE ? ESCAPE '\\' OR definition LIKE ? ESCAPE '\\')
+           ORDER BY updated_at DESC LIMIT ?`,
+          userId, UNSCOPED, like, like, limit
+        )
+        .toArray() as WikiStoreRow[];
+      return rows.map(toWikiArticle);
     },
   };
 }

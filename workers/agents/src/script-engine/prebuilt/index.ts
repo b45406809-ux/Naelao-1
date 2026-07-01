@@ -28,6 +28,8 @@ import { mcpConnector } from "./mcp-connector.js";
 import { browserUse } from "./browser-use.js";
 import { codeExec } from "./code-exec.js";
 import { memory } from "./memory.js";
+import { fabric } from "./fabric.js";
+import { wiki } from "./wiki.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -70,6 +72,9 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   [codeExec.name]: codeExec,
   // Memory OS: episodic log + semantic recall + user model (Hermes-pattern self-managed memory).
   [memory.name]: memory,
+  // Memory OS Layer 4 (Fabric) + Layer 6 (LLM Wiki) — cross-session consolidation + curated vault.
+  [fabric.name]: fabric,
+  [wiki.name]: wiki,
 };
 
 /**
@@ -104,4 +109,6 @@ export {
   browserUse,
   codeExec,
   memory,
+  fabric,
+  wiki,
 };

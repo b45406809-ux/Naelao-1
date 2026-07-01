@@ -42,6 +42,7 @@ export { TaskDO } from "./do/TaskDO.js";
 export { ProductDO } from "./do/ProductDO.js";
 export { BusinessDO } from "./do/BusinessDO.js";
 export { ToolSandboxDO } from "./do/ToolSandboxDO.js";
+export { ConcurrencyDO } from "./do/ConcurrencyDO.js";
 export { AgentTaskWorkflow } from "./workflows/AgentTaskWorkflow.js";
 
 // ── Env interface ─────────────────────────────────────────────────────────────
@@ -1232,7 +1233,12 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
     await stub.fetch(new Request(`http://agent-do/channels/${channel}/inbound`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ raw, projectId: link?.project_id ?? undefined }),
+      body: JSON.stringify({
+        raw,
+        projectId: link?.project_id ?? undefined,
+        spaceId,
+        tenantId: space.tenant_id,
+      }),
     }));
   } catch (err) {
     console.error(`[channels] inbound forward failed channel=${channel} space=${spaceId}:`, (err as Error).message);

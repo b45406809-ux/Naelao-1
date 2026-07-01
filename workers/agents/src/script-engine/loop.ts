@@ -81,6 +81,14 @@ export type ReasonDecision =
   | { action: "answer"; text: string }
   | { action: "give_up"; reason: string };
 
+/** Real LLM token usage from one decide() call (spec: per-token accounting, not a step-count
+ *  proxy). Read from `Reasoner.lastUsage` immediately after each awaited decide() — safe
+ *  because the loop never overlaps two decide() calls on the same reasoner instance. */
+export interface ReasonerUsage {
+  input_tokens: number;
+  output_tokens: number;
+}
+
 export interface Reasoner {
   /**
    * Decide what to do given the goal, the current observation, find candidates, and the
@@ -95,6 +103,10 @@ export interface Reasoner {
     /** Set on L2/L3 — the script being repaired and why it drifted. */
     repairTarget?: { name: string; failureReason: string };
   }): Promise<ReasonDecision>;
+  /** Token usage from the most recently completed decide() call, when the backing LLM
+   *  client reports it. Optional — reasoners that can't report it (e.g. test fakes) leave
+   *  this undefined, which the loop treats as zero, not an error. */
+  lastUsage?: ReasonerUsage | undefined;
 }
 
 /** Escalation thresholds (spec §11.1 agents.md "Escalation Rules"). Overridable per agent. */
@@ -120,6 +132,14 @@ export interface RunLoopOptions {
   /** Cap on EXECUTE attempts within one pass (prevents runaway). */
   maxSteps?: number;
   /**
+   * Real per-token budget ceiling for this pass (spec: sub-agent budgets must be enforced
+   * against actual reasoner token spend, not a coarse step-count proxy). Checked before each
+   * L3/L4 reasoning step; once reached the loop stops taking new steps and falls through to
+   * the same "exhausted" terminal handling as running out of maxSteps. Absent = unbounded
+   * (the normal builder-workspace default; sub-agents always set this from their own budget).
+   */
+  maxTokens?: number;
+  /**
    * Action names that require human approval before execution (from agents.md
    * `requires_approval_for:` block — parsed by NaelaoAgentDO and passed here).
    * When env.hitlGateway is present and the chosen action name is in this set,
@@ -129,6 +149,23 @@ export interface RunLoopOptions {
   /** Opaque run/session identifiers forwarded to the HITL gateway. */
   runId?: string;
   sessionId?: string;
+  /**
+   * Optional checkpoint callback (spec: incremental sub-agent progress — a parent shouldn't
+   * have to wait for a whole child run to finish to see it's alive and making progress).
+   * Called at OBSERVE, GATE (once the escalation level is known), and before each L3/L4
+   * reasoning step. Never awaited into the critical path failing the run — a throwing
+   * onProgress is swallowed, not propagated.
+   */
+  onProgress?: (checkpoint: { phase: string; detail?: string }) => void | Promise<void>;
+}
+
+async function reportProgress(opts: RunLoopOptions, phase: string, detail?: string): Promise<void> {
+  if (!opts.onProgress) return;
+  try {
+    await opts.onProgress({ phase, ...(detail ? { detail } : {}) });
+  } catch {
+    /* progress reporting is a convenience, never fails the run */
+  }
 }
 
 /**
@@ -153,6 +190,7 @@ export async function runScriptLoop(
   // 1-2. OBSERVE + FINGERPRINT
   const snapshot = await runObserve(env, opts.startupObserve, opts.observeArgs ?? {});
   notes.push(`observed ${snapshot.type} fingerprint=${snapshot.fingerprint.slice(0, 12)}`);
+  await reportProgress(opts, "observe", snapshot.type);
 
   // 3. FIND
   const candidates = await tools.find(opts.goal, { snapshot, limit: 3 });
@@ -174,6 +212,7 @@ export async function runScriptLoop(
     level = "L4";
   }
   notes.push(`gate → ${level}`);
+  await reportProgress(opts, "gate", level);
 
   // 5-7. EXECUTE / VERIFY / DISTILL per level.
   switch (level) {
@@ -199,12 +238,13 @@ export async function runScriptLoop(
         availableOperations: tools.availableOperations(),
         repairTarget: { name: top!.name, failureReason: "fingerprint drift (partial match)" },
       });
+      const usage = usageOf(reasoner);
       if (decision.action === "patch") {
         await tools.update(decision.name, { code: decision.code }, decision.reason);
         const params = paramsFor(top!, opts.goal);
         const allowed = await hitlGate(decision.name, params, gatedActions, env.hitlGateway, runId, sessionId, notes);
         if (!allowed) {
-          return { level, script_name: decision.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes };
+          return withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usage);
         }
         const result = await tools.run(decision.name, params);
         notes.push(`L2 patched ${decision.name}: ${result.ok ? "ok" : "fail"}`);
@@ -216,9 +256,9 @@ export async function runScriptLoop(
             notes.push(`L2 rollback ${decision.name} → v${meta.version - 1}`);
           }
         }
-        return { level, script_name: decision.name, result, distilled_script: decision.name, notes };
+        return withTokenUsage({ level, script_name: decision.name, result, distilled_script: decision.name, notes }, usage);
       }
-      return applyTerminalDecision(level, decision, tools, opts.goal, notes);
+      return withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes), usage);
     }
 
     case "L3":
@@ -226,7 +266,15 @@ export async function runScriptLoop(
       // Full re-derivation (L3) or live first-principles reasoning then distill (L4).
       const maxSteps = opts.maxSteps ?? 6;
       let lastDecision: ReasonDecision | null = null;
+      const usageAcc = { input: 0, output: 0 };
       for (let step = 0; step < maxSteps; step++) {
+        // Real per-token budget ceiling (sub-agent budgets — spec: enforce actual reasoner
+        // spend, not a step-count proxy). Never starts a step it can't afford.
+        if (opts.maxTokens && usageAcc.input + usageAcc.output >= opts.maxTokens) {
+          notes.push(`${level} token budget ${opts.maxTokens} reached before step ${step + 1}`);
+          break;
+        }
+        await reportProgress(opts, "step", `${level} step ${step + 1}/${maxSteps}`);
         const decision = await reasoner.decide({
           goal: opts.goal,
           level,
@@ -237,32 +285,63 @@ export async function runScriptLoop(
             ? { repairTarget: { name: top.name, failureReason: "stale / re-derive" } }
             : {}),
         });
+        const stepUsage = usageOf(reasoner);
+        usageAcc.input += stepUsage.input;
+        usageAcc.output += stepUsage.output;
         lastDecision = decision;
 
         if (decision.action === "run") {
           // HITL gate before execution
           const allowed = await hitlGate(decision.name, decision.params, gatedActions, env.hitlGateway, runId, sessionId, notes);
           if (!allowed) {
-            return { level, script_name: decision.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes };
+            return withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usageAcc);
           }
           const result = await tools.run(decision.name, decision.params);
           notes.push(`${level} run ${decision.name}: ${result.ok ? "ok" : "fail"}`);
           if (!result.ok) continue; // let the reasoner try another step
-          return { level, script_name: decision.name, result, notes };
+          return withTokenUsage({ level, script_name: decision.name, result, notes }, usageAcc);
         }
 
         if (decision.action === "distill" || decision.action === "patch") {
-          return applyTerminalDecision(level, decision, tools, opts.goal, notes);
+          return withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes), usageAcc);
         }
 
         if (decision.action === "answer" || decision.action === "give_up") {
-          return applyTerminalDecision(level, decision, tools, opts.goal, notes);
+          return withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes), usageAcc);
         }
       }
       notes.push(`${level} exhausted ${maxSteps} steps`);
-      return applyTerminalDecision(level, lastDecision ?? { action: "give_up", reason: "no decision" }, tools, opts.goal, notes);
+      return withTokenUsage(
+        await applyTerminalDecision(level, lastDecision ?? { action: "give_up", reason: "no decision" }, tools, opts.goal, notes),
+        usageAcc
+      );
     }
   }
+}
+
+/** Reads the reasoner's most recently reported usage; zeros when unreported. */
+function usageOf(reasoner: Reasoner): { input: number; output: number } {
+  const u = reasoner.lastUsage;
+  return u ? { input: u.input_tokens, output: u.output_tokens } : { input: 0, output: 0 };
+}
+
+/**
+ * Adds real reasoner token spend onto a LoopResult's result, if it carries one. Keeps the
+ * input/output breakdown (not just the combined total) so the host can price it per-model —
+ * input and output tokens are billed at different rates (spec §15 / billing-core pricing).
+ */
+function withTokenUsage(loopResult: LoopResult, usage: { input: number; output: number }): LoopResult {
+  const total = usage.input + usage.output;
+  if (!loopResult.result || total === 0) return loopResult;
+  return {
+    ...loopResult,
+    result: {
+      ...loopResult.result,
+      tokens_used: loopResult.result.tokens_used + total,
+      input_tokens: (loopResult.result.input_tokens ?? 0) + usage.input,
+      output_tokens: (loopResult.result.output_tokens ?? 0) + usage.output,
+    },
+  };
 }
 
 /** Best-effort parameter resolution for a matched script (host can override via reasoner). */

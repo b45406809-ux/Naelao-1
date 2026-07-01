@@ -290,6 +290,31 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_project_rules_project ON project_rules(project_id, enabled, priority DESC);
     `,
   },
+  {
+    version: 13,
+    // Thread hierarchy: a sub-agent run or a channel (WhatsApp/Discord/email) conversation is
+    // NOT a new addressing concept — it's just another thread, linked to its parent via
+    // parent_thread_id like any subthread would be. thread_kind distinguishes the three shapes
+    // so the default thread list can hide the noisy ones (a project spawning 16 sub-agents
+    // shouldn't flood the builder's thread list) while still making them fully browsable —
+    // an admin who wants to audit a project's whole sub-agent tree, or every channel session,
+    // just flips show_sub_threads (or passes include_sub_threads=true) to see them inline,
+    // nested under the thread that spawned/received them.
+    description: "thread hierarchy (parent_thread_id, thread_kind) + show_sub_threads config",
+    up: `
+      ALTER TABLE threads ADD COLUMN parent_thread_id TEXT REFERENCES threads(id);
+      ALTER TABLE threads ADD COLUMN thread_kind TEXT NOT NULL DEFAULT 'primary' CHECK (thread_kind IN ('primary','sub_agent','channel'));
+      ALTER TABLE threads ADD COLUMN channel TEXT;
+      ALTER TABLE threads ADD COLUMN channel_session_id TEXT;
+      CREATE INDEX IF NOT EXISTS idx_threads_parent ON threads(parent_thread_id) WHERE parent_thread_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS idx_threads_kind ON threads(space_id, thread_kind, created_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_channel_session ON threads(channel_session_id) WHERE channel_session_id IS NOT NULL;
+
+      -- Off by default: a builder's thread list stays exactly as it looked before this
+      -- migration until they (or a customer-bot template) explicitly opt in.
+      ALTER TABLE projects ADD COLUMN show_sub_threads INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -534,6 +559,22 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const projectRuleIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/rules\/([^/]+)$/);
       if (method === "DELETE" && projectRuleIdMatch?.[1] && projectRuleIdMatch?.[2]) {
         return this.deleteProjectRule(projectRuleIdMatch[1], projectRuleIdMatch[2]);
+      }
+
+      // ── threads (spec-canonical; sub-agent/channel mirrors are ordinary subthreads) ────
+      // GET /threads?space_id=&project_id=&include_sub_threads=
+      if (method === "GET" && url.pathname === "/threads") {
+        return this.listThreads(url.searchParams);
+      }
+      // POST /threads — also used (idempotently) by NaelaoAgentDO to mirror a sub-agent
+      // spawn or a channel session as a browsable subthread.
+      if (method === "POST" && url.pathname === "/threads") {
+        return this.createThread(request);
+      }
+      // GET /threads/:id
+      const threadIdMatch = url.pathname.match(/^\/threads\/([^/]+)$/);
+      if (method === "GET" && threadIdMatch?.[1]) {
+        return this.getThread(threadIdMatch[1]);
       }
 
       // ── cross-space access grants (spec §49 checkPermission path) ─────────────
@@ -1146,6 +1187,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       channel_config?: Record<string, unknown>;
       name?: string;
       description?: string;
+      show_sub_threads?: boolean;
     }>().catch(() => ({}) as Record<string, never>);
 
     const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE id = ?", projectId);
@@ -1174,6 +1216,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     if (body.description !== undefined) {
       execute(this.ctx.storage.sql as never, "UPDATE projects SET description = ? WHERE id = ?", body.description, projectId);
+    }
+    if (body.show_sub_threads !== undefined) {
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET show_sub_threads = ? WHERE id = ?", body.show_sub_threads ? 1 : 0, projectId);
     }
     return this.getProject(projectId);
   }
@@ -1230,6 +1275,112 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private deleteProjectRule(projectId: string, ruleId: string): Response {
     execute(this.ctx.storage.sql as never, "DELETE FROM project_rules WHERE id = ? AND project_id = ?", ruleId, projectId);
     return Response.json({ deleted: true });
+  }
+
+  // ── Threads (spec-canonical) ─────────────────────────────────────────────────
+  // A sub-agent run or a channel conversation mirrors in here as an ordinary thread —
+  // thread_kind='sub_agent'/'channel' plus parent_thread_id, not a separate concept. Default
+  // listing hides them (thread_kind != 'primary') so a project's builder-facing thread list
+  // isn't flooded by a 16-way sub-agent fan-out or a busy WhatsApp bot; a project can opt in
+  // via show_sub_threads, or any caller can ask for them explicitly via include_sub_threads.
+  private listThreads(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const projectId = params.get("project_id");
+    let showSubThreads = params.get("include_sub_threads") === "true";
+    if (!showSubThreads && projectId) {
+      const project = queryOne<{ show_sub_threads: number }>(
+        this.ctx.storage.sql as never,
+        "SELECT show_sub_threads FROM projects WHERE id = ?",
+        projectId
+      );
+      showSubThreads = project?.show_sub_threads === 1;
+    }
+
+    const clauses = ["space_id = ?"];
+    const args: unknown[] = [spaceId];
+    if (projectId) {
+      clauses.push("project_id = ?");
+      args.push(projectId);
+    }
+    if (!showSubThreads) clauses.push("thread_kind = 'primary'");
+
+    const rows = queryAll(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM threads WHERE ${clauses.join(" AND ")} ORDER BY created_at DESC LIMIT 200`,
+      ...args
+    );
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  private async createThread(request: Request): Promise<Response> {
+    const body = await request.json<{
+      id?: string;
+      space_id: string;
+      user_id?: string;
+      project_id?: string;
+      title?: string;
+      parent_thread_id?: string;
+      thread_kind?: "primary" | "sub_agent" | "channel";
+      channel?: string;
+      channel_session_id?: string;
+    }>().catch(() => ({}) as Record<string, never>);
+    if (!body.space_id) {
+      return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+    }
+    const kind = body.thread_kind ?? "primary";
+    if (!["primary", "sub_agent", "channel"].includes(kind)) {
+      return Response.json({ error_code: "bad_request", message: "thread_kind must be 'primary', 'sub_agent', or 'channel'" }, { status: 400 });
+    }
+    const id = body.id ?? crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    if (body.channel_session_id) {
+      // Idempotent on channel_session_id — a channel's inbound webhook retries safely and
+      // re-mirroring the same session never duplicates its thread. Explicit select-then-
+      // insert/update rather than ON CONFLICT: the conflict target is a partial unique index
+      // (WHERE channel_session_id IS NOT NULL), which isn't a reliably portable upsert target
+      // across SQLite builds — this is unambiguous everywhere.
+      const existing = queryOne<{ id: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT id FROM threads WHERE channel_session_id = ?",
+        body.channel_session_id
+      );
+      if (existing) {
+        execute(this.ctx.storage.sql as never, "UPDATE threads SET updated_at = ? WHERE id = ?", now, existing.id);
+        const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", existing.id);
+        return Response.json(row, { status: 201 });
+      }
+      execute(
+        this.ctx.storage.sql as never,
+        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+        id, body.space_id, body.user_id ?? null, body.project_id ?? null, body.title ?? null,
+        body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id, now, now
+      );
+      const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", id);
+      return Response.json(row, { status: 201 });
+    }
+
+    const existingById = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM threads WHERE id = ?", id);
+    if (existingById) {
+      execute(this.ctx.storage.sql as never, "UPDATE threads SET updated_at = ? WHERE id = ?", now, id);
+    } else {
+      execute(
+        this.ctx.storage.sql as never,
+        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+        id, body.space_id, body.user_id ?? null, body.project_id ?? null, body.title ?? null,
+        body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id ?? null, now, now
+      );
+    }
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", id);
+    return Response.json(row, { status: 201 });
+  }
+
+  private getThread(threadId: string): Response {
+    const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", threadId);
+    if (!row) return Response.json({ error_code: "not_found", message: "Thread not found" }, { status: 404 });
+    return Response.json(row);
   }
 
   // G-AO17: Record a prompt injection attempt for a user and check if they are now rate-limited.

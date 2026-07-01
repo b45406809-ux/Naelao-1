@@ -432,6 +432,9 @@ importers:
       '@naelao/auth':
         specifier: workspace:*
         version: link:../packages/auth
+      '@naelao/billing-core':
+        specifier: workspace:*
+        version: link:../packages/billing-core
       '@naelao/crypto':
         specifier: workspace:*
         version: link:../packages/crypto
@@ -490,6 +493,9 @@ importers:
 
   workers/agents:
     dependencies:
+      '@naelao/billing-core':
+        specifier: workspace:*
+        version: link:../../packages/billing-core
       '@naelao/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto

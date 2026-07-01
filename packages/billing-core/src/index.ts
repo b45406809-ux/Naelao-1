@@ -149,3 +149,26 @@ export function computeTokenCostMicro(
   const costUsd = (inputTokens / 1_000_000) * p.input + (outputTokens / 1_000_000) * p.output;
   return Math.round(costUsd * 1_000_000);
 }
+
+/**
+ * The platform-wide credit unit: 1 credit = $0.01 USD (a cent). Coarse enough to store as a
+ * plain integer everywhere credits are already tracked (`space_credits.balance_credits`,
+ * customer-bot `daily_spend_cap_credits`/`project_spend`), fine-grained enough that a single
+ * Haiku-tier agent turn (a fraction of a cent) still rounds up to a real, non-zero charge
+ * rather than disappearing. Single source of truth — every USD↔credit conversion in the
+ * platform must go through this constant, not a locally re-derived rate.
+ */
+export const CREDITS_PER_USD = 100;
+
+/**
+ * Converts real reasoner token usage into the platform credit unit, using computeTokenCostMicro's
+ * per-model pricing. This is the ONLY place "tokens spent" becomes "credits charged" — replaces
+ * the earlier honest-but-coarse "1 token ≈ 1 credit" proxy used before real usage was tracked
+ * (NaelaoAgentDO's project spend cap, sub-agent budgets). Always rounds UP: a run that cost
+ * anything above $0 must never be recorded as free.
+ */
+export function tokensToCredits(inputTokens: number, outputTokens: number, model: string): number {
+  if (inputTokens <= 0 && outputTokens <= 0) return 0;
+  const costMicro = computeTokenCostMicro(inputTokens, outputTokens, model);
+  return Math.max(1, Math.ceil((costMicro * CREDITS_PER_USD) / 1_000_000));
+}

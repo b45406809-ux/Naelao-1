@@ -266,8 +266,8 @@ promotion has no trigger," fixed), and prunes the unbounded episodic log to a re
 The new **`memory` prebuilt** (`memory.remember` / `memory.recall` / `memory.forget`) is the
 missing Hermes pattern — the agent can explicitly write/query memory mid-task instead of it
 being something only the host silently injects — and ships in every agent by default.
-Layers 1 (Workspace/R2) and 2 (Sessions/FTS5) already existed; Layer 4 (Fabric, cross-session
-LLM-driven consolidation) and Layer 6 (LLM Wiki) remain open (A1.5).
+Layers 1 (Workspace/R2) and 2 (Sessions/FTS5) already existed; Layer 4 (Fabric) and Layer 6
+(LLM Wiki) are now built too — see A1.14.
 
 **Sub-agents — real spawn/receive/terminate.** `NaelaoAgentDO.buildOrchestrationHooks()`
 implements the `OrchestrationHooks` the `sub-agent` prebuilt already called (previously always
@@ -275,8 +275,9 @@ implements the `OrchestrationHooks` the `sub-agent` prebuilt already called (pre
 (`{ tasks: [{goal, budget_tokens?, model?}, ...] }`) and spawns them **concurrently** via
 `Promise.all` against sibling `NaelaoAgentDO` instances (`idFromName(`sub:{spaceId}:{subId}`)`)
 — see A1.12 for why batching is the chosen shape for parallelism here. Each child gets its own
-budget (`budget_tokens` → a coarse step ceiling via `budgetToMaxSteps`, never inherited from
-the parent — fixes "Sub-Agent Token Budget Not Isolated From Parent"); spawning is `await`ed
+budget (`budget_tokens` → real per-token enforcement in the loop itself as of A1.14, backstopped
+by a coarse step ceiling via `budgetToMaxSteps`; never inherited from the parent — fixes
+"Sub-Agent Token Budget Not Isolated From Parent"); spawning is `await`ed
 synchronously inside the parent's own request, so a child can never be orphaned by the parent's
 response completing first (fixes "Sub-agents have no parent-liveness link" structurally, not by
 polling); a fleet-wide batch cap (`MAX_SUB_AGENTS_PER_SPAWN = 16`, deliberately the same order
@@ -331,11 +332,12 @@ equivalent to Claude Code's "one message, multiple Task calls," expressed as the
 op rather than a batch of ops. `MAX_SUB_AGENTS_PER_SPAWN = 16` deliberately mirrors the rough
 scale Claude Code runs at, not picked arbitrarily.
 
-**What this does NOT yet do (open, tracked):** incremental streaming of a sub-agent's progress
-back to the parent before it finishes (spec gap "Sub-Agent Results Block Parent"); a real
-per-token meter for `budget_tokens` (today it's a coarse step-count proxy, documented as such);
-`parentAgent()`/notify-parent-of-progress for long-running children; an account-level (not
-just per-spawn-call) concurrency ceiling across a tenant's *simultaneous* sub-agent trees.
+**What this used to not do, now built in A1.14:** incremental progress streaming back to the
+parent before a child finishes; a real per-token meter for `budget_tokens`; an account-level
+concurrency ceiling across a tenant's *simultaneous* sub-agent trees. Still open: a full
+`parentAgent()`/bidirectional-messaging channel for long-running children (today's progress
+mechanism is one-directional child→parent; `agent.send` to an already-running child remains
+unsupported by design — see A1.11).
 
 ## A1.13 Customer-bot projects (WhatsApp/Discord/email business bots) — BUILT
 
@@ -395,16 +397,105 @@ in one call — the builder only ever fills in a name and (optionally) edits the
 (`POST .../channels/sessions/:id/resume|takeover`) proxy straight to the owning agent DO —
 this is the "all you do is see what the customers are doing" surface the builder described.
 
-**What this does NOT yet do (open, tracked):** a dashboard UI for any of the above (backend +
-API only, consistent with this session's engine-first pattern); mirroring a channel thread
-into SpaceDO's `threads` table so it shows up in the normal thread-browsing UI (today it lives
-in `NaelaoAgentDO.channel_sessions`, reachable via the observability endpoints above but not
-yet a first-class `threads` row); a real per-token→credit conversion for the spend cap (today
-`tokens_used` is the proxy, same honest-approximation pattern as sub-agent budgets in A1.12);
-cross-thread customer identity linking `channel_user_id` to a stable Memory OS `user_id` (the
-scoping exists — A1.11 — the *link* from "this WhatsApp number" to "this returning customer"
-does not yet); rate-limiting a single customer's message *rate* (the spend cap bounds cost,
-not message frequency).
+**What this used to not do, now built in A1.14:** mirroring a channel session into SpaceDO's
+`threads` table; a real per-token→credit conversion for the spend cap; linking
+`channel_user_id` to a stable Memory OS `user_id` so returning customers are recognized across
+visits. **Still open:** a dashboard UI for any of this (backend + API only, consistent with
+this session's engine-first pattern); rate-limiting a single customer's message *rate* (the
+spend cap bounds cost, not message frequency).
+
+## A1.14 Thread hierarchy, real credit conversion, identity linking, Fabric/Wiki, sub-agent
+## progress + account-level concurrency — BUILT
+
+Closes the honest-gap lists left open at the end of A1.12 and A1.13.
+
+**Thread hierarchy — sub-agents and channel sessions are subthreads, not a new concept.**
+SpaceDO's `threads` table (migration v8) existed but had no CRUD at all until this pass — it's
+now real: `POST/GET /threads`, scoped by `space_id`/`project_id`. Migration v13 adds
+`parent_thread_id`, `thread_kind` (`primary`/`sub_agent`/`channel`), and `channel`/
+`channel_session_id` columns. A sub-agent spawn (`NaelaoAgentDO.spawnSubAgentBatch`) and a new
+channel session (`handleChannelInbound`, first sight of a `(channel, channel_user_id)` pair
+only) both call a new `mirrorThread()` helper that POSTs to SpaceDO — best-effort, the DO's own
+`sub_agents`/`channel_sessions` tables remain the source of truth for actual bot logic; this is
+purely so an admin can browse the tree from the ordinary thread list. **Default listing hides
+`thread_kind != 'primary'`** (a 16-way sub-agent fan-out or a busy WhatsApp bot must not flood
+a builder's thread list) — a project opts in via the new `projects.show_sub_threads` column
+(`PATCH /projects/:id { show_sub_threads: true }`), or any caller passes
+`?include_sub_threads=true` to see the full tree, nested via `parent_thread_id`, on demand.
+
+**Real per-token accounting — the actual fix underlying both the budget and credit-conversion
+gaps.** Turned out `tokens_used` was hardcoded to `0` everywhere — `GatewayReasoner.decide()`
+discarded the Anthropic response's `usage` field entirely, so nothing downstream (spend caps,
+sub-agent budgets) had a real number to work with despite being *described* as token-based.
+Fixed at the source: `GatewayReasoner` now captures `usage.input_tokens`/`output_tokens` into a
+`lastUsage` property (the `Reasoner` interface contract); `runScriptLoop` reads it after every
+`reasoner.decide()` call and accumulates input/output separately into the returned
+`ScriptRunResult.tokens_used`/`input_tokens`/`output_tokens`. Two real consumers followed from
+having a real number:
+- **Sub-agent budgets are now enforced against real tokens**, not just a step count.
+  `RunLoopOptions.maxTokens` is checked before every L3/L4 reasoning step (never starts a step
+  it can't afford) and `spawnSubAgentBatch` passes each child's own `budget_tokens` as its
+  `max_tokens` context field. `budgetToMaxSteps`'s coarse step cap remains as a backstop for
+  the rare case a reasoner doesn't report usage at all — documented as secondary, not primary.
+- **Real USD→credit conversion** (`packages/billing-core`): `tokensToCredits(input, output,
+  model)` composes the pre-existing (but previously unused!) `computeTokenCostMicro` per-model
+  pricing table with a new platform-wide constant `CREDITS_PER_USD = 100` (1 credit = $0.01,
+  the single source of truth for every USD↔credit conversion — never re-derive this rate
+  locally). Always rounds up to at least 1 credit for any non-zero cost. Wired into the channel
+  heartbeat's `addProjectSpend` call, replacing the "1 token ≈ 1 credit" proxy.
+
+**Identity linking — `channel_user_id` → Memory OS `user_id`.** The scoping mechanism
+(`ScriptEngineEnv.userId`) already existed; the link was missing. `handleChannelHeartbeat` now
+sets `engineEnv.userId = \`channel:${channel}:${channel_user_id}\`` per message before it
+touches memory or runs the reasoning loop — the same "mutate the shared engineEnv per message"
+pattern already used for `maxTier`. A returning WhatsApp/Discord customer is now the same
+Memory OS user across every visit, not a stranger each time.
+
+**Memory OS Layer 4 (Fabric) + Layer 6 (LLM Wiki) — the last two of the spec's 6 layers.**
+Schema matches the spec's `fabric_store`/`wiki_store` (byte ~148161), scoped by `user_id` like
+every other layer here (the spec's AssistantDO is single-tenant per DO; ours shares one DO's
+SQLite in shared-assistant mode). `MemoryStore` gained `recordFabric`/`recallFabric`/
+`briefFabric` (Fabric — cross-session summary consolidation, `fabric_recall`/`fabric_brief`
+tools per spec) and `upsertWikiConcept`/`lookupWikiConcept`/`searchWiki` (Wiki — auto-curated
+concept vault). Exposed to the agent as two new self-managed prebuilts, **`fabric`** and
+**`wiki`** (same Hermes pattern as `memory`), in every default agent profile. `NaelaoAgentDO`
+also auto-records a Fabric entry after every successful `/script/run` — reusing the run's own
+goal + output + trace notes as the "session extraction" rather than firing a second LLM call,
+an honest cost-conscious approximation of the spec's "LLM-driven session extraction post-run."
+Fabric relevance scoring is a term-overlap heuristic (not embedding-based — Fabric is DO SQLite
++ R2 per spec, not a Vectorize-backed layer like Layer 5), filtered at the spec's 0.70 floor.
+
+**Incremental sub-agent progress streaming.** The parent still spawns and awaits children
+synchronously (the parent-liveness guarantee from A1.11 is unchanged — flipping to async
+fan-out would reintroduce the exact orphaning risk that guarantee closes). What's new: a child
+can report progress back to its *specific parent DO instance* mid-run via a cross-DO callback.
+`runScriptLoop` gained an `onProgress` checkpoint callback (OBSERVE, GATE, each L3/L4 step;
+swallows its own errors — a progress sink going down never fails the run). A spawned child's
+context now carries `parent_do_id` (`this.ctx.id.toString()`, resolved back via
+`namespace.idFromString()` — works regardless of the parent's own addressing scheme) alongside
+`sub_agent_id`; `handleScriptRun` wires `onProgress` to `POST /sub-agents/:id/progress` on the
+parent, which updates that row's new `progress_note` column. Because Durable Objects serve
+concurrent `fetch()` calls, an admin/dashboard can `GET /sub-agents?parent_run_id=` on the
+parent DO **while its own spawning request is still in flight** and see live status — a
+poll-based "stream" without needing a WebSocket/SSE channel, the same idiom this build already
+uses for channel-session observability.
+
+**Account-level concurrency ceiling — `ConcurrencyDO` (spec §28, byte ~551944).** A new,
+general-purpose Durable Object (`workers/agents/src/do/ConcurrencyDO.ts`, bound
+`CONCURRENCY_DO`) implementing the spec's acquire/release slot contract, wired specifically to
+gate **simultaneous sub-agent spawn trees** per space (`MAX_SUB_AGENTS_PER_SPAWN = 16` already
+bounds fan-out *within* one `agent.spawn` call; this bounds how many separate spawn trees can
+run *at once*, `MAX_CONCURRENT_SUB_AGENT_TREES = 3`, spec's own `maxConcurrentRuns` default).
+Two spec gaps closed in the same build rather than left as known issues:
+- **Deadlock scenario** (a holder crashes/evicts before releasing → a leaked slot forever):
+  every acquired slot carries its own `expires_at`; a DO Alarm sweeps expired slots every 5
+  minutes, and `acquire()` also sweeps inline for its own key so staleness never outlives one
+  acquire call even between alarm ticks.
+- **Check-then-insert race** (two concurrent callers both observe "under the limit" and both
+  succeed): `acquire()`'s `COUNT` and `INSERT` run with no `await` between them — atomic by
+  construction under the DO's single-threaded execution model, no separate lock needed.
+Fails open when unbound or unreachable (a down `ConcurrencyDO` must not wedge every agent run)
+— same honest-degradation posture as every other optional binding in this build.
 
 ## A1.5 Open follow-ups (tracked, not yet built)
 

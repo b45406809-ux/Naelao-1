@@ -54,6 +54,8 @@ ${BASE_AGENTS_MD}`,
         "browser-use",
         "code-exec",
         "memory",
+        "fabric",
+        "wiki",
       ],
       agent_scripts: "auto",
       startup_observe: "observe_filesystem",
@@ -125,6 +127,8 @@ export function launchpadAgentToProfile(def: LaunchpadAgentDefinition): { agentI
   }
   prebuilt.add("notifications"); // owner/customer notifications + HITL surface
   prebuilt.add("memory"); // episodic/semantic Memory OS — every agent self-manages memory
+  prebuilt.add("fabric"); // Layer 4 — cross-session consolidation
+  prebuilt.add("wiki"); // Layer 6 — auto-curated concept vault
 
   const triggerNote =
     def.trigger.type === "schedule"

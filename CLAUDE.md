@@ -91,6 +91,23 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     channel catalogue (Meta Cloud API, `X-Hub-Signature-256`). No-code project templates
     (`whatsapp-support-bot`, `discord-community-bot`, `email-support-bot`) seed STOP/opt-out
     + human-takeover by default. Full detail: appendix §A1.13.
+12. **Thread hierarchy, real token accounting, Memory OS Fabric/Wiki, sub-agent progress +
+    concurrency ceiling are now BUILT.** Sub-agent spawns and channel sessions mirror into
+    SpaceDO's `threads` table as ordinary subthreads (`thread_kind` + `parent_thread_id`,
+    hidden from the default list unless `projects.show_sub_threads` or
+    `?include_sub_threads=true`) — SpaceDO's `threads` table existed since migration v8 but
+    had **no CRUD at all** until this pass. `tokens_used` was hardcoded to `0` everywhere
+    (`GatewayReasoner` discarded the LLM response's real `usage`) — now captured for real and
+    threaded through the loop, which is what makes sub-agent token budgets (`maxTokens`,
+    enforced per L3/L4 step) and `tokensToCredits()` (real per-model USD→credit conversion,
+    `packages/billing-core`, `CREDITS_PER_USD=100`) actually real instead of proxies.
+    `channel_user_id` now links to a stable Memory OS `user_id` so returning channel customers
+    are recognized. Memory OS Layers 4 (Fabric, cross-session consolidation) and 6 (LLM Wiki,
+    auto-curated concept vault) are built — the full 6-layer pipeline is now complete. A child
+    sub-agent can report progress back to its parent DO mid-run (poll via
+    `GET /sub-agents?parent_run_id=`, no WebSocket needed). `ConcurrencyDO` (spec §28) caps
+    simultaneous sub-agent spawn trees per space, with the spec's own deadlock (TTL + alarm
+    sweep) and check-then-insert-race gaps closed. Full detail: appendix §A1.14.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

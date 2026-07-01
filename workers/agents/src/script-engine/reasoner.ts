@@ -7,7 +7,7 @@
  * is what makes token spend scale with novelty (spec §1).
  */
 
-import type { Reasoner, ReasonDecision } from "./loop.js";
+import type { Reasoner, ReasonDecision, ReasonerUsage } from "./loop.js";
 import type { Embedder } from "./types.js";
 import {
   buildPlatformLLMConfig,
@@ -42,9 +42,14 @@ function extractJson(text: string): unknown {
 
 /** A Reasoner backed by Anthropic via the AI Gateway. */
 export class GatewayReasoner implements Reasoner {
+  /** Usage from the most recently completed decide() call (Reasoner.lastUsage contract) —
+   *  real per-token accounting read by the loop's budget/credit tracking, not a proxy. */
+  lastUsage: ReasonerUsage | undefined;
+
   constructor(private readonly deps: ReasonerDeps) {}
 
   async decide(input: Parameters<Reasoner["decide"]>[0]): Promise<ReasonDecision> {
+    this.lastUsage = undefined;
     const cfg = buildPlatformLLMConfig(this.deps.apiKey, this.deps.gateway, {
       ...this.deps.ctx,
       skipCache: true,
@@ -77,7 +82,13 @@ export class GatewayReasoner implements Reasoner {
     if (!resp.ok) {
       return { action: "give_up", reason: `reasoner LLM error ${resp.status}` };
     }
-    const data = (await resp.json()) as { content?: Array<{ type: string; text?: string }> };
+    const data = (await resp.json()) as {
+      content?: Array<{ type: string; text?: string }>;
+      usage?: { input_tokens?: number; output_tokens?: number };
+    };
+    if (data.usage) {
+      this.lastUsage = { input_tokens: data.usage.input_tokens ?? 0, output_tokens: data.usage.output_tokens ?? 0 };
+    }
     const text = (data.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("");
     try {
       return extractJson(text) as ReasonDecision;

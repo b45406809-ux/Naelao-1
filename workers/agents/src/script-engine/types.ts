@@ -124,6 +124,11 @@ export interface ScriptRunResult {
   duration_ms: number;
   /** Reasoning-model tokens consumed by this run (0 for pure script execution). */
   tokens_used: number;
+  /** Directional breakdown of tokens_used, when the reasoner reported it — lets the host
+   *  compute a real per-model USD/credit cost (input and output are priced differently).
+   *  Absent for pure script execution, where tokens_used is already 0. */
+  input_tokens?: number;
+  output_tokens?: number;
 }
 
 /** A candidate returned by script.find. */
@@ -215,6 +220,25 @@ export interface MemoryRecallResult {
   user_id?: string;
 }
 
+/** A Layer 4 (Fabric) entry — a cross-session consolidated summary (spec: Icarus framework). */
+export interface FabricEntry {
+  id: string;
+  sessionId: string;
+  summary: string;
+  keyInsights: string[];
+  /** Relevance to a recallFabric() query in [0,1]; 0 for briefFabric() (no query, just recency). */
+  score: number;
+  createdAt: number;
+}
+
+/** A Layer 6 (LLM Wiki) article — an auto-curated concept/entity definition. */
+export interface WikiArticle {
+  concept: string;
+  definition: string;
+  relationships: string[];
+  updatedAt: number;
+}
+
 export interface MemoryStore {
   /**
    * Layer 3: remember a durable fact (entity/relation/attribute triple) OR Layer 5-bound
@@ -233,6 +257,26 @@ export interface MemoryStore {
   /** Surgical recall (spec "Pre-Flight Check"): structured facts + episodic + semantic, merged. */
   recall(query: { userId?: string; text: string; limit?: number }): Promise<MemoryRecallResult[]>;
   forget(id: string): Promise<void>;
+
+  /**
+   * Layer 4 (Fabric) — cross-session context consolidator. Records a post-run summary + key
+   * insights (spec: "Runs LLM-driven session extraction post-run"); the host calls this once
+   * per completed run, not per message — see NaelaoAgentDO's handleScriptRun.
+   */
+  recordFabric(entry: { userId?: string; sessionId: string; summary: string; keyInsights?: string[] }): Promise<{ id: string }>;
+  /** spec's `fabric_recall` tool — matched + score-filtered (>0.70 floor) against past summaries. */
+  recallFabric(query: { userId?: string; text: string; limit?: number }): Promise<FabricEntry[]>;
+  /** spec's `fabric_brief` tool — the N most recent cross-session summaries, no query needed. */
+  briefFabric(userId: string | undefined, limit?: number): Promise<FabricEntry[]>;
+
+  /**
+   * Layer 6 (LLM Wiki) — auto-curated concept/entity vault (spec: `wiki-continuous-ingest`).
+   * Upsert is keyed on (userId, concept): re-stating a concept refreshes its definition rather
+   * than duplicating it, the same merge behavior as Layer 3 structured facts.
+   */
+  upsertWikiConcept(entry: { userId?: string; concept: string; definition: string; relationships?: string[] }): Promise<{ concept: string }>;
+  lookupWikiConcept(userId: string | undefined, concept: string): Promise<WikiArticle | null>;
+  searchWiki(query: { userId?: string; text: string; limit?: number }): Promise<WikiArticle[]>;
 }
 
 /**

@@ -27,6 +27,12 @@ class_name = "BusinessDO"
 name = "TOOL_SANDBOX"
 class_name = "ToolSandboxDO"
 
+# Account-level concurrency ceiling (spec §28 "ConcurrencyDO") — gates simultaneous sub-agent
+# spawn trees per (spaceId, holder). See buildOrchestrationHooks' spawnSubAgent in NaelaoAgentDO.
+[[durable_objects.bindings]]
+name = "CONCURRENCY_DO"
+class_name = "ConcurrencyDO"
+
 [[migrations]]
 tag = "v1"
 new_classes = ["NaelaoAgentDO"]
@@ -46,6 +52,10 @@ new_classes = ["ProductDO", "BusinessDO"]
 [[migrations]]
 tag = "v5"
 new_classes = ["ToolSandboxDO"]
+
+[[migrations]]
+tag = "v6"
+new_classes = ["ConcurrencyDO"]
 
 [[r2_buckets]]
 binding = "BUSINESS_R2"

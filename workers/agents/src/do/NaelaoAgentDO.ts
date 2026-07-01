@@ -12,6 +12,7 @@ import type { LlmTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
+import { tokensToCredits } from "@naelao/billing-core";
 import {
   ScriptToolSurface,
   runScriptLoop,
@@ -30,6 +31,7 @@ import {
   budgetToMaxSteps,
   MAX_SUB_AGENTS_PER_SPAWN,
   DEFAULT_SUB_AGENT_BUDGET_TOKENS,
+  MAX_CONCURRENT_SUB_AGENT_TREES,
 } from "../script-engine/sub-agent-output.js";
 
 // ── G-AZ01: Agent FSM states and valid transitions ───────────────────────────
@@ -802,6 +804,9 @@ export interface AgentDOEnv {
   /** Self-binding — lets a running agent spawn sibling/child NaelaoAgentDO instances as
    *  sub-agents (script-engine/prebuilt/sub-agent.ts's agent.spawn/receive/terminate ops). */
   NAELAO_AGENT_DO?: DurableObjectNamespace<NaelaoAgentDO>;
+  /** Account-level concurrency ceiling (spec §28 ConcurrencyDO) — caps how many sub-agent
+   *  spawn trees can be running at once per space, on top of the existing per-spawn 16 cap. */
+  CONCURRENCY_DO?: DurableObjectNamespace;
 }
 
 export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
@@ -990,6 +995,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       )
     `);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_sub_agents_parent ON sub_agents(parent_run_id)`);
+    // Incremental progress (spec: a parent shouldn't have to wait for a whole child run to
+    // finish to see it's alive). Written by the CHILD via a cross-DO callback while `status`
+    // is still 'running' — pollable by an admin/dashboard via GET /sub-agents?parent_run_id=
+    // WHILE the parent's own spawning request is still in flight (DOs serve concurrent fetch()
+    // calls), without needing a WebSocket/SSE channel.
+    try { this.ctx.storage.sql.exec(`ALTER TABLE sub_agents ADD COLUMN progress_note TEXT`); } catch { /* exists */ }
 
     this.initialized = true;
   }
@@ -1106,6 +1117,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (method === "POST" && takeoverMatch?.[1]) {
         this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover = 1 WHERE id = ?`, takeoverMatch[1]);
         return Response.json({ human_takeover: true });
+      }
+
+      // POST /sub-agents/:id/progress — cross-DO callback a child uses to report incremental
+      // progress back to its parent (spec: sub-agent progress streaming). GET lists a parent
+      // run's children with their live status/progress_note — the poll-based "stream".
+      const subAgentProgressMatch = url.pathname.match(/^\/sub-agents\/([^/]+)\/progress$/);
+      if (method === "POST" && subAgentProgressMatch?.[1]) {
+        const body = await request.json<{ note?: string }>().catch(() => ({}) as { note?: string });
+        return this.handleSubAgentProgress(subAgentProgressMatch[1], body.note ?? "");
+      }
+      if (method === "GET" && url.pathname === "/sub-agents") {
+        return this.handleListSubAgents(url.searchParams.get("parent_run_id") ?? "");
       }
 
       // GET /runs/:runId
@@ -1302,7 +1325,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     agentId: string,
     tenantId: string,
     apiKey: string,
-    parentRunId: string
+    parentRunId: string,
+    parentThreadId?: string
   ): import("../script-engine/types.js").OrchestrationHooks {
     if (!this.env.NAELAO_AGENT_DO) return {};
     const agentDO = this.env.NAELAO_AGENT_DO;
@@ -1314,69 +1338,27 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           : [config];
         const tasks = rawTasks.slice(0, MAX_SUB_AGENTS_PER_SPAWN);
 
-        const spawned = await Promise.all(
-          tasks.map(async (t) => {
-            const subId = crypto.randomUUID();
-            const goal = String(t["goal"] ?? "");
-            const budgetTokens = typeof t["budget_tokens"] === "number" ? (t["budget_tokens"] as number) : DEFAULT_SUB_AGENT_BUDGET_TOKENS;
-            const maxSteps = budgetToMaxSteps(budgetTokens);
-            const now = Date.now();
-            this.ctx.storage.sql.exec(
-              `INSERT INTO sub_agents (id, parent_run_id, goal, status, budget_tokens, tokens_used, created_at, updated_at) VALUES (?, ?, ?, 'running', ?, 0, ?, ?)`,
-              subId, parentRunId, goal, budgetTokens, now, now
-            );
-            if (!goal) {
-              this.ctx.storage.sql.exec(`UPDATE sub_agents SET status='failed', error=?, updated_at=? WHERE id=?`, "missing goal", Date.now(), subId);
-              return { id: subId, ok: false, error: "missing goal" };
-            }
-            try {
-              const doId = agentDO.idFromName(`sub:${spaceId}:${subId}`);
-              const stub = agentDO.get(doId);
-              const resp = await stub.fetch(new Request("http://agent-do/script/run", {
-                method: "POST",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({
-                  goal,
-                  spaceId,
-                  agentId,
-                  tenantId,
-                  sessionId: `subagent-${subId}`,
-                  apiKey,
-                  ...(typeof t["model"] === "string" ? { model: t["model"] } : {}),
-                  context: { parent_run_id: parentRunId, sub_agent_id: subId, max_steps: maxSteps },
-                }),
-              }));
-              const body = await resp.json<{ result?: { ok: boolean; output?: unknown; tokens_used?: number; error?: string } }>().catch(() => ({}) as Record<string, never>);
-              const tokensUsed = body.result?.tokens_used ?? 0;
-              const ok = resp.ok && !!body.result?.ok;
-              const output = ok ? sanitizeSubAgentOutput(body.result?.output) : undefined;
-              this.ctx.storage.sql.exec(
-                `UPDATE sub_agents SET status = ?, tokens_used = ?, result = ?, error = ?, updated_at = ? WHERE id = ?`,
-                ok ? "done" : "failed", tokensUsed, ok ? JSON.stringify(output) : null, ok ? null : (body.result?.error ?? `HTTP ${resp.status}`), Date.now(), subId
-              );
-              return { id: subId, ok, ...(ok ? { output } : { error: body.result?.error ?? `HTTP ${resp.status}` }) };
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err);
-              this.ctx.storage.sql.exec(`UPDATE sub_agents SET status='failed', error=?, updated_at=? WHERE id=?`, msg, Date.now(), subId);
-              return { id: subId, ok: false, error: msg };
-            }
-          })
-        );
-        return { id: spawned.map((s) => s.id).join(","), results: spawned } as unknown as { id: string };
-      },
+        // Account-level concurrency ceiling (spec §28 ConcurrencyDO) — one slot per SPAWN
+        // TREE (this whole batched agent.spawn call), not per child; MAX_SUB_AGENTS_PER_SPAWN
+        // already bounds fan-out within a tree. Absent CONCURRENCY_DO = ungated (honest
+        // degradation, matches every other optional binding in this build).
+        const concurrencyKey = `sub-agent-tree:${spaceId}`;
+        const acquired = await this.acquireConcurrencySlot(concurrencyKey, parentRunId, MAX_CONCURRENT_SUB_AGENT_TREES);
+        if (!acquired.granted) {
+          return {
+            id: "",
+            results: [{ ok: false, error: `concurrency limit reached: ${acquired.active}/${acquired.limit ?? MAX_CONCURRENT_SUB_AGENT_TREES} sub-agent trees already running for this space` }],
+          } as unknown as { id: string };
+        }
 
-      receiveFromSubAgent: async (id) => {
-        const rows = this.ctx.storage.sql.exec(`SELECT * FROM sub_agents WHERE id = ?`, id).toArray() as Array<{
-          id: string; status: string; result: string | null; error: string | null; tokens_used: number;
-        }>;
-        const row = rows[0];
-        if (!row) return { ok: false, error: "unknown sub-agent id" };
-        return { ok: row.status === "done", status: row.status, output: row.result ? safeJsonParse(row.result) : undefined, error: row.error ?? undefined, tokens_used: row.tokens_used };
+        try {
+          return await this.spawnSubAgentBatch(tasks, spaceId, agentId, tenantId, apiKey, parentRunId, parentThreadId, agentDO);
+        } finally {
+          await this.releaseConcurrencySlot(concurrencyKey, parentRunId);
+        }
       },
-
-      terminateSubAgent: async (id) => {
-        this.ctx.storage.sql.exec(`UPDATE sub_agents SET status = 'terminated', updated_at = ? WHERE id = ? AND status = 'running'`, Date.now(), id);
-      },
+      receiveFromSubAgent: this.receiveFromSubAgentImpl.bind(this),
+      terminateSubAgent: this.terminateSubAgentImpl.bind(this),
 
       sendToSubAgent: async (_id, _task) => {
         // Sub-agents in this build run to completion synchronously within agent.spawn — there
@@ -1385,6 +1367,179 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return { ok: false, reason: "sub-agents run synchronously; spawn another batch instead of sending to a running one" };
       },
     };
+  }
+
+  private async acquireConcurrencySlot(key: string, holderId: string, limit: number): Promise<{ granted: boolean; active: number; limit?: number }> {
+    if (!this.env.CONCURRENCY_DO) return { granted: true, active: 0 }; // ungated when unbound
+    try {
+      const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(key));
+      const resp = await stub.fetch(new Request("http://concurrency-do/acquire", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key, holder_id: holderId, limit }),
+      }));
+      return await resp.json<{ granted: boolean; active: number; limit?: number }>();
+    } catch {
+      return { granted: true, active: 0 }; // fail open — a down ConcurrencyDO must not wedge every agent run
+    }
+  }
+
+  private async releaseConcurrencySlot(key: string, holderId: string): Promise<void> {
+    if (!this.env.CONCURRENCY_DO) return;
+    try {
+      const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(key));
+      await stub.fetch(new Request("http://concurrency-do/release", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key, holder_id: holderId }),
+      }));
+    } catch {
+      /* best-effort — the slot's own TTL reclaims it if release never lands */
+    }
+  }
+
+  private async spawnSubAgentBatch(
+    tasks: Array<Record<string, unknown>>,
+    spaceId: string,
+    agentId: string,
+    tenantId: string,
+    apiKey: string,
+    parentRunId: string,
+    parentThreadId: string | undefined,
+    agentDO: DurableObjectNamespace<NaelaoAgentDO>
+  ): Promise<{ id: string }> {
+    const spawned = await Promise.all(
+      tasks.map(async (t) => {
+        const subId = crypto.randomUUID();
+        const goal = String(t["goal"] ?? "");
+        const budgetTokens = typeof t["budget_tokens"] === "number" ? (t["budget_tokens"] as number) : DEFAULT_SUB_AGENT_BUDGET_TOKENS;
+        const maxSteps = budgetToMaxSteps(budgetTokens);
+        const now = Date.now();
+        this.ctx.storage.sql.exec(
+          `INSERT INTO sub_agents (id, parent_run_id, goal, status, budget_tokens, tokens_used, created_at, updated_at) VALUES (?, ?, ?, 'running', ?, 0, ?, ?)`,
+          subId, parentRunId, goal, budgetTokens, now, now
+        );
+        // Best-effort subthread mirror (spec: a sub-agent run is just a thread, linked to
+        // its parent — hidden from the default list unless the project opts in). Awaited
+        // (not fire-and-forget) so it can't be abandoned mid-flight once this task's own
+        // promise resolves and the DO's request context is free to tear down.
+        await this.mirrorThread(spaceId, tenantId, {
+          id: subId,
+          thread_kind: "sub_agent",
+          ...(parentThreadId ? { parent_thread_id: parentThreadId } : {}),
+          title: goal.slice(0, 120),
+        });
+        if (!goal) {
+          this.ctx.storage.sql.exec(`UPDATE sub_agents SET status='failed', error=?, updated_at=? WHERE id=?`, "missing goal", Date.now(), subId);
+          return { id: subId, ok: false, error: "missing goal" };
+        }
+        try {
+          const doId = agentDO.idFromName(`sub:${spaceId}:${subId}`);
+          const stub = agentDO.get(doId);
+          const resp = await stub.fetch(new Request("http://agent-do/script/run", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              goal,
+              spaceId,
+              agentId,
+              tenantId,
+              sessionId: `subagent-${subId}`,
+              apiKey,
+              ...(typeof t["model"] === "string" ? { model: t["model"] } : {}),
+              context: {
+                parent_run_id: parentRunId,
+                sub_agent_id: subId,
+                max_steps: maxSteps,
+                max_tokens: budgetTokens,
+                // Lets the child report incremental progress back to THIS DO instance
+                // mid-run — see buildSubAgentProgressReporter / handleScriptRun's onProgress wiring.
+                parent_do_id: this.ctx.id.toString(),
+              },
+            }),
+          }));
+          const body = await resp.json<{ result?: { ok: boolean; output?: unknown; tokens_used?: number; error?: string } }>().catch(() => ({}) as Record<string, never>);
+          const tokensUsed = body.result?.tokens_used ?? 0;
+          const ok = resp.ok && !!body.result?.ok;
+          const output = ok ? sanitizeSubAgentOutput(body.result?.output) : undefined;
+          this.ctx.storage.sql.exec(
+            `UPDATE sub_agents SET status = ?, tokens_used = ?, result = ?, error = ?, updated_at = ? WHERE id = ?`,
+            ok ? "done" : "failed", tokensUsed, ok ? JSON.stringify(output) : null, ok ? null : (body.result?.error ?? `HTTP ${resp.status}`), Date.now(), subId
+          );
+          return { id: subId, ok, ...(ok ? { output } : { error: body.result?.error ?? `HTTP ${resp.status}` }) };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.ctx.storage.sql.exec(`UPDATE sub_agents SET status='failed', error=?, updated_at=? WHERE id=?`, msg, Date.now(), subId);
+          return { id: subId, ok: false, error: msg };
+        }
+      })
+    );
+    return { id: spawned.map((s) => s.id).join(","), results: spawned } as unknown as { id: string };
+  }
+
+  private receiveFromSubAgentImpl(id: string): Promise<unknown> {
+    const rows = this.ctx.storage.sql.exec(`SELECT * FROM sub_agents WHERE id = ?`, id).toArray() as Array<{
+      id: string; status: string; result: string | null; error: string | null; tokens_used: number; progress_note: string | null;
+    }>;
+    const row = rows[0];
+    if (!row) return Promise.resolve({ ok: false, error: "unknown sub-agent id" });
+    return Promise.resolve({
+      ok: row.status === "done",
+      status: row.status,
+      output: row.result ? safeJsonParse(row.result) : undefined,
+      error: row.error ?? undefined,
+      tokens_used: row.tokens_used,
+      progress_note: row.progress_note ?? undefined,
+    });
+  }
+
+  private terminateSubAgentImpl(id: string): Promise<void> {
+    this.ctx.storage.sql.exec(`UPDATE sub_agents SET status = 'terminated', updated_at = ? WHERE id = ? AND status = 'running'`, Date.now(), id);
+    return Promise.resolve();
+  }
+
+  /**
+   * When this run is a sub-agent (its context carries parent_do_id + sub_agent_id — set by
+   * the parent's spawnSubAgent hook), builds an onProgress callback that calls back to the
+   * PARENT DO instance so its sub_agents row is updated live, mid-run — see loop.ts's
+   * onProgress checkpoints and handleSubAgentProgress below.
+   */
+  private buildSubAgentProgressReporter(context: Record<string, unknown> | undefined): ((checkpoint: { phase: string; detail?: string }) => Promise<void>) | undefined {
+    const parentDoId = context?.["parent_do_id"];
+    const subAgentId = context?.["sub_agent_id"];
+    if (typeof parentDoId !== "string" || typeof subAgentId !== "string" || !this.env.NAELAO_AGENT_DO) return undefined;
+    const agentDO = this.env.NAELAO_AGENT_DO;
+    return async (checkpoint) => {
+      try {
+        const parentStub = agentDO.get(agentDO.idFromString(parentDoId));
+        await parentStub.fetch(new Request(`http://agent-do/sub-agents/${encodeURIComponent(subAgentId)}/progress`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ note: checkpoint.detail ? `${checkpoint.phase}: ${checkpoint.detail}` : checkpoint.phase }),
+        }));
+      } catch {
+        /* best-effort — progress reporting never blocks the child's own run */
+      }
+    };
+  }
+
+  private handleSubAgentProgress(id: string, note: string): Response {
+    this.ctx.storage.sql.exec(
+      `UPDATE sub_agents SET progress_note = ?, updated_at = ? WHERE id = ? AND status = 'running'`,
+      note, Date.now(), id
+    );
+    return Response.json({ ok: true });
+  }
+
+  private handleListSubAgents(parentRunId: string): Response {
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT id, parent_run_id, goal, status, budget_tokens, tokens_used, progress_note, created_at, updated_at
+         FROM sub_agents WHERE parent_run_id = ? ORDER BY created_at ASC`,
+        parentRunId
+      )
+      .toArray();
+    return Response.json({ data: rows, count: rows.length });
   }
 
   private async handleScriptRun(request: Request): Promise<Response> {
@@ -1417,7 +1572,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!engineEnv) {
       return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     }
-    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId);
+    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId);
 
     // Load the agent's 4-file config; without it the agent is not provisioned.
     const config = await loadAgentConfig(engineEnv.scriptsBucket, spaceId, agentId);
@@ -1441,6 +1596,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     try {
       const maxStepsFromContext = body.context?.["max_steps"];
+      const maxTokensFromContext = body.context?.["max_tokens"];
+      const onProgress = this.buildSubAgentProgressReporter(body.context);
       const result = await runScriptLoop(engineEnv, tools, reasoner, config.scripts.prebuilt, {
         goal: body.goal,
         startupObserve: config.scripts.startup_observe,
@@ -1448,7 +1605,27 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         runId,
         sessionId,
         ...(typeof maxStepsFromContext === "number" ? { maxSteps: maxStepsFromContext } : {}),
+        ...(typeof maxTokensFromContext === "number" ? { maxTokens: maxTokensFromContext } : {}),
+        ...(onProgress ? { onProgress } : {}),
       });
+
+      // Layer 4 (Fabric) auto-consolidation (spec: "runs LLM-driven session extraction
+      // post-run"). Reuses the trace this run already produced instead of a second LLM call —
+      // an honest, cost-conscious approximation of the spec's Icarus-framework extraction.
+      // Best-effort: never fails the run itself.
+      if (engineEnv.memoryStore && result.result?.ok && typeof result.result.output === "string" && result.result.output.trim()) {
+        try {
+          await engineEnv.memoryStore.recordFabric({
+            ...(userId ? { userId } : {}),
+            sessionId,
+            summary: `Goal: ${body.goal.slice(0, 300)}\nOutcome: ${result.result.output.slice(0, 500)}`,
+            keyInsights: result.notes.slice(-5),
+          });
+        } catch {
+          /* best-effort — Fabric is a memory convenience, not run-critical */
+        }
+      }
+
       return Response.json(result);
     } catch (err) {
       return Response.json(
@@ -1486,7 +1663,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const adapter = getAdapter(type);
     if (!adapter) return Response.json({ error: "unknown_channel" }, { status: 400 });
 
-    type InboundBody = { raw?: Record<string, unknown>; projectId?: string };
+    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; spaceId?: string; tenantId?: string };
     const body = await request.json<InboundBody>().catch(() => ({}) as InboundBody);
     const norm: NormalizedInbound | null = adapter.normalizeInbound(body.raw ?? {});
     if (!norm) return Response.json({ ignored: true }); // bot echo / not actionable
@@ -1495,6 +1672,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       .exec(`SELECT id FROM channel_sessions WHERE channel = ? AND channel_user_id = ?`, norm.channel, norm.channel_user_id)
       .toArray() as Array<{ id: string }>;
     let sessionId: string;
+    const isNewSession = !rows[0];
     if (rows[0]) {
       sessionId = rows[0].id;
       this.ctx.storage.sql.exec(
@@ -1507,6 +1685,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         `INSERT INTO channel_sessions (id, channel, channel_user_id, project_id, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)`,
         sessionId, norm.channel, norm.channel_user_id, body.projectId ?? null, Date.now(), Date.now()
       );
+    }
+
+    // Mirror as a subthread (spec: a channel conversation is just a thread, not a new
+    // addressing concept) — only on first sight of this (channel, channel_user_id) pair;
+    // createThread is idempotent on channel_session_id anyway, but this avoids a SpaceDO
+    // round trip on every single inbound message from an already-known customer.
+    if (isNewSession && body.spaceId && body.tenantId) {
+      await this.mirrorThread(body.spaceId, body.tenantId, {
+        id: crypto.randomUUID(),
+        thread_kind: "channel",
+        channel: norm.channel,
+        channel_session_id: sessionId,
+        title: `${norm.channel}: ${norm.channel_user_id}`,
+        ...(body.projectId ? { project_id: body.projectId } : {}),
+      });
     }
 
     // Dedupe on (session, direction, external_id) — re-delivered webhook events no-op.
@@ -1550,9 +1743,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // reply; if the model isn't confident it returns "ESCALATE" and the message stays queued
   // for a human (honest escalation beats a confident wrong answer, per A1.3).
   /** Fetch a customer-bot project's config (execution ceiling, spend cap) from SpaceDO. */
-  private async fetchProjectConfig(spaceId: string, projectId: string): Promise<{ execution_ceiling: number; daily_spend_cap_credits: number } | null> {
+  private async fetchProjectConfig(spaceId: string, tenantId: string, projectId: string): Promise<{ execution_ceiling: number; daily_spend_cap_credits: number } | null> {
     try {
-      const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}`));
+      const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}`, {
+        headers: { "x-naelao-tenant-id": tenantId },
+      }));
       if (!resp.ok) return null;
       return await resp.json<{ execution_ceiling: number; daily_spend_cap_credits: number }>();
     } catch {
@@ -1561,14 +1756,48 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   /** Fetch a customer-bot project's no-code rules (highest priority first) from SpaceDO. */
-  private async fetchProjectRules(spaceId: string, projectId: string): Promise<ProjectRule[]> {
+  private async fetchProjectRules(spaceId: string, tenantId: string, projectId: string): Promise<ProjectRule[]> {
     try {
-      const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}/rules`));
+      const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}/rules`, {
+        headers: { "x-naelao-tenant-id": tenantId },
+      }));
       if (!resp.ok) return [];
       const { data } = await resp.json<{ data: ProjectRule[] }>();
       return data.filter((r) => r.enabled !== 0);
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * Mirror a sub-agent spawn or a channel session into SpaceDO's threads table as an ordinary
+   * subthread (thread_kind + parent_thread_id) — best-effort: the DO's own sub_agents /
+   * channel_sessions tables remain the source of truth for actual bot logic, this is purely
+   * so an admin can browse the tree from the normal thread list (opt-in via
+   * projects.show_sub_threads or include_sub_threads=true).
+   */
+  private async mirrorThread(
+    spaceId: string,
+    tenantId: string,
+    thread: {
+      id: string;
+      project_id?: string;
+      parent_thread_id?: string;
+      thread_kind: "sub_agent" | "channel";
+      title?: string;
+      channel?: string;
+      channel_session_id?: string;
+    }
+  ): Promise<void> {
+    if (!this.env.SPACES_WORKER || !tenantId) return;
+    try {
+      await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/threads`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+        body: JSON.stringify(thread),
+      }));
+    } catch {
+      /* best-effort mirror — sub_agents/channel_sessions remain the source of truth */
     }
   }
 
@@ -1637,11 +1866,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!config) return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
     const requiresApprovalFor = [...parseRequiresApprovalFor(config.agentsMd)];
     const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
+    const model = body.model ?? "claude-haiku-4-5-20251001";
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
       gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway" },
-      ctx: { spaceId, agentId, model: body.model ?? "claude-haiku-4-5-20251001" },
-      ...(body.model ? { model: body.model } : {}),
+      ctx: { spaceId, agentId, model },
+      model,
     });
 
     // Resolve config + rules once per distinct project among this batch (not per message).
@@ -1649,7 +1879,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const projectConfigs = new Map<string, { execution_ceiling: number; daily_spend_cap_credits: number }>();
     const projectRules = new Map<string, ProjectRule[]>();
     for (const pid of projectIds) {
-      const [cfg, rules] = await Promise.all([this.fetchProjectConfig(spaceId, pid), this.fetchProjectRules(spaceId, pid)]);
+      const [cfg, rules] = await Promise.all([this.fetchProjectConfig(spaceId, tenantId, pid), this.fetchProjectRules(spaceId, tenantId, pid)]);
       if (cfg) projectConfigs.set(pid, cfg);
       projectRules.set(pid, rules);
     }
@@ -1665,6 +1895,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
       const projectCfg = msg.project_id ? projectConfigs.get(msg.project_id) : undefined;
       const rules = msg.project_id ? (projectRules.get(msg.project_id) ?? []) : [];
+
+      // Identity linking (spec: returning customers should be recognized) — a deterministic,
+      // per-space-scoped user id derived from (channel, channel_user_id). Set on the shared
+      // engineEnv before every path that can touch Memory OS for this message, the same way
+      // maxTier is mutated per message below — memory.remember/recall and the surgical-recall
+      // pre-flight then scope to THIS customer, not the space at large, across visits.
+      engineEnv.userId = `channel:${msg.channel}:${msg.channel_user_id}`;
 
       // 1. No-code rules (spec: "after the customer says X, this happens") — checked before
       //    any reasoning at all. Zero token cost, deterministic, admin-authored.
@@ -1727,7 +1964,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
 
       if (msg.project_id && result.result?.tokens_used) {
-        this.addProjectSpend(msg.project_id, result.result.tokens_used);
+        // Real per-model USD→credit conversion (billing-core), not the old "1 token ≈ 1
+        // credit" proxy — falls back to the raw token count only if a future producer of
+        // tokens_used ever omits the input/output breakdown (never happens today).
+        const credits = result.result.input_tokens || result.result.output_tokens
+          ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, model)
+          : result.result.tokens_used;
+        this.addProjectSpend(msg.project_id, credits);
       }
 
       const deliveredDirectly = result.script_name?.startsWith("notify.") && result.result?.ok;

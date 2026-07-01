@@ -91,11 +91,22 @@ Adding the next connector after this is, again, a catalogue row + a sibling shim
 
 No new secrets — these are bindings, not credentials.
 
+## Account-level concurrency ceiling (do/ConcurrencyDO.ts — spec §28)
+
+| Binding | What it is |
+|---|---|
+| `CONCURRENCY_DO` (`durable_objects.bindings` → `ConcurrencyDO`) | Caps simultaneous sub-agent spawn trees per space. Optional — fails open (ungated) when absent or unreachable, same posture as every other optional binding in this build. |
+
+No secrets — a general-purpose acquire/release DO with no external dependency.
+
 ## Memory OS (script-engine/memory-os.ts)
 
 | Binding | What it is |
 |---|---|
 | `MEMORY_VECTORIZE` (`[[vectorize]]` index `naelao-agent-memory`) | The semantic (Layer 5) recall index. Optional — Layer 3 (structured facts) works with no Vectorize binding at all; without it, episodic notes are simply never promoted to long-term semantic memory (decay/pruning still run). |
+
+Layers 4 (Fabric) and 6 (LLM Wiki) need no bindings beyond the host DO's own SQLite — same as
+Layer 3, no separate configuration.
 
 ## Multi-channel gateway (launchpad/channels.ts + the /v1/channels/:channel/inbound/:spaceId route)
 
@@ -133,6 +144,15 @@ spaces worker (no `wrangler secret put` needed):
 - Observability: `GET /spaces/:id/channels/sessions`, `GET /spaces/:id/channels/unanswered`.
 - Human takeover: `POST /spaces/:id/channels/sessions/:sessionId/takeover` (silence the bot)
   / `.../resume` (hand it back).
+
+## Thread hierarchy + sub-agent progress (A1.14)
+
+No secrets, no new bindings. `POST /spaces/:id/threads` / `GET /spaces/:id/threads` are plain
+SpaceDO CRUD (proxied through `naelao-spaces`, already covered by the router's existing
+`/spaces/*` wildcard). `PATCH /spaces/:id/projects/:projectId { show_sub_threads: true }` flips
+a project's default thread listing to include its sub-agent/channel subthreads. Sub-agent
+progress polling is `GET /sub-agents?parent_run_id=` directly on the parent `NaelaoAgentDO` —
+same DO, no separate route to expose through the router yet (internal/debugging use for now).
 
 ## Other platform secrets (pre-existing)
 

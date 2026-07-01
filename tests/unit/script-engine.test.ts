@@ -194,6 +194,108 @@ describe("runScriptLoop — L1 execution + L4 distill (spec §2/§5)", () => {
   });
 });
 
+describe("runScriptLoop — real per-token accounting (replaces the step-count-only proxy)", () => {
+  it("accumulates real reasoner token usage across multiple L3/L4 steps into result.tokens_used", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    let call = 0;
+    const reasoner: Reasoner & { lastUsage?: { input_tokens: number; output_tokens: number } } = {
+      lastUsage: undefined,
+      async decide(): Promise<ReasonDecision> {
+        call++;
+        // First step: a failed run (so the loop takes a second step); second step: answer.
+        if (call === 1) {
+          this.lastUsage = { input_tokens: 100, output_tokens: 20 };
+          return { action: "run", name: "does_not_exist", params: {} };
+        }
+        this.lastUsage = { input_tokens: 80, output_tokens: 15 };
+        return { action: "answer", text: "done" };
+      },
+    };
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
+      goal: "multi-step goal",
+      startupObserve: "observe_filesystem",
+    });
+    expect(result.result?.tokens_used).toBe(100 + 20 + 80 + 15);
+    expect(result.result?.input_tokens).toBe(180);
+    expect(result.result?.output_tokens).toBe(35);
+  });
+
+  it("a reasoner that never reports usage leaves tokens_used at 0 (honest, not fabricated)", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const reasoner: Reasoner = {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "answer", text: "42" };
+      },
+    };
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
+      goal: "what is the answer",
+      startupObserve: "observe_filesystem",
+    });
+    expect(result.result?.tokens_used).toBe(0);
+  });
+
+  it("maxTokens stops the loop before it can afford another step", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    let calls = 0;
+    const reasoner: Reasoner & { lastUsage?: { input_tokens: number; output_tokens: number } } = {
+      lastUsage: undefined,
+      async decide(): Promise<ReasonDecision> {
+        calls++;
+        this.lastUsage = { input_tokens: 6000, output_tokens: 0 }; // each step costs more than the budget
+        return { action: "run", name: "does_not_exist", params: {} }; // always fails -> would loop forever without a cap
+      },
+    };
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
+      goal: "expensive goal",
+      startupObserve: "observe_filesystem",
+      maxSteps: 10,
+      maxTokens: 5000, // less than one step's cost -> stops after step 1
+    });
+    expect(calls).toBe(1);
+    expect(result.notes.some((n) => n.includes("token budget"))).toBe(true);
+  });
+
+  it("onProgress fires at observe, gate, and each L3/L4 step", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const reasoner: Reasoner = {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "answer", text: "ok" };
+      },
+    };
+    const phases: string[] = [];
+    await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
+      goal: "trivial goal",
+      startupObserve: "observe_filesystem",
+      onProgress: (checkpoint) => {
+        phases.push(checkpoint.phase);
+      },
+    });
+    expect(phases).toEqual(["observe", "gate", "step"]);
+  });
+
+  it("a throwing onProgress never fails the run", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const reasoner: Reasoner = {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "answer", text: "ok" };
+      },
+    };
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
+      goal: "trivial goal",
+      startupObserve: "observe_filesystem",
+      onProgress: () => {
+        throw new Error("progress sink is down");
+      },
+    });
+    expect(result.result?.ok).toBe(true);
+  });
+});
+
 describe("Agent config 4 R2 files + profiles (spec §11/§13)", () => {
   it("round-trips an agent's four config files", async () => {
     const env = makeEnv();
