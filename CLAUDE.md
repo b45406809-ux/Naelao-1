@@ -148,6 +148,15 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     (`createCustomHostname` + TXT DCV + `getCustomHostname` status poll); it previously posted
     `kind='storefront'` and silently dropped the domain. Buy form → `/storefront/checkout` →
     billing worker reserved commerce checkout (platform fee). Full detail: appendix §A1.16.3.
+17. **Member/seat billing enablement + reseller consolidated statement are now BUILT.** The
+    money paths already existed (seat checkout + `recordSeatActivation`; per-event
+    `reseller_ledger` attribution); this pass added the missing config/read surfaces.
+    Member/seat: `GET/PATCH /spaces/:spaceId/member-billing` lets a builder enable + price
+    seats, provisions the seat Lemon Squeezy variant once (like product publish), and stores
+    it as a per-space `config_json.productConfig.memberBilling` override (never forks the
+    manifest). Reseller: `GET /reseller/statement?period=YYYY-MM` sums the ledger into the
+    consolidated wholesale invoice (totals by currency + per-client breakdown) the reseller
+    settles — the G-AS34/G-AS35 wholesale-invoicing deliverable. Full detail: appendix §A1.16.4.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

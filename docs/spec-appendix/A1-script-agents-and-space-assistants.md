@@ -562,8 +562,11 @@ tracked as the next piece of this same builder conversation, not yet built.
   per-privileged-user overrides.
 - **MCP as scripts**: agents never connect to MCP directly; they write/use scripts that wrap
   MCP providers (Pipedream, Composio).
-- **Member/seat billing**: Lemon Squeezy billing for a builder's space-members (the third
-  payer class) — the customer-purchase and builder-plan paths are done.
+- ~~**Member/seat billing**~~ — **BUILT** (see A1.16.4). Lemon Squeezy billing for a builder's
+  space-members (the third payer class): `/internal/seats/checkout` + LS-webhook
+  `recordSeatActivation` (member activated on paid seat) already existed; this pass added the
+  builder-facing enable/price surface (`GET/PATCH /spaces/:spaceId/member-billing`) that
+  provisions the seat LS variant and stores the config as a per-space `productConfig` override.
 - ~~**Storefront render + CF for SaaS apply step**~~ — **BUILT** (see A1.16.3). The portal
   Worker now serves the store at the root path a buyer lands on (`GET /` resolves the Host via
   `business_services`, precedence storefront → product portal), and the zone-scoped
@@ -573,9 +576,12 @@ tracked as the next piece of this same builder conversation, not yet built.
 - **Space collaboration**: roles, task boards, and project deduplication (admin's assistant
   broadcasts "this already exists" to member assistants). **Settled in A1.8** — assistant is
   the operator over shared `ProjectDO` state (locks + presence + dedup), not a per-user fork.
-- **Reseller / `tenant` membership**: `parent_tenant_id` account hierarchy + wholesale
-  invoicing + client-portfolio dashboard (spec G-AS34/G-AS35). Schema landed (`productConfig`);
-  the billing subsystem is a separate build — see A1.8.
+- ~~**Reseller / `tenant` membership**~~ — **BUILT** (see A1.16.4). `parent_tenant_id` hierarchy
+  (`tenant_hierarchy`), `reseller_accounts`, per-event `reseller_ledger` attribution
+  (`recordResellerAttribution` in the LS webhook), `/reseller/spaces` + client-portfolio
+  endpoints were already in place; this pass added the consolidated **wholesale statement**
+  (`GET /reseller/statement?period=YYYY-MM`) that sums the ledger into the invoice the reseller
+  settles + a per-client breakdown (spec G-AS34/G-AS35).
 
 ---
 
@@ -977,3 +983,44 @@ intent + CNAME instructions; the apply runs later when the deploy-time secrets l
 - portal Worker: `GET /` renders the store (name/products/price/checkout form) for a storefront
   host; renders the "opening soon" empty state with no published products; 404s when the host is
   neither a storefront nor a portal
+
+---
+
+## A1.16.4 Member/seat billing enablement + reseller consolidated statement — BUILT
+
+Two billing surfaces that were "scaffolded but not usable end-to-end" are now complete. In both
+cases the money movement already existed; what was missing was the config/read surface that lets a
+builder turn it on or a reseller see what they owe.
+
+**Member/seat billing — builder enablement (spaces worker).** The third payer class (a builder
+charges people to join their space) already had checkout (`billing /internal/seats/checkout`),
+pricing resolution (`spaces /internal/member-billing`, reading `productConfig.memberBilling`), and
+member activation on the paid webhook (`recordSeatActivation`). What was missing: a builder had no
+way to *enable* it without hand-editing a manifest, and nothing provisioned the seat's Lemon
+Squeezy variant (products auto-create theirs on publish; seats had no equivalent). Added:
+- `GET /spaces/:spaceId/member-billing` — the space's effective member-billing config.
+- `PATCH /spaces/:spaceId/member-billing` — `{ enabled, seatPriceCents?, currency?, interval? }`.
+  On enable it provisions the seat LS variant **once** (via `billing /internal/products/ls-variant`,
+  `kind` = `subscription` | `one_time`), merges over the current effective config (unspecified
+  fields keep their value; an existing `lsVariantId` is never re-provisioned), and persists the
+  result as a **per-space `config_json.productConfig.memberBilling` override** — never forks the
+  SpaceType manifest (`loadEffectiveProductConfig` already merges the override on top). Enabling
+  with a non-positive `seatPriceCents` is a 400; ownership is gated by tenant.
+
+**Reseller consolidated statement (spaces worker).** `recordResellerAttribution` writes one
+`reseller_ledger` row per billable child event (retail / wholesale / margin, tagged with a
+`YYYY-MM` period). The portfolio endpoint showed only a current-month rollup. The actual
+"wholesale invoicing" deliverable (G-AS34/G-AS35) — a consolidated statement the reseller settles
+with Naelao and bills their own clients from — was missing. Added:
+- `GET /reseller/statement?period=YYYY-MM` (defaults to current month) — sums the ledger for the
+  calling parent tenant into `totals` (grouped by currency: retail/wholesale/margin/events) plus a
+  `by_client` breakdown (per child tenant × currency, ordered by wholesale desc) and a
+  `client_count`. Rejects a malformed period (400) and a missing tenant (401). Routed through the
+  existing `/reseller/*` proxy.
+
+**Tests (`tests/unit/member-seat-reseller-billing.test.ts`, 9 tests):**
+- member billing: disabled defaults; enable provisions the seat variant + writes the
+  `productConfig.memberBilling` override; enable at price 0 → 400; enable with an existing variant
+  does not re-provision and merges over current; unowned space → 404
+- reseller statement: aggregates totals + per-client breakdown for a period; defaults to the
+  current month; malformed period → 400; missing tenant → 401

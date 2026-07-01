@@ -1189,6 +1189,121 @@ app.get("/internal/business-services/custom-domain-status", async (c) => {
   }
 });
 
+// ── Member/seat billing — builder-facing configuration (the third payer class) ─
+// The checkout + activation paths already exist (billing worker /internal/seats/checkout →
+// LS webhook recordSeatActivation). What was missing: a way for a builder to ENABLE and price
+// seats without hand-editing a manifest, and to provision the seat's Lemon Squeezy variant the
+// same way product publish does. Config is stored as a per-space productConfig override in
+// config_json (loadEffectiveProductConfig merges it over the manifest), so it never forks the
+// SpaceType. Money-in stays reserved: seats always check out through Naelao's LS store.
+
+type MemberBillingConfig = NonNullable<SpaceTypeProductConfig["memberBilling"]>;
+
+/** Load a space owned by the calling tenant (ownership gate, no commerce requirement). */
+async function loadOwnedSpace(
+  c: { env: Env; req: { header: (h: string) => string | undefined } },
+  spaceId: string
+): Promise<
+  | { ok: true; tenantId: string; name: string; spacetypeId: string; configJson: string | null }
+  | { ok: false; status: 401 | 404; error_code: string; message: string }
+> {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId) return { ok: false, status: 401, error_code: "unauthorized", message: "Missing tenant" };
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT name, spacetype_id, config_json FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
+  ).bind(spaceId, tenantId).first<{ name: string; spacetype_id: string; config_json: string | null }>();
+  if (!space) return { ok: false, status: 404, error_code: "not_found", message: "Space not found" };
+  return { ok: true, tenantId, name: space.name, spacetypeId: space.spacetype_id, configJson: space.config_json };
+}
+
+// GET /spaces/:spaceId/member-billing — the space's effective member-billing config.
+app.get("/spaces/:spaceId/member-billing", async (c) => {
+  const owned = await loadOwnedSpace(c, c.req.param("spaceId"));
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const pc = await loadEffectiveProductConfig(c.env, owned.spacetypeId, owned.configJson);
+  const mb = pc?.memberBilling ?? { enabled: false, seatPriceCents: 0 };
+  return c.json({ member_billing: mb });
+});
+
+// PATCH /spaces/:spaceId/member-billing — enable/price seats. On enable, provisions the seat's
+// Lemon Squeezy variant (once) exactly like product publish, then persists the override.
+app.patch("/spaces/:spaceId/member-billing", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+
+  const body = await c.req.json<{
+    enabled: boolean;
+    seatPriceCents?: number;
+    currency?: string;
+    interval?: "subscription" | "one_time";
+  }>();
+  if (typeof body.enabled !== "boolean") {
+    return c.json({ error_code: "bad_request", message: "enabled (boolean) is required" }, 400);
+  }
+
+  // Merge over the current effective config so unspecified fields keep their value.
+  const pc = await loadEffectiveProductConfig(c.env, owned.spacetypeId, owned.configJson);
+  const current: Partial<MemberBillingConfig> = pc?.memberBilling ?? {};
+  const seatPriceCents = body.seatPriceCents ?? current.seatPriceCents ?? 0;
+  const currency = (body.currency ?? current.currency ?? "USD").toUpperCase();
+  const interval = body.interval ?? current.interval ?? "subscription";
+
+  if (body.enabled) {
+    if (!Number.isInteger(seatPriceCents) || seatPriceCents <= 0) {
+      return c.json({ error_code: "bad_request", message: "seatPriceCents must be a positive integer to enable seats" }, 400);
+    }
+  }
+
+  // Provision the seat LS variant once (only when enabling, priced, not yet provisioned).
+  let lsVariantId = current.lsVariantId;
+  if (body.enabled && !lsVariantId && c.env.BILLING_WORKER) {
+    try {
+      const lsResp = await c.env.BILLING_WORKER.fetch(
+        new Request("http://billing-worker/internal/products/ls-variant", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-naelao-internal": "publish" },
+          body: JSON.stringify({
+            name: `${owned.name} — Membership seat`,
+            price_cents: seatPriceCents,
+            currency,
+            kind: interval === "one_time" ? "one_time" : "subscription",
+          }),
+        })
+      );
+      if (lsResp.ok) {
+        lsVariantId = (await lsResp.json<{ ls_variant_id: string }>()).ls_variant_id;
+      } else {
+        console.error(`[spaces/member-billing] seat variant create failed space=${spaceId}: ${await lsResp.text()}`);
+        // Non-fatal: seats are enabled but the dev/placeholder path in seat checkout applies
+        // until a variant exists. Builder can PATCH again to retry provisioning.
+      }
+    } catch (err) {
+      console.error(`[spaces/member-billing] seat variant create error space=${spaceId}:`, (err as Error).message);
+    }
+  }
+
+  const memberBilling: MemberBillingConfig = {
+    enabled: body.enabled,
+    seatPriceCents,
+    currency,
+    interval,
+    ...(lsVariantId ? { lsVariantId } : {}),
+  };
+
+  // Persist as a config_json.productConfig override, preserving all other config + override keys.
+  let config: { productConfig?: Partial<SpaceTypeProductConfig> } & Record<string, unknown> = {};
+  if (owned.configJson) {
+    try { config = JSON.parse(owned.configJson); } catch { /* start clean on malformed */ }
+  }
+  config.productConfig = { ...(config.productConfig ?? {}), memberBilling };
+  await c.env.PLATFORM_DB.prepare(
+    "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
+  ).bind(JSON.stringify(config), new Date().toISOString(), spaceId, owned.tenantId).run();
+
+  return c.json({ member_billing: memberBilling });
+});
+
 // ── Internal: SpaceType manifest registry (spec §62) ────────────────────────
 // These routes are called by the provisioner via SPACES_WORKER service binding.
 // They are NOT exposed to end-users — caller identity is validated by the internal header.
@@ -1414,6 +1529,54 @@ app.get("/reseller/clients", async (c) => {
     client_count: clients.length,
     current_period: period,
     billing: rollup ?? { retail: 0, wholesale: 0, margin: 0, events: 0 },
+  });
+});
+
+// GET /reseller/statement?period=YYYY-MM — the reseller's consolidated wholesale statement for a
+// period (G-AS34/G-AS35 wholesale invoicing). recordResellerAttribution writes one reseller_ledger
+// row per billable child event; this sums them into the invoice the reseller settles with Naelao
+// (wholesale) and can bill their own clients from (retail/margin), with a per-client breakdown.
+// Defaults to the current month. Grouped by currency so mixed-currency portfolios stay correct.
+app.get("/reseller/statement", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+
+  const period = c.req.query("period") ?? new Date().toISOString().slice(0, 7);
+  if (!/^\d{4}-\d{2}$/.test(period)) {
+    return c.json({ error_code: "bad_request", message: "period must be YYYY-MM" }, 400);
+  }
+
+  const { results: totals } = await c.env.PLATFORM_DB.prepare(
+    `SELECT currency,
+            COALESCE(SUM(retail_cents),0)    AS retail_cents,
+            COALESCE(SUM(wholesale_cents),0) AS wholesale_cents,
+            COALESCE(SUM(margin_cents),0)    AS margin_cents,
+            COUNT(*)                         AS events
+       FROM reseller_ledger
+      WHERE parent_tenant_id = ? AND period = ?
+      GROUP BY currency
+      ORDER BY wholesale_cents DESC`
+  ).bind(tenantId, period).all();
+
+  const { results: byClient } = await c.env.PLATFORM_DB.prepare(
+    `SELECT child_tenant_id, currency,
+            COALESCE(SUM(retail_cents),0)    AS retail_cents,
+            COALESCE(SUM(wholesale_cents),0) AS wholesale_cents,
+            COALESCE(SUM(margin_cents),0)    AS margin_cents,
+            COUNT(*)                         AS events
+       FROM reseller_ledger
+      WHERE parent_tenant_id = ? AND period = ?
+      GROUP BY child_tenant_id, currency
+      ORDER BY wholesale_cents DESC
+      LIMIT 500`
+  ).bind(tenantId, period).all();
+
+  return c.json({
+    parent_tenant_id: tenantId,
+    period,
+    totals,
+    by_client: byClient,
+    client_count: new Set(byClient.map((r) => (r as { child_tenant_id: string }).child_tenant_id)).size,
   });
 });
 
