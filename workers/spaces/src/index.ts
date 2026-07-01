@@ -473,6 +473,9 @@ app.post("/spaces/:spaceId/me/injection", async (c) => {
 // ── SpaceDO agent_definitions proxy ─────────────────────────────────────────
 // Forward /spaces/:spaceId/agent-definitions* to the SpaceDO.
 // Per spec §11 and CLAUDE.md: SpaceDO owns agent_definitions.
+// A1.16.10 (layer-3 backstop, bucket A): builder-authored config, never end-user-facing
+// (confirmed against apps/widget + apps/portal — neither ever calls this route) — safe to gate.
+app.use("/spaces/:spaceId/agent-definitions/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.all("/spaces/:spaceId/agent-definitions*", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -497,6 +500,11 @@ app.all("/spaces/:spaceId/agent-definitions*", async (c) => {
 });
 
 // ── SpaceDO members proxy ────────────────────────────────────────────────────
+// A1.16.10 (layer-3 backstop, bucket A): SpaceDO team members (spec A1.8's "team" population —
+// people invited into the space with a role) are never product/portal customers (the hard
+// rule: "never make product customers into SpaceDO members") — confirmed neither widget nor
+// portal ever calls this route. Safe to gate.
+app.use("/spaces/:spaceId/members/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.all("/spaces/:spaceId/members*", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -522,6 +530,16 @@ app.all("/spaces/:spaceId/members*", async (c) => {
 
 // ── SpaceDO session proxy ────────────────────────────────────────────────────
 // Forward /spaces/:spaceId/sessions/* to the SpaceDO for that space
+// A1.16.10 (layer-3 backstop, bucket B): investigated before gating — the router mounts this
+// path on its JWT-gated `api` sub-app (api.use("*", jwtAuth(...)) with no exceptions), so a
+// Bearer token is ALREADY mandatory to reach here via the router. Neither apps/widget nor
+// apps/portal ever sends one (they only send x-naelao-end-user-id) — end-user chat through
+// the router is presently non-functional (a separate, real bug: no customer-auth JWT flow
+// exists yet — see appendix). This means gating with requireInternalHmac cannot break
+// currently-working end-user traffic, because none currently reaches this route successfully.
+// The one direct (non-router) caller, NaelaoAgentDO.writeConversationToSession, already mints
+// the token (see A1.16.9).
+app.use("/spaces/:spaceId/sessions/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.all("/spaces/:spaceId/sessions*", async (c) => {
   const spaceId = c.req.param("spaceId");
   const { tenantId } = getCallerIdentity(c);
@@ -856,6 +874,10 @@ app.patch("/spaces/:spaceId/assistant-policy", async (c) => {
 // Threads (spec-canonical). A sub-agent spawn or a channel session mirrors in here as a
 // subthread (thread_kind + parent_thread_id) — hidden from the default list unless the
 // project's show_sub_threads is on, or the caller passes include_sub_threads=true.
+// A1.16.10 (layer-3 backstop, bucket A): the dashboard's structural browse view (builder-only —
+// confirmed widget/portal never call this; end-user chat transport is /sessions, not /threads).
+app.use("/spaces/:spaceId/threads", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/threads/:threadId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.get("/spaces/:spaceId/threads", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;

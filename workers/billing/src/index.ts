@@ -562,6 +562,7 @@ app.post("/webhooks/lemon-squeezy", async (c) => {
     AGENTS_WORKER: c.env.AGENTS_WORKER,
     ...(c.env.SPACES_WORKER ? { SPACES_WORKER: c.env.SPACES_WORKER } : {}),
     PLATFORM_DB: c.env.PLATFORM_DB,
+    PLATFORM_SECRET: c.env.PLATFORM_SECRET,
   });
 });
 

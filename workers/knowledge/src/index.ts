@@ -116,6 +116,11 @@ async function readChunkFromR2(
   return JSON.parse(text) as ChunkRecord;
 }
 
+// A1.16.10 (layer-3 backstop, bucket A): KB is a server-side agent tool, never called
+// client-side (confirmed neither apps/widget nor apps/portal ever reaches /kb/*) — safe to
+// gate broadly.
+app.use("/spaces/:spaceId/kb/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
+
 // ── GET /spaces/:spaceId/kb/documents ─────────────────────────────────────────
 
 app.get("/spaces/:spaceId/kb/documents", async (c) => {

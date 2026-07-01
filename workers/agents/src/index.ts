@@ -326,7 +326,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
             method: "GET",
             headers: {
               "x-naelao-tenant-id": tenantId,
-              "x-naelao-internal": "agents",
+              "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
             },
           }
         )
@@ -378,6 +378,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         headers: {
           "x-naelao-tenant-id": tenantId,
           "x-naelao-user-id": c.req.header("x-naelao-user-id") ?? "",
+          "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
         },
       }
     );

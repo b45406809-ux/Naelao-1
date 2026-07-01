@@ -221,6 +221,20 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     design), `/sessions*`, `/threads`, `/members*`, `/agent-definitions*`, and knowledge's
     `/spaces/:id/kb/*` — plausibly end-user/portal-reachable via paths not yet fully verified
     safe to gate. Full detail: appendix §A1.16.9.
+23. **The routes §22 deferred are now gated too — investigated first, not guessed.** Grepped
+    `apps/widget` + `apps/portal` for direct callers before touching anything (per spec A1.8:
+    team members and portal customers are structurally different populations). Bucket A
+    (`members*`, `agent-definitions*`, `threads`, knowledge's `kb/*`) — confirmed
+    builder/server-only, gated immediately; fixed `lemon-squeezy.ts`'s seat-activation call
+    (its `LemonSqueezyEnv` had no `PLATFORM_SECRET` either — same gap as billing's own env),
+    `agents/index.ts`'s two remaining calls, and `knowledge-base.ts`'s three ops. Bucket B
+    (`sessions*`, the end-user chat transport) needed real investigation: found that
+    **end-user chat through the router is currently non-functional end-to-end** — the router
+    requires a Bearer JWT unconditionally, but neither the widget nor the portal ever sends
+    one (portal mints a magic-link `auth_token` and stores it, but never reads it back out to
+    attach to a request). This is a real, separate product bug (needs a customer-auth JWT
+    flow — NOT fixed here) — but it also means gating `sessions*` breaks nothing currently
+    working. Gated it. Full detail: appendix §A1.16.10.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

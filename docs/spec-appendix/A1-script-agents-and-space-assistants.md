@@ -1348,3 +1348,51 @@ proving each: rejects the OLD weak check style (static string / any-truthy-heade
 accepts a properly minted token. `tests/unit/storefront-serving.test.ts` updated to supply
 `platformSecret` in its mock `ScriptEngineEnv` (would otherwise throw `DataError: Zero-length
 key is not supported` from `signHmac` on an empty-string secret).
+
+---
+
+## A1.16.10 Bucket A/B: the last direct-caller routes, plus a real product bug found — BUILT
+
+§A1.16.9 left six routes deliberately ungated because gating them without verifying no
+legitimate non-router caller existed risked silently breaking real traffic. Investigated each
+one against the actual population model (spec A1.8: team members vs. portal customers are
+structurally different — "never make product customers into SpaceDO members") by grepping
+`apps/widget` and `apps/portal` for direct callers, rather than guessing from route names.
+
+**Bucket A — confirmed builder/internal-only, gated with no further investigation needed:**
+`/spaces/:spaceId/members*`, `/spaces/:spaceId/agent-definitions*`, `/spaces/:spaceId/threads[/:id]`,
+and knowledge worker's `/spaces/:spaceId/kb/*`. Neither the widget nor the portal ever calls
+any of these — team-member management, agent-definition config, structural thread browsing,
+and KB retrieval are all server-side/dashboard concerns. Callers fixed: `lemon-squeezy.ts`'s
+seat-activation → `/members` call (added `PLATFORM_SECRET` to `LemonSqueezyEnv`, which didn't
+have it — same gap as `BillingEnv` in §A1.16.9), `agents/index.ts`'s agent-definition lookup
+and KB-search-during-agent-run calls, and `knowledge-base.ts`'s three ops (search/index/delete).
+
+**Bucket B — `/spaces/:spaceId/sessions*` — required real investigation, not just gating.**
+This is the end-user chat transport, so gating it blind was the genuine risk §A1.16.9 flagged.
+Investigation found: **the router mounts this path on its JWT-gated `api` sub-app
+(`api.use("*", jwtAuth(...))`, no exceptions) — a Bearer token is already mandatory to reach
+it via the router.** Neither `apps/widget/src/naelao-chat.ts` nor `apps/portal/src/lib/api.ts`
+ever sends an `Authorization: Bearer` header — both only send `x-naelao-end-user-id`. The
+portal's magic-link flow (`apps/portal/src/app/[spaceId]/auth/page.tsx`) does mint an
+`auth_token` and store it (`storeAuthToken`), but **nothing ever reads it back out to attach
+to a subsequent request** — grepping the whole `apps/portal/src` tree for its use turns up
+only the write.
+
+**This means end-user chat through the router is currently non-functional end-to-end** — a
+real, product-level bug, entirely separate from and larger than this security pass (it needs
+a customer-auth JWT flow: the router accepting something other than a builder JWT, and the
+widget/portal actually sending it). It is NOT fixed here — that's a different, larger piece of
+work. What it DOES mean for this pass: gating `/sessions*` with `requireInternalHmac` cannot
+break currently-working end-user traffic, because no such traffic currently reaches this route
+successfully. Gated it; the one direct (non-router) caller,
+`NaelaoAgentDO.writeConversationToSession`, already minted the token as of §A1.16.9.
+
+**Tests:** extended `tests/unit/layer3-backstop-routes.test.ts` (+7) covering members,
+agent-definitions, threads (reject + accept), sessions/messages (reject + accept, the exact
+shape `writeConversationToSession` sends), and knowledge's `kb/search`.
+
+**Follow-up, not part of this security pass:** the end-user auth gap found above (portal
+mints a magic-link token, never sends it back) should get its own pass — design the
+customer-auth JWT the router will accept, and wire `apps/widget`/`apps/portal` to actually
+attach it.

@@ -8,12 +8,21 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
+import { mintInternalToken } from "@naelao/http";
 
 function reqWorker(ctx: PrebuiltOpContext): Fetcher {
   if (!ctx.env.knowledgeWorker) {
     throw new Error("knowledge-base: KNOWLEDGE_WORKER binding not configured");
   }
   return ctx.env.knowledgeWorker;
+}
+
+async function internalHeaders(ctx: PrebuiltOpContext, extra?: Record<string, string>): Promise<Record<string, string>> {
+  return {
+    "x-naelao-tenant-id": ctx.env.tenantId,
+    "x-naelao-internal-token": await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId),
+    ...extra,
+  };
 }
 
 export const knowledgeBase: PrebuiltScript = {
@@ -28,7 +37,7 @@ export const knowledgeBase: PrebuiltScript = {
       const resp = await reqWorker(ctx).fetch(
         new Request(
           `http://knowledge-worker/spaces/${ctx.env.spaceId}/kb/search?q=${encodeURIComponent(query)}&top_k=${topK}`,
-          { headers: { "x-naelao-tenant-id": ctx.env.tenantId } }
+          { headers: await internalHeaders(ctx) }
         )
       );
       if (!resp.ok) throw new Error(`knowledge.search failed: ${resp.status}`);
@@ -39,7 +48,7 @@ export const knowledgeBase: PrebuiltScript = {
       const resp = await reqWorker(ctx).fetch(
         new Request(`http://knowledge-worker/spaces/${ctx.env.spaceId}/kb/index`, {
           method: "POST",
-          headers: { "content-type": "application/json", "x-naelao-tenant-id": ctx.env.tenantId },
+          headers: await internalHeaders(ctx, { "content-type": "application/json" }),
           body: JSON.stringify({ text: args["text"], metadata: args["metadata"] ?? {} }),
         })
       );
@@ -52,7 +61,7 @@ export const knowledgeBase: PrebuiltScript = {
       const resp = await reqWorker(ctx).fetch(
         new Request(`http://knowledge-worker/spaces/${ctx.env.spaceId}/kb/${encodeURIComponent(id)}`, {
           method: "DELETE",
-          headers: { "x-naelao-tenant-id": ctx.env.tenantId },
+          headers: await internalHeaders(ctx),
         })
       );
       if (!resp.ok) throw new Error(`knowledge.delete failed: ${resp.status}`);

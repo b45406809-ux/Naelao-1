@@ -18,6 +18,7 @@
 
 import { LemonSqueezyProvider, computeResellerAttribution, isLedgerEvent, billingPeriod } from "@naelao/billing-core";
 import type { NormalizedBillingEvent, BillingRelationship } from "@naelao/billing-core";
+import { mintInternalToken } from "@naelao/http";
 
 export interface LemonSqueezyEnv {
   LEMON_SQUEEZY_WEBHOOK_SECRET?: string;
@@ -27,6 +28,8 @@ export interface LemonSqueezyEnv {
   AGENTS_WORKER: Fetcher;
   SPACES_WORKER?: Fetcher;
   PLATFORM_DB: D1Database;
+  /** For minting the internal HMAC token the direct (non-router) SPACES_WORKER call below needs. */
+  PLATFORM_SECRET: string;
 }
 
 /**
@@ -71,7 +74,11 @@ async function recordSeatActivation(
     try {
       await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${event.spaceId}/members`, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-naelao-tenant-id": space.tenant_id, "x-naelao-internal": "billing" },
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": space.tenant_id,
+          "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, space.tenant_id),
+        },
         body: JSON.stringify({ space_id: event.spaceId, user_id: userId, role: "member" }),
       }));
     } catch (err) {

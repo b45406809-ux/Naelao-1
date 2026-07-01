@@ -115,6 +115,96 @@ describe("spaces worker — newly-gated routes reject forged direct requests", (
   });
 });
 
+// Bucket A/B (following up on the deferred routes): builder-only team surfaces (members,
+// agent-definitions, threads) and the end-user chat transport (sessions) — investigated first
+// (apps/widget + apps/portal grepped for direct callers) before gating.
+describe("spaces worker — bucket A/B routes (members, agent-definitions, threads, sessions)", () => {
+  it("GET /spaces/:spaceId/members rejects with no internal token", async () => {
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/space-1/members", {
+        headers: { "x-naelao-tenant-id": "tenant-1" },
+      }),
+      makeSpacesEnv() as never,
+      execCtx
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("GET /spaces/:spaceId/agent-definitions rejects with no internal token", async () => {
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/space-1/agent-definitions", {
+        headers: { "x-naelao-tenant-id": "tenant-1" },
+      }),
+      makeSpacesEnv() as never,
+      execCtx
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("GET /spaces/:spaceId/threads rejects with no internal token", async () => {
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/space-1/threads", {
+        headers: { "x-naelao-tenant-id": "tenant-1" },
+      }),
+      makeSpacesEnv() as never,
+      execCtx
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("GET /spaces/:spaceId/threads accepts a properly minted token", async () => {
+    const token = await mintInternalToken(SECRET, "tenant-1");
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/space-1/threads", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      makeSpacesEnv() as never,
+      execCtx
+    );
+    expect(res.status).not.toBe(403);
+  });
+
+  it("POST /spaces/:spaceId/sessions/:id/messages rejects with no internal token (the currently-broken end-user chat path)", async () => {
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/space-1/sessions/sess-1/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1" },
+        body: JSON.stringify({ role: "user", content: "hi" }),
+      }),
+      makeSpacesEnv() as never,
+      execCtx
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("POST /spaces/:spaceId/sessions/:id/messages accepts a properly minted token (NaelaoAgentDO's writeConversationToSession shape)", async () => {
+    const token = await mintInternalToken(SECRET, "tenant-1");
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/space-1/sessions/sess-1/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+        body: JSON.stringify({ role: "user", content: "hi" }),
+      }),
+      makeSpacesEnv() as never,
+      execCtx
+    );
+    expect(res.status).not.toBe(403);
+  });
+});
+
+describe("knowledge worker — kb/* routes (bucket A) now require a token", () => {
+  it("GET /spaces/:spaceId/kb/search rejects with no internal token", async () => {
+    const res = await knowledgeWorker.fetch(
+      new Request("https://knowledge.naelao.com/spaces/space-1/kb/search?q=hello", {
+        headers: { "x-naelao-tenant-id": "tenant-1" },
+      }),
+      { PLATFORM_SECRET: SECRET, ENVIRONMENT: "test" } as never,
+      execCtx
+    );
+    expect(res.status).toBe(403);
+  });
+});
+
 describe("knowledge worker — semantic-cache routes now require a token (previously NO auth at all)", () => {
   function makeKnowledgeEnv(): Record<string, unknown> {
     return { PLATFORM_SECRET: SECRET, ENVIRONMENT: "test" };
