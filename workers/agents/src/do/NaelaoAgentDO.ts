@@ -8,6 +8,7 @@
 //   - Alarm used for 30s timeout watchdog
 
 import { DurableObject } from "cloudflare:workers";
+import { mintInternalToken } from "@naelao/http";
 import type { LlmTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
@@ -370,6 +371,8 @@ interface ToolServices {
   knowledgeWorker: Fetcher;
   spaceId: string;
   tenantId: string;
+  /** For minting the internal HMAC token this direct (non-router) service-binding call needs. */
+  platformSecret: string;
 }
 
 // ── beforeToolCall: policy interceptor (G-AB20) ──────────────────────────────
@@ -560,7 +563,10 @@ async function dispatchTool(
           `http://knowledge-worker/spaces/${services.spaceId}/kb/search?q=${encodeURIComponent(query)}&top_k=5`,
           {
             method: "GET",
-            headers: { "x-naelao-tenant-id": services.tenantId },
+            headers: {
+              "x-naelao-tenant-id": services.tenantId,
+              "x-naelao-internal-token": await mintInternalToken(services.platformSecret, services.tenantId),
+            },
           }
         );
 
@@ -1235,6 +1241,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       spaceId,
       agentId,
       tenantId,
+      platformSecret: this.env.PLATFORM_SECRET,
       ...(userId ? { userId } : {}),
       // Project-scoped workspace (every thread's agent in a project shares one R2 filesystem)
       // vs. the Space Assistant's space-wide workspace — see workspacePrefix() in types.ts.
@@ -1847,6 +1854,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // Drain the unanswered queue through the script-first loop: the goal asks for a grounded
   // reply; if the model isn't confident it returns "ESCALATE" and the message stays queued
   // for a human (honest escalation beats a confident wrong answer, per A1.3).
+
+  // A1.16.9 (layer-3 backstop): every SPACES_WORKER/KNOWLEDGE_WORKER call below is a direct
+  // service-binding call, bypassing naelao-router — workers_dev=false (layer 1) already blocks
+  // outside traffic, but these calls must ALSO present a verified internal token so the target
+  // worker's requireInternalHmac middleware (layer 3) accepts them.
+  private async internalHeaders(tenantId: string, extra?: Record<string, string>): Promise<Record<string, string>> {
+    return {
+      "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId),
+      ...extra,
+    };
+  }
+
   /** Fetch a customer-bot project's config (execution ceiling, spend cap) from SpaceDO. */
   /**
    * Fetch the Space Assistant's approval policy from SpaceDO. Null on any failure (unreachable
@@ -1858,7 +1878,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!this.env.SPACES_WORKER || !tenantId) return null;
     try {
       const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/assistant-policy`, {
-        headers: { "x-naelao-tenant-id": tenantId },
+        headers: await this.internalHeaders(tenantId),
       }));
       if (!resp.ok) return null;
       return await resp.json<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] }>();
@@ -1870,7 +1890,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private async fetchProjectConfig(spaceId: string, tenantId: string, projectId: string): Promise<{ execution_ceiling: number; daily_spend_cap_credits: number } | null> {
     try {
       const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}`, {
-        headers: { "x-naelao-tenant-id": tenantId },
+        headers: await this.internalHeaders(tenantId),
       }));
       if (!resp.ok) return null;
       return await resp.json<{ execution_ceiling: number; daily_spend_cap_credits: number }>();
@@ -1883,7 +1903,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private async fetchProjectRules(spaceId: string, tenantId: string, projectId: string): Promise<ProjectRule[]> {
     try {
       const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}/rules`, {
-        headers: { "x-naelao-tenant-id": tenantId },
+        headers: await this.internalHeaders(tenantId),
       }));
       if (!resp.ok) return [];
       const { data } = await resp.json<{ data: ProjectRule[] }>();
@@ -1917,7 +1937,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try {
       await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/threads`, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+        headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
         body: JSON.stringify(thread),
       }));
     } catch {
@@ -2194,6 +2214,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       knowledgeWorker: this.env.KNOWLEDGE_WORKER,
       spaceId: body.spaceId,
       tenantId: body.tenantId,
+      platformSecret: this.env.PLATFORM_SECRET,
     };
 
     try {
@@ -2613,10 +2634,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     finalAnswer: string
   ): Promise<void> {
     const baseUrl = `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/messages`;
-    const headers = {
-      "content-type": "application/json",
-      "x-naelao-tenant-id": tenantId,
-    };
+    const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
 
     try {
       await this.env.SPACES_WORKER.fetch(new Request(baseUrl, {

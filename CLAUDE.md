@@ -204,10 +204,23 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     `requireInternalHmac` middleware + `mintInternalToken` helper (`packages/http`) gate
     credentials worker's public CRUD routes and `/internal/triggers/fire` (previously a
     forgeable static-string check) with real HMAC verification, replacing/backstopping the
-    `workers_dev` fix. Explicitly NOT yet done: the public `/spaces/:id/...` and `/kb/...`
-    routes have ~15 direct (non-router) callers across NaelaoAgentDO/provisioner/billing that
-    would all need updating to add the same defense-in-depth layer — tracked as a follow-up,
-    not silently dropped. Full detail: appendix §A1.16.8.
+    `workers_dev` fix. Full detail: appendix §A1.16.8.
+22. **Layer-3 backstop follow-up (§21's deferred item) is now BUILT.** Gated the ~15
+    direct-caller routes §21 deferred: `/spaces/:spaceId/projects[/:id[/rules]]`,
+    `/assistant-policy`, `/registry`, `/internal/business-services[/custom-domain-status]`,
+    `/internal/member-billing`, `/internal/space-types/:id[/record-install]` (spaces worker,
+    several had even weaker checks than the old triggers/fire — any truthy header sufficed),
+    and `/internal/semantic-cache/*` (knowledge worker — had NO auth check at all). Fixed
+    every caller to mint a token: `NaelaoAgentDO` (new `internalHeaders()` helper +
+    `ScriptEngineEnv.platformSecret` for prebuilt scripts), provisioner, billing (which had no
+    `PLATFORM_SECRET` in its env at all — added it), agents worker. Caught a real bug in the
+    process: the knowledge worker's first mount attempt used `/internal/semantic-cache*` (no
+    slash) — Hono doesn't match sub-paths with that pattern, so the middleware silently never
+    ran; fixed to `/internal/semantic-cache/*`. Deliberately still NOT gated (documented, not
+    dropped): `/me/*` (genuinely public signed-link GDPR export, no JWT/tenant context by
+    design), `/sessions*`, `/threads`, `/members*`, `/agent-definitions*`, and knowledge's
+    `/spaces/:id/kb/*` — plausibly end-user/portal-reachable via paths not yet fully verified
+    safe to gate. Full detail: appendix §A1.16.9.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

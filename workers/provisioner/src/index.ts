@@ -17,7 +17,7 @@
  */
 
 import { Hono } from "hono";
-import { errorResponse, requestId } from "@naelao/http";
+import { errorResponse, requestId, mintInternalToken } from "@naelao/http";
 import {
   LAUNCHPAD_CORE_AGENTS,
   agentsForTemplate,
@@ -66,11 +66,15 @@ function validateEnv(env: Env): void {
 
 async function loadManifest(
   spaceTypeId: string,
-  env: Env
+  env: Env,
+  tenantId: string
 ): Promise<NaelaoSpaceTypeManifestV2 | null> {
   const resp = await env.SPACES_WORKER.fetch(
     new Request(`http://spaces-worker/internal/space-types/${spaceTypeId}`, {
-      headers: { "x-naelao-internal": "provisioner" },
+      headers: {
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+      },
     })
   );
   if (!resp.ok) return null;
@@ -193,7 +197,7 @@ async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
     provisioned.push("db_status");
 
     // Step 2: Load SpaceType manifest from registry (KV-cached)
-    const manifest = await loadManifest(spaceTypeId, env);
+    const manifest = await loadManifest(spaceTypeId, env, tenantId);
     if (!manifest) throw new Error(`SpaceType not found or not approved: ${spaceTypeId}`);
 
     // Step 3: Instantiate declared platform DOs (Launchpad declares none — extensible for future types)
@@ -249,7 +253,7 @@ async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
           headers: {
             "content-type": "application/json",
             "x-naelao-tenant-id": tenantId,
-            "x-naelao-internal": "provisioner",
+            "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
           },
           body: JSON.stringify({
             id: spaceId,
@@ -345,7 +349,8 @@ async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-naelao-internal": "provisioner",
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
         },
         body: JSON.stringify({ spaceId, version: manifest.version }),
       })

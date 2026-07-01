@@ -1292,3 +1292,59 @@ a follow-up; not yet built.
 - `tests/unit/credential-hierarchy.test.ts` updated (still 20/20) to mint a real internal
   token via the test-helper `req()`, proving the credentials worker's public routes now require
   it end-to-end (real handler, not a mock).
+
+---
+
+## A1.16.9 Layer-3 backstop follow-up (§A1.16.8's deferred item) — BUILT
+
+§A1.16.8 explicitly deferred gating the public `/spaces/:spaceId/...` and `/kb/...` routes'
+~15 direct (non-router) callers, since doing it required touching every one of those call
+sites. This pass does that.
+
+**Newly gated (spaces worker):** `/spaces/:spaceId/projects[/:id[/rules]]`,
+`/spaces/:spaceId/assistant-policy`, `/spaces/:spaceId/registry`, `/internal/business-services`
+(POST+GET), `/internal/business-services/custom-domain-status`, `/internal/member-billing`,
+`/internal/space-types/:id`, `/internal/space-types/:id/record-install` — all now require
+`requireInternalHmac`. Several of these had even weaker checks than `/internal/triggers/fire`
+did (any truthy `x-naelao-internal` header sufficed, not even a fixed string) — closed the same
+way. **Newly gated (knowledge worker):** `/internal/semantic-cache/*` (lookup, store, DELETE) —
+these had **no auth check of any kind**, not even a header presence check.
+
+**Deliberately NOT gated this pass** (documented, not silently dropped): `/spaces/:spaceId/me/*`
+(GDPR export + signed-download links — genuinely public, signature-authenticated, no JWT/tenant
+context by design; gating them would break real end-user flows), `/spaces/:spaceId/sessions*`,
+`/spaces/:spaceId/threads`, `/spaces/:spaceId/members*`, `/spaces/:spaceId/agent-definitions*`,
+and `/spaces/:spaceId/kb/*` (knowledge worker) — these are plausibly also end-user- or
+portal-reachable via paths this pass didn't have budget to fully verify; gating them without
+confirming no legitimate non-router caller exists risked silently breaking real traffic.
+Tracked as a further follow-up.
+
+**Callers fixed to mint `mintInternalToken`:**
+- `NaelaoAgentDO.ts` — added a shared `internalHeaders(tenantId, extra?)` helper, used by
+  `fetchAssistantPolicy`, `fetchProjectConfig`, `fetchProjectRules`, `mirrorThread`,
+  `writeConversationToSession`, and the `search_kb` tool dispatch (`ToolServices` gained a
+  `platformSecret` field). `ScriptEngineEnv` gained an optional `platformSecret` field, set in
+  `buildScriptEngineEnv`, so every prebuilt script can mint its own token.
+- `workers/provisioner/src/index.ts` — `loadManifest` now takes a `tenantId` param; the
+  `/registry` and `/record-install` calls mint tokens.
+- `workers/billing/src/index.ts` — the seat-checkout → `/internal/member-billing` call now
+  resolves the space's real `tenant_id` from `PLATFORM_DB` (previously sent no tenant context
+  at all) and mints a token. Added `PLATFORM_SECRET` to `BillingEnv` (was missing entirely —
+  billing worker had no way to mint an internal token before this).
+- `workers/agents/src/index.ts` — the 3 `projects`/`from-template` calls, the bootstrap
+  `/projects` call, and both `/internal/semantic-cache/*` calls now mint tokens.
+- Prebuilt scripts (`business-email.ts`, `storefront.ts`, `commerce.ts`'s unused `spaces()`
+  helper) — mint via `ctx.env.platformSecret`.
+
+**Bug found and fixed in passing:** the knowledge worker mount used
+`app.use("/internal/semantic-cache*", ...)` (no slash before `*`) — Hono does not match
+sub-paths with that pattern (`/foo/bar*` does not match `/foo/bar/baz`; needs `/foo/bar/*`).
+The middleware silently never ran. Caught by the new test asserting a 403 on an unauthenticated
+request; fixed to `/internal/semantic-cache/*`.
+
+**Tests:** `tests/unit/layer3-backstop-routes.test.ts` (8) — a representative sample of the
+newly-gated routes (not exhaustive; the middleware itself is unit-tested in isolation)
+proving each: rejects the OLD weak check style (static string / any-truthy-header) with 403,
+accepts a properly minted token. `tests/unit/storefront-serving.test.ts` updated to supply
+`platformSecret` in its mock `ScriptEngineEnv` (would otherwise throw `DataError: Zero-length
+key is not supported` from `signHmac` on an empty-string secret).

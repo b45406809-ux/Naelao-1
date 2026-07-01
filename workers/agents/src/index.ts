@@ -426,7 +426,11 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     const cacheResp = await c.env.KNOWLEDGE_WORKER.fetch(
       new Request("http://knowledge-worker/internal/semantic-cache/lookup", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+        },
         body: JSON.stringify({ query: body.goal, spaceId }),
       })
     );
@@ -525,12 +529,18 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // G-AZ19: Store successful agent response in semantic cache for future hits
   if (doResponse.ok) {
     c.executionCtx.waitUntil(
-      c.env.KNOWLEDGE_WORKER.fetch(
-        new Request("http://knowledge-worker/internal/semantic-cache/store", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: body.goal, spaceId, response: JSON.stringify(doBody) }),
-        })
+      mintInternalToken(c.env.PLATFORM_SECRET, tenantId).then((token) =>
+        c.env.KNOWLEDGE_WORKER.fetch(
+          new Request("http://knowledge-worker/internal/semantic-cache/store", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": token,
+            },
+            body: JSON.stringify({ query: body.goal, spaceId, response: JSON.stringify(doBody) }),
+          })
+        )
       ).catch(() => {})
     );
   }
@@ -1210,9 +1220,10 @@ app.post("/spaces/:spaceId/projects/from-template", async (c) => {
   if (!template) throw notFound("Project template");
 
   // 1. Create the project.
+  const internalToken1213 = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
   const createResp = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": internalToken1213 },
     body: JSON.stringify({ name: body.name ?? template.name, description: template.description }),
   }));
   if (!createResp.ok) return c.json({ error_code: "project_create_failed", message: await createResp.text() }, 502);
@@ -1221,7 +1232,7 @@ app.post("/spaces/:spaceId/projects/from-template", async (c) => {
   // 2. Configure it as a customer-facing bot (execution ceiling, spend cap, suggested channel).
   const configResp = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}`, {
     method: "PATCH",
-    headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": internalToken1213 },
     body: JSON.stringify({
       kind: "customer_bot",
       execution_ceiling: template.execution_ceiling,
@@ -1235,7 +1246,7 @@ app.post("/spaces/:spaceId/projects/from-template", async (c) => {
   for (const rule of template.rules) {
     await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}/rules`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": internalToken1213 },
       body: JSON.stringify(rule),
     }));
   }
@@ -1380,11 +1391,12 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
 
   // 1. Create the template's projects (idempotent on name) via the SpaceDO.
   const createdProjects: string[] = [];
+  const bootstrapInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
   for (const name of onboarding.projects ?? []) {
     try {
       const r = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal": "agents" },
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": bootstrapInternalToken },
         body: JSON.stringify({ name }),
       }));
       if (r.ok) createdProjects.push(name);

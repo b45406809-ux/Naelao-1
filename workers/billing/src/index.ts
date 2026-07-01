@@ -4,6 +4,7 @@ import {
   internalError,
   notFound,
   requestId,
+  mintInternalToken,
 } from "@naelao/http";
 // G-D05: Billing worker — Stripe webhooks, Lemon Squeezy webhooks, checkout, subscription sync
 import { Hono } from "hono";
@@ -19,6 +20,9 @@ import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
 
 export interface BillingEnv {
   ENVIRONMENT: string;
+  /** Shared inter-worker HMAC secret (mintInternalToken/requireInternalHmac, @naelao/http) —
+   *  needed to call spaces worker's internal routes directly (bypassing naelao-router). */
+  PLATFORM_SECRET: string;
   STRIPE_SECRET_KEY: string;
   STRIPE_WEBHOOK_SECRET: string;
   STRIPE_GROWTH_PRICE_ID: string;
@@ -461,9 +465,15 @@ app.post("/internal/seats/checkout", async (c) => {
 
   // Resolve the space's seat pricing from its effective productConfig (via spaces worker).
   if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
+  const seatSpaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+    .bind(body.space_id).first<{ tenant_id: string }>();
+  if (!seatSpaceRow) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
   const cfgResp = await c.env.SPACES_WORKER.fetch(
     new Request(`http://spaces-worker/internal/member-billing?space_id=${encodeURIComponent(body.space_id)}`, {
-      headers: { "x-naelao-internal": "billing" },
+      headers: {
+        "x-naelao-tenant-id": seatSpaceRow.tenant_id,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, seatSpaceRow.tenant_id),
+      },
     })
   );
   if (!cfgResp.ok) return c.json({ error_code: "not_configured", message: "Member billing is not enabled for this space" }, 409);

@@ -14,6 +14,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
+import { mintInternalToken } from "@naelao/http";
 
 async function billing(ctx: PrebuiltOpContext, path: string, body: Record<string, unknown>): Promise<unknown> {
   if (!ctx.env.billingWorker) {
@@ -34,7 +35,10 @@ async function spaces(ctx: PrebuiltOpContext, path: string): Promise<unknown> {
   if (!ctx.env.spacesWorker) throw new Error("commerce unavailable: spaces worker binding not configured");
   const resp = await ctx.env.spacesWorker.fetch(
     new Request(`http://spaces-worker${path}`, {
-      headers: { "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal": "commerce-script" },
+      headers: {
+        "x-naelao-tenant-id": ctx.env.tenantId,
+        "x-naelao-internal-token": await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId),
+      },
     })
   );
   if (!resp.ok) throw new Error(`commerce read ${path} failed: ${resp.status}`);

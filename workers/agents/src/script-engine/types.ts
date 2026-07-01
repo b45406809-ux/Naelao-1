@@ -346,6 +346,11 @@ export interface ScriptEngineEnv {
   spaceId: string;
   agentId: string;
   tenantId: string;
+  /** For minting the internal HMAC token any direct (non-router) service-binding call to
+   *  another worker (spacesWorker, knowledgeWorker, ...) needs — see mintInternalToken,
+   *  @naelao/http. Optional so environments that never make such a call (most script tests)
+   *  don't need to supply it. */
+  platformSecret?: string;
   /** The end-user this run is on behalf of (set per /script/run call). Scopes the user model
    *  (Memory OS) and per-(channel,user) sessions. Absent for space-level/system-triggered runs. */
   userId?: string;

@@ -6,7 +6,7 @@
  */
 
 import { Hono } from "hono";
-import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut } from "@naelao/http";
+import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac } from "@naelao/http";
 import { chunkText, embedText, embedBatch, bm25Score, reciprocalRankFusion } from "@naelao/rag";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
@@ -624,6 +624,11 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
 
 const SEMANTIC_CACHE_SIMILARITY_THRESHOLD = 0.97;
 const SEMANTIC_CACHE_TTL_SECS = 24 * 60 * 60;
+
+// A1.16.9 (layer-3 backstop): these routes had NO auth check at all — not even a truthy
+// header, just an open POST/DELETE anyone reaching this worker could call. Covers lookup,
+// store, and the DELETE invalidation route below (prefix wildcard).
+app.use("/internal/semantic-cache/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
 
 app.post("/internal/semantic-cache/lookup", async (c) => {
   const body = await c.req.json<{ query: string; spaceId: string }>();

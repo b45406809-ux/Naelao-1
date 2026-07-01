@@ -23,7 +23,7 @@ describe("storefront prebuilt — business-service kinds", () => {
       },
     };
     const ctx = {
-      env: { spaceId: "space-1", tenantId: "tenant-1", spacesWorker },
+      env: { spaceId: "space-1", tenantId: "tenant-1", spacesWorker, platformSecret: "test-platform-secret" },
       run: async () => ({}),
     } as unknown as PrebuiltOpContext;
     return { ctx, sent };

@@ -26,6 +26,8 @@ dead_letter_queue = "naelao-billing-events-dlq"
 
 # Primary billing: Lemon Squeezy webhook dispatcher → wakes NaelaoAgentDO
 # Set LEMON_SQUEEZY_WEBHOOK_SECRET and LEMON_SQUEEZY_API_KEY via wrangler secret put
+# Also set PLATFORM_SECRET (shared with every other worker) — required to call spaces
+# worker's internal routes directly (mintInternalToken, @naelao/http).
 [[services]]
 binding = "AGENTS_WORKER"
 service = "naelao-agents"

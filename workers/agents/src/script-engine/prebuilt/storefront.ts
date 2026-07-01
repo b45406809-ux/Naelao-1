@@ -21,6 +21,7 @@
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
+import { mintInternalToken } from "@naelao/http";
 
 async function bizService(
   ctx: PrebuiltOpContext,
@@ -30,7 +31,11 @@ async function bizService(
   if (!ctx.env.spacesWorker) throw new Error("storefront unavailable: spaces worker binding not configured");
   const init: RequestInit = {
     method,
-    headers: { "content-type": "application/json", "x-naelao-tenant-id": ctx.env.tenantId, "x-naelao-internal": "storefront-script" },
+    headers: {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": ctx.env.tenantId,
+      "x-naelao-internal-token": await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId),
+    },
   };
   if (body) init.body = JSON.stringify({ space_id: ctx.env.spaceId, ...body });
   const path = method === "GET"

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { errorResponse, requestId, notFound } from "@naelao/http";
+import { errorResponse, requestId, notFound, requireInternalHmac } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
@@ -581,10 +581,10 @@ async function forwardToSpaceDO(
 
 // POST /spaces/:spaceId/registry — internal: seed/refresh the root space row.
 // Called by the provisioner (step 5b) with the manifest tenancy + agency_shell.
+// A1.16.9 (layer-3 backstop): the old check was a static "x-naelao-internal === 'provisioner'"
+// string, forgeable by anyone reaching this worker directly. requireInternalHmac replaces it.
+app.use("/spaces/:spaceId/registry", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.post("/spaces/:spaceId/registry", async (c) => {
-  if (c.req.header("x-naelao-internal") !== "provisioner") {
-    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
-  }
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
@@ -592,7 +592,15 @@ app.post("/spaces/:spaceId/registry", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
-// Projects (thread grouping). GET lists, POST creates — proxied to the SpaceDO.
+// Projects (thread grouping) — builder-only surface (never end-user-facing), so safe to gate
+// broadly: real traffic always arrives either via the router (proxyTo already mints the token
+// off verified JWT claims) or a direct internal caller (NaelaoAgentDO, agents worker — both
+// updated to mint it too).
+app.use("/spaces/:spaceId/projects", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/rules", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+
+// GET lists, POST creates — proxied to the SpaceDO.
 app.get("/spaces/:spaceId/projects", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -824,7 +832,9 @@ app.delete("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
 
 // Space Assistant approval policy — "same access as the owning user, ask first unless the
 // user has trusted this action." Owner-authenticated only; the assistant can never set its
-// own policy.
+// own policy. Also fetched directly by NaelaoAgentDO (fetchAssistantPolicy) — internal,
+// builder-only, never end-user-facing, so safe to gate broadly.
+app.use("/spaces/:spaceId/assistant-policy", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.get("/spaces/:spaceId/assistant-policy", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -1173,9 +1183,11 @@ app.get("/spaces/:spaceId/revenue", async (c) => {
 const STOREFRONT_ROOT = "naelao.com";
 const EMAIL_ROOT = "naelao-mail.com";
 
+// A1.16.9 (layer-3 backstop): the old check accepted ANY truthy x-naelao-internal value —
+// weaker than even a static string. Covers both the POST and GET handlers below (Hono's
+// app.use is method-agnostic for a given path).
+app.use("/internal/business-services", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.post("/internal/business-services", async (c) => {
-  const internal = c.req.header("x-naelao-internal");
-  if (!internal) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   const body = await c.req.json<{
     space_id: string;
@@ -1255,8 +1267,8 @@ app.post("/internal/business-services", async (c) => {
 
 // GET /internal/member-billing?space_id= — resolve a space's seat pricing (for the billing
 // worker's seat checkout). Returns 404 when member billing is not enabled.
+app.use("/internal/member-billing", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.get("/internal/member-billing", async (c) => {
-  if (!c.req.header("x-naelao-internal")) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
   const spaceId = c.req.query("space_id") ?? "";
   const space = await c.env.PLATFORM_DB.prepare(
     "SELECT spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
@@ -1274,7 +1286,6 @@ app.get("/internal/member-billing", async (c) => {
 });
 
 app.get("/internal/business-services", async (c) => {
-  if (!c.req.header("x-naelao-internal")) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
   const spaceId = c.req.query("space_id") ?? "";
   const kind = c.req.query("kind") ?? "";
   const row = await c.env.PLATFORM_DB.prepare(
@@ -1285,8 +1296,8 @@ app.get("/internal/business-services", async (c) => {
 
 // GET /internal/business-services/custom-domain-status?space_id= — poll CF for cert/DCV
 // status and flip the record to 'active' once Cloudflare reports the hostname active.
+app.use("/internal/business-services/custom-domain-status", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.get("/internal/business-services/custom-domain-status", async (c) => {
-  if (!c.req.header("x-naelao-internal")) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
   const spaceId = c.req.query("space_id") ?? "";
   const row = await c.env.PLATFORM_DB.prepare(
     "SELECT cf_hostname_id, custom_domain, status FROM business_services WHERE space_id = ? AND kind = 'custom_domain'"
@@ -1444,10 +1455,8 @@ function getRegistryDO(env: Env): ReturnType<typeof env.SPACE_TYPE_REGISTRY_DO.g
 }
 
 // GET /internal/space-types/:id — load manifest (KV-cached 1h for fast provisioning)
+app.use("/internal/space-types/:id", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.get("/internal/space-types/:id", async (c) => {
-  if (c.req.header("x-naelao-internal") !== "provisioner") {
-    return c.json({ error: "forbidden" }, 403);
-  }
   const typeId = c.req.param("id");
   const cacheKey = `space-type-manifest:${typeId}`;
 
@@ -1464,10 +1473,8 @@ app.get("/internal/space-types/:id", async (c) => {
 });
 
 // POST /internal/space-types/:id/record-install — called at end of provisioning (step 10)
+app.use("/internal/space-types/:id/record-install", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.post("/internal/space-types/:id/record-install", async (c) => {
-  if (c.req.header("x-naelao-internal") !== "provisioner") {
-    return c.json({ error: "forbidden" }, 403);
-  }
   const typeId = c.req.param("id");
   const body = await c.req.json<{ spaceId: string; version: string }>();
   const registry = getRegistryDO(c.env);
