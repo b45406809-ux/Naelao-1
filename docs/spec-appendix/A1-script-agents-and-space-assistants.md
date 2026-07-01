@@ -558,8 +558,10 @@ tracked as the next piece of this same builder conversation, not yet built.
 
 ## A1.5 Open follow-ups (tracked, not yet built)
 
-- **Credential hierarchy**: per-user (default) + per-space (shared, e.g. company email) +
-  per-privileged-user overrides.
+- ~~**Credential hierarchy**~~ — **BUILT** (see A1.16.5). Per-user (default) + per-space
+  (shared) + per-privileged-user overrides, in `workers/credentials`. Also closed a
+  pre-existing gap: `space_credentials` had no migration at all — the worker would have
+  thrown at runtime against a real D1.
 - **MCP as scripts**: agents never connect to MCP directly; they write/use scripts that wrap
   MCP providers (Pipedream, Composio).
 - ~~**Member/seat billing**~~ — **BUILT** (see A1.16.4). Lemon Squeezy billing for a builder's
@@ -1024,3 +1026,69 @@ with Naelao and bills their own clients from — was missing. Added:
   does not re-provision and merges over current; unowned space → 404
 - reseller statement: aggregates totals + per-client breakdown for a period; defaults to the
   current month; malformed period → 400; missing tenant → 401
+
+---
+
+## A1.16.5 Credential hierarchy (per-user / per-space / privileged override) — BUILT
+
+Closes the "credential hierarchy" open follow-up. Also closed in passing: `space_credentials`
+— the table the credentials worker has always queried — had **no migration creating it at
+all**; every query would have thrown against a real D1. `infra/migrations/0040_space_credentials.sql`
+creates it with the hierarchy built in from the start.
+
+**The three tiers, resolved in this order for an acting user:**
+1. `scope='space'` row with `is_override=1` — a privileged (owner/admin) override. Always wins,
+   even over the acting user's own personal credential. Lets an admin force everyone onto one
+   company-managed credential regardless of what individuals have connected.
+2. `scope='user'` row for the acting user — the per-user **default**: a member's own personal
+   credential (their own OAuth token, their own email account) for a given name.
+3. `scope='space'` row with `is_override=0` — the shared space-wide fallback (e.g. a shared
+   company email) used when the acting user has no personal credential of that name.
+
+Enforced by two partial unique indexes (`idx_space_credentials_user` on `(space_id, name,
+user_id) WHERE scope='user'`, `idx_space_credentials_space` on `(space_id, name) WHERE
+scope='space'`) — at most one personal credential per (space, name, user), and exactly one
+space-level row per (space, name) that is either the shared default or its override, never
+both (the override IS the space-level row; `is_override` just changes how it resolves).
+
+**Authorization (`workers/credentials/src/index.ts`):**
+- Any member may create/update their own `scope='user'` credential (`POST` upserts in place —
+  re-saving the same name rotates the value rather than erroring or duplicating).
+- Creating a `scope='space'` credential, OR setting `is_override=1`, requires `owner`/`admin`
+  (read from `x-naelao-role`, forwarded by the router from JWT claims — same trust boundary as
+  every other worker in this codebase).
+- `GET` (list) returns metadata only, never values. A non-privileged caller sees their own
+  personal credentials + all space-scoped ones (so they can see what's shared, never a
+  teammate's personal credential). Owner/admin sees everything, for audit/management.
+- `DELETE` — a member may delete their own personal credential; deleting any `scope='space'`
+  row (shared or override) requires owner/admin.
+
+**Resolution endpoint.** `POST /v1/internal/spaces/:spaceId/credentials/:name/plaintext` (called
+by mcp-hub, business-email, etc. via the short-lived HMAC credential token) now accepts an
+optional `on_behalf_of_user_id` in the body. Callers that don't know/care about a specific
+member (mcp-hub resolving a connector's own secret — unchanged, no body sent) get the effective
+space-level credential (override, else shared). Callers acting for a specific member (future:
+"send this email as me") pass their user id and get the full 3-tier resolution.
+
+**Router wiring (a second pre-existing gap closed).** The public CRUD routes
+(`POST/GET /spaces/:spaceId/credentials`, `DELETE /spaces/:spaceId/credentials/:credId`) were
+never proxied by `naelao-router` at all — the dashboard's credentials page called an endpoint
+that didn't exist on the public API. Added the `CREDENTIALS_WORKER` service binding + the two
+proxy routes. (The internal plaintext-resolution route is intentionally NOT proxied — it's
+service-binding-only, exactly like every other worker's `/internal/*` surface in this
+codebase.) One byproduct: the credentials worker's public routes had a `/v1` prefix baked into
+their own path definitions, inconsistent with every other proxied worker (spaces/knowledge/
+agents define routes WITHOUT `/v1`, since `proxyTo` always strips it before forwarding) — fixed
+by dropping the prefix on the three public routes; the internal route keeps its `/v1` prefix
+since it's only ever reached by other workers constructing the full URL directly over the
+service binding, never through the public router's prefix-stripping path.
+
+**Tests (`tests/unit/credential-hierarchy.test.ts`, 20 tests), against REAL SQLite.** Rather
+than regex-dispatch mocks, these run the actual migration SQL through `node:sqlite`
+(`tests/stubs/d1-sqlite.ts`, a thin D1-shaped facade) — this also serves as a live check that
+the migration's partial-unique-index + `ON CONFLICT ... WHERE ... DO UPDATE` upsert syntax is
+valid SQLite. Covers: scoping/authorization rules (member vs owner/admin, is_override gating),
+upsert-in-place, list visibility (own + shared vs everything), delete authorization, the full
+3-tier resolution order including the override-always-wins case, the no-`on_behalf_of` backward
+-compatible path (mcp-hub's actual call shape), 404 on no match, invalid-token rejection, and
+cross-tenant isolation.

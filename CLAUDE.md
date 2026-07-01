@@ -157,6 +157,16 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     manifest). Reseller: `GET /reseller/statement?period=YYYY-MM` sums the ledger into the
     consolidated wholesale invoice (totals by currency + per-client breakdown) the reseller
     settles — the G-AS34/G-AS35 wholesale-invoicing deliverable. Full detail: appendix §A1.16.4.
+18. **Credential hierarchy is now BUILT** (`workers/credentials`). Three tiers, resolved per
+    acting user: privileged (owner/admin) `is_override` space-level row always wins → a
+    member's own `scope='user'` credential (the per-user default) → the shared `scope='space'`
+    fallback. Enforced by two partial unique indexes so there's exactly one personal credential
+    per (space, name, user) and one space-level row per (space, name). Also closed a
+    pre-existing gap: `space_credentials` had no migration creating it at all
+    (`infra/migrations/0040_space_credentials.sql` now does, hierarchy built in from the
+    start) and the public CRUD routes were never proxied by `naelao-router` (added the
+    `CREDENTIALS_WORKER` binding + routes). Tests run the real migration through `node:sqlite`
+    rather than mocking SQL. Full detail: appendix §A1.16.5.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

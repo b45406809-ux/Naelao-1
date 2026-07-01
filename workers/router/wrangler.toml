@@ -55,6 +55,10 @@ service = "naelao-agents"
 binding = "AUTH_WORKER"
 service = "naelao-auth"
 
+[[services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
+
 [env.staging]
 name = "naelao-router-staging"
 vars = { ENVIRONMENT = "staging" }

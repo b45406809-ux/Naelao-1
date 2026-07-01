@@ -1,4 +1,11 @@
-// G-C01: Credentials worker — encrypted per-Space credential storage
+// G-C01: Credentials worker — encrypted per-Space credential storage.
+//
+// Credential hierarchy (CLAUDE.md open follow-up, closed here): a credential is resolved for an
+// ACTING USER in three tiers, most-specific-wins EXCEPT a privileged override always wins:
+//   1. space-scope row with is_override=1  — privileged (owner/admin) override, always wins
+//   2. user-scope row for the acting user  — personal credential (the per-user default)
+//   3. space-scope row with is_override=0  — shared space-wide fallback
+// See resolveCredential() below and infra/migrations/0040_space_credentials.sql.
 import { badRequest, errorResponse, forbidden, notFound, requestId } from "@naelao/http";
 import { Hono } from "hono";
 
@@ -98,6 +105,22 @@ async function decrypt(ciphertext: string, iv: string, rootKeyHex: string, space
   return new TextDecoder().decode(decrypted);
 }
 
+/** Resolve the root key hex matching a stored row's key_version (handles rotation). */
+function resolveRootKeyHex(
+  env: CredentialsEnv,
+  rowVersion: string | null
+): string {
+  const { version: currentVersion, hex: currentHex } = parseKeyEnv(env.CREDENTIAL_ENCRYPTION_KEY);
+  const effectiveRowVersion = rowVersion ?? "v1";
+  if (effectiveRowVersion === currentVersion) return currentHex;
+  const prevKey = (env as CredentialsEnv & { CREDENTIAL_ENCRYPTION_KEY_PREV?: string }).CREDENTIAL_ENCRYPTION_KEY_PREV;
+  if (prevKey) {
+    const { version: prevVersion, hex: prevHex } = parseKeyEnv(prevKey);
+    if (effectiveRowVersion === prevVersion) return prevHex;
+  }
+  return currentHex;
+}
+
 // ── G-F06: Short-lived per-request HMAC token for internal credential access ──
 // Token format: "t=<unix-seconds>,aid=<agentId>,v1=<hmac-hex>"
 // HMAC payload:  "<spaceId>:<agentId>:<timestamp>"
@@ -170,6 +193,7 @@ async function verifyCredentialToken(
 // ── Validation ────────────────────────────────────────────────────────────────
 
 const CREDENTIAL_NAME_RE = /^[A-Za-z0-9_]{1,64}$/;
+const PRIVILEGED_ROLES = new Set(["owner", "admin"]);
 
 function validateCredentialName(name: string): void {
   if (!CREDENTIAL_NAME_RE.test(name)) {
@@ -177,6 +201,60 @@ function validateCredentialName(name: string): void {
       "Credential name must be 1–64 characters: alphanumeric and underscore only"
     );
   }
+}
+
+function isPrivileged(role: string): boolean {
+  return PRIVILEGED_ROLES.has(role);
+}
+
+// ── Credential hierarchy: row shape + resolution ─────────────────────────────
+
+interface CredentialRow {
+  id: string;
+  space_id: string;
+  tenant_id: string;
+  name: string;
+  scope: "user" | "space";
+  user_id: string | null;
+  is_override: number;
+  encrypted_value: string;
+  iv: string;
+  key_version: string | null;
+  description: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * Resolve the effective credential row for (spaceId, name, actingUserId) per the hierarchy:
+ *   1. space-scope row with is_override=1  (privileged override — always wins)
+ *   2. user-scope row for actingUserId      (personal, default)
+ *   3. space-scope row with is_override=0   (shared fallback)
+ * actingUserId may be omitted (e.g. an agent acting on behalf of the space as a whole, not a
+ * specific member) — resolution then skips tier 2 and only considers the space-scope row.
+ */
+async function resolveCredential(
+  db: D1Database,
+  spaceId: string,
+  tenantId: string,
+  name: string,
+  actingUserId: string | null
+): Promise<CredentialRow | null> {
+  const spaceRow = await db.prepare(
+    `SELECT * FROM space_credentials WHERE space_id = ? AND tenant_id = ? AND name = ? AND scope = 'space' LIMIT 1`
+  ).bind(spaceId, tenantId, name).first<CredentialRow>();
+
+  if (spaceRow && spaceRow.is_override) return spaceRow;
+
+  if (actingUserId) {
+    const userRow = await db.prepare(
+      `SELECT * FROM space_credentials WHERE space_id = ? AND tenant_id = ? AND name = ? AND scope = 'user' AND user_id = ? LIMIT 1`
+    ).bind(spaceId, tenantId, name, actingUserId).first<CredentialRow>();
+    if (userRow) return userRow;
+  }
+
+  return spaceRow ?? null;
 }
 
 // ── Hono app ──────────────────────────────────────────────────────────────────
@@ -189,45 +267,86 @@ app.use("*", async (c, next) => {
   await next();
 });
 
-// POST /v1/spaces/:spaceId/credentials — create a credential
-app.post("/v1/spaces/:spaceId/credentials", async (c) => {
+// POST /v1/spaces/:spaceId/credentials — create a credential.
+// Body: { name, value, description?, scope?: 'user'|'space' (default 'user'), is_override?: boolean }
+// - scope='user' (default): a member's own personal credential. Always allowed for the caller,
+//   always owned by the caller (a user can never create another user's credential).
+// - scope='space': the shared space-wide credential. Requires owner/admin.
+// - is_override=true: only valid with scope='space', requires owner/admin — forces this value
+//   ahead of any member's personal credential of the same name.
+app.post("/spaces/:spaceId/credentials", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  const role = c.req.header("x-naelao-role") ?? "viewer";
   const spaceId = c.req.param("spaceId");
 
   if (!tenantId) throw badRequest("x-naelao-tenant-id header is required");
+  if (!userId) throw badRequest("x-naelao-user-id header is required");
 
-  let body: { name: string; value: string; description?: string };
+  let body: {
+    name: string;
+    value: string;
+    description?: string;
+    scope?: "user" | "space";
+    is_override?: boolean;
+  };
   try {
-    body = await c.req.json<{ name: string; value: string; description?: string }>();
+    body = await c.req.json();
   } catch {
     throw badRequest("Invalid JSON body");
   }
 
   if (!body.name) throw badRequest("name is required");
   if (!body.value) throw badRequest("value is required");
-
   validateCredentialName(body.name);
+
+  const scope = body.scope ?? "user";
+  if (scope !== "user" && scope !== "space") {
+    throw badRequest("scope must be 'user' or 'space'");
+  }
+  const isOverride = Boolean(body.is_override);
+  if (isOverride && scope !== "space") {
+    throw badRequest("is_override is only valid with scope='space'");
+  }
+  if ((scope === "space" || isOverride) && !isPrivileged(role)) {
+    throw forbidden("Only owner/admin may set a space-shared credential or override");
+  }
 
   // G-AH07: Space-derived key; each space's credentials use a distinct HKDF-derived key
   const { ciphertext, iv, key_version } = await encrypt(body.value, c.env.CREDENTIAL_ENCRYPTION_KEY, spaceId);
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
+  const ownerUserId = scope === "user" ? userId : null;
 
+  // Upsert on the unique (space,name,scope[,user]) index so re-saving the same name/scope
+  // rotates the value in place rather than erroring or leaving orphaned rows.
+  const conflictTarget = scope === "user" ? "(space_id, name, user_id)" : "(space_id, name)";
   await c.env.PLATFORM_DB.prepare(
     `INSERT INTO space_credentials
-       (id, space_id, tenant_id, name, encrypted_value, iv, key_version, description, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, space_id, tenant_id, name, scope, user_id, is_override, encrypted_value, iv, key_version, description, created_by, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT ${conflictTarget} WHERE scope = '${scope}' DO UPDATE SET
+       is_override = excluded.is_override,
+       encrypted_value = excluded.encrypted_value,
+       iv = excluded.iv,
+       key_version = excluded.key_version,
+       description = excluded.description,
+       updated_at = excluded.updated_at`
   )
     .bind(
       id,
       spaceId,
       tenantId,
       body.name,
+      scope,
+      ownerUserId,
+      isOverride ? 1 : 0,
       ciphertext,
       iv,
       key_version,
       body.description ?? null,
+      userId,
       now,
       now
     )
@@ -237,6 +356,8 @@ app.post("/v1/spaces/:spaceId/credentials", async (c) => {
     {
       id,
       name: body.name,
+      scope,
+      is_override: isOverride,
       description: body.description ?? null,
       created_at: now,
     },
@@ -244,41 +365,71 @@ app.post("/v1/spaces/:spaceId/credentials", async (c) => {
   );
 });
 
-// GET /v1/spaces/:spaceId/credentials — list credentials (names only, no values)
-app.get("/v1/spaces/:spaceId/credentials", async (c) => {
+// GET /v1/spaces/:spaceId/credentials — list credentials (metadata only, never values).
+// A non-privileged caller sees: their own user-scoped credentials + all space-scoped ones
+// (so they can see what's shared/overridden, without seeing teammates' personal credentials).
+// A privileged caller (owner/admin) sees everything, for management/audit visibility.
+app.get("/spaces/:spaceId/credentials", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  const role = c.req.header("x-naelao-role") ?? "viewer";
   const spaceId = c.req.param("spaceId");
 
   if (!tenantId) throw badRequest("x-naelao-tenant-id header is required");
 
-  const results = await c.env.PLATFORM_DB.prepare(
-    `SELECT id, name, description, created_at
-     FROM space_credentials
-     WHERE space_id = ? AND tenant_id = ?
-     ORDER BY created_at DESC`
-  )
-    .bind(spaceId, tenantId)
-    .all<{
-      id: string;
-      name: string;
-      description: string | null;
-      created_at: string;
-    }>();
+  const query = isPrivileged(role)
+    ? c.env.PLATFORM_DB.prepare(
+        `SELECT id, name, scope, user_id, is_override, description, created_at
+         FROM space_credentials
+         WHERE space_id = ? AND tenant_id = ?
+         ORDER BY created_at DESC`
+      ).bind(spaceId, tenantId)
+    : c.env.PLATFORM_DB.prepare(
+        `SELECT id, name, scope, user_id, is_override, description, created_at
+         FROM space_credentials
+         WHERE space_id = ? AND tenant_id = ? AND (scope = 'space' OR user_id = ?)
+         ORDER BY created_at DESC`
+      ).bind(spaceId, tenantId, userId);
 
-  return c.json({ credentials: results.results });
+  const results = await query.all<{
+    id: string;
+    name: string;
+    scope: "user" | "space";
+    user_id: string | null;
+    is_override: number;
+    description: string | null;
+    created_at: string;
+  }>();
+
+  return c.json({
+    credentials: results.results.map((r) => ({ ...r, is_override: Boolean(r.is_override) })),
+  });
 });
 
-// DELETE /v1/spaces/:spaceId/credentials/:credId — delete a credential
-app.delete("/v1/spaces/:spaceId/credentials/:credId", async (c) => {
+// DELETE /v1/spaces/:spaceId/credentials/:credId — delete a credential.
+// A user may always delete their own user-scoped credential. Deleting a space-scoped
+// credential (shared or override) requires owner/admin.
+app.delete("/spaces/:spaceId/credentials/:credId", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const userId = c.req.header("x-naelao-user-id") ?? "";
+  const role = c.req.header("x-naelao-role") ?? "viewer";
   const spaceId = c.req.param("spaceId");
   const credId = c.req.param("credId");
 
   if (!tenantId) throw badRequest("x-naelao-tenant-id header is required");
 
+  const row = await c.env.PLATFORM_DB.prepare(
+    `SELECT scope, user_id FROM space_credentials WHERE id = ? AND space_id = ? AND tenant_id = ?`
+  ).bind(credId, spaceId, tenantId).first<{ scope: "user" | "space"; user_id: string | null }>();
+  if (!row) throw notFound("Credential");
+
+  const isOwnCredential = row.scope === "user" && row.user_id === userId;
+  if (!isOwnCredential && !isPrivileged(role)) {
+    throw forbidden("Only the owning member or an owner/admin may delete this credential");
+  }
+
   const result = await c.env.PLATFORM_DB.prepare(
-    `DELETE FROM space_credentials
-     WHERE id = ? AND space_id = ? AND tenant_id = ?`
+    `DELETE FROM space_credentials WHERE id = ? AND space_id = ? AND tenant_id = ?`
   )
     .bind(credId, spaceId, tenantId)
     .run();
@@ -291,7 +442,10 @@ app.delete("/v1/spaces/:spaceId/credentials/:credId", async (c) => {
 });
 
 // POST /v1/internal/spaces/:spaceId/credentials/:name/plaintext
-// Internal endpoint — returns decrypted value for agent tool dispatch
+// Internal endpoint — returns decrypted value for agent tool dispatch, resolved through the
+// credential hierarchy for an optional acting user (body.on_behalf_of_user_id). Callers that
+// don't know/care about a specific member (e.g. mcp-hub resolving a connector's own secret)
+// omit it and get the effective space-level credential (override, else shared).
 // G-F06: Requires short-lived HMAC credential token (x-naelao-credential-token)
 //        embedding {spaceId}:{agentId}:{timestamp}, expires 60s.
 app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) => {
@@ -309,40 +463,21 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
     throw forbidden(tokenCheck.reason ?? "Invalid credential token");
   }
 
-  const row = await c.env.PLATFORM_DB.prepare(
-    `SELECT name, encrypted_value, iv, key_version
-     FROM space_credentials
-     WHERE name = ? AND space_id = ? AND tenant_id = ?
-     LIMIT 1`
-  )
-    .bind(credName, spaceId, tenantId)
-    .first<{
-      name: string;
-      encrypted_value: string;
-      iv: string;
-      key_version: string | null;
-    }>();
+  let onBehalfOfUserId: string | null = null;
+  try {
+    const body = await c.req.json<{ on_behalf_of_user_id?: string }>();
+    onBehalfOfUserId = body.on_behalf_of_user_id ?? null;
+  } catch {
+    // Empty/absent body is fine — resolves at the space level.
+  }
 
+  const row = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, credName, onBehalfOfUserId);
   if (!row) {
     throw notFound("Credential");
   }
 
   // G-AH07/G-D05: Resolve the root key matching this credential's key_version for decryption.
-  // Per-space derived key is always re-derived from the appropriate root key version.
-  const currentKey = c.env.CREDENTIAL_ENCRYPTION_KEY;
-  const { version: currentVersion, hex: currentHex } = parseKeyEnv(currentKey);
-  const rowVersion = row.key_version ?? "v1";
-
-  let rootHex = currentHex;
-  if (rowVersion !== currentVersion) {
-    const prevKey = (c.env as typeof c.env & { CREDENTIAL_ENCRYPTION_KEY_PREV?: string }).CREDENTIAL_ENCRYPTION_KEY_PREV;
-    if (prevKey) {
-      const { version: prevVersion, hex: prevHex } = parseKeyEnv(prevKey);
-      if (rowVersion === prevVersion) {
-        rootHex = prevHex;
-      }
-    }
-  }
+  const rootHex = resolveRootKeyHex(c.env, row.key_version);
 
   // G-AH07: Re-derive the per-space key from the resolved root key hex and spaceId
   const value = await decrypt(row.encrypted_value, row.iv, rootHex, spaceId);
@@ -356,20 +491,21 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
     }
     c.env.ANALYTICS.writeDataPoint({
       blobs: [
-        "credential_access",   // blob1: event_name
-        row.name,              // blob2: credential_name (not the value)
-        spaceId,               // blob3: space_id
-        tokenParts["aid"] ?? "", // blob4: agent_id
-        tenantId,              // blob5: tenant_id
+        "credential_access",          // blob1: event_name
+        row.name,                     // blob2: credential_name (not the value)
+        spaceId,                      // blob3: space_id
+        tokenParts["aid"] ?? "",      // blob4: agent_id
+        tenantId,                     // blob5: tenant_id
+        row.scope,                    // blob6: resolved scope (user | space)
       ],
-      doubles: [Date.now()],   // double1: access_timestamp_ms
+      doubles: [Date.now()],          // double1: access_timestamp_ms
       indexes: [spaceId],
     });
   } catch {
     // Best-effort — audit failures must not block the credential read
   }
 
-  return c.json({ name: row.name, value });
+  return c.json({ name: row.name, value, scope: row.scope, is_override: Boolean(row.is_override) });
 });
 
 // ── Error handler ─────────────────────────────────────────────────────────────

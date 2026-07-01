@@ -18,6 +18,7 @@ export interface Env {
   KNOWLEDGE_WORKER: Fetcher;
   AGENTS_WORKER: Fetcher;
   AUTH_WORKER: Fetcher;
+  CREDENTIALS_WORKER: Fetcher;
 }
 
 // G-AX27: Replay attack prevention — max clock skew in seconds
@@ -275,6 +276,15 @@ api.all("/spaces", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.
 // Knowledge (KB) → knowledge worker
 api.all("/spaces/:spaceId/kb/*", async (c) =>
   proxyTo(c.env.KNOWLEDGE_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
+// Credentials (per-user / per-space / privileged-override hierarchy) → credentials worker.
+// Never proxy /internal/* here — internal credential resolution is service-binding-only.
+api.all("/spaces/:spaceId/credentials", async (c) =>
+  proxyTo(c.env.CREDENTIALS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/credentials/:credId", async (c) =>
+  proxyTo(c.env.CREDENTIALS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 
 // Agent sessions + messages → agents worker
