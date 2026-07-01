@@ -211,3 +211,136 @@ export const PRESENCE_FRESHNESS_WINDOW_MS = 90_000;
 export function isPresenceFresh(lastSeenAtMs: number, nowMs: number, windowMs: number = PRESENCE_FRESHNESS_WINDOW_MS): boolean {
   return nowMs - lastSeenAtMs <= windowMs;
 }
+
+// ── Time-based scheduling (spec §05 "cron-jobs.json — the assistant's schedule of recurring
+// tasks") — the no-code equivalent of "every day at 9am, run this script." Complements the
+// event-driven triggers above with a TIME-driven one. A lightweight, dependency-free 5-field
+// cron matcher (minute hour day-of-month month day-of-week, UTC): '*', literal numbers,
+// comma lists, ranges, and '/step' — covering every form used by this build's own templates
+// ("0 8 * * *", "0 9 * * *", "0 * * * *") with headroom for anything a builder reasonably
+// picks from a no-code cron-expression UI. Deliberately not a full croniter port.
+//
+// The spec warns against re-parsing cron expressions on every heartbeat tick ("the Worker has
+// a 10ms CPU limit per heartbeat invocation... never re-parse on every heartbeat") — that
+// warning is about OpenClaw's tight 5-minute loop. Our dispatcher (runScheduledJobs, agents
+// worker) runs HOURLY, so a bounded per-minute scan since the job's last run is cheap (at
+// most a few thousand iterations) and needs no persistent "precomputed next run" cache.
+
+export interface ParsedCronField {
+  wildcard: boolean;
+  values: Set<number>;
+}
+
+function parseCronField(field: string, min: number, max: number): ParsedCronField {
+  if (field === "*") return { wildcard: true, values: new Set() };
+  const values = new Set<number>();
+  for (const part of field.split(",")) {
+    const stepMatch = part.match(/^(\*|\d+)(?:-(\d+))?\/(\d+)$/);
+    if (stepMatch) {
+      const start = stepMatch[1] === "*" ? min : parseInt(stepMatch[1]!, 10);
+      const end = stepMatch[2] ? parseInt(stepMatch[2], 10) : max;
+      const step = parseInt(stepMatch[3]!, 10);
+      if (step <= 0) throw new Error(`Cron step must be positive: "${part}"`);
+      for (let v = start; v <= end; v += step) values.add(v);
+      continue;
+    }
+    const rangeMatch = part.match(/^(\d+)-(\d+)$/);
+    if (rangeMatch) {
+      const start = parseInt(rangeMatch[1]!, 10);
+      const end = parseInt(rangeMatch[2]!, 10);
+      for (let v = start; v <= end; v++) values.add(v);
+      continue;
+    }
+    if (!/^\d+$/.test(part)) throw new Error(`Unparseable cron field segment: "${part}"`);
+    const n = parseInt(part, 10);
+    if (n < min || n > max) throw new Error(`Cron field value ${n} out of range [${min}, ${max}]: "${part}"`);
+    values.add(n);
+  }
+  return { wildcard: false, values };
+}
+
+export interface ParsedCron {
+  minute: ParsedCronField;
+  hour: ParsedCronField;
+  dayOfMonth: ParsedCronField;
+  month: ParsedCronField;
+  dayOfWeek: ParsedCronField;
+}
+
+/** Parse a standard 5-field cron expression ("minute hour day-of-month month day-of-week").
+ *  Throws on a malformed expression (wrong field count or unparseable/out-of-range field) so
+ *  a builder gets an immediate error at creation time rather than a silently-never-firing job. */
+export function parseCronExpression(expr: string): ParsedCron {
+  const fields = expr.trim().split(/\s+/);
+  if (fields.length !== 5) {
+    throw new Error(`Cron expression must have exactly 5 fields (minute hour day month weekday), got ${fields.length}: "${expr}"`);
+  }
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = fields;
+  return {
+    minute: parseCronField(minute!, 0, 59),
+    hour: parseCronField(hour!, 0, 23),
+    dayOfMonth: parseCronField(dayOfMonth!, 1, 31),
+    month: parseCronField(month!, 1, 12),
+    dayOfWeek: parseCronField(dayOfWeek!, 0, 6),
+  };
+}
+
+/** Validate a cron expression without needing the parsed result — for a create/update
+ *  endpoint to reject a malformed expression up front. Returns the parse error, or null. */
+export function validateCronExpression(expr: string): string | null {
+  try {
+    parseCronExpression(expr);
+    return null;
+  } catch (err) {
+    return (err as Error).message;
+  }
+}
+
+function fieldMatches(field: ParsedCronField, value: number): boolean {
+  return field.wildcard || field.values.has(value);
+}
+
+/** Whether `date` (evaluated in UTC) matches the parsed cron expression, to the minute. */
+export function cronMatchesDate(cron: ParsedCron, date: Date): boolean {
+  return (
+    fieldMatches(cron.minute, date.getUTCMinutes()) &&
+    fieldMatches(cron.hour, date.getUTCHours()) &&
+    fieldMatches(cron.dayOfMonth, date.getUTCDate()) &&
+    fieldMatches(cron.month, date.getUTCMonth() + 1) &&
+    fieldMatches(cron.dayOfWeek, date.getUTCDay())
+  );
+}
+
+/** Default lookback bound for isCronDue's per-minute scan — generous enough for any cron
+ *  granularity used by this build's templates (daily) with headroom for a missed dispatch
+ *  cycle or a newly-enabled long-dormant job, small enough that the scan is always trivial
+ *  (at most ~11,520 iterations of simple arithmetic) even in the worst case. */
+export const CRON_DUE_MAX_LOOKBACK_MS = 8 * 24 * 60 * 60 * 1000; // 8 days
+
+/**
+ * Whether a job with this cron expression is due to fire between its last run and now.
+ * Scans minute-by-minute since max(lastRunAtMs, nowMs - lookback) — bounded so a
+ * long-dormant job can't cause an unbounded scan. If the job was due more than once in the
+ * gap (e.g. the dispatcher missed a cycle), this still returns true (fires once for the
+ * gap; the caller records last_run_at so it isn't re-fired next tick, matching the spec's own
+ * "update lastRun ... compute the next nextRun" model without needing a separate precomputed
+ * field).
+ */
+export function isCronDue(
+  cronExpression: string,
+  lastRunAtMs: number,
+  nowMs: number,
+  lookbackMs: number = CRON_DUE_MAX_LOOKBACK_MS
+): boolean {
+  const cron = parseCronExpression(cronExpression);
+  const earliestStart = nowMs - lookbackMs;
+  const scanStart = Math.max(lastRunAtMs, earliestStart);
+  // Scan the minute AFTER scanStart through now (inclusive) — "after" so a job whose
+  // last_run_at IS an exact match-minute doesn't refire immediately on the same minute.
+  const startMinute = Math.floor(scanStart / 60_000) + 1;
+  const endMinute = Math.floor(nowMs / 60_000);
+  for (let m = startMinute; m <= endMinute; m++) {
+    if (cronMatchesDate(cron, new Date(m * 60_000))) return true;
+  }
+  return false;
+}

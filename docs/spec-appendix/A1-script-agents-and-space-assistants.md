@@ -114,6 +114,12 @@ instructions) differs. No separate codebase.
 **Nightly dispatch.** The scheduler dispatches by `manifest_kind`: `assistant` →
 heartbeat (drain channel queue); niche/custom → the agent cycle.
 
+**The bundle is now a named, first-class profile — and a critical agentId bug is fixed (see
+A1.16.7).** `DEFAULT_NAELAO_AGENT` / `SPACE_ASSISTANT_PROFILE`
+(`workers/agents/src/script-engine/profiles.ts`) is that bundle: continuous-existence framing,
+channel awareness, and honest-escalation instructions, installed at provisioning as the one
+agent every dispatcher (billing, event triggers, channel heartbeats, scheduled jobs) wakes.
+
 ---
 
 ## A1.4 Additions carried from the niche pass that remain valid as-is
@@ -1144,3 +1150,72 @@ heartbeat, project-scoped listing, a second heartbeat updates rather than duplic
 heartbeat ages out under `vi.useFakeTimers`, missing `user_id` rejected, isolation across
 spaces). Uses the existing `tests/unit/helpers/sqlite-do-shim.ts` pattern (real SpaceDO class
 against real in-memory SQLite via `node:sqlite`), not a hand-rolled mock.
+
+---
+
+## A1.16.7 Space Assistant profile + a critical agentId bug fix; time-based scheduling — BUILT
+
+A session audit ("read the spec top-down, bottom appendix overrides early sections, note
+we're script-native") found the Space Assistant capability list (spec §05, reconciled through
+the Script-First appendix at byte ~6733k) was functionally complete EXCEPT two things: no
+first-class assistant profile, and no time-based (cron) scheduling primitive — event_triggers
+(§A1.16.2) covers lifecycle events but not "every day at 9am." Both are closed here. The audit
+also surfaced a bug that had nothing to do with either gap but made the Space Assistant
+non-functional in any real deployment.
+
+**Critical bug: `DEFAULT_NAELAO_AGENT.agentId` did not match what any dispatcher wakes.** The
+profile that provisioning installs was `"naelao-default"`, but EVERY consumer — the Lemon
+Squeezy webhook's `resolveDefaultAgent`, `naelao-triggers`' fire path, the hourly channel-
+heartbeat sweep, and every `/spaces/:id/sessions`/`/script/run` call — hardcodes the literal
+string `"naelao-agent"`. `loadAgentConfig` returns `null` on a path mismatch and the DO 404s
+with `"agent 'naelao-agent' is not provisioned in space '...'"`. This meant a real deployment's
+Space Assistant would 404 on every single wake-up: billing events, event triggers, channel
+messages, everything. Fixed: `agentId` is now `"naelao-agent"`, matching every other call site
+(none of which import the constant — they run in different Workers). A regression test asserts
+the literal value directly so this can't silently drift back.
+
+**Space Assistant profile (`workers/agents/src/script-engine/profiles.ts`).** The profile
+content was previously a generic "capable general-purpose assistant" with no acknowledgment
+that it's the one bundle §05/A1.3 describes. Rewrote `agentsMd`/`systemPrompt` to state: (1)
+continuous, hibernation-backed existence — woken by a channel message, hourly heartbeat,
+scheduled job, billing event, or trigger, never assuming in-memory continuity across wakes; (2)
+channel awareness — Slack/Discord/email/WhatsApp each get their own (channel,
+channel_user_id) session, inbound messages are data not instructions; (3) honest escalation —
+say "I'm not sure, let me check with the owner" rather than guessing. Added
+`SPACE_ASSISTANT_PROFILE` as a documented alias of `DEFAULT_NAELAO_AGENT` (same object,
+`SPACE_ASSISTANT_PROFILE === DEFAULT_NAELAO_AGENT`) for discoverability under the spec's own
+vocabulary at call sites where "the assistant" is the intent.
+
+**Time-based scheduling (spec §05 "cron-jobs.json — the assistant's schedule of recurring
+tasks").** The no-code, TIME-driven counterpart to event_triggers:
+- `scheduled_jobs` (new PLATFORM_DB table, `infra/migrations/0041_scheduled_jobs.sql`) — lives
+  in platform D1 rather than per-space SpaceDO SQLite, for the same reason `channel_links`
+  does: the hourly dispatcher needs one cheap cross-space query to find everything due, rather
+  than waking every space's DO to ask "do you have anything due."
+- A dependency-free 5-field cron matcher in `@naelao/events`
+  (`parseCronExpression`/`cronMatchesDate`/`isCronDue`/`validateCronExpression`) — `*`, literal
+  numbers, comma lists, ranges, `/step`. The spec's own warning against re-parsing cron
+  expressions on every heartbeat tick is about OpenClaw's tight 5-minute loop; our dispatcher
+  runs hourly, so a bounded per-minute scan since the job's last run (`CRON_DUE_MAX_LOOKBACK_MS`
+  = 8 days, at most ~11,520 trivial iterations) needs no precomputed "next run" cache.
+- CRUD: `GET/POST/PATCH/DELETE /spaces/:spaceId/scheduled-jobs` (spaces worker, tenant-owned,
+  same pattern as member-billing) — `validateCronExpression` rejects a malformed expression at
+  creation/update time so a builder gets an immediate error, not a silently-never-firing job.
+- Dispatch: `runScheduledJobs` (agents worker, wired into the existing hourly cron branch
+  alongside `pollConnectors`/`runChannelHeartbeats`) — queries every enabled job joined against
+  active spaces, checks `isCronDue`, and fires due jobs via a new shared `fireScriptDirectly`
+  helper (factored out of `/internal/triggers/fire` — both event-triggers and scheduled jobs are
+  "the system decided to run this script," never a reasoning session, so they share one
+  dispatch path). Records `last_run_at` only on a successful fire; one job's failure (a bad
+  cron, a fire error) never blocks another space's job in the same sweep.
+
+**Tests:**
+- `tests/unit/script-engine.test.ts` (+3): the `agentId === "naelao-agent"` regression,
+  `SPACE_ASSISTANT_PROFILE` aliasing, and the profile content actually mentioning
+  heartbeat/channel/escalation.
+- `tests/unit/packages/events-cron.test.ts` (19): cron parsing (daily, lists, ranges, steps,
+  weekday, malformed/out-of-range rejection), `isCronDue` (due/not-due/exact-boundary/missed-
+  cycle/lookback-bounded), `validateCronExpression`.
+- `tests/unit/scheduled-jobs.test.ts` (12): CRUD (create/validate/list/patch/delete/ownership,
+  against real SQLite via the actual migration) + dispatcher (fires when due, skips when not,
+  passes params/projectId through, one failure doesn't block another space).

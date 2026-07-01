@@ -5,6 +5,7 @@ import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
 import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
 import { cfSaasConfig, createCustomHostname, getCustomHostname } from "./cf-saas.js";
+import { validateCronExpression } from "@naelao/events";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
@@ -717,6 +718,108 @@ app.delete("/spaces/:spaceId/event-triggers/:triggerId", async (c) => {
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/event-triggers/${encodeURIComponent(triggerId)}?space_id=${encodeURIComponent(spaceId)}`, "DELETE");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// Scheduled jobs (@naelao/events, spec §05 "cron-jobs.json") — the no-code, TIME-driven
+// counterpart to event-triggers: "every day at 9am, run this script." Unlike event-triggers
+// (per-space rows in SpaceDO, evaluated inline when the triggering action already touches that
+// DO), scheduled jobs live directly in PLATFORM_DB — the hourly dispatcher (runScheduledJobs,
+// agents worker) needs one cheap cross-space query to find everything due, the same reason
+// channel_links is a platform table rather than per-space state.
+app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
+  const owned = await loadOwnedSpace(c, c.req.param("spaceId"));
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT id, name, cron_expression, script_name, params, project_id, enabled, last_run_at, created_at, updated_at
+       FROM scheduled_jobs WHERE space_id = ? ORDER BY created_at DESC`
+  ).bind(c.req.param("spaceId")).all();
+  return c.json({ data: results, count: results.length });
+});
+
+app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+
+  const body = await c.req.json<{
+    name: string;
+    cron_expression: string;
+    script_name: string;
+    params?: Record<string, unknown>;
+    project_id?: string;
+  }>().catch(() => ({}) as Record<string, never>);
+  if (!body.name || !body.cron_expression || !body.script_name) {
+    return c.json({ error_code: "bad_request", message: "name, cron_expression, and script_name are required" }, 400);
+  }
+  const cronError = validateCronExpression(body.cron_expression);
+  if (cronError) return c.json({ error_code: "bad_request", message: `Invalid cron_expression: ${cronError}` }, 400);
+
+  const id = crypto.randomUUID();
+  const now = new Date().toISOString();
+  await c.env.PLATFORM_DB.prepare(
+    `INSERT INTO scheduled_jobs (id, space_id, tenant_id, project_id, name, cron_expression, script_name, params, enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+  ).bind(
+    id, spaceId, owned.tenantId, body.project_id ?? null, body.name, body.cron_expression,
+    body.script_name, JSON.stringify(body.params ?? {}), now, now
+  ).run();
+
+  return c.json({
+    id, name: body.name, cron_expression: body.cron_expression, script_name: body.script_name,
+    project_id: body.project_id ?? null, enabled: true, last_run_at: null, created_at: now,
+  }, 201);
+});
+
+app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const jobId = c.req.param("jobId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+
+  const body = await c.req.json<{
+    name?: string;
+    cron_expression?: string;
+    script_name?: string;
+    params?: Record<string, unknown>;
+    enabled?: boolean;
+  }>().catch(() => ({}) as Record<string, never>);
+
+  if (body.cron_expression !== undefined) {
+    const cronError = validateCronExpression(body.cron_expression);
+    if (cronError) return c.json({ error_code: "bad_request", message: `Invalid cron_expression: ${cronError}` }, 400);
+  }
+
+  const now = new Date().toISOString();
+  const res = await c.env.PLATFORM_DB.prepare(
+    `UPDATE scheduled_jobs SET
+       name = COALESCE(?, name),
+       cron_expression = COALESCE(?, cron_expression),
+       script_name = COALESCE(?, script_name),
+       params = COALESCE(?, params),
+       enabled = COALESCE(?, enabled),
+       updated_at = ?
+     WHERE id = ? AND space_id = ? AND tenant_id = ?`
+  ).bind(
+    body.name ?? null, body.cron_expression ?? null, body.script_name ?? null,
+    body.params !== undefined ? JSON.stringify(body.params) : null,
+    body.enabled === undefined ? null : (body.enabled ? 1 : 0),
+    now, jobId, spaceId, owned.tenantId
+  ).run();
+
+  if (res.meta.changes === 0) return c.json({ error_code: "not_found", message: "Scheduled job not found" }, 404);
+  return c.json({ id: jobId, updated_at: now });
+});
+
+app.delete("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const jobId = c.req.param("jobId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const res = await c.env.PLATFORM_DB.prepare(
+    "DELETE FROM scheduled_jobs WHERE id = ? AND space_id = ? AND tenant_id = ?"
+  ).bind(jobId, spaceId, owned.tenantId).run();
+  if (res.meta.changes === 0) return c.json({ error_code: "not_found", message: "Scheduled job not found" }, 404);
+  return c.json({ deleted: true, id: jobId });
 });
 
 // Space Assistant approval policy — "same access as the owning user, ask first unless the

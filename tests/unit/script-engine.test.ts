@@ -5,7 +5,7 @@ import { scriptFind } from "../../workers/agents/src/script-engine/script-find.j
 import { runScriptLoop, type Reasoner, type ReasonDecision } from "../../workers/agents/src/script-engine/loop.js";
 import { observeFilesystem } from "../../workers/agents/src/script-engine/observe.js";
 import { writeAgentConfig, loadAgentConfig } from "../../workers/agents/src/script-engine/agent-config.js";
-import { launchpadAgentToProfile, DEFAULT_NAELAO_AGENT } from "../../workers/agents/src/script-engine/profiles.js";
+import { launchpadAgentToProfile, DEFAULT_NAELAO_AGENT, SPACE_ASSISTANT_PROFILE } from "../../workers/agents/src/script-engine/profiles.js";
 import { LAUNCHPAD_CORE_AGENTS } from "../../workers/agents/src/launchpad/spacetype.js";
 import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
 
@@ -411,6 +411,27 @@ describe("Agent config 4 R2 files + profiles (spec §11/§13)", () => {
     expect(loaded).not.toBeNull();
     expect(loaded!.scripts.prebuilt).toContain("r2-workspace");
     expect(loaded!.scripts.startup_observe).toBe("observe_filesystem");
+  });
+
+  it("DEFAULT_NAELAO_AGENT.agentId is exactly 'naelao-agent' (regression: every dispatcher — " +
+     "billing, event triggers, channel heartbeats, scheduled jobs — hardcodes this literal " +
+     "string; a mismatched agentId here means the provisioned config lives at a different R2 " +
+     "path than every wake-up call looks for, and every dispatch 404s: 'agent is not " +
+     "provisioned in space')", () => {
+    expect(DEFAULT_NAELAO_AGENT.agentId).toBe("naelao-agent");
+  });
+
+  it("SPACE_ASSISTANT_PROFILE is the same profile as DEFAULT_NAELAO_AGENT (one bundle, not two)", () => {
+    expect(SPACE_ASSISTANT_PROFILE).toBe(DEFAULT_NAELAO_AGENT);
+  });
+
+  it("the Space Assistant profile reflects continuous existence, channels, and honest escalation (spec §05/A1.3)", () => {
+    const combined = DEFAULT_NAELAO_AGENT.config.agentsMd + " " + DEFAULT_NAELAO_AGENT.config.systemPrompt;
+    expect(combined).toMatch(/heartbeat/i);
+    expect(combined).toMatch(/channel/i);
+    expect(combined).toMatch(/escalat/i);
+    // notifications carries the HITL / owner-escalation surface
+    expect(DEFAULT_NAELAO_AGENT.config.scripts.prebuilt).toContain("notifications");
   });
 
   it("derives a profile from each Launchpad core agent", () => {

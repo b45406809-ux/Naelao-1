@@ -17,6 +17,7 @@
     "@naelao/billing-core": "workspace:*",
     "@naelao/entitlements": "workspace:*",
     "@naelao/moderation": "workspace:*",
+    "@naelao/events": "workspace:*",
     "hono": "^4.6.0"
   },
   "devDependencies": {

@@ -26,6 +26,7 @@ import { shouldPromote } from "./whop/cycle-logic.js";
 import { listManifests } from "./launchpad/manifest.js";
 import { LAUNCHPAD_TEMPLATES } from "./launchpad/spacetype.js";
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
+import { isCronDue } from "@naelao/events";
 import { SkillLibrary } from "./script-engine/skill-library.js";
 import { promoteSkill, inheritTemplateSkills } from "./script-engine/federation.js";
 import { verifyWebhookSignature, normalizeWebhook, webhookGoal } from "./connectors/webhook-normalizer.js";
@@ -589,6 +590,33 @@ app.post("/agents/:agentId/script/run", async (c) => {
   return c.json(doBody, doResp.status as 200 | 400 | 404 | 500 | 503);
 });
 
+// Shared by /internal/triggers/fire and runScheduledJobs (the time-based dispatcher below) —
+// runs a named script DIRECTLY via ScriptToolSurface, no OBSERVE/FIND/GATE, no reasoner, no
+// LLM call. Both event-triggers and scheduled jobs are "the system decided to run this
+// script," never a reasoning session, so they share one dispatch path.
+async function fireScriptDirectly(
+  env: AgentsEnv,
+  params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; scriptName: string; params?: Record<string, unknown> },
+  reqId?: string
+): Promise<Response> {
+  const agentId = params.agentId ?? "naelao-agent";
+  const stub = await getAgentDOForSpace(env, params.tenantId, params.spaceId, agentId, reqId);
+  return stub.fetch(
+    new Request("http://agent-do/triggers/fire", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        spaceId: params.spaceId,
+        agentId,
+        tenantId: params.tenantId,
+        ...(params.projectId ? { projectId: params.projectId } : {}),
+        scriptName: params.scriptName,
+        params: params.params ?? {},
+      }),
+    })
+  );
+}
+
 // ── POST /internal/triggers/fire — @naelao/events dispatch target ─────────────
 // SpaceDO calls this after evaluating an event_triggers match (thread.created,
 // project.created, ...). Deliberately NOT the reasoning loop: this runs the named script
@@ -612,22 +640,7 @@ app.post("/internal/triggers/fire", async (c) => {
   if (!body?.spaceId || !body.tenantId || !body.scriptName) {
     return c.json({ error_code: "bad_request", message: "spaceId, tenantId, and scriptName are required" }, 400);
   }
-  const agentId = body.agentId ?? "naelao-agent";
-  const stub = await getAgentDOForSpace(c.env, body.tenantId, body.spaceId, agentId, c.get("requestId"));
-  const doResp = await stub.fetch(
-    new Request("http://agent-do/triggers/fire", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        spaceId: body.spaceId,
-        agentId,
-        tenantId: body.tenantId,
-        ...(body.projectId ? { projectId: body.projectId } : {}),
-        scriptName: body.scriptName,
-        params: body.params ?? {},
-      }),
-    })
-  );
+  const doResp = await fireScriptDirectly(c.env, body, c.get("requestId"));
   const doBody = await doResp.json<unknown>();
   return c.json(doBody, doResp.status as 200 | 400 | 404 | 500 | 503);
 });
@@ -2006,6 +2019,51 @@ async function runChannelHeartbeats(env: AgentsEnv): Promise<void> {
   }
 }
 
+// ── Scheduled jobs sweep (hourly cron) — spec §05 "cron-jobs.json" ───────────────────────
+// The no-code, TIME-driven counterpart to runChannelHeartbeats: one cheap cross-space query
+// against PLATFORM_DB (scheduled_jobs, see infra/migrations/0041) finds every enabled job,
+// isCronDue (@naelao/events, bounded per-minute scan since last_run_at) decides which are due,
+// and each due job fires DIRECTLY via fireScriptDirectly — no reasoning loop, matching
+// event-triggers' own "the system decided to run this" dispatch model.
+async function runScheduledJobs(env: AgentsEnv): Promise<void> {
+  const { results } = await env.PLATFORM_DB.prepare(
+    `SELECT sj.id, sj.space_id, sj.tenant_id, sj.project_id, sj.cron_expression, sj.script_name, sj.params, sj.last_run_at
+       FROM scheduled_jobs sj
+       JOIN spaces s ON s.id = sj.space_id AND s.status = 'active'
+      WHERE sj.enabled = 1`
+  ).all<{
+    id: string; space_id: string; tenant_id: string; project_id: string | null;
+    cron_expression: string; script_name: string; params: string; last_run_at: number | null;
+  }>();
+
+  const now = Date.now();
+  for (const row of results) {
+    try {
+      // Never-run job: treat "last run" as the job's own creation instant is unavailable here
+      // (not selected), so fall back to 0 — isCronDue's lookback bound still caps the scan.
+      const lastRunAt = row.last_run_at ?? 0;
+      if (!isCronDue(row.cron_expression, lastRunAt, now)) continue;
+
+      const doResp = await fireScriptDirectly(env, {
+        spaceId: row.space_id,
+        tenantId: row.tenant_id,
+        ...(row.project_id ? { projectId: row.project_id } : {}),
+        scriptName: row.script_name,
+        params: JSON.parse(row.params || "{}") as Record<string, unknown>,
+      });
+      if (doResp.ok) {
+        await env.PLATFORM_DB.prepare("UPDATE scheduled_jobs SET last_run_at = ? WHERE id = ?").bind(now, row.id).run();
+      } else {
+        console.error(`[scheduled-jobs] fire failed job=${row.id} space=${row.space_id}: ${doResp.status}`);
+      }
+    } catch (err) {
+      // A parse error in a malformed cron_expression, or a fire failure, must never block
+      // other spaces' jobs in the same sweep (same isolation reasoning as runChannelHeartbeats).
+      console.error(`[scheduled-jobs] job failed id=${row.id} space=${row.space_id}:`, (err as Error).message);
+    }
+  }
+}
+
 async function handleScheduled(env: AgentsEnv): Promise<void> {
   // Fetch all registered business user IDs from ProductDO
   const productDO = await getProductDO(env);
@@ -2094,15 +2152,17 @@ async function handleScheduled(env: AgentsEnv): Promise<void> {
 }
 
 // Exported for end-to-end tests that drive the assembled app the way the router does.
-export { app };
+export { app, runScheduledJobs };
 
 export default {
   fetch: app.fetch,
   async scheduled(controller: ScheduledController, env: AgentsEnv, _ctx: ExecutionContext): Promise<void> {
-    // Hourly cron → poll webhook-less connectors; daily cron → the nightly business cycle.
+    // Hourly cron → poll webhook-less connectors, channel heartbeats, and time-based
+    // scheduled jobs (spec §05 cron-jobs.json); daily cron → the nightly business cycle.
     if (controller.cron === "0 * * * *") {
       await pollConnectors(env);
       await runChannelHeartbeats(env);
+      await runScheduledJobs(env);
     } else {
       await handleScheduled(env);
     }

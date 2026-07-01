@@ -179,6 +179,19 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     no-code trigger to broadcast "this already exists" — never blocks creation. Also fixed in
     passing: `updateProject` had no `status` field at all, so a project could never actually
     be archived. Full detail: appendix §A1.16.6.
+20. **Space Assistant profile + a critical agentId bug fix, and time-based scheduling, are now
+    BUILT.** A top-down spec read (§05, overridden by the Script-First appendix) found the
+    Space Assistant capability list functionally complete except a missing first-class profile
+    and no cron-style scheduling — and surfaced a real bug: `DEFAULT_NAELAO_AGENT.agentId` was
+    `"naelao-default"` while EVERY dispatcher (billing, triggers, channel heartbeats,
+    sessions) hardcodes `"naelao-agent"` — a real deployment's Space Assistant would 404 on
+    every wake-up. Fixed the id; rewrote the profile (`SPACE_ASSISTANT_PROFILE`, an alias of
+    `DEFAULT_NAELAO_AGENT`) to state continuous existence, channel awareness, and honest
+    escalation. Time-based scheduling: `scheduled_jobs` (new PLATFORM_DB table, cron-matcher
+    in `@naelao/events`: `parseCronExpression`/`isCronDue`), `GET/POST/PATCH/DELETE
+    /spaces/:spaceId/scheduled-jobs`, and `runScheduledJobs` wired into the existing hourly
+    cron — the no-code, TIME-driven counterpart to event_triggers (spec §05 cron-jobs.json).
+    Full detail: appendix §A1.16.7.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

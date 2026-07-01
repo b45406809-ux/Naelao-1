@@ -511,6 +511,9 @@ importers:
       '@naelao/entitlements':
         specifier: workspace:*
         version: link:../../packages/entitlements
+      '@naelao/events':
+        specifier: workspace:*
+        version: link:../../packages/events
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
