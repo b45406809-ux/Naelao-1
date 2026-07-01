@@ -20,6 +20,7 @@
     "@naelao/llm-gateway": "workspace:*",
     "@naelao/security": "workspace:*",
     "@naelao/billing-core": "workspace:*",
+    "@naelao/events": "workspace:*",
     "typescript": "^5.6.3"
   }
 }

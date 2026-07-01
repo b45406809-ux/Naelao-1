@@ -589,6 +589,49 @@ app.post("/agents/:agentId/script/run", async (c) => {
   return c.json(doBody, doResp.status as 200 | 400 | 404 | 500 | 503);
 });
 
+// ── POST /internal/triggers/fire — @naelao/events dispatch target ─────────────
+// SpaceDO calls this after evaluating an event_triggers match (thread.created,
+// project.created, ...). Deliberately NOT the reasoning loop: this runs the named script
+// DIRECTLY via ScriptToolSurface, no OBSERVE/FIND/GATE, no reasoner, no LLM call — a fired
+// trigger action must be cheap and deterministic (spec-adjacent: "the compact script runs
+// so next time a user comes to that thread the conversation won't eat too much tokens" —
+// the trigger mechanism itself must not eat tokens either). Internal-only.
+app.post("/internal/triggers/fire", async (c) => {
+  if (c.req.header("x-naelao-internal") !== "spaces-trigger") {
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  }
+  interface FireBody {
+    spaceId: string;
+    tenantId: string;
+    agentId?: string;
+    projectId?: string;
+    scriptName: string;
+    params?: Record<string, unknown>;
+  }
+  const body = await c.req.json<FireBody>().catch(() => null);
+  if (!body?.spaceId || !body.tenantId || !body.scriptName) {
+    return c.json({ error_code: "bad_request", message: "spaceId, tenantId, and scriptName are required" }, 400);
+  }
+  const agentId = body.agentId ?? "naelao-agent";
+  const stub = await getAgentDOForSpace(c.env, body.tenantId, body.spaceId, agentId, c.get("requestId"));
+  const doResp = await stub.fetch(
+    new Request("http://agent-do/triggers/fire", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        spaceId: body.spaceId,
+        agentId,
+        tenantId: body.tenantId,
+        ...(body.projectId ? { projectId: body.projectId } : {}),
+        scriptName: body.scriptName,
+        params: body.params ?? {},
+      }),
+    })
+  );
+  const doBody = await doResp.json<unknown>();
+  return c.json(doBody, doResp.status as 200 | 400 | 404 | 500 | 503);
+});
+
 // ── GET /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId ────────────────
 
 app.get(

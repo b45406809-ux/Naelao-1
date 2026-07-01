@@ -44,19 +44,33 @@ export function parseRequiresApprovalFor(agentsMd: string): Set<string> {
 }
 
 /**
+ * Whether `gatedActions` blocks `actionName`, under the run's approval mode:
+ *   - "gate_listed" (default — ordinary project-bound Naelao Agents): gatedActions is an
+ *     ALLOWLIST of what's gated. Everything else runs freely. This is agents.md's
+ *     `requires_approval_for:` block — a builder opts specific actions INTO approval.
+ *   - "gate_unless_listed" (the Space Assistant's default posture): gatedActions is an
+ *     ALLOWLIST of what's PRE-APPROVED. Everything else is gated by default — "same access
+ *     as the owning user, but ask first unless the user has explicitly trusted this action."
+ */
+function isGated(actionName: string, gatedActions: Set<string>, mode: ApprovalMode): boolean {
+  return mode === "gate_unless_listed" ? !gatedActions.has(actionName) : gatedActions.has(actionName);
+}
+
+/**
  * Gate an action against the HITL policy. Returns true if execution should proceed.
- * When hitlGateway is absent or the action is not gated, always returns true (proceed).
+ * When hitlGateway is absent or the action isn't gated under the current mode, proceeds.
  */
 async function hitlGate(
   actionName: string,
   actionInput: Record<string, unknown>,
   gatedActions: Set<string>,
+  mode: ApprovalMode,
   gateway: HITLGateway | undefined,
   runId: string,
   sessionId: string,
   notes: string[]
 ): Promise<boolean> {
-  if (!gatedActions.has(actionName) || !gateway) return true;
+  if (!isGated(actionName, gatedActions, mode) || !gateway) return true;
   notes.push(`HITL gate: requesting approval for '${actionName}'`);
   const { approved, reason, approvalId } = await gateway.requestApproval({
     runId,
@@ -124,6 +138,9 @@ export const DEFAULT_ESCALATION: EscalationConfig = {
   confidenceFloor: FIND_CONFIDENCE_FLOOR,
 };
 
+/** See RunLoopOptions.approvalMode. */
+export type ApprovalMode = "gate_listed" | "gate_unless_listed";
+
 export interface RunLoopOptions {
   goal: string;
   startupObserve: string;
@@ -140,12 +157,21 @@ export interface RunLoopOptions {
    */
   maxTokens?: number;
   /**
-   * Action names that require human approval before execution (from agents.md
-   * `requires_approval_for:` block — parsed by NaelaoAgentDO and passed here).
-   * When env.hitlGateway is present and the chosen action name is in this set,
+   * Action names interpreted according to `approvalMode` (default "gate_listed"):
+   *   - "gate_listed": these are the actions that REQUIRE approval (agents.md's
+   *     `requires_approval_for:` block) — everything else runs freely. The normal posture
+   *     for an ordinary, narrower-purpose Naelao Agent.
+   *   - "gate_unless_listed": these are the actions PRE-APPROVED to skip asking — everything
+   *     else requires approval by default. The Space Assistant's posture: same access as the
+   *     user who owns it, but ask first unless the user has explicitly trusted this action
+   *     (an empty list + this mode = ask before literally everything; a non-empty list here
+   *     with an absent hitlGateway, or "yolo" policy passing an empty gate_listed set, is how
+   *     a user grants full autonomy — see NaelaoAgentDO.fetchAssistantPolicy).
+   * When env.hitlGateway is present and the chosen action is gated under the current mode,
    * the loop pauses and waits for HITLApprovalDO to resolve it before running.
    */
   requiresApprovalFor?: string[];
+  approvalMode?: ApprovalMode;
   /** Opaque run/session identifiers forwarded to the HITL gateway. */
   runId?: string;
   sessionId?: string;
@@ -184,6 +210,7 @@ export async function runScriptLoop(
   const cfg: EscalationConfig = { ...DEFAULT_ESCALATION, ...opts.escalation };
   const notes: string[] = [];
   const gatedActions = new Set(opts.requiresApprovalFor ?? []);
+  const approvalMode: ApprovalMode = opts.approvalMode ?? "gate_listed";
   const runId = opts.runId ?? crypto.randomUUID();
   const sessionId = opts.sessionId ?? "unknown";
 
@@ -219,7 +246,7 @@ export async function runScriptLoop(
     case "L1": {
       const params = paramsFor(top!, opts.goal);
       // HITL gate before execution
-      const allowed = await hitlGate(top!.name, params, gatedActions, env.hitlGateway, runId, sessionId, notes);
+      const allowed = await hitlGate(top!.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes);
       if (!allowed) {
         return { level, script_name: top!.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes };
       }
@@ -242,7 +269,7 @@ export async function runScriptLoop(
       if (decision.action === "patch") {
         await tools.update(decision.name, { code: decision.code }, decision.reason);
         const params = paramsFor(top!, opts.goal);
-        const allowed = await hitlGate(decision.name, params, gatedActions, env.hitlGateway, runId, sessionId, notes);
+        const allowed = await hitlGate(decision.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes);
         if (!allowed) {
           return withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usage);
         }
@@ -292,7 +319,7 @@ export async function runScriptLoop(
 
         if (decision.action === "run") {
           // HITL gate before execution
-          const allowed = await hitlGate(decision.name, decision.params, gatedActions, env.hitlGateway, runId, sessionId, notes);
+          const allowed = await hitlGate(decision.name, decision.params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes);
           if (!allowed) {
             return withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usageAcc);
           }

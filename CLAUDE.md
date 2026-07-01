@@ -120,6 +120,25 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     lives entirely in scripts an assistant authors and wires into its agents' instructions.
     Lock keys are always space/project-prefixed server-side, never left to a script to
     remember. Full detail: appendix §A1.15.
+14. **Assistant approval policy + YOLO mode are now BUILT.** The HITL gate in `runScriptLoop`
+    has a second mode: `gate_unless_listed` (Space Assistant default) inverts the allowlist
+    — every action is gated **unless** it appears in `auto_approved_actions`. `yolo` mode
+    sets `gate_listed` with an empty list (nothing ever gated). Policy is stored in SpaceDO
+    migration v14 (`assistant_policy` table: `approval_mode`, `auto_approved_actions`).
+    `fetchAssistantPolicy()` in `NaelaoAgentDO` fails CLOSED — any error defaults to
+    `always_ask` with no pre-approved actions, never silently grants yolo. Endpoints:
+    `GET/PATCH /spaces/:spaceId/assistant-policy`. Full detail: appendix §A1.16.1.
+15. **No-code event triggers (`@naelao/events`) are now BUILT.** Builders configure
+    "project lifecycle triggers" — e.g. "when a new thread is created and the last-active
+    thread has been idle 5 min, run the compact script" — as SpaceDO rows (migration v15,
+    `event_triggers` table). The `@naelao/events` package (`packages/events/`) provides pure
+    DO-agnostic logic: `matchesEvent`, `selectMatchingRules`, `evaluateCondition`,
+    `buildFireParams`. Trigger fire bypasses the reasoning loop entirely — `handleTriggerFire`
+    in `NaelaoAgentDO` calls `ScriptToolSurface.run()` directly; no LLM cost. Project
+    scoping is structurally enforced: a project-scoped trigger can never fire across project
+    boundaries. Fan-out is bounded at 5 rules per event. Endpoints:
+    `GET/POST /spaces/:spaceId/event-triggers`, `DELETE /spaces/:spaceId/event-triggers/:id`.
+    Full detail: appendix §A1.16.2.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
@@ -178,9 +197,9 @@ DO hibernation kills ALL in-memory state — always persist to SQLite.
 - `tests/` — integration, e2e, contract, isolation, load tests
 
 ## Git
-**Active branch: `claude/naelao-missing-gaps-pass-8vkakf`** — work here; do NOT push to any
+**Active branch: `claude/naelao-missing-gaps-pass-6kb300`** — work here; do NOT push to any
 other branch without explicit permission. Commit after every working subsystem; push after
-every commit. (Older branch `...-713ruz` is superseded.)
+every commit. (Older branches `...-8vkakf` and `...-713ruz` are superseded.)
 
 ## Build Progress
 - [x] Phase 0: Scaffold (root workspace, packages, workers structure)
@@ -193,7 +212,7 @@ every commit. (Older branch `...-713ruz` is superseded.)
 - [x] Phase 7: Async Systems (Queues consumers, Workflows, all 28 workers)
 - [x] Phase 8: Analytics + Observability (analytics-schema, tracing, logger packages)
 - [x] Phase 9: Security Hardening (PBKDF2 G-B02, JWT pin G-B01, moderation, SSRF, env validation)
-- [x] Phase 10: Test Suite (167 tests across 14 suites — crypto, moderation, entitlements, webhooks, analytics-schema, idempotency, auth, rag, security, llm-gateway, spacedo, auth-flow, api-schema, tenant-isolation)
+- [x] Phase 10: Test Suite (449 tests across 45 suites — crypto, moderation, entitlements, webhooks, analytics-schema, idempotency, auth, rag, security, llm-gateway, spacedo, auth-flow, api-schema, tenant-isolation, script-engine, sub-agents, memory, channels, billing, events, and more)
 
 ## Additional Infrastructure Built
 - [x] Terraform IaC (cloudflare/cloudflare ~4.45, all KV/R2/D1/Queues/Vectorize/Pages resources)

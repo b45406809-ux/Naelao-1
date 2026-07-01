@@ -254,6 +254,12 @@ importers:
         specifier: '*'
         version: 5.9.3
 
+  packages/events:
+    devDependencies:
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
   packages/http:
     dependencies:
       '@naelao/auth':
@@ -441,6 +447,9 @@ importers:
       '@naelao/entitlements':
         specifier: workspace:*
         version: link:../packages/entitlements
+      '@naelao/events':
+        specifier: workspace:*
+        version: link:../packages/events
       '@naelao/idempotency':
         specifier: workspace:*
         version: link:../packages/idempotency
@@ -1041,6 +1050,9 @@ importers:
       '@naelao/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@naelao/events':
+        specifier: workspace:*
+        version: link:../../packages/events
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http

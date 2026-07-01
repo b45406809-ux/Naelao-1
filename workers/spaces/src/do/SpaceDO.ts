@@ -2,6 +2,8 @@ import { DurableObject } from "cloudflare:workers";
 import { applyMigrations, queryAll, queryOne, execute } from "@naelao/db";
 import type { Migration } from "@naelao/db";
 import type { MessageRole } from "@naelao/types";
+import { selectMatchingRules, evaluateCondition, buildFireParams } from "@naelao/events";
+import type { TriggerRule, TriggerCondition, EventEnvelope, ConditionContext } from "@naelao/events";
 
 function safeJsonParseObj(text: string): Record<string, unknown> {
   try {
@@ -10,6 +12,53 @@ function safeJsonParseObj(text: string): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function safeJsonParseArr(text: string): unknown[] {
+  try {
+    const v = JSON.parse(text) as unknown;
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeJsonParseCondition(text: string): TriggerCondition {
+  try {
+    const v = JSON.parse(text) as unknown;
+    if (v && typeof v === "object" && typeof (v as { type?: unknown }).type === "string") {
+      return v as TriggerCondition;
+    }
+  } catch {
+    /* fall through to the always-match default */
+  }
+  return { type: "always" };
+}
+
+interface EventTriggerRow {
+  id: string;
+  space_id: string;
+  project_id: string | null;
+  event_type: string;
+  condition: string;
+  script_name: string;
+  params: string;
+  enabled: number;
+  priority: number;
+  created_at: string;
+}
+
+function rowToTriggerRule(row: EventTriggerRow): TriggerRule {
+  return {
+    id: row.id,
+    space_id: row.space_id,
+    ...(row.project_id ? { project_id: row.project_id } : {}),
+    event_type: row.event_type,
+    condition: safeJsonParseCondition(row.condition),
+    action: { type: "run_script", script_name: row.script_name, params: safeJsonParseObj(row.params) },
+    enabled: row.enabled === 1,
+    priority: row.priority,
+  };
 }
 
 // ── Schema migrations ────────────────────────────────────────────────────────
@@ -315,10 +364,58 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE projects ADD COLUMN show_sub_threads INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    version: 14,
+    // Space Assistant approval policy: "same access as the owning user, but ask before
+    // acting unless the user has explicitly trusted this action." One row per space.
+    // approval_mode='always_ask' (the default) gates EVERY action unless it's in
+    // auto_approved_actions; approval_mode='yolo' skips asking entirely. This inverts the
+    // ordinary Naelao Agent's requires_approval_for allowlist (which gates a SPECIFIC list of
+    // actions, everything else free) — see loop.ts's ApprovalMode.
+    description: "assistant_policy (Space Assistant approval mode + auto-approved actions)",
+    up: `
+      CREATE TABLE IF NOT EXISTS assistant_policy (
+        space_id              TEXT PRIMARY KEY,
+        approval_mode         TEXT NOT NULL DEFAULT 'always_ask' CHECK (approval_mode IN ('always_ask','yolo')),
+        auto_approved_actions TEXT NOT NULL DEFAULT '[]', -- JSON array of action names
+        updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `,
+  },
+  {
+    version: 15,
+    // Event triggers (spec-adjacent "no-code, from projects to threads to everything"):
+    // "after event X happens in this project/space, run script Y" — the same no-code,
+    // admin/assistant-authored, checked-before-anything-expensive pattern as project_rules,
+    // generalized from "customer said X" to "X happened structurally" (a thread was created,
+    // a project was created, ...). Always scoped to project_id (or space-wide when NULL) —
+    // condition evaluation and target-thread resolution NEVER cross that boundary (an agent
+    // cannot construct a trigger, or have one fire, against another project's threads).
+    description: "event_triggers (no-code lifecycle triggers, e.g. 'thread created -> compact the idle one')",
+    up: `
+      CREATE TABLE IF NOT EXISTS event_triggers (
+        id            TEXT PRIMARY KEY,
+        space_id      TEXT NOT NULL,
+        project_id    TEXT, -- NULL = space-wide
+        event_type    TEXT NOT NULL, -- e.g. 'thread.created', 'project.created'
+        condition     TEXT NOT NULL DEFAULT '{"type":"always"}', -- JSON TriggerCondition (@naelao/events)
+        script_name   TEXT NOT NULL, -- the script.run action fired on match
+        params        TEXT NOT NULL DEFAULT '{}', -- JSON, merged with event-derived params at fire time
+        enabled       INTEGER NOT NULL DEFAULT 1,
+        priority      INTEGER NOT NULL DEFAULT 0,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_event_triggers_lookup ON event_triggers(space_id, event_type, enabled, priority DESC);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
   PLATFORM_SECRET: string;
+  /** Agents worker — used to fire event_triggers (script.run) on a structural lifecycle
+   *  event (thread.created, project.created, ...). Optional: firing is best-effort, never
+   *  blocks the state change that triggered it. */
+  AGENTS_WORKER?: Fetcher;
 }
 
 // Row types for internal use
@@ -559,6 +656,27 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const projectRuleIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/rules\/([^/]+)$/);
       if (method === "DELETE" && projectRuleIdMatch?.[1] && projectRuleIdMatch?.[2]) {
         return this.deleteProjectRule(projectRuleIdMatch[1], projectRuleIdMatch[2]);
+      }
+
+      // ── Event triggers (@naelao/events) ────────────────────────────────────────
+      // GET /event-triggers?space_id=&project_id=
+      if (method === "GET" && url.pathname === "/event-triggers") {
+        return this.listEventTriggers(url.searchParams);
+      }
+      if (method === "POST" && url.pathname === "/event-triggers") {
+        return this.createEventTrigger(request);
+      }
+      const eventTriggerIdMatch = url.pathname.match(/^\/event-triggers\/([^/]+)$/);
+      if (method === "DELETE" && eventTriggerIdMatch?.[1]) {
+        return this.deleteEventTrigger(url.searchParams.get("space_id") ?? "", eventTriggerIdMatch[1]);
+      }
+
+      // ── Space Assistant approval policy ────────────────────────────────────────
+      if (method === "GET" && url.pathname === "/assistant-policy") {
+        return this.getAssistantPolicy(url.searchParams.get("space_id") ?? "");
+      }
+      if (method === "PATCH" && url.pathname === "/assistant-policy") {
+        return this.updateAssistantPolicy(url.searchParams.get("space_id") ?? "", request);
       }
 
       // ── threads (spec-canonical; sub-agent/channel mirrors are ordinary subthreads) ────
@@ -1148,13 +1266,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async createProject(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id: string; name: string; description?: string }>();
+    const body = await request.json<{ space_id: string; name: string; description?: string; tenant_id?: string }>();
     if (!body.space_id || !body.name) {
       return Response.json({ error_code: "bad_request", message: "space_id and name are required" }, { status: 400 });
     }
+    // Check BEFORE inserting — createProject is idempotent on (space_id, name), and
+    // project.created should only fire on a genuinely NEW project, not a re-run of bootstrap.
+    const alreadyExisted = !!queryOne<{ id: string }>(
+      this.ctx.storage.sql as never, "SELECT id FROM projects WHERE space_id = ? AND name = ?", body.space_id, body.name
+    );
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
-    // Idempotent on (space_id, name) so re-running bootstrap doesn't duplicate projects.
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO projects (id, space_id, name, description, status, created_at) VALUES (?, ?, ?, ?, 'active', ?)
@@ -1166,6 +1288,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       "SELECT id, name, status, created_at FROM projects WHERE space_id = ? AND name = ?",
       body.space_id, body.name
     );
+    if (!alreadyExisted && row) {
+      // Awaited (not fire-and-forget) — same reasoning as mirrorThread elsewhere in this
+      // build: an un-awaited promise can be abandoned mid-flight once this response is sent
+      // and the DO's request context is free to tear down. fireMatchingTriggers is itself
+      // best-effort/non-throwing, so this never fails project creation.
+      await this.fireMatchingTriggers({ type: "project.created", space_id: body.space_id, project_id: row.id, occurred_at: Date.now() }, body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "");
+    }
     return Response.json(row ?? { id, name: body.name, status: "active", created_at: now }, { status: 201 });
   }
 
@@ -1277,6 +1406,51 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ deleted: true });
   }
 
+  // ── Space Assistant approval policy ──────────────────────────────────────────
+  // "Same access as the owning user, but ask before acting unless the user has explicitly
+  // trusted this action." always_ask (default) gates everything except auto_approved_actions;
+  // yolo skips asking entirely. User-controlled, never settable by the assistant itself —
+  // only this space-worker route (owner-authenticated) can change it.
+  private getAssistantPolicy(spaceId: string): Response {
+    const row = queryOne<{ space_id: string; approval_mode: string; auto_approved_actions: string; updated_at: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM assistant_policy WHERE space_id = ?",
+      spaceId
+    );
+    if (!row) {
+      return Response.json({ space_id: spaceId, approval_mode: "always_ask", auto_approved_actions: [] });
+    }
+    return Response.json({ ...row, auto_approved_actions: safeJsonParseArr(row.auto_approved_actions) });
+  }
+
+  private async updateAssistantPolicy(spaceId: string, request: Request): Promise<Response> {
+    const body = await request.json<{
+      approval_mode?: "always_ask" | "yolo";
+      auto_approved_actions?: string[];
+    }>().catch(() => ({}) as Record<string, never>);
+
+    if (body.approval_mode !== undefined && body.approval_mode !== "always_ask" && body.approval_mode !== "yolo") {
+      return Response.json({ error_code: "bad_request", message: "approval_mode must be 'always_ask' or 'yolo'" }, { status: 400 });
+    }
+
+    const existing = queryOne<{ approval_mode: string; auto_approved_actions: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT approval_mode, auto_approved_actions FROM assistant_policy WHERE space_id = ?",
+      spaceId
+    );
+    const approvalMode = body.approval_mode ?? existing?.approval_mode ?? "always_ask";
+    const autoApproved = body.auto_approved_actions ?? (existing ? safeJsonParseArr(existing.auto_approved_actions) : []);
+    const now = new Date().toISOString();
+
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO assistant_policy (space_id, approval_mode, auto_approved_actions, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(space_id) DO UPDATE SET approval_mode = excluded.approval_mode, auto_approved_actions = excluded.auto_approved_actions, updated_at = excluded.updated_at`,
+      spaceId, approvalMode, JSON.stringify(autoApproved), now
+    );
+    return this.getAssistantPolicy(spaceId);
+  }
+
   // ── Threads (spec-canonical) ─────────────────────────────────────────────────
   // A sub-agent run or a channel conversation mirrors in here as an ordinary thread —
   // thread_kind='sub_agent'/'channel' plus parent_thread_id, not a separate concept. Default
@@ -1323,6 +1497,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       thread_kind?: "primary" | "sub_agent" | "channel";
       channel?: string;
       channel_session_id?: string;
+      tenant_id?: string;
     }>().catch(() => ({}) as Record<string, never>);
     if (!body.space_id) {
       return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
@@ -1333,6 +1508,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     const id = body.id ?? crypto.randomUUID();
     const now = new Date().toISOString();
+    const tenantId = body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "";
+    // thread.created only fires for a genuinely NEW thread — never on the idempotent
+    // update/re-mirror branches below (a webhook retry or a repeat mirrorThread() call must
+    // not re-fire triggers for a thread that already existed).
+    const fireCreated = (threadId: string, projectId: string | null) =>
+      this.fireMatchingTriggers({ type: "thread.created", space_id: body.space_id, ...(projectId ? { project_id: projectId } : {}), thread_id: threadId, occurred_at: Date.now() }, tenantId);
 
     if (body.channel_session_id) {
       // Idempotent on channel_session_id — a channel's inbound webhook retries safely and
@@ -1357,6 +1538,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         id, body.space_id, body.user_id ?? null, body.project_id ?? null, body.title ?? null,
         body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id, now, now
       );
+      await fireCreated(id, body.project_id ?? null);
       const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", id);
       return Response.json(row, { status: 201 });
     }
@@ -1372,6 +1554,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         id, body.space_id, body.user_id ?? null, body.project_id ?? null, body.title ?? null,
         body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id ?? null, now, now
       );
+      await fireCreated(id, body.project_id ?? null);
     }
     const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", id);
     return Response.json(row, { status: 201 });
@@ -1381,6 +1564,130 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", threadId);
     if (!row) return Response.json({ error_code: "not_found", message: "Thread not found" }, { status: 404 });
     return Response.json(row);
+  }
+
+  // ── Event triggers (@naelao/events) — no-code "after X happens, run script Y" ─────────────
+  private listEventTriggers(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const projectId = params.get("project_id");
+    const clauses = ["space_id = ?"];
+    const args: unknown[] = [spaceId];
+    if (projectId) {
+      clauses.push("(project_id = ? OR project_id IS NULL)");
+      args.push(projectId);
+    }
+    const rows = queryAll<EventTriggerRow>(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM event_triggers WHERE ${clauses.join(" AND ")} ORDER BY priority DESC, created_at`,
+      ...args
+    );
+    const data = rows.map(rowToTriggerRule);
+    return Response.json({ data, count: data.length });
+  }
+
+  private async createEventTrigger(request: Request): Promise<Response> {
+    const body = await request.json<{
+      space_id: string;
+      project_id?: string;
+      event_type: string;
+      condition?: TriggerCondition;
+      script_name: string;
+      params?: Record<string, unknown>;
+      priority?: number;
+    }>().catch(() => ({}) as Record<string, never>);
+
+    if (!body.space_id || !body.event_type || !body.script_name) {
+      return Response.json({ error_code: "bad_request", message: "space_id, event_type, and script_name are required" }, { status: 400 });
+    }
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO event_triggers (id, space_id, project_id, event_type, condition, script_name, params, enabled, priority, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      id, body.space_id, body.project_id ?? null, body.event_type,
+      JSON.stringify(body.condition ?? { type: "always" }), body.script_name,
+      JSON.stringify(body.params ?? {}), body.priority ?? 0, now
+    );
+    return Response.json(
+      { id, space_id: body.space_id, project_id: body.project_id ?? null, event_type: body.event_type, script_name: body.script_name, created_at: now },
+      { status: 201 }
+    );
+  }
+
+  private deleteEventTrigger(spaceId: string, triggerId: string): Response {
+    execute(this.ctx.storage.sql as never, "DELETE FROM event_triggers WHERE id = ? AND space_id = ?", triggerId, spaceId);
+    return Response.json({ deleted: true });
+  }
+
+  /**
+   * Resolves what `last_active_thread_idle` needs: the most recently updated OTHER thread in
+   * the SAME scope as the trigger (its project, or the whole space when the trigger is
+   * space-wide), excluding the thread that fired the event. Scoped by construction — this
+   * query can never see a different project's threads, so a project-scoped trigger can never
+   * resolve (and therefore never fire against) a thread outside its own project.
+   */
+  private resolveLastActiveOtherThread(spaceId: string, projectId: string | undefined, excludeThreadId: string): { id: string; updated_at_ms: number } | undefined {
+    const clauses = ["space_id = ?", "id != ?", "thread_kind = 'primary'"];
+    const args: unknown[] = [spaceId, excludeThreadId];
+    if (projectId) {
+      clauses.push("project_id = ?");
+      args.push(projectId);
+    }
+    const row = queryOne<{ id: string; updated_at: string }>(
+      this.ctx.storage.sql as never,
+      `SELECT id, updated_at FROM threads WHERE ${clauses.join(" AND ")} ORDER BY updated_at DESC, rowid DESC LIMIT 1`,
+      ...args
+    );
+    if (!row) return undefined;
+    return { id: row.id, updated_at_ms: Date.parse(row.updated_at) };
+  }
+
+  /**
+   * Evaluates and fires every event_triggers row that matches `event` — best-effort, never
+   * blocks or fails the state change (thread/project creation) that produced the event.
+   * Firing means calling out to the agents worker's internal script.run route; the actual
+   * work is entirely in whatever script the trigger names (@naelao/events: "the action is
+   * always run_script, not a new action-type surface to keep in sync with the engine").
+   */
+  private async fireMatchingTriggers(event: EventEnvelope, tenantId: string): Promise<void> {
+    if (!this.env.AGENTS_WORKER || !tenantId) return;
+    try {
+      const rows = queryAll<EventTriggerRow>(
+        this.ctx.storage.sql as never,
+        "SELECT * FROM event_triggers WHERE space_id = ? AND event_type = ? AND enabled = 1",
+        event.space_id, event.type
+      );
+      const rules = selectMatchingRules(rows.map(rowToTriggerRule), event);
+      for (const rule of rules.slice(0, 5)) { // bound worst-case fan-out per single event
+        let ctx: ConditionContext = {};
+        if (rule.condition.type === "last_active_thread_idle") {
+          const other = this.resolveLastActiveOtherThread(event.space_id, rule.project_id ?? undefined, event.thread_id ?? "");
+          if (other) ctx = { lastActiveOtherThread: other };
+        }
+        const result = evaluateCondition(rule.condition, ctx);
+        if (!result.matched) continue;
+        const params = buildFireParams(rule.action, event, result);
+        await this.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/triggers/fire", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-naelao-internal": "spaces-trigger" },
+          body: JSON.stringify({
+            spaceId: event.space_id,
+            tenantId,
+            scriptName: rule.action.script_name,
+            params,
+            // The fired script inherits its trigger's own project scoping (e.g. so a
+            // project's compact script reads/writes that project's workspace, not the
+            // space-wide one) — never the event's, in case a space-wide trigger fires for a
+            // project-scoped event.
+            ...(rule.project_id ? { projectId: rule.project_id } : {}),
+          }),
+        }));
+      }
+    } catch {
+      /* best-effort — a firing failure must never surface as a failure of the thing that happened */
+    }
   }
 
   // G-AO17: Record a prompt injection attempt for a user and check if they are now rate-limited.

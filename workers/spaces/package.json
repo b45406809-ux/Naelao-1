@@ -10,6 +10,7 @@
   "dependencies": {
     "@naelao/crypto": "workspace:*",
     "@naelao/db": "workspace:*",
+    "@naelao/events": "workspace:*",
     "@naelao/http": "workspace:*",
     "@naelao/types": "workspace:*",
     "hono": "^4.6.14"

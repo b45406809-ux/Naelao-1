@@ -296,6 +296,113 @@ describe("runScriptLoop — real per-token accounting (replaces the step-count-o
   });
 });
 
+describe("runScriptLoop — approval modes (Space Assistant default-ask vs ordinary agent gate-listed)", () => {
+  function makeHitlGateway(approved: boolean): { calls: string[]; gateway: import("../../workers/agents/src/script-engine/types.js").HITLGateway } {
+    const calls: string[] = [];
+    return {
+      calls,
+      gateway: {
+        async requestApproval(params) {
+          calls.push(params.actionName);
+          return { approvalId: "appr-1", approved };
+        },
+      },
+    };
+  }
+
+  it("gate_listed (ordinary agent default): only actions IN the list are gated", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const { calls, gateway } = makeHitlGateway(true);
+    env.hitlGateway = gateway;
+    const reasoner: Reasoner = {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+      },
+    };
+    // "write_file" is NOT in requiresApprovalFor -> gate_listed mode means it runs freely.
+    await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
+      goal: "write a file", startupObserve: "observe_filesystem",
+      requiresApprovalFor: ["delete_file"],
+    });
+    expect(calls).toEqual([]); // never asked
+  });
+
+  it("gate_unless_listed (Space Assistant default): actions NOT in the list ARE gated", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const { calls, gateway } = makeHitlGateway(true);
+    env.hitlGateway = gateway;
+    const reasoner: Reasoner = {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+      },
+    };
+    // "write_file" is NOT in the auto-approved list -> gate_unless_listed asks first.
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
+      goal: "write a file", startupObserve: "observe_filesystem",
+      requiresApprovalFor: ["read_file"], // the auto-approved set, under gate_unless_listed
+      approvalMode: "gate_unless_listed",
+    });
+    expect(calls).toEqual(["write_file"]);
+    expect(result.result?.ok).toBe(true); // approved=true -> proceeds
+  });
+
+  it("gate_unless_listed: an auto-approved action is never asked about", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const { calls, gateway } = makeHitlGateway(true);
+    env.hitlGateway = gateway;
+    const reasoner: Reasoner = {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+      },
+    };
+    await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
+      goal: "write a file", startupObserve: "observe_filesystem",
+      requiresApprovalFor: ["write_file"], // pre-approved
+      approvalMode: "gate_unless_listed",
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("gate_unless_listed with a rejected approval aborts the action", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const { gateway } = makeHitlGateway(false);
+    env.hitlGateway = gateway;
+    const reasoner: Reasoner = {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+      },
+    };
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
+      goal: "write a file", startupObserve: "observe_filesystem",
+      requiresApprovalFor: [],
+      approvalMode: "gate_unless_listed",
+    });
+    expect(result.result?.ok).toBe(false);
+    expect(result.result?.error).toMatch(/HITL rejected/);
+  });
+
+  it("YOLO (empty requiresApprovalFor, default gate_listed mode) never asks even with a gateway wired", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const { calls, gateway } = makeHitlGateway(true);
+    env.hitlGateway = gateway;
+    const reasoner: Reasoner = {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+      },
+    };
+    await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
+      goal: "write a file", startupObserve: "observe_filesystem",
+      requiresApprovalFor: [], // NaelaoAgentDO's yolo policy passes this + default gate_listed
+    });
+    expect(calls).toEqual([]);
+  });
+});
+
 describe("Agent config 4 R2 files + profiles (spec §11/§13)", () => {
   it("round-trips an agent's four config files", async () => {
     const env = makeEnv();

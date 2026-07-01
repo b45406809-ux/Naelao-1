@@ -79,6 +79,12 @@ queue = "naelao-provisioning-queue"
 binding = "BILLING_WORKER"
 service = "naelao-billing"
 
+# Agents worker — SpaceDO fires event_triggers (thread.created, project.created, ...) by
+# calling into this internal route; the fired action is always just script.run (@naelao/events).
+[[services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
 [env.staging]
 vars = { ENVIRONMENT = "staging" }
 
@@ -86,9 +92,17 @@ vars = { ENVIRONMENT = "staging" }
 binding = "BILLING_WORKER"
 service = "naelao-billing"
 
+[[env.staging.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
 
 [[env.production.services]]
 binding = "BILLING_WORKER"
 service = "naelao-billing"
+
+[[env.production.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"

@@ -1131,6 +1131,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return this.handleListSubAgents(url.searchParams.get("parent_run_id") ?? "");
       }
 
+      // POST /triggers/fire — @naelao/events dispatch target (called via the agents worker's
+      // internal /internal/triggers/fire route, which resolves this DO). Runs the named
+      // script directly — no reasoning loop, no LLM call.
+      if (method === "POST" && url.pathname === "/triggers/fire") {
+        return this.handleTriggerFire(request);
+      }
+
       // GET /runs/:runId
       const runMatch = url.pathname.match(/^\/runs\/([^/]+)$/);
       if (method === "GET" && runMatch?.[1]) {
@@ -1579,6 +1586,43 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     return Response.json({ data: rows, count: rows.length });
   }
 
+  /**
+   * Fires an @naelao/events trigger action — runs the named script DIRECTLY via
+   * ScriptToolSurface, bypassing the OBSERVE/FIND/GATE loop and the reasoner entirely. A
+   * trigger firing is meant to be cheap and deterministic (the builder's own example: a
+   * compact script that runs on thread creation "so next time a user comes to that thread
+   * the conversation won't eat too much tokens" — the trigger mechanism itself shouldn't
+   * cost tokens either). Not gated by the assistant approval policy or requires_approval_for:
+   * an admin/assistant already authored this exact (event, script) pairing when they created
+   * the trigger — the same trust level as a customer-bot project_rule's run_script action.
+   */
+  private async handleTriggerFire(request: Request): Promise<Response> {
+    const body = await request.json<{
+      spaceId: string;
+      agentId: string;
+      tenantId?: string;
+      projectId?: string;
+      scriptName: string;
+      params?: Record<string, unknown>;
+    }>().catch(() => null);
+    if (!body?.spaceId || !body.scriptName) {
+      return Response.json({ error: "spaceId and scriptName are required" }, { status: 400 });
+    }
+
+    const engineEnv = this.buildScriptEngineEnv(body.spaceId, body.agentId, body.tenantId ?? "", undefined, body.projectId);
+    if (!engineEnv) {
+      return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
+    }
+    const config = await loadAgentConfig(engineEnv.scriptsBucket, body.spaceId, body.agentId);
+    if (!config) {
+      return Response.json({ error: `agent '${body.agentId}' is not provisioned in space '${body.spaceId}'` }, { status: 404 });
+    }
+
+    const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
+    const result = await tools.run(body.scriptName, body.params ?? {});
+    return Response.json({ result });
+  }
+
   private async handleScriptRun(request: Request): Promise<Response> {
     const body = await request.json<{
       goal: string;
@@ -1624,8 +1668,24 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
     }
 
-    // Parse requires_approval_for from agents.md (spec §10 / CLAUDE.md task #10)
-    const requiresApprovalFor = [...parseRequiresApprovalFor(config.agentsMd)];
+    // Approval policy. A project-bound Naelao Agent keeps the ordinary allowlist-of-gated
+    // actions from agents.md (spec §10). The Space Assistant (no projectId) is different:
+    // "same access as the owning user, but ask first unless the user has explicitly trusted
+    // this action" — always_ask (default) gates everything except auto_approved_actions;
+    // yolo skips asking entirely. See loop.ts's ApprovalMode.
+    let requiresApprovalFor: string[];
+    let approvalMode: "gate_listed" | "gate_unless_listed" = "gate_listed";
+    if (projectId) {
+      requiresApprovalFor = [...parseRequiresApprovalFor(config.agentsMd)];
+    } else {
+      const policy = await this.fetchAssistantPolicy(spaceId, tenantId);
+      if (policy?.approval_mode === "yolo") {
+        requiresApprovalFor = [];
+      } else {
+        requiresApprovalFor = policy?.auto_approved_actions ?? [];
+        approvalMode = "gate_unless_listed";
+      }
+    }
 
     const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
     const reasoner = new GatewayReasoner({
@@ -1646,6 +1706,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         goal: body.goal,
         startupObserve: config.scripts.startup_observe,
         requiresApprovalFor,
+        approvalMode,
         runId,
         sessionId,
         ...(typeof maxStepsFromContext === "number" ? { maxSteps: maxStepsFromContext } : {}),
@@ -1787,6 +1848,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // reply; if the model isn't confident it returns "ESCALATE" and the message stays queued
   // for a human (honest escalation beats a confident wrong answer, per A1.3).
   /** Fetch a customer-bot project's config (execution ceiling, spend cap) from SpaceDO. */
+  /**
+   * Fetch the Space Assistant's approval policy from SpaceDO. Null on any failure (unreachable
+   * SPACES_WORKER, not yet configured) — the caller treats null the same as the safe default
+   * (always_ask, nothing pre-approved), never as "assume yolo." This is a security-relevant
+   * control: failures fail CLOSED (ask more), not open.
+   */
+  private async fetchAssistantPolicy(spaceId: string, tenantId: string): Promise<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] } | null> {
+    if (!this.env.SPACES_WORKER || !tenantId) return null;
+    try {
+      const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/assistant-policy`, {
+        headers: { "x-naelao-tenant-id": tenantId },
+      }));
+      if (!resp.ok) return null;
+      return await resp.json<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] }>();
+    } catch {
+      return null;
+    }
+  }
+
   private async fetchProjectConfig(spaceId: string, tenantId: string, projectId: string): Promise<{ execution_ceiling: number; daily_spend_cap_credits: number } | null> {
     try {
       const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}`, {

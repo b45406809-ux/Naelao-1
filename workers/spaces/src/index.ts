@@ -27,6 +27,8 @@ export interface Env {
   CF_SAAS_ZONE_ID?: string;
   /** Billing worker — called at publish time to auto-create LS product + variant. */
   BILLING_WORKER?: Fetcher;
+  /** Agents worker — SpaceDO fires event_triggers by calling its internal script.run route. */
+  AGENTS_WORKER?: Fetcher;
 }
 
 /** Message enqueued on space creation; consumed by the provisioner (installs agents etc.). */
@@ -605,7 +607,7 @@ app.post("/spaces/:spaceId/projects", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const body = await c.req.json<{ name: string; description?: string }>().catch(() => ({ name: "" }));
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const res = await forwardToSpaceDO(stub, "/projects", "POST", JSON.stringify({ ...body, space_id: spaceId }));
+  const res = await forwardToSpaceDO(stub, "/projects", "POST", JSON.stringify({ ...body, space_id: spaceId, tenant_id: tenantId }));
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
@@ -658,6 +660,60 @@ app.delete("/spaces/:spaceId/projects/:projectId/rules/:ruleId", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// Event triggers (@naelao/events) — no-code "after X happens (thread created, project
+// created, ...), run script Y." project_id absent = space-wide.
+app.get("/spaces/:spaceId/event-triggers", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const qs = new URLSearchParams({ space_id: spaceId });
+  const projectId = c.req.query("project_id");
+  if (projectId) qs.set("project_id", projectId);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/event-triggers?${qs.toString()}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.post("/spaces/:spaceId/event-triggers", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json().catch(() => ({}));
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/event-triggers", "POST", JSON.stringify({ ...body, space_id: spaceId }));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.delete("/spaces/:spaceId/event-triggers/:triggerId", async (c) => {
+  const { spaceId, triggerId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/event-triggers/${encodeURIComponent(triggerId)}?space_id=${encodeURIComponent(spaceId)}`, "DELETE");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// Space Assistant approval policy — "same access as the owning user, ask first unless the
+// user has trusted this action." Owner-authenticated only; the assistant can never set its
+// own policy.
+app.get("/spaces/:spaceId/assistant-policy", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/assistant-policy?space_id=${encodeURIComponent(spaceId)}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.patch("/spaces/:spaceId/assistant-policy", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/assistant-policy?space_id=${encodeURIComponent(spaceId)}`, "PATCH", c.req.raw.body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // Threads (spec-canonical). A sub-agent spawn or a channel session mirrors in here as a
 // subthread (thread_kind + parent_thread_id) — hidden from the default list unless the
 // project's show_sub_threads is on, or the caller passes include_sub_threads=true.
@@ -681,7 +737,9 @@ app.post("/spaces/:spaceId/threads", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const body = await c.req.json().catch(() => ({}));
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const res = await forwardToSpaceDO(stub, "/threads", "POST", JSON.stringify({ ...body, space_id: spaceId }));
+  // tenant_id travels in the body — forwardToSpaceDO doesn't forward headers, and SpaceDO
+  // needs it to fire event_triggers (thread.created) via the agents worker.
+  const res = await forwardToSpaceDO(stub, "/threads", "POST", JSON.stringify({ ...body, space_id: spaceId, tenant_id: tenantId }));
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 

@@ -814,3 +814,125 @@ Cross-department reads need an explicit **cross-space grant**
   - **Dashboard UI** — `apps/dashboard` clients page: drill-down drawer with the client's
     businesses, suspend/reactivate, and promote-to-product (with irreversible confirm).
 - Launchpad SpaceType definition (§11): `workers/agents/src/launchpad/` manifests + templates
+
+---
+
+## A1.16 Addition: Assistant Approval Policy + No-Code Event Triggers (`@naelao/events`)
+
+### A1.16.1 Assistant Approval Policy (HITL gate inversion)
+
+**Why this exists.** The ordinary agent (`NaelaoAgentDO` with a `projectId`) treats
+`requiresApprovalFor` as an **allowlist of gated actions** — only the listed actions pause
+for human sign-off. A Space Assistant (no `projectId`) has the *opposite* contract: it may
+act autonomously by default because it is an always-on service, but it should ask before
+unusual actions.
+
+**Two modes (`ApprovalMode` — `workers/agents/src/script-engine/loop.ts`):**
+
+| mode | behaviour |
+|---|---|
+| `gate_listed` | Default for project agents. Only actions in `requiresApprovalFor` are gated. |
+| `gate_unless_listed` | Space Assistant default (`always_ask`). All actions are gated **unless** explicitly listed in `auto_approved_actions`. |
+
+**Storage — SpaceDO migration v14 (`assistant_policy` table):**
+
+```sql
+CREATE TABLE IF NOT EXISTS assistant_policy (
+  space_id TEXT PRIMARY KEY,
+  approval_mode TEXT NOT NULL DEFAULT 'always_ask', -- 'always_ask' | 'yolo'
+  auto_approved_actions TEXT NOT NULL DEFAULT '[]'  -- JSON string[]
+);
+```
+
+**`yolo` mode** — when a builder sets `approval_mode = 'yolo'`, the Space Assistant uses
+`gate_listed` with an empty `requiresApprovalFor` list, which means nothing is ever gated.
+This matches the builder's "skip asking entirely" expectation.
+
+**`fetchAssistantPolicy()` fails CLOSED.** Any error (SpaceDO unreachable, row missing)
+returns `null`, which the calling code treats as `always_ask` with no auto-approved actions.
+Never silently grants yolo.
+
+**Endpoints (spaces worker):**
+- `GET /spaces/:spaceId/assistant-policy` — returns current policy
+- `PATCH /spaces/:spaceId/assistant-policy` — update `approval_mode` and/or `auto_approved_actions`
+
+**Tests:** 5 new approval-mode tests added to `tests/unit/script-engine.test.ts`:
+- `gate_listed` only gates listed actions; `gate_unless_listed` gates everything else
+- auto-approved actions in `gate_unless_listed` skip the HITL gate
+- rejected approval aborts the loop
+- yolo empty list never asks
+
+### A1.16.2 No-Code Event Triggers (`@naelao/events` package)
+
+**Why this exists.** Builders need "project lifecycle triggers" — if a new thread is created
+in the current project and the last-active thread is the agent's thread, trigger the compact
+script — without writing code. Triggers are data rows; the execution is deterministic
+`script.run`, no LLM cost.
+
+**`@naelao/events` (`packages/events/src/index.ts`)** — pure, DO-agnostic logic:
+
+```typescript
+// core types
+type NaelaoEventType = "thread.created" | "thread.closed" | "project.created" | (string & {});
+interface EventEnvelope { type, space_id, project_id?, thread_id?, occurred_at, payload? }
+type TriggerCondition =
+  | { type: "always" }
+  | { type: "last_active_thread_idle"; idle_minutes: number };
+interface TriggerRule { id, space_id, project_id?, event_type, condition, action, enabled, priority }
+
+// pure functions
+matchesEvent(rule, event): boolean          // structural match (type + space + project boundary)
+selectMatchingRules(rules, event): TriggerRule[]  // filters + sorts by priority desc
+evaluateCondition(condition, ctx): ConditionResult
+buildFireParams(action, event, conditionResult): Record<string, unknown>
+```
+
+**Project scoping is structurally enforced:**
+- A project-scoped rule (`project_id` set) can only match events in that exact project — never
+  another project's threads, never a space-wide event.
+- `resolveLastActiveOtherThread()` in SpaceDO queries only within the trigger's own
+  project — a project-scoped trigger cannot see another project's threads.
+
+**Storage — SpaceDO migration v15 (`event_triggers` table):**
+
+```sql
+CREATE TABLE IF NOT EXISTS event_triggers (
+  id TEXT PRIMARY KEY,
+  space_id TEXT NOT NULL,
+  project_id TEXT,                          -- null = space-wide
+  event_type TEXT NOT NULL,
+  condition_json TEXT NOT NULL DEFAULT '{"type":"always"}',
+  action_json TEXT NOT NULL,                -- { type: "run_script", script_name, params? }
+  enabled INTEGER NOT NULL DEFAULT 1,
+  priority INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch('now','subsec') * 1000)
+);
+```
+
+**Trigger fire path:**
+1. SpaceDO's `createThread()` / `createProject()` fires `fireMatchingTriggers()` on NEW rows
+   only (idempotent re-runs don't re-fire).
+2. `fireMatchingTriggers()` calls `selectMatchingRules()` → `evaluateCondition()` → 
+   `buildFireParams()` for each matching rule (max 5 per event to bound fan-out).
+3. Each fired trigger POSTs to `AGENTS_WORKER /internal/triggers/fire` (internal-only, gated
+   on `x-naelao-internal: spaces-trigger` header).
+4. `NaelaoAgentDO.handleTriggerFire()` calls `ScriptToolSurface.run()` directly — no
+   OBSERVE/FIND/GATE loop, no LLM wake, no token cost.
+
+**Endpoints (spaces worker):**
+- `GET /spaces/:spaceId/event-triggers` — list all triggers for this space
+- `POST /spaces/:spaceId/event-triggers` — create a trigger
+- `DELETE /spaces/:spaceId/event-triggers/:triggerId` — delete a trigger
+
+**`fireMatchingTriggers()` is awaited** (not fire-and-forget), same reasoning as
+`mirrorThread()` — un-awaited promises can be abandoned mid-flight when the DO's request
+context is freed.
+
+**Tests (`tests/unit/packages/events.test.ts`, 13 tests):**
+- `matchesEvent`: disabled rule, wrong event type, cross-space (never cross-tenant), exact
+  project match vs different project vs no project
+- `selectMatchingRules`: priority ordering, filters disabled + wrong-type rules
+- `evaluateCondition`: always, idle below threshold (no match), idle above threshold (match +
+  targetThreadId), recent thread (no match)
+- `buildFireParams`: targets condition-resolved thread over event's own; falls back to event
+  thread when no condition target
