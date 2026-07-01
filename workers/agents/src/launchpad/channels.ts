@@ -15,7 +15,7 @@
  * Pure and dependency-free so it is unit-testable.
  */
 
-export type ChannelType = "email" | "slack" | "discord";
+export type ChannelType = "email" | "slack" | "discord" | "whatsapp";
 
 export interface NormalizedInbound {
   channel: ChannelType;
@@ -183,10 +183,50 @@ const discordAdapter: ChannelAdapter = {
   },
 };
 
+// WhatsApp Business (Meta Cloud API) — the customer-facing business-number bot use case.
+// Inbound webhook shape: entry[0].changes[0].value.messages[0] (delivery-receipt "statuses"
+// callbacks have no `messages` array and are correctly ignored). Outbound goes through the
+// Cloud API's /messages endpoint (handled by the notifications dispatch layer, not here).
+const whatsappAdapter: ChannelAdapter = {
+  type: "whatsapp",
+  normalizeInbound(raw) {
+    const entry = (raw["entry"] as Array<Record<string, unknown>> | undefined)?.[0];
+    const change = (entry?.["changes"] as Array<Record<string, unknown>> | undefined)?.[0];
+    const value = change?.["value"] as Record<string, unknown> | undefined;
+    const message = (value?.["messages"] as Array<Record<string, unknown>> | undefined)?.[0];
+    if (!message) return null; // status callback (sent/delivered/read) or malformed — not actionable
+
+    const from = str(message, "from");
+    const id = str(message, "id");
+    const textBody = (message["text"] as Record<string, unknown> | undefined)?.["body"];
+    const text = typeof textBody === "string" ? textBody : undefined;
+    if (!from || !id || !text) return null; // non-text message (image/audio/...) — not handled yet
+
+    const ts = str(message, "timestamp");
+    return { channel: "whatsapp", channel_user_id: from, text, external_id: id, timestamp: ts ? Number(ts) * 1000 : Date.now() };
+  },
+  formatOutbound(msg) {
+    return { messaging_product: "whatsapp", type: "text", text: { body: msg.text } };
+  },
+  // Meta Cloud API signing: HMAC-SHA256(rawBody, app_secret) vs X-Hub-Signature-256
+  // (prefixed "sha256="). `secret` here is the WhatsApp app's App Secret.
+  async verifySignature({ rawBody, headers, secret }) {
+    const header = headers["x-hub-signature-256"];
+    if (!header?.startsWith("sha256=") || !secret) return false;
+    try {
+      const expected = `sha256=${await hmacSha256Hex(secret, rawBody)}`;
+      return timingSafeEqual(expected, header);
+    } catch {
+      return false;
+    }
+  },
+};
+
 const ADAPTERS: Record<ChannelType, ChannelAdapter> = {
   email: emailAdapter,
   slack: slackAdapter,
   discord: discordAdapter,
+  whatsapp: whatsappAdapter,
 };
 
 export function getAdapter(type: string): ChannelAdapter | undefined {
@@ -194,7 +234,7 @@ export function getAdapter(type: string): ChannelAdapter | undefined {
 }
 
 export function isChannelType(t: string): t is ChannelType {
-  return t === "email" || t === "slack" || t === "discord";
+  return t === "email" || t === "slack" || t === "discord" || t === "whatsapp";
 }
 
 /**

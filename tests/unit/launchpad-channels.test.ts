@@ -25,6 +25,24 @@ describe("channel adapters — inbound normalization", () => {
     expect(getAdapter("email")!.normalizeInbound({})).toBeNull();
     expect(getAdapter("slack")!.normalizeInbound({ user: "U1" })).toBeNull();
   });
+
+  it("normalizes a WhatsApp Cloud API text message", () => {
+    const raw = {
+      entry: [{ changes: [{ value: { messages: [{ from: "16505551234", id: "wamid.X", timestamp: "1700000000", text: { body: "hi there" } }] } }] }],
+    };
+    const n = getAdapter("whatsapp")!.normalizeInbound(raw);
+    expect(n).toEqual({ channel: "whatsapp", channel_user_id: "16505551234", text: "hi there", external_id: "wamid.X", timestamp: 1700000000000 });
+  });
+
+  it("ignores WhatsApp delivery-receipt (statuses) callbacks", () => {
+    const raw = { entry: [{ changes: [{ value: { statuses: [{ id: "wamid.X", status: "delivered" }] } }] }] };
+    expect(getAdapter("whatsapp")!.normalizeInbound(raw)).toBeNull();
+  });
+
+  it("ignores non-text WhatsApp messages (not handled yet) without crashing", () => {
+    const raw = { entry: [{ changes: [{ value: { messages: [{ from: "1650555", id: "w1", type: "image" }] } }] }] };
+    expect(getAdapter("whatsapp")!.normalizeInbound(raw)).toBeNull();
+  });
 });
 
 describe("channel adapters — outbound formatting", () => {
@@ -32,6 +50,7 @@ describe("channel adapters — outbound formatting", () => {
     expect(getAdapter("slack")!.formatOutbound({ text: "hi" })).toHaveProperty("blocks");
     expect(getAdapter("discord")!.formatOutbound({ text: "hi" })).toEqual({ content: "hi" });
     expect(getAdapter("email")!.formatOutbound({ text: "hi" })).toMatchObject({ body: "hi" });
+    expect(getAdapter("whatsapp")!.formatOutbound({ text: "hi" })).toEqual({ messaging_product: "whatsapp", type: "text", text: { body: "hi" } });
   });
 });
 
@@ -45,6 +64,7 @@ describe("per-user session keys (appendix @3245389 — no cross-user bleed)", ()
 describe("channel type guard", () => {
   it("accepts known channels, rejects unknown", () => {
     expect(isChannelType("email")).toBe(true);
+    expect(isChannelType("whatsapp")).toBe(true);
     expect(isChannelType("telegram")).toBe(false);
     expect(getAdapter("telegram")).toBeUndefined();
   });
@@ -158,8 +178,21 @@ describe("channel adapters — inbound signature verification", () => {
     expect(wrong).toBe(false);
   });
 
+  it("WhatsApp (Meta Cloud API): valid HMAC-SHA256(rawBody, app_secret) passes, tampered body fails", async () => {
+    const secret = "meta-app-secret";
+    const rawBody = JSON.stringify({ entry: [] });
+    const header = `sha256=${await hmacSha256Hex(secret, rawBody)}`;
+    const adapter = getAdapter("whatsapp")!;
+
+    const ok = await adapter.verifySignature({ rawBody, headers: { "x-hub-signature-256": header }, secret });
+    expect(ok).toBe(true);
+
+    const tampered = await adapter.verifySignature({ rawBody: rawBody + "x", headers: { "x-hub-signature-256": header }, secret });
+    expect(tampered).toBe(false);
+  });
+
   it("every channel fails closed when headers/secret are missing entirely", async () => {
-    for (const channel of ["slack", "discord", "email"] as const) {
+    for (const channel of ["slack", "discord", "email", "whatsapp"] as const) {
       const ok = await getAdapter(channel)!.verifySignature({ rawBody: "{}", headers: {}, secret: "" });
       expect(ok).toBe(false);
     }

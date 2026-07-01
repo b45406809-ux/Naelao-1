@@ -30,6 +30,7 @@ import { SkillLibrary } from "./script-engine/skill-library.js";
 import { promoteSkill, inheritTemplateSkills } from "./script-engine/federation.js";
 import { verifyWebhookSignature, normalizeWebhook, webhookGoal } from "./connectors/webhook-normalizer.js";
 import { isChannelType, getAdapter } from "./launchpad/channels.js";
+import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -1065,6 +1066,7 @@ const CHANNEL_SECRET_CREDENTIAL: Record<string, string> = {
   slack: "SLACK_SIGNING_SECRET",
   discord: "DISCORD_PUBLIC_KEY",
   email: "EMAIL_SIGNING_SECRET",
+  whatsapp: "WHATSAPP_APP_SECRET",
 };
 
 // POST /channels/:channel/connect — store the channel's signing secret in the vault and mark
@@ -1078,7 +1080,8 @@ app.post("/channels/:channel/connect", async (c) => {
   if (!isChannelType(channel)) throw notFound("Channel");
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
 
-  const body = await c.req.json<{ space_id: string; secret: string }>().catch(() => ({ space_id: "", secret: "" }));
+  type ConnectChannelBody = { space_id: string; secret: string; project_id?: string };
+  const body = await c.req.json<ConnectChannelBody>().catch(() => ({ space_id: "", secret: "" }) as ConnectChannelBody);
   if (!body.space_id) throw badRequest("space_id is required");
   if (!body.secret) throw badRequest("secret is required (signing secret / public key)");
 
@@ -1097,12 +1100,73 @@ app.post("/channels/:channel/connect", async (c) => {
     return c.json({ error_code: "credential_store_failed", message: await credResp.text() }, 502);
   }
 
+  // project_id binds this channel to a specific customer-bot project (e.g. "WhatsApp Support
+  // Bot") instead of the space's default agent — undefined/null keeps the legacy space-level
+  // behavior. Re-connecting can move a channel to a different project.
   await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO channel_links (space_id, tenant_id, channel, enabled) VALUES (?, ?, ?, 1)
-     ON CONFLICT (space_id, channel) DO UPDATE SET enabled = 1`
-  ).bind(body.space_id, tenantId, channel).run();
+    `INSERT INTO channel_links (space_id, tenant_id, channel, enabled, project_id) VALUES (?, ?, ?, 1, ?)
+     ON CONFLICT (space_id, channel) DO UPDATE SET enabled = 1, project_id = excluded.project_id`
+  ).bind(body.space_id, tenantId, channel, body.project_id ?? null).run();
 
-  return c.json({ connected: true, channel, webhook_path: `/v1/channels/${channel}/inbound/${body.space_id}` }, 201);
+  return c.json({ connected: true, channel, project_id: body.project_id ?? null, webhook_path: `/v1/channels/${channel}/inbound/${body.space_id}` }, 201);
+});
+
+// GET /project-templates — no-code customer-bot presets (WhatsApp/Discord/email support bot).
+// The dashboard renders these as cards; applying one is filling in a name, never writing code.
+app.get("/project-templates", (c) => c.json({ data: PROJECT_TEMPLATES, count: PROJECT_TEMPLATES.length }));
+
+// POST /spaces/:spaceId/projects/from-template — creates a fully configured customer-bot
+// project in one call: the project row (kind=customer_bot, execution ceiling, spend cap,
+// channel_config) plus its starter rules (STOP/opt-out, human-takeover, greeting). The
+// builder still has to call /channels/:channel/connect with this project's id to actually
+// wire a live number/server — template application only sets up the Naelao-side config.
+app.post("/spaces/:spaceId/projects/from-template", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+
+  type FromTemplateBody = { template_id: string; name?: string };
+  const body = await c.req.json<FromTemplateBody>().catch(() => ({ template_id: "" }) as FromTemplateBody);
+  const template = getProjectTemplate(body.template_id);
+  if (!template) throw notFound("Project template");
+
+  // 1. Create the project.
+  const createResp = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+    body: JSON.stringify({ name: body.name ?? template.name, description: template.description }),
+  }));
+  if (!createResp.ok) return c.json({ error_code: "project_create_failed", message: await createResp.text() }, 502);
+  const project = await createResp.json<{ id: string; name: string }>();
+
+  // 2. Configure it as a customer-facing bot (execution ceiling, spend cap, suggested channel).
+  const configResp = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+    body: JSON.stringify({
+      kind: "customer_bot",
+      execution_ceiling: template.execution_ceiling,
+      daily_spend_cap_credits: template.daily_spend_cap_credits,
+      channel_config: { [template.suggested_channel]: { connected: false } },
+    }),
+  }));
+  if (!configResp.ok) return c.json({ error_code: "project_config_failed", message: await configResp.text() }, 502);
+
+  // 3. Seed the starter rules (STOP/opt-out + human-takeover + a couple of canned replies).
+  for (const rule of template.rules) {
+    await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}/rules`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+      body: JSON.stringify(rule),
+    }));
+  }
+
+  return c.json({
+    project_id: project.id,
+    template_id: template.id,
+    suggested_channel: template.suggested_channel,
+    next_step: `POST /channels/${template.suggested_channel}/connect { space_id, secret, project_id: "${project.id}" }`,
+  }, 201);
 });
 
 // POST /channels/:channel/inbound/:spaceId — generic, signature-verified channel ingress.
@@ -1157,17 +1221,60 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
   // Slack wraps the actual message in `event`; Discord/email payloads are already top-level.
   const raw = channel === "slack" && parsed["event"] ? (parsed["event"] as Record<string, unknown>) : parsed;
 
+  // Resolve which project (if any) this channel is bound to — a customer-bot project runs
+  // under a restricted execution ceiling + its own rules instead of the default agent.
+  const link = await c.env.PLATFORM_DB.prepare(
+    "SELECT project_id FROM channel_links WHERE space_id = ? AND channel = ?"
+  ).bind(spaceId, channel).first<{ project_id: string | null }>();
+
   try {
     const stub = await getAgentDOForSpace(c.env, space.tenant_id, spaceId, "naelao-agent", c.get("requestId"));
     await stub.fetch(new Request(`http://agent-do/channels/${channel}/inbound`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ raw }),
+      body: JSON.stringify({ raw, projectId: link?.project_id ?? undefined }),
     }));
   } catch (err) {
     console.error(`[channels] inbound forward failed channel=${channel} space=${spaceId}:`, (err as Error).message);
   }
   return c.json({ ok: true });
+});
+
+// Customer-bot observability + admin control — "all you do is see what the customers are
+// doing" (the whole point of a customer-bot project's UI surface, vs. a workspace you chat
+// in). Proxies straight to the space's agent DO.
+app.get("/spaces/:spaceId/channels/sessions", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
+  return stub.fetch(new Request("http://agent-do/channels/sessions"));
+});
+
+app.get("/spaces/:spaceId/channels/unanswered", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
+  return stub.fetch(new Request("http://agent-do/channels/unanswered"));
+});
+
+// Admin hands a thread back to the bot (or takes it over themselves) — the human-takeover
+// toggle. A customer can also trigger takeover via a project_rule ("talk to a human").
+app.post("/spaces/:spaceId/channels/sessions/:sessionId/resume", async (c) => {
+  const { spaceId, sessionId } = c.req.param();
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
+  return stub.fetch(new Request(`http://agent-do/channels/sessions/${encodeURIComponent(sessionId)}/resume`, { method: "POST" }));
+});
+
+app.post("/spaces/:spaceId/channels/sessions/:sessionId/takeover", async (c) => {
+  const { spaceId, sessionId } = c.req.param();
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
+  return stub.fetch(new Request(`http://agent-do/channels/sessions/${encodeURIComponent(sessionId)}/takeover`, { method: "POST" }));
 });
 
 // ── First-run bootstrap execution ─────────────────────────────────────────────

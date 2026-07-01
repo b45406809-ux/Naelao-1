@@ -99,8 +99,9 @@ No new secrets — these are bindings, not credentials.
 
 ## Multi-channel gateway (launchpad/channels.ts + the /v1/channels/:channel/inbound/:spaceId route)
 
-Same vault pattern as connectors — `POST /channels/:channel/connect { space_id, secret }`
-stores the channel's signing secret/public key under a fixed credential name, and the public
+Same vault pattern as connectors — `POST /channels/:channel/connect { space_id, secret,
+project_id? }` stores the channel's signing secret/public key under a fixed credential name
+(and optionally binds the channel to a customer-bot project — see below), and the public
 webhook route resolves it at verification time:
 
 | Channel | Credential name | What `secret` is |
@@ -108,12 +109,30 @@ webhook route resolves it at verification time:
 | `slack` | `SLACK_SIGNING_SECRET` | Slack app's Signing Secret (HMAC-SHA256) |
 | `discord` | `DISCORD_PUBLIC_KEY` | Discord app's Public Key, hex (Ed25519 — asymmetric, not a shared secret) |
 | `email` | `EMAIL_SIGNING_SECRET` | Inbound-parse provider's signing key (Mailgun-style HMAC) |
+| `whatsapp` | `WHATSAPP_APP_SECRET` | Meta app's App Secret (HMAC-SHA256 over the raw body, `X-Hub-Signature-256`) |
 
 Point the provider's webhook console at `https://<router>/v1/channels/:channel/inbound/:spaceId`
 (returned by the connect endpoint). Slack's Events API URL-verification handshake is answered
 automatically once the signature checks out. The hourly cron drains each connected space's
-unanswered queue (`channel_links` table, `0038_channel_links.sql`) through the agent's
-script-first loop.
+unanswered queue (`channel_links` table, `0038_channel_links.sql` + `project_id` in
+`0039_channel_links_project.sql`) through the agent's script-first loop.
+
+## Customer-bot projects (WhatsApp/Discord/email business bots — A1.13)
+
+No secrets beyond the channel signing secrets above. Configuration is all data, set via the
+spaces worker (no `wrangler secret put` needed):
+
+- `POST /spaces/:id/projects/from-template { template_id }` — the fast path. Creates a fully
+  configured project (execution ceiling, spend cap, starter no-code rules) from one of
+  `whatsapp-support-bot` / `discord-community-bot` / `email-support-bot`
+  (`launchpad/project-templates.ts`). Returns the `project_id` to pass to
+  `/channels/:channel/connect`.
+- Manual path: `POST /spaces/:id/projects` then `PATCH /spaces/:id/projects/:projectId
+  { kind: "customer_bot", execution_ceiling, daily_spend_cap_credits, channel_config }`, plus
+  `POST /spaces/:id/projects/:projectId/rules` per rule.
+- Observability: `GET /spaces/:id/channels/sessions`, `GET /spaces/:id/channels/unanswered`.
+- Human takeover: `POST /spaces/:id/channels/sessions/:sessionId/takeover` (silence the bot)
+  / `.../resume` (hand it back).
 
 ## Other platform secrets (pre-existing)
 

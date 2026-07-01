@@ -1,10 +1,11 @@
 /**
  * notifications (spec §12.4) — multi-channel notification dispatch. Tier 2.
- * Operations: notify.email, notify.slack, notify.discord, notify.apns, notify.fcm.
+ * Operations: notify.email, notify.slack, notify.discord, notify.whatsapp, notify.apns, notify.fcm.
  *
  * This is the script the Space Assistant uses to reach the owner (e.g. "Order #1234
- * fulfilled") and that HITL uses for approval requests. Routed through the notifications
- * worker service binding when configured.
+ * fulfilled") and that HITL uses for approval requests — and the one the channel heartbeat
+ * (NaelaoAgentDO) uses to actually deliver a reply to a customer-facing bot thread. Routed
+ * through the notifications worker service binding when configured.
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
@@ -38,6 +39,7 @@ export const notifications: PrebuiltScript = {
       dispatch(c, "email", { to: a["to"], subject: a["subject"], body: a["body"] }),
     "notify.slack": (a, c) => dispatch(c, "slack", { channel: a["channel"], message: a["message"] }),
     "notify.discord": (a, c) => dispatch(c, "discord", { channel: a["channel"], message: a["message"] }),
+    "notify.whatsapp": (a, c) => dispatch(c, "whatsapp", { to: a["to"], message: a["message"] }),
     "notify.apns": (a, c) => dispatch(c, "apns", { device_token: a["device_token"], payload: a["payload"] }),
     "notify.fcm": (a, c) => dispatch(c, "fcm", { token: a["token"], payload: a["payload"] }),
   },

@@ -3,6 +3,15 @@ import { applyMigrations, queryAll, queryOne, execute } from "@naelao/db";
 import type { Migration } from "@naelao/db";
 import type { MessageRole } from "@naelao/types";
 
+function safeJsonParseObj(text: string): Record<string, unknown> {
+  try {
+    const v = JSON.parse(text) as unknown;
+    return v && typeof v === "object" ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
 // ── Schema migrations ────────────────────────────────────────────────────────
 const MIGRATIONS: Migration[] = [
   {
@@ -244,6 +253,43 @@ const MIGRATIONS: Migration[] = [
       CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_space_name ON projects(space_id, name);
     `,
   },
+  {
+    version: 12,
+    // Customer-facing bot projects (WhatsApp/Discord/etc business bots). A project can be
+    // flagged `kind = 'customer_bot'`: the UI surface flips from "workspace I chat in" to
+    // "surface I watch and configure," each external user becomes a thread (the normal
+    // project/thread model — no new addressing concept), and the bound agent runs under
+    // real, structural constraints instead of full autonomy:
+    //   - execution_ceiling caps which execution-ladder tier its scripts may use (e.g. a
+    //     ceiling of 2 means "can talk and look things up, never touch a container").
+    //   - daily_spend_cap_credits bounds runaway spend from a chatty/adversarial customer.
+    //   - channel_config records which channel(s) are bound (the channel_links row in the
+    //     agents worker's D1 carries the matching project_id — this is the SpaceDO side of
+    //     that link, kept here because the project is what an admin configures/sees).
+    description: "customer-bot project config + project_rules (no-code triggers)",
+    up: `
+      ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'workspace' CHECK (kind IN ('workspace','customer_bot'));
+      ALTER TABLE projects ADD COLUMN execution_ceiling INTEGER NOT NULL DEFAULT 5 CHECK (execution_ceiling BETWEEN 1 AND 5);
+      ALTER TABLE projects ADD COLUMN daily_spend_cap_credits INTEGER NOT NULL DEFAULT 0; -- 0 = no cap
+      ALTER TABLE projects ADD COLUMN channel_config TEXT NOT NULL DEFAULT '{}';
+
+      -- No-code "after customer says X, this happens" rules (checked before the full
+      -- reasoning loop — cheap, deterministic, admin-authored, no coding required).
+      CREATE TABLE IF NOT EXISTS project_rules (
+        id              TEXT PRIMARY KEY,
+        project_id      TEXT NOT NULL,
+        space_id        TEXT NOT NULL,
+        trigger_pattern TEXT NOT NULL,   -- substring/keyword match against the inbound text
+        action          TEXT NOT NULL CHECK (action IN ('reply','run_script','human_takeover')),
+        reply_text      TEXT,            -- when action = 'reply'
+        script_name     TEXT,            -- when action = 'run_script'
+        enabled         INTEGER NOT NULL DEFAULT 1,
+        priority        INTEGER NOT NULL DEFAULT 0, -- higher checked first
+        created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_project_rules_project ON project_rules(project_id, enabled, priority DESC);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -467,6 +513,27 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // POST /projects — create a project (idempotent on (space_id, name))
       if (method === "POST" && url.pathname === "/projects") {
         return this.createProject(request);
+      }
+      // GET /projects/:id — single project (incl. customer-bot config)
+      const projectIdMatch = url.pathname.match(/^\/projects\/([^/]+)$/);
+      if (method === "GET" && projectIdMatch?.[1]) {
+        return this.getProject(projectIdMatch[1]);
+      }
+      // PATCH /projects/:id — configure kind / execution_ceiling / channel_config / spend cap
+      if (method === "PATCH" && projectIdMatch?.[1]) {
+        return this.updateProject(projectIdMatch[1], request);
+      }
+      // ── project_rules (no-code "after customer says X" triggers) ──────────────
+      const projectRulesMatch = url.pathname.match(/^\/projects\/([^/]+)\/rules$/);
+      if (method === "GET" && projectRulesMatch?.[1]) {
+        return this.listProjectRules(projectRulesMatch[1]);
+      }
+      if (method === "POST" && projectRulesMatch?.[1]) {
+        return this.createProjectRule(projectRulesMatch[1], request);
+      }
+      const projectRuleIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/rules\/([^/]+)$/);
+      if (method === "DELETE" && projectRuleIdMatch?.[1] && projectRuleIdMatch?.[2]) {
+        return this.deleteProjectRule(projectRuleIdMatch[1], projectRuleIdMatch[2]);
       }
 
       // ── cross-space access grants (spec §49 checkPermission path) ─────────────
@@ -1059,6 +1126,110 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.space_id, body.name
     );
     return Response.json(row ?? { id, name: body.name, status: "active", created_at: now }, { status: 201 });
+  }
+
+  // ── Customer-bot project config (no-code, admin-configured) ─────────────────
+  private getProject(projectId: string): Response {
+    const row = queryOne<{
+      id: string; space_id: string; name: string; description: string; status: string;
+      kind: string; execution_ceiling: number; daily_spend_cap_credits: number; channel_config: string; created_at: string;
+    }>(this.ctx.storage.sql as never, "SELECT * FROM projects WHERE id = ?", projectId);
+    if (!row) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    return Response.json({ ...row, channel_config: safeJsonParseObj(row.channel_config) });
+  }
+
+  private async updateProject(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<{
+      kind?: "workspace" | "customer_bot";
+      execution_ceiling?: number;
+      daily_spend_cap_credits?: number;
+      channel_config?: Record<string, unknown>;
+      name?: string;
+      description?: string;
+    }>().catch(() => ({}) as Record<string, never>);
+
+    const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE id = ?", projectId);
+    if (!existing) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+
+    if (body.kind !== undefined) {
+      if (body.kind !== "workspace" && body.kind !== "customer_bot") {
+        return Response.json({ error_code: "bad_request", message: "kind must be 'workspace' or 'customer_bot'" }, { status: 400 });
+      }
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET kind = ? WHERE id = ?", body.kind, projectId);
+    }
+    if (body.execution_ceiling !== undefined) {
+      if (!Number.isInteger(body.execution_ceiling) || body.execution_ceiling < 1 || body.execution_ceiling > 5) {
+        return Response.json({ error_code: "bad_request", message: "execution_ceiling must be an integer 1-5" }, { status: 400 });
+      }
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET execution_ceiling = ? WHERE id = ?", body.execution_ceiling, projectId);
+    }
+    if (body.daily_spend_cap_credits !== undefined) {
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET daily_spend_cap_credits = ? WHERE id = ?", Math.max(0, body.daily_spend_cap_credits), projectId);
+    }
+    if (body.channel_config !== undefined) {
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET channel_config = ? WHERE id = ?", JSON.stringify(body.channel_config), projectId);
+    }
+    if (body.name !== undefined) {
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET name = ? WHERE id = ?", body.name, projectId);
+    }
+    if (body.description !== undefined) {
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET description = ? WHERE id = ?", body.description, projectId);
+    }
+    return this.getProject(projectId);
+  }
+
+  // ── project_rules — no-code "after the customer says X, this happens" triggers ─────────
+  private listProjectRules(projectId: string): Response {
+    const rows = queryAll<{
+      id: string; project_id: string; trigger_pattern: string; action: string;
+      reply_text: string | null; script_name: string | null; enabled: number; priority: number; created_at: string;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM project_rules WHERE project_id = ? ORDER BY priority DESC, created_at",
+      projectId
+    );
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  private async createProjectRule(projectId: string, request: Request): Promise<Response> {
+    const project = queryOne<{ id: string; space_id: string }>(this.ctx.storage.sql as never, "SELECT id, space_id FROM projects WHERE id = ?", projectId);
+    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+
+    const body = await request.json<{
+      trigger_pattern: string;
+      action: "reply" | "run_script" | "human_takeover";
+      reply_text?: string;
+      script_name?: string;
+      priority?: number;
+    }>().catch(() => ({}) as Record<string, never>);
+
+    if (!body.trigger_pattern || !body.action) {
+      return Response.json({ error_code: "bad_request", message: "trigger_pattern and action are required" }, { status: 400 });
+    }
+    if (!["reply", "run_script", "human_takeover"].includes(body.action)) {
+      return Response.json({ error_code: "bad_request", message: "action must be 'reply', 'run_script', or 'human_takeover'" }, { status: 400 });
+    }
+    if (body.action === "reply" && !body.reply_text) {
+      return Response.json({ error_code: "bad_request", message: "reply_text is required when action is 'reply'" }, { status: 400 });
+    }
+    if (body.action === "run_script" && !body.script_name) {
+      return Response.json({ error_code: "bad_request", message: "script_name is required when action is 'run_script'" }, { status: 400 });
+    }
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO project_rules (id, project_id, space_id, trigger_pattern, action, reply_text, script_name, enabled, priority, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      id, projectId, project.space_id, body.trigger_pattern, body.action, body.reply_text ?? null, body.script_name ?? null, body.priority ?? 0, now
+    );
+    return Response.json({ id, project_id: projectId, trigger_pattern: body.trigger_pattern, action: body.action, created_at: now }, { status: 201 });
+  }
+
+  private deleteProjectRule(projectId: string, ruleId: string): Response {
+    execute(this.ctx.storage.sql as never, "DELETE FROM project_rules WHERE id = ? AND project_id = ?", ruleId, projectId);
+    return Response.json({ deleted: true });
   }
 
   // G-AO17: Record a prompt injection attempt for a user and check if they are now rate-limited.

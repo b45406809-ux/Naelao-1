@@ -290,6 +290,18 @@ api.all("/spaces/:spaceId/bootstrap/*", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 
+// Apply a customer-bot project template (WhatsApp/Discord/email support bot) → agents worker
+// (it composes the call across the spaces worker's project endpoints + seeds starter rules).
+api.all("/spaces/:spaceId/projects/from-template", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
+// Customer-bot channel observability + human-takeover admin control → agents worker
+// (proxies straight through to the space's agent DO).
+api.all("/spaces/:spaceId/channels/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
 // Reseller / partner endpoints → spaces worker (G-AS34/G-AS35)
 api.all("/reseller/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 api.all("/reseller", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
@@ -311,6 +323,9 @@ api.all("/templates/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"
 // Multi-channel gateway connect flow (authenticated; the public inbound webhook is registered
 // above, before the JWT gate) → agents worker.
 api.all("/channels/:channel/connect", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+
+// Customer-bot project template catalogue → agents worker.
+api.all("/project-templates", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
 app.route("/v1", api);
 

@@ -337,6 +337,75 @@ per-token meter for `budget_tokens` (today it's a coarse step-count proxy, docum
 `parentAgent()`/notify-parent-of-progress for long-running children; an account-level (not
 just per-spawn-call) concurrency ceiling across a tenant's *simultaneous* sub-agent trees.
 
+## A1.13 Customer-bot projects (WhatsApp/Discord/email business bots) — BUILT
+
+The builder's own scenario: *"I have a WhatsApp Business number my customers message — I
+want a bot that answers Q&A, but I don't want it to be a full agent executing stuff for
+customers without us knowing."* Settled by making a **project** (not a new DO, not a new
+addressing scheme) the unit of restriction: a project can be flagged `kind = 'customer_bot'`
+(SpaceDO `projects` table, migration v12), which flips its UI surface from "a workspace you
+chat in" to "a surface you watch and configure" — each external customer becomes a thread the
+same way any other project's threads work, no new concept for the admin to learn.
+
+**Three structural constraints, not prompt instructions** — a compromised or over-eager
+reasoner cannot talk its way past any of them:
+
+1. **Execution ceiling** (`projects.execution_ceiling`, 1-5) — caps which execution-ladder
+   tier the bound agent may use. Enforced in `ScriptToolSurface` (`code-runner.ts`'s
+   sibling, not it) at `script.create`, `script.update` (including retroactively, if an
+   admin lowers the ceiling after scripts already exist), *and* `script.run` — for both
+   prebuilt ops and stored scripts. A ceiling of 2 means "talk and look things up, never
+   touch a container or browser." `ScriptEngineEnv.maxTier` is the plumbing; it's set per
+   message in the heartbeat, not once per agent, since one heartbeat sweep can touch several
+   projects with different ceilings.
+2. **Daily spend cap** (`projects.daily_spend_cap_credits`) — a project-scoped running total
+   (`NaelaoAgentDO.project_spend`, `tokens_used` as an honest proxy for "credits," not a real
+   billing conversion) that the heartbeat checks before each reasoning-loop call; once hit,
+   remaining messages for that project are marked `spend_capped` (visible, not silently
+   dropped) until the next UTC day.
+3. **No-code rules** (`project_rules` table) — "after the customer says X, this happens,"
+   admin-authored via form fields, checked **before** the reasoning loop even runs (zero
+   token cost, deterministic). Three actions: `reply` (canned text), `run_script` (a named
+   library script, still ceiling-checked), `human_takeover` (silences the bot for that one
+   thread — `channel_sessions.human_takeover` — until an admin calls `.../resume`). Every
+   template seeds STOP/UNSUBSCRIBE (WhatsApp Business Platform compliance, not optional) and
+   a "talk to a human" escape hatch at the highest priority, so a customer can always reach a
+   person and opt out, regardless of what the builder configures on top.
+
+**Channel binding.** `channel_links` (D1) gained `project_id` (migration 0039) — reconnecting
+a channel (`POST /channels/:channel/connect { project_id }`) moves it between projects. The
+public webhook route resolves the binding and forwards `projectId` to the owning
+`NaelaoAgentDO`; `channel_sessions` carries it per-thread so the heartbeat knows which
+project's ceiling/rules/spend-cap apply to which pending message, batched per distinct
+project per sweep (not re-fetched per message).
+
+**WhatsApp joins the channel catalogue** (`launchpad/channels.ts`): Meta Cloud API inbound
+shape (`entry[0].changes[0].value.messages[0]`; delivery-receipt `statuses` callbacks
+correctly ignored), `X-Hub-Signature-256` (HMAC-SHA256 over the app secret) verification,
+outbound via the existing `notifications` prebuilt's new `notify.whatsapp` op.
+
+**No-code project templates** (`launchpad/project-templates.ts`, distinct from SpaceType
+templates — a SpaceType template configures a whole *space* at provisioning; a project
+template configures *one project* inside an already-existing space): `whatsapp-support-bot`,
+`discord-community-bot`, `email-support-bot`. `POST /spaces/:id/projects/from-template`
+creates the project, configures it (ceiling/cap/channel_config), and seeds its starter rules
+in one call — the builder only ever fills in a name and (optionally) edits the canned replies.
+
+**Observability** (`GET /spaces/:id/channels/sessions`, `.../unanswered`) and admin control
+(`POST .../channels/sessions/:id/resume|takeover`) proxy straight to the owning agent DO —
+this is the "all you do is see what the customers are doing" surface the builder described.
+
+**What this does NOT yet do (open, tracked):** a dashboard UI for any of the above (backend +
+API only, consistent with this session's engine-first pattern); mirroring a channel thread
+into SpaceDO's `threads` table so it shows up in the normal thread-browsing UI (today it lives
+in `NaelaoAgentDO.channel_sessions`, reachable via the observability endpoints above but not
+yet a first-class `threads` row); a real per-token→credit conversion for the spend cap (today
+`tokens_used` is the proxy, same honest-approximation pattern as sub-agent budgets in A1.12);
+cross-thread customer identity linking `channel_user_id` to a stable Memory OS `user_id` (the
+scoping exists — A1.11 — the *link* from "this WhatsApp number" to "this returning customer"
+does not yet); rate-limiting a single customer's message *rate* (the spend cap bounds cost,
+not message frequency).
+
 ## A1.5 Open follow-ups (tracked, not yet built)
 
 - **Credential hierarchy**: per-user (default) + per-space (shared, e.g. company email) +

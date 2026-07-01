@@ -83,6 +83,14 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     via the `memory` prebuilt; sub-agent fan-out is real (batched `agent.spawn`, isolated
     per-child budget, capped at 16 concurrent like Claude Code's own pattern). Full detail:
     `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.11-A1.12.
+11. **Customer-bot projects (WhatsApp/Discord/email business bots) are now BUILT.** A
+    **project** (not a new DO) can be flagged `kind='customer_bot'`: capped execution ceiling
+    (script.create/update/run all fail closed above it), a daily spend cap, and no-code
+    "after the customer says X, this happens" rules (`reply` / `run_script` /
+    `human_takeover`) checked before the reasoning loop ever runs. WhatsApp joined the
+    channel catalogue (Meta Cloud API, `X-Hub-Signature-256`). No-code project templates
+    (`whatsapp-support-bot`, `discord-community-bot`, `email-support-bot`) seed STOP/opt-out
+    + human-takeover by default. Full detail: appendix §A1.13.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

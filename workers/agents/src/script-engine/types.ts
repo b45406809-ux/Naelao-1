@@ -288,4 +288,12 @@ export interface ScriptEngineEnv {
   /** The end-user this run is on behalf of (set per /script/run call). Scopes the user model
    *  (Memory OS) and per-(channel,user) sessions. Absent for space-level/system-triggered runs. */
   userId?: string;
+  /**
+   * Execution ladder ceiling (1-5) for this run — set on customer-facing bot projects
+   * (SpaceDO `projects.execution_ceiling`) so a restricted bot can never use a tier above
+   * what the admin configured (e.g. ceiling=2 means "talk and look things up, never touch a
+   * container or browser"). Absent = unrestricted (the normal builder-workspace default).
+   * Enforced structurally in ScriptToolSurface — not a prompt instruction.
+   */
+  maxTier?: ExecutionTier;
 }

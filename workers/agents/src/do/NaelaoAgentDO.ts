@@ -18,6 +18,7 @@ import {
   parseRequiresApprovalFor,
   loadAgentConfig,
   type ScriptEngineEnv,
+  type ExecutionTier,
 } from "../script-engine/index.js";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
@@ -347,6 +348,18 @@ function safeCalculate(expression: string): number {
     throw new Error("Expression too long");
   }
   return new ExprParser(expression).parse();
+}
+
+// A customer-bot project's no-code "after the customer says X, this happens" rule
+// (SpaceDO's project_rules table, fetched over SPACES_WORKER).
+interface ProjectRule {
+  id: string;
+  trigger_pattern: string;
+  action: "reply" | "run_script" | "human_takeover";
+  reply_text: string | null;
+  script_name: string | null;
+  enabled: number;
+  priority: number;
 }
 
 // ── Tool services (injected from DO env) ─────────────────────────────────────
@@ -924,11 +937,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         id              TEXT PRIMARY KEY,
         channel         TEXT NOT NULL,
         channel_user_id TEXT NOT NULL,
+        project_id      TEXT, -- customer-bot project this channel is bound to (NULL = space default agent)
+        human_takeover  INTEGER NOT NULL DEFAULT 0, -- admin/rule silenced the bot for this thread
         created_at      INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000),
         last_seen       INTEGER NOT NULL DEFAULT (unixepoch('now') * 1000)
       )
     `);
     this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_session_user ON channel_sessions(channel, channel_user_id)`);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_session_project ON channel_sessions(project_id) WHERE project_id IS NOT NULL`);
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS channel_messages (
         id          TEXT PRIMARY KEY,
@@ -942,6 +958,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     `);
     this.ctx.storage.sql.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_msg_dedupe ON channel_messages(session_id, direction, external_id)`);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_channel_msg_unanswered ON channel_messages(direction, answered, created_at)`);
+
+    // Per-project daily spend tracking (customer-bot spend caps — G-3664680-style plan
+    // gating, applied here at the project level). "Credits" is a coarse tokens_used proxy,
+    // not a real billing conversion (that lives in the billing worker) — documented as such.
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS project_spend (
+        project_id TEXT NOT NULL,
+        day        TEXT NOT NULL, -- YYYY-MM-DD (UTC)
+        credits    INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (project_id, day)
+      )
+    `);
 
     // Sub-agents (spec §12.1 / Pattern 3 "Sub-Agent Coordination") — fan-out tracking +
     // parent-liveness so a spawned child's result is never orphaned (fixes "Sub-agents have
@@ -1064,6 +1092,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
       if (method === "POST" && url.pathname === "/channels/heartbeat") {
         return this.handleChannelHeartbeat(request);
+      }
+
+      // POST /channels/sessions/:sessionId/resume — admin hands a human-takeover thread
+      // back to the bot. Also usable proactively (admin decides to take over a thread
+      // themselves) by setting human_takeover=1 directly — exposed here as the inverse.
+      const resumeMatch = url.pathname.match(/^\/channels\/sessions\/([^/]+)\/resume$/);
+      if (method === "POST" && resumeMatch?.[1]) {
+        this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover = 0 WHERE id = ?`, resumeMatch[1]);
+        return Response.json({ resumed: true });
+      }
+      const takeoverMatch = url.pathname.match(/^\/channels\/sessions\/([^/]+)\/takeover$/);
+      if (method === "POST" && takeoverMatch?.[1]) {
+        this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover = 1 WHERE id = ?`, takeoverMatch[1]);
+        return Response.json({ human_takeover: true });
       }
 
       // GET /runs/:runId
@@ -1444,7 +1486,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const adapter = getAdapter(type);
     if (!adapter) return Response.json({ error: "unknown_channel" }, { status: 400 });
 
-    const body = await request.json<{ raw?: Record<string, unknown> }>().catch(() => ({}) as { raw?: Record<string, unknown> });
+    type InboundBody = { raw?: Record<string, unknown>; projectId?: string };
+    const body = await request.json<InboundBody>().catch(() => ({}) as InboundBody);
     const norm: NormalizedInbound | null = adapter.normalizeInbound(body.raw ?? {});
     if (!norm) return Response.json({ ignored: true }); // bot echo / not actionable
 
@@ -1454,12 +1497,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     let sessionId: string;
     if (rows[0]) {
       sessionId = rows[0].id;
-      this.ctx.storage.sql.exec(`UPDATE channel_sessions SET last_seen = ? WHERE id = ?`, Date.now(), sessionId);
+      this.ctx.storage.sql.exec(
+        `UPDATE channel_sessions SET last_seen = ?, project_id = ? WHERE id = ?`,
+        Date.now(), body.projectId ?? null, sessionId
+      );
     } else {
       sessionId = crypto.randomUUID();
       this.ctx.storage.sql.exec(
-        `INSERT INTO channel_sessions (id, channel, channel_user_id, created_at, last_seen) VALUES (?, ?, ?, ?, ?)`,
-        sessionId, norm.channel, norm.channel_user_id, Date.now(), Date.now()
+        `INSERT INTO channel_sessions (id, channel, channel_user_id, project_id, created_at, last_seen) VALUES (?, ?, ?, ?, ?, ?)`,
+        sessionId, norm.channel, norm.channel_user_id, body.projectId ?? null, Date.now(), Date.now()
       );
     }
 
@@ -1472,9 +1518,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     return Response.json({ session_id: sessionId, queued: true });
   }
 
+  // Observability surface for customer-bot projects ("all you do is see what the customers
+  // are doing" — this is that view): project_id + human_takeover so the admin/dashboard can
+  // tell which project a thread belongs to and whether a human has taken it over.
   private handleListChannelSessions(): Response {
     const rows = this.ctx.storage.sql
-      .exec(`SELECT id, channel, channel_user_id, created_at, last_seen FROM channel_sessions ORDER BY last_seen DESC LIMIT 200`)
+      .exec(`SELECT id, channel, channel_user_id, project_id, human_takeover, created_at, last_seen FROM channel_sessions ORDER BY last_seen DESC LIMIT 200`)
       .toArray();
     return Response.json({ sessions: rows, count: rows.length });
   }
@@ -1482,7 +1531,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private handleChannelUnanswered(): Response {
     const rows = this.ctx.storage.sql
       .exec(
-        `SELECT m.id, m.session_id, s.channel, s.channel_user_id, m.text, m.created_at
+        `SELECT m.id, m.session_id, s.channel, s.channel_user_id, s.project_id, s.human_takeover, m.text, m.created_at
          FROM channel_messages m JOIN channel_sessions s ON s.id = m.session_id
          WHERE m.direction = 'inbound' AND m.answered = 0 ORDER BY m.created_at ASC LIMIT 100`
       )
@@ -1493,12 +1542,71 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   /** Maps a channel + the matched channel_user_id to the notify.* op's expected params. */
   private notifyParamsFor(channel: string, channelUserId: string, text: string): Record<string, unknown> {
     if (channel === "email") return { to: channelUserId, subject: "Re: your message", body: text };
+    if (channel === "whatsapp") return { to: channelUserId, message: text };
     return { channel: channelUserId, message: text }; // slack / discord
   }
 
   // Drain the unanswered queue through the script-first loop: the goal asks for a grounded
   // reply; if the model isn't confident it returns "ESCALATE" and the message stays queued
   // for a human (honest escalation beats a confident wrong answer, per A1.3).
+  /** Fetch a customer-bot project's config (execution ceiling, spend cap) from SpaceDO. */
+  private async fetchProjectConfig(spaceId: string, projectId: string): Promise<{ execution_ceiling: number; daily_spend_cap_credits: number } | null> {
+    try {
+      const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}`));
+      if (!resp.ok) return null;
+      return await resp.json<{ execution_ceiling: number; daily_spend_cap_credits: number }>();
+    } catch {
+      return null;
+    }
+  }
+
+  /** Fetch a customer-bot project's no-code rules (highest priority first) from SpaceDO. */
+  private async fetchProjectRules(spaceId: string, projectId: string): Promise<ProjectRule[]> {
+    try {
+      const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}/rules`));
+      if (!resp.ok) return [];
+      const { data } = await resp.json<{ data: ProjectRule[] }>();
+      return data.filter((r) => r.enabled !== 0);
+    } catch {
+      return [];
+    }
+  }
+
+  /** First enabled rule (priority order — already sorted by the API) whose trigger_pattern
+   *  substring-matches the inbound text, case-insensitive. */
+  private matchProjectRule(rules: ProjectRule[], text: string): ProjectRule | null {
+    const lower = text.toLowerCase();
+    return rules.find((r) => lower.includes(r.trigger_pattern.toLowerCase())) ?? null;
+  }
+
+  private todaySpendKey(): string {
+    return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+  }
+
+  private getProjectSpendToday(projectId: string): number {
+    const row = this.ctx.storage.sql
+      .exec(`SELECT credits FROM project_spend WHERE project_id = ? AND day = ?`, projectId, this.todaySpendKey())
+      .toArray() as Array<{ credits: number }>;
+    return row[0]?.credits ?? 0;
+  }
+
+  private addProjectSpend(projectId: string, credits: number): void {
+    const day = this.todaySpendKey();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO project_spend (project_id, day, credits) VALUES (?, ?, ?)
+       ON CONFLICT (project_id, day) DO UPDATE SET credits = credits + excluded.credits`,
+      projectId, day, credits
+    );
+  }
+
+  private markOutbound(sessionId: string, messageId: string, text: string): void {
+    this.ctx.storage.sql.exec(
+      `INSERT INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at) VALUES (?, ?, 'outbound', ?, NULL, 1, ?)`,
+      crypto.randomUUID(), sessionId, text, Date.now()
+    );
+    this.ctx.storage.sql.exec(`UPDATE channel_messages SET answered = 1 WHERE id = ?`, messageId);
+  }
+
   private async handleChannelHeartbeat(request: Request): Promise<Response> {
     this.ensureInit();
     type HeartbeatBody = { spaceId?: string; agentId?: string; tenantId?: string; apiKey?: string; model?: string; max?: number };
@@ -1509,16 +1617,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const tenantId = body.tenantId ?? "";
     const limit = Math.min(body.max ?? 5, 20);
 
+    // human_takeover sessions are correctly left alone — a human is already handling them,
+    // this is not an escalation/failure, so it's tracked separately from `escalated`.
     const pending = this.ctx.storage.sql
       .exec(
-        `SELECT m.id, m.session_id, s.channel, s.channel_user_id, m.text
+        `SELECT m.id, m.session_id, s.channel, s.channel_user_id, s.project_id, m.text
          FROM channel_messages m JOIN channel_sessions s ON s.id = m.session_id
-         WHERE m.direction = 'inbound' AND m.answered = 0 ORDER BY m.created_at ASC LIMIT ?`,
+         WHERE m.direction = 'inbound' AND m.answered = 0 AND s.human_takeover = 0
+         ORDER BY m.created_at ASC LIMIT ?`,
         limit
       )
-      .toArray() as Array<{ id: string; session_id: string; channel: string; channel_user_id: string; text: string }>;
+      .toArray() as Array<{ id: string; session_id: string; channel: string; channel_user_id: string; project_id: string | null; text: string }>;
 
-    if (pending.length === 0) return Response.json({ drained: 0, answered: 0, escalated: 0 });
+    if (pending.length === 0) return Response.json({ drained: 0, answered: 0, escalated: 0, rule_handled: 0, spend_capped: 0 });
 
     const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId);
     if (!engineEnv) return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
@@ -1533,11 +1644,72 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(body.model ? { model: body.model } : {}),
     });
 
+    // Resolve config + rules once per distinct project among this batch (not per message).
+    const projectIds = [...new Set(pending.map((m) => m.project_id).filter((id): id is string => !!id))];
+    const projectConfigs = new Map<string, { execution_ceiling: number; daily_spend_cap_credits: number }>();
+    const projectRules = new Map<string, ProjectRule[]>();
+    for (const pid of projectIds) {
+      const [cfg, rules] = await Promise.all([this.fetchProjectConfig(spaceId, pid), this.fetchProjectRules(spaceId, pid)]);
+      if (cfg) projectConfigs.set(pid, cfg);
+      projectRules.set(pid, rules);
+    }
+
     let answered = 0;
     let escalated = 0;
+    let ruleHandled = 0;
+    let spendCapped = 0;
+
     for (const msg of pending) {
-      // Untrusted inbound text — moderate before it ever reaches the reasoning prompt.
+      // Untrusted inbound text — moderate before it ever reaches the reasoning prompt or a rule match.
       if (moderateInput(msg.text).blocked) { escalated++; continue; }
+
+      const projectCfg = msg.project_id ? projectConfigs.get(msg.project_id) : undefined;
+      const rules = msg.project_id ? (projectRules.get(msg.project_id) ?? []) : [];
+
+      // 1. No-code rules (spec: "after the customer says X, this happens") — checked before
+      //    any reasoning at all. Zero token cost, deterministic, admin-authored.
+      const matchedRule = this.matchProjectRule(rules, msg.text);
+      if (matchedRule) {
+        if (matchedRule.action === "human_takeover") {
+          this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover = 1 WHERE id = ?`, msg.session_id);
+          ruleHandled++;
+          continue; // message stays unanswered for a human — that's the point
+        }
+        const replyText = matchedRule.action === "reply"
+          ? (matchedRule.reply_text ?? "")
+          : null;
+        if (replyText) {
+          const deliver = await tools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, replyText));
+          if (deliver.ok) {
+            this.markOutbound(msg.session_id, msg.id, replyText);
+            ruleHandled++;
+            continue;
+          }
+        } else if (matchedRule.action === "run_script" && matchedRule.script_name) {
+          if (projectCfg) engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
+          const scriptResult = await tools.run(matchedRule.script_name, { text: msg.text, channel_user_id: msg.channel_user_id });
+          if (scriptResult.ok) {
+            this.markOutbound(msg.session_id, msg.id, `(handled by rule → ${matchedRule.script_name})`);
+            ruleHandled++;
+            continue;
+          }
+        }
+        // Rule matched but delivery/script failed — fall through to escalation, not silent drop.
+        escalated++;
+        continue;
+      }
+
+      // 2. Daily spend cap (customer-bot projects only) — protects against a chatty or
+      //    adversarial customer running up an unbounded bill. Once hit, leave the rest of
+      //    today's messages for a human rather than silently dropping them.
+      if (projectCfg && projectCfg.daily_spend_cap_credits > 0 && this.getProjectSpendToday(msg.project_id!) >= projectCfg.daily_spend_cap_credits) {
+        spendCapped++;
+        continue;
+      }
+
+      // 3. Full reasoning loop, under the project's execution ceiling if it has one.
+      if (projectCfg) engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
+      else delete engineEnv.maxTier;
 
       let result: Awaited<ReturnType<typeof runScriptLoop>>;
       try {
@@ -1554,13 +1726,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         result = { level: "L4", result: { ok: false, error: String(err), tier: 1, duration_ms: 0, tokens_used: 0 }, notes: [] };
       }
 
+      if (msg.project_id && result.result?.tokens_used) {
+        this.addProjectSpend(msg.project_id, result.result.tokens_used);
+      }
+
       const deliveredDirectly = result.script_name?.startsWith("notify.") && result.result?.ok;
       if (deliveredDirectly) {
-        this.ctx.storage.sql.exec(
-          `INSERT INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at) VALUES (?, ?, 'outbound', ?, NULL, 1, ?)`,
-          crypto.randomUUID(), msg.session_id, "(sent via notify)", Date.now()
-        );
-        this.ctx.storage.sql.exec(`UPDATE channel_messages SET answered = 1 WHERE id = ?`, msg.id);
+        this.markOutbound(msg.session_id, msg.id, "(sent via notify)");
         answered++;
         continue;
       }
@@ -1573,14 +1745,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // The reasoner answered in text rather than calling notify.* itself — deliver it now.
       const deliver = await tools.run(`notify.${msg.channel}`, this.notifyParamsFor(msg.channel, msg.channel_user_id, text));
       if (!deliver.ok) { escalated++; continue; }
-      this.ctx.storage.sql.exec(
-        `INSERT INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at) VALUES (?, ?, 'outbound', ?, NULL, 1, ?)`,
-        crypto.randomUUID(), msg.session_id, text, Date.now()
-      );
-      this.ctx.storage.sql.exec(`UPDATE channel_messages SET answered = 1 WHERE id = ?`, msg.id);
+      this.markOutbound(msg.session_id, msg.id, text);
       answered++;
     }
-    return Response.json({ drained: pending.length, answered, escalated });
+    return Response.json({ drained: pending.length, answered, escalated, rule_handled: ruleHandled, spend_capped: spendCapped });
   }
 
   // ── POST /run ─────────────────────────────────────────────────────────────

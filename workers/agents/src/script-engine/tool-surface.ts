@@ -22,6 +22,7 @@ import type {
   FindCandidate,
   ObserveSnapshot,
   ScriptDomain,
+  ExecutionTier,
 } from "./types.js";
 import { SkillLibrary } from "./skill-library.js";
 import { scriptFind, indexScriptEmbedding, removeScriptEmbedding } from "./script-find.js";
@@ -51,12 +52,30 @@ export class ScriptToolSurface {
     return [...this.ops.keys()];
   }
 
+  /**
+   * Restricted-project execution ceiling (e.g. a customer-bot project capped at Tier 2) —
+   * fail closed on any tier above it, for both authoring (script.create/update) and running
+   * (script.run). Structural, not a prompt instruction: a compromised or over-eager reasoner
+   * cannot talk its way past this.
+   */
+  private assertWithinCeiling(tier: ExecutionTier, context: string): void {
+    if (this.env.maxTier !== undefined && tier > this.env.maxTier) {
+      throw new Error(
+        `Tier ${tier} exceeds this project's execution ceiling (${this.env.maxTier}) for ${context}. ` +
+        `This project is configured as a restricted customer-facing bot — ask an admin to raise ` +
+        `its execution ceiling if this capability is actually needed.`
+      );
+    }
+  }
+
   // ── script.create ──────────────────────────────────────────────────────────
   async create(input: {
     name: string;
     code?: string;
     metadata: Partial<ScriptMetadata> & Pick<ScriptMetadata, "description" | "domain" | "requires_tier">;
   }): Promise<ScriptMetadata> {
+    this.assertWithinCeiling(input.metadata.requires_tier, `script.create('${input.name}')`);
+
     // Income-wallet protection: a user/agent script may never collect money. Only the
     // prebuilt commerce op (Naelao's Lemon Squeezy store) may — that is how the platform
     // fee is guaranteed. Reject reserved-capability authoring at create time (fail-closed).
@@ -93,7 +112,14 @@ export class ScriptToolSurface {
     patch: { code?: string; metadata?: Partial<ScriptMetadata> },
     reason: string
   ): Promise<ScriptMetadata> {
-    // Re-check on update so a benign script can't be edited into a money-in bypass.
+    // Re-check on update so a benign script can't be edited into a money-in bypass — and so a
+    // ceiling lowered AFTER creation (admin restricts a project) is enforced retroactively.
+    if (patch.metadata?.requires_tier !== undefined) {
+      this.assertWithinCeiling(patch.metadata.requires_tier, `script.update('${name}')`);
+    } else {
+      const existing = await this.library.read(name);
+      if (existing) this.assertWithinCeiling(existing.metadata.requires_tier, `script.update('${name}')`);
+    }
     assertNoReservedViolation({
       name,
       code: patch.code,
@@ -130,6 +156,15 @@ export class ScriptToolSurface {
     // 1. Prebuilt operation?
     const prebuilt = this.ops.get(name);
     if (prebuilt) {
+      if (this.env.maxTier !== undefined && prebuilt.prebuilt.requires_tier > this.env.maxTier) {
+        return {
+          ok: false,
+          error: `Tier ${prebuilt.prebuilt.requires_tier} exceeds this project's execution ceiling (${this.env.maxTier}) for script.run('${name}').`,
+          tier: prebuilt.prebuilt.requires_tier,
+          duration_ms: Date.now() - started,
+          tokens_used: 0,
+        };
+      }
       try {
         const output = await prebuilt.op(params, {
           env: this.env,
@@ -165,6 +200,15 @@ export class ScriptToolSurface {
         ok: false,
         error: `Unknown script or operation: ${name}`,
         tier: 1,
+        duration_ms: Date.now() - started,
+        tokens_used: 0,
+      };
+    }
+    if (this.env.maxTier !== undefined && stored.metadata.requires_tier > this.env.maxTier) {
+      return {
+        ok: false,
+        error: `Tier ${stored.metadata.requires_tier} exceeds this project's execution ceiling (${this.env.maxTier}) for script.run('${name}').`,
+        tier: stored.metadata.requires_tier,
         duration_ms: Date.now() - started,
         tokens_used: 0,
       };
