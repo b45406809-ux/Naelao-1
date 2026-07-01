@@ -167,6 +167,18 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     start) and the public CRUD routes were never proxied by `naelao-router` (added the
     `CREDENTIALS_WORKER` binding + routes). Tests run the real migration through `node:sqlite`
     rather than mocking SQL. Full detail: appendix §A1.16.5.
+19. **Space collaboration (presence + project deduplication) is now BUILT.** Roles and locks
+    already existed; this pass adds the other two A1.8 coordination primitives, both in
+    `SpaceDO` (no new DO). Presence: migration v16 `presence` table, heartbeat-based
+    (`POST/GET /spaces/:spaceId/presence`), `isPresenceFresh` (`@naelao/events`, 90s default
+    window) ages out stale/crashed clients. Project dedup: `createProject` now runs a
+    token-Jaccard name-similarity check (`findPossibleDuplicateProjects`, `@naelao/events`,
+    deliberately not embeddings — that's `script.find`'s job) against existing active
+    projects, returns `possible_duplicates` in the response, and fires the existing
+    `project.possible_duplicate` event through `fireMatchingTriggers` so a builder can wire a
+    no-code trigger to broadcast "this already exists" — never blocks creation. Also fixed in
+    passing: `updateProject` had no `status` field at all, so a project could never actually
+    be archived. Full detail: appendix §A1.16.6.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

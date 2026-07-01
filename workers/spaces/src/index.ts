@@ -660,6 +660,32 @@ app.delete("/spaces/:spaceId/projects/:projectId/rules/:ruleId", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// Presence (space collaboration, A1.8) — heartbeat: "I'm here" (space-level, or scoped to a
+// project/thread). Callers poll GET periodically to see who's currently active.
+app.post("/spaces/:spaceId/presence", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  const userId = c.req.header("x-naelao-user-id") ?? getCallerIdentity(c).userId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
+  const body = await c.req.json<{ project_id?: string; thread_id?: string }>().catch(() => ({}));
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/presence", "POST", JSON.stringify({ space_id: spaceId, user_id: userId, ...body }));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.get("/spaces/:spaceId/presence", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const qs = new URLSearchParams({ space_id: spaceId });
+  const projectId = c.req.query("project_id");
+  if (projectId) qs.set("project_id", projectId);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/presence?${qs.toString()}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // Event triggers (@naelao/events) — no-code "after X happens (thread created, project
 // created, ...), run script Y." project_id absent = space-wide.
 app.get("/spaces/:spaceId/event-triggers", async (c) => {

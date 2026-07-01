@@ -575,9 +575,12 @@ tracked as the next piece of this same builder conversation, not yet built.
   `custom_hostnames` apply (`createCustomHostname` + TXT DCV + status poll) is wired end-to-end
   in the spaces worker. The `storefront.set_custom_domain` prebuilt now posts `kind='custom_domain'`
   (the branch that actually runs the CF-for-SaaS apply).
-- **Space collaboration**: roles, task boards, and project deduplication (admin's assistant
-  broadcasts "this already exists" to member assistants). **Settled in A1.8** — assistant is
-  the operator over shared `ProjectDO` state (locks + presence + dedup), not a per-user fork.
+- ~~**Space collaboration**~~ — **BUILT** (see A1.16.6). Roles already existed
+  (`space_members.role`); locks already existed (`LockDO`/A1.15). This pass added presence
+  (heartbeat-based, in `SpaceDO`) and project deduplication (name-similarity heads-up on
+  `POST /projects`, wired to the existing event-trigger mechanism so a builder can broadcast
+  "this already exists" via a no-code trigger). "Task boards" is the existing
+  Projects+threads model (§A1.0) — a dashboard rendering concern, not a missing backend.
 - ~~**Reseller / `tenant` membership**~~ — **BUILT** (see A1.16.4). `parent_tenant_id` hierarchy
   (`tenant_hierarchy`), `reseller_accounts`, per-event `reseller_ledger` attribution
   (`recordResellerAttribution` in the LS webhook), `/reseller/spaces` + client-portfolio
@@ -1092,3 +1095,52 @@ upsert-in-place, list visibility (own + shared vs everything), delete authorizat
 3-tier resolution order including the override-always-wins case, the no-`on_behalf_of` backward
 -compatible path (mcp-hub's actual call shape), 404 on no match, invalid-token rejection, and
 cross-tenant isolation.
+
+---
+
+## A1.16.6 Space collaboration: presence + project deduplication — BUILT
+
+Closes the "space collaboration" open follow-up (A1.5/A1.8: "two members' assistants do not
+build two companies because they read/write the same shared state ... coordination = file
+locks + presence + project deduplication"). Of the three coordination primitives A1.8 names,
+locks already existed (`LockDO`, A1.15) and roles already existed (`space_members.role`,
+`owner`/`admin`/`editor`/`member`/`viewer`). This pass builds the other two, both living in
+`SpaceDO` (no new DO — presence and dedup are space-scoped, unlike locks which need arbitrary
+cross-resource naming).
+
+**Presence** (migration v16, `presence` table: one row per `(space_id, user_id)`). A
+heartbeat, not a WebSocket/DO-alarm system: `POST /spaces/:spaceId/presence` upserts where a
+member currently is (`project_id`/`thread_id`, or space-level if omitted); `GET
+/spaces/:spaceId/presence?project_id=` lists who still counts as "active" — a caller-supplied
+freshness window (`isPresenceFresh`, `@naelao/events`, default 90s) filters out stale rows so a
+closed tab or crashed client ages out instead of appearing present forever.
+
+**Project deduplication** (`SpaceDO.createProject`). Exact-name idempotency already existed
+(`ON CONFLICT(space_id, name) DO NOTHING`); this adds a *semantic* heads-up: before inserting a
+genuinely new project, its name is compared against every existing active project via
+token-Jaccard similarity (`nameSimilarity`/`findPossibleDuplicateProjects`, `@naelao/events`;
+threshold 0.5, chosen to favor recall — a false-positive heads-up costs nothing, a missed real
+duplicate is the thing this exists to catch). This is deliberately **not** embeddings/Vectorize
+— that's reserved for `script.find`'s retrieval, not a synchronous check on every project
+creation. Matches are returned in the create response as `possible_duplicates` and, when any are
+found, a `project.possible_duplicate` event fires through the *existing* event-trigger
+mechanism (`fireMatchingTriggers`, same as `project.created`) — a builder wires this to a
+no-code trigger (e.g. a `notifications` script) to actually broadcast "this already exists" to
+the space's admin/assistant. The dedup check never blocks creation, matching A1.8's framing:
+coordination, not gatekeeping.
+
+**Adjacent bug fixed in passing:** `updateProject` had no `status` field at all, so a project
+could never actually be archived via the API (`listProjects` and the new dedup candidate query
+both filter on `status != 'archived'`, but nothing could set it). Added `PATCH
+{ status: 'active'|'archived' }`.
+
+**Tests (`tests/unit/space-collaboration.test.ts`, 20 tests):** pure similarity/dedup/freshness
+functions (identical/unrelated/superset names, case/punctuation insensitivity, sorted-by-score
+filtering, freshness at/past a window); `SpaceDO` project creation (no duplicates for an
+unrelated name, a similar name flagged but still created, an idempotent exact re-create reports
+no duplicates for itself, an archived project excluded from candidates, the possible-duplicate
+event actually firing through a registered no-code trigger); `SpaceDO` presence (space-level
+heartbeat, project-scoped listing, a second heartbeat updates rather than duplicates, a stale
+heartbeat ages out under `vi.useFakeTimers`, missing `user_id` rejected, isolation across
+spaces). Uses the existing `tests/unit/helpers/sqlite-do-shim.ts` pattern (real SpaceDO class
+against real in-memory SQLite via `node:sqlite`), not a hand-rolled mock.

@@ -21,6 +21,7 @@ export type NaelaoEventType =
   | "thread.created"
   | "thread.closed"
   | "project.created"
+  | "project.possible_duplicate"
   | (string & {});
 
 export interface EventEnvelope {
@@ -141,4 +142,72 @@ export function buildFireParams(
     thread_id: conditionResult.targetThreadId ?? event.thread_id,
     triggered_by_thread_id: event.thread_id,
   };
+}
+
+// ── Space collaboration (spec A1.8): "two members' assistants do not build two companies
+// because they read/write the same shared space state" — project deduplication + presence.
+// Coordination here is a HEADS-UP, never a block: a member can always create their project;
+// the system just surfaces "this might already exist" so the space's own assistant/admin can
+// notice and reconcile, exactly the "broadcasts 'this already exists'" framing in A1.8.
+
+/** Token-normalize a project name for similarity comparison: lowercase, strip punctuation,
+ *  split on whitespace, de-duplicate. Deliberately NOT semantic/embedding-based — this is an
+ *  advisory heads-up check run synchronously on every project creation, not a `script.find`
+ *  retrieval (which is what embeddings + Vectorize are reserved for). */
+function normalizeTokens(name: string): Set<string> {
+  return new Set(
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter(Boolean)
+  );
+}
+
+/** Jaccard similarity (intersection / union of token sets) — 1.0 identical tokens, 0.0 no
+ *  overlap. Two empty-token names (e.g. both blank) are treated as identical (1.0). */
+export function nameSimilarity(a: string, b: string): number {
+  const ta = normalizeTokens(a);
+  const tb = normalizeTokens(b);
+  if (ta.size === 0 && tb.size === 0) return 1;
+  let intersection = 0;
+  for (const t of ta) if (tb.has(t)) intersection++;
+  const union = new Set([...ta, ...tb]).size;
+  return union === 0 ? 0 : intersection / union;
+}
+
+/** Below this similarity, two project names are considered unrelated — chosen so a name that
+ *  is a strict superset/subset sharing at least half its tokens ("Support" vs "Support
+ *  Escalations") is flagged, favoring recall (a false-positive heads-up costs nothing; a missed
+ *  real duplicate is the thing this feature exists to catch). */
+export const PROJECT_DUPLICATE_SIMILARITY_THRESHOLD = 0.5;
+
+export interface ExistingProject {
+  id: string;
+  name: string;
+}
+
+/** Existing active projects whose name is a likely duplicate of `name`, most-similar first. */
+export function findPossibleDuplicateProjects(
+  name: string,
+  existing: ExistingProject[],
+  threshold: number = PROJECT_DUPLICATE_SIMILARITY_THRESHOLD
+): ExistingProject[] {
+  return existing
+    .map((p) => ({ project: p, score: nameSimilarity(name, p.name) }))
+    .filter(({ score }) => score >= threshold)
+    .sort((a, b) => b.score - a.score)
+    .map(({ project }) => project);
+}
+
+/** Default freshness window: a member is considered "active" if they heartbeat within 90s —
+ *  long enough to tolerate normal polling/network jitter, short enough that presence reflects
+ *  reality within one interaction cycle. */
+export const PRESENCE_FRESHNESS_WINDOW_MS = 90_000;
+
+/** Whether a presence heartbeat recorded at `lastSeenAtMs` still counts as "currently active"
+ *  at `nowMs` — the freshness window a heartbeat-based (not WebSocket-based) presence system
+ *  needs so a closed tab/crashed client ages out instead of appearing present forever. */
+export function isPresenceFresh(lastSeenAtMs: number, nowMs: number, windowMs: number = PRESENCE_FRESHNESS_WINDOW_MS): boolean {
+  return nowMs - lastSeenAtMs <= windowMs;
 }

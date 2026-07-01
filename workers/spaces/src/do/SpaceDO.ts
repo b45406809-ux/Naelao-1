@@ -2,7 +2,10 @@ import { DurableObject } from "cloudflare:workers";
 import { applyMigrations, queryAll, queryOne, execute } from "@naelao/db";
 import type { Migration } from "@naelao/db";
 import type { MessageRole } from "@naelao/types";
-import { selectMatchingRules, evaluateCondition, buildFireParams } from "@naelao/events";
+import {
+  selectMatchingRules, evaluateCondition, buildFireParams,
+  findPossibleDuplicateProjects, isPresenceFresh, PRESENCE_FRESHNESS_WINDOW_MS,
+} from "@naelao/events";
 import type { TriggerRule, TriggerCondition, EventEnvelope, ConditionContext } from "@naelao/events";
 
 function safeJsonParseObj(text: string): Record<string, unknown> {
@@ -408,6 +411,28 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_event_triggers_lookup ON event_triggers(space_id, event_type, enabled, priority DESC);
     `,
   },
+  {
+    version: 16,
+    // Presence (spec A1.8 "space collaboration"): "the company state is shared ... two
+    // members' assistants do not build two companies because they read/write the same shared
+    // state." Coordination = locks (already built, LockDO/A1.15) + presence + project
+    // deduplication (this migration + createProject below). Presence is a lightweight
+    // heartbeat, not a WebSocket/DO-alarm system: one row per (space, user) recording where
+    // they currently are; a caller-supplied freshness window (isPresenceFresh, @naelao/events)
+    // decides who still counts as "active" — a crashed/closed client just ages out.
+    description: "presence (heartbeat-based, one row per space+user — who's active where)",
+    up: `
+      CREATE TABLE IF NOT EXISTS presence (
+        space_id      TEXT NOT NULL,
+        user_id       TEXT NOT NULL,
+        project_id    TEXT, -- NULL = present at the space level, not scoped to one project
+        thread_id     TEXT,
+        last_seen_at  INTEGER NOT NULL, -- unix ms
+        PRIMARY KEY (space_id, user_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_presence_project ON presence(space_id, project_id, last_seen_at DESC);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -656,6 +681,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const projectRuleIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/rules\/([^/]+)$/);
       if (method === "DELETE" && projectRuleIdMatch?.[1] && projectRuleIdMatch?.[2]) {
         return this.deleteProjectRule(projectRuleIdMatch[1], projectRuleIdMatch[2]);
+      }
+
+      // ── Presence (space collaboration, A1.8) ───────────────────────────────────
+      // POST /presence — heartbeat: upsert where this user currently is (space-level if no
+      // project_id/thread_id given).
+      if (method === "POST" && url.pathname === "/presence") {
+        return this.heartbeatPresence(request);
+      }
+      // GET /presence?space_id=&project_id= — members currently active (fresh heartbeat),
+      // optionally scoped to one project.
+      if (method === "GET" && url.pathname === "/presence") {
+        return this.listPresence(url.searchParams);
       }
 
       // ── Event triggers (@naelao/events) ────────────────────────────────────────
@@ -1275,6 +1312,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const alreadyExisted = !!queryOne<{ id: string }>(
       this.ctx.storage.sql as never, "SELECT id FROM projects WHERE space_id = ? AND name = ?", body.space_id, body.name
     );
+    // Space collaboration (A1.8): before creating a genuinely new project, check for a
+    // likely-duplicate among the space's existing active projects (name similarity, not just
+    // exact match). This is a HEADS-UP, never a block — the member's project is still created;
+    // the space is informed so an admin/assistant can reconcile ("this already exists").
+    let possibleDuplicates: Array<{ id: string; name: string }> = [];
+    if (!alreadyExisted) {
+      const activeProjects = queryAll<{ id: string; name: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT id, name FROM projects WHERE space_id = ? AND status != 'archived'",
+        body.space_id
+      );
+      possibleDuplicates = findPossibleDuplicateProjects(body.name, activeProjects);
+    }
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     execute(
@@ -1289,13 +1339,70 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.space_id, body.name
     );
     if (!alreadyExisted && row) {
+      const tenantId = body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "";
       // Awaited (not fire-and-forget) — same reasoning as mirrorThread elsewhere in this
       // build: an un-awaited promise can be abandoned mid-flight once this response is sent
       // and the DO's request context is free to tear down. fireMatchingTriggers is itself
       // best-effort/non-throwing, so this never fails project creation.
-      await this.fireMatchingTriggers({ type: "project.created", space_id: body.space_id, project_id: row.id, occurred_at: Date.now() }, body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "");
+      await this.fireMatchingTriggers({ type: "project.created", space_id: body.space_id, project_id: row.id, occurred_at: Date.now() }, tenantId);
+      if (possibleDuplicates.length > 0) {
+        // A builder can wire this event to a no-code trigger (e.g. a notifications script) to
+        // actually broadcast the heads-up to the space's admin/assistant — the dedup detection
+        // itself never assumes a specific notification channel.
+        await this.fireMatchingTriggers(
+          {
+            type: "project.possible_duplicate",
+            space_id: body.space_id,
+            project_id: row.id,
+            occurred_at: Date.now(),
+            payload: { new_project_name: row.name, candidates: possibleDuplicates },
+          },
+          tenantId
+        );
+      }
     }
-    return Response.json(row ?? { id, name: body.name, status: "active", created_at: now }, { status: 201 });
+    return Response.json(
+      { ...(row ?? { id, name: body.name, status: "active", created_at: now }), possible_duplicates: possibleDuplicates },
+      { status: 201 }
+    );
+  }
+
+  // ── Presence (space collaboration, A1.8) ────────────────────────────────────
+  // Heartbeat-based, not WebSocket-based: a client calls /presence periodically while a member
+  // has a project/thread open; listPresence filters by a freshness window so a closed tab or
+  // crashed client just ages out rather than appearing present forever.
+  private async heartbeatPresence(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id: string; user_id: string; project_id?: string; thread_id?: string }>();
+    if (!body.space_id || !body.user_id) {
+      return Response.json({ error_code: "bad_request", message: "space_id and user_id are required" }, { status: 400 });
+    }
+    const now = Date.now();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO presence (space_id, user_id, project_id, thread_id, last_seen_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(space_id, user_id) DO UPDATE SET project_id = excluded.project_id, thread_id = excluded.thread_id, last_seen_at = excluded.last_seen_at`,
+      body.space_id, body.user_id, body.project_id ?? null, body.thread_id ?? null, now
+    );
+    return Response.json({ ok: true, last_seen_at: now });
+  }
+
+  private listPresence(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    const projectId = params.get("project_id");
+    const rows = projectId
+      ? queryAll<{ user_id: string; project_id: string | null; thread_id: string | null; last_seen_at: number }>(
+          this.ctx.storage.sql as never,
+          "SELECT user_id, project_id, thread_id, last_seen_at FROM presence WHERE space_id = ? AND project_id = ?",
+          spaceId, projectId
+        )
+      : queryAll<{ user_id: string; project_id: string | null; thread_id: string | null; last_seen_at: number }>(
+          this.ctx.storage.sql as never,
+          "SELECT user_id, project_id, thread_id, last_seen_at FROM presence WHERE space_id = ?",
+          spaceId
+        );
+    const now = Date.now();
+    const active = rows.filter((r) => isPresenceFresh(r.last_seen_at, now));
+    return Response.json({ data: active, count: active.length, freshness_window_ms: PRESENCE_FRESHNESS_WINDOW_MS });
   }
 
   // ── Customer-bot project config (no-code, admin-configured) ─────────────────
@@ -1317,11 +1424,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       name?: string;
       description?: string;
       show_sub_threads?: boolean;
+      status?: "active" | "archived";
     }>().catch(() => ({}) as Record<string, never>);
 
     const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE id = ?", projectId);
     if (!existing) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
 
+    if (body.status !== undefined) {
+      if (body.status !== "active" && body.status !== "archived") {
+        return Response.json({ error_code: "bad_request", message: "status must be 'active' or 'archived'" }, { status: 400 });
+      }
+      // Archiving removes a project from listProjects and from dedup candidates (both filter
+      // on status != 'archived') without deleting its threads/history.
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET status = ? WHERE id = ?", body.status, projectId);
+    }
     if (body.kind !== undefined) {
       if (body.kind !== "workspace" && body.kind !== "customer_bot") {
         return Response.json({ error_code: "bad_request", message: "kind must be 'workspace' or 'customer_bot'" }, { status: 400 });
