@@ -564,9 +564,12 @@ tracked as the next piece of this same builder conversation, not yet built.
   MCP providers (Pipedream, Composio).
 - **Member/seat billing**: Lemon Squeezy billing for a builder's space-members (the third
   payer class) — the customer-purchase and builder-plan paths are done.
-- **Storefront render + CF for SaaS apply step**: the portal Worker serving the multitenant
-  storefront UI from the `portal-host` route, and the zone-scoped `custom_hostnames` API call
-  (the data model + route registration + DNS instructions are built).
+- ~~**Storefront render + CF for SaaS apply step**~~ — **BUILT** (see A1.16.3). The portal
+  Worker now serves the store at the root path a buyer lands on (`GET /` resolves the Host via
+  `business_services`, precedence storefront → product portal), and the zone-scoped
+  `custom_hostnames` apply (`createCustomHostname` + TXT DCV + status poll) is wired end-to-end
+  in the spaces worker. The `storefront.set_custom_domain` prebuilt now posts `kind='custom_domain'`
+  (the branch that actually runs the CF-for-SaaS apply).
 - **Space collaboration**: roles, task boards, and project deduplication (admin's assistant
   broadcasts "this already exists" to member assistants). **Settled in A1.8** — assistant is
   the operator over shared `ProjectDO` state (locks + presence + dedup), not a per-user fork.
@@ -936,3 +939,41 @@ context is freed.
   targetThreadId), recent thread (no match)
 - `buildFireParams`: targets condition-resolved thread over event's own; falls back to event
   thread when no condition target
+
+---
+
+## A1.16.3 Storefront render at the fallback origin + Cloudflare-for-SaaS apply — BUILT
+
+The Launchpad **storefront** (spec §11 external portal, monetization model B) is now
+functional end-to-end: a buyer can reach a store and check out. Two gaps closed this pass.
+
+**1. Serve the store at the ROOT path (portal Worker = CF-for-SaaS fallback origin).** Storefront
+hosts — the `{slug}.naelao.com` wildcard (covered by the zone cert) plus opt-in verified custom
+hostnames — CNAME to the portal Worker as the Cloudflare-for-SaaS fallback origin. A buyer's
+browser lands on `/`, not `/storefront`. The Worker now has `GET /` which resolves the `Host`
+header against `business_services` (precedence: **storefront → product portal**) and renders the
+store inline; it falls through to the product-portal proxy (`PORTAL_DOMAINS` KV → CF Pages) when
+the host is a space shell, and 404s otherwise. `resolvePortal()` / `proxyToPortal()` were
+extracted from the old `/proxy` handler so both `/` and `/proxy` share one code path.
+`renderStorefrontForSpace()` is shared by `/` and the explicit `/storefront` route. The rendered
+buy form posts to `/storefront/checkout` (same host), which routes money-in through the billing
+worker's reserved commerce checkout (platform fee applied).
+
+**2. `storefront.set_custom_domain` triggers the CF-for-SaaS apply.** The prebuilt op posted
+`kind='storefront'` with a `custom_domain`, but the spaces worker only runs the apply
+(`createCustomHostname` → TXT DCV → `pending_dns`, then `getCustomHostname` status poll flipping
+to `active`) on the `kind='custom_domain'` branch. `kind='storefront'` silently dropped the domain
+and allocated a `{slug}.naelao.com` handle. Fixed: the op now posts `kind='custom_domain'`, which
+is a distinct `business_services` row (the table's `UNIQUE(space_id, kind)` allows a space to hold
+both a storefront handle and a custom domain). `resolveStorefront()` already matches either
+`naelao_handle` (storefront) or `custom_domain` (custom_domain), so both surfaces resolve.
+
+The CF apply is a no-op unless `CF_API_TOKEN` + `CF_SAAS_ZONE_ID` are configured (dev path records
+intent + CNAME instructions; the apply runs later when the deploy-time secrets land).
+
+**Tests (`tests/unit/storefront-serving.test.ts`, 5 tests):**
+- prebuilt: `set_custom_domain` posts `kind='custom_domain'` (regression), `provision` posts
+  `kind='storefront'` with a DNS-safe slug
+- portal Worker: `GET /` renders the store (name/products/price/checkout form) for a storefront
+  host; renders the "opening soon" empty state with no published products; 404s when the host is
+  neither a storefront nor a portal

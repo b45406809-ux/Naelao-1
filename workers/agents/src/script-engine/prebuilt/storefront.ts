@@ -57,7 +57,10 @@ export const storefront: PrebuiltScript = {
     "storefront.provision": (a, c) =>
       bizService(c, "POST", { kind: "storefront", slug: toSlug(String(a["slug"] ?? a["name"] ?? "shop")) }),
     "storefront.set_custom_domain": (a, c) =>
-      bizService(c, "POST", { kind: "storefront", custom_domain: String(a["domain"] ?? "") }),
+      // Custom domains are a separate business_services row (kind='custom_domain'); this is what
+      // triggers the Cloudflare-for-SaaS apply (createCustomHostname + TXT DCV) on the spaces
+      // worker. Posting kind='storefront' here would drop the domain and allocate a handle.
+      bizService(c, "POST", { kind: "custom_domain", custom_domain: String(a["domain"] ?? "") }),
     "storefront.status": (_a, c) => bizService(c, "GET"),
   },
 };

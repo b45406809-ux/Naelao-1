@@ -1,5 +1,5 @@
 // Portal Router — subdomain + custom-domain routing for Space end-user portals
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { errorResponse, requestId } from "@naelao/http";
 
 interface Env {
@@ -246,12 +246,15 @@ function renderStorefront(spaceName: string, products: StorefrontProduct[], bran
 </body></html>`;
 }
 
-// GET /storefront — render the storefront for the requesting Host.
-app.get("/storefront", async (c) => {
-  const host = c.req.header("host") ?? "";
-  const sf = await resolveStorefront(host, c.env);
-  if (!sf) return c.html("<h1>Store not found</h1>", 404);
-
+/**
+ * Render the storefront for an already-resolved space. Shared by the explicit `/storefront`
+ * path and the root-path handler (the address a buyer's browser actually lands on when a
+ * storefront host CNAMEs to this Worker as the Cloudflare-for-SaaS fallback origin).
+ */
+async function renderStorefrontForSpace(
+  c: Context<{ Bindings: Env }>,
+  sf: { spaceId: string; tenantId: string }
+): Promise<Response> {
   const space = await c.env.PLATFORM_DB.prepare(
     "SELECT name, config_json FROM spaces WHERE id = ?"
   ).bind(sf.spaceId).first<{ name: string; config_json: string | null }>();
@@ -272,6 +275,14 @@ app.get("/storefront", async (c) => {
   }
 
   return c.html(renderStorefront(space?.name ?? "Store", results, brand));
+}
+
+// GET /storefront — render the storefront for the requesting Host.
+app.get("/storefront", async (c) => {
+  const host = c.req.header("host") ?? "";
+  const sf = await resolveStorefront(host, c.env);
+  if (!sf) return c.html("<h1>Store not found</h1>", 404);
+  return renderStorefrontForSpace(c, sf);
 });
 
 // POST /storefront/checkout — initiate a (reserved) money-in checkout for a product.
@@ -301,68 +312,70 @@ app.post("/storefront/checkout", async (c) => {
   return c.redirect(checkout_url, 303);
 });
 
-// ALL /proxy — main ingress handler for incoming portal requests
-// In production this worker sits behind *.naelao.app and any verified custom domains.
-// The CF Zone routes to this worker; it resolves the Space and proxies to the Portal CF Pages app.
-app.all("/proxy", async (c) => {
-  const host = c.req.header("host") ?? "";
-  // Derive subdomain label from host (e.g. "myspace" from "myspace.naelao.app")
+/** Resolve a product-portal (space shell) host to its space via PORTAL_DOMAINS KV. */
+async function resolvePortal(host: string, env: Env): Promise<DomainMapping | null> {
   const subdomain = host.split(".")[0] ?? "";
 
-  let spaceId: string | null = null;
-  let resolvedTenantId: string | null = null;
-
   // 1. Check exact custom domain first (higher priority)
-  const customRaw = await c.env.PORTAL_DOMAINS.get(`domain:${host}`);
+  const customRaw = await env.PORTAL_DOMAINS.get(`domain:${host}`);
   if (customRaw !== null) {
-    try {
-      const mapping = JSON.parse(customRaw) as DomainMapping;
-      spaceId = mapping.spaceId;
-      resolvedTenantId = mapping.tenantId;
-    } catch {
-      // Corrupt entry — fall through to subdomain check
-    }
+    try { return JSON.parse(customRaw) as DomainMapping; } catch { /* fall through */ }
   }
-
   // 2. Fallback to subdomain lookup
-  if (spaceId === null && subdomain) {
-    const subRaw = await c.env.PORTAL_DOMAINS.get(`subdomain:${subdomain}`);
+  if (subdomain) {
+    const subRaw = await env.PORTAL_DOMAINS.get(`subdomain:${subdomain}`);
     if (subRaw !== null) {
-      try {
-        const mapping = JSON.parse(subRaw) as DomainMapping;
-        spaceId = mapping.spaceId;
-        resolvedTenantId = mapping.tenantId;
-      } catch {
-        // Corrupt entry — fall through
-      }
+      try { return JSON.parse(subRaw) as DomainMapping; } catch { /* fall through */ }
     }
   }
+  return null;
+}
 
-  if (spaceId === null || resolvedTenantId === null) {
-    return c.json({ error_code: "not_found", message: "Portal not found for this domain" }, 404);
-  }
-
-  // Proxy to portal CF Pages origin with Space context injected as headers
+/** Proxy the incoming request to the portal CF Pages origin with space context injected. */
+function proxyToPortal(c: Context<{ Bindings: Env }>, mapping: DomainMapping, host: string): Response | Promise<Response> {
   const originalUrl = new URL(c.req.url);
   const portalOrigin = new URL(c.env.PORTAL_ORIGIN);
   originalUrl.hostname = portalOrigin.hostname;
   originalUrl.protocol = portalOrigin.protocol;
   originalUrl.port = portalOrigin.port;
 
-  // Build a fresh headers object — spread raw request headers and inject space context
   const upstreamHeaders = new Headers(c.req.raw.headers);
-  upstreamHeaders.set("x-naelao-space-id", spaceId);
-  upstreamHeaders.set("x-naelao-tenant-id", resolvedTenantId);
+  upstreamHeaders.set("x-naelao-space-id", mapping.spaceId);
+  upstreamHeaders.set("x-naelao-tenant-id", mapping.tenantId);
   upstreamHeaders.set("x-naelao-portal-host", host);
 
-  const proxyReq = new Request(originalUrl.toString(), {
+  return fetch(new Request(originalUrl.toString(), {
     method: c.req.method,
     headers: upstreamHeaders,
     body: c.req.raw.body,
     redirect: "follow",
-  });
+  }));
+}
 
-  return fetch(proxyReq);
+// GET / — the address a buyer's browser actually lands on. This Worker is the Cloudflare-for-SaaS
+// fallback origin: storefront hosts ({slug}.naelao.com wildcard + verified custom hostnames) and
+// product-portal hosts (*.naelao.app + portal custom domains) all arrive here at the root path.
+// Storefront takes precedence (business_services), then the product portal (PORTAL_DOMAINS).
+app.get("/", async (c) => {
+  const host = c.req.header("host") ?? "";
+  const sf = await resolveStorefront(host, c.env);
+  if (sf) return renderStorefrontForSpace(c, sf);
+
+  const portal = await resolvePortal(host, c.env);
+  if (portal) return proxyToPortal(c, portal, host);
+
+  return c.html("<h1>Store not found</h1>", 404);
+});
+
+// ALL /proxy — explicit product-portal ingress (kept for direct/rewritten routing).
+// In production this worker sits behind *.naelao.app and any verified custom domains.
+app.all("/proxy", async (c) => {
+  const host = c.req.header("host") ?? "";
+  const mapping = await resolvePortal(host, c.env);
+  if (!mapping) {
+    return c.json({ error_code: "not_found", message: "Portal not found for this domain" }, 404);
+  }
+  return proxyToPortal(c, mapping, host);
 });
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));

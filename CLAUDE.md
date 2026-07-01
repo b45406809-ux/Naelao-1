@@ -139,6 +139,15 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     boundaries. Fan-out is bounded at 5 rules per event. Endpoints:
     `GET/POST /spaces/:spaceId/event-triggers`, `DELETE /spaces/:spaceId/event-triggers/:id`.
     Full detail: appendix §A1.16.2.
+16. **Launchpad storefront is now FUNCTIONAL end-to-end (render + CF-for-SaaS apply).** The
+    portal Worker (the Cloudflare-for-SaaS fallback origin) now serves the store at the ROOT
+    path a buyer lands on — `GET /` resolves the `Host` against `business_services`
+    (precedence storefront → product portal), renders inline, falls through to the product
+    portal proxy, else 404. The `storefront.set_custom_domain` prebuilt now posts
+    `kind='custom_domain'` — the only branch that runs the CF-for-SaaS apply
+    (`createCustomHostname` + TXT DCV + `getCustomHostname` status poll); it previously posted
+    `kind='storefront'` and silently dropped the domain. Buy form → `/storefront/checkout` →
+    billing worker reserved commerce checkout (platform fee). Full detail: appendix §A1.16.3.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
