@@ -235,6 +235,19 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     attach to a request). This is a real, separate product bug (needs a customer-auth JWT
     flow — NOT fixed here) — but it also means gating `sessions*` breaks nothing currently
     working. Gated it. Full detail: appendix §A1.16.10.
+24. **A space's creator was never registered as its own `space_members` owner — now FIXED.**
+    Traced while discussing the reseller ("customer creates their own business") flow.
+    `INSERT INTO space_members` occurred in exactly one place platform-wide (paid-seat
+    activation) — neither `POST /spaces` nor `POST /reseller/spaces` ever registered the
+    creator, because `ProvisionMessage` didn't even carry a `userId`. Masked by the primary
+    auth path using a global per-user JWT role, not `space_members` — but a live landmine for
+    `SpaceDO.checkCrossSpace` (spec §49, denies the owner "direct member" of their own space)
+    and for any team-listing UI. Fixed: `ProvisionMessage.userId`, new provisioner step 5c
+    (`seedOwnerMember`) registers `role: 'owner'` via the members route, idempotent and
+    non-fatal on failure. Also verified while tracing this: the reseller economics a builder
+    would want (customer list, per-customer drill-down, suspend/promote, wholesale/referral
+    revenue share via `reseller_ledger`) are already fully built and wired — this fix didn't
+    need to add any of that. Full detail: appendix §A1.16.11.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

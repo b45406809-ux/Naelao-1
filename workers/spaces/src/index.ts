@@ -41,6 +41,8 @@ interface ProvisionMessage {
   spaceName: string;
   templateId?: string;
   requestedAt: string;
+  /** The creator — the provisioner registers them as space_members owner (step 5c). */
+  userId?: string;
 }
 
 // Plan-tier space limits (G-I13: quota enforcement)
@@ -267,6 +269,7 @@ app.post("/spaces", async (c) => {
       spaceTypeId: body.spacetype_id,
       spaceName: body.name,
       ...(body.template_id ? { templateId: body.template_id } : {}),
+      ...(userId ? { userId } : {}),
       requestedAt: now,
     });
   }
@@ -1652,6 +1655,7 @@ app.post("/reseller/spaces", async (c) => {
       spaceTypeId: body.spacetype_id,
       spaceName: body.name,
       ...(body.template_id ? { templateId: body.template_id } : {}),
+      userId,
       requestedAt: now,
     });
   }

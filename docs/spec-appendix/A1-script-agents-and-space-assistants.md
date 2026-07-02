@@ -1396,3 +1396,65 @@ shape `writeConversationToSession` sends), and knowledge's `kb/search`.
 mints a magic-link token, never sends it back) should get its own pass — design the
 customer-auth JWT the router will accept, and wire `apps/widget`/`apps/portal` to actually
 attach it.
+
+---
+
+## A1.16.11 Space creator was never registered as a member of their own space — FIXED
+
+Traced while discussing the reseller ("customer creates their own business") flow: a space's
+creator was never inserted into `space_members`. Confirmed by grepping the entire platform —
+`INSERT INTO space_members` occurs in exactly one place (`SpaceDO.addMember`), and its only
+caller anywhere was `billing/lemon-squeezy.ts`'s paid-seat activation. Neither `POST /spaces`
+(a normal builder) nor `POST /reseller/spaces` (a customer creating their own business) ever
+called it — both just enqueue `PROVISION_QUEUE` and the 10-step provisioner never touched
+`space_members` either. Root cause: `ProvisionMessage` didn't even carry a `userId` field, so
+the provisioner had no identity to register even if it tried.
+
+**Why this wasn't obviously broken:** the primary authorization path doesn't read
+`space_members` at all — `x-naelao-role` comes from a global per-user role on the `users`
+table, set at signup and carried in the JWT, independent of any specific space. So ordinary
+access checks worked fine and masked the gap.
+
+**Where it actually bites:** `SpaceDO.checkCrossSpace` (spec §49's cross-department access
+gate) grants "direct member" access by querying `space_members` for `(target_space_id,
+user_id)`. Since the owner was never in that table, this check would deny the owner "direct
+member" status of their own space (not yet exploited — nothing currently calls this endpoint,
+but a live landmine for whenever cross-space KB/thread grants get wired up). Team-listing UI
+would also show an empty roster for every space, including to its own owner.
+
+**Fix:** `ProvisionMessage` gained an optional `userId` field, set by both `POST /spaces` and
+`POST /reseller/spaces` from `getCallerIdentity(c).userId`. New provisioner step 5c
+(`seedOwnerMember`, `workers/provisioner/src/index.ts`, extracted as its own testable exported
+function) registers that user as `role: 'owner'` via the (now `requireInternalHmac`-gated,
+§A1.16.10) `/spaces/:spaceId/members` route, minting the token itself. Idempotent (`addMember`
+upserts on conflict) and non-fatal on failure (a member-seed failure must never roll back an
+otherwise-successful provision — logs a warning and continues). Serves both the normal-builder
+and reseller-customer paths identically, since both funnel through the same provisioner; for
+the reseller path the token is minted against the CUSTOMER's own new child tenant (not the
+reseller's), matching where their new space actually lives.
+
+**Reseller economics — verified already fully wired, not new work.** While tracing this, also
+confirmed the "product owner sees their customers, controls their access, earns a share"
+questions are already built end-to-end, not something this fix needed to add:
+- `GET /reseller/clients` — customer list + current-period rollup (retail/wholesale/margin).
+- `GET /reseller/clients/:childTenantId` — one customer's businesses (drill-down).
+- `GET /reseller/statement?period=` — consolidated wholesale invoice, grouped by currency,
+  with a per-client breakdown (the G-AS34/G-AS35 wholesale-invoicing deliverable).
+- `POST /reseller/clients/:childTenantId/status` — suspend/reactivate a customer; suspension
+  cascades to all of that customer's spaces so their agents stop running.
+- `POST /reseller/clients/:childTenantId/promote` — sever the reseller relationship, making
+  the customer's business fully independent (one-way, explicit acknowledgement required).
+- Revenue share: `reseller_accounts.billing_relationship` is either `"reseller"` (the reseller
+  buys wholesale at a fixed `wholesale_cents`, keeps the retail/wholesale spread as margin) or
+  `"referral"` (Naelao collects retail, pays the reseller `referral_share_pct` of it) —
+  `computeResellerAttribution` (`packages/billing-core/src/reseller.ts`) computes this per
+  event, and `recordResellerAttribution` (`billing/lemon-squeezy.ts`) fires on EVERY billing
+  event on EVERY space, walking `tenant_hierarchy` to find the parent reseller and writing a
+  `reseller_ledger` row — meaning revenue from a reseller customer's own end-customers rolls
+  up automatically, no separate wiring needed per business.
+- This machinery reads tenant identity from the JWT (`getCallerIdentity`), not `space_members`
+  — so it was unaffected by the owner-membership gap above.
+
+**Tests:** `tests/unit/provisioner-owner-member.test.ts` (4) — owner registered with a verified
+token scoped to the right tenant, no-op (not a throw) on missing userId, no-op (not a throw)
+on a failed downstream call, and the reseller child-tenant token-scoping shape specifically.

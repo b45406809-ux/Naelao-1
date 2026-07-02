@@ -35,7 +35,7 @@ import type { AgentConfig } from "../../agents/src/script-engine/index.js";
 import type { NaelaoSpaceTypeManifestV2 } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
 import { resolveTenancy } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
 
-interface Env {
+export interface Env {
   ENVIRONMENT: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
@@ -56,6 +56,10 @@ interface ProvisionMessage {
   spaceName: string;
   templateId?: string;
   requestedAt: string;
+  /** The user who created this space — registered as space_members owner in step 5c.
+   *  Optional only for backward compatibility with any already-queued messages; every new
+   *  enqueue (POST /spaces, POST /reseller/spaces) sets it. */
+  userId?: string;
 }
 
 function validateEnv(env: Env): void {
@@ -177,10 +181,45 @@ async function mergeOnboarding(
   ).bind(JSON.stringify(cfg), new Date().toISOString(), spaceId, tenantId).run();
 }
 
+// Step 5c: register the creator as space_members owner. Previously nothing in the platform
+// EVER inserted this row for either a normal builder (POST /spaces) or a reseller customer
+// (POST /reseller/spaces) — space_members stayed empty except for paid seat activations
+// (billing/lemon-squeezy.ts), so the person who actually created and runs the space was never
+// a member of it. Idempotent (addMember upserts on conflict), so a retry of this queue message
+// is safe. Returns whether the owner row was seeded (false on missing userId or a failed call —
+// never throws, since a failure here must not roll back an otherwise-successful provision).
+export async function seedOwnerMember(
+  env: Env,
+  spaceId: string,
+  tenantId: string,
+  userId: string | undefined
+): Promise<boolean> {
+  if (!userId) {
+    console.warn(`[provisioner] no userId on provision message for ${spaceId} — owner member not seeded`);
+    return false;
+  }
+  const memberResp = await env.SPACES_WORKER.fetch(
+    new Request(`http://spaces-worker/spaces/${spaceId}/members`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+      },
+      body: JSON.stringify({ space_id: spaceId, user_id: userId, role: "owner" }),
+    })
+  );
+  if (!memberResp.ok) {
+    console.warn(`[provisioner] owner member seed failed for ${spaceId}: ${await memberResp.text()}`);
+    return false;
+  }
+  return true;
+}
+
 // ── 10-step transactional provisioner ───────────────────────────────────────
 
-async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
-  const { spaceId, tenantId, spaceTypeId, spaceName, templateId } = msg;
+export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
+  const { spaceId, tenantId, spaceTypeId, spaceName, templateId, userId } = msg;
   const now = new Date().toISOString();
   const provisioned: string[] = [];
 
@@ -268,6 +307,11 @@ async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
         console.warn(`[provisioner] root-space registry seed failed for ${spaceId}: ${await rootResp.text()}`);
       }
       provisioned.push("space_registry");
+    }
+
+    // Step 5c: Register the creator as space_members owner.
+    if (await seedOwnerMember(env, spaceId, tenantId, userId)) {
+      provisioned.push("owner_member");
     }
 
     // Step 6: Register workflow templates (stored in KV for the triggers worker to pick up)
