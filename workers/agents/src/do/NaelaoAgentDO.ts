@@ -365,6 +365,18 @@ interface ProjectRule {
   priority: number;
 }
 
+// F17 / A1.13: fetchProjectConfig's result, distinguishing a clean 404 ("no project config row
+// — permissive by design") from a genuine fetch/5xx/network error ("we could not verify the
+// project's restrictions"). Collapsing both into `null` (the previous behavior) meant a
+// transient SpaceDO error silently disabled BOTH structural customer-bot controls (execution
+// ceiling and daily spend cap), which A1.13 requires to be un-bypassable. Callers must fail
+// CLOSED on "error" (clamp to the most restrictive tier, treat as spend-capped) and only stay
+// permissive on "not_found".
+type ProjectConfigResult =
+  | { status: "found"; execution_ceiling: number; daily_spend_cap_credits: number }
+  | { status: "not_found" }
+  | { status: "error" };
+
 // ── Tool services (injected from DO env) ─────────────────────────────────────
 
 interface ToolServices {
@@ -1677,17 +1689,31 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     let hasSpendCap = false;
     if (projectId) {
       const projectCfg = await this.fetchProjectConfig(spaceId, tenantId, projectId);
-      if (projectCfg && projectCfg.daily_spend_cap_credits > 0) {
-        hasSpendCap = true;
-        const spend = await this.checkAndDebitProjectSpend(spaceId, tenantId, projectId, 0);
-        if (spend.capped) {
-          return Response.json(
-            { error: "daily spend cap reached for this project", error_code: "spend_capped" },
-            { status: 429 }
-          );
-        }
+      if (projectCfg.status === "error") {
+        // F17 / A1.13: a transient SpaceDO error must fail CLOSED, never read as "unrestricted"
+        // — that would silently disable BOTH structural customer-bot controls (execution
+        // ceiling and daily spend cap) this project depends on being un-bypassable. Clamp to
+        // the most restrictive tier and treat the run exactly like a real spend-cap hit.
+        engineEnv.maxTier = 1 as ExecutionTier;
+        return Response.json(
+          { error: "unable to verify project restrictions — try again shortly", error_code: "spend_capped" },
+          { status: 429 }
+        );
       }
-      if (projectCfg) engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
+      if (projectCfg.status === "found") {
+        if (projectCfg.daily_spend_cap_credits > 0) {
+          hasSpendCap = true;
+          const spend = await this.checkAndDebitProjectSpend(spaceId, tenantId, projectId, 0);
+          if (spend.capped) {
+            return Response.json(
+              { error: "daily spend cap reached for this project", error_code: "spend_capped" },
+              { status: 429 }
+            );
+          }
+        }
+        engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
+      }
+      // status === "not_found": no project config row — permissive by design, unchanged.
     }
 
     // Load the agent's 4-file config; without it the agent is not provisioned.
@@ -1953,15 +1979,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
-  private async fetchProjectConfig(spaceId: string, tenantId: string, projectId: string): Promise<{ execution_ceiling: number; daily_spend_cap_credits: number } | null> {
+  private async fetchProjectConfig(spaceId: string, tenantId: string, projectId: string): Promise<ProjectConfigResult> {
     try {
       const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}`, {
         headers: await this.internalHeaders(tenantId),
       }));
-      if (!resp.ok) return null;
-      return await resp.json<{ execution_ceiling: number; daily_spend_cap_credits: number }>();
+      if (resp.status === 404) return { status: "not_found" };
+      if (!resp.ok) return { status: "error" };
+      const data = await resp.json<{ execution_ceiling: number; daily_spend_cap_credits: number }>();
+      return { status: "found", execution_ceiling: data.execution_ceiling, daily_spend_cap_credits: data.daily_spend_cap_credits };
     } catch {
-      return null;
+      return { status: "error" };
     }
   }
 
@@ -2086,12 +2114,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     });
 
     // Resolve config + rules once per distinct project among this batch (not per message).
+    // F17 / A1.13: store the FULL ProjectConfigResult (found/not_found/error), not just
+    // successful fetches — a SpaceDO error must be distinguishable from "no config row" so the
+    // per-message loop below can fail closed instead of silently running unrestricted.
     const projectIds = [...new Set(pending.map((m) => m.project_id).filter((id): id is string => !!id))];
-    const projectConfigs = new Map<string, { execution_ceiling: number; daily_spend_cap_credits: number }>();
+    const projectConfigs = new Map<string, ProjectConfigResult>();
     const projectRules = new Map<string, ProjectRule[]>();
     for (const pid of projectIds) {
       const [cfg, rules] = await Promise.all([this.fetchProjectConfig(spaceId, tenantId, pid), this.fetchProjectRules(spaceId, tenantId, pid)]);
-      if (cfg) projectConfigs.set(pid, cfg);
+      projectConfigs.set(pid, cfg);
       projectRules.set(pid, rules);
     }
 
@@ -2104,7 +2135,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // Untrusted inbound text — moderate before it ever reaches the reasoning prompt or a rule match.
       if (moderateInput(msg.text).blocked) { escalated++; continue; }
 
-      const projectCfg = msg.project_id ? projectConfigs.get(msg.project_id) : undefined;
+      const projectCfgResult = msg.project_id ? projectConfigs.get(msg.project_id) : undefined;
+      const projectCfg = projectCfgResult?.status === "found" ? projectCfgResult : undefined;
       const rules = msg.project_id ? (projectRules.get(msg.project_id) ?? []) : [];
 
       // Identity linking (spec: returning customers should be recognized) — a deterministic,
@@ -2140,6 +2172,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             continue;
           }
         } else if (matchedRule.action === "run_script" && matchedRule.script_name) {
+          if (projectCfgResult?.status === "error") {
+            // F17 / A1.13: fail closed — never run a rule-triggered script unrestricted while
+            // the project's config is unreachable. Treat exactly like a spend-cap hit.
+            engineEnv.maxTier = 1 as ExecutionTier;
+            spendCapped++;
+            continue;
+          }
           if (projectCfg) engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
           const scriptResult = await tools.run(matchedRule.script_name, { text: msg.text, channel_user_id: msg.channel_user_id });
           if (scriptResult.ok) {
@@ -2170,8 +2209,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
 
       // 3. Full reasoning loop, under the project's execution ceiling if it has one.
-      if (projectCfg) engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
-      else delete engineEnv.maxTier;
+      if (projectCfg) {
+        engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
+      } else if (projectCfgResult?.status === "error") {
+        // F17 / A1.13: SpaceDO fetch failed — fail CLOSED (most restrictive tier, treated as a
+        // spend-cap hit) rather than running the full reasoning loop unrestricted.
+        engineEnv.maxTier = 1 as ExecutionTier;
+        spendCapped++;
+        continue;
+      } else {
+        delete engineEnv.maxTier;
+      }
 
       let result: Awaited<ReturnType<typeof runScriptLoop>>;
       try {

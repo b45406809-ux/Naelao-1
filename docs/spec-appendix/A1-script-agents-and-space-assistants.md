@@ -2129,3 +2129,44 @@ ungated; and a legacy config with no persisted field falls back to parsing a
 
 746 unit/contract/integration/isolation/simulation tests pass; `naelao-agents-worker` and
 `naelao-provisioner-worker` typecheck clean.
+
+### A1.16.23 F17: a SpaceDO project-config fetch error silently disabled BOTH customer-bot
+structural controls (execution ceiling AND daily spend cap) — FIXED.
+
+`NaelaoAgentDO.fetchProjectConfig` returned `null` on ANY failure — a clean 404 ("this project
+has no config row, permissive is correct") and a genuine 5xx/network error ("SpaceDO could not
+be reached, we have no idea what this project's restrictions are") were indistinguishable. Both
+`handleScriptRun` and `handleChannelHeartbeat` treated a `null` config as "unrestricted": the
+daily-spend-cap check was skipped entirely, and `engineEnv.maxTier` was left untouched (or
+explicitly deleted), which for a customer-bot project means running at the platform's default,
+most-PERMISSIVE tier. A1.13 states these two controls (execution ceiling, daily spend cap) must
+be un-bypassable — a transient SpaceDO blip was silently bypassing both at once, for every
+in-flight and subsequent request against that project until the outage cleared.
+
+Fix: `fetchProjectConfig` now returns a `{ status: "found" | "not_found" | "error" }` union
+instead of `T | null`. `not_found` (a clean 404) stays exactly as permissive as before — a
+project genuinely configured with no restrictions is not the failure mode this fix targets.
+`error` (5xx or a thrown network error) fails CLOSED: `engineEnv.maxTier` is clamped to `1` (the
+most restrictive execution tier) and the request/message is treated exactly like a real
+spend-cap hit (`error_code: "spend_capped"` / `spend_capped` counter), never run unrestricted.
+Applied at all three points that previously read a possibly-null config and set/left
+`engineEnv.maxTier`: `handleScriptRun`'s pre-run gate, `handleChannelHeartbeat`'s per-message
+no-code-rule `run_script` branch (a rule-triggered script execution — a separate code path from
+the full reasoning loop, and one the fix must cover independently since a matched rule
+short-circuits before reaching the reasoning-loop gate), and `handleChannelHeartbeat`'s final
+full-reasoning-loop gate (replacing the bare `else delete engineEnv.maxTier`).
+
+**Tests:** `tests/unit/project-config-fail-closed.test.ts` (new, 6) — `handleScriptRun`: a
+thrown network error and a `500` response from the project-config endpoint both reject the run
+`429 spend_capped`; a clean `404` falls through past the gate exactly as before (never rejected
+as `spend_capped`). `handleChannelHeartbeat`: a network error marks pending messages
+`spend_capped` (not silently answered or dropped); a clean `404` leaves `spend_capped` at `0`;
+and a matched no-code `run_script` rule under a project-config error is short-circuited to
+`spend_capped` BEFORE the rule's script ever runs (`rule_handled: 0`), proving the fix covers
+that execution path independently of the main reasoning-loop gate. Re-ran the pre-existing
+`tests/unit/handlescriptrun-spend-cap.test.ts` (4) and
+`tests/unit/naelaoagentdo-customer-bot-heartbeat.test.ts` (4) suites — both still pass unchanged,
+confirming the clean-404/normal-config paths those suites cover were not affected.
+
+752 unit/contract/integration/isolation/simulation tests pass; `naelao-agents-worker`
+typechecks clean.
