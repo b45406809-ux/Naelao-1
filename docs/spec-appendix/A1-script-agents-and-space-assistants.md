@@ -1485,3 +1485,65 @@ from one space in a DO hosting two spaces leaves their membership in the other s
 (the actual regression); a delete with no `space_id` is rejected (400) rather than silently
 falling through to an unscoped delete; removing a user who isn't a member of the target space
 is a harmless no-op.
+
+---
+
+## A1.16.13 Three scheduled-jobs defects: false-fire on creation, infinite retry, no visibility — FIXED
+
+Three defects in the time-based scheduling dispatcher (`runScheduledJobs`,
+`workers/agents/src/index.ts`), found in a targeted follow-up review of A1.16.7's original
+implementation.
+
+**1. A newly created job could fire immediately for a cron minute that predates it.**
+`isCronDue` was floored at `row.last_run_at ?? 0` — a never-run job's scan floor was
+effectively "the beginning of time" (bounded only by `isCronDue`'s 8-day lookback). A daily
+`"0 9 * * *"` job created at 3pm would fire immediately, because 9am *that same day* falls
+inside the 8-day lookback window even though the job didn't exist yet. Migration 0041's own
+comment already promised `created_at`-based behavior that was never implemented. Fixed: the
+query now selects `created_at`, parsed as UTC (`Date.parse(created_at + "Z")` — SQLite's
+`datetime('now')` text has no timezone suffix), and the floor is
+`row.last_run_at ?? createdAtMs`.
+
+**2. A permanently failing job retried every hourly sweep forever.** `last_run_at` was only
+written on a successful fire, so a job with a bad script name, a since-deleted script, or (via
+the same code path) a malformed `cron_expression` would re-attempt the identical due minute on
+every single sweep indefinitely — unbounded DO wakes and log spam with no way for a builder to
+notice short of watching logs.
+
+New migration `infra/migrations/0042_scheduled_jobs_failures.sql`: adds
+`consecutive_failures INTEGER NOT NULL DEFAULT 0` and `last_error TEXT`; recreates
+`idx_scheduled_jobs_dispatch` as `(enabled, space_id)` (the dispatch query filters `enabled=1`
+AND joins on `space_id` — the old single-column index never matched that access pattern).
+
+Dispatcher change (`recordScheduledJobFailure`): on a failed fire *or* a thrown error (e.g. an
+unparseable cron), `last_run_at` now advances too — the due minute was "consumed" either way,
+which is what actually stops the infinite retry — plus `consecutive_failures` increments and
+`last_error` is stored (truncated to 2000 chars). On success, both reset to a clean state
+(`consecutive_failures = 0, last_error = NULL`). At `SCHEDULED_JOB_MAX_CONSECUTIVE_FAILURES`
+(5) the job auto-disables (`enabled = 0`) and fires a `scheduled_job.disabled` event so a
+builder can wire a no-code notification to it — same mechanism every other structural
+mutation (`thread.created`, `project.created`, `project.possible_duplicate`) already uses, not
+a new one-off. Since nothing outside SpaceDO could previously fire an *arbitrary* event
+through `fireMatchingTriggers` (every prior caller was SpaceDO firing its own internal
+mutations), added a minimal internal route for it: `POST
+/internal/spaces/:spaceId/events/fire` (spaces worker, `requireInternalHmac`-gated, forwards
+to a new `SpaceDO.fireExternalEvent` handler that resolves `tenantId` from the caller's own
+verified `x-naelao-tenant-id`, matching the trust model of every other internal route in this
+build).
+
+**3. The failure state was invisible to the builder.** `GET /spaces/:spaceId/scheduled-jobs`
+now returns `consecutive_failures` and `last_error` alongside the existing fields.
+
+**Tests:**
+- `tests/unit/scheduled-jobs.test.ts` extended to 17 (from 12): a new job created after its
+  cron's most recent due minute does not fire (the actual B5-class regression, deterministic —
+  picks a cron minute guaranteed not to be "now"); a failed fire records
+  `consecutive_failures=1` + `last_error` + advances `last_run_at`; the 5th consecutive failure
+  disables the job and fires the `scheduled_job.disabled` event with the right payload; the
+  4th failure does NOT yet fire the disable event; a successful fire after prior failures
+  resets the counter and clears the error. CRUD tests now load migration 0042 too and assert
+  the new fields round-trip through `GET`.
+- `tests/unit/space-fire-external-event.test.ts` (5, new) — direct `SpaceDO` + real SQLite
+  coverage of `POST /internal/events/fire`: fires a matching trigger, no-ops when no trigger is
+  configured, rejects a missing tenant header or a malformed body, and — the isolation
+  case — a trigger configured for a *different* space in the same DO does not fire.

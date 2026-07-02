@@ -613,6 +613,19 @@ app.post("/spaces/:spaceId/registry", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// POST /internal/spaces/:spaceId/events/fire — internal: let a caller outside this space's
+// SpaceDO (e.g. the agents worker's scheduled-jobs auto-disable, A1.16.13) run an arbitrary
+// event through the same event_triggers matching every structural mutation already uses, so a
+// builder can wire a no-code trigger to react to it the same way as thread.created etc.
+app.use("/internal/spaces/:spaceId/events/fire", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/spaces/:spaceId/events/fire", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/internal/events/fire", "POST", c.req.raw.body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // Projects (thread grouping) — builder-only surface (never end-user-facing), so safe to gate
 // broadly: real traffic always arrives either via the router (proxyTo already mints the token
 // off verified JWT claims) or a direct internal caller (NaelaoAgentDO, agents worker — both
@@ -759,7 +772,8 @@ app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const owned = await loadOwnedSpace(c, c.req.param("spaceId"));
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
   const { results } = await c.env.PLATFORM_DB.prepare(
-    `SELECT id, name, cron_expression, script_name, params, project_id, enabled, last_run_at, created_at, updated_at
+    `SELECT id, name, cron_expression, script_name, params, project_id, enabled, last_run_at,
+            consecutive_failures, last_error, created_at, updated_at
        FROM scheduled_jobs WHERE space_id = ? ORDER BY created_at DESC`
   ).bind(c.req.param("spaceId")).all();
   return c.json({ data: results, count: results.length });

@@ -631,6 +631,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.removeMember(memberMatch[1], url.searchParams.get("space_id") ?? "");
       }
 
+      // POST /internal/events/fire — let a caller OUTSIDE this DO (e.g. the agents worker's
+      // scheduled-jobs auto-disable) run an arbitrary event through the SAME event_triggers
+      // matching every structural mutation (thread.created, project.created, ...) already
+      // uses, so a builder can wire a no-code trigger to it exactly the same way. Internal
+      // only — gated by requireInternalHmac in the forwarding route (workers/spaces/src/index.ts).
+      if (method === "POST" && url.pathname === "/internal/events/fire") {
+        return this.fireExternalEvent(request);
+      }
+
       // ── space registry / hierarchy endpoints ──────────────────────────────────
       // POST /spaces — register the root space row (idempotent; provisioner calls this)
       if (method === "POST" && url.pathname === "/spaces") {
@@ -1772,6 +1781,39 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     );
     if (!row) return undefined;
     return { id: row.id, updated_at_ms: Date.parse(row.updated_at) };
+  }
+
+  /**
+   * POST /internal/events/fire body — an external caller (outside this DO) supplying an event
+   * for fireMatchingTriggers to evaluate. tenantId comes from the caller's own verified
+   * internal token (requireInternalHmac already checked it matches x-naelao-tenant-id before
+   * this request reached the DO), same trust boundary as every other internal-only route.
+   */
+  private async fireExternalEvent(request: Request): Promise<Response> {
+    const tenantId = request.headers.get("x-naelao-tenant-id") ?? "";
+    const body = await request.json<{
+      type: string;
+      space_id: string;
+      project_id?: string;
+      thread_id?: string;
+      occurred_at?: number;
+      payload?: Record<string, unknown>;
+    }>();
+    if (!tenantId || !body.type || !body.space_id) {
+      return Response.json({ error_code: "bad_request", message: "type and space_id are required" }, { status: 400 });
+    }
+    await this.fireMatchingTriggers(
+      {
+        type: body.type,
+        space_id: body.space_id,
+        ...(body.project_id ? { project_id: body.project_id } : {}),
+        ...(body.thread_id ? { thread_id: body.thread_id } : {}),
+        occurred_at: body.occurred_at ?? Date.now(),
+        ...(body.payload ? { payload: body.payload } : {}),
+      },
+      tenantId
+    );
+    return Response.json({ fired: true });
   }
 
   /**

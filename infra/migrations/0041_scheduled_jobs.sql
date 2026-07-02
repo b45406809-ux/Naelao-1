@@ -15,7 +15,8 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
   script_name     TEXT NOT NULL, -- the script.run action fired on schedule
   params          TEXT NOT NULL DEFAULT '{}', -- JSON, passed to the fired script
   enabled         INTEGER NOT NULL DEFAULT 1,
-  last_run_at     INTEGER, -- unix ms; NULL = never run (isCronDue scans from created_at instead)
+  last_run_at     INTEGER, -- unix ms; NULL = never run (dispatcher floors the isCronDue scan
+                            -- at created_at instead, see infra/migrations/0042's changelog)
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );

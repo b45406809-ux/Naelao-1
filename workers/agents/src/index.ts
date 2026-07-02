@@ -2052,6 +2052,56 @@ async function runChannelHeartbeats(env: AgentsEnv): Promise<void> {
   }
 }
 
+// A job that fails this many sweeps in a row auto-disables rather than retrying forever —
+// see recordScheduledJobFailure below.
+const SCHEDULED_JOB_MAX_CONSECUTIVE_FAILURES = 5;
+
+interface ScheduledJobRow {
+  id: string; space_id: string; tenant_id: string; project_id: string | null;
+  cron_expression: string; script_name: string; params: string; last_run_at: number | null;
+  created_at: string; consecutive_failures: number;
+}
+
+// On a failed fire (or a thrown error, e.g. a malformed cron_expression): the due minute was
+// still consumed, so last_run_at advances too — otherwise a permanently-broken job (bad
+// script name, malformed cron) refires every single hourly sweep forever. Auto-disables after
+// SCHEDULED_JOB_MAX_CONSECUTIVE_FAILURES and fires a scheduled_job.disabled event through the
+// same event_triggers path every other structural mutation uses, so a builder can wire a
+// no-code notification to it — never throws, a failure recording its own failure must not
+// block the rest of the sweep either.
+async function recordScheduledJobFailure(env: AgentsEnv, row: ScheduledJobRow, now: number, error: string): Promise<void> {
+  try {
+    const failures = row.consecutive_failures + 1;
+    const disable = failures >= SCHEDULED_JOB_MAX_CONSECUTIVE_FAILURES;
+    await env.PLATFORM_DB.prepare(
+      `UPDATE scheduled_jobs
+          SET last_run_at = ?, consecutive_failures = ?, last_error = ?, enabled = ?
+        WHERE id = ?`
+    ).bind(now, failures, error.slice(0, 2000), disable ? 0 : 1, row.id).run();
+
+    if (disable && env.SPACES_WORKER) {
+      const token = await mintInternalToken(env.PLATFORM_SECRET, row.tenant_id);
+      await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/spaces/${row.space_id}/events/fire`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": row.tenant_id,
+          "x-naelao-internal-token": token,
+        },
+        body: JSON.stringify({
+          type: "scheduled_job.disabled",
+          space_id: row.space_id,
+          ...(row.project_id ? { project_id: row.project_id } : {}),
+          occurred_at: now,
+          payload: { scheduled_job_id: row.id, script_name: row.script_name, consecutive_failures: failures, last_error: error.slice(0, 500) },
+        }),
+      }));
+    }
+  } catch (err) {
+    console.error(`[scheduled-jobs] failed to record failure for job=${row.id} space=${row.space_id}:`, (err as Error).message);
+  }
+}
+
 // ── Scheduled jobs sweep (hourly cron) — spec §05 "cron-jobs.json" ───────────────────────
 // The no-code, TIME-driven counterpart to runChannelHeartbeats: one cheap cross-space query
 // against PLATFORM_DB (scheduled_jobs, see infra/migrations/0041) finds every enabled job,
@@ -2060,21 +2110,22 @@ async function runChannelHeartbeats(env: AgentsEnv): Promise<void> {
 // event-triggers' own "the system decided to run this" dispatch model.
 async function runScheduledJobs(env: AgentsEnv): Promise<void> {
   const { results } = await env.PLATFORM_DB.prepare(
-    `SELECT sj.id, sj.space_id, sj.tenant_id, sj.project_id, sj.cron_expression, sj.script_name, sj.params, sj.last_run_at
+    `SELECT sj.id, sj.space_id, sj.tenant_id, sj.project_id, sj.cron_expression, sj.script_name, sj.params,
+            sj.last_run_at, sj.created_at, sj.consecutive_failures
        FROM scheduled_jobs sj
        JOIN spaces s ON s.id = sj.space_id AND s.status = 'active'
       WHERE sj.enabled = 1`
-  ).all<{
-    id: string; space_id: string; tenant_id: string; project_id: string | null;
-    cron_expression: string; script_name: string; params: string; last_run_at: number | null;
-  }>();
+  ).all<ScheduledJobRow>();
 
   const now = Date.now();
   for (const row of results) {
     try {
-      // Never-run job: treat "last run" as the job's own creation instant is unavailable here
-      // (not selected), so fall back to 0 — isCronDue's lookback bound still caps the scan.
-      const lastRunAt = row.last_run_at ?? 0;
+      // A never-run job is due starting from its OWN creation, not "anywhere in the 8-day
+      // lookback" — otherwise a job created at 3pm with cron "0 9 * * *" fires immediately,
+      // because 9am today already falls inside the lookback window. created_at is SQLite
+      // datetime('now') text with no timezone suffix — it's UTC, Date.parse needs the "Z".
+      const createdAtMs = Date.parse(`${row.created_at}Z`);
+      const lastRunAt = row.last_run_at ?? createdAtMs;
       if (!isCronDue(row.cron_expression, lastRunAt, now)) continue;
 
       const doResp = await fireScriptDirectly(env, {
@@ -2085,14 +2136,20 @@ async function runScheduledJobs(env: AgentsEnv): Promise<void> {
         params: JSON.parse(row.params || "{}") as Record<string, unknown>,
       });
       if (doResp.ok) {
-        await env.PLATFORM_DB.prepare("UPDATE scheduled_jobs SET last_run_at = ? WHERE id = ?").bind(now, row.id).run();
+        await env.PLATFORM_DB.prepare(
+          "UPDATE scheduled_jobs SET last_run_at = ?, consecutive_failures = 0, last_error = NULL WHERE id = ?"
+        ).bind(now, row.id).run();
       } else {
+        const errText = await doResp.text().catch(() => `HTTP ${doResp.status}`);
         console.error(`[scheduled-jobs] fire failed job=${row.id} space=${row.space_id}: ${doResp.status}`);
+        await recordScheduledJobFailure(env, row, now, errText);
       }
     } catch (err) {
       // A parse error in a malformed cron_expression, or a fire failure, must never block
       // other spaces' jobs in the same sweep (same isolation reasoning as runChannelHeartbeats).
-      console.error(`[scheduled-jobs] job failed id=${row.id} space=${row.space_id}:`, (err as Error).message);
+      const message = (err as Error).message;
+      console.error(`[scheduled-jobs] job failed id=${row.id} space=${row.space_id}:`, message);
+      await recordScheduledJobFailure(env, row, now, message);
     }
   }
 }
