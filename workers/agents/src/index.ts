@@ -2055,64 +2055,123 @@ async function recordScheduledJobFailure(env: AgentsEnv, row: ScheduledJobRow, n
 // 1000-subrequest-per-invocation ceiling at a few hundred active spaces. Fanning out over
 // Queues means each tick is its own invocation, with its own subrequest budget, and retries
 // are per-tick instead of "redo the whole sweep."
+// F1: each of the three rosters below used to be a single unbounded `SELECT ... WHERE
+// enabled = 1` with no LIMIT — at "millions of Spaces" that pulls the entire platform-wide
+// enabled-job set into one Worker's memory in one D1 read, which D1's result-set cap and the
+// Worker's ~128MB memory ceiling will not survive. Each roster is now enumerated in
+// PAGE_SIZE-row keyset-paginated pages instead, so memory and D1 result-set size stay bounded
+// regardless of platform size. This does NOT add sharding (see CLAUDE.md) — it's the
+// enumeration shape sharding will eventually reuse (each shard paginates its own slice).
+const AGENT_TICKS_PAGE_SIZE = 1000;
+
 async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
   const messages: MessageSendRequest<AgentTickMessage>[] = [];
+  let totalEnumerated = 0;
 
   // Connector polls (webhook-less connectors, e.g. Gumroad — Whop & friends are event-driven).
   const connectorIds = pollableConnectorIds();
   if (connectorIds.length > 0) {
     const placeholders = connectorIds.map(() => "?").join(",");
-    const { results } = await env.PLATFORM_DB.prepare(
-      `SELECT m.space_id AS space_id, m.tenant_id AS tenant_id, m.name AS name
-         FROM mcp_servers m
-         JOIN spaces s ON s.id = m.space_id AND s.status = 'active'
-        WHERE m.enabled = 1 AND m.name IN (${placeholders})`
-    ).bind(...connectorIds).all<{ space_id: string; tenant_id: string; name: string }>();
-    for (const row of results) {
-      messages.push({ body: { kind: "connector_poll", spaceId: row.space_id, tenantId: row.tenant_id, connectorName: row.name } });
+    let cursor = "";
+    for (;;) {
+      const { results } = await env.PLATFORM_DB.prepare(
+        `SELECT m.id AS id, m.space_id AS space_id, m.tenant_id AS tenant_id, m.name AS name
+           FROM mcp_servers m
+           JOIN spaces s ON s.id = m.space_id AND s.status = 'active'
+          WHERE m.enabled = 1 AND m.name IN (${placeholders}) AND m.id > ?
+          ORDER BY m.id
+          LIMIT ?`
+      ).bind(...connectorIds, cursor, AGENT_TICKS_PAGE_SIZE).all<{ id: string; space_id: string; tenant_id: string; name: string }>();
+      if (results.length === 0) break;
+      for (const row of results) {
+        messages.push({ body: { kind: "connector_poll", spaceId: row.space_id, tenantId: row.tenant_id, connectorName: row.name } });
+      }
+      totalEnumerated += results.length;
+      if (results.length < AGENT_TICKS_PAGE_SIZE) break;
+      cursor = results[results.length - 1]!.id;
     }
   }
 
-  // Channel heartbeats — every space with at least one enabled channel link.
-  const heartbeats = await env.PLATFORM_DB.prepare(
-    `SELECT DISTINCT cl.space_id AS space_id, cl.tenant_id AS tenant_id
-       FROM channel_links cl
-       JOIN spaces s ON s.id = cl.space_id AND s.status = 'active'
-      WHERE cl.enabled = 1`
-  ).all<{ space_id: string; tenant_id: string }>();
-  for (const row of heartbeats.results) {
-    messages.push({ body: { kind: "heartbeat", spaceId: row.space_id, tenantId: row.tenant_id } });
+  // Channel heartbeats — every space with at least one enabled channel link. channel_links has
+  // no single `id` column (its PK is the (space_id, channel) pair), so the roster is paginated
+  // raw (one row per enabled channel, not deduplicated in SQL) and deduplicated to one heartbeat
+  // message per space in-memory — a space with multiple enabled channels only ever gets one
+  // heartbeat message either way, so a duplicate row landing on the far side of a page boundary
+  // changes nothing about the messages produced.
+  {
+    let cursor = "";
+    const seenSpaces = new Set<string>();
+    for (;;) {
+      const { results } = await env.PLATFORM_DB.prepare(
+        `SELECT cl.space_id AS space_id, cl.tenant_id AS tenant_id
+           FROM channel_links cl
+           JOIN spaces s ON s.id = cl.space_id AND s.status = 'active'
+          WHERE cl.enabled = 1 AND cl.space_id > ?
+          ORDER BY cl.space_id, cl.channel
+          LIMIT ?`
+      ).bind(cursor, AGENT_TICKS_PAGE_SIZE).all<{ space_id: string; tenant_id: string }>();
+      if (results.length === 0) break;
+      for (const row of results) {
+        if (!seenSpaces.has(row.space_id)) {
+          seenSpaces.add(row.space_id);
+          messages.push({ body: { kind: "heartbeat", spaceId: row.space_id, tenantId: row.tenant_id } });
+        }
+      }
+      totalEnumerated += results.length;
+      if (results.length < AGENT_TICKS_PAGE_SIZE) break;
+      cursor = results[results.length - 1]!.space_id;
+    }
   }
 
   // Scheduled jobs — the isCronDue check itself runs HERE (pure computation, no subrequests);
   // only jobs that are actually due get a message. See A1.16.13 for the created_at floor and
   // failure-tracking semantics this reuses unchanged.
-  const { results: jobRows } = await env.PLATFORM_DB.prepare(
-    `SELECT sj.id, sj.space_id, sj.tenant_id, sj.cron_expression, sj.last_run_at, sj.created_at
-       FROM scheduled_jobs sj
-       JOIN spaces s ON s.id = sj.space_id AND s.status = 'active'
-      WHERE sj.enabled = 1`
-  ).all<{ id: string; space_id: string; tenant_id: string; cron_expression: string; last_run_at: number | null; created_at: string }>();
-  const now = Date.now();
-  for (const row of jobRows) {
-    try {
-      const createdAtMs = Date.parse(`${row.created_at}Z`);
-      const lastRunAt = row.last_run_at ?? createdAtMs;
-      if (!isCronDue(row.cron_expression, lastRunAt, now)) continue;
-      messages.push({ body: { kind: "scheduled_job", spaceId: row.space_id, tenantId: row.tenant_id, jobId: row.id } });
-    } catch (err) {
-      // A malformed cron_expression would throw on every future sweep too — record it as a
-      // failure right away so it auto-disables like any other broken job, rather than silently
-      // never enqueueing (which would look identical to "not due yet" from the outside).
-      console.error(`[agent-ticks] cron check failed job=${row.id} space=${row.space_id}:`, (err as Error).message);
-      await recordScheduledJobFailure(
-        env,
-        { id: row.id, space_id: row.space_id, tenant_id: row.tenant_id, project_id: null, cron_expression: row.cron_expression, script_name: "", params: "{}", last_run_at: row.last_run_at, created_at: row.created_at, consecutive_failures: 0 },
-        now,
-        (err as Error).message
-      );
+  {
+    let cursor = "";
+    const now = Date.now();
+    for (;;) {
+      const { results: jobRows } = await env.PLATFORM_DB.prepare(
+        `SELECT sj.id, sj.space_id, sj.tenant_id, sj.cron_expression, sj.last_run_at, sj.created_at
+           FROM scheduled_jobs sj
+           JOIN spaces s ON s.id = sj.space_id AND s.status = 'active'
+          WHERE sj.enabled = 1 AND sj.id > ?
+          ORDER BY sj.id
+          LIMIT ?`
+      ).bind(cursor, AGENT_TICKS_PAGE_SIZE).all<{ id: string; space_id: string; tenant_id: string; cron_expression: string; last_run_at: number | null; created_at: string }>();
+      if (jobRows.length === 0) break;
+      for (const row of jobRows) {
+        try {
+          const createdAtMs = Date.parse(`${row.created_at}Z`);
+          const lastRunAt = row.last_run_at ?? createdAtMs;
+          if (!isCronDue(row.cron_expression, lastRunAt, now)) continue;
+          messages.push({ body: { kind: "scheduled_job", spaceId: row.space_id, tenantId: row.tenant_id, jobId: row.id } });
+        } catch (err) {
+          // A malformed cron_expression would throw on every future sweep too — record it as a
+          // failure right away so it auto-disables like any other broken job, rather than
+          // silently never enqueueing (which would look identical to "not due yet" from the
+          // outside).
+          console.error(`[agent-ticks] cron check failed job=${row.id} space=${row.space_id}:`, (err as Error).message);
+          await recordScheduledJobFailure(
+            env,
+            { id: row.id, space_id: row.space_id, tenant_id: row.tenant_id, project_id: null, cron_expression: row.cron_expression, script_name: "", params: "{}", last_run_at: row.last_run_at, created_at: row.created_at, consecutive_failures: 0 },
+            now,
+            (err as Error).message
+          );
+        }
+      }
+      totalEnumerated += jobRows.length;
+      if (jobRows.length < AGENT_TICKS_PAGE_SIZE) break;
+      cursor = jobRows[jobRows.length - 1]!.id;
     }
   }
+
+  try {
+    env.ANALYTICS.writeDataPoint({
+      blobs: ["agent-ticks.enumerated"],
+      doubles: [totalEnumerated, messages.length],
+      indexes: ["agent-ticks"],
+    });
+  } catch { /* best-effort */ }
 
   // CF Queues' sendBatch caps at 100 messages per call — chunk accordingly.
   for (let i = 0; i < messages.length; i += 100) {

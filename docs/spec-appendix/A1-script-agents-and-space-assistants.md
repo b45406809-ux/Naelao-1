@@ -1647,3 +1647,66 @@ confirmed filtered from `GET /presence`'s response while still physically presen
 table (`COUNT(*) = 1`).
 
 643 unit/contract/integration/isolation/simulation tests pass; 72/72 typecheck clean.
+
+---
+
+## A1.16.16 `enqueueAgentTicks` rosters were unbounded — enumeration ceiling at platform scale — FIXED
+
+A1.16.14 moved the hourly sweep's DO *fetches* to a CF Queues fan-out, fixing the
+1000-subrequest-per-invocation ceiling — but the **enumeration** feeding that fan-out was still
+three single, unbounded `SELECT ... WHERE enabled = 1` queries (connectors via `mcp_servers`,
+channel heartbeats via `channel_links`, scheduled jobs via `scheduled_jobs`), each pulling every
+enabled row across every space on the platform into one Worker's memory in one D1 read. That's
+fine at a few hundred Spaces; it is not a query that survives to "millions of Spaces" — D1's
+result-set size and the Worker's ~128MB memory ceiling would be hit long before then, and the
+failure mode (a truncated result set or an OOM) is silent from the outside — jobs simply stop
+being enqueued for spaces past the ceiling.
+
+Also corrected in passing: CLAUDE.md's Stack section claimed D1 is "sharded by tenant_id MOD
+n" — no shard-routing code exists anywhere in the repo, every worker's `wrangler.toml` binds
+the same single `naelao-platform` D1 database, and there is exactly one `cloudflare_d1_database`
+Terraform resource. That claim was the documented "answer" to this scale ceiling, and it wasn't
+built — leaving it in place would have let a future pass reason from a false premise. Reworded
+to state the current reality (single instance) with sharding named as a future milestone, not
+implemented here (this pass is enumeration pagination only, which is a prerequisite either way —
+each shard will still need to paginate its own slice).
+
+**Fix:** each of the three rosters in `enqueueAgentTicks` (`workers/agents/src/index.ts`) is now
+keyset-paginated in `AGENT_TICKS_PAGE_SIZE` (1000) row pages instead of one unbounded query:
+- **Connectors** (`mcp_servers`, has an `id TEXT PRIMARY KEY`): paginated directly on
+  `m.id > ? ORDER BY m.id LIMIT ?`, alongside the existing `m.name IN (...)` pollable-connector
+  filter.
+- **Channel heartbeats** (`channel_links`): this table's primary key is the `(space_id,
+  channel)` pair — there's no single `id` column to page on — so the roster is paginated
+  directly on `cl.space_id > ? ORDER BY cl.space_id, cl.channel LIMIT ?` (raw, non-deduplicated
+  rows) and deduplicated to one heartbeat message per space in-memory via a `Set`, matching the
+  original query's `SELECT DISTINCT cl.space_id` semantics. A space with multiple enabled
+  channels only ever produces one heartbeat message regardless of which page its rows land on.
+- **Scheduled jobs** (`scheduled_jobs`, has an `id TEXT PRIMARY KEY`): same shape as connectors,
+  `sj.id > ? ORDER BY sj.id LIMIT ?`. The `isCronDue` check, the `created_at` floor, and
+  `recordScheduledJobFailure` on a malformed cron are all unchanged — they still run per-row,
+  just now per-row-within-a-page instead of per-row-within-one-giant-result-set.
+
+Each roster loop terminates when a page returns 0 rows or fewer than the page size (no separate
+COUNT query needed). One Analytics Engine data point (`agent-ticks.enumerated`) is written per
+sweep with the total rows enumerated and the total messages produced, so the enumeration
+ceiling becomes visible via a metric well before it could ever be silently hit — the specific
+gap in the previous state, where the entire query result would just be pulled into memory with
+no observability into how large that pull was getting as the platform grew. The queue consumer
+(`handleAgentTick`) and the 100-message `sendBatch` chunking are untouched — this is purely the
+planning/enumeration phase.
+
+**Tests:** `tests/unit/scheduled-jobs.test.ts`'s `makeEnqueueEnv` mock D1 rewritten from
+"return the whole fixture array on every `.all()` call" to a real `paginate()` helper that
+filters by `sortKeyOf(row) > cursor`, sorts, and slices to the bound `LIMIT` — the same cursor
+and limit `enqueueAgentTicks` now binds as the last two positional params on every query — so
+existing small-roster tests exercise the *real* pagination path (naturally terminating after one
+page returns fewer rows than the limit) rather than a mock that ignores pagination entirely.
+Three new tests (+3, 24 → 27) confirm a roster spanning multiple 1000-row pages is enumerated
+completely with no lost or duplicated rows: 2500 scheduled jobs (3 D1 page calls: 1000 + 1000 +
+500), 1500 connectors (2 calls: 1000 + 500), and 1200 channel-heartbeat spaces (2 calls: 1000 +
+200) — each asserting both the total message count and that every id/spaceId is unique (no
+duplicate enqueue across a page boundary).
+
+664 unit/contract/integration/isolation/simulation tests pass; typecheck clean
+(`@naelao/agents-worker`).

@@ -248,6 +248,18 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     would want (customer list, per-customer drill-down, suspend/promote, wholesale/referral
     revenue share via `reseller_ledger`) are already fully built and wired — this fix didn't
     need to add any of that. Full detail: appendix §A1.16.11.
+25. **`enqueueAgentTicks`'s three rosters were unbounded — a silent enumeration ceiling at
+    platform scale — now FIXED.** Each of connectors (`mcp_servers`), channel heartbeats
+    (`channel_links`), and scheduled jobs (`scheduled_jobs`) was one single `SELECT ... WHERE
+    enabled = 1` with no `LIMIT`, pulling every enabled row across the whole platform into one
+    Worker's memory in one D1 read — fine at a few hundred Spaces, not survivable at "millions."
+    Each roster is now keyset-paginated in 1000-row pages (`channel_links` has no single `id`
+    column — its PK is `(space_id, channel)` — so it pages on `space_id` directly and
+    deduplicates to one heartbeat per space in-memory). One Analytics data point
+    (`agent-ticks.enumerated`) per sweep makes the enumeration size observable. Also corrected:
+    the Stack section below claimed D1 is "sharded by tenant_id MOD n" — no such code exists
+    anywhere in the repo; reworded to state the current single-instance reality with sharding as
+    a named future milestone. Full detail: appendix §A1.16.16.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
@@ -266,7 +278,7 @@ appendixes are authoritative** and override the early framing. Always confirm ag
 - CF Queues + DLQ (async events, webhook delivery, analytics, notifications)
 - CF Workflows (provisioning, erasure, ingestion, billing, dunning)
 - CF Analytics Engine (events, metrics — append-only, 25M rows/day limit)
-- D1 (platform metadata, billing, users — sharded by tenant_id MOD n)
+- D1 (platform metadata, billing, users — single instance today; sharding a named future milestone)
 - LLM: Anthropic Claude (primary) with fallback chain
 - Stripe (billing + Connect + Meters)
 - Next.js on CF Pages (builder dashboard)

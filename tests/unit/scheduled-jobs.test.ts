@@ -164,28 +164,52 @@ describe("enqueueAgentTicks (agents worker hourly cron — enumerate-and-enqueue
     id: string; space_id: string; tenant_id: string;
     cron_expression: string; last_run_at: number | null; created_at: string;
   }
-  interface ConnectorRow { space_id: string; tenant_id: string; name: string }
+  interface ConnectorRow { space_id: string; tenant_id: string; name: string; id?: string }
   interface HeartbeatRow { space_id: string; tenant_id: string }
 
   const OLD_CREATED_AT = "2020-01-01 00:00:00";
+
+  // enqueueAgentTicks now keyset-paginates each roster (F1) — every `.prepare(...).all()` call
+  // binds its cursor and page-size LIMIT as the last two positional params. This mock
+  // implements real pagination semantics (filter by "sort key > cursor", sort, slice to limit)
+  // instead of returning the whole fixture array on every call, so a test with a roster larger
+  // than one page actually exercises multiple round trips the same way D1 would.
+  function paginate<T>(rows: T[], sortKeyOf: (row: T) => string, cursor: string, limit: number): T[] {
+    return [...rows]
+      .filter((r) => sortKeyOf(r) > cursor)
+      .sort((a, b) => (sortKeyOf(a) < sortKeyOf(b) ? -1 : sortKeyOf(a) > sortKeyOf(b) ? 1 : 0))
+      .slice(0, limit);
+  }
 
   function makeEnqueueEnv(opts: {
     connectors?: ConnectorRow[];
     heartbeats?: HeartbeatRow[];
     jobs?: JobRow[];
-  }): { env: AgentsEnv; batches: AgentTickMessage[][]; eventFireCalls: Array<{ url: string; body: unknown }> } {
-    const connectors = opts.connectors ?? [];
+  }): { env: AgentsEnv; batches: AgentTickMessage[][]; eventFireCalls: Array<{ url: string; body: unknown }>; allCallCounts: { connectors: number; heartbeats: number; jobs: number } } {
+    const connectors = (opts.connectors ?? []).map((c, i) => ({ ...c, id: c.id ?? `conn-${i}` }));
     const heartbeats = opts.heartbeats ?? [];
     const jobs = opts.jobs ?? [];
+    const allCallCounts = { connectors: 0, heartbeats: 0, jobs: 0 };
     const db = {
       prepare(sql: string) {
         let args: unknown[] = [];
         const stmt = {
           bind(...a: unknown[]) { args = a; return stmt; },
           async all() {
-            if (/FROM mcp_servers/.test(sql)) return { results: connectors };
-            if (/FROM channel_links/.test(sql)) return { results: heartbeats };
-            if (/FROM scheduled_jobs/.test(sql)) return { results: jobs };
+            const cursor = String(args[args.length - 2] ?? "");
+            const limit = Number(args[args.length - 1] ?? Number.MAX_SAFE_INTEGER);
+            if (/FROM mcp_servers/.test(sql)) {
+              allCallCounts.connectors++;
+              return { results: paginate(connectors, (r) => r.id!, cursor, limit) };
+            }
+            if (/FROM channel_links/.test(sql)) {
+              allCallCounts.heartbeats++;
+              return { results: paginate(heartbeats, (r) => r.space_id, cursor, limit) };
+            }
+            if (/FROM scheduled_jobs/.test(sql)) {
+              allCallCounts.jobs++;
+              return { results: paginate(jobs, (r) => r.id, cursor, limit) };
+            }
             return { results: [] };
           },
           async run() {
@@ -217,7 +241,7 @@ describe("enqueueAgentTicks (agents worker hourly cron — enumerate-and-enqueue
       SPACES_WORKER: spacesWorkerStub,
       ANALYTICS: { writeDataPoint() {} },
     } as unknown as AgentsEnv;
-    return { env, batches, eventFireCalls };
+    return { env, batches, eventFireCalls, allCallCounts };
   }
 
   it("enqueues a heartbeat message for every space with an enabled channel link", async () => {
@@ -293,6 +317,62 @@ describe("enqueueAgentTicks (agents worker hourly cron — enumerate-and-enqueue
     expect(batches[1]).toHaveLength(100);
     expect(batches[2]).toHaveLength(50);
     expect(batches.flat()).toHaveLength(250);
+  });
+
+  // F1: each roster used to be one unbounded SELECT with no LIMIT — at platform scale that
+  // pulls every enabled row across every space into memory in a single D1 read. This proves the
+  // keyset pagination enumerates a roster that spans multiple 1000-row pages without losing or
+  // duplicating rows, across all three roster types.
+  it("enumerates all rows across multiple pages when a roster exceeds the page size (1000)", async () => {
+    const jobs: JobRow[] = Array.from({ length: 2500 }, (_, i) => ({
+      id: `job-${String(i).padStart(5, "0")}`,
+      space_id: `space-${i}`,
+      tenant_id: "tenant-1",
+      cron_expression: "* * * * *",
+      last_run_at: null,
+      created_at: OLD_CREATED_AT,
+    }));
+    const { env, batches, allCallCounts } = makeEnqueueEnv({ jobs });
+    await enqueueAgentTicks(env);
+
+    // 3 pages fetched from D1 (1000 + 1000 + 500), not one unbounded query.
+    expect(allCallCounts.jobs).toBe(3);
+
+    const messages = batches.flat();
+    expect(messages).toHaveLength(2500);
+    expect(messages.every((m) => m.kind === "scheduled_job")).toBe(true);
+    // No row lost or duplicated across the page boundaries.
+    expect(new Set(messages.map((m) => m.jobId)).size).toBe(2500);
+  });
+
+  it("enumerates a connector roster exceeding the page size across multiple D1 pages", async () => {
+    const connectors: ConnectorRow[] = Array.from({ length: 1500 }, (_, i) => ({
+      space_id: `space-${i}`,
+      tenant_id: "tenant-1",
+      name: "gumroad",
+      id: `conn-${String(i).padStart(5, "0")}`,
+    }));
+    const { env, batches, allCallCounts } = makeEnqueueEnv({ connectors });
+    await enqueueAgentTicks(env);
+
+    expect(allCallCounts.connectors).toBe(2); // 1000 + 500
+    const messages = batches.flat();
+    expect(messages).toHaveLength(1500);
+    expect(new Set(messages.map((m) => m.spaceId)).size).toBe(1500);
+  });
+
+  it("enumerates a heartbeat roster exceeding the page size across multiple D1 pages", async () => {
+    const heartbeats: HeartbeatRow[] = Array.from({ length: 1200 }, (_, i) => ({
+      space_id: `space-${String(i).padStart(5, "0")}`,
+      tenant_id: "tenant-1",
+    }));
+    const { env, batches, allCallCounts } = makeEnqueueEnv({ heartbeats });
+    await enqueueAgentTicks(env);
+
+    expect(allCallCounts.heartbeats).toBe(2); // 1000 + 200
+    const messages = batches.flat();
+    expect(messages).toHaveLength(1200);
+    expect(new Set(messages.map((m) => m.spaceId)).size).toBe(1200);
   });
 });
 
