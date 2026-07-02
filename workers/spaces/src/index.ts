@@ -633,6 +633,7 @@ app.post("/internal/spaces/:spaceId/events/fire", async (c) => {
 app.use("/spaces/:spaceId/projects", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId/rules", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/spend", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 
 // GET lists, POST creates — proxied to the SpaceDO.
 app.get("/spaces/:spaceId/projects", async (c) => {
@@ -700,6 +701,28 @@ app.delete("/spaces/:spaceId/projects/:projectId/rules/:ruleId", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/rules/${encodeURIComponent(ruleId)}`, "DELETE");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// F9: authoritative per-project daily spend, single writer (SpaceDO — one DO per space, so
+// every thread's agent DO debits through the SAME instance regardless of how many concurrent
+// threads a customer-bot project has). GET is a pure gate check (credits=0 semantics via
+// query-less POST); POST records an actual debit. Called only by NaelaoAgentDO.
+app.get("/spaces/:spaceId/projects/:projectId/spend", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/spend`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/spend", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/spend`, "POST", c.req.raw.body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 

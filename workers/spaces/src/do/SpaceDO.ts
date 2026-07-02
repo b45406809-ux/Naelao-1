@@ -9,6 +9,10 @@ import {
 import type { TriggerRule, TriggerCondition, EventEnvelope, ConditionContext } from "@naelao/events";
 import { mintInternalToken } from "@naelao/http";
 
+function todaySpendKey(): string {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
+}
+
 function safeJsonParseObj(text: string): Record<string, unknown> {
   try {
     const v = JSON.parse(text) as unknown;
@@ -434,6 +438,25 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_presence_project ON presence(space_id, project_id, last_seen_at DESC);
     `,
   },
+  {
+    version: 17,
+    // F9: the customer-bot daily spend cap was enforced against a `project_spend` table living
+    // in NaelaoAgentDO's OWN SQLite — but agent DOs are addressed space:project:thread, so
+    // every thread got an independent, zero-based tally. A project with N concurrent customer
+    // threads could spend up to N x its configured cap. SpaceDO is one DO per space (all
+    // threads/projects in it share this single instance), so it's the correct single writer:
+    // moving the authoritative tally here means every thread's spend against the same project
+    // lands in the same row, serialized by the DO's single-threaded request handling.
+    description: "project_spend (authoritative per-project daily spend tally, single-writer)",
+    up: `
+      CREATE TABLE IF NOT EXISTS project_spend (
+        project_id TEXT NOT NULL,
+        day        TEXT NOT NULL, -- YYYY-MM-DD (UTC)
+        credits    INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (project_id, day)
+      );
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -699,6 +722,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const projectRuleIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/rules\/([^/]+)$/);
       if (method === "DELETE" && projectRuleIdMatch?.[1] && projectRuleIdMatch?.[2]) {
         return this.deleteProjectRule(projectRuleIdMatch[1], projectRuleIdMatch[2]);
+      }
+      // ── Authoritative per-project daily spend (F9) ─────────────────────────────
+      const projectSpendMatch = url.pathname.match(/^\/projects\/([^/]+)\/spend$/);
+      if (method === "GET" && projectSpendMatch?.[1]) {
+        return this.getProjectSpend(projectSpendMatch[1], url.searchParams);
+      }
+      if (method === "POST" && projectSpendMatch?.[1]) {
+        return this.debitProjectSpend(projectSpendMatch[1], request);
       }
 
       // ── Presence (space collaboration, A1.8) ───────────────────────────────────
@@ -1508,6 +1539,52 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       execute(this.ctx.storage.sql as never, "UPDATE projects SET show_sub_threads = ? WHERE id = ?", body.show_sub_threads ? 1 : 0, projectId);
     }
     return this.getProject(projectId);
+  }
+
+  // ── Authoritative per-project daily spend (F9) ──────────────────────────────────────────
+  // Every agent-DO thread against a project (each its own NaelaoAgentDO instance) debits
+  // through this one SpaceDO instead of keeping its own zero-based local tally — single
+  // writer, so concurrent threads on the same customer-bot project share one real total.
+  private getProjectSpend(projectId: string, params: URLSearchParams): Response {
+    const project = queryOne<{ daily_spend_cap_credits: number }>(
+      this.ctx.storage.sql as never, "SELECT daily_spend_cap_credits FROM projects WHERE id = ?", projectId
+    );
+    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    const day = params.get("day") ?? todaySpendKey();
+    const row = queryOne<{ credits: number }>(
+      this.ctx.storage.sql as never, "SELECT credits FROM project_spend WHERE project_id = ? AND day = ?", projectId, day
+    );
+    const spentToday = row?.credits ?? 0;
+    const cap = project.daily_spend_cap_credits;
+    return Response.json({ project_id: projectId, day, spent_today: spentToday, cap, capped: cap > 0 && spentToday >= cap });
+  }
+
+  // POST /projects/:projectId/spend { credits } — adds `credits` (if any) to today's tally and
+  // returns the updated total. Called with credits=0 as a pure pre-run gate check, and again
+  // post-run with the actual token cost — both trips serialized through this single DO, so
+  // spend recorded by one thread is immediately visible to the next thread's gate check.
+  private async debitProjectSpend(projectId: string, request: Request): Promise<Response> {
+    const project = queryOne<{ daily_spend_cap_credits: number }>(
+      this.ctx.storage.sql as never, "SELECT daily_spend_cap_credits FROM projects WHERE id = ?", projectId
+    );
+    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    const body = await request.json<{ credits?: number }>().catch(() => ({}) as Record<string, never>);
+    const credits = typeof body.credits === "number" && body.credits > 0 ? body.credits : 0;
+    const day = todaySpendKey();
+    if (credits > 0) {
+      execute(
+        this.ctx.storage.sql as never,
+        `INSERT INTO project_spend (project_id, day, credits) VALUES (?, ?, ?)
+         ON CONFLICT (project_id, day) DO UPDATE SET credits = credits + excluded.credits`,
+        projectId, day, credits
+      );
+    }
+    const row = queryOne<{ credits: number }>(
+      this.ctx.storage.sql as never, "SELECT credits FROM project_spend WHERE project_id = ? AND day = ?", projectId, day
+    );
+    const spentToday = row?.credits ?? 0;
+    const cap = project.daily_spend_cap_credits;
+    return Response.json({ project_id: projectId, day, spent_today: spentToday, cap, capped: cap > 0 && spentToday >= cap });
   }
 
   // ── project_rules — no-code "after the customer says X, this happens" triggers ─────────

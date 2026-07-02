@@ -1672,13 +1672,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // F14: customer-bot daily spend cap was only enforced in the channel-heartbeat drain path
     // (handleChannelHeartbeat) — a direct /script/run call with the same projectId bypassed it
     // entirely. Apply the identical cap-then-execution-ceiling gate here.
+    // F9: the gate itself now checks through SpaceDO (single writer for the whole project),
+    // not this DO's own local tally — see checkAndDebitProjectSpend.
+    let hasSpendCap = false;
     if (projectId) {
       const projectCfg = await this.fetchProjectConfig(spaceId, tenantId, projectId);
-      if (projectCfg && projectCfg.daily_spend_cap_credits > 0 && this.getProjectSpendToday(projectId) >= projectCfg.daily_spend_cap_credits) {
-        return Response.json(
-          { error: "daily spend cap reached for this project", error_code: "spend_capped" },
-          { status: 429 }
-        );
+      if (projectCfg && projectCfg.daily_spend_cap_credits > 0) {
+        hasSpendCap = true;
+        const spend = await this.checkAndDebitProjectSpend(spaceId, tenantId, projectId, 0);
+        if (spend.capped) {
+          return Response.json(
+            { error: "daily spend cap reached for this project", error_code: "spend_capped" },
+            { status: 429 }
+          );
+        }
       }
       if (projectCfg) engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
     }
@@ -1740,7 +1747,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           result.result.input_tokens || result.result.output_tokens
             ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, body.model ?? "claude-haiku-4-5-20251001")
             : result.result.tokens_used;
+        // F9: SpaceDO is now the authoritative tally (single writer across every thread on
+        // this project); the local table is kept only as this DO's own telemetry/cache.
         this.addProjectSpend(projectId, credits);
+        if (hasSpendCap) await this.checkAndDebitProjectSpend(spaceId, tenantId, projectId, credits);
       }
 
       // Layer 4 (Fabric) auto-consolidation (spec: "runs LLM-driven session extraction
@@ -1906,6 +1916,34 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return await resp.json<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] }>();
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * F9: authoritative spend check+debit, single-writer via SpaceDO — agent DOs are addressed
+   * space:project:thread (their own SQLite each), so a purely local tally undercounts spend by
+   * however many concurrent threads/channels a customer-bot project has. Pass credits=0 for a
+   * pure pre-run gate check; pass the actual post-run token cost to record it. Fails CLOSED:
+   * any error (network, non-2xx, missing SPACES_WORKER) is treated as capped, matching the
+   * fetchAssistantPolicy precedent — a spend limiter that fails open isn't one.
+   */
+  private async checkAndDebitProjectSpend(
+    spaceId: string, tenantId: string, projectId: string, credits: number
+  ): Promise<{ capped: boolean; spent_today: number }> {
+    try {
+      const resp = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${spaceId}/projects/${projectId}/spend`,
+        {
+          method: "POST",
+          headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+          body: JSON.stringify({ credits }),
+        }
+      ));
+      if (!resp.ok) return { capped: true, spent_today: Number.POSITIVE_INFINITY };
+      const data = await resp.json<{ capped: boolean; spent_today: number }>();
+      return data;
+    } catch {
+      return { capped: true, spent_today: Number.POSITIVE_INFINITY };
     }
   }
 
@@ -2111,7 +2149,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // 2. Daily spend cap (customer-bot projects only) — protects against a chatty or
       //    adversarial customer running up an unbounded bill. Once hit, leave the rest of
       //    today's messages for a human rather than silently dropping them.
-      if (projectCfg && projectCfg.daily_spend_cap_credits > 0 && this.getProjectSpendToday(msg.project_id!) >= projectCfg.daily_spend_cap_credits) {
+      // F9: gate through SpaceDO (single writer for the whole project), not this DO's own
+      // local tally — a project can otherwise receive traffic through more than one agent DO
+      // (this channel-drain DO AND a direct per-thread /script/run session against the same
+      // project), and only SpaceDO sees both.
+      if (
+        projectCfg &&
+        projectCfg.daily_spend_cap_credits > 0 &&
+        (await this.checkAndDebitProjectSpend(spaceId, tenantId, msg.project_id!, 0)).capped
+      ) {
         spendCapped++;
         continue;
       }
@@ -2142,7 +2188,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const credits = result.result.input_tokens || result.result.output_tokens
           ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, model)
           : result.result.tokens_used;
+        // F9: SpaceDO is the authoritative tally; the local table is kept only as this DO's
+        // own telemetry/cache.
         this.addProjectSpend(msg.project_id, credits);
+        if (projectCfg && projectCfg.daily_spend_cap_credits > 0) {
+          await this.checkAndDebitProjectSpend(spaceId, tenantId, msg.project_id, credits);
+        }
       }
 
       const deliveredDirectly = result.script_name?.startsWith("notify.") && result.result?.ok;

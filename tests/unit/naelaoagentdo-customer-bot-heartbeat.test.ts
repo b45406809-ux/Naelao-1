@@ -41,10 +41,28 @@ interface FakeProject {
   rules: Array<{ trigger_pattern: string; action: string; reply_text?: string; script_name?: string; enabled: number; priority: number }>;
 }
 
-function makeSpacesWorker(projects: Record<string, FakeProject>): Fetcher {
-  return {
+// F9: the daily spend cap gate now checks through a SpaceDO-backed `/spend` endpoint (single
+// writer for the whole project) instead of this DO's own local `project_spend` table — this
+// mock simulates that endpoint with real stateful accumulation, mirroring
+// SpaceDO.debitProjectSpend's credits-add + capped-flag response shape.
+function makeSpacesWorker(projects: Record<string, FakeProject>) {
+  const spend = new Map<string, number>(); // projectId -> credits spent "today"
+  const fetcher = {
     async fetch(input: RequestInfo) {
-      const url = new URL(typeof input === "string" ? input : (input as Request).url);
+      const req = input as Request;
+      const url = new URL(typeof input === "string" ? input : req.url);
+      const spendMatch = url.pathname.match(/^\/spaces\/[^/]+\/projects\/([^/]+)\/spend$/);
+      if (spendMatch?.[1]) {
+        const projectId = spendMatch[1];
+        const project = projects[projectId];
+        if (!project) return new Response("not found", { status: 404 });
+        const body = await req.json<{ credits?: number }>().catch(() => ({}) as Record<string, never>);
+        const credits = typeof body.credits === "number" && body.credits > 0 ? body.credits : 0;
+        const spentToday = (spend.get(projectId) ?? 0) + credits;
+        spend.set(projectId, spentToday);
+        const cap = project.daily_spend_cap_credits;
+        return Response.json({ project_id: projectId, day: "test-day", spent_today: spentToday, cap, capped: cap > 0 && spentToday >= cap });
+      }
       const projectMatch = url.pathname.match(/^\/spaces\/[^/]+\/projects\/([^/]+)(\/rules)?$/);
       if (projectMatch) {
         const [, projectId, rulesSuffix] = projectMatch;
@@ -56,15 +74,17 @@ function makeSpacesWorker(projects: Record<string, FakeProject>): Fetcher {
       return new Response("not found", { status: 404 });
     },
   } as unknown as Fetcher;
+  return { fetcher, spend };
 }
 
 async function makeDO(projects: Record<string, FakeProject>) {
   const r2 = makeR2();
   const ctx = { storage: { sql: createDOSqlStorage() } };
+  const { fetcher: spacesWorker, spend } = makeSpacesWorker(projects);
   const env = {
     PLATFORM_SECRET: "test",
     KNOWLEDGE_WORKER: { fetch: async () => new Response("{}") } as unknown as Fetcher,
-    SPACES_WORKER: makeSpacesWorker(projects),
+    SPACES_WORKER: spacesWorker,
     SCRIPTS_R2: r2,
   };
   const spaceDO = new NaelaoAgentDO(ctx as never, env as never);
@@ -76,7 +96,7 @@ async function makeDO(projects: Record<string, FakeProject>) {
     skills: { skills: [] },
   });
 
-  return spaceDO;
+  return { spaceDO, spend };
 }
 
 async function inbound(doInstance: NaelaoAgentDO, channel: string, raw: Record<string, unknown>, projectId?: string) {
@@ -98,7 +118,7 @@ async function heartbeat(doInstance: NaelaoAgentDO, spaceId = "space1") {
 
 describe("NaelaoAgentDO channel heartbeat — customer-bot project rules", () => {
   it("a matched 'reply' rule answers without touching the reasoning loop (zero LLM calls)", async () => {
-    const spaceDO = await makeDO({
+    const { spaceDO } = await makeDO({
       proj1: { execution_ceiling: 2, daily_spend_cap_credits: 0, rules: [{ trigger_pattern: "STOP", action: "reply", reply_text: "Unsubscribed.", enabled: 1, priority: 1000 }] },
     });
     await inbound(spaceDO, "whatsapp", { entry: [{ changes: [{ value: { messages: [{ from: "1650555", id: "w1", timestamp: "1700000000", text: { body: "please STOP messaging me" } }] } }] }] }, "proj1");
@@ -108,7 +128,7 @@ describe("NaelaoAgentDO channel heartbeat — customer-bot project rules", () =>
   });
 
   it("a matched 'human_takeover' rule silences the bot for that thread (message stays unanswered)", async () => {
-    const spaceDO = await makeDO({
+    const { spaceDO } = await makeDO({
       proj1: { execution_ceiling: 2, daily_spend_cap_credits: 0, rules: [{ trigger_pattern: "talk to a human", action: "human_takeover", enabled: 1, priority: 900 }] },
     });
     await inbound(spaceDO, "whatsapp", { entry: [{ changes: [{ value: { messages: [{ from: "1650555", id: "w1", timestamp: "1700000000", text: { body: "I want to talk to a human please" } }] } }] }] }, "proj1");
@@ -124,21 +144,20 @@ describe("NaelaoAgentDO channel heartbeat — customer-bot project rules", () =>
   });
 
   it("daily spend cap: once a project's cap is hit, further messages are spend_capped, not silently dropped", async () => {
-    const spaceDO = await makeDO({
+    const { spaceDO, spend } = await makeDO({
       proj1: { execution_ceiling: 2, daily_spend_cap_credits: 100, rules: [] },
     });
     await inbound(spaceDO, "whatsapp", { entry: [{ changes: [{ value: { messages: [{ from: "1650555", id: "w1", timestamp: "1700000000", text: { body: "hi, question about my order" } }] } }] }] }, "proj1");
 
-    // Manually push the project over its cap (simulating prior LLM-driven replies today) —
-    // after the inbound call, which is what triggers ensureInit()/table creation.
-    const doAny = spaceDO as unknown as { addProjectSpend(projectId: string, credits: number): void };
-    doAny.addProjectSpend("proj1", 500);
+    // Push the project over its cap via the same SpaceDO-backed store the gate itself reads —
+    // simulates prior LLM-driven replies today.
+    spend.set("proj1", 500);
     const result = await heartbeat(spaceDO);
     expect(result).toMatchObject({ drained: 1, spend_capped: 1, answered: 0, escalated: 0 });
   });
 
   it("two different projects on the same channel type are independently rule-scoped", async () => {
-    const spaceDO = await makeDO({
+    const { spaceDO } = await makeDO({
       proj1: { execution_ceiling: 2, daily_spend_cap_credits: 0, rules: [{ trigger_pattern: "hours", action: "reply", reply_text: "9-5 Mon-Fri", enabled: 1, priority: 10 }] },
       proj2: { execution_ceiling: 2, daily_spend_cap_credits: 0, rules: [] }, // no rules — would fall through to reasoning
     });
