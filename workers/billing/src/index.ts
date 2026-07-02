@@ -8,7 +8,7 @@ import {
 } from "@naelao/http";
 // G-D05: Billing worker — Stripe webhooks, Lemon Squeezy webhooks, checkout, subscription sync
 import { Hono } from "hono";
-import { checkQuota, incrementUsage, invalidateQuotaCache } from "./quota.js";
+import { checkQuota, recordUsageEvent, invalidateQuotaCache } from "./quota.js";
 import {
   createBillingPortalSession,
   createCheckoutSession,
@@ -373,11 +373,13 @@ app.post("/billing/usage", async (c) => {
     return c.json({ recorded: false, deduplicated: true, id }, 200);
   }
 
-  // Increment KV quota counter for api_call events (for fast quota checks)
+  // F12: invalidate the KV quota cache instead of incrementing it — the next checkQuota call
+  // recomputes fresh from D1's atomic COUNT/SUM aggregate rather than trusting a number a
+  // concurrent writer could have raced.
   if (body.event_type === "api_call") {
-    await incrementUsage(c.env.QUOTA_CACHE, body.org_id, "api_calls", quantity);
+    await recordUsageEvent(c.env.QUOTA_CACHE, body.org_id, "api_calls");
   } else if (body.event_type === "kb_doc") {
-    await incrementUsage(c.env.QUOTA_CACHE, body.org_id, "kb_docs", quantity);
+    await recordUsageEvent(c.env.QUOTA_CACHE, body.org_id, "kb_docs");
   }
 
   // Enqueue to BILLING_EVENTS for async Stripe metering

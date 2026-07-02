@@ -131,23 +131,28 @@ export async function checkQuota(
 }
 
 /**
- * Increment the KV usage counter for an org/metric.
- * The KV counter is the source-of-truth for fast quota checks between cache refreshes.
- * D1 remains the authoritative store for accounting; this is a best-effort counter.
+ * F12: this used to be a KV read-modify-write (get -> parseInt -> put(value + delta)) — not
+ * atomic, so concurrent calls for the same org/metric can lose increments (classic
+ * read-then-write race). It also used a sliding `expirationTtl` on every write, so an org with
+ * continuous traffic could keep resetting its own cache's TTL forward indefinitely and never
+ * naturally fall back to a fresh D1 read — turning a bounded ~300s staleness window into
+ * potentially unbounded drift under sustained load.
+ *
+ * `getCurrentUsage`'s D1 fallback is already correct and atomic in the way that matters here —
+ * it's a live `COUNT`/`SUM` aggregate over the authoritative rows (`spaces`, `kb_documents`,
+ * `usage_events`), not an accumulator that could itself drift. So instead of maintaining a
+ * second, independently-incremented number that has to somehow stay in sync with that
+ * aggregate, this just invalidates the cache on every usage event — the next `checkQuota` call
+ * is forced back through the real aggregate query instead of trusting a number nothing can
+ * prove is still correct. Trades one extra D1 read per post-cache-miss quota check for
+ * eliminating the race entirely.
  */
-export async function incrementUsage(
+export async function recordUsageEvent(
   kv: KVNamespace,
   orgId: string,
-  metric: QuotaMetric,
-  delta = 1
+  metric: QuotaMetric
 ): Promise<void> {
-  const key = kvKey(orgId, metric);
-  const current = await kv.get(key, "text");
-  const value = current !== null ? Number.parseInt(current, 10) || 0 : 0;
-  // Write back incremented value; preserve TTL only if already cached (otherwise use fresh TTL)
-  await kv.put(key, String(value + delta), {
-    expirationTtl: QUOTA_TTL_SECONDS,
-  });
+  await kv.delete(kvKey(orgId, metric));
 }
 
 /**
