@@ -765,7 +765,7 @@ app.delete("/spaces/:spaceId/event-triggers/:triggerId", async (c) => {
 // Scheduled jobs (@naelao/events, spec §05 "cron-jobs.json") — the no-code, TIME-driven
 // counterpart to event-triggers: "every day at 9am, run this script." Unlike event-triggers
 // (per-space rows in SpaceDO, evaluated inline when the triggering action already touches that
-// DO), scheduled jobs live directly in PLATFORM_DB — the hourly dispatcher (runScheduledJobs,
+// DO), scheduled jobs live directly in PLATFORM_DB — the hourly dispatcher (enqueueAgentTicks,
 // agents worker) needs one cheap cross-space query to find everything due, the same reason
 // channel_links is a platform table rather than per-space state.
 app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {

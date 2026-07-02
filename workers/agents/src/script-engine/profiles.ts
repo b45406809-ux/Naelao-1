@@ -38,8 +38,8 @@ const BASE_AGENTS_MD = `# Behavioral Rules
  * channel-heartbeat sweep, scheduled jobs) wakes, and the one with continuous, hibernation-
  * backed existence per §05. `agentId` MUST be exactly `"naelao-agent"` — every consumer
  * (workers/billing/src/lemon-squeezy.ts resolveDefaultAgent, workers/triggers,
- * runChannelHeartbeats, runScheduledJobs, fireScriptDirectly's default) hardcodes that literal
- * string rather than importing this constant, since they run in different Workers than this
+ * handleAgentTick's heartbeat/scheduled_job cases, fireScriptDirectly's default) hardcodes that
+ * literal string rather than importing this constant, since they run in different Workers than this
  * profile is authored in.
  */
 export const DEFAULT_NAELAO_AGENT: { agentId: string; config: AgentConfig } = {

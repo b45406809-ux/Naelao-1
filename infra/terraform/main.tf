@@ -106,6 +106,17 @@ resource "cloudflare_queue" "sessions" {
   name       = "${local.name_prefix}-sessions"
 }
 
+# naelao-agents' hourly tick fan-out (heartbeats, connector polls, scheduled jobs — see
+# workers/agents/wrangler.toml). Named literally (not "${local.name_prefix}-...") because
+# that's the literal queue name workers/agents/wrangler.toml's [[queues.producers]]/
+# [[queues.consumers]] bindings reference — matching every other worker's queue.producers
+# entry in this repo (naelao-billing-events, naelao-notifications, naelao-provisioning, ...),
+# none of which use the name_prefix template either.
+resource "cloudflare_queue" "agent_ticks" {
+  account_id = var.account_id
+  name       = "naelao-agent-ticks"
+}
+
 # ── Vectorize Indexes ─────────────────────────────────────────────────────────
 
 resource "cloudflare_vectorize_index" "kb" {

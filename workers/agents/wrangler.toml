@@ -110,6 +110,23 @@ id = "REPLACE_WITH_KV_ID"
 binding = "ANALYTICS"
 dataset = "naelao_agent_events"
 
+# Hourly "agent tick" fan-out (heartbeats, connector polls, scheduled jobs) — see
+# enqueueAgentTicks/handleAgentTicksQueue in src/index.ts. scheduled() only does the cheap D1
+# roster + isCronDue queries (no subrequests); each due tick becomes one queue message,
+# processed by the queue() consumer. Without this, the old serial in-invocation loop broke the
+# Workers 1000-subrequest limit at a few hundred active spaces.
+[[queues.producers]]
+binding = "AGENT_TICKS"
+queue = "naelao-agent-ticks"
+
+[[queues.consumers]]
+queue = "naelao-agent-ticks"
+max_batch_size = 100
+max_batch_timeout = 5
+max_retries = 3
+max_concurrency = 50
+dead_letter_queue = "naelao-agent-ticks-dlq"
+
 [triggers]
 # 02:00 daily → nightly business cycle; hourly → poll webhook-less connectors (e.g. Gumroad)
 # + drain each space's channel heartbeat (unanswered messages) + Memory OS maintenance.

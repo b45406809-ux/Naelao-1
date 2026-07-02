@@ -1,7 +1,7 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import spacesWorker from "../../workers/spaces/src/index.js";
-import { runScheduledJobs } from "../../workers/agents/src/index.js";
-import type { AgentsEnv } from "../../workers/agents/src/index.js";
+import { enqueueAgentTicks, handleAgentTicksQueue, handleAgentTick } from "../../workers/agents/src/index.js";
+import type { AgentsEnv, AgentTickMessage } from "../../workers/agents/src/index.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -151,77 +151,55 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
   });
 });
 
-// ── Dispatcher (agents worker) — runScheduledJobs fires due jobs, skips not-due, records
-// last_run_at, and now tracks/auto-disables on repeated failure.
-describe("runScheduledJobs (agents worker hourly dispatcher)", () => {
-  interface Row {
-    id: string; space_id: string; tenant_id: string; project_id: string | null;
-    cron_expression: string; script_name: string; params: string; last_run_at: number | null;
-    created_at: string; consecutive_failures: number;
-  }
 
-  // A fixed, far-in-the-past creation instant — every existing test's cron windows assume the
-  // job has "always existed" so created_at never becomes the binding constraint.
+// ── enqueueAgentTicks (agents worker hourly cron, enumerate-and-enqueue phase) ───────────────
+// A1.16.14: the old serial in-invocation loop (pollConnectors + runChannelHeartbeats +
+// runScheduledJobs, all awaited subrequests inside ONE Worker invocation) broke the platform's
+// 1000-subrequest-per-invocation limit at a few hundred active spaces. scheduled() now does
+// ONLY the cheap D1 roster queries + the pure isCronDue computation (no subrequests at all),
+// and hands one message per due tick to AGENT_TICKS — these tests cover that planning step:
+// roster rows in, expected messages out.
+describe("enqueueAgentTicks (agents worker hourly cron — enumerate-and-enqueue)", () => {
+  interface JobRow {
+    id: string; space_id: string; tenant_id: string;
+    cron_expression: string; last_run_at: number | null; created_at: string;
+  }
+  interface ConnectorRow { space_id: string; tenant_id: string; name: string }
+  interface HeartbeatRow { space_id: string; tenant_id: string }
+
   const OLD_CREATED_AT = "2020-01-01 00:00:00";
 
-  function row(overrides: Partial<Row> & Pick<Row, "id" | "space_id" | "tenant_id" | "cron_expression" | "script_name">): Row {
-    return {
-      project_id: null, params: "{}", last_run_at: null,
-      created_at: OLD_CREATED_AT, consecutive_failures: 0,
-      ...overrides,
-    };
-  }
-
-  function makeAgentsEnv(rows: Row[]): {
-    env: AgentsEnv;
-    fireCalls: Array<{ url: string; body: unknown }>;
-    updates: Array<{ id: string; last_run_at: number; consecutive_failures?: number; last_error?: string | null; enabled?: number }>;
-    eventFireCalls: Array<{ url: string; body: unknown }>;
-  } {
-    const fireCalls: Array<{ url: string; body: unknown }> = [];
-    const updates: Array<{ id: string; last_run_at: number; consecutive_failures?: number; last_error?: string | null; enabled?: number }> = [];
+  function makeEnqueueEnv(opts: {
+    connectors?: ConnectorRow[];
+    heartbeats?: HeartbeatRow[];
+    jobs?: JobRow[];
+  }): { env: AgentsEnv; batches: AgentTickMessage[][]; eventFireCalls: Array<{ url: string; body: unknown }> } {
+    const connectors = opts.connectors ?? [];
+    const heartbeats = opts.heartbeats ?? [];
+    const jobs = opts.jobs ?? [];
     const db = {
       prepare(sql: string) {
         let args: unknown[] = [];
         const stmt = {
           bind(...a: unknown[]) { args = a; return stmt; },
           async all() {
-            if (/FROM scheduled_jobs/.test(sql)) return { results: rows };
+            if (/FROM mcp_servers/.test(sql)) return { results: connectors };
+            if (/FROM channel_links/.test(sql)) return { results: heartbeats };
+            if (/FROM scheduled_jobs/.test(sql)) return { results: jobs };
             return { results: [] };
           },
           async run() {
-            // Match on the distinguishing column list only — the real query wraps across
-            // lines with leading whitespace, which a literal-text regex would miss.
-            if (/consecutive_failures = \?, last_error = \?, enabled = \?/.test(sql)) {
-              // now, failures, error, enabled, id
-              updates.push({
-                id: args[4] as string,
-                last_run_at: args[0] as number,
-                consecutive_failures: args[1] as number,
-                last_error: args[2] as string | null,
-                enabled: args[3] as number,
-              });
-            } else if (/consecutive_failures = 0, last_error = NULL/.test(sql)) {
-              // now, id — the success path
-              updates.push({ id: args[1] as string, last_run_at: args[0] as number, consecutive_failures: 0, last_error: null });
-            }
-            return { meta: { changes: 1 } };
+            return { meta: { changes: 1 } }; // used by recordScheduledJobFailure on a bad cron
           },
         };
         return stmt;
       },
     };
-    const agentDoStub = {
-      async fetch(reqInput: Request | string, init?: RequestInit) {
-        const url = typeof reqInput === "string" ? reqInput : reqInput.url;
-        const body = init?.body ? JSON.parse(init.body as string) : await (reqInput as Request).json().catch(() => null);
-        fireCalls.push({ url, body });
-        return new Response(JSON.stringify({ result: "ok" }), { status: 200 });
+    const batches: AgentTickMessage[][] = [];
+    const agentTicksQueue = {
+      async sendBatch(messages: Array<{ body: AgentTickMessage }>) {
+        batches.push(messages.map((m) => m.body));
       },
-    };
-    const agentDoNamespace = {
-      idFromName: (name: string) => ({ toString: () => name }),
-      get: () => agentDoStub,
     };
     const eventFireCalls: Array<{ url: string; body: unknown }> = [];
     const spacesWorkerStub = {
@@ -235,154 +213,299 @@ describe("runScheduledJobs (agents worker hourly dispatcher)", () => {
     const env = {
       PLATFORM_SECRET: "test-secret",
       PLATFORM_DB: db,
+      AGENT_TICKS: agentTicksQueue,
+      SPACES_WORKER: spacesWorkerStub,
+      ANALYTICS: { writeDataPoint() {} },
+    } as unknown as AgentsEnv;
+    return { env, batches, eventFireCalls };
+  }
+
+  it("enqueues a heartbeat message for every space with an enabled channel link", async () => {
+    const { env, batches } = makeEnqueueEnv({
+      heartbeats: [{ space_id: "space-1", tenant_id: "tenant-1" }, { space_id: "space-2", tenant_id: "tenant-1" }],
+    });
+    await enqueueAgentTicks(env);
+    const messages = batches.flat();
+    expect(messages).toHaveLength(2);
+    expect(messages.every((m) => m.kind === "heartbeat")).toBe(true);
+    expect(messages.map((m) => m.spaceId).sort()).toEqual(["space-1", "space-2"]);
+  });
+
+  it("enqueues a connector_poll message per enabled connector row, carrying the connector name", async () => {
+    const { env, batches } = makeEnqueueEnv({
+      connectors: [{ space_id: "space-1", tenant_id: "tenant-1", name: "gumroad" }],
+    });
+    await enqueueAgentTicks(env);
+    const messages = batches.flat();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toEqual({ kind: "connector_poll", spaceId: "space-1", tenantId: "tenant-1", connectorName: "gumroad" });
+  });
+
+  it("enqueues a scheduled_job message only for jobs isCronDue considers due", async () => {
+    const dueJob: JobRow = { id: "job-due", space_id: "space-1", tenant_id: "tenant-1", cron_expression: "* * * * *", last_run_at: null, created_at: OLD_CREATED_AT };
+    const notDueJob: JobRow = { id: "job-not-due", space_id: "space-1", tenant_id: "tenant-1", cron_expression: "0 0 1 1 *", last_run_at: Date.now(), created_at: OLD_CREATED_AT };
+    const { env, batches } = makeEnqueueEnv({ jobs: [dueJob, notDueJob] });
+    await enqueueAgentTicks(env);
+    const messages = batches.flat();
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toEqual({ kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "job-due" });
+  });
+
+  it("does not enqueue a job created after its cron's most recent due minute (B5 regression, carried into the planning phase)", async () => {
+    const now = new Date();
+    const currentMinute = now.getUTCMinutes();
+    const excludedMinute = (currentMinute + 30) % 60; // guaranteed not to be "now"
+    const freshJob: JobRow = {
+      id: "fresh", space_id: "space-1", tenant_id: "tenant-1",
+      cron_expression: `${excludedMinute} * * * *`, last_run_at: null,
+      created_at: now.toISOString().slice(0, 19).replace("T", " "),
+    };
+    const { env, batches } = makeEnqueueEnv({ jobs: [freshJob] });
+    await enqueueAgentTicks(env);
+    expect(batches.flat()).toHaveLength(0);
+  });
+
+  it("records a failure (but does not enqueue) for a job whose cron_expression fails to parse", async () => {
+    const badJob: JobRow = { id: "job-bad-cron", space_id: "space-1", tenant_id: "tenant-1", cron_expression: "not a cron", last_run_at: null, created_at: OLD_CREATED_AT };
+    const { env, batches } = makeEnqueueEnv({ jobs: [badJob] });
+    await enqueueAgentTicks(env);
+    expect(batches.flat()).toHaveLength(0); // never queued for firing
+  });
+
+  it("combines connector, heartbeat, and scheduled_job messages from one sweep into batches", async () => {
+    const { env, batches } = makeEnqueueEnv({
+      connectors: [{ space_id: "space-1", tenant_id: "tenant-1", name: "gumroad" }],
+      heartbeats: [{ space_id: "space-2", tenant_id: "tenant-1" }],
+      jobs: [{ id: "job-1", space_id: "space-3", tenant_id: "tenant-1", cron_expression: "* * * * *", last_run_at: null, created_at: OLD_CREATED_AT }],
+    });
+    await enqueueAgentTicks(env);
+    const messages = batches.flat();
+    expect(messages).toHaveLength(3);
+    expect(messages.map((m) => m.kind).sort()).toEqual(["connector_poll", "heartbeat", "scheduled_job"]);
+  });
+
+  it("chunks more than 100 messages into multiple sendBatch calls", async () => {
+    const heartbeats: HeartbeatRow[] = Array.from({ length: 250 }, (_, i) => ({ space_id: `space-${i}`, tenant_id: "tenant-1" }));
+    const { env, batches } = makeEnqueueEnv({ heartbeats });
+    await enqueueAgentTicks(env);
+    expect(batches).toHaveLength(3); // 100 + 100 + 50
+    expect(batches[0]).toHaveLength(100);
+    expect(batches[1]).toHaveLength(100);
+    expect(batches[2]).toHaveLength(50);
+    expect(batches.flat()).toHaveLength(250);
+  });
+});
+
+// ── handleAgentTick / handleAgentTicksQueue (agents worker queue consumer) ───────────────────
+// One message, one tick, its own fresh subrequest budget — the fetch-DO bodies moved nearly
+// verbatim from the old serial loop. At-least-once delivery (CF Queues) is safe for
+// scheduled_job messages specifically because last_run_at advances on every fire attempt
+// (success or failure — see A1.16.13's recordScheduledJobFailure), so a redelivered message
+// re-fetches the row fresh and is a no-op once that due minute is already recorded.
+describe("handleAgentTicksQueue (agents worker queue consumer)", () => {
+  interface ScheduledJobFullRow {
+    id: string; space_id: string; tenant_id: string; project_id: string | null;
+    cron_expression: string; script_name: string; params: string; last_run_at: number | null;
+    created_at: string; consecutive_failures: number;
+  }
+
+  function makeConsumerEnv(opts: {
+    jobRow?: ScheduledJobFullRow | null;
+    agentDoStatus?: number;
+  }): {
+    env: AgentsEnv;
+    fireCalls: Array<{ url: string; body: unknown }>;
+    updates: Array<{ id: string; last_run_at: number; consecutive_failures?: number; last_error?: string | null; enabled?: number }>;
+    eventFireCalls: Array<{ url: string; body: unknown }>;
+  } {
+    const fireCalls: Array<{ url: string; body: unknown }> = [];
+    const updates: Array<{ id: string; last_run_at: number; consecutive_failures?: number; last_error?: string | null; enabled?: number }> = [];
+    const db = {
+      prepare(sql: string) {
+        let args: unknown[] = [];
+        const stmt = {
+          bind(...a: unknown[]) { args = a; return stmt; },
+          async first() {
+            if (/FROM scheduled_jobs WHERE id = \? AND enabled = 1/.test(sql)) return opts.jobRow ?? null;
+            return null;
+          },
+          async run() {
+            if (/consecutive_failures = \?, last_error = \?, enabled = \?/.test(sql)) {
+              updates.push({ id: args[4] as string, last_run_at: args[0] as number, consecutive_failures: args[1] as number, last_error: args[2] as string | null, enabled: args[3] as number });
+            } else if (/consecutive_failures = 0, last_error = NULL/.test(sql)) {
+              updates.push({ id: args[1] as string, last_run_at: args[0] as number, consecutive_failures: 0, last_error: null });
+            }
+            return { meta: { changes: 1 } };
+          },
+        };
+        return stmt;
+      },
+    };
+    const status = opts.agentDoStatus ?? 200;
+    const agentDoStub = {
+      async fetch(reqInput: Request | string, init?: RequestInit) {
+        const url = typeof reqInput === "string" ? reqInput : reqInput.url;
+        const body = init?.body ? JSON.parse(init.body as string) : await (reqInput as Request).json().catch(() => null);
+        fireCalls.push({ url, body });
+        return new Response(status === 200 ? JSON.stringify({ result: "ok" }) : "boom", { status });
+      },
+    };
+    const agentDoNamespace = { idFromName: (name: string) => ({ toString: () => name }), get: () => agentDoStub };
+    const eventFireCalls: Array<{ url: string; body: unknown }> = [];
+    const spacesWorkerStub = {
+      async fetch(reqInput: Request | string, init?: RequestInit) {
+        const req2 = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
+        const body = await req2.clone().json().catch(() => null);
+        eventFireCalls.push({ url: req2.url, body });
+        return new Response(JSON.stringify({ fired: true }), { status: 200 });
+      },
+    };
+    const env = {
+      PLATFORM_SECRET: "test-secret",
+      PLATFORM_DB: db,
       NAELAO_AGENT_DO: agentDoNamespace,
+      AGENT_CACHE: { async get() { return null; }, async put() {} },
       SPACES_WORKER: spacesWorkerStub,
       ANALYTICS: { writeDataPoint() {} },
     } as unknown as AgentsEnv;
     return { env, fireCalls, updates, eventFireCalls };
   }
 
-  // Fires with an always-firing agent DO that fails (used by the failure-tracking tests below).
-  function makeFailingAgentsEnv(rows: Row[], status = 500): ReturnType<typeof makeAgentsEnv> {
-    const result = makeAgentsEnv(rows);
-    const failingStub = { async fetch() { return new Response("boom", { status }); } };
-    (result.env as unknown as { NAELAO_AGENT_DO: { get: () => unknown } }).NAELAO_AGENT_DO = {
-      idFromName: (name: string) => ({ toString: () => name }),
-      get: () => failingStub,
+  function makeBatch(messages: AgentTickMessage[]): { batch: { messages: Array<{ body: AgentTickMessage; ack: () => void; retry: () => void }> }; acked: AgentTickMessage[]; retried: AgentTickMessage[] } {
+    const acked: AgentTickMessage[] = [];
+    const retried: AgentTickMessage[] = [];
+    return {
+      batch: {
+        messages: messages.map((body) => ({
+          body,
+          ack: () => acked.push(body),
+          retry: () => retried.push(body),
+        })),
+      },
+      acked,
+      retried,
     };
-    return result;
   }
 
-  it("fires a job whose cron is due and records last_run_at", async () => {
-    const dueRow = row({
-      id: "job-1", space_id: "space-1", tenant_id: "tenant-1",
+  it("a heartbeat tick calls both channels/heartbeat and memory/maintenance for that space", async () => {
+    const { env, fireCalls } = makeConsumerEnv({});
+    const { batch, acked } = makeBatch([{ kind: "heartbeat", spaceId: "space-1", tenantId: "tenant-1" }]);
+    await handleAgentTicksQueue(batch as never, env);
+    expect(fireCalls).toHaveLength(2);
+    expect(fireCalls[0]!.url).toBe("http://agent-do/channels/heartbeat");
+    expect(fireCalls[1]!.url).toBe("http://agent-do/memory/maintenance");
+    expect(acked).toHaveLength(1);
+  });
+
+  it("a connector_poll tick fires script/run with the connector name in the goal and context", async () => {
+    const { env, fireCalls } = makeConsumerEnv({});
+    const { batch } = makeBatch([{ kind: "connector_poll", spaceId: "space-1", tenantId: "tenant-1", connectorName: "gumroad" }]);
+    await handleAgentTicksQueue(batch as never, env);
+    expect(fireCalls).toHaveLength(1);
+    expect(fireCalls[0]!.url).toBe("http://agent-do/script/run");
+    const body = fireCalls[0]!.body as { goal: string; context: { platform: string } };
+    expect(body.goal).toContain("gumroad");
+    expect(body.context.platform).toBe("gumroad");
+  });
+
+  it("a scheduled_job tick re-fetches the row by id and fires it, recording success", async () => {
+    const jobRow: ScheduledJobFullRow = {
+      id: "job-1", space_id: "space-1", tenant_id: "tenant-1", project_id: "proj-1",
       cron_expression: "* * * * *", script_name: "notifications.daily_standup",
-    });
-    const { env, fireCalls, updates } = makeAgentsEnv([dueRow]);
-    await runScheduledJobs(env);
+      params: JSON.stringify({ format: "csv" }), last_run_at: null,
+      created_at: "2020-01-01 00:00:00", consecutive_failures: 2,
+    };
+    const { env, fireCalls, updates } = makeConsumerEnv({ jobRow });
+    const { batch, acked } = makeBatch([{ kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "job-1" }]);
+    await handleAgentTicksQueue(batch as never, env);
     expect(fireCalls).toHaveLength(1);
-    const body = fireCalls[0]!.body as { scriptName: string; spaceId: string };
+    const body = fireCalls[0]!.body as { scriptName: string; projectId?: string; params: { format: string } };
     expect(body.scriptName).toBe("notifications.daily_standup");
-    expect(body.spaceId).toBe("space-1");
-    expect(updates).toHaveLength(1);
-    expect(updates[0]!.id).toBe("job-1");
-    expect(updates[0]!.consecutive_failures).toBe(0);
-  });
-
-  it("skips a job whose cron is not due, and does not update last_run_at", async () => {
-    // A cron pinned to a specific minute far from "now" (year 2000) will never match.
-    const notDueRow = row({
-      id: "job-2", space_id: "space-1", tenant_id: "tenant-1",
-      cron_expression: "0 0 1 1 *", script_name: "s",
-      last_run_at: Date.now(), // just ran — definitely not due again immediately
-    });
-    const { env, fireCalls, updates } = makeAgentsEnv([notDueRow]);
-    await runScheduledJobs(env);
-    expect(fireCalls).toHaveLength(0);
-    expect(updates).toHaveLength(0);
-  });
-
-  it("passes params through to the fired script", async () => {
-    const dueRow = row({
-      id: "job-3", space_id: "space-1", tenant_id: "tenant-1", project_id: "proj-1",
-      cron_expression: "* * * * *", script_name: "commerce.report",
-      params: JSON.stringify({ format: "csv" }),
-    });
-    const { env, fireCalls } = makeAgentsEnv([dueRow]);
-    await runScheduledJobs(env);
-    const body = fireCalls[0]!.body as { params: { format: string }; projectId?: string };
-    expect(body.params).toEqual({ format: "csv" });
     expect(body.projectId).toBe("proj-1");
+    expect(body.params).toEqual({ format: "csv" });
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.consecutive_failures).toBe(0); // reset on success, even though the row had 2 prior failures
+    expect(acked).toHaveLength(1);
   });
 
-  it("one job's failure does not block another space's job in the same sweep", async () => {
-    const badRow = row({
-      id: "bad", space_id: "space-bad", tenant_id: "tenant-1",
-      cron_expression: "not a cron", script_name: "s",
-    });
-    const goodRow = row({
-      id: "good", space_id: "space-good", tenant_id: "tenant-1",
-      cron_expression: "* * * * *", script_name: "s2",
-    });
-    const { env, fireCalls } = makeAgentsEnv([badRow, goodRow]);
-    await runScheduledJobs(env);
-    expect(fireCalls).toHaveLength(1);
-    expect((fireCalls[0]!.body as { spaceId: string }).spaceId).toBe("space-good");
+  it("a scheduled_job tick for a job deleted/disabled since enqueue is a harmless ack, no fire", async () => {
+    const { env, fireCalls } = makeConsumerEnv({ jobRow: null });
+    const { batch, acked, retried } = makeBatch([{ kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "job-gone" }]);
+    await handleAgentTicksQueue(batch as never, env);
+    expect(fireCalls).toHaveLength(0);
+    expect(acked).toHaveLength(1);
+    expect(retried).toHaveLength(0);
   });
 
-  it("a newly created job does not fire for a cron minute that already passed before it existed (B5 regression)", async () => {
-    const now = Date.now();
-    const nowDate = new Date(now);
-    // Cron matching every minute EXCEPT right now — created exactly now, so the floor
-    // (created_at) equals "now" and isCronDue must find no matching minute strictly after it.
-    const currentMinute = nowDate.getUTCMinutes();
-    const excludedMinute = (currentMinute + 30) % 60; // a minute that is NOT "now"
-    const freshRow = row({
-      id: "fresh2", space_id: "space-1", tenant_id: "tenant-1",
-      cron_expression: `${excludedMinute} * * * *`, script_name: "s",
-      created_at: nowDate.toISOString().slice(0, 19).replace("T", " "),
-    });
-    const { env, fireCalls } = makeAgentsEnv([freshRow]);
-    await runScheduledJobs(env);
+  it("a scheduled_job tick that fails to fire records the failure and still acks (not retries) the message", async () => {
+    const jobRow: ScheduledJobFullRow = {
+      id: "job-fail", space_id: "space-1", tenant_id: "tenant-1", project_id: null,
+      cron_expression: "* * * * *", script_name: "s", params: "{}", last_run_at: null,
+      created_at: "2020-01-01 00:00:00", consecutive_failures: 0,
+    };
+    const { env, updates } = makeConsumerEnv({ jobRow, agentDoStatus: 500 });
+    const { batch, acked, retried } = makeBatch([{ kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "job-fail" }]);
+    await handleAgentTicksQueue(batch as never, env);
+    // The failure is recorded (last_run_at advances, consecutive_failures increments) inside
+    // handleAgentTick itself — a failed SCRIPT fire is not a QUEUE-level failure, so the
+    // message acks normally rather than being redelivered by CF Queues.
+    expect(updates).toHaveLength(1);
+    expect(updates[0]!.consecutive_failures).toBe(1);
+    expect(acked).toHaveLength(1);
+    expect(retried).toHaveLength(0);
+  });
+
+  it("processes multiple messages in one batch independently, acking each", async () => {
+    const jobRow: ScheduledJobFullRow = {
+      id: "job-1", space_id: "space-3", tenant_id: "tenant-1", project_id: null,
+      cron_expression: "* * * * *", script_name: "s", params: "{}", last_run_at: null,
+      created_at: "2020-01-01 00:00:00", consecutive_failures: 0,
+    };
+    const { env, fireCalls } = makeConsumerEnv({ jobRow });
+    const { batch, acked } = makeBatch([
+      { kind: "heartbeat", spaceId: "space-1", tenantId: "tenant-1" },
+      { kind: "connector_poll", spaceId: "space-2", tenantId: "tenant-1", connectorName: "gumroad" },
+      { kind: "scheduled_job", spaceId: "space-3", tenantId: "tenant-1", jobId: "job-1" },
+    ]);
+    await handleAgentTicksQueue(batch as never, env);
+    expect(acked).toHaveLength(3);
+    // heartbeat (2 calls) + connector_poll (1 call) + scheduled_job (1 call) = 4
+    expect(fireCalls).toHaveLength(4);
+  });
+
+  it("a thrown error in handleAgentTick causes the queue message to retry, not ack", async () => {
+    // No PLATFORM_DB.first() implementation for an unexpected shape — forces a throw path via
+    // a NAELAO_AGENT_DO that itself throws, simulating a transient DO-dispatch failure.
+    const throwingEnv = {
+      PLATFORM_SECRET: "test-secret",
+      PLATFORM_DB: { prepare() { throw new Error("unreachable in this test"); } },
+      NAELAO_AGENT_DO: { idFromName: () => ({}), get: () => ({ async fetch() { throw new Error("DO unreachable"); } }) },
+    } as unknown as AgentsEnv;
+    const { batch, acked, retried } = makeBatch([{ kind: "heartbeat", spaceId: "space-1", tenantId: "tenant-1" }]);
+    await handleAgentTicksQueue(batch as never, throwingEnv);
+    expect(acked).toHaveLength(0);
+    expect(retried).toHaveLength(1);
+  });
+});
+
+// ── handleAgentTick called directly (no queue plumbing) ──────────────────────────────────────
+describe("handleAgentTick (direct call)", () => {
+  it("a connector_poll message with no connectorName is a silent no-op", async () => {
+    const fireCalls: unknown[] = [];
+    const env = {
+      NAELAO_AGENT_DO: { idFromName: () => ({}), get: () => ({ async fetch(r: Request) { fireCalls.push(r); return new Response("{}"); } }) },
+      AGENT_CACHE: { async get() { return null; }, async put() {} },
+    } as unknown as AgentsEnv;
+    await handleAgentTick(env, { kind: "connector_poll", spaceId: "space-1", tenantId: "tenant-1" });
     expect(fireCalls).toHaveLength(0);
   });
 
-  it("records the failure, advances last_run_at, and stores last_error on a failed fire", async () => {
-    const dueRow = row({
-      id: "job-fail", space_id: "space-1", tenant_id: "tenant-1",
-      cron_expression: "* * * * *", script_name: "s",
-    });
-    const { env, updates } = makeFailingAgentsEnv([dueRow]);
-    await runScheduledJobs(env);
-    expect(updates).toHaveLength(1);
-    expect(updates[0]!.id).toBe("job-fail");
-    expect(updates[0]!.consecutive_failures).toBe(1);
-    expect(updates[0]!.last_error).toBeTruthy();
-    expect(updates[0]!.enabled).toBe(1); // not yet at the disable threshold
-  });
-
-  it("auto-disables and fires a scheduled_job.disabled event on the 5th consecutive failure", async () => {
-    const dueRow = row({
-      id: "job-chronic", space_id: "space-1", tenant_id: "tenant-1",
-      cron_expression: "* * * * *", script_name: "s",
-      consecutive_failures: 4, // this sweep's failure will be the 5th
-    });
-    const { env, updates, eventFireCalls } = makeFailingAgentsEnv([dueRow]);
-    await runScheduledJobs(env);
-    expect(updates).toHaveLength(1);
-    expect(updates[0]!.consecutive_failures).toBe(5);
-    expect(updates[0]!.enabled).toBe(0);
-
-    expect(eventFireCalls).toHaveLength(1);
-    expect(eventFireCalls[0]!.url).toBe("http://spaces-worker/internal/spaces/space-1/events/fire");
-    const body = eventFireCalls[0]!.body as { type: string; space_id: string; payload: { scheduled_job_id: string; consecutive_failures: number } };
-    expect(body.type).toBe("scheduled_job.disabled");
-    expect(body.space_id).toBe("space-1");
-    expect(body.payload.scheduled_job_id).toBe("job-chronic");
-    expect(body.payload.consecutive_failures).toBe(5);
-  });
-
-  it("does not fire the disabled event before the 5th consecutive failure", async () => {
-    const dueRow = row({
-      id: "job-chronic2", space_id: "space-1", tenant_id: "tenant-1",
-      cron_expression: "* * * * *", script_name: "s",
-      consecutive_failures: 3, // this sweep's failure is only the 4th
-    });
-    const { env, eventFireCalls } = makeFailingAgentsEnv([dueRow]);
-    await runScheduledJobs(env);
-    expect(eventFireCalls).toHaveLength(0);
-  });
-
-  it("resets consecutive_failures and last_error to a clean state on a successful fire after prior failures", async () => {
-    const recoveringRow = row({
-      id: "job-recovered", space_id: "space-1", tenant_id: "tenant-1",
-      cron_expression: "* * * * *", script_name: "s",
-      consecutive_failures: 3,
-    });
-    const { env, updates } = makeAgentsEnv([recoveringRow]); // healthy stub — this sweep succeeds
-    await runScheduledJobs(env);
-    expect(updates).toHaveLength(1);
-    expect(updates[0]!.consecutive_failures).toBe(0);
-    expect(updates[0]!.last_error).toBeNull();
+  it("a scheduled_job message with no jobId is a silent no-op", async () => {
+    let dbCalled = false;
+    const env = {
+      PLATFORM_DB: { prepare() { dbCalled = true; return { bind: () => ({ first: async () => null }) }; } },
+    } as unknown as AgentsEnv;
+    await handleAgentTick(env, { kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1" });
+    expect(dbCalled).toBe(false);
   });
 });

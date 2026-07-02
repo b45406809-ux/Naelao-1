@@ -8,7 +8,7 @@ import {
 } from "@naelao/events";
 
 // Time-based scheduling (spec §05 cron-jobs.json) — the lightweight 5-field cron matcher used
-// by scheduled_jobs (workers/spaces) + runScheduledJobs (workers/agents hourly dispatcher).
+// by scheduled_jobs (workers/spaces) + enqueueAgentTicks (workers/agents hourly dispatcher).
 
 describe("parseCronExpression / cronMatchesDate", () => {
   it("matches a daily schedule ('0 8 * * *') exactly at 08:00 UTC and nowhere else", () => {

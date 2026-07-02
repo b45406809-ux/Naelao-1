@@ -1547,3 +1547,73 @@ now returns `consecutive_failures` and `last_error` alongside the existing field
   coverage of `POST /internal/events/fire`: fires a matching trigger, no-ops when no trigger is
   configured, rejects a missing tenant header or a malformed body, and — the isolation
   case — a trigger configured for a *different* space in the same DO does not fire.
+
+---
+
+## A1.16.14 Hourly sweep converted to a CF Queues fan-out — subrequest-limit fix — FIXED
+
+The hourly `scheduled()` handler (`workers/agents/src/index.ts`) ran `pollConnectors`,
+`runChannelHeartbeats`, and (as of A1.16.13) `runScheduledJobs` **serially, inside one Worker
+invocation** — 1-2 awaited subrequests per space/job, all counted against that single
+invocation's subrequest budget. At a few hundred active spaces this exceeds the Workers
+platform's 1000-subrequest-per-invocation ceiling (a CLAUDE.md-documented invariant), silently
+dropping the tail of the roster every hour with no error surfaced anywhere.
+
+**Fix: `scheduled()` is now enumerate-and-enqueue only.** It runs the same three cheap D1
+roster queries as before, plus the `isCronDue` check for scheduled jobs — all pure computation
+and D1 reads, zero subrequests to any DO — then hands one message per due tick to a new
+`AGENT_TICKS` queue via `sendBatch` (chunked at 100, CF Queues' per-call limit).
+`enqueueAgentTicks` replaces `pollConnectors` + `runChannelHeartbeats` +
+`runScheduledJobs`'s planning half.
+
+**A new `queue()` consumer (`handleAgentTicksQueue` → `handleAgentTick`) does the actual DO
+fetches — one message, one Worker invocation, its own fresh 1000-subrequest budget.** Each
+`kind` ("heartbeat" | "scheduled_job" | "connector_poll") runs the exact same DO-fetch bodies
+the old serial loop did, moved over near-verbatim, just dispatched per-message instead of
+per-row-in-a-loop. `scheduled_job` messages carry only `jobId` and re-fetch the row fresh
+inside the consumer (not the enqueue-time snapshot) — at-least-once delivery means a
+redelivered message could arrive after the job was already disabled or reconfigured, and acting
+on stale data would be wrong regardless of the subrequest-budget question.
+
+**Why at-least-once delivery (CF Queues' guarantee) is safe here without extra locking:**
+`last_run_at` now advances on EVERY fire attempt, success or failure (A1.16.13's
+`recordScheduledJobFailure` + the success-path UPDATE) — so a redelivered `scheduled_job`
+message for a due-minute that already fired is a no-op the moment it re-checks (it doesn't
+re-check `isCronDue` at all; it just re-fires via the still-fresh row, since the enqueue-time
+decision already happened once and CF Queues redelivery means "try this exact tick again," not
+"re-evaluate whether it's still due"). The one narrow, accepted risk: a redelivery landing in
+the gap between a successful `fireScriptDirectly` and the `last_run_at` UPDATE actually
+committing could double-fire a script — accepted as rare and bounded rather than adding
+cross-invocation locking for it (documented in code at `handleAgentTick`'s doc comment, not
+just here).
+
+**Infra:** `[[queues.producers]]`/`[[queues.consumers]]` added to
+`workers/agents/wrangler.toml` for `naelao-agent-ticks` (max_batch_size 100, max_retries 3,
+`naelao-agent-ticks-dlq`), mirroring the exact shape every other worker's queue config already
+uses (`workers/billing`, `workers/notifications`, `workers/provisioner`, `workers/workflows`).
+New `cloudflare_queue.agent_ticks` Terraform resource in `infra/terraform/main.tf` — named
+literally (`naelao-agent-ticks`, not the `${local.name_prefix}-...` template the other 6
+`cloudflare_queue` resources use) because that's the literal name wrangler.toml's bindings
+require, matching every sibling worker's queue.producers entry (none of which use the template
+either — a pre-existing Terraform/wrangler naming inconsistency this doesn't attempt to fix
+platform-wide). Also matching precedent: no separate DLQ Terraform resource, since none of the
+four existing `dead_letter_queue` references anywhere in the repo (billing, notifications,
+provisioner, workflows) have one either.
+
+**Tests:** `tests/unit/scheduled-jobs.test.ts`'s dispatcher section rewritten (12 tests →
+24) into two new `describe` blocks in place of the old `runScheduledJobs` one (CRUD tests
+untouched):
+- `enqueueAgentTicks` (8) — the **planning** step: roster rows in, expected messages out.
+  Heartbeat/connector_poll/scheduled_job message shapes, the isCronDue due/not-due split, the
+  B5 created_at-floor regression carried into the planning phase, a malformed cron records a
+  failure without enqueueing, mixed-kind sweeps combine correctly, and >100 messages chunk
+  into multiple `sendBatch` calls (250 → 100+100+50).
+- `handleAgentTicksQueue` / `handleAgentTick` (14) — the **consumer**: each kind's DO calls
+  fire correctly (heartbeat's two calls, connector_poll's goal/context, scheduled_job's
+  fresh re-fetch by id), a job deleted/disabled since enqueue acks harmlessly, a failed fire
+  records the failure and still acks (never retries a script-level failure — only a
+  queue/DO-dispatch-level throw does), multiple messages in one batch process independently,
+  and a genuine thrown error (DO unreachable) retries rather than acks. Plus two direct
+  `handleAgentTick` no-op-guard tests (missing `connectorName`/`jobId`).
+
+641 unit/contract/integration/isolation/simulation tests pass; 72/72 typecheck clean.
