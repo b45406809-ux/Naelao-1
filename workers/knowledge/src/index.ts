@@ -54,6 +54,19 @@ function requireTenant(c: { req: { header: (h: string) => string | undefined } }
   return tenantId;
 }
 
+// F8: every kb/documents/* route already scopes its SQL by `WHERE space_id = ? AND tenant_id
+// = ?`, so a foreign spaceId just matches zero rows there. kb/search has no such scoping — it
+// filters Vectorize by space_id alone — so a caller who merely knows/guesses another tenant's
+// spaceId could search that tenant's KB. Verify the space is actually owned by the requesting
+// tenant before running the (otherwise unscoped) Vectorize query.
+async function verifySpaceOwnership(db: D1Database, spaceId: string, tenantId: string): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT 1 FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'")
+    .bind(spaceId, tenantId)
+    .first();
+  return row !== null;
+}
+
 // ── G-BD01: KB content sanitization — strip HTML/XML and scan for injection ───
 
 // Patterns that commonly signal prompt injection attempts in KB content
@@ -521,6 +534,9 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   if (!query || query.trim().length === 0) {
     throw badRequest("q parameter is required");
   }
+
+  const owned = await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId);
+  if (!owned) throw notFound("Space not found");
 
   // ── Semantic cache ────────────────────────────────────────────────────────
   const cacheHash = await sha256Hex(query + spaceId);
