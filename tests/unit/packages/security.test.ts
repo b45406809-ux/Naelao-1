@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   detectSqlInjection,
   detectXss,
@@ -13,6 +13,7 @@ import {
   generateCsrfToken,
   verifyCsrfToken,
 } from "@naelao/security";
+import { checkSsrf } from "@naelao/security";
 
 const TEST_SECRET = "csrf-test-secret-123";
 
@@ -155,5 +156,55 @@ describe("generateCsrfToken / verifyCsrfToken", () => {
     // Use 1ms max age — should be expired immediately
     await new Promise((r) => setTimeout(r, 5));
     expect(await verifyCsrfToken(token, "session123", TEST_SECRET, 1)).toBe(false);
+  });
+});
+
+// F10/F13: shared SSRF guard used by the browser worker (Tier 4 navigate) and mirrored inline
+// in the script-engine isolate harness (Tier 2/3/4, which can't import this package directly).
+describe("checkSsrf", () => {
+  it("blocks a literal loopback/link-local/private host without needing DNS resolution", async () => {
+    for (const url of ["http://127.0.0.1/", "http://localhost/", "http://169.254.169.254/latest/meta-data", "http://10.0.0.5/", "http://192.168.1.1/", "http://internal-svc.internal/"]) {
+      const result = await checkSsrf(url, { resolveDns: false });
+      expect(result.blocked).toBe(true);
+    }
+  });
+
+  it("blocks a non-http(s) protocol", async () => {
+    const result = await checkSsrf("file:///etc/passwd", { resolveDns: false });
+    expect(result.blocked).toBe(true);
+  });
+
+  it("allows a public https URL when the literal hostname isn't blocked", async () => {
+    const result = await checkSsrf("https://example.com/page", { resolveDns: false });
+    expect(result.blocked).toBe(false);
+  });
+
+  it("blocks a hostname that DNS-rebinds to a blocked address (the F13 gap)", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const type = new URL(url).searchParams.get("type");
+      if (type === "A") {
+        return new Response(JSON.stringify({ Answer: [{ data: "169.254.169.254" }] }));
+      }
+      return new Response(JSON.stringify({ Answer: [] }));
+    }) as unknown as typeof fetch;
+
+    const result = await checkSsrf("https://evil-rebind.example/", { fetchImpl });
+    expect(result.blocked).toBe(true);
+    expect(result.reason).toContain("resolves to a blocked address");
+  });
+
+  it("allows a hostname that resolves only to public addresses", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const type = new URL(url).searchParams.get("type");
+      if (type === "A") {
+        return new Response(JSON.stringify({ Answer: [{ data: "93.184.216.34" }] }));
+      }
+      return new Response(JSON.stringify({ Answer: [] }));
+    }) as unknown as typeof fetch;
+
+    const result = await checkSsrf("https://example.com/", { fetchImpl });
+    expect(result.blocked).toBe(false);
   });
 });

@@ -77,14 +77,51 @@ function extractBarePackageImports(code: string): string[] {
   return [...specs];
 }
 
-/** Builds the single-file isolate module: user code + a fetch() harness appended. */
+// F10: the isolate previously handed scripts a raw, unguarded `fetch` — any Tier 2/3/4
+// script could reach internal-only addresses (e.g. 169.254.169.254) with no SSRF check at
+// all. This module runs as standalone JS text inside a CF Worker Loader isolate (no bundler,
+// no imports beyond what's in `modules`), so the guard can't be pulled in from
+// @naelao/security — it's inlined here and kept in sync with that package's logic by hand.
+// `globalThis.fetch` is overridden (not just `ctx.fetch`) so a script that calls bare
+// `fetch(...)` directly — bypassing the `ctx` convention — is still guarded.
+const SSRF_GUARD_PRELUDE = `
+const __realFetch = fetch;
+const __SSRF_BLOCKED_RE = [/^localhost$/i, /^127\\./, /^0\\.0\\.0\\.0$/, /^::1$/, /^169\\.254\\./, /^10\\./, /^172\\.(1[6-9]|2\\d|3[01])\\./, /^192\\.168\\./, /^100\\.(6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\./, /^fc00:/i, /^fd00:/i, /^fe80:/i, /^0\\./];
+function __isBlockedHost(h) {
+  return __SSRF_BLOCKED_RE.some((re) => re.test(h)) || h.endsWith(".internal") || h.endsWith(".local") || h.endsWith(".localhost");
+}
+async function __resolveIps(hostname) {
+  try {
+    const q = (type) => __realFetch("https://cloudflare-dns.com/dns-query?name=" + encodeURIComponent(hostname) + "&type=" + type, { headers: { accept: "application/dns-json" } }).then((r) => r.ok ? r.json() : null).catch(() => null);
+    const [a, aaaa] = await Promise.all([q("A"), q("AAAA")]);
+    const answers = [...((a && a.Answer) || []), ...((aaaa && aaaa.Answer) || [])];
+    return answers.map((x) => x.data).filter(Boolean);
+  } catch { return []; }
+}
+async function __ssrfGuardedFetch(...args) {
+  const req = args[0];
+  const rawUrl = typeof req === "string" ? req : (req && req.url) || "";
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch { throw new Error("ssrf_blocked: invalid URL"); }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error("ssrf_blocked: protocol " + parsed.protocol + " not allowed");
+  const hostname = parsed.hostname.toLowerCase();
+  if (__isBlockedHost(hostname)) throw new Error("ssrf_blocked: host " + hostname + " not allowed");
+  const resolved = await __resolveIps(hostname);
+  if (resolved.some(__isBlockedHost)) throw new Error("ssrf_blocked: host " + hostname + " resolves to a blocked address");
+  return __realFetch(...args);
+}
+globalThis.fetch = __ssrfGuardedFetch;
+`;
+
+/** Builds the single-file isolate module: SSRF guard prelude + user code + a fetch() harness. */
 function buildIsolateModule(userCode: string): string {
-  return `${userCode}
+  return `${SSRF_GUARD_PRELUDE}
+${userCode}
 
 export default {
   async fetch(request, env) {
     const { args } = await request.json();
-    const ctx = { fetch: (...a) => fetch(...a) };
+    const ctx = { fetch: (...a) => __ssrfGuardedFetch(...a) };
     if (env.__BROWSER__) {
       ctx.browser = {
         navigate: async (req) => {

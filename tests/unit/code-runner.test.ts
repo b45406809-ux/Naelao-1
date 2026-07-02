@@ -80,6 +80,50 @@ describe("code-runner — Tier 2/3 isolate execution", () => {
   });
 });
 
+describe("code-runner — F10 SSRF guard inside the isolate", () => {
+  it("blocks ctx.fetch to a literal link-local/metadata address", async () => {
+    const runner = buildCodeRunner({ loader: fakeLoader() });
+    const result = await runner.run({
+      name: "ssrf-attempt",
+      code: `export async function run(args, ctx) { await ctx.fetch("http://169.254.169.254/latest/meta-data"); return "unreachable"; }`,
+      tier: 2,
+      args: {},
+      spaceId: "space1",
+      agentId: "agent1",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("ssrf_blocked");
+  });
+
+  it("also blocks a bare fetch() call (not just ctx.fetch) — global fetch is overridden too", async () => {
+    const runner = buildCodeRunner({ loader: fakeLoader() });
+    const result = await runner.run({
+      name: "ssrf-attempt-bare",
+      code: `export async function run(args, ctx) { await fetch("http://10.0.0.5/"); return "unreachable"; }`,
+      tier: 2,
+      args: {},
+      spaceId: "space1",
+      agentId: "agent1",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("ssrf_blocked");
+  });
+
+  it("blocks a non-http(s) protocol", async () => {
+    const runner = buildCodeRunner({ loader: fakeLoader() });
+    const result = await runner.run({
+      name: "ssrf-file-protocol",
+      code: `export async function run(args, ctx) { await ctx.fetch("file:///etc/passwd"); return "unreachable"; }`,
+      tier: 2,
+      args: {},
+      spaceId: "space1",
+      agentId: "agent1",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("ssrf_blocked");
+  });
+});
+
 describe("code-runner — Tier 4 browser capability injection", () => {
   it("injects ctx.browser.navigate proxied to the BROWSER_WORKER binding", async () => {
     const navigateSpy = vi.fn().mockResolvedValue(

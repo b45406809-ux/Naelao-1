@@ -667,6 +667,9 @@ importers:
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
+      '@naelao/security':
+        specifier: workspace:*
+        version: link:../../packages/security
       '@naelao/types':
         specifier: workspace:*
         version: link:../../packages/types

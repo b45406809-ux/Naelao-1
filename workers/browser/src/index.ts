@@ -1,6 +1,7 @@
 // G-BR01..G-BR05: CF Browser Rendering worker — SSRF-safe web navigation for agents
 import { Hono } from "hono";
 import { errorResponse, requestId } from "@naelao/http";
+import { checkSsrf } from "@naelao/security";
 
 interface Env {
   ENVIRONMENT: string;
@@ -41,43 +42,6 @@ function validateEnv(env: Env): void {
   if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
 }
 
-// SSRF protection — block private/internal IP ranges and localhost
-const BLOCKED_HOSTS = [
-  /^localhost$/i,
-  /^127\./,
-  /^0\.0\.0\.0$/,
-  /^::1$/,
-  /^169\.254\./,
-  /^10\./,
-  /^172\.(1[6-9]|2\d|3[01])\./,
-  /^192\.168\./,
-  /^fc00:/i,
-  /^fe80:/i,
-  /^0\./,
-];
-
-function isSsrfBlocked(rawUrl: string): { blocked: boolean; reason?: string } {
-  let parsed: URL;
-  try {
-    parsed = new URL(rawUrl);
-  } catch {
-    return { blocked: true, reason: "Invalid URL" };
-  }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    return { blocked: true, reason: `Protocol not allowed: ${parsed.protocol}` };
-  }
-  const hostname = parsed.hostname.toLowerCase();
-  for (const pattern of BLOCKED_HOSTS) {
-    if (pattern.test(hostname)) {
-      return { blocked: true, reason: `Blocked host: ${hostname}` };
-    }
-  }
-  if (hostname.endsWith(".internal") || hostname.endsWith(".local") || hostname.endsWith(".localhost")) {
-    return { blocked: true, reason: `Blocked internal domain: ${hostname}` };
-  }
-  return { blocked: false };
-}
-
 const app = new Hono<{ Bindings: Env }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
@@ -95,7 +59,9 @@ app.post("/v1/browser/navigate", async (c) => {
   const body = await c.req.json<NavigateRequest>();
   if (!body.url) return c.json({ error_code: "bad_request", message: "url required" }, 400);
 
-  const ssrf = isSsrfBlocked(body.url);
+  // F13: literal-only blocklist missed DNS rebinding (a hostname registered to resolve to
+  // 169.254.169.254 etc.) — checkSsrf resolves the hostname via DoH and checks resolved IPs too.
+  const ssrf = await checkSsrf(body.url);
   if (ssrf.blocked) {
     return c.json({ error_code: "forbidden", message: `SSRF blocked: ${ssrf.reason}` }, 403);
   }
