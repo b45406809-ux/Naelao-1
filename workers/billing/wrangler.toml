@@ -1,0 +1,64 @@
+name = "naelao-billing"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "REPLACE_WITH_DB_ID"
+
+[[kv_namespaces]]
+binding = "QUOTA_CACHE"
+id = "REPLACE_WITH_KV_ID"
+
+[[queues.producers]]
+binding = "BILLING_EVENTS"
+queue = "naelao-billing-events"
+
+[[queues.consumers]]
+queue = "naelao-billing-events"
+max_batch_size = 100
+max_batch_timeout = 5
+max_retries = 3
+max_concurrency = 50
+dead_letter_queue = "naelao-billing-events-dlq"
+
+# Primary billing: Lemon Squeezy webhook dispatcher → wakes NaelaoAgentDO
+# Set LEMON_SQUEEZY_WEBHOOK_SECRET and LEMON_SQUEEZY_API_KEY via wrangler secret put
+# Also set PLATFORM_SECRET (shared with every other worker) — required to call spaces
+# worker's internal routes directly (mintInternalToken, @naelao/http).
+[[services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+# Seat purchases activate the member in SpaceDO via the spaces worker.
+[[services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+[vars]
+ENVIRONMENT = "development"
+STRIPE_PUBLISHABLE_KEY = ""
+
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
+
+[[env.staging.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+[[env.staging.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+[[env.production.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+[[env.production.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"

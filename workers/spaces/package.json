@@ -1,0 +1,25 @@
+{
+  "name": "naelao-spaces",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@naelao/crypto": "workspace:*",
+    "@naelao/db": "workspace:*",
+    "@naelao/events": "workspace:*",
+    "@naelao/http": "workspace:*",
+    "@naelao/types": "workspace:*",
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "typescript": "*",
+    "@cloudflare/workers-types": "*",
+    "wrangler": "*",
+    "vitest": "*",
+    "@cloudflare/vitest-pool-workers": "*"
+  }
+}

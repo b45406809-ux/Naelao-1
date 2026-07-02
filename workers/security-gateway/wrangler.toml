@@ -1,0 +1,35 @@
+name = "naelao-security-gateway"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# B1 fix: this worker must never be reachable directly — naelao-router is the only public
+# API surface. Identity headers (x-naelao-tenant-id/role/user-id) are trusted as-is by
+# downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
+workers_dev = false
+
+[[durable_objects.bindings]]
+name = "RATE_LIMITER"
+class_name = "RateLimiterDO"
+script_name = "naelao-security-gateway"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RateLimiterDO"]
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "REPLACE_WITH_DB_ID"
+
+[vars]
+ENVIRONMENT = "development"
+RATE_LIMIT_GLOBAL = "1000"
+RATE_LIMIT_AUTH = "10"
+RATE_LIMIT_TENANT = "500"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
+
+[env.production]
+vars = { ENVIRONMENT = "production" }

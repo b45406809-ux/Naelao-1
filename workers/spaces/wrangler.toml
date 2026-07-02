@@ -1,0 +1,113 @@
+name = "naelao-spaces"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# B1 fix: this worker must never be reachable directly — naelao-router is the only public
+# API surface. Identity headers (x-naelao-tenant-id/role/user-id) are trusted as-is by
+# downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
+workers_dev = false
+
+[vars]
+ENVIRONMENT = "development"
+
+# Cloudflare for SaaS custom-hostname provisioning (storefront custom domains).
+# Set the real values at deploy time as secrets:
+#   wrangler secret put CF_API_TOKEN      (zone-scoped: SSL and Certificates: Edit)
+#   wrangler secret put CF_SAAS_ZONE_ID   (the naelao.com SaaS zone id)
+# When unset, custom-domain requests are recorded as pending_dns (no live API call).
+
+[[durable_objects.bindings]]
+name = "SPACE_DO"
+class_name = "SpaceDO"
+
+[[durable_objects.bindings]]
+name = "LOCK_DO"
+class_name = "LockDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["SpaceDO"]
+
+[[durable_objects.bindings]]
+name = "FEATURE_FLAG_DO"
+class_name = "FeatureFlagDO"
+
+[[durable_objects.bindings]]
+name = "TRANSACTION_COORDINATOR_DO"
+class_name = "TransactionCoordinatorDO"
+
+# SpaceTypeRegistryDO — global singleton, one instance for the whole platform.
+# Space Types are exclusively authored by Naelao (spec §62 / CLAUDE.md #7).
+[[durable_objects.bindings]]
+name = "SPACE_TYPE_REGISTRY_DO"
+class_name = "SpaceTypeRegistryDO"
+
+[[migrations]]
+tag = "v2"
+new_classes = ["LockDO"]
+
+[[migrations]]
+tag = "v3"
+new_classes = ["FeatureFlagDO"]
+
+[[migrations]]
+tag = "v4"
+new_classes = ["TransactionCoordinatorDO"]
+
+[[migrations]]
+tag = "v5"
+new_classes = ["SpaceTypeRegistryDO"]
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "PLACEHOLDER_D1_ID"
+
+[[r2_buckets]]
+binding = "EXPORTS_BUCKET"
+bucket_name = "naelao-exports"
+
+# KV for caching SpaceType manifests (TTL 1h — provisioner reads this before hitting the DO)
+[[kv_namespaces]]
+binding = "NAELAO_CONFIG_KV"
+id = "REPLACE_WITH_KV_ID"
+
+# Producer to the provisioning queue — on space creation we enqueue a space_provision
+# message; naelao-provisioner consumes it and installs the SpaceType's agents.
+[[queues.producers]]
+binding = "PROVISION_QUEUE"
+queue = "naelao-provisioning-queue"
+
+# Billing worker — called at product publish time to auto-create LS product + variant.
+[[services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
+# Agents worker — SpaceDO fires event_triggers (thread.created, project.created, ...) by
+# calling into this internal route; the fired action is always just script.run (@naelao/events).
+[[services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
+
+[[env.staging.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
+[[env.staging.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+[[env.production.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
+[[env.production.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"

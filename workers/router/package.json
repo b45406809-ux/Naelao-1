@@ -1,0 +1,26 @@
+{
+  "name": "naelao-router",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy:staging": "wrangler deploy --env staging",
+    "deploy:production": "wrangler deploy --env production",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@naelao/auth": "workspace:*",
+    "@naelao/crypto": "workspace:*",
+    "@naelao/http": "workspace:*",
+    "@naelao/types": "workspace:*",
+    "hono": "^4.6.14"
+  },
+  "devDependencies": {
+    "typescript": "*",
+    "@cloudflare/workers-types": "*",
+    "wrangler": "*",
+    "vitest": "*",
+    "@cloudflare/vitest-pool-workers": "*"
+  }
+}

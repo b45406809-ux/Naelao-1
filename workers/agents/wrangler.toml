@@ -1,0 +1,235 @@
+name = "naelao-agents"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[[durable_objects.bindings]]
+name = "NAELAO_AGENT_DO"
+class_name = "NaelaoAgentDO"
+
+[[durable_objects.bindings]]
+name = "HITL_APPROVAL_DO"
+class_name = "HITLApprovalDO"
+
+[[durable_objects.bindings]]
+name = "TASK_DO"
+class_name = "TaskDO"
+
+[[durable_objects.bindings]]
+name = "PRODUCT_DO"
+class_name = "ProductDO"
+
+[[durable_objects.bindings]]
+name = "BUSINESS_DO"
+class_name = "BusinessDO"
+
+[[durable_objects.bindings]]
+name = "TOOL_SANDBOX"
+class_name = "ToolSandboxDO"
+
+# Account-level concurrency ceiling (spec §28 "ConcurrencyDO") — gates simultaneous sub-agent
+# spawn trees per (spaceId, holder). See buildOrchestrationHooks' spawnSubAgent in NaelaoAgentDO.
+[[durable_objects.bindings]]
+name = "CONCURRENCY_DO"
+class_name = "ConcurrencyDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["NaelaoAgentDO"]
+
+[[migrations]]
+tag = "v2"
+new_classes = ["HITLApprovalDO"]
+
+[[migrations]]
+tag = "v3"
+new_classes = ["TaskDO"]
+
+[[migrations]]
+tag = "v4"
+new_classes = ["ProductDO", "BusinessDO"]
+
+[[migrations]]
+tag = "v5"
+new_classes = ["ToolSandboxDO"]
+
+[[migrations]]
+tag = "v6"
+new_classes = ["ConcurrencyDO"]
+
+[[r2_buckets]]
+binding = "BUSINESS_R2"
+bucket_name = "naelao-business-scripts"
+
+# Tier-5 micro-tool build/test compute (WG-01). A Cloudflare Container attached to
+# ToolSandboxDO — the agent spins it up on demand to build + test the micro-tool's
+# code (Node, and Python for scripts that need it), and it sleeps when idle.
+[[containers]]
+class_name = "ToolSandboxDO"
+image = "./Dockerfile.toolsandbox"
+max_instances = 5
+# instance_type = "basic"   # bump for heavier build/test workloads
+
+# Script-first engine (authoritative agent model; spec appendix ~6672k):
+# skill library + agent 4-file config + agent workspace, all keyed by space.
+# Layout: spaces/{spaceId}/scripts/..., spaces/{spaceId}/agents/..., spaces/{spaceId}/workspace/...
+[[r2_buckets]]
+binding = "SCRIPTS_R2"
+bucket_name = "naelao-agent-scripts"
+
+# Vectorize index for script.find semantic search (spec §16). Optional — the engine
+# degrades to a tag/text scan when absent.
+[[vectorize]]
+binding = "SCRIPTS_VECTORIZE"
+index_name = "naelao-agent-scripts"
+
+# Vectorize index for the Memory OS semantic layer (episodic facts promoted to long-term
+# semantic memory, queried by embedding + user_id filter). Separate vector space/lifecycle
+# from the skill-library index above.
+[[vectorize]]
+binding = "MEMORY_VECTORIZE"
+index_name = "naelao-agent-memory"
+
+# CF Worker Loader (beta) — dynamically spins up a fresh V8 isolate per script.run call for
+# execution Tiers 2-4 (script-engine/code-runner.ts). Not yet in @cloudflare/workers-types;
+# typed locally there. Optional — Tiers 2-4 degrade to "unavailable" without it (Tier 1 R2
+# ops always work; Tier 5 container is unaffected).
+[[worker_loaders]]
+binding = "LOADER"
+
+[[workflows]]
+name = "AgentTaskWorkflow"
+class_name = "AgentTaskWorkflow"
+binding = "AGENT_TASK_WORKFLOW"
+
+[[kv_namespaces]]
+binding = "AGENT_CACHE"
+id = "REPLACE_WITH_KV_ID"
+
+[[analytics_engine_datasets]]
+binding = "ANALYTICS"
+dataset = "naelao_agent_events"
+
+# Hourly "agent tick" fan-out (heartbeats, connector polls, scheduled jobs) — see
+# enqueueAgentTicks/handleAgentTicksQueue in src/index.ts. scheduled() only does the cheap D1
+# roster + isCronDue queries (no subrequests); each due tick becomes one queue message,
+# processed by the queue() consumer. Without this, the old serial in-invocation loop broke the
+# Workers 1000-subrequest limit at a few hundred active spaces.
+[[queues.producers]]
+binding = "AGENT_TICKS"
+queue = "naelao-agent-ticks"
+
+[[queues.consumers]]
+queue = "naelao-agent-ticks"
+max_batch_size = 100
+max_batch_timeout = 5
+max_retries = 3
+max_concurrency = 50
+dead_letter_queue = "naelao-agent-ticks-dlq"
+
+[triggers]
+# 02:00 daily → nightly business cycle; hourly → poll webhook-less connectors (e.g. Gumroad)
+# + drain each space's channel heartbeat (unanswered messages) + Memory OS maintenance.
+crons = ["0 2 * * *", "0 * * * *"]
+
+[[services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+[[services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+[[services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+[[services]]
+binding = "NOTIFICATIONS_WORKER"
+service = "naelao-notifications"
+
+# Billing worker — the reserved commerce script's only money-in path.
+[[services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
+# MCP hub — external-platform connector registry + tool proxy (mcp-connector prebuilt).
+[[services]]
+binding = "MCP_HUB"
+service = "naelao-mcp-hub"
+
+# Credentials vault — stores a connector's API key (the connect flow); only the name is referenced.
+[[services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
+
+# CF Browser Rendering proxy — Tier 4 of the execution ladder (code-runner.ts). Agents never
+# get raw CDP; all browser ops are mediated by this Worker's SSRF guard + rate controls.
+[[services]]
+binding = "BROWSER_WORKER"
+service = "naelao-browser"
+
+[vars]
+ENVIRONMENT = "development"
+# CF AI Gateway — every LLM call routes through this (spec §15).
+# Override with real values via `wrangler secret put` in production.
+NAELAO_ACCOUNT_ID = "placeholder"
+NAELAO_GATEWAY_ID = "naelao-gateway"
+
+# CF Workers AI — used by free-tier agents and sub-agent vision tasks.
+[[ai]]
+binding = "AI"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
+
+[[env.staging.services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+[[env.staging.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+[[env.staging.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
+[[env.staging.services]]
+binding = "MCP_HUB"
+service = "naelao-mcp-hub"
+
+[[env.staging.services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
+
+[[env.staging.services]]
+binding = "BROWSER_WORKER"
+service = "naelao-browser"
+
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+[[env.production.services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+[[env.production.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+[[env.production.services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
+[[env.production.services]]
+binding = "MCP_HUB"
+service = "naelao-mcp-hub"
+
+[[env.production.services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
+
+[[env.production.services]]
+binding = "BROWSER_WORKER"
+service = "naelao-browser"

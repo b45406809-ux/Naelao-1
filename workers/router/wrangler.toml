@@ -1,0 +1,68 @@
+name = "naelao-router"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "development"
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "REPLACE_WITH_DB_ID"
+
+[[kv_namespaces]]
+binding = "SESSION_REVOCATION"
+id = "PLACEHOLDER_SESSION_KV_ID"
+preview_id = "PLACEHOLDER_SESSION_KV_PREVIEW_ID"
+
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "PLACEHOLDER_CONFIG_KV_ID"
+preview_id = "PLACEHOLDER_CONFIG_KV_PREVIEW_ID"
+
+[[kv_namespaces]]
+binding = "NONCE_STORE"
+id = "PLACEHOLDER_NONCE_STORE_KV_ID"
+preview_id = "PLACEHOLDER_NONCE_STORE_KV_PREVIEW_ID"
+
+[[kv_namespaces]]
+binding = "QUOTA_CACHE"
+id = "PLACEHOLDER_QUOTA_CACHE_KV_ID"
+preview_id = "PLACEHOLDER_QUOTA_CACHE_KV_PREVIEW_ID"
+
+[[durable_objects.bindings]]
+name = "RATE_LIMIT_DO"
+class_name = "RateLimitDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RateLimitDO"]
+
+[[services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+[[services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+[[services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
+[[services]]
+binding = "AUTH_WORKER"
+service = "naelao-auth"
+
+[[services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
+
+[env.staging]
+name = "naelao-router-staging"
+vars = { ENVIRONMENT = "staging" }
+
+[env.production]
+name = "naelao-router-production"
+vars = { ENVIRONMENT = "production" }

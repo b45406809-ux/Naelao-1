@@ -1,0 +1,4 @@
+
+> @naelao/client-sdk@0.1.0 typecheck /home/user/Naelao-1/packages/client-sdk
+> tsc --noEmit
+

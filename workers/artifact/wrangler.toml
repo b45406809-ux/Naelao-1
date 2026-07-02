@@ -1,0 +1,22 @@
+name = "naelao-artifact"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# B1 fix: this worker must never be reachable directly — naelao-router is the only public
+# API surface. Identity headers (x-naelao-tenant-id/role/user-id) are trusted as-is by
+# downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
+workers_dev = false
+
+[[r2_buckets]]
+binding = "ARTIFACT_BUCKET"
+bucket_name = "naelao-artifacts"
+
+[vars]
+ENVIRONMENT = "development"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
+
+[env.production]
+vars = { ENVIRONMENT = "production" }

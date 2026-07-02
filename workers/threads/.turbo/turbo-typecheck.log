@@ -1,0 +1,4 @@
+
+> @naelao/threads-worker@0.1.0 typecheck /home/user/Naelao-1/workers/threads
+> tsc --noEmit
+

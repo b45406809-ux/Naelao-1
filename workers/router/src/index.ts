@@ -1,0 +1,367 @@
+import { Hono } from "hono";
+import { cors, requestId, jwtAuth, errorResponse } from "@naelao/http";
+import { signHmac } from "@naelao/crypto";
+import type { NaelaoJwtClaims } from "@naelao/types";
+export { RateLimitDO } from "./RateLimitDO";
+
+export interface Env {
+  ENVIRONMENT: string;
+  JWT_SECRET: string;
+  PLATFORM_SECRET: string;
+  SESSION_REVOCATION: KVNamespace;
+  CONFIG: KVNamespace;
+  NONCE_STORE: KVNamespace;
+  QUOTA_CACHE: KVNamespace;
+  PLATFORM_DB: D1Database;
+  RATE_LIMIT_DO: DurableObjectNamespace;
+  SPACES_WORKER: Fetcher;
+  KNOWLEDGE_WORKER: Fetcher;
+  AGENTS_WORKER: Fetcher;
+  AUTH_WORKER: Fetcher;
+  CREDENTIALS_WORKER: Fetcher;
+}
+
+// G-AX27: Replay attack prevention — max clock skew in seconds
+const MAX_TIMESTAMP_SKEW_S = 300;
+
+// ── G-AX27: validate timestamp and track nonce to prevent replay attacks ──────
+async function checkReplayPrevention(
+  request: Request,
+  nonceStore: KVNamespace
+): Promise<{ ok: boolean; reason?: string }> {
+  const tsHeader = request.headers.get("x-naelao-timestamp");
+  if (!tsHeader) return { ok: true }; // header optional for unauthenticated routes
+
+  const ts = parseInt(tsHeader, 10);
+  if (isNaN(ts)) return { ok: false, reason: "x-naelao-timestamp must be a unix epoch integer" };
+
+  const nowS = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowS - ts) > MAX_TIMESTAMP_SKEW_S) {
+    return { ok: false, reason: `Request timestamp is outside ±${MAX_TIMESTAMP_SKEW_S}s window` };
+  }
+
+  // Nonce check (best-effort — KV eventual consistency ~60s, but catches most replays)
+  const nonceHeader = request.headers.get("x-naelao-nonce");
+  if (nonceHeader) {
+    const nonceKey = `nonce:${nonceHeader}`;
+    const existing = await nonceStore.get(nonceKey);
+    if (existing !== null) {
+      return { ok: false, reason: "Request nonce has already been used (replay detected)" };
+    }
+    // Store nonce with TTL slightly longer than the allowed skew window
+    await nonceStore.put(nonceKey, "1", { expirationTtl: MAX_TIMESTAMP_SKEW_S + 60 });
+  }
+
+  return { ok: true };
+}
+
+// G-AD02: In-memory per-user token version cache (5s TTL)
+// Map key: userId, value: { version, expiresAt }
+const tokenVersionCache = new Map<string, { version: number; expiresAt: number }>();
+const TOKEN_VERSION_CACHE_TTL_MS = 5_000;
+
+async function checkTokenVersion(
+  db: D1Database,
+  userId: string,
+  claimedVersion: number
+): Promise<boolean> {
+  const cached = tokenVersionCache.get(userId);
+  let currentVersion: number;
+
+  if (cached && Date.now() < cached.expiresAt) {
+    currentVersion = cached.version;
+  } else {
+    const row = await db
+      .prepare("SELECT token_version FROM users WHERE id = ?1")
+      .bind(userId)
+      .first<{ token_version: number }>();
+    currentVersion = row?.token_version ?? 0;
+    tokenVersionCache.set(userId, { version: currentVersion, expiresAt: Date.now() + TOKEN_VERSION_CACHE_TTL_MS });
+  }
+
+  return claimedVersion >= currentVersion;
+}
+
+// Extend Hono context variables for this worker
+declare module "hono" {
+  interface ContextVariableMap {
+    requestId: string;
+    claims: NaelaoJwtClaims;
+  }
+}
+
+// G-A11: Validate required secrets at startup
+function validateEnv(env: Env): void {
+  const required = ["JWT_SECRET", "PLATFORM_SECRET"] as const;
+  for (const key of required) {
+    if (!env[key]) throw new Error(`Missing required secret: ${key}`);
+  }
+}
+
+const app = new Hono<{ Bindings: Env }>();
+
+// ── Global middleware ────────────────────────────────────────────────────────
+app.use("*", cors(["*"]));
+app.use("*", requestId);
+app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
+
+// ── Health check (unauthenticated) ───────────────────────────────────────────
+app.get("/health", (c) =>
+  c.json({ status: "ok", env: c.env.ENVIRONMENT, ts: Date.now() })
+);
+
+// ── Auth routes (forwarded to auth worker) ───────────────────────────────────
+app.all("/v1/auth/*", async (c) => {
+  const url = new URL(c.req.url);
+  const downstream = new URL(url.pathname.replace("/v1/auth", ""), "http://auth");
+  downstream.search = url.search;
+  return c.env.AUTH_WORKER.fetch(
+    new Request(downstream.toString(), {
+      method: c.req.method,
+      headers: c.req.raw.headers,
+      body: c.req.raw.body,
+    })
+  );
+});
+
+// ── Public connector webhook ingress (unauthenticated; HMAC signature is the auth) ──
+// External platforms (Whop, Gumroad, …) POST events here — they can't carry a JWT, so this is
+// registered BEFORE the authenticated api group. The agents worker verifies the signature.
+app.all("/v1/connectors/:platform/webhook/:spaceId", async (c) => {
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.AGENTS_WORKER.fetch(
+    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+  );
+});
+
+// ── Public multi-channel ingress (unauthenticated; the channel's own signature is the auth) ──
+// Slack/Discord/inbound-email providers can't carry a JWT either — same pattern as connectors
+// above, registered before the authenticated api group. The agents worker verifies the
+// channel-specific signature (HMAC for Slack/email, Ed25519 for Discord) before acting on it.
+app.all("/v1/channels/:channel/inbound/:spaceId", async (c) => {
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.AGENTS_WORKER.fetch(
+    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+  );
+});
+
+// ── Protected API routes ─────────────────────────────────────────────────────
+const api = new Hono<{ Bindings: Env }>();
+api.use(
+  "*",
+  jwtAuth((c) => (c as unknown as { env: Env }).env.JWT_SECRET)
+);
+
+// G-AX27: Replay attack prevention — timestamp skew + nonce dedup
+api.use("*", async (c, next) => {
+  if (c.env.NONCE_STORE) {
+    const result = await checkReplayPrevention(c.req.raw, c.env.NONCE_STORE);
+    if (!result.ok) {
+      return c.json({ error_code: "replay_detected", message: result.reason }, 400);
+    }
+  }
+  return next();
+});
+
+// G-AX12: Token bucket rate limiting per authenticated user
+// Default: 120 requests/minute (2× smoother than fixed 60-window)
+const DEFAULT_RATE_LIMIT = 120;
+api.use("*", async (c, next) => {
+  if (!c.env.RATE_LIMIT_DO) return next();
+  const claims = c.get("claims");
+  const bucketKey = claims?.sub ?? c.req.header("x-forwarded-for") ?? "anonymous";
+  const doId = c.env.RATE_LIMIT_DO.idFromName("global-rate-limiter");
+  const stub = c.env.RATE_LIMIT_DO.get(doId);
+  try {
+    const rl = await stub.fetch("http://do/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: bucketKey, limit: DEFAULT_RATE_LIMIT }),
+    });
+    const result = await rl.json<{ allowed: boolean; remaining: number; retry_after_ms: number }>();
+    if (!result.allowed) {
+      return c.json(
+        { error_code: "rate_limited", message: "Too many requests", retry_after_ms: result.retry_after_ms },
+        429
+      );
+    }
+    // Surface remaining quota in response headers (set after response via header)
+    c.header("X-RateLimit-Limit", String(DEFAULT_RATE_LIMIT));
+    c.header("X-RateLimit-Remaining", String(result.remaining));
+  } catch {
+    // Rate limiter unavailable — fail open to avoid blocking all traffic
+  }
+  return next();
+});
+
+// G-BA02: Tenant resource quota enforcement at ingress.
+// Reads cached quota status from KV (written by billing/usage workers every 60s).
+// Key: quota:{tenantId}:blocked → "1" | absent
+// Grace: 5% overage is allowed; only hard-blocked tenants are rejected.
+// Fails open — if KV unavailable, request passes through.
+api.use("*", async (c, next) => {
+  if (!c.env.QUOTA_CACHE) return next();
+  const claims = c.get("claims");
+  const tenantId = claims?.tid ?? "";
+  if (!tenantId) return next();
+
+  try {
+    const blocked = await c.env.QUOTA_CACHE.get(`quota:${tenantId}:blocked`);
+    if (blocked === "1") {
+      const detail = await c.env.QUOTA_CACHE.get(`quota:${tenantId}:detail`);
+      let detailObj: Record<string, unknown> = {};
+      try { detailObj = detail ? JSON.parse(detail) : {}; } catch { /* ignore */ }
+      return c.json({
+        error_code: "quota_exceeded",
+        message: "Tenant resource quota exceeded — upgrade plan or contact support",
+        detail: detailObj,
+      }, 429);
+    }
+  } catch {
+    // Fail open — quota check errors never block requests
+  }
+  return next();
+});
+
+// G-AD02: Token version check — reject tokens whose version is behind the DB value.
+// Uses 5s in-memory cache to avoid a D1 read on every request.
+api.use("*", async (c, next) => {
+  const claims = c.get("claims");
+  if (claims?.tv !== undefined) {
+    const valid = await checkTokenVersion(c.env.PLATFORM_DB, claims.sub, claims.tv);
+    if (!valid) {
+      return c.json(
+        { error_code: "token_revoked", message: "Session has been revoked" },
+        401
+      );
+    }
+  }
+  return next();
+});
+
+// G-I01: Sign inter-worker requests with HMAC so downstream workers can verify origin
+async function proxyTo(
+  worker: Fetcher,
+  claims: NaelaoJwtClaims | undefined,
+  req: Request,
+  platformSecret: string,
+): Promise<Response> {
+  const headers = new Headers(req.headers);
+  // B2 fix: strip client-supplied identity/internal headers UNCONDITIONALLY before setting
+  // them from verified claims below. Previously these were only overwritten inside
+  // `if (claims)`, so any route reachable without auth would forward the caller's own
+  // (attacker-controlled) x-naelao-tenant-id / x-naelao-role straight through to the
+  // downstream worker, which trusts them as-is.
+  headers.delete("x-naelao-tenant-id");
+  headers.delete("x-naelao-user-id");
+  headers.delete("x-naelao-role");
+  headers.delete("x-naelao-scopes");
+  headers.delete("x-naelao-internal-token");
+  const ts = Date.now().toString();
+  if (claims) {
+    headers.set("x-naelao-tenant-id", claims.tid);
+    headers.set("x-naelao-user-id", claims.sub);
+    headers.set("x-naelao-role", claims.role);
+    headers.set("x-naelao-scopes", claims.scopes.join(","));
+    const sig = await signHmac(`internal:${claims.tid}:${ts}`, platformSecret);
+    headers.set("x-naelao-internal-token", `t=${ts},v1=${sig}`);
+  }
+  // Strip the /v1 mount prefix so downstream workers (which define routes WITHOUT
+  // /v1, e.g. /spaces, /business) actually match. Mirrors the auth-route rewrite.
+  const u = new URL(req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return worker.fetch(new Request(u.toString(), {
+    method: req.method,
+    headers,
+    body: req.body,
+  }));
+}
+
+// Spaces CRUD → spaces worker
+api.all("/spaces/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/spaces", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+
+// Knowledge (KB) → knowledge worker
+api.all("/spaces/:spaceId/kb/*", async (c) =>
+  proxyTo(c.env.KNOWLEDGE_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
+// Credentials (per-user / per-space / privileged-override hierarchy) → credentials worker.
+// Never proxy /internal/* here — internal credential resolution is service-binding-only.
+api.all("/spaces/:spaceId/credentials", async (c) =>
+  proxyTo(c.env.CREDENTIALS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/credentials/:credId", async (c) =>
+  proxyTo(c.env.CREDENTIALS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
+// Agent sessions + messages → agents worker
+api.all("/spaces/:spaceId/sessions/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/sessions", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
+// First-run bootstrap (create projects + run setup scripts) → agents worker
+api.all("/spaces/:spaceId/bootstrap/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
+// Apply a customer-bot project template (WhatsApp/Discord/email support bot) → agents worker
+// (it composes the call across the spaces worker's project endpoints + seeds starter rules).
+api.all("/spaces/:spaceId/projects/from-template", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
+// Customer-bot channel observability + human-takeover admin control → agents worker
+// (proxies straight through to the space's agent DO).
+api.all("/spaces/:spaceId/channels/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
+// Reseller / partner endpoints → spaces worker (G-AS34/G-AS35)
+api.all("/reseller/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/reseller", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+
+// Launchpad / Whop Businesses (the one live niche) → agents worker.
+// Catalog (roadmap), product config, and per-user business endpoints.
+api.all("/catalog/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/product/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/business/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+
+// External-platform connectors (catalogue + connect flow) → agents worker.
+api.all("/connectors/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/connectors", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+
+// Federated template learning (promote / inherit shared skills) → agents worker.
+api.all("/skills/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/templates/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+
+// Multi-channel gateway connect flow (authenticated; the public inbound webhook is registered
+// above, before the JWT gate) → agents worker.
+api.all("/channels/:channel/connect", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+
+// Customer-bot project template catalogue → agents worker.
+api.all("/project-templates", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+
+app.route("/v1", api);
+
+// ── Error handler ────────────────────────────────────────────────────────────
+app.onError((err, c) => {
+  const reqId = c.get("requestId") ?? "unknown";
+  return errorResponse(err, reqId);
+});
+
+app.notFound((c) => {
+  return c.json(
+    { error_code: "not_found", message: "Route not found", request_id: c.get("requestId") },
+    404
+  );
+});
+
+export default {
+  fetch: app.fetch,
+} satisfies ExportedHandler<Env>;

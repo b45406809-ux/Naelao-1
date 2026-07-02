@@ -1,0 +1,60 @@
+name = "naelao-provisioner"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# B1 fix: this worker must never be reachable directly — naelao-router is the only public
+# API surface. Identity headers (x-naelao-tenant-id/role/user-id) are trusted as-is by
+# downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
+workers_dev = false
+
+[[queues.consumers]]
+queue = "naelao-provisioning-queue"
+max_batch_size = 10
+max_batch_timeout = 30
+max_retries = 3
+max_concurrency = 10
+dead_letter_queue = "naelao-provisioning-dlq"
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "PLACEHOLDER_D1_ID"
+
+[[kv_namespaces]]
+binding = "SPACES_KV"
+id = "PLACEHOLDER_KV_ID"
+
+# Service binding to naelao-spaces — provisioner registers each installed agent in the
+# SpaceDO agent_definitions index (the code expects env.SPACES_WORKER, not an HTTP URL).
+[[services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+# Skill library / agent-config R2 — the provisioner writes each agent's 4 config files here.
+[[r2_buckets]]
+binding = "SCRIPTS_R2"
+bucket_name = "naelao-agent-scripts"
+
+# Portal slug→spaceId mapping written during external portal provisioning (step 7).
+# Read by naelao-portal-router worker at request time. Optional — skipped if unbound.
+[[kv_namespaces]]
+binding = "PORTAL_KV"
+id = "REPLACE_WITH_PORTAL_KV_ID"
+
+[vars]
+ENVIRONMENT = "development"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
+
+[[env.staging.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+[[env.production.services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"

@@ -1,0 +1,4 @@
+
+> @naelao/tool-runtime@0.1.0 typecheck /home/user/Naelao-1/packages/tool-runtime
+> tsc --noEmit
+

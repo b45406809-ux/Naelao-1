@@ -1,0 +1,83 @@
+name = "naelao-workflows"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# B1 fix: this worker must never be reachable directly — naelao-router is the only public
+# API surface. Identity headers (x-naelao-tenant-id/role/user-id) are trusted as-is by
+# downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
+workers_dev = false
+
+[[workflows]]
+name = "SpaceProvisioningWorkflow"
+class_name = "SpaceProvisioningWorkflow"
+binding = "SPACE_PROVISIONING"
+
+[[workflows]]
+name = "DataErasureWorkflow"
+class_name = "DataErasureWorkflow"
+binding = "DATA_ERASURE"
+
+[[workflows]]
+name = "KbIngestionWorkflow"
+class_name = "KbIngestionWorkflow"
+binding = "KB_INGESTION"
+
+[[workflows]]
+name = "DunningWorkflow"
+class_name = "DunningWorkflow"
+binding = "DUNNING"
+
+[[workflows]]
+name = "QueueHealthWorkflow"
+class_name = "QueueHealthWorkflow"
+binding = "QUEUE_HEALTH"
+
+[triggers]
+crons = ["*/30 * * * *"]
+
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "REPLACE_WITH_DB_ID"
+
+[[r2_buckets]]
+binding = "KB_BUCKET"
+bucket_name = "naelao-kb"
+
+[[vectorize_indexes]]
+binding = "KB_VECTORS"
+index_name = "naelao-kb-prod"
+
+[[kv_namespaces]]
+binding = "QUOTA_CACHE"
+id = "REPLACE_WITH_KV_ID"
+
+[[queues.producers]]
+binding = "EVENTS_QUEUE"
+queue = "naelao-events"
+
+[[queues.consumers]]
+queue = "naelao-events"
+max_batch_size = 100
+max_batch_timeout = 10
+max_retries = 3
+max_concurrency = 50
+dead_letter_queue = "naelao-events-dlq"
+
+[[services]]
+binding = "SPACES_WORKER"
+service = "naelao-spaces"
+
+[[services]]
+binding = "KNOWLEDGE_WORKER"
+service = "naelao-knowledge"
+
+[vars]
+ENVIRONMENT = "development"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
+
+[env.production]
+vars = { ENVIRONMENT = "production" }

@@ -1,0 +1,23 @@
+name = "naelao-connector-gumroad"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# B1 fix: this worker must never be reachable directly — naelao-router is the only public
+# API surface. Identity headers (x-naelao-tenant-id/role/user-id) are trusted as-is by
+# downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
+workers_dev = false
+
+# The Gumroad MCP shim. Deployed behind the catalogue's mcp_endpoint
+# (https://mcp.naelao.com/connectors/gumroad). mcp-hub calls `${mcp_endpoint}/mcp` with the
+# builder's Gumroad access token as a Bearer token (resolved from the vault); the shim appends
+# it as the access_token query param Gumroad expects. Holds no secrets.
+
+[vars]
+ENVIRONMENT = "development"
+
+[env.staging]
+vars = { ENVIRONMENT = "staging" }
+
+[env.production]
+vars = { ENVIRONMENT = "production" }

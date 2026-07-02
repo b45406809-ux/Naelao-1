@@ -1,0 +1,4 @@
+
+> @naelao/crypto@0.1.0 typecheck /home/user/Naelao-1/packages/crypto
+> tsc --noEmit
+
