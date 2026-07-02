@@ -373,6 +373,20 @@ const MIGRATIONS: Migration[] = [
     `,
   },
   {
+    version: 18,
+    // Templates ship pre-wired projects (and, per the bootstrap flow, a starter thread inside
+    // each one) bound to whichever installed agent owns that project's work — e.g. Launchpad's
+    // creator-store template's "Orders" project defaults to launchpad-fulfillment-v1, "Support"
+    // to launchpad-support-v1. This is a DEFAULT only, not an enforced identity: any caller may
+    // still pass a different agentId to /script/run for a thread in this project. Nullable —
+    // reference/data projects (e.g. "Products", "Members", "FAQ") intentionally have no default
+    // agent, since nothing runs automatically in them.
+    description: "projects.default_agent_id (template-seeded agent binding)",
+    up: `
+      ALTER TABLE projects ADD COLUMN default_agent_id TEXT;
+    `,
+  },
+  {
     version: 14,
     // Space Assistant approval policy: "same access as the owning user, but ask before
     // acting unless the user has explicitly trusted this action." One row per space.
@@ -1355,16 +1369,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // ── Projects (thread grouping) ──────────────────────────────────────────────
   private listProjects(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
-    const rows = queryAll<{ id: string; space_id: string; name: string; description: string; status: string; created_at: string }>(
+    const rows = queryAll<{ id: string; space_id: string; name: string; description: string; status: string; default_agent_id: string | null; created_at: string }>(
       this.ctx.storage.sql as never,
-      "SELECT id, space_id, name, description, status, created_at FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at",
+      "SELECT id, space_id, name, description, status, default_agent_id, created_at FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at",
       spaceId
     );
     return Response.json({ data: rows, count: rows.length });
   }
 
   private async createProject(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id: string; name: string; description?: string; tenant_id?: string }>();
+    const body = await request.json<{ space_id: string; name: string; description?: string; tenant_id?: string; default_agent_id?: string }>();
     if (!body.space_id || !body.name) {
       return Response.json({ error_code: "bad_request", message: "space_id and name are required" }, { status: 400 });
     }
@@ -1390,13 +1404,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const now = new Date().toISOString();
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO projects (id, space_id, name, description, status, created_at) VALUES (?, ?, ?, ?, 'active', ?)
+      `INSERT INTO projects (id, space_id, name, description, status, default_agent_id, created_at) VALUES (?, ?, ?, ?, 'active', ?, ?)
        ON CONFLICT(space_id, name) DO NOTHING`,
-      id, body.space_id, body.name, body.description ?? "", now
+      id, body.space_id, body.name, body.description ?? "", body.default_agent_id ?? null, now
     );
-    const row = queryOne<{ id: string; name: string; status: string; created_at: string }>(
+    const row = queryOne<{ id: string; name: string; status: string; default_agent_id: string | null; created_at: string }>(
       this.ctx.storage.sql as never,
-      "SELECT id, name, status, created_at FROM projects WHERE space_id = ? AND name = ?",
+      "SELECT id, name, status, default_agent_id, created_at FROM projects WHERE space_id = ? AND name = ?",
       body.space_id, body.name
     );
     if (!alreadyExisted && row) {
@@ -1482,7 +1496,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private getProject(projectId: string): Response {
     const row = queryOne<{
       id: string; space_id: string; name: string; description: string; status: string;
-      kind: string; execution_ceiling: number; daily_spend_cap_credits: number; channel_config: string; created_at: string;
+      kind: string; execution_ceiling: number; daily_spend_cap_credits: number; channel_config: string;
+      default_agent_id: string | null; created_at: string;
     }>(this.ctx.storage.sql as never, "SELECT * FROM projects WHERE id = ?", projectId);
     if (!row) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
     return Response.json({ ...row, channel_config: safeJsonParseObj(row.channel_config) });
@@ -1498,6 +1513,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       description?: string;
       show_sub_threads?: boolean;
       status?: "active" | "archived";
+      /** Which agent runs here by default (template-seeded or admin-assigned). null clears it —
+       *  a project is never permanently bound to one agent; the builder/Space Assistant can
+       *  always reassign or unset it. */
+      default_agent_id?: string | null;
     }>().catch(() => ({}) as Record<string, never>);
 
     const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE id = ?", projectId);
@@ -1537,6 +1556,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     if (body.show_sub_threads !== undefined) {
       execute(this.ctx.storage.sql as never, "UPDATE projects SET show_sub_threads = ? WHERE id = ?", body.show_sub_threads ? 1 : 0, projectId);
+    }
+    if (body.default_agent_id !== undefined) {
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET default_agent_id = ? WHERE id = ?", body.default_agent_id, projectId);
     }
     return this.getProject(projectId);
   }

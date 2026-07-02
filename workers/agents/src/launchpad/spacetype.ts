@@ -55,16 +55,34 @@ export interface OnboardingPrompt {
 }
 
 /**
+ * An initial project a template seeds, optionally pre-bound to one of the template's installed
+ * agents. The binding is a DEFAULT only — projects.default_agent_id (SpaceDO migration v18) is
+ * never an enforced identity, and the builder or Space Assistant can reassign/clear it at any
+ * time via PATCH. A project with no default_agent_id (e.g. "Products", a reference/data project)
+ * is intentionally unbound — nothing runs there automatically.
+ */
+export interface TemplateProjectSeed {
+  name: string;
+  /** A LaunchpadAgentDefinition.id from this same template's `agents` list. */
+  default_agent_id?: string;
+}
+
+/**
  * Template bootstrap (the "as you start, everything is set up" flow). On space creation the
  * provisioner installs the prebuilt agents (template.agents), seeds the skill library, then the
  * Space Assistant runs this: ask the prompts (credentials + preferences), create the initial
- * projects, and run the setup scripts to finish wiring the business.
+ * projects (each with a starter thread when it has a default_agent_id), and run the setup
+ * scripts to finish wiring the business.
  */
 export interface TemplateBootstrap {
   /** Questions asked on first run (credentials to connect, preferences to set). */
   prompts: OnboardingPrompt[];
-  /** Initial projects (thread groups) to create in the space. */
-  projects?: string[];
+  /**
+   * Initial projects (thread groups) to create in the space. A plain string is a name-only,
+   * unbound project (equivalent to `{ name }`) — kept so existing/simple templates don't need
+   * the object form.
+   */
+  projects?: Array<string | TemplateProjectSeed>;
   /** Prebuilt script ops the assistant runs on start to finish setup. */
   setup_scripts?: string[];
 }
@@ -172,7 +190,15 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { id: "product_type", type: "choice", question: "What do you mainly sell?", options: ["Courses", "Ebooks", "Templates", "Memberships"], required: true },
         { id: "storefront_slug", type: "text", question: "Pick a storefront handle ({slug}.naelao.com).", required: true },
       ],
-      projects: ["Products", "Orders", "Support"],
+      // "Products" is a reference/inventory project (no default agent — nothing runs there
+      // automatically). "Orders" and "Support" are each bound to the agent that owns that
+      // work, and get a starter thread at bootstrap so the builder opens on a pre-wired
+      // workspace, not an empty space — all reassignable/removable after the fact.
+      projects: [
+        "Products",
+        { name: "Orders", default_agent_id: "launchpad-fulfillment-v1" },
+        { name: "Support", default_agent_id: "launchpad-support-v1" },
+      ],
       setup_scripts: ["storefront.provision"],
     },
   },
@@ -183,15 +209,17 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-content-v1", "launchpad-fulfillment-v1"],
     skills: ["web-search", "email-tool", "stripe-app"],
     free_tier_eligible: true,
-    // This template installs launchpad-fulfillment-v1 (handles subscription/payment events).
-    // Seed the "Orders" project so a paid-billing event is scoped there instead of running
-    // space-wide — same mechanism as creator-store below. No prompts/setup_scripts needed;
-    // the project just needs to exist for billing/lemon-squeezy.ts's resolveFulfillmentProjectId
-    // to find it. The owner (or the Space Assistant) can rename/reconfigure/remove it freely —
-    // billing falls back to a space-wide run if it's gone.
+    // Both installed agents get their own pre-wired project + starter thread: "Content" for
+    // drafting issues, "Orders" for subscription/payment events (so billing/lemon-squeezy.ts's
+    // resolveFulfillmentProjectId scopes there instead of running space-wide). Either project
+    // can be renamed, reassigned, or removed by the owner/Space Assistant — billing and the
+    // content cron both fall back to a space-wide run if their project is gone.
     bootstrap: {
       prompts: [],
-      projects: ["Orders"],
+      projects: [
+        { name: "Content", default_agent_id: "launchpad-content-v1" },
+        { name: "Orders", default_agent_id: "launchpad-fulfillment-v1" },
+      ],
     },
   },
   {
@@ -201,11 +229,14 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-support-v1", "launchpad-fulfillment-v1"],
     skills: ["stripe-app", "email-tool", "crm-tool"],
     free_tier_eligible: false,
-    // Same reasoning as newsletter-business above — this template also installs the
-    // fulfillment agent, so it gets a dedicated "Orders" project too.
+    // Same reasoning as newsletter-business above: "Support" for tier-1 questions, "Orders"
+    // for billing events — both pre-wired, both reassignable/removable.
     bootstrap: {
       prompts: [],
-      projects: ["Orders"],
+      projects: [
+        { name: "Support", default_agent_id: "launchpad-support-v1" },
+        { name: "Orders", default_agent_id: "launchpad-fulfillment-v1" },
+      ],
     },
   },
   {
@@ -215,6 +246,13 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-content-v1", "launchpad-support-v1"],
     skills: ["email-tool", "file-manager", "web-search"],
     free_tier_eligible: false,
+    bootstrap: {
+      prompts: [],
+      projects: [
+        { name: "Deliverables", default_agent_id: "launchpad-content-v1" },
+        { name: "Client Communication", default_agent_id: "launchpad-support-v1" },
+      ],
+    },
   },
   {
     id: "coaching-community",
@@ -223,6 +261,13 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-support-v1", "launchpad-content-v1"],
     skills: ["email-tool", "web-search", "file-manager"],
     free_tier_eligible: true,
+    bootstrap: {
+      prompts: [],
+      projects: [
+        { name: "Member Questions", default_agent_id: "launchpad-support-v1" },
+        { name: "Learning Materials", default_agent_id: "launchpad-content-v1" },
+      ],
+    },
   },
   // ── Platform-connector templates ("Whop first, everything else coming soon") ──
   // A platform template wires an external creator platform via the connector catalogue +
@@ -245,7 +290,13 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { id: "reply_tone", type: "choice", question: "What tone should the support agent use?", options: ["Friendly", "Professional", "Playful"], required: false },
         { id: "auto_reply", type: "boolean", question: "Let the agent auto-reply to common member questions (you review the rest)?", required: false },
       ],
-      projects: ["Members", "Support", "Content"],
+      // "Members" is a reference/data project (roster the agent reads, nothing runs there
+      // automatically); "Support" and "Content" are bound to the agents that own that work.
+      projects: [
+        "Members",
+        { name: "Support", default_agent_id: "launchpad-support-v1" },
+        { name: "Content", default_agent_id: "launchpad-content-v1" },
+      ],
       setup_scripts: ["mcp.list_tools"],
     },
   },
@@ -266,7 +317,14 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { id: "reply_tone", type: "choice", question: "Reply tone?", options: ["Friendly", "Professional", "Concise"], required: false },
         { id: "autonomy", type: "choice", question: "How much can the agent send without review?", options: ["Draft everything for me", "Auto-send FAQs, draft the rest", "Auto-send most, escalate edge cases"], required: false },
       ],
-      projects: ["Inbox", "Escalations", "FAQ"],
+      // "Inbox" is where the support agent actually works; "Escalations" (human review queue)
+      // and "FAQ" (reference content) are intentionally unbound — nothing runs there
+      // automatically.
+      projects: [
+        { name: "Inbox", default_agent_id: "launchpad-support-v1" },
+        "Escalations",
+        "FAQ",
+      ],
       setup_scripts: ["knowledge-base.status"],
     },
   },
@@ -311,6 +369,17 @@ export function validateLaunchpadSpaceType(st: LaunchpadSpaceType = LAUNCHPAD_SP
     for (const aid of t.agents) {
       if (!CORE_AGENT_IDS.has(aid)) {
         throw new Error(`Launchpad template '${t.id}' references unknown core agent '${aid}'`);
+      }
+    }
+    // A bootstrap project's default_agent_id must be one of THIS template's own installed
+    // agents — a project can't default to an agent the space never provisions.
+    const installedAgents = new Set(t.agents);
+    for (const p of t.bootstrap?.projects ?? []) {
+      if (typeof p === "string") continue;
+      if (p.default_agent_id && !installedAgents.has(p.default_agent_id)) {
+        throw new Error(
+          `Launchpad template '${t.id}' project '${p.name}' defaults to agent '${p.default_agent_id}', which is not in this template's own agents list`
+        );
       }
     }
   }

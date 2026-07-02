@@ -155,15 +155,28 @@ async function resolveDefaultAgent(
 }
 
 /**
- * Resolve a pre-seeded "Orders" project for this space, if the builder's template created one
- * (Launchpad's creator-store/newsletter-business/micro-saas templates seed one via
- * bootstrap.projects — see launchpad/spacetype.ts). When present, a billing event is scoped to
- * that project (workspace-scoped, its own approval gates and execution ceiling apply) instead
- * of running space-wide — the Space Assistant does the general coordination, but the actual
- * order-handling work has a dedicated home a builder can rename, reconfigure, or remove.
+ * The Launchpad core agent that handles order fulfillment (spec §11 / launchpad/spacetype.ts).
+ * Billing worker deliberately doesn't import the agents worker's module (workers stay
+ * independent — mirrors the "naelao-agent" literal every dispatcher hardcodes per A1.16.7)
+ * so this is a local literal, kept in sync by convention.
+ */
+const FULFILLMENT_AGENT_ID = "launchpad-fulfillment-v1";
+
+/**
+ * Resolve a pre-seeded project bound to the fulfillment agent for this space, if the builder's
+ * template created one (creator-store/newsletter-business/micro-saas seed one — e.g. "Orders" —
+ * via bootstrap.projects with default_agent_id: "launchpad-fulfillment-v1"; see
+ * launchpad/spacetype.ts). When present, a billing event is scoped to that project
+ * (workspace-scoped, its own approval gates and execution ceiling apply) instead of running
+ * space-wide — the Space Assistant does the general coordination, but the actual order-handling
+ * work has a dedicated home a builder can rename, reassign, or remove.
+ *
+ * Matches on default_agent_id first (the real binding — survives a rename). Falls back to a
+ * project literally named "Orders" for a space provisioned before projects.default_agent_id
+ * existed, or where a builder manually created an "Orders" project without setting the binding.
  * Best-effort: returns undefined (never throws) when SPACES_WORKER is unbound, the lookup fails,
- * or no "Orders" project exists — the caller falls back to the space-wide Space Assistant run
- * exactly as before, so a builder who deletes/renames the project doesn't break anything.
+ * or no matching project exists — the caller falls back to the space-wide Space Assistant run
+ * exactly as before, so a builder who deletes/reassigns the project doesn't break anything.
  */
 export async function resolveFulfillmentProjectId(
   spaceId: string,
@@ -179,9 +192,11 @@ export async function resolveFulfillmentProjectId(
       },
     }));
     if (!resp.ok) return undefined;
-    const { data } = await resp.json<{ data: Array<{ id: string; name: string; status?: string }> }>();
-    const match = data.find((p) => p.name?.trim().toLowerCase() === "orders" && p.status !== "archived");
-    return match?.id;
+    const { data } = await resp.json<{ data: Array<{ id: string; name: string; status?: string; default_agent_id?: string | null }> }>();
+    const byBinding = data.find((p) => p.default_agent_id === FULFILLMENT_AGENT_ID && p.status !== "archived");
+    if (byBinding) return byBinding.id;
+    const byName = data.find((p) => p.name?.trim().toLowerCase() === "orders" && p.status !== "archived");
+    return byName?.id;
   } catch {
     return undefined;
   }

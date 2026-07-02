@@ -156,11 +156,18 @@ async function registerAgentIndex(
   }
 }
 
+/** A template project seed, normalized to the object shape (see spacetype.ts's
+ *  TemplateProjectSeed) — a plain name is stored as `{ name }` with no default_agent_id. */
+interface OnboardingProject {
+  name: string;
+  default_agent_id?: string;
+}
+
 /** Merge a first-run onboarding record into the space's config_json (read-merge-write). */
 interface OnboardingState {
   template_id: string;
   status: "pending" | "complete";
-  projects: string[];
+  projects: OnboardingProject[];
   setup_scripts: string[];
   created_at: string;
 }
@@ -376,10 +383,15 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
 
       const tpl = getLaunchpadTemplate(templateId);
       if (tpl?.bootstrap) {
+        // Normalize each project seed to the object shape — a plain string (an unbound,
+        // reference-only project like "Products") becomes { name } with no default_agent_id.
+        const projects: OnboardingProject[] = (tpl.bootstrap.projects ?? []).map((p) =>
+          typeof p === "string" ? { name: p } : p
+        );
         await mergeOnboarding(env, spaceId, tenantId, {
           template_id: templateId,
           status: "pending",
-          projects: tpl.bootstrap.projects ?? [],
+          projects,
           setup_scripts: tpl.bootstrap.setup_scripts ?? [],
           created_at: now,
         });

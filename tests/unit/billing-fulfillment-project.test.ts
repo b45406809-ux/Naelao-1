@@ -30,7 +30,7 @@ function makeOrderPaidBody(spaceId: string): string {
 }
 
 describe("resolveFulfillmentProjectId", () => {
-  function makeEnv(projects: Array<{ id: string; name: string; status?: string }> | null): LemonSqueezyEnv {
+  function makeEnv(projects: Array<{ id: string; name: string; status?: string; default_agent_id?: string | null }> | null): LemonSqueezyEnv {
     return {
       AGENTS_WORKER: { fetch: async () => new Response("{}") } as unknown as Fetcher,
       PLATFORM_DB: {} as unknown as D1Database,
@@ -44,12 +44,46 @@ describe("resolveFulfillmentProjectId", () => {
     };
   }
 
-  it("resolves the Orders project id when one exists (case/whitespace-insensitive)", async () => {
+  it("resolves a project bound to the fulfillment agent, even with an unrelated name", async () => {
+    // Mirrors newsletter-business/micro-saas seeding "Orders" via default_agent_id rather than
+    // relying on the literal name — and proves a builder can rename the project (e.g. to
+    // "Billing") without breaking the routing, since the binding is what's authoritative.
+    const id = await resolveFulfillmentProjectId(
+      "space1", "tenant1",
+      makeEnv([
+        { id: "p1", name: "Products" },
+        { id: "p2", name: "Billing", default_agent_id: "launchpad-fulfillment-v1" },
+        { id: "p3", name: "Support", default_agent_id: "launchpad-support-v1" },
+      ])
+    );
+    expect(id).toBe("p2");
+  });
+
+  it("prefers the default_agent_id binding over a same-named-but-unbound project", async () => {
+    const id = await resolveFulfillmentProjectId(
+      "space1", "tenant1",
+      makeEnv([
+        { id: "unbound-orders", name: "Orders" },
+        { id: "bound-elsewhere", name: "Fulfillment", default_agent_id: "launchpad-fulfillment-v1" },
+      ])
+    );
+    expect(id).toBe("bound-elsewhere");
+  });
+
+  it("falls back to a project literally named Orders when nothing is bound (case/whitespace-insensitive)", async () => {
     const id = await resolveFulfillmentProjectId(
       "space1", "tenant1",
       makeEnv([{ id: "p1", name: "Products" }, { id: "p2", name: "  orders " }, { id: "p3", name: "Support" }])
     );
     expect(id).toBe("p2");
+  });
+
+  it("ignores an archived project even if it's bound to the fulfillment agent", async () => {
+    const id = await resolveFulfillmentProjectId(
+      "space1", "tenant1",
+      makeEnv([{ id: "p2", name: "Orders", default_agent_id: "launchpad-fulfillment-v1", status: "archived" }])
+    );
+    expect(id).toBeUndefined();
   });
 
   it("returns undefined when there is no Orders project", async () => {

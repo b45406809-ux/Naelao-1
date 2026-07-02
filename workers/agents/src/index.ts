@@ -1390,9 +1390,11 @@ app.post("/spaces/:spaceId/channels/sessions/:sessionId/takeover", async (c) => 
 
 // ── First-run bootstrap execution ─────────────────────────────────────────────
 // POST /spaces/:spaceId/bootstrap/complete — finishes the onboarding the provisioner recorded:
-// creates the template's projects in the SpaceDO, wakes the assistant to run the setup scripts,
-// and marks onboarding complete. Called by the dashboard wizard after credentials/preferences
-// are collected (which it does directly via connect + config PATCH).
+// creates the template's projects (each pre-bound to its default agent, per spacetype.ts's
+// TemplateProjectSeed) in the SpaceDO, seeds a starter thread in each bound project so the
+// builder opens on a pre-wired workspace rather than an empty one, wakes the assistant to run
+// the setup scripts, and marks onboarding complete. Called by the dashboard wizard after
+// credentials/preferences are collected (which it does directly via connect + config PATCH).
 app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) throw unauthorized("Missing tenant identity");
@@ -1403,21 +1405,45 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
   ).bind(spaceId, tenantId).first<{ config_json: string | null }>();
   if (!row) throw notFound("Space");
   const cfg = (safeParse(row.config_json ?? "{}") as Record<string, unknown>) ?? {};
-  const onboarding = (cfg["onboarding"] as { projects?: string[]; setup_scripts?: string[]; status?: string } | undefined) ?? {};
+  // A project seed may be a plain string (older/simple onboarding records, or a name-only
+  // unbound project) or { name, default_agent_id? } — normalize both to the object shape here
+  // so downstream code has one shape to deal with.
+  type RawProjectSeed = string | { name: string; default_agent_id?: string };
+  const onboarding = (cfg["onboarding"] as { projects?: RawProjectSeed[]; setup_scripts?: string[]; status?: string } | undefined) ?? {};
+  const projectSeeds = (onboarding.projects ?? []).map((p) => (typeof p === "string" ? { name: p } : p));
 
-  // 1. Create the template's projects (idempotent on name) via the SpaceDO.
+  // 1. Create the template's projects (idempotent on name) via the SpaceDO, each with its
+  //    default_agent_id, then seed a starter thread in any project that has one — a project
+  //    with no default agent (e.g. a reference project like "Products") gets no thread, since
+  //    nothing runs there automatically.
   const createdProjects: string[] = [];
   const bootstrapInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
-  for (const name of onboarding.projects ?? []) {
+  for (const seed of projectSeeds) {
     try {
       const r = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": bootstrapInternalToken },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name: seed.name, ...(seed.default_agent_id ? { default_agent_id: seed.default_agent_id } : {}) }),
       }));
-      if (r.ok) createdProjects.push(name);
+      if (!r.ok) continue;
+      createdProjects.push(seed.name);
+
+      if (seed.default_agent_id) {
+        const project = await r.json<{ id?: string }>().catch(() => ({}) as { id?: string });
+        if (project.id) {
+          try {
+            await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/threads`, {
+              method: "POST",
+              headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": bootstrapInternalToken },
+              body: JSON.stringify({ space_id: spaceId, tenant_id: tenantId, project_id: project.id, title: seed.name }),
+            }));
+          } catch (err) {
+            console.warn(`[bootstrap] starter thread create failed (${seed.name}) for ${spaceId}:`, (err as Error).message);
+          }
+        }
+      }
     } catch (err) {
-      console.warn(`[bootstrap] project create failed (${name}) for ${spaceId}:`, (err as Error).message);
+      console.warn(`[bootstrap] project create failed (${seed.name}) for ${spaceId}:`, (err as Error).message);
     }
   }
 

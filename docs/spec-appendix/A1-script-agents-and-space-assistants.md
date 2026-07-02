@@ -1934,3 +1934,52 @@ final count with no lost updates (impossible by construction now, since there's 
 counter value left to race on); and `invalidateQuotaCache` still clears all three metrics.
 
 687 unit/contract/integration/isolation/simulation tests pass across 71 files; typecheck clean.
+
+## A1.16.19 Templates ship pre-wired projects + starter threads, bound to their agents — BUILT
+
+Closes a follow-on gap the audit's F18/F19 pass surfaced but didn't fix: Launchpad's core
+agents (`launchpad-fulfillment-v1`/`-support-v1`/`-content-v1`) were installed at provisioning
+but nothing in the data model said which project's work a given agent owns — a billing event
+always woke the generic Space Assistant space-wide, never scoped to a project. The fix: a
+project can now carry a **default_agent_id** (SpaceDO migration v18, `projects.default_agent_id`
+nullable) — a DEFAULT only, never an enforced identity, freely reassignable/clearable via
+`PATCH /spaces/:id/projects/:projectId { default_agent_id }`.
+
+**Templates declare the binding as data.** `TemplateProjectSeed` (`launchpad/spacetype.ts`) lets
+a template's `bootstrap.projects` entry be either a plain string (an unbound, reference-only
+project — e.g. "Products", "Members", "FAQ": nothing runs there automatically) or
+`{ name, default_agent_id }`. Every template that installs a fulfillment/support/content agent
+now seeds a project bound to it: creator-store (Orders→fulfillment, Support→support),
+newsletter-business (Content→content, Orders→fulfillment), micro-saas (Support→support,
+Orders→fulfillment), service-agency (Deliverables→content, Client Communication→support),
+coaching-community (Member Questions→support, Learning Materials→content), whop-seller
+(Support→support, Content→content), customer-service (Inbox→support; Escalations/FAQ stay
+unbound — human-review and reference surfaces, not agent-run). `validateLaunchpadSpaceType`
+fails fast if a project's `default_agent_id` isn't one of that same template's own `agents`.
+
+**`POST /spaces/:spaceId/bootstrap/complete`** (agents worker) now creates each seed project
+carrying its `default_agent_id`, and — for any project that has one — seeds a single starter
+thread in it (`POST /spaces/:spaceId/threads { project_id, title }`), so a builder opens on a
+pre-wired workspace (projects + a starting thread per agent) rather than an empty space. A
+project with no binding gets no starter thread. Backward-compatible: an older onboarding record
+whose `projects` are plain strings (pre-migration) is normalized the same way a string seed is.
+
+**Billing scoping.** `billing/lemon-squeezy.ts`'s `resolveFulfillmentProjectId` now matches
+`default_agent_id === "launchpad-fulfillment-v1"` first (survives a rename — the binding is
+authoritative), falling back to a project literally named "Orders" only for spaces provisioned
+before this migration. Still entirely best-effort: no project, an unreachable SPACES_WORKER, or
+any lookup error all fall back to today's space-wide Space Assistant run — the Space Assistant
+and the builder remain free to handle a billing event generally, reassign the binding, or
+delete the project outright.
+
+**Tests:** `tests/unit/spacedo-project-default-agent.test.ts` (6) — persistence through
+create/GET/list, PATCH reassign, PATCH-to-null clears the binding, omitting the field from a
+PATCH leaves it untouched. `tests/unit/bootstrap-complete-agent-projects.test.ts` (3) — bound
+projects get a starter thread, unbound projects don't, and legacy string-only onboarding records
+still work. `tests/unit/billing-fulfillment-project.test.ts` extended (+3) — binding match wins
+over an unrelated-but-similarly-named project, binding beats a same-named-but-unbound project,
+archived-and-bound is still excluded.
+
+708 unit/contract/integration/isolation/simulation tests pass; `naelao-spaces`,
+`@naelao/agents-worker`, `@naelao/billing-worker`, and `@naelao/provisioner-worker` typecheck
+clean.
