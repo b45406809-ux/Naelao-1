@@ -1983,3 +1983,76 @@ archived-and-bound is still excluded.
 708 unit/contract/integration/isolation/simulation tests pass; `naelao-spaces`,
 `@naelao/agents-worker`, `@naelao/billing-worker`, and `@naelao/provisioner-worker` typecheck
 clean.
+
+## A1.16.20 Project configurability round 2: max_threads, allowed_agent_ids, and a generalized
+## project-template catalogue (workspace-kind templates, not just customer_bot) — BUILT
+
+Follow-on to A1.16.19. Design discussion settled two axes explicitly so they don't get
+conflated: **`kind`** stays a small, closed enum with real platform-enforced behavior
+(`workspace`, `customer_bot` — unchanged, no new kind added this pass); **project templates**
+are where scenario-specific specialization ("community user monitoring," "order fulfillment,"
+etc.) belongs — a named, reusable bundle of the same knobs a builder could set by hand, not new
+platform code per business vertical.
+
+**`projects.max_threads` + `projects.allowed_agent_ids`** (SpaceDO migration v19, both nullable/
+zero-means-unlimited):
+- `max_threads` caps how many "real" conversations (primary threads + channel sessions) a
+  project hosts at once — deliberately NOT sub-agent fan-out threads (already bounded by
+  `MAX_SUB_AGENTS_PER_SPAWN`/`ConcurrencyDO`; counting ephemeral orchestration threads toward a
+  builder-facing limit would be surprising). Enforced in `SpaceDO.createThread` at the two
+  genuinely-new-row insert sites (not the idempotent update-existing paths): a project at its
+  cap rejects a new primary/channel thread with `409 thread_limit_reached`. Archiving a thread
+  frees a slot (the count query filters `status = 'active'`).
+- `allowed_agent_ids` is the thread-level "switch agent" allowlist — the specific mechanism
+  behind "if the user clicks switch agents in a thread, the list will be just those in the
+  project." `null`/`[]` = unrestricted (today's behavior, every space agent available). When
+  set, `default_agent_id` (existing or in the same PATCH) must be a member —
+  `SpaceDO.validateAgentBinding` enforces this at both `createProject` and `updateProject`
+  against the *effective* post-patch state (a caller sending only one of the two fields is
+  checked against whatever's already stored for the other).
+
+**Generalized `ProjectTemplate`** (`launchpad/project-templates.ts`) — no longer customer_bot-
+only. `kind` is now explicit per template (`workspace` | `customer_bot`); `suggested_channel`
+and `rules` are customer_bot-specific (validated as required/optional respectively by the new
+`validateProjectTemplates()`, same fail-fast-at-import pattern as
+`validateLaunchpadSpaceType`); new `max_threads`, `default_agent_id`, `allowed_agent_ids`, and
+`scheduled_jobs` (cron-scheduled ops, seeded via the existing project-scoped `scheduled_jobs`
+table — no new primitive needed) apply to any kind. `community-member-monitoring` is the
+concrete "community business template ships a preconfigured user-monitoring project" example:
+`kind: 'workspace'`, `default_agent_id`/`allowed_agent_ids` bound to the support agent, a
+weekly-digest `scheduled_jobs` entry — no `suggested_channel`, no reactive `rules` (it's
+schedule/observation-driven, not reactive-trigger-driven, which is exactly why it's `workspace`
+and not a new kind).
+
+**`POST /spaces/:spaceId/projects/from-template`** (agents worker) generalized to apply any
+catalogue entry: creates the project with its agent binding/allowlist set from the start,
+PATCHes in kind/ceiling/cap/thread-cap (+ `channel_config` only for customer_bot templates with
+a `suggested_channel`), seeds `rules` (customer_bot) and `scheduled_jobs` (any kind, scoped via
+`project_id`) — same one-call "no required follow-up edits" guarantee the original customer-bot-
+only version had, now scenario-agnostic.
+
+Explicitly deferred (per the design discussion): a persisted per-project skill/script
+attachment that the script engine re-merges into every run scoped to that project — seeding
+scripts/skills at template-application time is a bigger change to the run-time config-assembly
+path (`buildScriptEngineEnv`/`loadAgentConfig`), tracked as a follow-up, not built here. Also not
+built: the actual dashboard "switch agent in a thread" UI that would read `allowed_agent_ids` —
+this pass is the backend primitive it needs, not the frontend surface itself.
+
+**Tests:** `tests/unit/spacedo-project-configurability.test.ts` (renamed from
+`spacedo-project-default-agent.test.ts`, +13) — `allowed_agent_ids` persistence through create/
+GET/list, creation/PATCH rejected when `default_agent_id` falls outside a non-empty
+`allowed_agent_ids`, PATCH-to-`[]` clears it back to unrestricted; `max_threads` validation,
+enforcement at the cap (409 on the 3rd thread with `max_threads: 2`), archiving frees a slot,
+sub-agent threads never count toward the cap, threads with no `project_id` are never capped.
+`tests/unit/project-templates.test.ts` extended (+11) — workspace-kind template invariants, the
+`community-member-monitoring` example's binding + scheduled job, and `validateProjectTemplates`
+rejecting each new invariant violation (duplicate id, missing `suggested_channel` on a
+`customer_bot` template, non-positive spend cap, `default_agent_id` outside
+`allowed_agent_ids`, a `reply` rule missing `reply_text`). `tests/unit/projects-from-template.test.ts`
+(new, 3) — a customer_bot template still seeds channel_config/rules with no scheduled jobs; a
+workspace template sets the agent binding at creation, skips `channel_config`, and seeds exactly
+one project-scoped scheduled job; an unknown template id 404s.
+
+735 unit/contract/integration/isolation/simulation tests pass; `naelao-spaces`,
+`@naelao/agents-worker`, `@naelao/billing-worker`, and `@naelao/provisioner-worker` typecheck
+clean.

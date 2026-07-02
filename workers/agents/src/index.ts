@@ -1220,11 +1220,13 @@ app.post("/channels/:channel/connect", async (c) => {
 // The dashboard renders these as cards; applying one is filling in a name, never writing code.
 app.get("/project-templates", (c) => c.json({ data: PROJECT_TEMPLATES, count: PROJECT_TEMPLATES.length }));
 
-// POST /spaces/:spaceId/projects/from-template — creates a fully configured customer-bot
-// project in one call: the project row (kind=customer_bot, execution ceiling, spend cap,
-// channel_config) plus its starter rules (STOP/opt-out, human-takeover, greeting). The
-// builder still has to call /channels/:channel/connect with this project's id to actually
-// wire a live number/server — template application only sets up the Naelao-side config.
+// POST /spaces/:spaceId/projects/from-template — creates a fully configured project in one
+// call, from any entry in the project-templates catalogue (not just customer_bot presets):
+// the project row (kind, execution ceiling, spend cap, thread cap, agent binding/allowlist,
+// channel_config when the template suggests a channel) plus its starter rules and scheduled
+// jobs. For a customer_bot template, the builder still has to call /channels/:channel/connect
+// with this project's id to actually wire a live number/server — template application only
+// sets up the Naelao-side config.
 app.post("/spaces/:spaceId/projects/from-template", async (c) => {
   const spaceId = c.req.param("spaceId");
   const { tenantId } = getCallerIdentity(c);
@@ -1235,31 +1237,43 @@ app.post("/spaces/:spaceId/projects/from-template", async (c) => {
   const template = getProjectTemplate(body.template_id);
   if (!template) throw notFound("Project template");
 
-  // 1. Create the project.
+  // 1. Create the project (agent binding set at creation so it's consistent from the start —
+  //    createProject validates default_agent_id is a member of allowed_agent_ids when both
+  //    are set, same as a builder setting them by hand).
   const internalToken1213 = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
   const createResp = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": internalToken1213 },
-    body: JSON.stringify({ name: body.name ?? template.name, description: template.description }),
+    body: JSON.stringify({
+      name: body.name ?? template.name,
+      description: template.description,
+      ...(template.default_agent_id ? { default_agent_id: template.default_agent_id } : {}),
+      ...(template.allowed_agent_ids && template.allowed_agent_ids.length > 0 ? { allowed_agent_ids: template.allowed_agent_ids } : {}),
+    }),
   }));
   if (!createResp.ok) return c.json({ error_code: "project_create_failed", message: await createResp.text() }, 502);
   const project = await createResp.json<{ id: string; name: string }>();
 
-  // 2. Configure it as a customer-facing bot (execution ceiling, spend cap, suggested channel).
+  // 2. Configure the rest (kind, execution ceiling, spend cap, thread cap, suggested channel —
+  //    only customer_bot templates set channel_config).
   const configResp = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}`, {
     method: "PATCH",
     headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": internalToken1213 },
     body: JSON.stringify({
-      kind: "customer_bot",
+      kind: template.kind,
       execution_ceiling: template.execution_ceiling,
       daily_spend_cap_credits: template.daily_spend_cap_credits,
-      channel_config: { [template.suggested_channel]: { connected: false } },
+      ...(template.max_threads !== undefined ? { max_threads: template.max_threads } : {}),
+      ...(template.kind === "customer_bot" && template.suggested_channel
+        ? { channel_config: { [template.suggested_channel]: { connected: false } } }
+        : {}),
     }),
   }));
   if (!configResp.ok) return c.json({ error_code: "project_config_failed", message: await configResp.text() }, 502);
 
-  // 3. Seed the starter rules (STOP/opt-out + human-takeover + a couple of canned replies).
-  for (const rule of template.rules) {
+  // 3. Seed the starter rules (customer_bot's reactive no-code triggers — STOP/opt-out,
+  //    human-takeover, canned replies).
+  for (const rule of template.rules ?? []) {
     await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}/rules`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": internalToken1213 },
@@ -1267,11 +1281,24 @@ app.post("/spaces/:spaceId/projects/from-template", async (c) => {
     }));
   }
 
+  // 4. Seed the scheduled jobs (workspace templates' schedule/observation-driven work — e.g.
+  //    a weekly community digest). Scoped to this project via project_id.
+  for (const job of template.scheduled_jobs ?? []) {
+    await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/scheduled-jobs`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": internalToken1213 },
+      body: JSON.stringify({ ...job, project_id: project.id }),
+    }));
+  }
+
   return c.json({
     project_id: project.id,
     template_id: template.id,
-    suggested_channel: template.suggested_channel,
-    next_step: `POST /channels/${template.suggested_channel}/connect { space_id, secret, project_id: "${project.id}" }`,
+    kind: template.kind,
+    ...(template.suggested_channel ? { suggested_channel: template.suggested_channel } : {}),
+    ...(template.kind === "customer_bot" && template.suggested_channel
+      ? { next_step: `POST /channels/${template.suggested_channel}/connect { space_id, secret, project_id: "${project.id}" }` }
+      : {}),
   }, 201);
 });
 

@@ -22,6 +22,17 @@ function safeJsonParseObj(text: string): Record<string, unknown> {
   }
 }
 
+/** projects.allowed_agent_ids is stored as a JSON string[] or NULL (unrestricted). */
+function safeJsonParseAgentIds(text: string | null): string[] | null {
+  if (text === null) return null;
+  try {
+    const v = JSON.parse(text) as unknown;
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : null;
+  } catch {
+    return null;
+  }
+}
+
 function safeJsonParseArr(text: string): unknown[] {
   try {
     const v = JSON.parse(text) as unknown;
@@ -373,20 +384,6 @@ const MIGRATIONS: Migration[] = [
     `,
   },
   {
-    version: 18,
-    // Templates ship pre-wired projects (and, per the bootstrap flow, a starter thread inside
-    // each one) bound to whichever installed agent owns that project's work — e.g. Launchpad's
-    // creator-store template's "Orders" project defaults to launchpad-fulfillment-v1, "Support"
-    // to launchpad-support-v1. This is a DEFAULT only, not an enforced identity: any caller may
-    // still pass a different agentId to /script/run for a thread in this project. Nullable —
-    // reference/data projects (e.g. "Products", "Members", "FAQ") intentionally have no default
-    // agent, since nothing runs automatically in them.
-    description: "projects.default_agent_id (template-seeded agent binding)",
-    up: `
-      ALTER TABLE projects ADD COLUMN default_agent_id TEXT;
-    `,
-  },
-  {
     version: 14,
     // Space Assistant approval policy: "same access as the owning user, but ask before
     // acting unless the user has explicitly trusted this action." One row per space.
@@ -469,6 +466,35 @@ const MIGRATIONS: Migration[] = [
         credits    INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (project_id, day)
       );
+    `,
+  },
+  {
+    version: 18,
+    // Templates ship pre-wired projects (and, per the bootstrap flow, a starter thread inside
+    // each one) bound to whichever installed agent owns that project's work — e.g. Launchpad's
+    // creator-store template's "Orders" project defaults to launchpad-fulfillment-v1, "Support"
+    // to launchpad-support-v1. This is a DEFAULT only, not an enforced identity: any caller may
+    // still pass a different agentId to /script/run for a thread in this project. Nullable —
+    // reference/data projects (e.g. "Products", "Members", "FAQ") intentionally have no default
+    // agent, since nothing runs automatically in them.
+    description: "projects.default_agent_id (template-seeded agent binding)",
+    up: `
+      ALTER TABLE projects ADD COLUMN default_agent_id TEXT;
+    `,
+  },
+  {
+    version: 19,
+    // Per-project configurability, round 2: a hard cap on how many "real" conversations
+    // (primary threads + channel sessions — NOT ephemeral sub-agent fan-out, which is already
+    // bounded by MAX_SUB_AGENTS_PER_SPAWN/ConcurrencyDO) a project may host at once, and a
+    // restricted agent allowlist so a thread's "switch agent" surface can be scoped to just the
+    // agents relevant to this project instead of every agent in the space. Both nullable/zero
+    // means "unrestricted" (today's behavior) — a project only gets these limits when a builder,
+    // the Space Assistant, or a project template explicitly sets them.
+    description: "projects.max_threads + projects.allowed_agent_ids",
+    up: `
+      ALTER TABLE projects ADD COLUMN max_threads INTEGER NOT NULL DEFAULT 0; -- 0 = unlimited
+      ALTER TABLE projects ADD COLUMN allowed_agent_ids TEXT; -- JSON string[]; NULL = unrestricted
     `,
   },
 ];
@@ -1367,21 +1393,50 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   // ── Projects (thread grouping) ──────────────────────────────────────────────
+
+  /** When both are set, default_agent_id must be one of allowed_agent_ids — a project can't
+   *  default to an agent its own thread-level "switch agent" allowlist excludes. A null/empty
+   *  allowed_agent_ids means unrestricted, so there's nothing to check against. */
+  private static validateAgentBinding(
+    defaultAgentId: string | null | undefined,
+    allowedAgentIds: string[] | null | undefined
+  ): string | null {
+    if (defaultAgentId && allowedAgentIds && allowedAgentIds.length > 0 && !allowedAgentIds.includes(defaultAgentId)) {
+      return `default_agent_id '${defaultAgentId}' must be included in allowed_agent_ids`;
+    }
+    return null;
+  }
+
   private listProjects(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
-    const rows = queryAll<{ id: string; space_id: string; name: string; description: string; status: string; default_agent_id: string | null; created_at: string }>(
+    const rows = queryAll<{
+      id: string; space_id: string; name: string; description: string; status: string;
+      default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null; created_at: string;
+    }>(
       this.ctx.storage.sql as never,
-      "SELECT id, space_id, name, description, status, default_agent_id, created_at FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at",
+      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, created_at FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at",
       spaceId
     );
-    return Response.json({ data: rows, count: rows.length });
+    return Response.json({
+      data: rows.map((r) => ({ ...r, allowed_agent_ids: safeJsonParseAgentIds(r.allowed_agent_ids) })),
+      count: rows.length,
+    });
   }
 
   private async createProject(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id: string; name: string; description?: string; tenant_id?: string; default_agent_id?: string }>();
+    const body = await request.json<{
+      space_id: string; name: string; description?: string; tenant_id?: string;
+      default_agent_id?: string; max_threads?: number; allowed_agent_ids?: string[];
+    }>();
     if (!body.space_id || !body.name) {
       return Response.json({ error_code: "bad_request", message: "space_id and name are required" }, { status: 400 });
     }
+    if (body.max_threads !== undefined && (!Number.isInteger(body.max_threads) || body.max_threads < 0)) {
+      return Response.json({ error_code: "bad_request", message: "max_threads must be a non-negative integer" }, { status: 400 });
+    }
+    const bindingError = SpaceDO.validateAgentBinding(body.default_agent_id, body.allowed_agent_ids);
+    if (bindingError) return Response.json({ error_code: "bad_request", message: bindingError }, { status: 400 });
+
     // Check BEFORE inserting — createProject is idempotent on (space_id, name), and
     // project.created should only fire on a genuinely NEW project, not a re-run of bootstrap.
     const alreadyExisted = !!queryOne<{ id: string }>(
@@ -1402,15 +1457,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
+    const allowedAgentIdsJson = body.allowed_agent_ids && body.allowed_agent_ids.length > 0
+      ? JSON.stringify(body.allowed_agent_ids)
+      : null;
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO projects (id, space_id, name, description, status, default_agent_id, created_at) VALUES (?, ?, ?, ?, 'active', ?, ?)
+      `INSERT INTO projects (id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, created_at)
+       VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
        ON CONFLICT(space_id, name) DO NOTHING`,
-      id, body.space_id, body.name, body.description ?? "", body.default_agent_id ?? null, now
+      id, body.space_id, body.name, body.description ?? "", body.default_agent_id ?? null,
+      body.max_threads ?? 0, allowedAgentIdsJson, now
     );
-    const row = queryOne<{ id: string; name: string; status: string; default_agent_id: string | null; created_at: string }>(
+    const row = queryOne<{
+      id: string; name: string; status: string; default_agent_id: string | null;
+      max_threads: number; allowed_agent_ids: string | null; created_at: string;
+    }>(
       this.ctx.storage.sql as never,
-      "SELECT id, name, status, default_agent_id, created_at FROM projects WHERE space_id = ? AND name = ?",
+      "SELECT id, name, status, default_agent_id, max_threads, allowed_agent_ids, created_at FROM projects WHERE space_id = ? AND name = ?",
       body.space_id, body.name
     );
     if (!alreadyExisted && row) {
@@ -1436,8 +1499,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         );
       }
     }
+    const responseRow = row
+      ? { ...row, allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) }
+      : { id, name: body.name, status: "active", default_agent_id: body.default_agent_id ?? null, max_threads: body.max_threads ?? 0, allowed_agent_ids: body.allowed_agent_ids ?? null, created_at: now };
     return Response.json(
-      { ...(row ?? { id, name: body.name, status: "active", created_at: now }), possible_duplicates: possibleDuplicates },
+      { ...responseRow, possible_duplicates: possibleDuplicates },
       { status: 201 }
     );
   }
@@ -1497,10 +1563,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const row = queryOne<{
       id: string; space_id: string; name: string; description: string; status: string;
       kind: string; execution_ceiling: number; daily_spend_cap_credits: number; channel_config: string;
-      default_agent_id: string | null; created_at: string;
+      default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null; created_at: string;
     }>(this.ctx.storage.sql as never, "SELECT * FROM projects WHERE id = ?", projectId);
     if (!row) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
-    return Response.json({ ...row, channel_config: safeJsonParseObj(row.channel_config) });
+    return Response.json({ ...row, channel_config: safeJsonParseObj(row.channel_config), allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) });
   }
 
   private async updateProject(projectId: string, request: Request): Promise<Response> {
@@ -1517,10 +1583,30 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
        *  a project is never permanently bound to one agent; the builder/Space Assistant can
        *  always reassign or unset it. */
       default_agent_id?: string | null;
+      /** 0/omitted = unlimited. Caps "real" conversations (primary threads + channel
+       *  sessions) — never counts ephemeral sub-agent fan-out threads. */
+      max_threads?: number;
+      /** The thread-level "switch agent" allowlist. null/[] clears it (unrestricted — any
+       *  space agent). When set, default_agent_id (existing or in this same PATCH) must be
+       *  a member. */
+      allowed_agent_ids?: string[] | null;
     }>().catch(() => ({}) as Record<string, never>);
 
-    const existing = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE id = ?", projectId);
+    const existing = queryOne<{ id: string; default_agent_id: string | null; allowed_agent_ids: string | null }>(
+      this.ctx.storage.sql as never, "SELECT id, default_agent_id, allowed_agent_ids FROM projects WHERE id = ?", projectId
+    );
     if (!existing) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+
+    if (body.max_threads !== undefined && (!Number.isInteger(body.max_threads) || body.max_threads < 0)) {
+      return Response.json({ error_code: "bad_request", message: "max_threads must be a non-negative integer" }, { status: 400 });
+    }
+    // Cross-validate against the EFFECTIVE post-patch state, not just what's in this one PATCH
+    // body — a caller might only send default_agent_id while allowed_agent_ids stays as
+    // whatever's already stored (or vice versa).
+    const effectiveDefaultAgentId = body.default_agent_id !== undefined ? body.default_agent_id : existing.default_agent_id;
+    const effectiveAllowedAgentIds = body.allowed_agent_ids !== undefined ? body.allowed_agent_ids : safeJsonParseAgentIds(existing.allowed_agent_ids);
+    const bindingError = SpaceDO.validateAgentBinding(effectiveDefaultAgentId, effectiveAllowedAgentIds);
+    if (bindingError) return Response.json({ error_code: "bad_request", message: bindingError }, { status: 400 });
 
     if (body.status !== undefined) {
       if (body.status !== "active" && body.status !== "archived") {
@@ -1559,6 +1645,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     if (body.default_agent_id !== undefined) {
       execute(this.ctx.storage.sql as never, "UPDATE projects SET default_agent_id = ? WHERE id = ?", body.default_agent_id, projectId);
+    }
+    if (body.max_threads !== undefined) {
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET max_threads = ? WHERE id = ?", body.max_threads, projectId);
+    }
+    if (body.allowed_agent_ids !== undefined) {
+      const json = body.allowed_agent_ids && body.allowed_agent_ids.length > 0 ? JSON.stringify(body.allowed_agent_ids) : null;
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET allowed_agent_ids = ? WHERE id = ?", json, projectId);
     }
     return this.getProject(projectId);
   }
@@ -1743,6 +1836,27 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ data: rows, count: rows.length });
   }
 
+  /**
+   * projects.max_threads (0 = unlimited) caps how many "real" conversations a project hosts at
+   * once — primary threads and channel sessions, deliberately NOT sub_agent fan-out (that's
+   * already bounded by MAX_SUB_AGENTS_PER_SPAWN/ConcurrencyDO, and counting ephemeral
+   * orchestration threads toward a builder-facing limit would be surprising). Only archived
+   * threads don't count, so archiving old conversations reopens room under the cap.
+   */
+  private isThreadLimitReached(projectId: string | null | undefined, kind: string): boolean {
+    if (!projectId || kind === "sub_agent") return false;
+    const project = queryOne<{ max_threads: number }>(
+      this.ctx.storage.sql as never, "SELECT max_threads FROM projects WHERE id = ?", projectId
+    );
+    if (!project || project.max_threads <= 0) return false;
+    const countRow = queryOne<{ n: number }>(
+      this.ctx.storage.sql as never,
+      "SELECT COUNT(*) as n FROM threads WHERE project_id = ? AND status = 'active' AND thread_kind IN ('primary','channel')",
+      projectId
+    );
+    return (countRow?.n ?? 0) >= project.max_threads;
+  }
+
   private async createThread(request: Request): Promise<Response> {
     const body = await request.json<{
       id?: string;
@@ -1788,6 +1902,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", existing.id);
         return Response.json(row, { status: 201 });
       }
+      if (this.isThreadLimitReached(body.project_id, kind)) {
+        return Response.json({ error_code: "thread_limit_reached", message: "This project has reached its configured max_threads" }, { status: 409 });
+      }
       execute(
         this.ctx.storage.sql as never,
         `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, created_at, updated_at)
@@ -1804,6 +1921,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (existingById) {
       execute(this.ctx.storage.sql as never, "UPDATE threads SET updated_at = ? WHERE id = ?", now, id);
     } else {
+      if (this.isThreadLimitReached(body.project_id, kind)) {
+        return Response.json({ error_code: "thread_limit_reached", message: "This project has reached its configured max_threads" }, { status: 409 });
+      }
       execute(
         this.ctx.storage.sql as never,
         `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, created_at, updated_at)
