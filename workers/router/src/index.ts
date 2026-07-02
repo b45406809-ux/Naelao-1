@@ -197,8 +197,14 @@ const DEFAULT_RATE_LIMIT = 120;
 api.use("*", async (c, next) => {
   if (!c.env.RATE_LIMIT_DO) return next();
   const claims = c.get("claims");
-  const bucketKey = claims?.sub ?? c.req.header("x-forwarded-for") ?? "anonymous";
-  const doId = c.env.RATE_LIMIT_DO.idFromName("global-rate-limiter");
+  // F7: X-Forwarded-For is client-supplied on the first hop — an unauthenticated attacker can
+  // rotate it to mint unlimited fresh buckets (bypass) or converge onto a victim's IP (targeted
+  // starvation). cf-connecting-ip is set by Cloudflare's edge and cannot be spoofed by the
+  // client. Sharding by idFromName(bucketKey) (was a single "global-rate-limiter" DO for the
+  // whole platform) also means each key gets its own DO instead of serializing all traffic
+  // through one chokepoint.
+  const bucketKey = claims?.sub ?? c.req.header("cf-connecting-ip") ?? "anonymous";
+  const doId = c.env.RATE_LIMIT_DO.idFromName(bucketKey);
   const stub = c.env.RATE_LIMIT_DO.get(doId);
   try {
     const rl = await stub.fetch("http://do/check", {

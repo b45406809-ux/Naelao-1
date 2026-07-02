@@ -8,6 +8,13 @@
 // HTTP interface (internal):
 //   POST /check  { key: string, limit: number } → { allowed: boolean, remaining: number, retry_after_ms: number }
 //   POST /reset  { key: string }                → 204
+//
+// F7: the router used to route EVERY request on the platform through idFromName("global-rate-
+// limiter") — a single DO serializing all traffic platform-wide. The router now shards by
+// calling idFromName(bucketKey) itself, so each key gets its own DO instance and this table
+// holds at most one row (this DO's own key). Since buckets were never pruned before (rows
+// accumulated forever) and a sharded DO now holds exactly one key, an idle DO can free its
+// storage entirely via an alarm instead of needing a sweeper.
 
 import { DurableObject } from "cloudflare:workers";
 
@@ -18,6 +25,10 @@ interface BucketRow {
   capacity: number;
   rate_per_sec: number;
 }
+
+// How long a sharded bucket DO waits with no /check calls before it clears its own storage.
+// Reset on every /check, so this only fires after genuine idle time, not mid-burst traffic.
+const IDLE_CLEANUP_MS = 10 * 60 * 1000;
 
 export class RateLimitDO extends DurableObject {
   private initialized = false;
@@ -46,6 +57,10 @@ export class RateLimitDO extends DurableObject {
       if (!body.key || !body.limit) {
         return Response.json({ error: "key and limit required" }, { status: 400 });
       }
+
+      // Push the idle-cleanup alarm back on every call — it only actually fires once this
+      // (now single-key) DO has seen no traffic for IDLE_CLEANUP_MS.
+      await this.ctx.storage.setAlarm(Date.now() + IDLE_CLEANUP_MS);
 
       const perMinuteLimit = body.limit;
       const capacity = perMinuteLimit * 2; // allow burst up to 2× per-minute limit
@@ -107,5 +122,11 @@ export class RateLimitDO extends DurableObject {
     }
 
     return Response.json({ error: "not_found" }, { status: 404 });
+  }
+
+  // Fires only after IDLE_CLEANUP_MS with no /check calls (each call reschedules it) — frees
+  // this bucket's storage since a sharded DO holds exactly one key's row.
+  override async alarm(): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM buckets");
   }
 }
