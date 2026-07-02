@@ -5,6 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "development"
+CORS_ALLOWLIST = "http://localhost:3000,http://localhost:3001"
 
 [[d1_databases]]
 binding = "PLATFORM_DB"
@@ -61,8 +62,8 @@ service = "naelao-credentials"
 
 [env.staging]
 name = "naelao-router-staging"
-vars = { ENVIRONMENT = "staging" }
+vars = { ENVIRONMENT = "staging", CORS_ALLOWLIST = "https://staging-dashboard.naelao.com,https://staging-portal.naelao.com" }
 
 [env.production]
 name = "naelao-router-production"
-vars = { ENVIRONMENT = "production" }
+vars = { ENVIRONMENT = "production", CORS_ALLOWLIST = "https://dashboard.naelao.com,https://portal.naelao.com" }

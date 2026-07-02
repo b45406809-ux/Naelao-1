@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { cors, requestId, jwtAuth, errorResponse } from "@naelao/http";
+import { requestId, jwtAuth, errorResponse } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
 import type { NaelaoJwtClaims } from "@naelao/types";
 export { RateLimitDO } from "./RateLimitDO";
@@ -8,6 +8,7 @@ export interface Env {
   ENVIRONMENT: string;
   JWT_SECRET: string;
   PLATFORM_SECRET: string;
+  CORS_ALLOWLIST?: string;
   SESSION_REVOCATION: KVNamespace;
   CONFIG: KVNamespace;
   NONCE_STORE: KVNamespace;
@@ -100,8 +101,33 @@ function validateEnv(env: Env): void {
 
 const app = new Hono<{ Bindings: Env }>();
 
-// ── Global middleware ────────────────────────────────────────────────────────
-app.use("*", cors(["*"]));
+// F11: cors(["*"]) allowed any origin to drive cross-origin requests carrying a Bearer JWT.
+// The allowlist is env-driven (CORS_ALLOWLIST, comma-separated) because it must be read per
+// request from c.env — a static cors(...) factory bakes its list in at module-load time,
+// before env is available. Never echo "*" — only an exact allowlisted origin, or nothing.
+app.use("*", async (c, next) => {
+  const origin = c.req.header("origin") ?? "";
+  const allowlist = (c.env.CORS_ALLOWLIST ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const allowed = allowlist.includes(origin) ? origin : "";
+
+  if (c.req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": allowed,
+        "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Request-Id",
+        "Access-Control-Max-Age": "86400",
+      },
+    });
+  }
+  await next();
+  if (allowed) c.res.headers.set("Access-Control-Allow-Origin", allowed);
+  return;
+});
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
 
