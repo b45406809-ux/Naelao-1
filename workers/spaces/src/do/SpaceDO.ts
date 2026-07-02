@@ -504,6 +504,13 @@ interface CrossSpaceGrantRow {
 // In-memory only; intentionally lost on DO hibernation (acceptable for 30s TTL).
 const DENY_CACHE_TTL_MS = 30_000;
 
+// How long a presence row survives with no heartbeat before heartbeatPresence's opportunistic
+// prune deletes it — deliberately much longer than PRESENCE_FRESHNESS_WINDOW_MS (~90s, which
+// only governs GET /presence's "who's active" filter, not storage). 24h gives ample room for a
+// legitimately-idle-but-still-open session while still bounding table growth from departed
+// members and one-time invitees.
+export const PRESENCE_PRUNE_CUTOFF_MS = 24 * 60 * 60 * 1000;
+
 // ── SpaceDO ──────────────────────────────────────────────────────────────────
 export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private initialized = false;
@@ -1405,6 +1412,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       `INSERT INTO presence (space_id, user_id, project_id, thread_id, last_seen_at) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(space_id, user_id) DO UPDATE SET project_id = excluded.project_id, thread_id = excluded.thread_id, last_seen_at = excluded.last_seen_at`,
       body.space_id, body.user_id, body.project_id ?? null, body.thread_id ?? null, now
+    );
+    // Opportunistic prune: presence's PK is (space_id, user_id), so a row only ever grows the
+    // table when a NEW user heartbeats for the first time — but that row then lives forever
+    // (isPresenceFresh only filters GET /presence, it never deletes). A space with high churn
+    // (departed team members, one-time invitees) would accumulate a stale row per historical
+    // user indefinitely. No alarm/cron needed for this: every heartbeat opportunistically
+    // sweeps its own space's rows older than 24h — far past isPresenceFresh's ~90s window, so
+    // this only removes rows that were never going to show as "active" again anyway.
+    execute(
+      this.ctx.storage.sql as never,
+      "DELETE FROM presence WHERE space_id = ? AND last_seen_at < ?",
+      body.space_id, now - PRESENCE_PRUNE_CUTOFF_MS
     );
     return Response.json({ ok: true, last_seen_at: now });
   }

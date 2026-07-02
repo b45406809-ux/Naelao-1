@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { SpaceDO, PRESENCE_PRUNE_CUTOFF_MS } from "../../workers/spaces/src/do/SpaceDO.js";
+import { createDOSqlStorage, type DOSqlStorage } from "./helpers/sqlite-do-shim.js";
 import { nameSimilarity, findPossibleDuplicateProjects, isPresenceFresh, PRESENCE_FRESHNESS_WINDOW_MS } from "@naelao/events";
 
 // Space collaboration (A1.8): "two members' assistants do not build two companies because
@@ -199,5 +199,66 @@ describe("SpaceDO — presence", () => {
     await call(spaceDO, "/presence", "POST", { space_id: "space1", user_id: "user-1" });
     const otherSpace = await call(spaceDO, "/presence?space_id=space2", "GET");
     expect(otherSpace.json.data).toEqual([]);
+  });
+
+  // A1.16.15: presence's PK is (space_id, user_id) — a row only grows the table on a brand-new
+  // user's first heartbeat, but then lives forever (isPresenceFresh only filters GET, it never
+  // deletes). heartbeatPresence now opportunistically prunes rows older than
+  // PRESENCE_PRUNE_CUTOFF_MS (24h) on every heartbeat — these two tests need to see past the
+  // HTTP layer (GET only ever returns fresh rows either way) to distinguish "filtered from the
+  // active list" from "physically deleted," so they construct the DO with direct access to the
+  // underlying SQL storage rather than using the shared `spaceDO`/`call` helpers above.
+  function makeSpaceDOWithSql(): { doInstance: SpaceDO; sql: DOSqlStorage } {
+    const sql = createDOSqlStorage();
+    const doInstance = new SpaceDO({ storage: { sql } } as never, { PLATFORM_SECRET: "test-secret" } as never);
+    return { doInstance, sql };
+  }
+
+  function presenceRowCount(sql: DOSqlStorage, spaceId: string, userId: string): number {
+    return sql.exec<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM presence WHERE space_id = ? AND user_id = ?",
+      spaceId, userId
+    ).toArray()[0]!.n;
+  }
+
+  it("a >24h-stale row is physically deleted (not just filtered) after another user's heartbeat", async () => {
+    const { doInstance, sql } = makeSpaceDOWithSql();
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      await call(doInstance, "/presence", "POST", { space_id: "space1", user_id: "user-1" });
+      expect(presenceRowCount(sql, "space1", "user-1")).toBe(1);
+
+      vi.setSystemTime(PRESENCE_PRUNE_CUTOFF_MS + 1);
+      // A DIFFERENT user's heartbeat is what triggers the opportunistic prune.
+      await call(doInstance, "/presence", "POST", { space_id: "space1", user_id: "user-2" });
+
+      expect(presenceRowCount(sql, "space1", "user-1")).toBe(0); // physically gone
+      expect(presenceRowCount(sql, "space1", "user-2")).toBe(1); // the fresh heartbeat itself survives
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a stale-but-<24h row is filtered from GET but still physically present in the table", async () => {
+    const { doInstance, sql } = makeSpaceDOWithSql();
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      await call(doInstance, "/presence", "POST", { space_id: "space1", user_id: "user-1" });
+
+      // Past isPresenceFresh's ~90s window (so GET excludes it) but well under the 24h prune
+      // cutoff (so the prune must NOT touch it).
+      vi.setSystemTime(PRESENCE_FRESHNESS_WINDOW_MS + 1);
+      expect(PRESENCE_FRESHNESS_WINDOW_MS + 1).toBeLessThan(PRESENCE_PRUNE_CUTOFF_MS);
+      await call(doInstance, "/presence", "POST", { space_id: "space1", user_id: "user-2" });
+
+      const list = await call(doInstance, "/presence?space_id=space1", "GET");
+      expect(list.json.data.map((r: { user_id: string }) => r.user_id)).toEqual(["user-2"]); // user-1 filtered out
+
+      expect(presenceRowCount(sql, "space1", "user-1")).toBe(1); // but still in the table
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

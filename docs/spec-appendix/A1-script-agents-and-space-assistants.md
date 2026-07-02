@@ -1617,3 +1617,33 @@ untouched):
   `handleAgentTick` no-op-guard tests (missing `connectorName`/`jobId`).
 
 641 unit/contract/integration/isolation/simulation tests pass; 72/72 typecheck clean.
+
+---
+
+## A1.16.15 Presence rows never deleted — unbounded DO SQLite growth — FIXED
+
+`presence`'s primary key is `(space_id, user_id)`, so `heartbeatPresence` upserts rather than
+inserts a fresh row every time — but `isPresenceFresh` only filters `GET /presence`'s "who's
+active" list, it never deletes anything. A row created by a departed team member or a
+one-time invitee lives in the table forever, so a space's presence table grows monotonically
+with its total historical distinct-heartbeat-user count, not its current active count.
+
+**Fix:** `heartbeatPresence` now runs an opportunistic prune after its upsert —
+`DELETE FROM presence WHERE space_id = ? AND last_seen_at < ?` with a 24h cutoff
+(`PRESENCE_PRUNE_CUTOFF_MS`, exported from `SpaceDO.ts`) — deliberately much longer than
+`PRESENCE_FRESHNESS_WINDOW_MS` (~90s, the "who's active right now" GET filter) so it only ever
+removes rows that were never going to show as active again regardless. No alarm/cron needed:
+every heartbeat sweeps its own space's stale rows as a side effect, bounding growth without
+adding a new scheduled job to the platform.
+
+**Tests:** `tests/unit/space-collaboration.test.ts`'s "SpaceDO — presence" block extended (+2,
+20 → 22): both tests construct the DO with direct access to the underlying `DOSqlStorage`
+(not just the HTTP `call` helper) because `GET /presence` returns identical results — "not in
+the response" — whether a stale row was pruned or merely filtered; distinguishing "physically
+deleted" from "filtered from the active list" requires querying the raw table. A row past the
+24h cutoff is confirmed gone from the table (`COUNT(*) = 0`) after a *different* user's
+heartbeat triggers the prune; a row past the ~90s freshness window but still under 24h is
+confirmed filtered from `GET /presence`'s response while still physically present in the
+table (`COUNT(*) = 1`).
+
+643 unit/contract/integration/isolation/simulation tests pass; 72/72 typecheck clean.
