@@ -1458,3 +1458,30 @@ questions are already built end-to-end, not something this fix needed to add:
 **Tests:** `tests/unit/provisioner-owner-member.test.ts` (4) — owner registered with a verified
 token scoped to the right tenant, no-op (not a throw) on missing userId, no-op (not a throw)
 on a failed downstream call, and the reseller child-tenant token-scoping shape specifically.
+
+---
+
+## A1.16.12 `removeMember` was unscoped — cross-space member deletion — FIXED
+
+`SpaceDO.removeMember` (`workers/spaces/src/do/SpaceDO.ts`) ran `DELETE FROM space_members
+WHERE user_id = ?` with no `space_id` predicate, even though `space_members` is keyed
+`(space_id, user_id)` and one SpaceDO can host more than one space row (a sub-space/department
+registry — see A1.16.9's threads/agent-definitions gating for the same "one DO, many spaces"
+shape). Removing a member from one department silently removed them from every other space
+that DO hosted, including the root space — a real correctness/authorization bug: `addMember`
+always wrote a space-scoped row, but the only way to remove one un-scoped anything sharing
+that `user_id` in the same DO.
+
+**Fix:** the DELETE route (`DELETE /members/:userId`) now reads `space_id` from the query
+string — the members proxy in `workers/spaces/src/index.ts` already appends `?space_id=...`
+to every forwarded request (same as `GET /members?space_id=` does), so no proxy change was
+needed. `removeMember(userId, spaceId)` now runs `DELETE FROM space_members WHERE space_id = ?
+AND user_id = ?`, and returns 400 if `space_id` is missing rather than silently falling back
+to an unscoped delete.
+
+**Tests:** `tests/unit/space-members-scoping.test.ts` (3), against a real `SpaceDO` + real
+SQLite (`sqlite-do-shim`, the same pattern as `space-collaboration.test.ts`): removing a user
+from one space in a DO hosting two spaces leaves their membership in the other space intact
+(the actual regression); a delete with no `space_id` is rejected (400) rather than silently
+falling through to an unscoped delete; removing a user who isn't a member of the target space
+is a harmless no-op.

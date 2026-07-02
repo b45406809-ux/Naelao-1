@@ -624,10 +624,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/members") {
         return this.addMember(request);
       }
-      // DELETE /members/:userId
+      // DELETE /members/:userId?space_id=... (the members proxy in workers/spaces/src/index.ts
+      // always appends space_id to the forwarded query string, same as GET /members does)
       const memberMatch = url.pathname.match(/^\/members\/([^/]+)$/);
       if (method === "DELETE" && memberMatch?.[1]) {
-        return this.removeMember(memberMatch[1]);
+        return this.removeMember(memberMatch[1], url.searchParams.get("space_id") ?? "");
       }
 
       // ── space registry / hierarchy endpoints ──────────────────────────────────
@@ -1287,9 +1288,21 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return Response.json({ space_id: body.space_id, user_id: body.user_id, role: body.role ?? "member" }, { status: 201 });
   }
 
-  private removeMember(userId: string): Response {
-    execute(this.ctx.storage.sql as never, "DELETE FROM space_members WHERE user_id = ?", userId);
-    return Response.json({ deleted: true, user_id: userId });
+  private removeMember(userId: string, spaceId: string): Response {
+    // G-SEC (found while tracing owner-membership, A1.16.11): this used to DELETE by user_id
+    // alone. One SpaceDO can host multiple space rows (a sub-space/department registry, see
+    // A1.16.9's threads/agent-definitions gating) — an unscoped delete removed a member from
+    // EVERY space in that DO at once, not just the one the caller meant to remove them from.
+    if (!spaceId) {
+      return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+    }
+    execute(
+      this.ctx.storage.sql as never,
+      "DELETE FROM space_members WHERE space_id = ? AND user_id = ?",
+      spaceId,
+      userId
+    );
+    return Response.json({ deleted: true, space_id: spaceId, user_id: userId });
   }
 
   // ── Projects (thread grouping) ──────────────────────────────────────────────
