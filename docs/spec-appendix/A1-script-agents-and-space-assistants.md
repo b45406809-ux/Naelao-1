@@ -2089,3 +2089,43 @@ agents worker, channels/connect → agents worker, and both the exact `/spaces` 
 catch-all itself, only its priority relative to the specific routes).
 
 741 unit/contract/integration/isolation/simulation tests pass; `naelao-router` typechecks clean.
+
+### A1.16.22 Spec §11 `requires_approval_for` was never enforced for Launchpad project agents
+— FIXED.
+
+`launchpadAgentToProfile` (profiles.ts) wrote an Autopilot agent's approval gates (e.g.
+`launchpad-fulfillment-v1`'s `["customer_email_send", "refund_issue"]`) as PROSE under a
+`# Approval Gates (HITL)` heading in `agents.md` — for the model to read. But
+`loop.ts`'s `parseRequiresApprovalFor` only ever matched a structurally different
+`## requires_approval_for` markdown heading followed by `- ` bullets — a shape no
+agent-authoring path in the codebase actually produced. So `parseRequiresApprovalFor(agentsMd)`
+always returned an empty set, and `NaelaoAgentDO.handleScriptRun` ran every project-bound
+Launchpad agent (fulfillment, support, etc.) under `gate_listed` mode with an empty gated-set —
+i.e. nothing was ever gated, silently. An Autopilot-tier fulfillment agent could issue a refund
+or send a customer email with no HITL pause at all, defeating the one guardrail spec §11
+requires for that tier.
+
+Fix: carry the gate list structurally instead of through prose. `AgentConfig` (agent-config.ts)
+gained an optional `requiresApprovalFor?: string[]` field — persisted inside the existing
+`scripts.json` R2 file (a `requires_approval_for` JSON key lifted/lowered by
+`loadAgentConfig`/`writeAgentConfig`), not a fifth file — an agent is still defined by exactly
+the four files. `launchpadAgentToProfile` now sets `config.requiresApprovalFor =
+[...def.requires_approval_for]` alongside (not instead of) the human-readable prose section,
+which stays for the model. `NaelaoAgentDO.handleScriptRun` and `handleChannelHeartbeat` now
+read `config.requiresApprovalFor` first, falling back to
+`parseRequiresApprovalFor(config.agentsMd)` only when the structural field is absent (agents
+provisioned before this fix). `loop.ts`'s `isGated` is now exported so the gate/allowlist
+semantics (`gate_listed` = allowlist of what's gated; `gate_unless_listed` = allowlist of what's
+pre-approved) are directly testable without re-deriving them.
+
+**Tests:** `tests/unit/approval-gates-structural.test.ts` (new, 5) — `launchpadAgentToProfile`
+carries `requires_approval_for` onto `AgentConfig.requiresApprovalFor` structurally; the prose
+section in `agents.md` is confirmed NOT structurally parseable (proving the original bug); the
+field round-trips through `writeAgentConfig`/`loadAgentConfig` over R2 without loss; a
+provisioned `launchpad-fulfillment-v1` profile gates `customer_email_send` and `refund_issue`
+(`isGated(..., "gate_listed") === true`) while leaving an unlisted action (`web_search`)
+ungated; and a legacy config with no persisted field falls back to parsing a
+`## requires_approval_for` heading in `agents.md` rather than crashing or silently un-gating.
+
+746 unit/contract/integration/isolation/simulation tests pass; `naelao-agents-worker` and
+`naelao-provisioner-worker` typecheck clean.

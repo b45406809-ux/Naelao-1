@@ -26,6 +26,14 @@ import { fingerprintSimilarity, isMatch, isPartial } from "./fingerprint.js";
 import { FIND_CONFIDENCE_FLOOR } from "./script-find.js";
 
 /**
+ * LEGACY FALLBACK ONLY (spec §11). The enforced source of truth is the structural
+ * `AgentConfig.requiresApprovalFor` field (agent-config.ts, persisted in scripts.json and
+ * written by `launchpadAgentToProfile` from `def.requires_approval_for`) — no agent-authoring
+ * path writes a `## requires_approval_for` markdown heading into agents.md anymore (the
+ * human-readable "# Approval Gates (HITL)" section is prose for the model, not this parser).
+ * Callers should use `config.requiresApprovalFor` and only fall back to parsing agents.md via
+ * this function for agents provisioned before the structural field existed.
+ *
  * Parse the `requires_approval_for:` section from agents.md.
  * Looks for a fenced block or a yaml-list after the heading, e.g.:
  *   ## requires_approval_for
@@ -52,7 +60,7 @@ export function parseRequiresApprovalFor(agentsMd: string): Set<string> {
  *     ALLOWLIST of what's PRE-APPROVED. Everything else is gated by default — "same access
  *     as the owning user, but ask first unless the user has explicitly trusted this action."
  */
-function isGated(actionName: string, gatedActions: Set<string>, mode: ApprovalMode): boolean {
+export function isGated(actionName: string, gatedActions: Set<string>, mode: ApprovalMode): boolean {
   return mode === "gate_unless_listed" ? !gatedActions.has(actionName) : gatedActions.has(actionName);
 }
 

@@ -24,11 +24,13 @@ export { runObserve, observeFilesystem, observeApi } from "./observe.js";
 export {
   runScriptLoop,
   parseRequiresApprovalFor,
+  isGated,
   DEFAULT_ESCALATION,
   type Reasoner,
   type ReasonDecision,
   type EscalationConfig,
   type RunLoopOptions,
+  type ApprovalMode,
 } from "./loop.js";
 export {
   loadAgentConfig,

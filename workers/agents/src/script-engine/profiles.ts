@@ -207,6 +207,9 @@ ${BASE_AGENTS_MD}`,
         startup_observe: "observe_filesystem",
       },
       skills: { skills: [] },
+      // Structural gate list (spec §11) — the "# Approval Gates (HITL)" prose above is for the
+      // model to read; this is what NaelaoAgentDO.handleScriptRun actually enforces against.
+      requiresApprovalFor: [...def.requires_approval_for],
     },
   };
 }

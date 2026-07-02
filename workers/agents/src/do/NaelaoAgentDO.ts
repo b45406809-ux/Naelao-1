@@ -1697,14 +1697,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     // Approval policy. A project-bound Naelao Agent keeps the ordinary allowlist-of-gated
-    // actions from agents.md (spec §10). The Space Assistant (no projectId) is different:
+    // actions (spec §11, appendix A1.16.1). The Space Assistant (no projectId) is different:
     // "same access as the owning user, but ask first unless the user has explicitly trusted
     // this action" — always_ask (default) gates everything except auto_approved_actions;
     // yolo skips asking entirely. See loop.ts's ApprovalMode.
     let requiresApprovalFor: string[];
     let approvalMode: "gate_listed" | "gate_unless_listed" = "gate_listed";
     if (projectId) {
-      requiresApprovalFor = [...parseRequiresApprovalFor(config.agentsMd)];
+      // Structural config.requiresApprovalFor (agent-config.ts, written by
+      // launchpadAgentToProfile from def.requires_approval_for) is the enforced source of
+      // truth. parseRequiresApprovalFor(agentsMd) only matched a `## requires_approval_for`
+      // markdown heading no profile actually writes — agentsMd carries the gates as prose under
+      // "# Approval Gates (HITL)" instead — so relying on it alone silently gated nothing.
+      // Fall back to the markdown parse only for agents provisioned before this field existed.
+      requiresApprovalFor = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];
     } else {
       const policy = await this.fetchAssistantPolicy(spaceId, tenantId);
       if (policy?.approval_mode === "yolo") {
@@ -2068,7 +2074,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!engineEnv) return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     const config = await loadAgentConfig(engineEnv.scriptsBucket, spaceId, agentId);
     if (!config) return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
-    const requiresApprovalFor = [...parseRequiresApprovalFor(config.agentsMd)];
+    // Same structural-config-first, agents.md-parse-fallback precedence as handleScriptRun above.
+    const requiresApprovalFor = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];
     const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
     const model = body.model ?? "claude-haiku-4-5-20251001";
     const reasoner = new GatewayReasoner({

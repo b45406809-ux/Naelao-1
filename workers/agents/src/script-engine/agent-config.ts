@@ -37,7 +37,23 @@ export interface AgentConfig {
   systemPrompt: string;
   scripts: ScriptsConfig;
   skills: SkillsConfig;
+  /**
+   * Structural HITL approval-gate allowlist (spec §11, appendix A1.16.1) — the action names
+   * this agent must pause and request owner approval for before executing (loop.ts's
+   * `gate_listed` mode). This is the enforced source of truth. `agents.md`'s
+   * "# Approval Gates (HITL)" prose section is for the MODEL to read (so it knows to ask), not
+   * for the runtime to parse — a prior version relied on parsing a `## requires_approval_for`
+   * markdown heading that no agent-authoring path ever actually wrote, so nothing was ever
+   * gated. Absent/undefined only for agents provisioned before this field existed; callers
+   * MUST fall back to `parseRequiresApprovalFor(agentsMd)` in that case (see loop.ts).
+   */
+  requiresApprovalFor?: string[];
 }
+
+/** On-disk shape of scripts.json: ScriptsConfig plus the structural approval-gate list. Kept
+ *  inside this existing JSON file rather than a fifth R2 file — an agent is still defined by
+ *  exactly the four files (agents.md, system-prompt.md, scripts.json, skills.json). */
+type PersistedScriptsConfig = ScriptsConfig & { requires_approval_for?: string[] };
 
 function agentDir(spaceId: string, agentId: string): string {
   return `spaces/${spaceId}/agents/${agentId}`;
@@ -58,11 +74,14 @@ export async function loadAgentConfig(
   ]);
   if (!scriptsJson || !systemPrompt) return null;
 
+  const { requires_approval_for, ...scripts } = JSON.parse(await scriptsJson.text()) as PersistedScriptsConfig;
+
   return {
     agentsMd: agentsMd ? await agentsMd.text() : "",
     systemPrompt: await systemPrompt.text(),
-    scripts: JSON.parse(await scriptsJson.text()) as ScriptsConfig,
+    scripts,
     skills: skillsJson ? (JSON.parse(await skillsJson.text()) as SkillsConfig) : { skills: [] },
+    ...(requires_approval_for ? { requiresApprovalFor: requires_approval_for } : {}),
   };
 }
 
@@ -74,10 +93,13 @@ export async function writeAgentConfig(
   config: AgentConfig
 ): Promise<void> {
   const dir = agentDir(spaceId, agentId);
+  const persistedScripts: PersistedScriptsConfig = config.requiresApprovalFor
+    ? { ...config.scripts, requires_approval_for: config.requiresApprovalFor }
+    : config.scripts;
   await Promise.all([
     bucket.put(`${dir}/agents.md`, config.agentsMd),
     bucket.put(`${dir}/system-prompt.md`, config.systemPrompt),
-    bucket.put(`${dir}/scripts.json`, JSON.stringify(config.scripts, null, 2)),
+    bucket.put(`${dir}/scripts.json`, JSON.stringify(persistedScripts, null, 2)),
     bucket.put(`${dir}/skills.json`, JSON.stringify(config.skills, null, 2)),
   ]);
 }
