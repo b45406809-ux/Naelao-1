@@ -1669,6 +1669,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // conceptually a subthread of the same project, not a different workspace.
     engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId);
 
+    // F14: customer-bot daily spend cap was only enforced in the channel-heartbeat drain path
+    // (handleChannelHeartbeat) — a direct /script/run call with the same projectId bypassed it
+    // entirely. Apply the identical cap-then-execution-ceiling gate here.
+    if (projectId) {
+      const projectCfg = await this.fetchProjectConfig(spaceId, tenantId, projectId);
+      if (projectCfg && projectCfg.daily_spend_cap_credits > 0 && this.getProjectSpendToday(projectId) >= projectCfg.daily_spend_cap_credits) {
+        return Response.json(
+          { error: "daily spend cap reached for this project", error_code: "spend_capped" },
+          { status: 429 }
+        );
+      }
+      if (projectCfg) engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
+    }
+
     // Load the agent's 4-file config; without it the agent is not provisioned.
     const config = await loadAgentConfig(engineEnv.scriptsBucket, spaceId, agentId);
     if (!config) {
@@ -1720,6 +1734,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(typeof maxTokensFromContext === "number" ? { maxTokens: maxTokensFromContext } : {}),
         ...(onProgress ? { onProgress } : {}),
       });
+
+      if (projectId && result.result?.tokens_used) {
+        const credits =
+          result.result.input_tokens || result.result.output_tokens
+            ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, body.model ?? "claude-haiku-4-5-20251001")
+            : result.result.tokens_used;
+        this.addProjectSpend(projectId, credits);
+      }
 
       // Layer 4 (Fabric) auto-consolidation (spec: "runs LLM-driven session extraction
       // post-run"). Reuses the trace this run already produced instead of a second LLM call —

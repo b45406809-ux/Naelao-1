@@ -1,0 +1,120 @@
+import { describe, it, expect } from "vitest";
+import { NaelaoAgentDO } from "../../workers/agents/src/do/NaelaoAgentDO.js";
+import { writeAgentConfig } from "../../workers/agents/src/script-engine/agent-config.js";
+import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+
+// F14: the customer-bot daily spend cap was enforced in the channel-heartbeat drain path
+// (handleChannelHeartbeat) but NOT in handleScriptRun — a direct POST /script/run carrying the
+// same projectId bypassed the cap entirely. This proves the gate now applies to that path too,
+// without needing a working LLM/reasoner: a project already over its cap must be rejected with
+// 429 before runScriptLoop (and therefore any reasoner call) ever runs.
+
+function makeR2(): R2Bucket {
+  const store = new Map<string, string>();
+  const bucket = {
+    async put(key: string, value: unknown) {
+      store.set(key, typeof value === "string" ? value : String(value));
+      return {} as R2Object;
+    },
+    async get(key: string) {
+      if (!store.has(key)) return null;
+      const text = store.get(key)!;
+      return { size: text.length, uploaded: new Date(), async text() { return text; }, get body() { return text; } } as unknown as R2ObjectBody;
+    },
+    async head(key: string) {
+      return store.has(key) ? ({} as R2Object) : null;
+    },
+    async delete(keys: string | string[]) {
+      for (const k of Array.isArray(keys) ? keys : [keys]) store.delete(k);
+    },
+    async list(opts?: { prefix?: string }) {
+      const prefix = opts?.prefix ?? "";
+      const objects = [...store.keys()].filter((k) => k.startsWith(prefix)).map((k) => ({ key: k, size: store.get(k)!.length, uploaded: new Date(), etag: "x" }));
+      return { objects, truncated: false, cursor: undefined } as unknown as R2Objects;
+    },
+  };
+  return bucket as unknown as R2Bucket;
+}
+
+function makeSpacesWorker(project: { execution_ceiling: number; daily_spend_cap_credits: number }): Fetcher {
+  return {
+    async fetch(input: RequestInfo) {
+      const url = new URL(typeof input === "string" ? input : (input as Request).url);
+      if (/^\/spaces\/[^/]+\/projects\/[^/]+$/.test(url.pathname)) {
+        return Response.json(project);
+      }
+      return new Response("not found", { status: 404 });
+    },
+  } as unknown as Fetcher;
+}
+
+async function makeDO(project: { execution_ceiling: number; daily_spend_cap_credits: number }) {
+  const r2 = makeR2();
+  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const env = {
+    PLATFORM_SECRET: "test",
+    KNOWLEDGE_WORKER: { fetch: async () => new Response("{}") } as unknown as Fetcher,
+    SPACES_WORKER: makeSpacesWorker(project),
+    SCRIPTS_R2: r2,
+  };
+  const spaceDO = new NaelaoAgentDO(ctx as never, env as never);
+
+  await writeAgentConfig(r2, "space1", "naelao-agent", {
+    agentsMd: "# Agent",
+    systemPrompt: "You are a support bot.",
+    scripts: { prebuilt: ["notifications"], agent_scripts: "auto", startup_observe: "observe_filesystem" },
+    skills: { skills: [] },
+  });
+
+  return spaceDO;
+}
+
+async function scriptRun(doInstance: NaelaoAgentDO, projectId: string) {
+  return doInstance.fetch(new Request("http://agent-do/script/run", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ goal: "help the customer", spaceId: "space1", agentId: "naelao-agent", tenantId: "tenant1", projectId, apiKey: "" }),
+  }));
+}
+
+describe("NaelaoAgentDO /script/run — customer-bot daily spend cap", () => {
+  it("rejects with 429 when the project is already at its daily spend cap, before any reasoning runs", async () => {
+    const spaceDO = await makeDO({ execution_ceiling: 2, daily_spend_cap_credits: 100 });
+    const doAny = spaceDO as unknown as { addProjectSpend(projectId: string, credits: number): void };
+
+    // ensureInit() (table creation) only runs inside the DO's own fetch() dispatcher — warm it
+    // up first so project_spend exists before writing to it directly.
+    await spaceDO.fetch(new Request("http://agent-do/warm", { method: "POST" }));
+    // Push the project over its cap first — mirrors prior LLM-driven spend recorded via the
+    // heartbeat path (or, after this fix, via a previous /script/run itself).
+    doAny.addProjectSpend("proj1", 500);
+
+    const res = await scriptRun(spaceDO, "proj1");
+    expect(res.status).toBe(429);
+    const body = await res.json() as { error_code?: string };
+    expect(body.error_code).toBe("spend_capped");
+  });
+
+  it("does not gate a project with no configured spend cap (daily_spend_cap_credits = 0)", async () => {
+    const spaceDO = await makeDO({ execution_ceiling: 2, daily_spend_cap_credits: 0 });
+    const res = await scriptRun(spaceDO, "proj1");
+    // Not 429 — falls through to the reasoning loop (which will itself fail/500 in this
+    // minimal test env with no real LLM gateway configured, which is fine — the point is the
+    // spend-cap gate specifically did not short-circuit it).
+    expect(res.status).not.toBe(429);
+  });
+
+  it("does not gate a run with no projectId (Space Assistant runs are never customer-bot-capped)", async () => {
+    const spaceDO = await makeDO({ execution_ceiling: 2, daily_spend_cap_credits: 100 });
+    const doAny = spaceDO as unknown as { addProjectSpend(projectId: string, credits: number): void };
+    await spaceDO.fetch(new Request("http://agent-do/warm", { method: "POST" }));
+    doAny.addProjectSpend("proj1", 500);
+
+    const res = await spaceDO.fetch(new Request("http://agent-do/script/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ goal: "help the customer", spaceId: "space1", agentId: "naelao-agent", tenantId: "tenant1", apiKey: "" }),
+    }));
+    expect(res.status).not.toBe(429);
+  });
+});
