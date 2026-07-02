@@ -279,6 +279,19 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     key) and keys on `cf-connecting-ip` (edge-set, unspoofable); `RateLimitDO` reschedules a
     10-minute idle-cleanup alarm on every check instead of never pruning its `buckets` table.
     Full detail: appendix §A1.16.17.
+27. **A third pass read the spec bottom-up and diffed it against the code — three of its four
+    findings (F10/F11/F13: unguarded isolate fetch, wildcard CORS, hostname-literal SSRF) were
+    already fixed by items 25-26 above and needed no changes; the fourth (F12, the billing
+    worker's KV usage counter) was real but narrower than described — verify against current
+    code before re-fixing already-fixed findings.** `incrementUsage` did an unsafe KV
+    read-modify-write, but it only feeds a dashboard `GET .../quota` summary — actual
+    entitlement enforcement platform-wide runs through `@naelao/entitlements`'s live `COUNT(*)`
+    D1 queries, untouched by this bug. The literal spec fix (a new atomically-incremented D1
+    counter table) would have introduced a second source of truth alongside the existing
+    COUNT/SUM aggregate the D1 fallback already computes correctly. Fixed instead by having
+    `recordUsageEvent` (renamed from `incrementUsage`) invalidate the KV cache entry rather than
+    incrementing it — the next `checkQuota` call is forced back through the real D1 aggregate,
+    eliminating the race instead of relocating it. Full detail: appendix §A1.16.18.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

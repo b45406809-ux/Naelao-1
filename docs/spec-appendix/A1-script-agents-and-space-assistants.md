@@ -1846,3 +1846,91 @@ fired alarm clears the bucket (next check starts from a fresh full-capacity buck
 
 681 unit/contract/integration/isolation/simulation tests pass across 70 files; 72/72
 typecheck clean.
+
+---
+
+## A1.16.18 Third audit pass (spec-vs-code) — F10/F11/F13 were already fixed; F12 (KV usage counter) was real, fixed with a smaller diff than the spec's literal prescription
+
+A third pass read the canonical spec bottom-up (not just the code) and diffed four
+spec-mandated Required Fixes against the implementation, citing G-AF14/16/20 by byte offset.
+Verifying each against the actual current code (not the pre-fix state) before touching
+anything:
+
+- **F10 (Tier-2/3 isolates get raw, unguarded `fetch`, spec G-AF20)** — **already fixed**, in
+  the same pass that closed F13 for the browser worker (see A1.16 Track B/F10+F13 above,
+  commit tagged `9a541e1`-equivalent). `workers/agents/src/script-engine/code-runner.ts`'s
+  `SSRF_GUARD_PRELUDE` overrides `globalThis.fetch` inside the isolate module text itself
+  (`__ssrfGuardedFetch`), and the injected `ctx.fetch` calls that same guarded function — not
+  the bare `fetch`. Confirmed by reading the current file (not assuming from memory): lines
+  ~87-114 show the guard, line ~124 shows `ctx.fetch: (...a) => __ssrfGuardedFetch(...a)`.
+- **F13 (SSRF guard is hostname-literal only, no DNS resolution, spec G-AF20 second half)** —
+  **already fixed** in the same pass. The isolate's `SSRF_GUARD_PRELUDE` includes
+  `__resolveIps(hostname)` (Cloudflare DoH query for A + AAAA records) and
+  `__ssrfGuardedFetch` blocks if ANY resolved IP matches the deny list, in addition to the
+  literal-hostname check — closing exactly the DNS-rebinding bypass the spec's clause exists
+  for. `@naelao/security`'s `checkSsrf`/`resolveHostnameIps` (used by the browser worker) has
+  the equivalent resolution step.
+- **F11 (CORS is `*` platform-wide, spec G-AF14)** — **already fixed**, in the first audit
+  batch (Track D). `workers/router/src/index.ts`'s CORS middleware (~line 104) is not
+  `cors(["*"])` from `packages/http/src/cors.ts` at all — it's a custom, env-driven
+  (`CORS_ALLOWLIST`) allowlist middleware that never echoes `*`, reads the allowlist per-request
+  (`c.env`, not baked in at module load), and returns an empty `Access-Control-Allow-Origin` for
+  a non-allowlisted origin. Regression coverage already exists in
+  `tests/unit/router-cors-allowlist.test.ts`.
+
+All three were re-flagged by a spec-vs-code diff that was, in effect, diffing the spec against
+a **pre-fix snapshot of the code** rather than its current state — the fixes exist, match the
+spec's own Required Fix text (deny-list ranges, DNS resolution, allowlist-not-wildcard), and
+have passing regression tests from the passes that introduced them. No changes made for these
+three; this section exists so a future pass doesn't re-flag them a third time without checking
+first.
+
+### F12 — `incrementUsage`'s KV read-modify-write (spec G-AF16) — real, but narrower in blast radius than described
+
+The gap is real: `workers/billing/src/quota.ts`'s `incrementUsage` did `kv.get` → `parseInt` →
+`kv.put(value + delta)` with a sliding `expirationTtl` reset on every write — not atomic
+(concurrent calls can lose increments), and continuous traffic could keep resetting the TTL
+forward indefinitely, turning a bounded ~300s staleness window into potentially unbounded
+drift under sustained load.
+
+Two things the initial framing got wrong, checked before fixing anything (worth recording so a
+future pass doesn't inherit the same overstatement):
+1. **This is not the enforcement path.** `checkQuota`'s `allowed` boolean (the thing this KV
+   counter feeds) is computed in `workers/billing/src/index.ts`'s quota-summary handler but
+   never read to block anything — it's returned in a `GET .../quota`-style response body for a
+   dashboard usage meter. The actual quota/entitlement enforcement used platform-wide (spaces
+   worker, agents worker, knowledge worker's KB-document-count gate) goes through
+   `@naelao/entitlements`'s `EntitlementsChecker`, which runs a live `COUNT(*)` D1 query
+   directly with no KV cache and no race window. So the bug is a dashboard-accuracy issue, not
+   an active quota-evasion or revenue-leak vector — billing/metering itself (the actual revenue
+   path) runs through `usage_events` (idempotent `INSERT OR IGNORE` on `event_hash`) and an
+   async Stripe-metering queue, both untouched by this KV counter.
+2. **The literal spec fix (a new `usage_metrics` D1 table with `UPDATE ... SET value = value +
+   ?`) would introduce a second source of truth**, not fix the one that exists. This codebase's
+   `getCurrentUsage` D1 fallback doesn't maintain an incrementable counter column at all — it
+   recomputes a live aggregate (`COUNT(*)` over `spaces`/`kb_documents`, `SUM(quantity)` over
+   `usage_events`) directly from the authoritative rows every cache-miss. That aggregate is
+   already correct and atomic in the way that matters (it's a read of real committed rows, not
+   an accumulator that can itself drift). Standing up a parallel `usage_metrics` counter table
+   that must somehow stay in sync with that aggregate would trade one race for a
+   two-sources-of-truth reconciliation problem — worse, not better.
+
+**Fix:** `incrementUsage` → `recordUsageEvent` (renamed — the new semantics are different
+enough that keeping the old name would mislead). Instead of trying to maintain a second,
+independently-mutated number, it just `kv.delete`s the cache key on every usage event. The next
+`checkQuota` call is forced back through the real D1 aggregate instead of trusting a number
+nothing can prove is still correct — this eliminates the race entirely rather than moving it,
+at the cost of one extra D1 read on the next post-invalidation quota check (acceptable: this
+endpoint is a dashboard summary, not a hot path). Call sites updated in
+`workers/billing/src/index.ts` (the two `event_type === "api_call"` / `"kb_doc"` branches after
+a `usage_events` insert).
+
+**Tests:** `tests/unit/quota-atomic.test.ts` (new) proves: `recordUsageEvent` deletes rather
+than increments the cache entry; after invalidation, `checkQuota` recomputes fresh from D1
+(reflects a D1 truth change the old code would have missed); without an intervening event, the
+cache still serves the fast path (no extra D1 query — the read-through behavior is preserved);
+20 "concurrent" usage events interleaved with D1 truth advancing one at a time land on an exact
+final count with no lost updates (impossible by construction now, since there's no shared
+counter value left to race on); and `invalidateQuotaCache` still clears all three metrics.
+
+687 unit/contract/integration/isolation/simulation tests pass across 71 files; typecheck clean.
