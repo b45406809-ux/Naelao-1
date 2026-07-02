@@ -134,6 +134,20 @@ async function readChunkFromR2(
 // gate broadly.
 app.use("/spaces/:spaceId/kb/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
 
+// F8: requireInternalHmac only authenticates the CALLING WORKER, not the tenant the request
+// is acting on behalf of. A compromised/malicious agent script belonging to tenant A can still
+// pass a spaceId belonging to tenant B (leaked/guessed via URLs, logs, screenshots) in the
+// x-naelao-tenant-id + spaceId pair. Every kb/* verb (list, ingest, patch, delete, search) must
+// refuse to touch a space the caller's tenant doesn't own — gated once, here, before any
+// handler runs (including cache lookups), so no future route can reintroduce the gap.
+app.use("/spaces/:spaceId/kb/*", async (c, next) => {
+  const tenantId = requireTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const owned = await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId);
+  if (!owned) throw notFound("Space not found");
+  await next();
+});
+
 // ── GET /spaces/:spaceId/kb/documents ─────────────────────────────────────────
 
 app.get("/spaces/:spaceId/kb/documents", async (c) => {
@@ -535,11 +549,10 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
     throw badRequest("q parameter is required");
   }
 
-  const owned = await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId);
-  if (!owned) throw notFound("Space not found");
-
-  // ── Semantic cache ────────────────────────────────────────────────────────
-  const cacheHash = await sha256Hex(query + spaceId);
+  // Ownership already verified by the "/spaces/:spaceId/kb/*" gate above (F8) — the cache key
+  // still folds tenantId in as defense-in-depth so a future refactor of that gate can't
+  // reintroduce a cross-tenant cache-serving path.
+  const cacheHash = await sha256Hex(tenantId + ":" + query + spaceId);
   const cacheKey = `kbcache:${cacheHash}`;
 
   const cached = await c.env.KB_CACHE.get(cacheKey);
