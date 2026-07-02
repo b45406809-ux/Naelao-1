@@ -311,10 +311,6 @@ async function proxyTo(
   }));
 }
 
-// Spaces CRUD → spaces worker
-api.all("/spaces/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
-api.all("/spaces", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
-
 // Knowledge (KB) → knowledge worker
 api.all("/spaces/:spaceId/kb/*", async (c) =>
   proxyTo(c.env.KNOWLEDGE_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
@@ -353,6 +349,15 @@ api.all("/spaces/:spaceId/projects/from-template", async (c) =>
 api.all("/spaces/:spaceId/channels/*", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
+
+// Spaces CRUD → spaces worker
+// F15: this catch-all MUST be registered AFTER every specific /spaces/:spaceId/... route
+// above. Hono dispatches to the first matching handler in registration order, and none of
+// the proxy handlers call next() — so if this were registered first (as it originally was),
+// it would swallow every /spaces/:spaceId/kb, /credentials, /sessions, /bootstrap,
+// /projects/from-template, and /channels request before the specific routes ever got a look.
+api.all("/spaces/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/spaces", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
 // Reseller / partner endpoints → spaces worker (G-AS34/G-AS35)
 api.all("/reseller/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));

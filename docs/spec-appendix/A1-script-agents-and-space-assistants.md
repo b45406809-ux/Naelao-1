@@ -2056,3 +2056,36 @@ one project-scoped scheduled job; an unknown template id 404s.
 735 unit/contract/integration/isolation/simulation tests pass; `naelao-spaces`,
 `@naelao/agents-worker`, `@naelao/billing-worker`, and `@naelao/provisioner-worker` typecheck
 clean.
+
+### A1.16.21 F15: router-dispatch regression — the `/spaces` catch-all was registered before
+every specific `/spaces/:spaceId/...` route, so KB/credentials/sessions/bootstrap/
+projects-from-template/channels requests were all silently misrouted to `SPACES_WORKER` — FIXED.
+
+`workers/router/src/index.ts`'s protected `api` sub-app is a flat list of `api.all(pattern, ...)`
+registrations proxied straight through to a downstream worker; none of the proxy handlers call
+`next()`. Hono's router dispatches to the **first** pattern that matches a request, in
+registration order. `api.all("/spaces/*")` and `api.all("/spaces")` were registered immediately
+after the shared middleware stack — before `/spaces/:spaceId/kb/*` (knowledge worker),
+`/spaces/:spaceId/credentials[/:credId]` (credentials worker), `/spaces/:spaceId/sessions[/*]`,
+`/spaces/:spaceId/bootstrap/*`, `/spaces/:spaceId/projects/from-template`, and
+`/spaces/:spaceId/channels/*` (all agents worker). `/spaces/*` matches every one of those paths
+too, so it won every time and the more specific routes below it were dead code — every KB
+search, credential read, chat session, bootstrap call, template application, and channel
+connect/inbound-admin request was actually being sent to `SPACES_WORKER`, which has no matching
+route for most of them and would 404 or (worse, for any path coincidentally shaped like a spaces
+route) silently do the wrong thing.
+
+Fix: moved both catch-all registrations (`api.all("/spaces/*")`, `api.all("/spaces")`) to
+immediately after the last specific `/spaces/:spaceId/...` route (right before the `/reseller/*`
+block), with no change to any handler body — this is purely a registration-order fix. A comment
+at the new call site states the ordering invariant so a future addition of another
+`/spaces/:spaceId/...` route doesn't get added below the catch-all by mistake.
+
+**Tests:** `tests/unit/router-dispatch.test.ts` (new, 6) — imports the router's real default
+export, mints a valid JWT via `@naelao/auth`'s `signJwt`, and asserts one representative request
+per downstream target: KB → knowledge worker, credentials → credentials worker, sessions →
+agents worker, channels/connect → agents worker, and both the exact `/spaces` and prefix
+`/spaces/:spaceId` catch-all shapes → spaces worker (proving the reorder didn't break the
+catch-all itself, only its priority relative to the specific routes).
+
+741 unit/contract/integration/isolation/simulation tests pass; `naelao-router` typechecks clean.
