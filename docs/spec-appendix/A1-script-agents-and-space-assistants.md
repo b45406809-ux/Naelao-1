@@ -1710,3 +1710,139 @@ duplicate enqueue across a page boundary).
 
 664 unit/contract/integration/isolation/simulation tests pass; typecheck clean
 (`@naelao/agents-worker`).
+
+---
+
+## A1.16.17 Second audit pass — cross-tenant KB read/write (F8), per-thread spend-cap undercounting (F9), and a global spoofable rate limiter (F7) — FIXED
+
+A second independent read of the platform surfaced three more findings, two more severe than
+anything in A1.16.9-16 — F8 is an exploitable-today cross-tenant data exposure, F9 means the
+flagship customer-bot money control doesn't actually bind. Fixed in dependency order (E → F →
+G): tenant isolation first (active exposure), then money (real spend), then abuse-hardening on
+a rate limiter that "worked" today.
+
+### F8 — `kb/search` (and the rest of `kb/*`) never verified the caller's tenant owns the space
+
+`GET /spaces/:spaceId/kb/search` (`workers/knowledge/src/index.ts`) extracted `tenantId` via
+`requireTenant` and never used it: the Vectorize filter was `{space_id: {$eq: spaceId}}` alone,
+and the semantic-cache key was `sha256Hex(query + spaceId)` — no tenant anywhere. Any caller
+who merely knew or guessed another tenant's `spaceId` (UUIDs leak via URLs, logs, screenshots)
+could search that tenant's KB. A prior pass (A1.16.9/10) had deliberately left `kb/*` ungated by
+`requireInternalHmac` reasoning as "plausibly reachable" — that HMAC gate authenticates the
+*calling worker*, not which tenant the request claims to act on behalf of, so a compromised or
+malicious agent script belonging to tenant A could still pass a `spaceId` belonging to tenant B.
+
+Worse on inspection: `POST /spaces/:spaceId/kb/documents` (ingest) had the exact same gap in the
+opposite direction — it never verified spaceId ownership before writing, so tenant A could
+*write* content into tenant B's KB. Since `kb/search`'s Vectorize filter is space-scoped only
+(not tenant-scoped), that write would later surface in tenant B's own searches — a cross-tenant
+KB-poisoning path, worse than the read leak alone.
+
+**Fix:** one ownership gate, applied once via Hono middleware ahead of every verb —
+`app.use("/spaces/:spaceId/kb/*", ...)` — checking `SELECT 1 FROM spaces WHERE id = ? AND
+tenant_id = ? AND status != 'deleted'` before any handler (list, ingest, patch, delete, search)
+runs, 404 on mismatch (not 403 — space existence isn't an oracle). This runs before the KV
+semantic-cache lookup in the search route, and the cache key now also folds `tenantId` in
+(`sha256Hex(tenantId + ":" + query + spaceId)`) as defense-in-depth against a future refactor
+that might move the gate after the cache check.
+
+**Tests:** `tests/unit/kb-tenant-isolation-all-routes.test.ts` (new) proves the gate covers
+list/ingest/delete — wrong-tenant ingest never inserts, wrong-tenant delete never deletes — and
+that a cache entry written under one tenant's search is never served to (or collides with) a
+different tenant's identical query. `tests/unit/kb-search-tenant-isolation.test.ts` (existing,
+from the first pass) continues to pass unchanged.
+
+### F9 — customer-bot daily spend cap was tallied per-DO, not per-project
+
+`project_spend` (`workers/agents/src/do/NaelaoAgentDO.ts`) lived in the agent DO's own SQLite,
+and the cap check was `getProjectSpendToday(projectId) >= cap` against that local table. But
+agent DOs are addressed `space:project:thread` (a direct `/script/run` session) or
+`space:agentId` (the channel-heartbeat drain) — either way, **every thread/DO instance serving
+a customer-bot project kept an independent, zero-based tally**. A project with N concurrent
+customer threads (or channel traffic running alongside a direct session) could spend up to N×
+its configured daily cap — the flagship customer-bot safety knob didn't actually bind.
+
+**Fix:** moved the authoritative tally to SpaceDO — one DO per space, so every thread's agent DO
+debits through the *same* instance regardless of how many concurrent threads/channels a project
+has. New migration v17 adds a `project_spend (project_id, day, credits)` table to `SpaceDO`
+(`workers/spaces/src/do/SpaceDO.ts`), plus `GET/POST /projects/:projectId/spend`:
+- `GET` (and `POST` with `credits: 0`) is a pure read of today's tally + the project's
+  `daily_spend_cap_credits` + a `capped` boolean — used as the pre-run gate.
+- `POST` with `credits > 0` atomically adds to today's tally (`ON CONFLICT ... DO UPDATE SET
+  credits = credits + excluded.credits`) and returns the updated total — used post-run once the
+  actual token cost is known.
+
+Both routes are serialized by the DO's single-threaded request handling, so spend recorded by
+one thread's post-run debit is immediately visible to the next thread's pre-run gate check —
+this is why a `credits=0` "check" and a real debit are the same endpoint, not two independent
+code paths that could drift.
+
+`NaelaoAgentDO.checkAndDebitProjectSpend(spaceId, tenantId, projectId, credits)` replaces the
+local-table cap check in both `handleScriptRun` (direct `/script/run`, was gated by F14 in the
+first pass but against the same flawed local tally) and `handleChannelHeartbeat` (the
+channel-drain loop, which the first audit pass believed was "the one place it works as intended"
+— true only if a project never receives traffic through more than one agent DO, which a
+customer-bot project bound to both a channel AND directly-addressable sessions can). **Fails
+CLOSED**: any error (network, non-2xx, missing `SPACES_WORKER`) is treated as `capped: true`,
+matching the `fetchAssistantPolicy` precedent — a spend limiter that fails open isn't one. The
+local `project_spend` table in `NaelaoAgentDO` is kept, but only as that DO's own
+telemetry/cache — it is no longer read for the enforcement decision.
+
+Note this pattern still tolerates a bounded overshoot of "one in-flight run's worth of credits"
+by design: the pre-run gate can only check *already-recorded* spend (the actual cost of a run
+isn't known until it finishes), so two threads that both pass the gate microseconds apart can
+each complete a run before either's debit lands. This is the same tolerance the first pass's
+F14 fix accepted; true zero-overshoot enforcement would need an upfront cost reservation this
+architecture doesn't have (LLM cost isn't knowable before the call completes) — noted, not
+treated as a gap in this pass.
+
+**Tests:** `tests/unit/spacedo-project-spend.test.ts` (new) drives the real SpaceDO over real
+in-memory SQLite (`node:sqlite`) and proves the core fix directly: two independent debit calls
+against the same project (standing in for two separate agent-DO threads, each of which would
+previously have started from a local zero) correctly sum to a shared total, and a third
+"thread"'s gate check sees the combined spend — capped once it crosses the configured limit.
+Also: a fresh/uncapped project (`cap=0`) is never capped regardless of debits; a `credits=0`
+call is a pure read that never mutates the tally; and spend for one project never leaks into
+another project's row. `tests/unit/handlescriptrun-spend-cap.test.ts` and
+`tests/unit/naelaoagentdo-customer-bot-heartbeat.test.ts` (both pre-existing, from the F14 pass)
+were rewritten to seed spend through a stateful mock of the new `/spend` endpoint instead of
+calling the now-non-authoritative `addProjectSpend` directly, plus a new fail-closed test
+(SpaceDO unreachable → 429, never falls through to the reasoning loop).
+
+### F7 — rate limiter: one global DO for the whole platform + a spoofable bucket key + unbounded rows
+
+`workers/router/src/index.ts`'s rate-limit middleware called
+`RATE_LIMIT_DO.idFromName("global-rate-limiter")` — every authenticated request on the entire
+platform serialized through **one** Durable Object, capping total platform throughput at a
+single DO's capacity and adding a cross-region hop to every request (the same class of mistake
+as A1.16.16's F1, except on the hot path of all traffic rather than an hourly cron). The bucket
+key was `claims?.sub ?? c.req.header("x-forwarded-for") ?? "anonymous"` — `X-Forwarded-For` is
+set by the client on the first hop, so an unauthenticated attacker could rotate it to mint
+unlimited fresh buckets (bypass) or converge traffic onto a victim's IP (targeted starvation);
+all no-XFF traffic also shared one literal `"anonymous"` bucket. `RateLimitDO`'s `buckets` table
+was never pruned — same defect class as the presence table fixed in A1.16.15, worse here because
+the spoofable key let an attacker mint rows deliberately.
+
+**Fix:**
+- Shard: the router now calls `RATE_LIMIT_DO.idFromName(bucketKey)` directly — one DO per key
+  instead of one DO for the whole platform. Token-bucket state per key is a single small row,
+  so per-key DOs remove the chokepoint entirely and each key's traffic stays local to its own DO.
+- Key: `claims?.sub ?? c.req.header("cf-connecting-ip") ?? "anonymous"` — `cf-connecting-ip` is
+  set by Cloudflare's edge and cannot be spoofed by the client, unlike XFF.
+- Prune: since a sharded DO now holds at most one key's row, `RateLimitDO` reschedules a DO
+  alarm (`ctx.storage.setAlarm`) on every `/check` call (`IDLE_CLEANUP_MS` = 10 minutes) instead
+  of extending it only on demand — the alarm only actually fires once a DO has seen no traffic
+  for the full idle window, at which point it clears its own `buckets` table. No sweeper needed.
+- Preserved exactly: token-bucket math (capacity = 2× per-minute limit, refill = limit/60 per
+  second), the 120/min default, fail-open on error, and the `X-RateLimit-*` response headers.
+
+**Tests:** `tests/unit/router-rate-limit-sharding.test.ts` (new) mocks the `RATE_LIMIT_DO`
+namespace to record `idFromName` calls and proves: the key is the JWT `sub` (not a global
+constant), `X-Forwarded-For` is never read (even when both XFF and `cf-connecting-ip` are
+present, only the JWT `sub` — or in its absence `cf-connecting-ip` — drives the key), and two
+different users land on two different DO ids. `tests/unit/rate-limit-do.test.ts` (new) drives
+the real `RateLimitDO` and proves the alarm is rescheduled on every `/check` call and that a
+fired alarm clears the bucket (next check starts from a fresh full-capacity bucket).
+
+681 unit/contract/integration/isolation/simulation tests pass across 70 files; 72/72
+typecheck clean.

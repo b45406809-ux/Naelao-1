@@ -260,6 +260,25 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     the Stack section below claimed D1 is "sharded by tenant_id MOD n" — no such code exists
     anywhere in the repo; reworded to state the current single-instance reality with sharding as
     a named future milestone. Full detail: appendix §A1.16.16.
+26. **A second audit pass found cross-tenant KB read/write (F8), per-thread spend-cap
+    undercounting (F9), and a spoofable global rate limiter (F7) — all now FIXED.** F8:
+    `kb/search` (and the rest of `kb/*` — list/ingest/patch/delete) never verified the caller's
+    tenant owns the target space; the `requireInternalHmac` gate a prior pass added only
+    authenticates the calling *worker*, not which tenant it claims to act for. A single Hono
+    ownership-check middleware now gates every `kb/*` verb (404 on mismatch, before the KV
+    semantic-cache lookup; the cache key also folds tenantId in). F9: the customer-bot daily
+    spend cap was tallied in the agent DO's own SQLite — but agent DOs are addressed
+    space:project:thread (or space:agentId for the channel-heartbeat drain), so a project with
+    N concurrent threads/channels could spend up to N× its cap. Moved the authoritative tally to
+    SpaceDO (one DO per space, single writer): new `project_spend` table (migration v17) +
+    `GET/POST /projects/:projectId/spend`, serialized so one thread's post-run debit is
+    immediately visible to the next thread's pre-run gate check. Fails CLOSED on any error,
+    matching the `fetchAssistantPolicy` precedent. F7: the router funneled every authenticated
+    request platform-wide through one `idFromName("global-rate-limiter")` DO and keyed buckets
+    by the client-spoofable `X-Forwarded-For`. Now shards by `idFromName(bucketKey)` (one DO per
+    key) and keys on `cf-connecting-ip` (edge-set, unspoofable); `RateLimitDO` reschedules a
+    10-minute idle-cleanup alarm on every check instead of never pruning its `buckets` table.
+    Full detail: appendix §A1.16.17.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
