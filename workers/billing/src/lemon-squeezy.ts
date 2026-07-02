@@ -154,6 +154,39 @@ async function resolveDefaultAgent(
   return { agentId: "naelao-agent", tenantId: row.tenant_id };
 }
 
+/**
+ * Resolve a pre-seeded "Orders" project for this space, if the builder's template created one
+ * (Launchpad's creator-store/newsletter-business/micro-saas templates seed one via
+ * bootstrap.projects — see launchpad/spacetype.ts). When present, a billing event is scoped to
+ * that project (workspace-scoped, its own approval gates and execution ceiling apply) instead
+ * of running space-wide — the Space Assistant does the general coordination, but the actual
+ * order-handling work has a dedicated home a builder can rename, reconfigure, or remove.
+ * Best-effort: returns undefined (never throws) when SPACES_WORKER is unbound, the lookup fails,
+ * or no "Orders" project exists — the caller falls back to the space-wide Space Assistant run
+ * exactly as before, so a builder who deletes/renames the project doesn't break anything.
+ */
+export async function resolveFulfillmentProjectId(
+  spaceId: string,
+  tenantId: string,
+  env: LemonSqueezyEnv
+): Promise<string | undefined> {
+  if (!env.SPACES_WORKER) return undefined;
+  try {
+    const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
+      headers: {
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+      },
+    }));
+    if (!resp.ok) return undefined;
+    const { data } = await resp.json<{ data: Array<{ id: string; name: string; status?: string }> }>();
+    const match = data.find((p) => p.name?.trim().toLowerCase() === "orders" && p.status !== "archived");
+    return match?.id;
+  } catch {
+    return undefined;
+  }
+}
+
 /** POST to agents worker: wake the agent with a billing event goal. */
 async function wakeAgent(
   spaceId: string,
@@ -161,7 +194,8 @@ async function wakeAgent(
   tenantId: string,
   event: NormalizedBillingEvent,
   agentsWorker: Fetcher,
-  orderId?: string | null
+  orderId?: string | null,
+  projectId?: string
 ): Promise<void> {
   const goal = GOAL_MAP[event.type] ?? `Handle billing event: ${event.type}`;
   const sessionId = `billing-${event.type}-${Date.now()}`;
@@ -178,6 +212,7 @@ async function wakeAgent(
       body: JSON.stringify({
         goal,
         sessionId,
+        ...(projectId ? { projectId } : {}),
         context: {
           trigger: "billing_event",
           event_type: event.type,
@@ -197,7 +232,7 @@ async function wakeAgent(
     const body = await resp.text();
     console.error(`[billing/ls] Failed to wake agent ${agentId} for space ${spaceId}: ${body}`);
   } else {
-    console.log(`[billing/ls] Woke agent ${agentId} for space ${spaceId} — event=${event.type}`);
+    console.log(`[billing/ls] Woke agent ${agentId} for space ${spaceId}${projectId ? ` project=${projectId}` : ""} — event=${event.type}`);
   }
 }
 
@@ -319,8 +354,11 @@ export async function handleLemonSqueezyWebhook(
   }
 
   // 6. Wake the Space Assistant agent asynchronously (ctx.waitUntil equivalent: fire-and-forget).
-  //    Pass the order id so the fulfilment agent can look it up and deliver the product.
-  await wakeAgent(event.spaceId, agent.agentId, agent.tenantId, event, env.AGENTS_WORKER, orderId);
+  //    Pass the order id so the fulfilment agent can look it up and deliver the product, and
+  //    scope the run to the space's "Orders" project when the template seeded one (best-effort
+  //    — falls back to a space-wide run when there isn't one).
+  const projectId = await resolveFulfillmentProjectId(event.spaceId, agent.tenantId, env);
+  await wakeAgent(event.spaceId, agent.agentId, agent.tenantId, event, env.AGENTS_WORKER, orderId, projectId);
 
   return Response.json({ ok: true, event_type: event.type, space_id: event.spaceId, order_id: orderId });
 }

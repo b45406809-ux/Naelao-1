@@ -183,6 +183,16 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-content-v1", "launchpad-fulfillment-v1"],
     skills: ["web-search", "email-tool", "stripe-app"],
     free_tier_eligible: true,
+    // This template installs launchpad-fulfillment-v1 (handles subscription/payment events).
+    // Seed the "Orders" project so a paid-billing event is scoped there instead of running
+    // space-wide — same mechanism as creator-store below. No prompts/setup_scripts needed;
+    // the project just needs to exist for billing/lemon-squeezy.ts's resolveFulfillmentProjectId
+    // to find it. The owner (or the Space Assistant) can rename/reconfigure/remove it freely —
+    // billing falls back to a space-wide run if it's gone.
+    bootstrap: {
+      prompts: [],
+      projects: ["Orders"],
+    },
   },
   {
     id: "micro-saas",
@@ -191,6 +201,12 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-support-v1", "launchpad-fulfillment-v1"],
     skills: ["stripe-app", "email-tool", "crm-tool"],
     free_tier_eligible: false,
+    // Same reasoning as newsletter-business above — this template also installs the
+    // fulfillment agent, so it gets a dedicated "Orders" project too.
+    bootstrap: {
+      prompts: [],
+      projects: ["Orders"],
+    },
   },
   {
     id: "service-agency",
