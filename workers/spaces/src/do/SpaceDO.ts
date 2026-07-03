@@ -615,6 +615,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/sessions") {
         return this.createSession(request);
       }
+      // GET /sessions?end_user_id=&limit= — Three-Tier Platform Model Phase 6: a signed-in
+      // product end user's own conversation list (the router allowlists this, filtered server
+      // side to end_user_id — never the space-wide list for that caller). Must be matched
+      // before the /sessions/:id pattern below, which would otherwise treat "?end_user_id=..."
+      // as no match anyway (path has no segment), but keep the ordering explicit.
+      if (method === "GET" && url.pathname === "/sessions") {
+        return this.listSessions(url.searchParams);
+      }
       // GET /sessions/:id
       const sessionMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
       if (method === "GET" && sessionMatch?.[1]) {
@@ -912,6 +920,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       );
     }
     return Response.json(session);
+  }
+
+  // GET /sessions?end_user_id=&limit= — Three-Tier Platform Model Phase 6. When end_user_id is
+  // present (the only shape the router allowlists for a product end user), the result is
+  // strictly scoped to that end_user_id's own sessions — this is a signed-in end user's own
+  // "recent conversations" list, never a space-wide browse (that stays /threads, builder-only).
+  // A builder-JWT caller omitting end_user_id gets the space-wide recent list.
+  private listSessions(params: URLSearchParams): Response {
+    const endUserId = params.get("end_user_id");
+    const limit = Math.min(Math.max(Number(params.get("limit")) || 20, 1), 100);
+    const rows = endUserId
+      ? queryAll<SessionRow>(
+          this.ctx.storage.sql as never,
+          "SELECT * FROM sessions WHERE end_user_id = ? ORDER BY updated_at DESC LIMIT ?",
+          endUserId,
+          limit
+        )
+      : queryAll<SessionRow>(
+          this.ctx.storage.sql as never,
+          "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?",
+          limit
+        );
+    return Response.json({ data: rows, count: rows.length });
   }
 
   // G-D02: 128 KB hard cap on message content to prevent OOM in DO SQLite

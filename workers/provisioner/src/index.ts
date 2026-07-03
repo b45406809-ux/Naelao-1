@@ -467,7 +467,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
 
     // Step 10: Record install in SpaceTypeRegistryDO + flip space to 'active'
     await env.SPACES_WORKER.fetch(
-      new Request(`http://spaces-worker/internal/space-types/${spaceTypeId}/record-install`, {
+      new Request(`http://spaces-worker/internal/space-types-record-install/${spaceTypeId}`, {
         method: "POST",
         headers: {
           "content-type": "application/json",

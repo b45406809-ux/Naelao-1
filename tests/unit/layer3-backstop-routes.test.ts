@@ -83,9 +83,9 @@ describe("spaces worker — newly-gated routes reject forged direct requests", (
     expect(res.status).toBe(403);
   });
 
-  it("POST /internal/space-types/:id/record-install rejects a static 'provisioner' string (the OLD check this replaces)", async () => {
+  it("POST /internal/space-types-record-install/:id rejects a static 'provisioner' string (the OLD check this replaces)", async () => {
     const res = await spacesWorker.fetch(
-      new Request("https://spaces.naelao.com/internal/space-types/launchpad/record-install", {
+      new Request("https://spaces.naelao.com/internal/space-types-record-install/launchpad", {
         method: "POST",
         headers: { "content-type": "application/json", "x-naelao-internal": "provisioner" },
         body: JSON.stringify({ spaceId: "space-1", version: "1" }),
@@ -96,10 +96,10 @@ describe("spaces worker — newly-gated routes reject forged direct requests", (
     expect(res.status).toBe(403);
   });
 
-  it("POST /internal/space-types/:id/record-install accepts a properly minted token", async () => {
+  it("POST /internal/space-types-record-install/:id accepts a properly minted token", async () => {
     const token = await mintInternalToken(SECRET, "tenant-1");
     const res = await spacesWorker.fetch(
-      new Request("https://spaces.naelao.com/internal/space-types/launchpad/record-install", {
+      new Request("https://spaces.naelao.com/internal/space-types-record-install/launchpad", {
         method: "POST",
         headers: {
           "content-type": "application/json",

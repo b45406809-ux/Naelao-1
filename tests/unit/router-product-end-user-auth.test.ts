@@ -7,9 +7,12 @@ import { signJwt } from "@naelao/auth";
 // (Phase 2, no platform tenant, no JWT), had no way through at all. This is the exact gap
 // CLAUDE.md item 23 flagged as deferred ("end-user chat through the router is currently
 // non-functional end-to-end"). Fixed with a hybrid auth check: a Bearer nps_... token +
-// x-naelao-end-user-id on an ALLOWLISTED path (only /spaces/:spaceId/sessions* today) is
-// verified against the space's ProductUserDO via the spaces worker's internal endpoint;
-// everything else still requires the ordinary platform JWT, unchanged.
+// x-naelao-end-user-id on an ALLOWLISTED path is verified against the space's ProductUserDO via
+// the spaces worker's internal endpoint; everything else still requires the ordinary platform
+// JWT, unchanged. Phase 6 continued (Product Shell) extended the allowlist beyond sessions* to
+// shell/manifest, kb/documents + kb/search (read-only), and product-users/me — see that
+// allowlist's own comment in workers/router/src/index.ts for what was deliberately NOT added
+// and why.
 
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 const JWT_SECRET = "test-jwt-secret";
@@ -84,7 +87,7 @@ describe("router — product end-user hybrid auth", () => {
   it("a Bearer nps_ token on a NON-allowlisted path is rejected, not silently granted platform access", async () => {
     const env = makeEnv(makeSpacesStub({ validSession: true }));
     const res = await routerWorker.fetch(
-      new Request("https://router.naelao.com/v1/spaces/prod-1/kb/documents", {
+      new Request("https://router.naelao.com/v1/spaces/prod-1/credentials", {
         method: "GET",
         headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
       }),
@@ -92,6 +95,60 @@ describe("router — product end-user hybrid auth", () => {
     );
     // Falls through to ordinary JWT verification, which fails for a non-JWT token.
     expect(res.status).toBe(401);
+  });
+
+  // Product Shell (Phase 6 continued): kb/documents and kb/search reads, shell/manifest, and
+  // product-users/me were deliberately ADDED to the allowlist (Journey 1B: end users read the
+  // knowledge base and their own profile) — /projects, /threads, /agent-definitions, and
+  // /scheduled-jobs were deliberately NOT added (see the allowlist's own comment: each already
+  // carries a "builder-only, confirmed" gate on the spaces worker, and end-user claims.tid is
+  // set to the space's OWNING tenant, so a tenant-match-only gate would silently start accepting
+  // end-user traffic the moment it's allowlisted).
+  it("a valid nps_ session CAN reach the allowlisted kb/documents (read) path", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "builder-tenant-1" }));
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/spaces/prod-1/kb/documents", {
+        method: "GET",
+        headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("a valid nps_ session CAN reach the allowlisted shell/manifest and product-users/me paths", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "builder-tenant-1" }));
+    const manifestRes = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/spaces/prod-1/shell/manifest", {
+        method: "GET",
+        headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
+      }),
+      env as never, execCtx
+    );
+    expect(manifestRes.status).toBe(200);
+
+    const meRes = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/spaces/prod-1/product-users/me", {
+        method: "GET",
+        headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
+      }),
+      env as never, execCtx
+    );
+    expect(meRes.status).toBe(200);
+  });
+
+  it("a valid nps_ session is still rejected on the deliberately builder-only /projects and /threads paths", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true }));
+    for (const path of ["/spaces/prod-1/projects", "/spaces/prod-1/threads", "/spaces/prod-1/agent-definitions", "/spaces/prod-1/scheduled-jobs"]) {
+      const res = await routerWorker.fetch(
+        new Request(`https://router.naelao.com/v1${path}`, {
+          method: "GET",
+          headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
+        }),
+        env as never, execCtx
+      );
+      expect(res.status).toBe(401);
+    }
   });
 
   it("a Bearer nps_ token WITHOUT x-naelao-end-user-id falls through to the JWT path and is rejected", async () => {

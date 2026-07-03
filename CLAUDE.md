@@ -475,10 +475,61 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     headers, so the SSE stream endpoint had no way to carry the Bearer token the new hybrid-auth
     check requires — router now also accepts `?session_token=&end_user_id=` query params, but
     ONLY on GET (the stream endpoint's only real caller), so this doesn't quietly widen the
-    allowlist. 880/880 tests pass. Remaining for Phase 6: the actual shell UI (sidebar, Projects/
-    Threads, chat) — the only piece left before an end user can sign up and use a Product for
-    real. Remaining after 6: 7 (sub-space/reseller UI), 8 (deferred product-sdk + per-product CF
-    Pages deploy).
+    allowlist. 880/880 tests pass.
+
+    **Phase 6 continued — shell data layer, a real pre-existing routing bug found and fixed, and
+    a corrected router-allowlist scope.** Building the shell's data layer (new
+    `GET /spaces/:spaceId/shell/manifest` safe-projection endpoint, `GET/PATCH
+    /spaces/:spaceId/product-users/me`, a new `GET /spaces/:spaceId/sessions` list route) surfaced
+    that the originally-planned router-allowlist additions (`/projects`, `/threads`,
+    `/agent-definitions`, `/scheduled-jobs`) would have been WRONG: each already carries an
+    explicit "builder-only, confirmed never end-user-facing" comment in
+    `workers/spaces/src/index.ts`, and `/threads`' own comment states end-user chat transport is
+    `/sessions`, not `/threads`. Worse, `resolveProductEndUserClaims` sets an end user's
+    `claims.tid` to the space's OWNING tenant (so internal-HMAC proxying works) — so a
+    tenant-match-only gate (e.g. `scheduled-jobs`' `loadOwnedSpace`) would have silently started
+    accepting end-user traffic the moment it was allowlisted, never having been audited with that
+    caller in mind. Corrected allowlist: `shell/manifest`, `kb/documents` + `kb/search` (read),
+    `product-users/me`, and the existing `sessions*` — Projects (Cycles), the structural Threads
+    browse, the Agents (definitions) page, and Crons stay **builder-operator-only** in the shell
+    (already reachable via JWT, no new allowlist entry). A genuinely new, narrowly-scoped
+    `GET /spaces/:spaceId/sessions` (list) was added to SpaceDO/spaces-worker instead — for a
+    product end user it derives `end_user_id` **only from verified claims**, never a
+    client-supplied query param (tested explicitly: a caller authenticated as one end user cannot
+    read another's sessions by passing `?end_user_id=`).
+
+    While wiring this up, found and fixed a genuine **pre-existing** bug (confirmed present
+    against git HEAD, before this pass touched anything): `POST /spaces/:spaceId/sessions`
+    (session CREATE — the mechanism every end-user chat surface depends on, including the
+    existing SSE widget) was **completely unreachable**, silently 404ing. Root-caused with a
+    reduced reproduction: Hono's RegExpRouter throws `buildMatcherFromPreprocessedRoutes` (an
+    internal error, silently caught by SmartRouter, which falls back to a TrieRouter that ALSO
+    mismatches) once this app's route table reaches a certain scale, when a multi-segment dynamic
+    route ending in a static suffix (`/internal/space-types/:id/record-install`) coexists with an
+    unrelated static sibling for the same method one segment shallower
+    (`/internal/space-types/seed`, POST) — a genuine Hono limitation, not application logic,
+    that silently corrupted **POST routing for the whole app**. Fixed by renaming the low-traffic
+    internal route to `/internal/space-types-record-install/:id` (static segment before the
+    dynamic one; the provisioner's one caller updated alongside) and, as belt-and-suspenders,
+    gating that route plus `/internal/space-types/:id`, `/spaces/:spaceId/sessions*`,
+    `/spaces/:spaceId/members*`, and `/spaces/:spaceId/agent-definitions*` inline instead of via a
+    separate `app.use(dynamicPattern, requireInternalHmac(...))` registration (the same
+    combination verified to work together). The members/agent-definitions fix was not
+    theoretical: their own "rejects with no internal token" tests started failing OPEN (500
+    reaching the handler instead of 403) the moment the record-install rename fixed one part of
+    the same corruption elsewhere, proving the fail-open risk was real. Also fixed in passing: the
+    session proxy's `new Request(..., { body: c.req.raw.body })` needs `duplex: "half"` for
+    spec-compliant fetch implementations (Node's undici, used by this repo's own tests) whenever a
+    streaming body is attached — never hit before because the whole route was unreachable.
+    **Not fixed elsewhere**: the same `app.use(dynamicPattern, requireInternalHmac(...))` pattern
+    recurs at several more call sites in this file (`registry`, `assistant-policy`, `projects`,
+    `internal/business-services`, `internal/member-billing`) — each may or may not actually
+    collide with a same-method static sibling; auditing and fixing all of them is a separate,
+    dedicated pass, not silently expanded into this one. 893/893 tests pass.
+
+    Remaining for Phase 6: the actual shell UI (sidebar, Projects/Threads, chat) — the only piece
+    left before an end user can sign up and use a Product for real. Remaining after 6: 7
+    (sub-space/reseller UI), 8 (deferred product-sdk + per-product CF Pages deploy).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

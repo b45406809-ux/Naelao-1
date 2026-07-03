@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken } from "@naelao/http";
+import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
@@ -307,11 +307,21 @@ app.post("/spaces/:spaceId/me/injection", async (c) => {
 // Per spec §11 and CLAUDE.md: SpaceDO owns agent_definitions.
 // A1.16.10 (layer-3 backstop, bucket A): builder-authored config, never end-user-facing
 // (confirmed against apps/widget + apps/portal — neither ever calls this route) — safe to gate.
-app.use("/spaces/:spaceId/agent-definitions/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+// Gated inline (not via a separate app.use(...)) — see the /internal/space-types-record-install/
+// :id route's comment for the full root-cause writeup: a separate app.use(...) on an overlapping
+// wildcard pattern was found, at this app's route-table scale, to be silently bypassable (a
+// genuine Hono RegExpRouter/TrieRouter limitation, not application logic) — this route's own
+// "no token" test started failing OPEN (500 reaching the handler instead of 403) once an
+// unrelated part of the same corruption elsewhere in this file was fixed, proving the risk is
+// real, not theoretical.
 app.all("/spaces/:spaceId/agent-definitions*", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const token = c.req.header("x-naelao-internal-token");
+  if (!(await verifyInternalToken(token, tenantId, c.env.PLATFORM_SECRET))) {
+    return errorResponse(forbidden("Missing or invalid internal token — this endpoint is not directly reachable"), c.get("requestId") ?? "unknown");
+  }
 
   const doId = c.env.SPACE_DO.idFromName(
     await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET)
@@ -327,6 +337,7 @@ app.all("/spaces/:spaceId/agent-definitions*", async (c) => {
       method: c.req.method,
       headers: c.req.raw.headers,
       body: c.req.raw.body,
+      ...(c.req.raw.body ? { duplex: "half" as const } : {}),
     })
   );
 });
@@ -335,12 +346,16 @@ app.all("/spaces/:spaceId/agent-definitions*", async (c) => {
 // A1.16.10 (layer-3 backstop, bucket A): SpaceDO team members (spec A1.8's "team" population —
 // people invited into the space with a role) are never product/portal customers (the hard
 // rule: "never make product customers into SpaceDO members") — confirmed neither widget nor
-// portal ever calls this route. Safe to gate.
-app.use("/spaces/:spaceId/members/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+// portal ever calls this route. Safe to gate. Gated inline for the same reason as
+// agent-definitions above.
 app.all("/spaces/:spaceId/members*", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const token = c.req.header("x-naelao-internal-token");
+  if (!(await verifyInternalToken(token, tenantId, c.env.PLATFORM_SECRET))) {
+    return errorResponse(forbidden("Missing or invalid internal token — this endpoint is not directly reachable"), c.get("requestId") ?? "unknown");
+  }
 
   const doId = c.env.SPACE_DO.idFromName(
     await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET)
@@ -356,6 +371,7 @@ app.all("/spaces/:spaceId/members*", async (c) => {
       method: c.req.method,
       headers: c.req.raw.headers,
       body: c.req.raw.body,
+      ...(c.req.raw.body ? { duplex: "half" as const } : {}),
     })
   );
 });
@@ -371,11 +387,20 @@ app.all("/spaces/:spaceId/members*", async (c) => {
 // currently-working end-user traffic, because none currently reaches this route successfully.
 // The one direct (non-router) caller, NaelaoAgentDO.writeConversationToSession, already mints
 // the token (see A1.16.9).
-app.use("/spaces/:spaceId/sessions/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+// Three-Tier Platform Model Phase 6 finding: POST /sessions (session CREATE — the mechanism
+// every end-user chat surface depends on) was UNREACHABLE before this pass touched anything,
+// confirmed against git HEAD. Root cause was elsewhere in this file, not in this route itself —
+// see the /internal/space-types-record-install/:id route's comment for the full root-cause
+// writeup (a genuine Hono RegExpRouter limitation at this app's route-table scale, silently
+// corrupting POST matching platform-wide). Gated inline here too, consistent with that fix.
 app.all("/spaces/:spaceId/sessions*", async (c) => {
   const spaceId = c.req.param("spaceId");
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const token = c.req.header("x-naelao-internal-token");
+  if (!(await verifyInternalToken(token, tenantId, c.env.PLATFORM_SECRET))) {
+    return errorResponse(forbidden("Missing or invalid internal token — this endpoint is not directly reachable"), c.get("requestId") ?? "unknown");
+  }
 
   // G-BA01: HMAC-derived DO name prevents enumeration by compromised workers
   const doId = c.env.SPACE_DO.idFromName(
@@ -386,13 +411,33 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
   const url = new URL(c.req.url);
   // Strip the /spaces/:spaceId prefix, keep /sessions/*
   const doPath = url.pathname.replace(`/spaces/${spaceId}`, "");
-  const doUrl = new URL(doPath + url.search, "http://space-do");
+
+  // Three-Tier Platform Model Phase 6: GET /sessions (bare, no :id) is the list route — a
+  // signed-in end user's own "recent conversations." The end_user_id filter MUST be derived
+  // from this caller's own verified claims, never forwarded from the client's query string —
+  // otherwise any end user could pass ?end_user_id=<someone-else> and list a stranger's
+  // sessions. Every other sub-path (create/get/messages/state) is untouched passthrough.
+  let search = url.search;
+  if (c.req.method === "GET" && doPath === "/sessions") {
+    const { role, userId } = getCallerIdentity(c);
+    const qs = new URLSearchParams();
+    if (role === "product_end_user" && userId) qs.set("end_user_id", userId);
+    const limit = url.searchParams.get("limit");
+    if (limit) qs.set("limit", limit);
+    search = `?${qs.toString()}`;
+  }
+  const doUrl = new URL(doPath + search, "http://space-do");
 
   return stub.fetch(
     new Request(doUrl.toString(), {
       method: c.req.method,
       headers: c.req.raw.headers,
       body: c.req.raw.body,
+      // Required by spec-compliant fetch implementations (e.g. Node's undici, used by this
+      // repo's own test suite) whenever a streaming body is attached to a Request — omitting it
+      // throws "duplex option is required" and was silently never hit before this Phase 6 pass
+      // because this whole route was unreachable (see the routing-bug comment above).
+      ...(c.req.raw.body ? { duplex: "half" as const } : {}),
     })
   );
 });
@@ -1387,8 +1432,14 @@ function getRegistryDO(env: Env): ReturnType<typeof env.SPACE_TYPE_REGISTRY_DO.g
 }
 
 // GET /internal/space-types/:id — load manifest (KV-cached 1h for fast provisioning)
-app.use("/internal/space-types/:id", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+// Gated inline for consistency with the record-install route below, whose comment has the full
+// root-cause writeup for a real, pre-existing routing bug this Phase 6 pass found and fixed.
 app.get("/internal/space-types/:id", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const token = c.req.header("x-naelao-internal-token");
+  if (!(await verifyInternalToken(token, tenantId, c.env.PLATFORM_SECRET))) {
+    return errorResponse(forbidden("Missing or invalid internal token — this endpoint is not directly reachable"), c.get("requestId") ?? "unknown");
+  }
   const typeId = c.req.param("id");
   const cacheKey = `space-type-manifest:${typeId}`;
 
@@ -1404,9 +1455,25 @@ app.get("/internal/space-types/:id", async (c) => {
   return c.json(manifest);
 });
 
-// POST /internal/space-types/:id/record-install — called at end of provisioning (step 10)
-app.use("/internal/space-types/:id/record-install", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.post("/internal/space-types/:id/record-install", async (c) => {
+// POST /internal/space-types-record-install/:id — called at end of provisioning (step 10).
+// Path deliberately shaped with the static segment BEFORE the dynamic :id (not
+// /internal/space-types/:id/record-install) — root-caused via a reduced reproduction: Hono's
+// RegExpRouter throws "buildMatcherFromPreprocessedRoutes" (silently caught by SmartRouter,
+// which then falls back to a TrieRouter that ALSO mismatches) when a multi-segment dynamic route
+// ending in a static suffix (.../:id/record-install) coexists, at this app's route-table scale,
+// with an unrelated static sibling for the same method one segment shallower
+// (/internal/space-types/seed, POST) — this is a genuine Hono limitation, not an application
+// bug, and it silently broke ALL POST routing app-wide (including POST /spaces/:id/sessions,
+// i.e. session creation — a pre-existing bug, confirmed present before this Phase 6 pass touched
+// anything). Renaming this one low-traffic internal route (provisioner-only caller, updated
+// alongside this) around the conflict was the actual fix; gate inline rather than via a separate
+// app.use(...) as belt-and-suspenders since that combination was verified to work together.
+app.post("/internal/space-types-record-install/:id", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const token = c.req.header("x-naelao-internal-token");
+  if (!(await verifyInternalToken(token, tenantId, c.env.PLATFORM_SECRET))) {
+    return errorResponse(forbidden("Missing or invalid internal token — this endpoint is not directly reachable"), c.get("requestId") ?? "unknown");
+  }
   const typeId = c.req.param("id");
   const body = await c.req.json<{ spaceId: string; version: string }>();
   const registry = getRegistryDO(c.env);
@@ -1476,6 +1543,24 @@ app.post("/internal/product-sessions/verify", async (c) => {
 // parented to the reseller). See docs/spec-appendix A1.8.
 
 /**
+ * Load a SpaceType's full manifest, KV-cached 1h (same cache key/TTL as
+ * /internal/space-types/:id — shared, not a second cache). Returns null if the type doesn't
+ * exist. Callers that only need productConfig should keep using loadEffectiveProductConfig
+ * below; this is for callers (like the shell manifest projection) that need ui.* too.
+ */
+async function loadManifest(env: Env, spaceTypeId: string): Promise<NaelaoSpaceTypeManifestV2 | null> {
+  const cacheKey = `space-type-manifest:${spaceTypeId}`;
+  const cached = await env.NAELAO_CONFIG_KV.get(cacheKey, "json") as NaelaoSpaceTypeManifestV2 | null;
+  if (cached) return cached;
+  const registry = getRegistryDO(env);
+  const resp = await registry.fetch(new Request(`http://registry/type/${spaceTypeId}`));
+  if (!resp.ok) return null;
+  const manifest = await resp.json<NaelaoSpaceTypeManifestV2>();
+  await env.NAELAO_CONFIG_KV.put(cacheKey, JSON.stringify(manifest), { expirationTtl: 3600 });
+  return manifest;
+}
+
+/**
  * Resolve the effective productConfig for a product space: the SpaceType manifest's
  * productConfig, overlaid with any per-space override in spaces.config_json.productConfig.
  */
@@ -1484,20 +1569,8 @@ async function loadEffectiveProductConfig(
   spaceTypeId: string,
   spaceConfigJson: string | null
 ): Promise<SpaceTypeProductConfig | null> {
-  let base: SpaceTypeProductConfig | null = null;
-  const cacheKey = `space-type-manifest:${spaceTypeId}`;
-  const cached = await env.NAELAO_CONFIG_KV.get(cacheKey, "json") as NaelaoSpaceTypeManifestV2 | null;
-  if (cached?.productConfig) {
-    base = cached.productConfig;
-  } else {
-    const registry = getRegistryDO(env);
-    const resp = await registry.fetch(new Request(`http://registry/type/${spaceTypeId}`));
-    if (resp.ok) {
-      const manifest = await resp.json<NaelaoSpaceTypeManifestV2>();
-      await env.NAELAO_CONFIG_KV.put(cacheKey, JSON.stringify(manifest), { expirationTtl: 3600 });
-      base = manifest.productConfig ?? null;
-    }
-  }
+  const manifest = await loadManifest(env, spaceTypeId);
+  const base = manifest?.productConfig ?? null;
   // Per-space override (builders tune membership per product without forking the manifest).
   let override: Partial<SpaceTypeProductConfig> | undefined;
   if (spaceConfigJson) {
@@ -1509,6 +1582,113 @@ async function loadEffectiveProductConfig(
   if (!base && !override) return null;
   return { ...(base ?? {}), ...(override ?? {}) } as SpaceTypeProductConfig;
 }
+
+// ── Three-Tier Platform Model, Phase 6: Product Shell data layer ────────────────────────────
+// GET /spaces/:spaceId/shell/manifest — a SAFE PROJECTION of the SpaceType manifest for a
+// browser client (the manifest-driven Product Shell in apps/portal). Deliberately excludes
+// agentEnvironment/backend/lifecycle/marketplace and every builder-only productConfig field
+// (commerce, businessServices, memberBilling, pricingConfig, billingRelationship,
+// userPermissions, adminFeatures, featureFlags, authProvider.ssoConfig) — those are either
+// platform-internal runtime config or govern a different actor (the builder), never needed by
+// the shell chrome itself. Works for BOTH an authenticated caller (builder JWT or product
+// end-user session) AND a pre-login visitor (the login page needs branding before any token
+// exists) — when there's no resolvable tenant, falls back to a tenant-less lookup by space id
+// alone, which is safe because the response is already a fully public-safe projection.
+app.get("/spaces/:spaceId/shell/manifest", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId } = getCallerIdentity(c);
+
+  const space = tenantId
+    ? await c.env.PLATFORM_DB.prepare(
+        "SELECT id, name, spacetype_id, config_json FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
+      ).bind(spaceId, tenantId).first<{ id: string; name: string; spacetype_id: string; config_json: string | null }>()
+    : await c.env.PLATFORM_DB.prepare(
+        "SELECT id, name, spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
+      ).bind(spaceId).first<{ id: string; name: string; spacetype_id: string; config_json: string | null }>();
+  if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+
+  const manifest = await loadManifest(c.env, space.spacetype_id);
+  if (!manifest) return c.json({ error_code: "not_found", message: "SpaceType manifest not found" }, 404);
+  const pc = await loadEffectiveProductConfig(c.env, space.spacetype_id, space.config_json);
+
+  return c.json({
+    space_id: space.id,
+    space_type_id: space.spacetype_id,
+    space_name: space.name,
+    manifest_name: manifest.name,
+    manifest_version: manifest.version,
+    icon: manifest.icon,
+    ui: {
+      sidebar_items: manifest.ui.operatorShell.sidebarItems,
+      hidden_core_items: manifest.ui.operatorShell.hiddenCoreItems,
+      default_view: manifest.ui.operatorShell.defaultView,
+    },
+    branding: {
+      brand_color: pc?.branding?.brandColor ?? null,
+      logo_url: pc?.branding?.logoUrl ?? null,
+      favicon_url: pc?.branding?.faviconUrl ?? null,
+      product_description: pc?.branding?.productDescription ?? null,
+      suppress_naelao_branding: pc?.branding?.suppressNaelaoBranding ?? false,
+    },
+    assistant_mode: pc?.assistantMode ?? "per-user",
+    sub_space_display: pc?.subSpaceDisplay ?? null,
+    allow_public_signup: pc?.allowPublicSignup ?? false,
+    auth_provider: pc?.authProvider?.provider ?? "naelao-native",
+  });
+});
+
+// GET/PATCH /spaces/:spaceId/product-users/me — a signed-in product end user's own profile +
+// credit balance (topbar meter, Settings' General/Billing tabs). Resolves identity from the
+// caller's OWN claims only (role must be product_end_user; userId is that end user's own
+// end_user_id, set by the router's resolveProductEndUserClaims) — there is deliberately no way
+// to pass a different end_user_id and read someone else's profile through this route.
+app.get("/spaces/:spaceId/product-users/me", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { role, userId, tenantId } = getCallerIdentity(c);
+  if (role !== "product_end_user" || !userId) {
+    return c.json({ error_code: "not_an_end_user", message: "This route is for product end users only" }, 404);
+  }
+  const row = await c.env.PLATFORM_DB.prepare(
+    "SELECT email, display_name, first_seen_at, last_seen_at, suspended_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
+  ).bind(spaceId, userId).first<{ email: string | null; display_name: string | null; first_seen_at: string; last_seen_at: string | null; suspended_at: string | null }>();
+  if (!row) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
+
+  const stub = await productUserDoStub(c.env, spaceId, userId, tenantId);
+  const balanceRes = await stub.fetch(new Request("http://do/credits/balance"));
+  const balance = await balanceRes.json<{ balance_credits: number }>();
+
+  return c.json({
+    end_user_id: userId,
+    email: row.email,
+    display_name: row.display_name,
+    joined_at: row.first_seen_at,
+    last_seen_at: row.last_seen_at,
+    suspended: row.suspended_at !== null,
+    credits_balance: balance.balance_credits,
+  });
+});
+
+app.patch("/spaces/:spaceId/product-users/me", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { role, userId } = getCallerIdentity(c);
+  if (role !== "product_end_user" || !userId) {
+    return c.json({ error_code: "not_an_end_user", message: "This route is for product end users only" }, 404);
+  }
+  const body = await c.req.json<{ display_name?: string }>().catch(() => ({}) as { display_name?: string });
+  if (body.display_name === undefined) {
+    return c.json({ error_code: "bad_request", message: "Nothing to update" }, 400);
+  }
+  const res = await c.env.PLATFORM_DB.prepare(
+    "UPDATE product_end_users SET display_name = ? WHERE product_space_id = ? AND end_user_id = ?"
+  ).bind(body.display_name, spaceId, userId).run();
+  if (res.meta.changes === 0) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
+  return c.json({ ok: true, display_name: body.display_name });
+});
+
+// GET /spaces/:spaceId/sessions (list) is handled by the generic SpaceDO session proxy above
+// (app.all("/spaces/:spaceId/sessions*", ...)) — see that handler's own comment for why the
+// end_user_id filter is derived from verified caller claims there, never a client-supplied
+// query param.
 
 // POST /reseller/spaces — a customer creates their own business under a reseller's product.
 app.post("/reseller/spaces", async (c) => {

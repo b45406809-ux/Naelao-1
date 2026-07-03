@@ -185,14 +185,47 @@ app.all("/v1/spaces/:spaceId/end-users/*", async (c) => {
   );
 });
 
+// Three-Tier Platform Model, Phase 6: the shell's login page needs branding (logo/color/name)
+// and auth_provider BEFORE a visitor has any credential at all — registered unauthenticated,
+// same reasoning as end-users/* above. The spaces worker's handler already returns a fully
+// public-safe projection (no internal manifest fields) regardless of caller identity, so there
+// is nothing extra to leak by allowing a bare, tokenless GET here. Since this path is reached
+// with NO claims verification at all, strip any client-supplied identity headers first (same B2
+// precedent as proxyTo below) — otherwise a caller could set x-naelao-tenant-id themselves and
+// have the spaces worker's getCallerIdentity trust it as if it had been verified.
+app.get("/v1/spaces/:spaceId/shell/manifest", async (c) => {
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  const headers = new Headers(c.req.raw.headers);
+  headers.delete("x-naelao-tenant-id");
+  headers.delete("x-naelao-user-id");
+  headers.delete("x-naelao-role");
+  headers.delete("x-naelao-scopes");
+  headers.delete("x-naelao-internal-token");
+  return c.env.SPACES_WORKER.fetch(new Request(u.toString(), { method: c.req.method, headers, body: c.req.raw.body }));
+});
+
 // Three-Tier Platform Model, Phase 6: routes a product end user (authenticated against
 // ProductUserDO, Phase 2 — no platform tenant, no JWT) is allowed to reach directly, carrying a
 // Bearer nps_... session token + x-naelao-end-user-id instead of a platform JWT. Deliberately a
 // narrow allowlist, not "any Bearer nps_ token works everywhere" — kb ingestion, credentials,
-// member-billing etc. stay JWT-only. Extend this list as more end-user surfaces come online
-// (threads, once product-scoped thread access ships).
+// member-billing etc. stay JWT-only.
+//
+// Product Shell (§A1.17 Phase 6 continued): /projects, /threads, /agent-definitions, and
+// /scheduled-jobs were considered for this list and deliberately REJECTED after reading their
+// own gates — each already carries an explicit "builder-only, confirmed never end-user-facing"
+// comment in workers/spaces/src/index.ts (some specifically audited against apps/widget/portal),
+// and /threads' own comment states the end-user chat transport is /sessions, not /threads. Worse,
+// resolveProductEndUserClaims below sets an end user's claims.tid to the SPACE'S OWNING tenant —
+// so a tenant-match-only gate (e.g. scheduled-jobs' loadOwnedSpace) would silently start
+// accepting end-user traffic the moment it's allowlisted, even though it was never audited with
+// that caller in mind. Do not add those four routes here; add a new, narrowly-scoped route
+// instead if a genuine need shows up (as sessions' own list route below did).
 const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/sessions(\/|$)/,
+  /^\/spaces\/([^/]+)\/shell\/manifest$/,
+  /^\/spaces\/([^/]+)\/kb\/(documents|search)(\/|$)/,
+  /^\/spaces\/([^/]+)\/product-users\/me$/,
 ];
 
 /** Resolve productId from the path if it matches an end-user-reachable route pattern. Strips the
