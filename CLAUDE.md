@@ -341,16 +341,28 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     `ProductUserDO` (the first persistent signed-in end-user concept — Launchpad end users are
     anonymous today), a Builder Dashboard API, the launch/domain wizard, ongoing management tabs,
     a manifest-driven Product Shell, and UI for the already-built sub-space/reseller mechanisms.
-    Full phased plan + design decisions: appendix §A1.17 (to be filled in as phases land).
-    First landed: Phase 0 — two separate, uncoordinated, and entirely dead API-key UIs existed
-    (`dashboard/settings` and `dashboard/api-keys`, calling `/settings/api-keys` and
-    `/v1/api-keys` respectively — neither route exists in any worker). Consolidated onto one
-    typed shape (scopes + expiry, matching the spec's scoped builder API key model) in
-    `apps/dashboard/src/lib/api.ts`, pointed at the future `/builder/api-keys` route (Phase 3),
-    with `dashboard/api-keys` as the canonical UI and `dashboard/settings` now linking to it
-    instead of duplicating it. Also found and flagged, but explicitly OUT of this plan's scope:
-    `dashboard/team` and `dashboard/usage` call `/v1/team/*` and `/v1/usage/*`, which are equally
-    unbacked by any worker — a future pass needs to either build those routes or retire the pages.
+    Full phased plan + design decisions: appendix §A1.17 (filled in as each phase lands).
+    **Landed so far — Phases 0-2** (of 8): Phase 0 consolidated two dead API-key UIs onto one
+    typed `/builder/api-keys` shape (`dashboard/api-keys` canonical, `dashboard/settings` links
+    to it); flagged `/v1/team/*` + `/v1/usage/*` as an equally-unbacked, out-of-scope gap. Phase 1
+    added the NaelaoProduct foundation: migration `0044` adds ONLY `product_slug` (unique
+    subdomain identity) + the conversation-access legal-audit pair as real columns — every other
+    NaelaoProduct field extends `SpaceTypeProductConfig` (a `config_json` override, like member
+    billing) to avoid a split-brain — plus `BuilderAccountDO` (thin per-builder product index +
+    scoped `nbk_...` API keys; reuses entitlements/reseller_ledger/RateLimitDO for
+    usage/billing/rate-limiting rather than reimplementing them). Phase 2 added `ProductUserDO`
+    (the platform's FIRST persistent signed-in end-user — credit ledger, product-scoped session
+    tokens, prefs, GDPR export; one instance per productId×endUserId). **Key resolved decision:**
+    end users auth via the product's own `auth_provider` → a product-scoped `nps_...` session
+    token validated against `ProductUserDO`, NEVER the platform builder JWT (which stays for
+    owners/admins/Team collaborators) — this also fixes the broken end-user chat-auth gap item 23
+    flagged. Credit ledger is a ledger only; token→credit conversion still settles through
+    billing-core's `tokensToCredits()`, never re-derived. Incidental: fixed a real bug in the
+    shared test helper `tests/unit/helpers/sqlite-do-shim.ts` (it silently dropped rows from any
+    param-less `SELECT`, a pattern production code already relies on). Remaining: Phase 3 (Builder
+    Dashboard API + the legally-gated conversation-access endpoint), 4 (launch/domain wizard), 5
+    (management tabs), 6 (manifest-driven Product Shell), 7 (sub-space/reseller UI), 8 (deferred
+    product-sdk + per-product CF Pages deploy).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

@@ -2486,4 +2486,41 @@ applies cleanly, columns default to NULL, slug uniqueness enforced but NULL-excl
 columns settable independently). 794/794 platform tests pass; `naelao-spaces` and the dashboard
 typecheck clean.
 
-Remaining phases (2-8) will each get their own subsection here as they land.
+**Phase 2 — DONE.** New `workers/spaces/src/do/ProductUserDO.ts` — the platform's FIRST
+persistent, signed-in end-user concept. Until now a Launchpad end user was an anonymous session
+id with no durable identity; a Product end user is a real record (credit balance, sessions,
+preferences, notification queue, conversation index). One instance per (productId, endUserId),
+HMAC-named `getDOName("produser", "${productId}:${endUserId}", tenantId, PLATFORM_SECRET)` so two
+builders can't collide on the same `end_user_id` namespace and instances can't be enumerated.
+Registered in `wrangler.toml` (`PRODUCT_USER_DO` binding, migration tag v7); `productUserDoStub`
+helper added to `index.ts` alongside `builderAccountDoStub` (routes that use it land in Phase 3+).
+
+**The auth design decision the plan flagged — resolved, not inferred.** End users authenticate
+through the PRODUCT'S configured `auth_provider` (naelao-native / Clerk / custom-OIDC / SAML),
+which yields a stable `end_user_id`; `ProductUserDO` then mints a **product-scoped session token**
+(`nps_...`, opaque, stored only as a SHA-256 hash) validated against its own `session_state` — NOT
+against the platform-wide builder JWT. Builder-side actors (owners/admins/Team collaborators) stay
+on the existing JWT + `space_members` path — they are a structurally different population (same
+reasoning as #23's Bucket A/B split). This is also the concrete fix for the currently-broken
+end-user chat-auth gap #23 flagged (widget/portal attach no credential today — a product session
+token is the credential they'll attach, wired in Phase 3/6). The DO is deliberately
+auth-provider-agnostic: it never sees Clerk/OIDC/SAML secrets (those stay in the credentials
+vault); the caller verifies the provider assertion and derives `end_user_id`, then asks the DO to
+open a session. Sessions are sliding-window (30-day TTL, refreshed on each verify).
+
+**Credit ledger is a LEDGER, not a second conversion source.** `credit_ledger`'s balance is the
+SUM of its deltas; `deduct` fails CLOSED on an over-draw (402, balance unchanged), matching the
+`fetchAssistantPolicy`/`project_spend` fail-closed precedent. Crucially, `deduct` accepts
+ALREADY-CONVERTED credits — the agent runtime owns `tokensToCredits()` (billing-core's single
+token→credit conversion point, #12), converts there, and passes credits here. The DO never
+re-derives the rate, so there's no split-brain with billing-core. (This is also why the spaces
+worker did NOT need to add a `@naelao/billing-core` dependency.) `/export` is the GDPR Art. 20
+data-portability dump (mirrors the SpaceDO `/me/export` pattern) and explicitly excludes
+`token_hash` — credential material is never exported.
+
+Tests: `tests/unit/product-user-do.test.ts` (11 — session open/verify/revoke/revoke-all, ledger
+grant/deduct/over-draw-fail-closed/validation, preferences round-trip, conversation-ref dedup,
+notification queue, and a GDPR export that asserts no `token_hash` leaks). 805/805 platform tests
+pass; `naelao-spaces` typechecks clean.
+
+Remaining phases (3-8) will each get their own subsection here as they land.

@@ -13,6 +13,7 @@ export { FeatureFlagDO } from "./do/FeatureFlagDO.js";
 export { TransactionCoordinatorDO } from "./do/TransactionCoordinatorDO.js";
 export { SpaceTypeRegistryDO } from "./do/SpaceTypeRegistryDO.js";
 export { BuilderAccountDO } from "./do/BuilderAccountDO.js";
+export { ProductUserDO } from "./do/ProductUserDO.js";
 
 export interface Env {
   ENVIRONMENT: string;
@@ -22,6 +23,8 @@ export interface Env {
   SPACE_TYPE_REGISTRY_DO: DurableObjectNamespace<SpaceTypeRegistryDO>;
   /** Three-Tier Platform Model, Phase 1 — one per builder (tenant). */
   BUILDER_ACCOUNT_DO: DurableObjectNamespace;
+  /** Three-Tier Platform Model, Phase 2 — one per (productId, endUserId). */
+  PRODUCT_USER_DO: DurableObjectNamespace;
   NAELAO_CONFIG_KV: KVNamespace;
   EXPORTS_BUCKET: R2Bucket;
   /** Producer to the provisioning queue — consumed by naelao-provisioner. */
@@ -595,6 +598,16 @@ async function builderAccountDoStub(env: Env, tenantId: string) {
     await getDOName("builder", tenantId, tenantId, env.PLATFORM_SECRET)
   );
   return env.BUILDER_ACCOUNT_DO.get(doId);
+}
+
+/** Get the ProductUserDO stub for a (product, end-user) pair, HMAC-named to prevent enumeration.
+ *  productId is a space id; the tenant that owns it scopes the HMAC so two builders can't collide
+ *  on the same end_user_id namespace. */
+async function productUserDoStub(env: Env, productId: string, endUserId: string, tenantId: string) {
+  const doId = env.PRODUCT_USER_DO.idFromName(
+    await getDOName("produser", `${productId}:${endUserId}`, tenantId, env.PLATFORM_SECRET)
+  );
+  return env.PRODUCT_USER_DO.get(doId);
 }
 
 /** Forward a request to a path on the SpaceDO, preserving method/headers/body. */
