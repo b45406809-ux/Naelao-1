@@ -321,6 +321,36 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     found by grepping every caller before touching the callee). `/webhooks/lemon-squeezy`
     untouched — its own Lemon Squeezy signature scheme is a different, already-correct
     mechanism. Full detail: appendix §A1.16.25.
+30. **NEW DIRECTION IN PROGRESS — the "Three-Tier Platform Model" (Naelao → Builder → End User)
+    is being built for real, not just the Space/SpaceType runtime we already have.** The original
+    spec describes a fuller product layer the build never finished: builders get a real SaaS-style
+    dashboard (launch wizard with custom domain, ongoing user/billing/analytics management), and
+    end users — depending on the SpaceType the builder picked — get either a shared collaborative
+    Space, a public storefront, or their own sub-space/business under a builder's reseller product.
+    Two load-bearing findings from re-reading the spec against the current code: (1) the backend
+    for sub-spaces is ALREADY spec-correct and fully tested (`/spaces/:spaceId/sub-spaces` with
+    `agency_shell`-gated mixed-type reselling, `/reseller/spaces` for fully independent
+    businesses) but has **zero consuming UI anywhere**; (2) the SpaceType manifest already
+    carries the exact UI contract the spec describes (`ui.operatorShell`/`ui.externalPortal`,
+    typed in `SpaceTypeRegistryDO.ts` and populated for Launchpad in `launchpad-manifest.ts` —
+    hidden core items, sidebar, default view, portal deployment type) but nothing renders it.
+    Building: a `NaelaoProduct` field set (extending the existing `spaces` table, not a parallel
+    table — avoids the split-brain anti-pattern the spec's own gap-appendix warns against),
+    `BuilderAccountDO` (thin per-builder index + api-keys, reusing existing entitlements/
+    reseller_ledger/RateLimitDO for usage/billing/rate-limiting rather than reimplementing them),
+    `ProductUserDO` (the first persistent signed-in end-user concept — Launchpad end users are
+    anonymous today), a Builder Dashboard API, the launch/domain wizard, ongoing management tabs,
+    a manifest-driven Product Shell, and UI for the already-built sub-space/reseller mechanisms.
+    Full phased plan + design decisions: appendix §A1.17 (to be filled in as phases land).
+    First landed: Phase 0 — two separate, uncoordinated, and entirely dead API-key UIs existed
+    (`dashboard/settings` and `dashboard/api-keys`, calling `/settings/api-keys` and
+    `/v1/api-keys` respectively — neither route exists in any worker). Consolidated onto one
+    typed shape (scopes + expiry, matching the spec's scoped builder API key model) in
+    `apps/dashboard/src/lib/api.ts`, pointed at the future `/builder/api-keys` route (Phase 3),
+    with `dashboard/api-keys` as the canonical UI and `dashboard/settings` now linking to it
+    instead of duplicating it. Also found and flagged, but explicitly OUT of this plan's scope:
+    `dashboard/team` and `dashboard/usage` call `/v1/team/*` and `/v1/usage/*`, which are equally
+    unbacked by any worker — a future pass needs to either build those routes or retire the pages.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

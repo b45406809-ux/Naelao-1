@@ -66,10 +66,18 @@ export interface AuthResponse {
   };
 }
 
+// F: two separate, uncoordinated API-key UIs existed (dashboard/settings and dashboard/api-keys),
+// each calling a different route (/settings/api-keys, /v1/api-keys) that neither worker ever
+// implemented — both were dead client code. Consolidated onto this single typed shape (the
+// richer of the two: scopes + expiry, matching the spec's scoped builder API key model) and a
+// single future backend route, /builder/api-keys (Three-Tier Platform Model, Phase 3).
 export interface ApiKey {
   id: string;
   name: string;
   key_prefix: string;
+  scopes: string[];
+  last_used_at: string | null;
+  expires_at: string | null;
   created_at: string;
 }
 
@@ -242,23 +250,29 @@ export async function deleteKbDoc(
   });
 }
 
-// ── API Keys ─────────────────────────────────────────────────────────────────
+// ── API Keys (Three-Tier Platform Model, Phase 3 — /builder/api-keys* not live until then) ──
 
 export async function listApiKeys(): Promise<ApiKey[]> {
-  const res = await apiFetch<{ data: ApiKey[] } | ApiKey[]>("/settings/api-keys");
+  const res = await apiFetch<{ data: ApiKey[] } | ApiKey[]>("/builder/api-keys");
   if (Array.isArray(res)) return res;
   return (res as { data: ApiKey[] }).data ?? [];
 }
 
-export async function createApiKey(name: string): Promise<{ key: string } & ApiKey> {
-  return apiFetch<{ key: string } & ApiKey>("/settings/api-keys", {
+export async function createApiKey(
+  name: string,
+  scopes: string[],
+  expiresInDays?: number
+): Promise<{ key: string } & ApiKey> {
+  const body: Record<string, unknown> = { name, scopes };
+  if (expiresInDays) body["expires_in_days"] = expiresInDays;
+  return apiFetch<{ key: string } & ApiKey>("/builder/api-keys", {
     method: "POST",
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(body),
   });
 }
 
 export async function revokeApiKey(id: string): Promise<void> {
-  return apiFetch<void>(`/settings/api-keys/${id}`, { method: "DELETE" });
+  return apiFetch<void>(`/builder/api-keys/${id}`, { method: "DELETE" });
 }
 
 // ── Reseller / client portfolio ──────────────────────────────────────────────

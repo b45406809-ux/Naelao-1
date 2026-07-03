@@ -2368,3 +2368,72 @@ and is covered by the platform-wide typecheck.
 776 unit/contract/integration/isolation/simulation tests pass; `naelao-billing-worker`,
 `naelao-agents-worker`, and `naelao-spaces` typecheck clean (and `npx turbo run typecheck` is
 clean platform-wide).
+
+## A1.17 The Three-Tier Platform Model (Naelao → Builder → End User) — IN PROGRESS
+
+CLAUDE.md item 30 is the index entry; this section accumulates design detail as each phase
+lands, per the approved plan at commit time (8 phases: API-key cleanup → NaelaoProduct schema +
+`BuilderAccountDO` → `ProductUserDO` → Builder Dashboard API → launch/domain wizard → ongoing
+management tabs → manifest-driven Product Shell → sub-space/reseller UI → deferred
+`@naelao/product-sdk`).
+
+**Why this exists.** Re-reading the spec's "Three-Tier Platform Model," "How Builders Use
+Naelao," the Journey walkthroughs (1A/1B/2), Temples, and the Sub-Space Scenarios A/B/C sections
+against the current codebase surfaced two load-bearing facts that reframe how much of this is
+actually new work:
+- The backend for sub-spaces is **already built and spec-correct**:
+  `/spaces/:spaceId/sub-spaces` (`workers/spaces/src/index.ts` ~968-1021, `SpaceDO.ts` createSubSpace
+  ~2195-2260) implements exactly the depth≤2 / `agency_shell`-gated-mixed-type / force-parent-type-
+  for-end-users rules the spec's §49 describes — Scenarios A (organizational), B (agency/mixed
+  type), and C (user-created workspace) all fall out of this one mechanism plus caller role.
+  `/reseller/spaces` (~1634) is the separate, heavier "spin off a fully independent business"
+  mechanism (new tenant, new SpaceDO). **Neither has any consuming UI** —
+  `apps/dashboard/src/lib/api.ts`'s `listSubSpaces`/`createSubSpace` are unused dead code, and
+  `apps/portal/src` has zero sub-space or reseller references.
+- The SpaceType manifest **already carries the exact `ui` contract** the spec's Layer-3
+  description specifies: `ui.operatorShell` (sidebarItems, dashboardWidgets, hiddenCoreItems,
+  defaultView) and `ui.externalPortal` (enabled, deploymentType, templateId, customDomain,
+  authModel), fully typed in `SpaceTypeRegistryDO.ts:61-77` and fully *populated* for Launchpad in
+  `launchpad-manifest.ts:50-70` (Launchpad hides `threads`/`projects` for the operator and shows
+  Revenue/Orders/Customers instead — "operators view dashboards, they don't chat," per spec).
+  Nothing renders this data yet.
+
+So most of the remaining work is genuinely new (a `NaelaoProduct` field set, `BuilderAccountDO`,
+`ProductUserDO` — the first persistent signed-in end-user concept in the platform, since Launchpad
+end users today are anonymous session IDs) plus UI against both new and already-existing,
+already-tested backend surfaces.
+
+**Design decisions locked in before implementation (do not re-litigate without updating this
+section):**
+- `NaelaoProduct` extends the existing `spaces` D1 table with new columns rather than a parallel
+  `products` table — the spec's own gap appendix flags exactly this kind of split-brain (e.g.
+  `space_credits` defined in two places) as the anti-pattern to avoid.
+- `BuilderAccountDO` is a thin per-builder index (`products`, `api_keys` tables only) — it must
+  NOT reimplement usage aggregation, invoicing, or rate limiting; those already exist
+  (`@naelao/entitlements` + Analytics Engine, `reseller_ledger`/`GET /reseller/statement`,
+  `workers/router/src/RateLimitDO.ts` respectively) and `BuilderAccountDO`'s methods should call
+  into them.
+- The builder-facing per-product feature-flags mechanism (spec: `PUT /builder/products/{id}/
+  feature-flags`) must NOT reuse `workers/spaces/src/do/FeatureFlagDO.ts` — that DO is Naelao's
+  own platform-wide gradual-rollout system (global flags, staff-controlled, targeting rules by
+  account/plan/tenant), a different concern from a builder toggling a flag for their own
+  product's end users. Needs its own simple mechanism (new `feature_flags_json` column + KV TTL
+  cache), not a shared engine with a different actor model.
+- Do not name anything `ProductDO` — `workers/agents/src/do/ProductDO.ts` already exists (legacy
+  Whop-niche singleton being retired per items #4/#11); `BuilderAccountDO`/`ProductUserDO` avoid
+  the collision but it's an easy mix-up in code review.
+- End-user auth for `ProductUserDO` is a product-scoped session token (issued via the product's
+  configured `auth_provider`), never the platform-wide builder JWT — Team-type collaborators
+  (`space_members`) are a structurally different population from Product end users, same
+  reasoning as item #23's Bucket A/B split.
+
+**Phase 0 — DONE.** Two separate, fully dead API-key UIs (`dashboard/settings`'s embedded
+section calling `/settings/api-keys`, `dashboard/api-keys` calling `/v1/api-keys` — neither route
+backed by any worker) consolidated onto one typed `ApiKey` shape in `apps/dashboard/src/lib/api.ts`
+(scopes + expiry + key_prefix, matching the spec's scoped `nbk_...` builder key model), pointed at
+the future `/builder/api-keys` route (Phase 3 will implement it). `dashboard/api-keys` is now the
+canonical UI; `dashboard/settings` links to it instead of duplicating it. `dashboard/team` and
+`dashboard/usage` call equally-unbacked `/v1/team/*`/`/v1/usage/*` routes — flagged as a known,
+separate, out-of-scope gap (CLAUDE.md item 30), not touched by this phase.
+
+Remaining phases (1-8) will each get their own subsection here as they land.

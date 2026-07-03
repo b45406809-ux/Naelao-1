@@ -1,17 +1,14 @@
 "use client";
 
-import { useEffect, useState, FormEvent } from "react";
-import {
-  listApiKeys,
-  createApiKey,
-  revokeApiKey,
-  getBillingSubscription,
-  createBillingCheckout,
-} from "@/lib/api";
-import type { ApiKey } from "@/lib/api";
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { getBillingSubscription, createBillingCheckout } from "@/lib/api";
 import { useAuth } from "@/lib/auth-provider";
 
-// G-BE40: Settings — subscription info, API keys, org info
+// G-BE40: Settings — subscription info, org info. API key management lives on its own page
+// (/dashboard/api-keys) — this page used to embed a second, simpler API-key UI pointed at a
+// route (/settings/api-keys) that no worker ever implemented; consolidated onto the one real
+// UI (scopes + expiry) instead of maintaining two dead call sites.
 
 const PLAN_TIERS = [
   {
@@ -71,15 +68,6 @@ export default function SettingsPage() {
   const [billingError, setBillingError] = useState<string | null>(null);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
 
-  // API keys state
-  const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
-  const [keysLoading, setKeysLoading] = useState(true);
-  const [keysError, setKeysError] = useState<string | null>(null);
-  const [newKeyName, setNewKeyName] = useState("");
-  const [creatingKey, setCreatingKey] = useState(false);
-  const [newKeyValue, setNewKeyValue] = useState<string | null>(null);
-  const [revokingId, setRevokingId] = useState<string | null>(null);
-
   useEffect(() => {
     async function loadBilling() {
       try {
@@ -91,17 +79,7 @@ export default function SettingsPage() {
         setBillingLoading(false);
       }
     }
-    async function loadKeys() {
-      try {
-        const keys = await listApiKeys();
-        setApiKeys(keys);
-      } catch {
-        setKeysError("Could not load API keys");
-      } finally {
-        setKeysLoading(false);
-      }
-    }
-    void Promise.all([loadBilling(), loadKeys()]);
+    void loadBilling();
   }, []);
 
   async function handleUpgrade(planId: string) {
@@ -115,37 +93,6 @@ export default function SettingsPage() {
       );
     } finally {
       setCheckoutLoading(null);
-    }
-  }
-
-  async function handleCreateKey(e: FormEvent) {
-    e.preventDefault();
-    if (!newKeyName.trim()) return;
-    setCreatingKey(true);
-    setNewKeyValue(null);
-    try {
-      const result = await createApiKey(newKeyName.trim());
-      setNewKeyValue(result.key);
-      setApiKeys((prev) => [result, ...prev]);
-      setNewKeyName("");
-    } catch (err) {
-      setKeysError(err instanceof Error ? err.message : "Failed to create key");
-    } finally {
-      setCreatingKey(false);
-    }
-  }
-
-  async function handleRevokeKey(id: string) {
-    if (!confirm("Revoke this API key? Any apps using it will stop working."))
-      return;
-    setRevokingId(id);
-    try {
-      await revokeApiKey(id);
-      setApiKeys((prev) => prev.filter((k) => k.id !== id));
-    } catch (err) {
-      setKeysError(err instanceof Error ? err.message : "Failed to revoke key");
-    } finally {
-      setRevokingId(null);
     }
   }
 
@@ -251,77 +198,15 @@ export default function SettingsPage() {
 
       {/* API Keys */}
       <SectionCard title="API Keys">
-        {keysError && (
-          <p className="text-sm text-red-600 mb-4">{keysError}</p>
-        )}
-
-        {/* Create new key */}
-        <form onSubmit={handleCreateKey} className="flex gap-3 mb-5">
-          <input
-            type="text"
-            value={newKeyName}
-            onChange={(e) => setNewKeyName(e.target.value)}
-            placeholder="Key name (e.g. production)"
-            required
-            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition text-sm"
-          />
-          <button
-            type="submit"
-            disabled={creatingKey || !newKeyName.trim()}
-            className="px-4 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-brand-300 text-white text-sm font-semibold rounded-lg transition-colors whitespace-nowrap"
-          >
-            {creatingKey ? "Creating..." : "Create Key"}
-          </button>
-        </form>
-
-        {/* Show newly created key once */}
-        {newKeyValue && (
-          <div className="mb-5 p-4 bg-green-50 border border-green-200 rounded-lg">
-            <p className="text-sm font-semibold text-green-800 mb-1">
-              New API key — copy now, it won't be shown again
-            </p>
-            <code className="text-xs bg-white border border-green-300 rounded px-2 py-1 block break-all">
-              {newKeyValue}
-            </code>
-          </div>
-        )}
-
-        {keysLoading ? (
-          <div className="text-sm text-gray-400">Loading keys...</div>
-        ) : apiKeys.length === 0 ? (
-          <p className="text-sm text-gray-400">
-            No API keys yet. Create one above.
-          </p>
-        ) : (
-          <ul className="divide-y divide-gray-100">
-            {apiKeys.map((key) => (
-              <li
-                key={key.id}
-                className="py-3 flex items-center justify-between"
-              >
-                <div>
-                  <p className="text-sm font-medium text-gray-900">
-                    {key.name}
-                  </p>
-                  <p className="text-xs text-gray-400 mt-0.5">
-                    {key.key_prefix}•••••••{" "}
-                    &middot;{" "}
-                    Created{" "}
-                    {new Date(key.created_at).toLocaleDateString()}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => void handleRevokeKey(key.id)}
-                  disabled={revokingId === key.id}
-                  className="text-xs text-red-500 hover:text-red-700 disabled:opacity-50 transition-colors"
-                >
-                  {revokingId === key.id ? "Revoking..." : "Revoke"}
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
+        <p className="text-sm text-gray-500 mb-4">
+          Scoped programmatic access to the Naelao API.
+        </p>
+        <Link
+          href="/dashboard/api-keys"
+          className="inline-flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-lg transition-colors"
+        >
+          Manage API Keys
+        </Link>
       </SectionCard>
     </div>
   );

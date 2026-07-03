@@ -1,17 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { apiFetch } from "@/lib/api";
-
-interface ApiKey {
-  id: string;
-  name: string;
-  key_prefix: string;
-  scopes: string[];
-  last_used_at: string | null;
-  expires_at: string | null;
-  created_at: string;
-}
+import { listApiKeys, createApiKey, revokeApiKey } from "@/lib/api";
+import type { ApiKey } from "@/lib/api";
 
 const ALL_SCOPES = [
   "spaces:read", "spaces:write",
@@ -35,20 +26,15 @@ export default function ApiKeysPage() {
   async function load() {
     setLoading(true);
     try {
-      const data = await apiFetch<{ data: ApiKey[] }>("/v1/api-keys");
-      setKeys(data.data);
+      setKeys(await listApiKeys());
     } catch { /* ignore */ } finally { setLoading(false); }
   }
 
   async function create() {
     if (!form.name || form.scopes.length === 0) return;
     try {
-      const body: Record<string, unknown> = { name: form.name, scopes: form.scopes };
-      if (form.expires_in_days) body["expires_in_days"] = parseInt(form.expires_in_days, 10);
-      const data = await apiFetch<{ key: string }>("/v1/api-keys", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
+      const expiresInDays = form.expires_in_days ? parseInt(form.expires_in_days, 10) : undefined;
+      const data = await createApiKey(form.name, form.scopes, expiresInDays);
       setNewKey(data.key);
       setShowNew(false);
       setForm({ name: "", scopes: [], expires_in_days: "" });
@@ -59,7 +45,7 @@ export default function ApiKeysPage() {
   async function revoke(id: string) {
     if (!confirm("Revoke this API key? This cannot be undone.")) return;
     try {
-      await apiFetch(`/v1/api-keys/${id}`, { method: "DELETE" });
+      await revokeApiKey(id);
       setKeys((prev) => prev.filter((k) => k.id !== id));
     } catch { /* ignore */ }
   }
