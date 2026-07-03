@@ -173,6 +173,18 @@ app.all("/v1/channels/:channel/inbound/:spaceId", async (c) => {
   );
 });
 
+// ── Three-Tier Platform Model, Phase 6: product end-user signup/login (unauthenticated — a
+// visitor has no token at all before this) ── Journey 1B: "End user signs up... via the
+// builder's configured auth provider." Registered before the JWT-gated api group, same
+// reasoning as /v1/auth/* above.
+app.all("/v1/spaces/:spaceId/end-users/*", async (c) => {
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.SPACES_WORKER.fetch(
+    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+  );
+});
+
 // Three-Tier Platform Model, Phase 6: routes a product end user (authenticated against
 // ProductUserDO, Phase 2 — no platform tenant, no JWT) is allowed to reach directly, carrying a
 // Bearer nps_... session token + x-naelao-end-user-id instead of a platform JWT. Deliberately a
@@ -234,12 +246,19 @@ async function resolveProductEndUserClaims(
 const api = new Hono<{ Bindings: Env }>();
 api.use("*", async (c, next) => {
   const authHeader = c.req.header("authorization") ?? "";
-  const bearerMatch = /^Bearer\s+(nps_\S+)$/.exec(authHeader);
-  const endUserId = c.req.header("x-naelao-end-user-id");
+  const headerMatch = /^Bearer\s+(nps_\S+)$/.exec(authHeader);
+  // The browser's native EventSource API cannot set custom headers, so the SSE stream endpoint
+  // (.../agent/runs/:runId/stream) has no way to carry a Bearer header — accept the same
+  // credentials as query params for GET requests as the standard, accepted workaround. Header
+  // form still wins when both are present.
+  const queryToken = c.req.query("session_token");
+  const queryEndUserId = c.req.query("end_user_id");
+  const sessionToken = headerMatch?.[1] ?? (c.req.method === "GET" && queryToken?.startsWith("nps_") ? queryToken : undefined);
+  const endUserId = c.req.header("x-naelao-end-user-id") ?? (c.req.method === "GET" ? queryEndUserId : undefined);
   const productId = matchProductEndUserPath(c.req.path);
 
-  if (bearerMatch && endUserId && productId) {
-    const claims = await resolveProductEndUserClaims(c.env, productId, endUserId, bearerMatch[1]!);
+  if (sessionToken && endUserId && productId) {
+    const claims = await resolveProductEndUserClaims(c.env, productId, endUserId, sessionToken);
     if (!claims) throw unauthorized("Invalid or expired product session");
     c.set("claims", claims);
     return next();

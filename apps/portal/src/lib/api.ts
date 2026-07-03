@@ -46,18 +46,35 @@ interface AgentRunResponse {
 
 // ── Core fetch ────────────────────────────────────────────────────────────────
 
+// Three-Tier Platform Model, Phase 6: an authenticated end-user session (ProductUserDO-backed —
+// see lib/productAccount.ts) carries BOTH a Bearer nps_... token and the end-user id; the
+// router's hybrid-auth check requires both together or it falls through to the (unusable here)
+// platform-JWT path. Sending only endUserId, as this file did before, never actually
+// authenticated anything — every /spaces/:spaceId/sessions* call 401'd once the router started
+// requiring a JWT unconditionally (CLAUDE.md item 23's flagged gap).
+export interface SessionCredentials {
+  sessionToken: string;
+  endUserId: string;
+}
+
 async function portalFetch<T>(
   path: string,
-  options: RequestInit & { endUserId?: string } = {}
+  options: RequestInit & { endUserId?: string; session?: SessionCredentials } = {}
 ): Promise<T> {
-  const { endUserId, ...fetchOptions } = options;
+  const { endUserId, session, ...fetchOptions } = options;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(fetchOptions.headers as Record<string, string> | undefined),
   };
 
-  if (endUserId) {
+  if (session) {
+    headers["Authorization"] = `Bearer ${session.sessionToken}`;
+    headers["x-naelao-end-user-id"] = session.endUserId;
+  } else if (endUserId) {
+    // Legacy anonymous path (apps/widget-style embeds) — never authenticates against the
+    // router's hybrid-auth check on its own; kept only for callers that don't have a real
+    // signed-in session and are prepared for those requests to fail until one exists.
     headers["x-naelao-end-user-id"] = endUserId;
   }
 

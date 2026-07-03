@@ -106,6 +106,30 @@ describe("router — product end-user hybrid auth", () => {
     expect(res.status).toBe(401);
   });
 
+  it("accepts session_token/end_user_id as query params on GET (EventSource can't set headers) — the real stream endpoint goes to AGENTS_WORKER", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "builder-tenant-1" }));
+    (env as Record<string, unknown>)["AGENTS_WORKER"] = namedFetcher("AGENTS", (req: Request) => Response.json({
+      worker: "AGENTS", forwarded_user: req.headers.get("x-naelao-user-id"), forwarded_tenant: req.headers.get("x-naelao-tenant-id"),
+    }));
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/spaces/prod-1/sessions/sess-1/agent/runs/run-1/stream?session_token=nps_realtoken&end_user_id=user-42"),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { forwarded_user: string; forwarded_tenant: string };
+    expect(body.forwarded_user).toBe("user-42");
+    expect(body.forwarded_tenant).toBe("builder-tenant-1");
+  });
+
+  it("does NOT accept query-param credentials on a non-GET request", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true }));
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/spaces/prod-1/sessions?session_token=nps_realtoken&end_user_id=user-42", { method: "POST" }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(401);
+  });
+
   it("an ordinary platform JWT still works on the same allowlisted path — unchanged for Team collaborators", async () => {
     const env = makeEnv(makeSpacesStub({ validSession: true }));
     const token = await signJwt({ sub: "user-1", tid: "tenant-1", email: "u@example.com", role: "owner", scopes: [] }, JWT_SECRET);

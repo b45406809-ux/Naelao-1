@@ -7,6 +7,7 @@ import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
 import { cfSaasConfig, createCustomHostname, getCustomHostname } from "./cf-saas.js";
 import { validateCronExpression } from "@naelao/events";
 import { registerBuilderRoutes } from "./builder-routes.js";
+import { registerProductEndUserRoutes } from "./product-end-user-routes.js";
 import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
 import type { ProvisionMessage } from "./create-space.js";
 
@@ -1774,6 +1775,8 @@ app.post("/reseller/clients/:childTenantId/promote", async (c) => {
 
 // Three-Tier Platform Model, Phase 3 (docs/spec-appendix A1.17) — /builder/* routes.
 registerBuilderRoutes(app);
+// Three-Tier Platform Model, Phase 6 — public, unauthenticated end-user signup/login.
+registerProductEndUserRoutes(app);
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
 

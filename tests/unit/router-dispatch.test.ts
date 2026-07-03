@@ -103,4 +103,12 @@ describe("router — /spaces dispatch order (F15)", () => {
     const res = await authedFetch("GET", "/v1/spaces", makeEnv());
     expect(await res.json()).toEqual({ worker: "SPACES" });
   });
+
+  it("POST /v1/spaces/s1/end-users/signup → SPACES_WORKER, with NO auth at all (Phase 6)", async () => {
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/spaces/s1/end-users/signup", { method: "POST" }),
+      makeEnv() as never, execCtx
+    );
+    expect(await res.json()).toEqual({ worker: "SPACES" });
+  });
 });

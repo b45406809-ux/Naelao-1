@@ -2797,13 +2797,56 @@ JWT still works unchanged). `router-dispatch.test.ts` extended with 4 more cases
 corrected session/agent-run/approvals split. 866/866 platform tests pass, full monorepo
 typecheck clean.
 
-**Remaining for Phase 6** (not yet built): the portal's end-user login flow against
-`ProductUserDO`'s real session endpoints (today `apps/portal/src/lib/account.ts` is explicitly
-legacy Whop-niche code, and the magic-link flow `apps/portal/src/lib/api.ts` calls
-`/spaces/:spaceId/auth/*`, which no worker implements — a fourth instance of the "UI calls a dead
-route" pattern, to be replaced rather than fixed, since ProductUserDO's session model supersedes
-it per Phase 2's own resolved decision) — then the actual Product Shell UI (sidebar chrome,
-Projects/Threads lists, the chat view reusing the now-reachable existing SSE mechanism) driven by
-the SpaceType manifest's `ui.externalPortal`/`ui.operatorShell`.
+**Scope correction, mid-phase, from the user directly:** a "Product" is not a storefront or any
+commerce concept — the spec is explicit: *"NaelaoProduct is the core data model representing a
+Tier 1 builder's deployed product. It wraps a configured Space."* (Section 48). The spec's own
+examples are LexSpace/CodePilot/FirmAI — a legal tool, a coding tool, a law-firm tool — matching
+the user's own analogy exactly. Journey 1B ("End User Joins a Builder's Product") describes
+precisely the rich shell this phase builds: *"the product UI — threads, sub-spaces, knowledge
+base — exactly as the builder configured it."* Nothing commerce-related appears in that journey
+at all. Journey 2 ("Space Admin Sets Up a Launchpad Business") is a separate, lower-level thing —
+installing a Stripe app, uploading digital goods, fulfillment webhooks — that happens to run
+*inside* one Launchpad Product as one of its optional features, not something that defines what a
+Product is. An earlier explanation in this session's chat (not committed anywhere) had
+conflated a Launchpad business's own storefront/commerce feature with "the real product,"
+describing them as competing concepts — corrected: every Product gets the same Journey-1B shell;
+Launchpad Products can additionally run a storefront as one feature among several.
+
+**End-user identity verification, closing the gap `ProductUserDO` (Phase 2) deliberately left
+open** (it mints and verifies SESSIONS but never verified an IDENTITY in the first place):
+`workers/spaces/src/product-end-user-routes.ts` adds real, public (unauthenticated —
+a visitor has no token before this) `POST /spaces/:spaceId/end-users/{signup,login}` for products
+configured with `authProvider.provider === 'naelao-native'` — email + password, hashed via the
+same PBKDF2 helper platform users already use (`@naelao/crypto`'s `hashPassword`/`verifyPassword`,
+G-B02). Extends the existing `product_end_users` roster (migration 0045) with a `password_hash`
+column (migration 0046) rather than forking a parallel credentials table — a credential is just
+another fact about the same roster row. Login fails with the identical `invalid_credentials`
+response whether the email doesn't exist or the password is wrong (never reveals which). Other
+`authProvider` values (clerk/custom-oidc/saml-sso) verify identity externally and are rejected
+with 400 here, rather than pretending to support a flow not yet built. Registered on the router's
+UNAUTHENTICATED path (`/v1/spaces/:spaceId/end-users/*`, mirroring the existing `/v1/auth/*`
+pattern) — a signup/login call has no session token to present yet.
+
+**A second gap found wiring the frontend to the new router auth: the browser's native
+`EventSource` API cannot set custom headers**, so the SSE stream endpoint
+(`.../agent/runs/:runId/stream`) had no way to carry the Bearer token the hybrid-auth check
+requires. Fixed with the standard accepted workaround: the router now also accepts
+`?session_token=nps_...&end_user_id=...` as query params, but ONLY on GET requests (the stream
+endpoint is the only real caller) — header form still wins when both are present, and a
+non-GET request with only query-param credentials is rejected, so this doesn't quietly widen the
+allowlist to accept token-bearing GETs anywhere unintended.
+
+Tests: `tests/unit/product-end-user-auth.test.ts` (11 — signup, duplicate-email rejection, same
+email independent across two products, short-password rejection, `allowedEmailDomains`
+enforcement, non-native-provider rejection, 404 for a nonexistent product, login success,
+constant-shape invalid-credentials response, suspended-account rejection, and a minted session
+round-tripping through the internal verify endpoint), plus 2 more in
+`router-product-end-user-auth.test.ts` for the SSE query-param fallback and its GET-only
+restriction. 880/880 platform tests pass, full monorepo typecheck clean.
+
+**Remaining for Phase 6:** the actual Product Shell UI (sidebar chrome, Projects/Threads lists,
+the chat view reusing the now-reachable existing SSE mechanism) driven by the SpaceType
+manifest's `ui.externalPortal`/`ui.operatorShell` — this is the only piece left before an end
+user can sign up, log in, and actually use a Product the way Journey 1B describes.
 
 Remaining phases (7-8) will each get their own subsection here as they land.

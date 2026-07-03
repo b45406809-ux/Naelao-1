@@ -430,8 +430,25 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     Phase 6: the portal's end-user login against ProductUserDO (today's `account.ts` is legacy
     Whop-niche code, and the magic-link routes are a 4th instance of "UI calls a dead route" —
     to be replaced, not fixed, since Phase 2 already decided ProductUserDO sessions supersede
-    it), then the actual shell UI reusing the now-reachable SSE chat mechanism. Remaining after
-    6: 7 (sub-space/reseller UI), 8 (deferred product-sdk + per-product CF Pages deploy).
+    it), then the actual shell UI reusing the now-reachable SSE chat mechanism. **Mid-phase scope
+    correction from the user:** a "Product" is a deployed Space, full stop — not a storefront or
+    any commerce concept (spec Section 48: "NaelaoProduct... wraps a configured Space"; examples
+    given are LexSpace/CodePilot/FirmAI). Journey 1B's end-user product UI (threads, sub-spaces,
+    knowledge base) is universal across every SpaceType; Launchpad's storefront/commerce is a
+    separate, optional FEATURE some Products run, not what defines a Product. Then closed the
+    identity-verification gap `ProductUserDO` deliberately left open (it mints/verifies sessions
+    but never verified WHO someone is): `workers/spaces/src/product-end-user-routes.ts` adds real
+    `POST /spaces/:spaceId/end-users/{signup,login}` (email+password, PBKDF2-hashed, migration
+    0046 extends the `product_end_users` roster rather than forking a table) for
+    `authProvider:'naelao-native'` products, registered on the router's unauthenticated path like
+    `/v1/auth/*`. Also found and fixed: the browser's native `EventSource` can't set custom
+    headers, so the SSE stream endpoint had no way to carry the Bearer token the new hybrid-auth
+    check requires — router now also accepts `?session_token=&end_user_id=` query params, but
+    ONLY on GET (the stream endpoint's only real caller), so this doesn't quietly widen the
+    allowlist. 880/880 tests pass. Remaining for Phase 6: the actual shell UI (sidebar, Projects/
+    Threads, chat) — the only piece left before an end user can sign up and use a Product for
+    real. Remaining after 6: 7 (sub-space/reseller UI), 8 (deferred product-sdk + per-product CF
+    Pages deploy).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
