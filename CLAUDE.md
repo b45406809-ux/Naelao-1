@@ -322,11 +322,41 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     untouched — its own Lemon Squeezy signature scheme is a different, already-correct
     mechanism. Full detail: appendix §A1.16.25.
 30. **NEW DIRECTION IN PROGRESS — the "Three-Tier Platform Model" (Naelao → Builder → End User)
-    is being built for real, not just the Space/SpaceType runtime we already have.** The original
-    spec describes a fuller product layer the build never finished: builders get a real SaaS-style
-    dashboard (launch wizard with custom domain, ongoing user/billing/analytics management), and
-    end users — depending on the SpaceType the builder picked — get either a shared collaborative
-    Space, a public storefront, or their own sub-space/business under a builder's reseller product.
+    is being built for real, not just the Space/SpaceType runtime we already have.**
+
+    > **⚠ Ground-truth definition, corrected mid-build — read this before touching anything in
+    > this item.** A **Product is a deployed Space, full stop.** Spec Section 48, verbatim:
+    > *"NaelaoProduct is the core data model representing a Tier 1 builder's deployed product. It
+    > wraps a configured Space."* The spec's own examples: **LexSpace, CodePilot, FirmAI** — a
+    > legal tool, a coding tool, a law-firm tool. It is NOT a storefront, NOT a commerce concept,
+    > and has nothing to do with what a Launchpad business happens to sell.
+    >
+    > **Journey 1B — "End User Joins a Builder's Product"** is the authoritative description of
+    > what every end user sees, on every SpaceType, no exceptions: *"the product UI — threads,
+    > sub-spaces, knowledge base — exactly as the builder configured it."* No commerce concept
+    > appears anywhere in that journey. This is the manifest-driven Product Shell (Phase 6) —
+    > the SAME rich shell serves the builder using their own product AND their signed-up end
+    > users, exactly like Anthropic (the builder) ships Claude Code to its own end users who just
+    > sign in with their own account.
+    >
+    > **Journey 2 — "Space Admin Sets Up a Launchpad Business"** is a *separate, lower-level*
+    > thing: installing a Stripe app, uploading digital goods (courses/PDFs), fulfillment
+    > webhooks, a storefront to sell them. This all happens *inside* one already-existing
+    > Launchpad Product, as one OPTIONAL FEATURE that SpaceType happens to offer — it is never
+    > what defines "product-ness," and a Product built on a different SpaceType (e.g. a coding
+    > tool) has no storefront at all yet is just as much a Product.
+    >
+    > An earlier pass in this session's own chat (never committed to code or docs) conflated
+    > these — described the storefront as competing with or separate from "the real product."
+    > Corrected: every Product gets Journey 1B's shell; Launchpad Products can *additionally* run
+    > Journey 2's storefront as one feature among several. Do not re-introduce this conflation.
+
+    The original spec describes a fuller product layer the build never finished: builders get a
+    real SaaS-style dashboard (launch wizard with custom domain, ongoing user/billing/analytics
+    management), and every end user gets the Journey-1B product shell (threads, sub-spaces,
+    knowledge base) — Launchpad end users may ALSO reach a public storefront or their own
+    sub-space/business under a builder's reseller product, but those are additional features
+    layered on top of the same baseline shell, not alternatives to it.
     Two load-bearing findings from re-reading the spec against the current code: (1) the backend
     for sub-spaces is ALREADY spec-correct and fully tested (`/spaces/:spaceId/sub-spaces` with
     `agency_shell`-gated mixed-type reselling, `/reseller/spaces` for fully independent
