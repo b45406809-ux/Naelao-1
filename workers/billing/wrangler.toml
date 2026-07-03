@@ -3,6 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2024-12-01"
 compatibility_flags = ["nodejs_compat"]
 
+# F20 / A1.16.8 fix: this worker must never be reachable directly — naelao-router is the only
+# public API surface. /internal/* routes below are additionally gated with requireInternalHmac,
+# but a direct workers.dev reachability is the same tenant-spoofing hole B1/A1.16.8 closed
+# everywhere else; this worker was missed.
+workers_dev = false
+
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"

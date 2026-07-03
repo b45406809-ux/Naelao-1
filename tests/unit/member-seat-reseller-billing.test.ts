@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import spacesWorker from "../../workers/spaces/src/index.js";
+import { verifyInternalToken } from "@naelao/http";
 
 // Member/seat billing (builder-facing enable + seat-variant provisioning) and the reseller
 // consolidated wholesale statement. The checkout/activation and per-event ledger writes already
@@ -18,8 +19,10 @@ interface DBState {
   lastConfigJson?: string;
 }
 
+const PLATFORM_SECRET_FOR_TESTS = "s";
+
 function makeEnv(state: DBState, billingVariantId?: string): Record<string, unknown> {
-  const billingCalls: Array<Record<string, unknown>> = [];
+  const billingCalls: Array<{ url: string; body: unknown; headers: Record<string, string> }> = [];
   const db = {
     prepare(sql: string) {
       let args: unknown[] = [];
@@ -49,7 +52,9 @@ function makeEnv(state: DBState, billingVariantId?: string): Record<string, unkn
   const kv = { async get() { return state.manifest ?? null; }, async put() {}, async delete() {} };
   const billingWorker = {
     async fetch(req: Request): Promise<Response> {
-      billingCalls.push({ url: req.url, body: await req.json() });
+      const headers: Record<string, string> = {};
+      req.headers.forEach((v, k) => { headers[k] = v; });
+      billingCalls.push({ url: req.url, body: await req.json(), headers });
       if (billingVariantId) {
         return new Response(JSON.stringify({ ls_variant_id: billingVariantId, ls_product_id: "prod-x" }), { status: 200 });
       }
@@ -57,7 +62,7 @@ function makeEnv(state: DBState, billingVariantId?: string): Record<string, unkn
     },
   };
   return {
-    PLATFORM_SECRET: "s", ENVIRONMENT: "test",
+    PLATFORM_SECRET: PLATFORM_SECRET_FOR_TESTS, ENVIRONMENT: "test",
     PLATFORM_DB: db, NAELAO_CONFIG_KV: kv, BILLING_WORKER: billingWorker,
     __billingCalls: billingCalls,
   };
@@ -91,9 +96,16 @@ describe("member/seat billing config", () => {
     const json = await res.json() as { member_billing: { enabled: boolean; seatPriceCents: number; currency: string; lsVariantId?: string } };
     expect(json.member_billing).toMatchObject({ enabled: true, seatPriceCents: 1500, currency: "USD", lsVariantId: "var_seat_123" });
     // The billing worker was asked to create a seat variant priced at the seat price.
-    const calls = (env as { __billingCalls: Array<{ url: string; body: { price_cents: number; kind: string } }> }).__billingCalls;
+    const calls = (env as { __billingCalls: Array<{ url: string; body: { price_cents: number; kind: string }; headers: Record<string, string> }> }).__billingCalls;
     expect(calls).toHaveLength(1);
     expect(calls[0]!.body).toMatchObject({ price_cents: 1500, kind: "subscription" });
+    // F20 / A1.16.8: this call now mints a verified requireInternalHmac token instead of the
+    // old forgeable `x-naelao-internal: "publish"` static header.
+    expect(calls[0]!.headers["x-naelao-internal"]).toBeUndefined();
+    expect(calls[0]!.headers["x-naelao-tenant-id"]).toBe("tenant-1");
+    const token = calls[0]!.headers["x-naelao-internal-token"];
+    expect(token).toBeTruthy();
+    expect(await verifyInternalToken(token, "tenant-1", PLATFORM_SECRET_FOR_TESTS)).toBe(true);
     // The override is written under config_json.productConfig.memberBilling (never forks the manifest).
     const written = JSON.parse(state.lastConfigJson!) as { productConfig: { memberBilling: { lsVariantId: string } } };
     expect(written.productConfig.memberBilling.lsVariantId).toBe("var_seat_123");

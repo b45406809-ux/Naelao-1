@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { errorResponse, requestId, notFound, requireInternalHmac } from "@naelao/http";
+import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
@@ -1166,10 +1166,16 @@ app.patch("/spaces/:spaceId/products/:id", async (c) => {
 
     if (product && !product.ls_variant_id) {
       try {
+        // F20 / A1.16.8: billing's /internal/products/ls-variant now requires a verified
+        // requireInternalHmac token instead of a forgeable static x-naelao-internal header.
         const lsResp = await c.env.BILLING_WORKER.fetch(
           new Request("http://billing-worker/internal/products/ls-variant", {
             method: "POST",
-            headers: { "content-type": "application/json", "x-naelao-internal": "publish" },
+            headers: {
+              "content-type": "application/json",
+              "x-naelao-tenant-id": ctx.tenantId,
+              "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, ctx.tenantId),
+            },
             body: JSON.stringify({
               name: product.name,
               description: product.description || undefined,
@@ -1473,10 +1479,15 @@ app.patch("/spaces/:spaceId/member-billing", async (c) => {
   let lsVariantId = current.lsVariantId;
   if (body.enabled && !lsVariantId && c.env.BILLING_WORKER) {
     try {
+      // F20 / A1.16.8: same requireInternalHmac gate as the product-publish caller above.
       const lsResp = await c.env.BILLING_WORKER.fetch(
         new Request("http://billing-worker/internal/products/ls-variant", {
           method: "POST",
-          headers: { "content-type": "application/json", "x-naelao-internal": "publish" },
+          headers: {
+            "content-type": "application/json",
+            "x-naelao-tenant-id": owned.tenantId,
+            "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, owned.tenantId),
+          },
           body: JSON.stringify({
             name: `${owned.name} — Membership seat`,
             price_cents: seatPriceCents,

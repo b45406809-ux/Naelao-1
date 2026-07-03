@@ -5,6 +5,7 @@ import {
   notFound,
   requestId,
   mintInternalToken,
+  requireInternalHmac,
 } from "@naelao/http";
 // G-D05: Billing worker — Stripe webhooks, Lemon Squeezy webhooks, checkout, subscription sync
 import { Hono } from "hono";
@@ -398,14 +399,17 @@ app.post("/billing/usage", async (c) => {
 });
 
 // ── POST /internal/commerce/checkout ─────────────────────────────────────────
-// Called by the reserved `commerce` prebuilt script (x-naelao-internal). The ONLY money-in
-// path: creates a Lemon Squeezy checkout on Naelao's store for a product, carrying
-// space_id + product_id + fee_bps in custom data so the webhook attributes the sale and
-// captures the platform fee. A builder can never reach this with their own processor.
+// Called by the reserved `commerce` prebuilt script. The ONLY money-in path: creates a Lemon
+// Squeezy checkout on Naelao's store for a product, carrying space_id + product_id + fee_bps in
+// custom data so the webhook attributes the sale and captures the platform fee. A builder can
+// never reach this with their own processor.
+// F20 / A1.16.8: this used to be a static `x-naelao-internal: "commerce-script"` header check —
+// forgeable by anyone reaching this worker directly, since workers_dev was also never set to
+// false here (see wrangler.toml). A1.16.8 replaced this exact pattern with requireInternalHmac
+// everywhere else; billing was missed. Same gate as workers/spaces/src/index.ts's /internal/*
+// routes.
+app.use("/internal/commerce/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
 app.post("/internal/commerce/checkout", async (c) => {
-  if (c.req.header("x-naelao-internal") !== "commerce-script") {
-    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
-  }
   const body = await c.req.json<{ space_id: string; product_id: string; customer_email?: string }>();
   if (!body.space_id || !body.product_id) {
     return c.json({ error_code: "bad_request", message: "space_id and product_id are required" }, 400);
@@ -455,13 +459,15 @@ app.post("/internal/commerce/checkout", async (c) => {
 // ── POST /internal/seats/checkout ────────────────────────────────────────────
 // The third money-in payer class: a builder charges someone to join their space (a seat).
 // Like product checkout, it runs through Naelao's Lemon Squeezy store so the platform fee
-// applies — a builder can't collect seat fees outside Naelao. Called by the portal "join"
-// flow and by the commerce.seat_checkout op (x-naelao-internal in {commerce-script,portal}).
+// applies — a builder can't collect seat fees outside Naelao. Called today by the
+// commerce.seat_checkout op; a future portal "join" flow calls this the same way (mint its own
+// token) — there is no special-cased caller identity string, requireInternalHmac only cares
+// that the caller holds PLATFORM_SECRET.
+// F20 / A1.16.8: replaces the static `x-naelao-internal in {"commerce-script","portal"}` header
+// check (forgeable) with the same requireInternalHmac gate every other worker's /internal/*
+// routes use.
+app.use("/internal/seats/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
 app.post("/internal/seats/checkout", async (c) => {
-  const internal = c.req.header("x-naelao-internal");
-  if (internal !== "commerce-script" && internal !== "portal") {
-    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
-  }
   const body = await c.req.json<{ space_id: string; user_id?: string; customer_email?: string }>();
   if (!body.space_id) return c.json({ error_code: "bad_request", message: "space_id is required" }, 400);
 
@@ -505,14 +511,14 @@ app.post("/internal/seats/checkout", async (c) => {
 });
 
 // ── POST /internal/products/ls-variant ───────────────────────────────────────
-// Called by the spaces worker when a product is published for the first time and
-// ls_variant_id is not yet set. Creates a Lemon Squeezy product + default variant in
-// Naelao's store so the builder's storefront can immediately accept payments.
+// Called by the spaces worker when a product (or a member-billing seat) is published for the
+// first time and ls_variant_id is not yet set. Creates a Lemon Squeezy product + default
+// variant in Naelao's store so the builder's storefront can immediately accept payments.
 // Dev path: returns a placeholder when LS creds are absent.
+// F20 / A1.16.8: replaces the static `x-naelao-internal !== "publish"` header check (forgeable)
+// with requireInternalHmac.
+app.use("/internal/products/ls-variant", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
 app.post("/internal/products/ls-variant", async (c) => {
-  if (c.req.header("x-naelao-internal") !== "publish") {
-    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
-  }
   const body = await c.req.json<{
     name: string;
     description?: string;

@@ -20,10 +20,17 @@ async function billing(ctx: PrebuiltOpContext, path: string, body: Record<string
   if (!ctx.env.billingWorker) {
     throw new Error("commerce unavailable: billing worker binding not configured");
   }
+  // F20 / A1.16.8: the billing worker's /internal/* routes now require a verified
+  // requireInternalHmac token (a static x-naelao-internal header was forgeable) — mint one the
+  // same way the spaces() helper below already does.
   const resp = await ctx.env.billingWorker.fetch(
     new Request(`http://billing-worker${path}`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-naelao-internal": "commerce-script", "x-naelao-tenant-id": ctx.env.tenantId },
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": ctx.env.tenantId,
+        "x-naelao-internal-token": await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId),
+      },
       body: JSON.stringify({ space_id: ctx.env.spaceId, ...body }),
     })
   );

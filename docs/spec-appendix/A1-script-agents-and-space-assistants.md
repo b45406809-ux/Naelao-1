@@ -2284,3 +2284,66 @@ identical trigger source, was `"stripe-app"`).
 765 unit/contract/integration/isolation/simulation tests pass; `naelao-agents-worker`,
 `naelao-billing-worker`, `naelao-provisioner-worker`, and `naelao-spaces` typecheck clean (and
 `npx turbo run typecheck` is clean platform-wide).
+
+### A1.16.25 F20: the billing worker was never given `workers_dev = false`, and three money-in
+routes were gated only by a forgeable static `x-naelao-internal` header — FIXED.
+
+A1.16.8 (item 21) replaced every worker's forgeable `x-naelao-internal: <static string>` check
+with `requireInternalHmac` and set `workers_dev = false` everywhere except workers with their
+own independent public ingress auth — but `workers/billing/wrangler.toml` was missed entirely
+(no `workers_dev = false` at all), and three of its own routes still used the exact pattern
+A1.16.8 eliminated everywhere else:
+
+- `POST /internal/commerce/checkout` — `x-naelao-internal !== "commerce-script"`
+- `POST /internal/seats/checkout` — `x-naelao-internal` not in `{"commerce-script", "portal"}`
+- `POST /internal/products/ls-variant` — `x-naelao-internal !== "publish"`
+
+All three are money-in or catalogue-provisioning paths (the reserved `commerce` prebuilt's only
+way to take payment, and the only way a builder's product/seat gets a real Lemon Squeezy
+variant) — directly reachable with a static, guessable header if the worker were ever hit at its
+own `workers.dev` URL, exactly the B1/A1.16.8 threat model.
+
+**Fix:** `workers/billing/wrangler.toml` now sets `workers_dev = false`. All three routes are
+gated with `app.use(path, requireInternalHmac((c) => c.env.PLATFORM_SECRET))`, mirroring
+`workers/spaces/src/index.ts`'s `/internal/*` convention exactly (bare-path registration, not a
+`/*` wildcard, matching the established pattern rather than the Hono-wildcard mismatch A1.16.9
+found and fixed elsewhere). The `/internal/seats/checkout` fix also drops the
+`{"commerce-script", "portal"}` caller-identity distinction entirely — `requireInternalHmac`
+authenticates the token, not a claimed identity string, so a future portal "join" flow (the
+`"portal"` branch was dead code; no caller anywhere in the repo ever sent that value) needs no
+special-casing, just its own minted token. `/webhooks/lemon-squeezy` is untouched — its own
+HMAC-signature scheme (Lemon Squeezy's signing secret) is a different, already-correct auth
+mechanism, not the pattern being fixed here.
+
+**Callers updated to mint a token instead of a static string** (ship callers and callees
+together — an unwired caller would 403 against its own money-in path):
+- `workers/agents/src/script-engine/prebuilt/commerce.ts`'s `billing()` helper (used by both
+  `commerce.checkout` and `commerce.seat_checkout`) — already sent `x-naelao-tenant-id:
+  ctx.env.tenantId` for logging purposes; now also sends `x-naelao-internal-token:
+  mintInternalToken(ctx.env.platformSecret, ctx.env.tenantId)`, the same pattern its own
+  `spaces()` helper already used for spaces-worker calls.
+- `workers/spaces/src/index.ts`'s **two** callers of `/internal/products/ls-variant` — product
+  publish (`PATCH /spaces/:spaceId/products/:id`, using `loadCommerceContext`'s `ctx.tenantId`)
+  and member/seat-billing enablement (`PATCH /spaces/:spaceId/member-billing`, using
+  `loadOwnedSpace`'s `owned.tenantId`) — both previously sent the static `"publish"` header; the
+  member-billing call site existed but wasn't named in the original report (found by grepping
+  every caller of the route before touching the callee, the same discipline A1.16.10 used).
+
+**Tests:** `tests/unit/billing-internal-hmac.test.ts` (new, 9) — mirrors
+`tests/unit/layer3-backstop-routes.test.ts`'s style against the real billing worker handler: all
+three routes reject their own old static header (and, for `/internal/commerce/checkout`, a
+request with no header at all) with `403`, and accept a properly minted token with a non-`403`
+status (the handler body then runs and 404s/succeeds on its own minimal-fixture terms — the
+point is the auth gate specifically passed); `/webhooks/lemon-squeezy` still correctly rejects
+an invalid provider signature with `401`, proving that route's own scheme wasn't touched.
+`tests/unit/commerce-prebuilt-hmac.test.ts` (new, 2) — the `commerce` prebuilt's
+`commerce.checkout`/`commerce.seat_checkout` ops send a token that verifies against the
+caller's own tenant (and fails against a different tenant), with no `x-naelao-internal` header
+present at all. `tests/unit/member-seat-reseller-billing.test.ts` extended (existing "PATCH
+enable provisions the seat LS variant" test) to capture and verify the minted token on the
+member-billing→ls-variant call — the product-publish call site uses the identical code shape
+and is covered by the platform-wide typecheck.
+
+776 unit/contract/integration/isolation/simulation tests pass; `naelao-billing-worker`,
+`naelao-agents-worker`, and `naelao-spaces` typecheck clean (and `npx turbo run typecheck` is
+clean platform-wide).

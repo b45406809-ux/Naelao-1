@@ -308,6 +308,19 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     Launchpad system prompts off "the Stripe/email/CRM tool" language onto the real script-native
     surface (`commerce`/`notifications`/`mcp-connector`/`script.find`). Full detail: appendix
     §A1.16.24.
+29. **The billing worker was missing `workers_dev = false` and three money-in routes were gated
+    only by a forgeable static header — now FIXED.** A1.16.8 (item 21) replaced this exact
+    pattern everywhere else in the platform but missed `workers/billing`: `wrangler.toml` never
+    set `workers_dev = false`, and `/internal/commerce/checkout`, `/internal/seats/checkout`,
+    and `/internal/products/ls-variant` each checked a static `x-naelao-internal` string anyone
+    reaching this worker directly could set. All three now use `requireInternalHmac`, matching
+    `workers/spaces/src/index.ts`'s `/internal/*` convention. Callers updated to mint a real
+    token: the `commerce` prebuilt's `checkout`/`seat_checkout` ops, and BOTH of
+    `workers/spaces/src/index.ts`'s callers of `/internal/products/ls-variant` (product publish
+    AND member/seat-billing enablement — the second call site wasn't in the original report,
+    found by grepping every caller before touching the callee). `/webhooks/lemon-squeezy`
+    untouched — its own Lemon Squeezy signature scheme is a different, already-correct
+    mechanism. Full detail: appendix §A1.16.25.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
