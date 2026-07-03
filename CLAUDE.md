@@ -391,9 +391,24 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     (a hard reload of any nested `/dashboard/*` route bounces through `/login` back to the generic
     `/dashboard`, dropping the original path — reproduced on the pre-existing `/dashboard/clients`
     too) — flagged, not fixed, out of scope for a wizard feature. Once reached via realistic
-    client-side navigation, all 7 steps render and validate correctly. Remaining: 5 (management
-    tabs), 6 (manifest-driven Product Shell), 7 (sub-space/reseller UI), 8 (deferred product-sdk +
-    per-product CF Pages deploy).
+    client-side navigation, all 7 steps render and validate correctly. **Phase 5 built the
+    Product Detail management tabs** (7 tabs — Overview/Users/Analytics/Configuration/
+    Feature-Flags/Billing/Danger-Zone — sharing one `ProductProvider` context so tabs don't each
+    re-fetch the product) and the dashboard's first shared UI component,
+    `ConfirmByTypingDialog` (type-the-exact-name-to-confirm, used for product deletion — stricter
+    than `clients/page.tsx`'s existing two-click-confirm pattern). No new backend routes — every
+    tab is a pure consumer of Phase 3's already-tested endpoints, so no new backend test file was
+    needed. The Billing tab is explicit that per-product revenue and the account-wide wholesale
+    statement are different numbers (`reseller_ledger` is tenant-scoped, not per-product — no
+    fabricated per-product breakdown). The Users tab is explicit that it shows product end users
+    only, not Team collaborators (still a structurally different, not-yet-listable population).
+    UI verification this time mocked the backend entirely at the network layer via CDP's `Fetch`
+    domain (fixing two non-obvious gotchas — CORS preflight `OPTIONS` handling and
+    `Access-Control-Allow-Origin` on mocked responses — worth remembering for any future session
+    using this technique), letting all 7 tabs be exercised with realistic data end-to-end,
+    including the feature-flag toggle round-trip and the delete-confirmation button's
+    disabled/enabled states. Remaining: 6 (manifest-driven Product Shell), 7 (sub-space/reseller
+    UI), 8 (deferred product-sdk + per-product CF Pages deploy).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

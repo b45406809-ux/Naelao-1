@@ -642,3 +642,80 @@ export async function listBuilderSpaceTypes(): Promise<BuilderSpaceTypeListing[]
   const res = await apiFetch<{ types: BuilderSpaceTypeListing[] }>("/builder/space-types");
   return res.types ?? [];
 }
+
+// ── Product Detail management tabs (Three-Tier Platform Model, Phase 5) ──────────────────────
+
+export interface BuilderProductAnalytics {
+  dau: number;
+  mau: number;
+  total_users: number;
+  /** Honestly null, not fabricated — see appendix A1.17 Phase 3: not bulk-aggregatable from D1
+   *  without Analytics Engine wiring this platform hasn't added yet. */
+  credits_consumed: number | null;
+}
+
+export async function getBuilderProductAnalytics(id: string): Promise<BuilderProductAnalytics> {
+  return apiFetch<BuilderProductAnalytics>(`/builder/products/${encodeURIComponent(id)}/analytics`);
+}
+
+export interface BuilderProductRevenue {
+  period: string;
+  gross_revenue_cents: number;
+  naelao_fee_cents: number;
+  net_revenue_cents: number;
+  order_count: number;
+  naelao_wholesale_cost_cents: number;
+}
+
+export async function getBuilderProductRevenue(id: string): Promise<BuilderProductRevenue> {
+  return apiFetch<BuilderProductRevenue>(`/builder/products/${encodeURIComponent(id)}/analytics/revenue`);
+}
+
+export interface BuilderProductEndUser {
+  end_user_id: string;
+  email: string | null;
+  display_name: string | null;
+  first_seen_at: string;
+  last_seen_at: string | null;
+  suspended_at: string | null;
+}
+
+export async function listBuilderProductUsers(id: string): Promise<BuilderProductEndUser[]> {
+  const res = await apiFetch<{ data: BuilderProductEndUser[] }>(`/builder/products/${encodeURIComponent(id)}/users`);
+  return res.data ?? [];
+}
+
+export async function suspendBuilderProductUser(id: string, userId: string): Promise<void> {
+  await apiFetch(`/builder/products/${encodeURIComponent(id)}/users/${encodeURIComponent(userId)}/suspend`, { method: "POST" });
+}
+
+export async function removeBuilderProductUser(id: string, userId: string): Promise<void> {
+  await apiFetch<void>(`/builder/products/${encodeURIComponent(id)}/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
+}
+
+export async function putBuilderProductFeatureFlags(id: string, flags: Record<string, boolean>): Promise<{ feature_flags: Record<string, boolean> }> {
+  return apiFetch(`/builder/products/${encodeURIComponent(id)}/feature-flags`, {
+    method: "PUT",
+    body: JSON.stringify({ flags }),
+  });
+}
+
+export interface BuilderBillingPeriod {
+  period: string;
+  retail: number;
+  wholesale: number;
+  margin: number;
+  events: number;
+}
+
+/** The builder's OWN wholesale statement — tenant-wide, not per-product (reseller_ledger tracks
+ *  billing at the tenant level; there is no per-product wholesale breakdown to show here). */
+export async function getBuilderBilling(period?: string): Promise<BuilderBillingPeriod> {
+  const qs = period ? `?period=${encodeURIComponent(period)}` : "";
+  return apiFetch<BuilderBillingPeriod>(`/builder/billing${qs}`);
+}
+
+export async function getBuilderBillingHistory(): Promise<BuilderBillingPeriod[]> {
+  const res = await apiFetch<{ data: BuilderBillingPeriod[] }>("/builder/billing/history");
+  return res.data ?? [];
+}

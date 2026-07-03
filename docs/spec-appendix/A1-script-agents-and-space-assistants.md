@@ -2673,4 +2673,52 @@ that same pre-existing bug, not new code).
 Tests: `tests/unit/create-space-record.test.ts` (11), `tests/unit/product-wizard-api.test.ts` (6)
 — 852/852 platform tests pass, full monorepo typecheck clean.
 
-Remaining phases (5-8) will each get their own subsection here as they land.
+**Phase 5 — DONE.** The Product Detail management tabs:
+`apps/dashboard/src/app/dashboard/products/[productId]/{layout,page,users,analytics,
+configuration,feature-flags,billing,danger-zone}` — 7 tabs sharing one `ProductProvider` React
+context (`productContext.tsx`, fetches the product once, exposes `refetch()`) so tabs don't each
+independently re-fetch the same product. First shared UI component in this app:
+`apps/dashboard/src/components/ConfirmByTypingDialog.tsx` (type-the-exact-name-to-confirm,
+reserved for irreversible actions — stricter than `clients/page.tsx`'s existing inline
+two-click-confirm pattern, used for product deletion).
+
+**No new backend routes.** Every tab is a pure consumer of Phase 3's already-tested endpoints
+(`GET .../analytics`, `.../analytics/revenue`, `.../users`, `POST .../users/:id/suspend`,
+`DELETE .../users/:id`, `PUT .../feature-flags`, `GET /builder/billing[/history]`,
+`PATCH /builder/products/:id`, `DELETE /builder/products/:id`) — so no new
+`tests/unit/*.test.ts` file was added this phase (would only re-test what
+`builder-dashboard-api.test.ts` already covers); verification was the manual UI pass below plus
+the existing typecheck/backend suite staying green.
+
+**Billing tab is honest about what's per-product vs. account-wide.** `reseller_ledger` (and
+therefore `GET /builder/billing[/history]`) is tracked at the TENANT level, not per-product —
+there is no per-product wholesale/margin breakdown to show. The tab shows this product's OWN
+revenue (from `analytics/revenue`) prominently, and separately, clearly labeled, the builder's
+overall account-wide wholesale statement — not fabricating a per-product number that doesn't
+exist.
+
+**Users tab shows product end users only, explicitly not Team collaborators.** `product_end_users`
+(Phase 3) and SpaceDO's internal `space_members` (Team-type collaborators) are two different
+populations (per #23's Bucket A/B split, reiterated in Phase 4's appendix entry) — no
+builder-facing route exists to list `space_members` today, and adding one was out of scope for
+"management tabs." The Users tab's copy says so explicitly rather than silently only showing
+half the picture with no explanation.
+
+**UI verification, mocked at the network layer.** Same CDP-driven approach as Phase 4, but this
+time using CDP's `Fetch` domain to intercept and mock `/builder/*` responses (no real backend
+running) — this let every tab be exercised with realistic data rather than only the "no backend"
+degraded path Phase 4 settled for. Two non-obvious things had to be fixed to make browser-level
+fetch mocking work at all, worth recording for any future session that reaches for this
+technique: (1) `apiFetch` sets `Content-Type: application/json` on every call, which makes even a
+plain GET a "non-simple" CORS request — the browser sends an `OPTIONS` preflight first, and
+without an explicit preflight response (200/204 + `Access-Control-Allow-Methods/Headers`) every
+mocked call fails with a generic, unhelpful "Failed to fetch"; (2) mocked responses need
+`Access-Control-Allow-Origin` themselves, or the browser blocks them client-side even though the
+network layer got a response. With both fixed: all 7 tabs render correctly with mocked data
+(Overview stats, Users roster, Analytics DAU/MAU/revenue, Configuration form, Feature Flags
+toggles, Billing's two-part breakdown, Danger Zone), the feature-flag toggle click correctly
+fires `PUT .../feature-flags` and refetches, and the delete confirmation button is verified
+disabled by default, disabled while the WRONG name is typed, and only enabled once the EXACT
+product name is typed — all with zero console errors.
+
+Remaining phases (6-8) will each get their own subsection here as they land.
