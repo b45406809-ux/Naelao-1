@@ -2170,3 +2170,117 @@ confirming the clean-404/normal-config paths those suites cover were not affecte
 
 752 unit/contract/integration/isolation/simulation tests pass; `naelao-agents-worker`
 typechecks clean.
+
+### A1.16.24 Launchpad's core agents (§11) were installed as R2 configs but never woken —
+`LaunchpadAgentDefinition.trigger` was pure data nothing read; the fulfillment/support agents'
+`requires_approval_for` gates fixed in A1.16.22 never actually applied to a real order — FIXED.
+
+Every dispatcher in the platform hardcodes `"naelao-agent"`: `billing/lemon-squeezy.ts`'s
+`resolveDefaultAgent`, every `handleAgentTick` case, `fireScriptDirectly`'s default. Nothing
+ever read a Launchpad core agent's own `trigger` field (`launchpad-fulfillment-v1`'s
+`{ type: "webhook", event: "order.completed" }`, `launchpad-support-v1`'s
+`{ type: "webhook", event: "message.received" }`, `launchpad-content-v1`'s
+`{ type: "schedule", cron: "0 9 * * *" }`) — so a "Creator Store" builder's Fulfillment and
+Support agents never ran under their own persona, and the Content agent's daily cron never
+fired at all. This made A1.16.22's approval-gates fix a dead letter in production: fulfillment's
+`customer_email_send`/`refund_issue` gates only apply when `NaelaoAgentDO` loads
+`launchpad-fulfillment-v1`'s own config — and nothing ever addressed that agent's DO for a real
+order.
+
+**Design decisions (both made and implemented here, not left as follow-ups):**
+
+1. **Schedule-type triggers → a real `scheduled_jobs` row, with a new goal-based dispatch
+   mode.** `scheduled_jobs` (0041/0042) only supported firing a named prebuilt script op
+   DIRECTLY (`fireScriptDirectly`/`handleTriggerFire` — no reasoner, no OBSERVE/FIND/GATE loop,
+   by deliberate design, identical posture to `event_triggers`). That's fine for "run this exact
+   script on a timer," but "draft this week's marketing content" needs judgment, not a
+   deterministic tool call — the dispatcher itself has no reasoning mode. Migration `0043`
+   (`infra/migrations/0043_scheduled_jobs_agent_goal.sql`) adds two nullable columns:
+   `agent_id` (which agent's own R2 config — system prompt, `requiresApprovalFor` — to wake;
+   `NULL` keeps the implicit `"naelao-agent"` default) and `goal` (when set, the dispatcher wakes
+   the FULL reasoning loop via `POST .../script/run` against that agent's own DO instead of
+   firing `script_name` directly; `NULL` preserves the exact pre-existing direct-fire behavior
+   for every job created before this fix). `script_name` stays `NOT NULL` (SQLite can't drop the
+   constraint without a full table rebuild) — a goal-based row stores `''` there, an unambiguous
+   sentinel the write path enforces at the API layer (`workers/spaces/src/index.ts`'s POST/PATCH
+   `/scheduled-jobs` now require "`script_name` OR `goal`", not just `script_name`).
+   `workers/agents/src/index.ts`'s `handleAgentTick` "scheduled_job" case branches on
+   `row.goal`: set → the new `wakeAgentGoal` helper (mirrors `billing/lemon-squeezy.ts`'s
+   `wakeAgent` — same `/script/run` shape, same `apiKey`/`sessionId`/`context` posture); unset →
+   the pre-existing `fireScriptDirectly` path, byte-for-byte unchanged for every job that
+   predates this migration.
+
+2. **Webhook-type triggers deliberately NOT translated into `event_triggers` rows.**
+   `event_triggers` (SpaceDO, `@naelao/events`) only fires on STRUCTURAL in-space events
+   (`thread.created`, `project.created`, `project.possible_duplicate`, `scheduled_job.disabled`)
+   — it has no `order.completed` or `message.received` event source, and nothing anywhere calls
+   `fireMatchingTriggers` with either. A row for either would sit inert forever, which would be
+   worse than the current bug (a builder who inspects the trigger list would believe it's wired
+   when it silently never fires). Both of this SpaceType's webhook agents are instead wired
+   through their own existing, more specific dispatch:
+
+   - **`launchpad-fulfillment-v1`'s `order.completed` → resolved directly by the billing
+     worker.** `billing/lemon-squeezy.ts`'s `handleLemonSqueezyWebhook` now routes a
+     `payment.success` event (an actual order/product sale) to the fulfillment specialist's OWN
+     agent DO instead of the Space Assistant — but ONLY when the new `isFulfillmentAgentBound`
+     check confirms a project is actually bound to it via a real `default_agent_id` (not the
+     looser name-only `"Orders"` fallback `resolveFulfillmentProjectId` already accepted for
+     SCOPING an already-decided Space-Assistant run — routing to an agent that was never
+     provisioned would just 404 and silently drop the order, worse than today's status quo). No
+     binding (a space provisioned before `projects.default_agent_id` existed, a manually
+     reassigned/removed project, or a raw core-agents install with no template) falls back to
+     the Space Assistant exactly as before. Every OTHER billing event type (subscription
+     changes, payment failures, refunds) keeps waking the Space Assistant unchanged —
+     `order.completed` is the only event this SpaceType defines a specialist trigger for. Only
+     one agent is ever woken per event, never both (`wakeAgent` is called exactly once, with a
+     single resolved `targetAgentId`).
+   - **`launchpad-support-v1`'s `message.received`** already reaches the space through
+     `channel_links` → project binding (unchanged by this fix — genuinely out of scope here,
+     since routing THAT path to the specialist's own DO/config would mean moving
+     `channel_sessions`/`channel_messages` SQLite state to a different DO instance, a much
+     larger migration than "wire the trigger," and `NaelaoAgentDO.ts`'s channel-heartbeat/inbound
+     handling was deliberately left untouched).
+
+3. **Fix B (same audit, same root cause family): the three Launchpad system prompts referenced
+   tools that don't exist in the script-native surface** — `"the Stripe tool"`, `"the email
+   tool"`, `"the CRM tool"` (`launchpad/spacetype.ts`, written verbatim into `system-prompt.md`
+   by `launchpadAgentToProfile`). Payment is Lemon Squeezy via the reserved `commerce` prebuilt
+   (Appendix H / CLAUDE.md #9), never a builder's own Stripe key. Rewrote all three
+   (`launchpad-fulfillment-v1`, `launchpad-support-v1`, `launchpad-content-v1`) to reference
+   `script.find`/`script.create` + distillation, the `commerce` prebuilt for money-in,
+   `notifications` for customer/owner messages, `mcp-connector` for external platforms
+   (Whop/CRM), and `knowledge-base`/`web-search`/`r2-workspace` where relevant — no hardcoded
+   tool-name language. Also swapped the stale `"stripe-app"` literal for `"commerce"` in
+   `allowed_skills` and `trigger.source` (both already mapped to the same prebuilt via
+   `skillToPrebuilt`'s backward-compat case, so this is a wording fix with no behavior change).
+
+**Provisioner wiring:** `workers/provisioner/src/index.ts`'s `installLaunchpadAgents` (step 9)
+now calls a new `installAgentTrigger` per installed agent: `schedule` → POST
+`/spaces/:id/scheduled-jobs` with `agent_id` + a `goal` derived from the agent's own
+`description` (`"Run your scheduled work per your role: ...; use script.find ...; distill a new
+one when you succeed"`); `webhook`/`manual` → no-op (see decision 2 above). Best-effort — a
+failed install logs and does not fail provisioning, same posture as the other non-critical
+install steps (`spacedo_init_hook`, `workflow_templates`). `rollbackSpace` now also deletes any
+`scheduled_jobs` rows for the space (PLATFORM_DB, not under the R2-prefix wipe the block above
+already does) so a retried `provisionSpace` after a failure doesn't accumulate duplicate cron
+rows for the same agent.
+
+**Tests:** `tests/unit/provisioner-agent-triggers.test.ts` (new, 5) — a `scheduled_jobs` row is
+created for the Content agent's cron, addressed at `agent_id: "launchpad-content-v1"`, with a
+`script.find`-referencing goal; no `scheduled_jobs` row is created for either webhook-type agent
+(fulfillment/support); agent-definitions index entries are still registered alongside the
+trigger wiring; a failed scheduled-jobs install is best-effort (does not throw, does not block
+the rest of the install); installing with no `templateId` (all three core agents) still wires
+exactly one scheduled job. `tests/unit/billing-fulfillment-project.test.ts` (+13: 4
+`isFulfillmentAgentBound` unit tests, 4 new `handleLemonSqueezyWebhook` routing tests) — routes
+to `launchpad-fulfillment-v1`'s own DO when actually bound; falls back to the Space Assistant
+when only name-matched; never routes a non-order event (`subscription.updated`) to the
+specialist even when bound; never wakes both agents for the same event.
+`tests/unit/scheduled-jobs.test.ts` updated to load migration `0043` in its real-SQLite fixture
+(the new columns are additive/nullable, so all 27 pre-existing assertions pass unchanged).
+`tests/unit/launchpad-spacetype.test.ts` updated for the `"commerce"` wording fix (functionally
+identical trigger source, was `"stripe-app"`).
+
+765 unit/contract/integration/isolation/simulation tests pass; `naelao-agents-worker`,
+`naelao-billing-worker`, `naelao-provisioner-worker`, and `naelao-spaces` typecheck clean (and
+`npx turbo run typecheck` is clean platform-wide).

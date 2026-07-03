@@ -22,7 +22,10 @@ describe("Launchpad SpaceType (§11)", () => {
   it("ships the core agent definitions in the §11 shape (fulfillment is canonical)", () => {
     const fulfillment = LAUNCHPAD_CORE_AGENTS.find(a => a.id === "launchpad-fulfillment-v1");
     expect(fulfillment).toBeDefined();
-    expect(fulfillment!.trigger).toEqual({ type: "webhook", event: "order.completed", source: "stripe-app" });
+    // Fix B: Lemon Squeezy is the platform's payment rail — never a builder's own Stripe key
+    // (spec Appendix H / CLAUDE.md #9). source used to say "stripe-app"; the reserved `commerce`
+    // prebuilt is what actually processes money-in.
+    expect(fulfillment!.trigger).toEqual({ type: "webhook", event: "order.completed", source: "commerce" });
     expect(fulfillment!.requires_approval_for).toContain("customer_email_send");
     expect(fulfillment!.max_spend_per_action_usd).toBe(0); // no autonomous spend by default
   });

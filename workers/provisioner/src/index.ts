@@ -22,6 +22,7 @@ import {
   LAUNCHPAD_CORE_AGENTS,
   agentsForTemplate,
   getLaunchpadTemplate,
+  type LaunchpadAgentDefinition,
 } from "../../agents/src/launchpad/spacetype.js";
 import {
   writeAgentConfig,
@@ -87,7 +88,7 @@ async function loadManifest(
 
 // ── Step 9: Install SpaceType agents ────────────────────────────────────────
 
-async function installLaunchpadAgents(
+export async function installLaunchpadAgents(
   spaceId: string,
   tenantId: string,
   templateId: string | undefined,
@@ -116,6 +117,71 @@ async function installLaunchpadAgents(
       spaceId, tenantId, profile.agentId, agentDef.name, agentDef.description,
       templateId ?? null, env
     );
+    await installAgentTrigger(spaceId, tenantId, agentDef, env);
+  }
+}
+
+/**
+ * F: LaunchpadAgentDefinition.trigger (spec §11) was installed as data but nothing ever read
+ * it — every dispatcher hardcodes "naelao-agent", so e.g. the Content agent's
+ * `cron: "0 9 * * *"` schedule never actually ran the specialist. Translate the trigger into a
+ * REAL wake path at install time:
+ *
+ *   - schedule → a scheduled_jobs row (spaces worker POST .../scheduled-jobs), with agent_id +
+ *     goal set so the dispatcher (workers/agents/src/index.ts handleAgentTick) wakes the
+ *     specialist's own full reasoning loop on its cron (migration 0043), not a bare script
+ *     fire — drafting content needs judgment, not a deterministic tool call.
+ *
+ *   - webhook → deliberately NOT translated into an event_triggers row here. event_triggers
+ *     (SpaceDO) only fires on STRUCTURAL in-space events (thread.created, project.created, ...);
+ *     it has no "order.completed" or "message.received" event source, so a row for either would
+ *     sit inert forever. Both of this SpaceType's webhook agents are wired through their own
+ *     existing, more specific dispatch instead: launchpad-fulfillment-v1's "order.completed" is
+ *     resolved directly by the billing worker (workers/billing/src/lemon-squeezy.ts — see the
+ *     routing decision documented there), and launchpad-support-v1's "message.received" already
+ *     reaches the space through channel_links → project binding. See appendix A1.16.x for the
+ *     full reasoning.
+ *
+ *   - manual → nothing to wire; it only runs when the owner messages it directly.
+ *
+ * Best-effort: a failed trigger install logs and does not fail provisioning (same posture as
+ * the other non-critical install steps above — spacedo_init_hook, workflow_templates).
+ */
+async function installAgentTrigger(
+  spaceId: string,
+  tenantId: string,
+  agentDef: LaunchpadAgentDefinition,
+  env: Env
+): Promise<void> {
+  if (agentDef.trigger.type !== "schedule") return;
+  const cron = agentDef.trigger.cron;
+  if (!cron) return;
+
+  try {
+    const resp = await env.SPACES_WORKER.fetch(
+      new Request(`http://spaces-worker/spaces/${spaceId}/scheduled-jobs`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+        },
+        body: JSON.stringify({
+          name: `${agentDef.name} — scheduled run`,
+          cron_expression: cron,
+          agent_id: agentDef.id,
+          goal:
+            `Run your scheduled work per your role: ${agentDef.description}. Use script.find for ` +
+            "a library script that already does this before reasoning from scratch, and distill " +
+            "a new one when you succeed so future runs are cheaper.",
+        }),
+      })
+    );
+    if (!resp.ok) {
+      console.warn(`[provisioner] scheduled-job install failed for agent '${agentDef.id}' in space '${spaceId}': ${await resp.text()}`);
+    }
+  } catch (err) {
+    console.warn(`[provisioner] scheduled-job install threw for agent '${agentDef.id}' in space '${spaceId}':`, (err as Error).message);
   }
 }
 
@@ -469,6 +535,11 @@ async function rollbackSpace(
     if (has("external_portal") && env.PORTAL_KV) {
       await env.PORTAL_KV.delete(`portal-space:${spaceId}`);
     }
+    // Remove any scheduled_jobs installAgentTrigger wrote (step 9, PLATFORM_DB — not under the
+    // R2 prefix the block above already wipes) so a retried provisionSpace doesn't accumulate
+    // duplicate cron rows for the same agent. Unconditional: harmless no-op when step 9 never
+    // ran or installed none.
+    await env.PLATFORM_DB.prepare("DELETE FROM scheduled_jobs WHERE space_id = ?").bind(spaceId).run();
   } catch (rollbackErr) {
     console.error("[provisioner] Rollback error:", rollbackErr);
   }

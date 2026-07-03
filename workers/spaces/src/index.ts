@@ -795,7 +795,7 @@ app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const owned = await loadOwnedSpace(c, c.req.param("spaceId"));
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
   const { results } = await c.env.PLATFORM_DB.prepare(
-    `SELECT id, name, cron_expression, script_name, params, project_id, enabled, last_run_at,
+    `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
             consecutive_failures, last_error, created_at, updated_at
        FROM scheduled_jobs WHERE space_id = ? ORDER BY created_at DESC`
   ).bind(c.req.param("spaceId")).all();
@@ -810,12 +810,18 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const body = await c.req.json<{
     name: string;
     cron_expression: string;
-    script_name: string;
+    script_name?: string;
     params?: Record<string, unknown>;
     project_id?: string;
+    /** Which agent's own R2 config (system prompt, approval gates) to wake. Omitted = the
+     *  Space Assistant ("naelao-agent"), same as before this field existed. */
+    agent_id?: string;
+    /** When set, the dispatcher wakes the full reasoning loop with this goal instead of
+     *  firing script_name directly (see infra/migrations/0043). */
+    goal?: string;
   }>().catch(() => ({}) as Record<string, never>);
-  if (!body.name || !body.cron_expression || !body.script_name) {
-    return c.json({ error_code: "bad_request", message: "name, cron_expression, and script_name are required" }, 400);
+  if (!body.name || !body.cron_expression || (!body.script_name && !body.goal)) {
+    return c.json({ error_code: "bad_request", message: "name, cron_expression, and either script_name or goal are required" }, 400);
   }
   const cronError = validateCronExpression(body.cron_expression);
   if (cronError) return c.json({ error_code: "bad_request", message: `Invalid cron_expression: ${cronError}` }, 400);
@@ -823,16 +829,17 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO scheduled_jobs (id, space_id, tenant_id, project_id, name, cron_expression, script_name, params, enabled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+    `INSERT INTO scheduled_jobs (id, space_id, tenant_id, project_id, name, cron_expression, script_name, params, agent_id, goal, enabled, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
   ).bind(
     id, spaceId, owned.tenantId, body.project_id ?? null, body.name, body.cron_expression,
-    body.script_name, JSON.stringify(body.params ?? {}), now, now
+    body.script_name ?? "", JSON.stringify(body.params ?? {}), body.agent_id ?? null, body.goal ?? null, now, now
   ).run();
 
   return c.json({
-    id, name: body.name, cron_expression: body.cron_expression, script_name: body.script_name,
-    project_id: body.project_id ?? null, enabled: true, last_run_at: null, created_at: now,
+    id, name: body.name, cron_expression: body.cron_expression, script_name: body.script_name ?? "",
+    project_id: body.project_id ?? null, agent_id: body.agent_id ?? null, goal: body.goal ?? null,
+    enabled: true, last_run_at: null, created_at: now,
   }, 201);
 });
 
@@ -847,6 +854,8 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
     cron_expression?: string;
     script_name?: string;
     params?: Record<string, unknown>;
+    agent_id?: string;
+    goal?: string;
     enabled?: boolean;
   }>().catch(() => ({}) as Record<string, never>);
 
@@ -862,12 +871,15 @@ app.patch("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
        cron_expression = COALESCE(?, cron_expression),
        script_name = COALESCE(?, script_name),
        params = COALESCE(?, params),
+       agent_id = COALESCE(?, agent_id),
+       goal = COALESCE(?, goal),
        enabled = COALESCE(?, enabled),
        updated_at = ?
      WHERE id = ? AND space_id = ? AND tenant_id = ?`
   ).bind(
     body.name ?? null, body.cron_expression ?? null, body.script_name ?? null,
     body.params !== undefined ? JSON.stringify(body.params) : null,
+    body.agent_id ?? null, body.goal ?? null,
     body.enabled === undefined ? null : (body.enabled ? 1 : 0),
     now, jobId, spaceId, owned.tenantId
   ).run();

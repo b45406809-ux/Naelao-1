@@ -643,6 +643,39 @@ async function fireScriptDirectly(
   );
 }
 
+// F: a scheduled job whose row.goal is set wakes the FULL reasoning loop (OBSERVE/FIND/GATE,
+// the reasoner, approval gates — everything fireScriptDirectly deliberately skips) against the
+// named agent's own DO — its own R2 config, own system prompt, own requires_approval_for. This
+// is how a Launchpad specialist agent (e.g. launchpad-content-v1, whose §11 trigger is
+// `{ type: "schedule", cron: "0 9 * * *" }`) actually runs on its cron instead of the schedule
+// silently doing nothing, or "running" under the Space Assistant's generic persona/gates. See
+// docs/spec-appendix/A1-script-agents-and-space-assistants.md for why this needed a second
+// dispatch mode alongside fireScriptDirectly rather than reusing it.
+async function wakeAgentGoal(
+  env: AgentsEnv,
+  params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; goal: string },
+  reqId?: string
+): Promise<Response> {
+  const agentId = params.agentId ?? "naelao-agent";
+  const stub = await getAgentDOForSpace(env, params.tenantId, params.spaceId, agentId, reqId);
+  return stub.fetch(
+    new Request("http://agent-do/script/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goal: params.goal,
+        spaceId: params.spaceId,
+        agentId,
+        tenantId: params.tenantId,
+        sessionId: `scheduled-job-${Date.now()}`,
+        ...(params.projectId ? { projectId: params.projectId } : {}),
+        context: { trigger: "scheduled_job" },
+        apiKey: env.ANTHROPIC_API_KEY,
+      }),
+    })
+  );
+}
+
 // ── POST /internal/triggers/fire — @naelao/events dispatch target ─────────────
 // SpaceDO calls this after evaluating an event_triggers match (thread.created,
 // project.created, ...). Deliberately NOT the reasoning loop: this runs the named script
@@ -2057,6 +2090,11 @@ interface ScheduledJobRow {
   id: string; space_id: string; tenant_id: string; project_id: string | null;
   cron_expression: string; script_name: string; params: string; last_run_at: number | null;
   created_at: string; consecutive_failures: number;
+  /** Which agent's own DO/config to wake. NULL = "naelao-agent" (the Space Assistant),
+   *  unchanged default behavior from before these columns existed (migration 0043). */
+  agent_id: string | null;
+  /** When set, fire the full reasoning loop with this goal instead of script_name directly. */
+  goal: string | null;
 }
 
 // On a failed fire (or a thrown error, e.g. a malformed cron_expression): the due minute was
@@ -2206,7 +2244,7 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
           console.error(`[agent-ticks] cron check failed job=${row.id} space=${row.space_id}:`, (err as Error).message);
           await recordScheduledJobFailure(
             env,
-            { id: row.id, space_id: row.space_id, tenant_id: row.tenant_id, project_id: null, cron_expression: row.cron_expression, script_name: "", params: "{}", last_run_at: row.last_run_at, created_at: row.created_at, consecutive_failures: 0 },
+            { id: row.id, space_id: row.space_id, tenant_id: row.tenant_id, project_id: null, cron_expression: row.cron_expression, script_name: "", params: "{}", agent_id: null, goal: null, last_run_at: row.last_run_at, created_at: row.created_at, consecutive_failures: 0 },
             now,
             (err as Error).message
           );
@@ -2294,20 +2332,31 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       // means this message could be redelivered after the job was already disabled or its
       // script_name/params changed — always act on current state.
       const row = await env.PLATFORM_DB.prepare(
-        `SELECT id, space_id, tenant_id, project_id, cron_expression, script_name, params, last_run_at, created_at, consecutive_failures
+        `SELECT id, space_id, tenant_id, project_id, cron_expression, script_name, params, agent_id, goal, last_run_at, created_at, consecutive_failures
            FROM scheduled_jobs WHERE id = ? AND enabled = 1`
       ).bind(msg.jobId).first<ScheduledJobRow>();
       if (!row) return; // deleted or already disabled since enqueue — nothing to do.
 
       const now = Date.now();
       try {
-        const doResp = await fireScriptDirectly(env, {
-          spaceId: row.space_id,
-          tenantId: row.tenant_id,
-          ...(row.project_id ? { projectId: row.project_id } : {}),
-          scriptName: row.script_name,
-          params: JSON.parse(row.params || "{}") as Record<string, unknown>,
-        });
+        // A goal-based row (migration 0043) wakes the full reasoning loop against the named
+        // agent's own DO; everything else keeps the pre-existing direct-script-fire behavior.
+        const doResp = row.goal
+          ? await wakeAgentGoal(env, {
+              spaceId: row.space_id,
+              tenantId: row.tenant_id,
+              ...(row.agent_id ? { agentId: row.agent_id } : {}),
+              ...(row.project_id ? { projectId: row.project_id } : {}),
+              goal: row.goal,
+            })
+          : await fireScriptDirectly(env, {
+              spaceId: row.space_id,
+              tenantId: row.tenant_id,
+              ...(row.agent_id ? { agentId: row.agent_id } : {}),
+              ...(row.project_id ? { projectId: row.project_id } : {}),
+              scriptName: row.script_name,
+              params: JSON.parse(row.params || "{}") as Record<string, unknown>,
+            });
         if (doResp.ok) {
           await env.PLATFORM_DB.prepare(
             "UPDATE scheduled_jobs SET last_run_at = ?, consecutive_failures = 0, last_error = NULL WHERE id = ?"

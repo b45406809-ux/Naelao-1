@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { handleLemonSqueezyWebhook, resolveFulfillmentProjectId } from "../../workers/billing/src/lemon-squeezy.js";
+import { handleLemonSqueezyWebhook, resolveFulfillmentProjectId, isFulfillmentAgentBound } from "../../workers/billing/src/lemon-squeezy.js";
 import type { LemonSqueezyEnv } from "../../workers/billing/src/lemon-squeezy.js";
 import { mintInternalToken } from "@naelao/http";
 
@@ -26,6 +26,13 @@ function makeOrderPaidBody(spaceId: string): string {
   return JSON.stringify({
     meta: { event_name: "order_created", custom_data: { spaceId } },
     data: { id: "ord_1", attributes: { total: 1999, currency: "USD", customer_id: "cust_1", custom_data: { spaceId } } },
+  });
+}
+
+function makeSubscriptionUpdatedBody(spaceId: string): string {
+  return JSON.stringify({
+    meta: { event_name: "subscription_updated", custom_data: { spaceId } },
+    data: { id: "sub_1", attributes: { total: 1999, currency: "USD", customer_id: "cust_1", custom_data: { spaceId } } },
   });
 }
 
@@ -221,6 +228,181 @@ describe("handleLemonSqueezyWebhook — scopes the wake to the Orders project wh
       env
     );
     expect(res.status).toBe(200);
+    expect(agentsFetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("isFulfillmentAgentBound", () => {
+  function makeEnv(projects: Array<{ default_agent_id?: string | null; status?: string }> | null): LemonSqueezyEnv {
+    return {
+      AGENTS_WORKER: { fetch: async () => new Response("{}") } as unknown as Fetcher,
+      PLATFORM_DB: {} as unknown as D1Database,
+      PLATFORM_SECRET,
+      SPACES_WORKER: {
+        async fetch() {
+          if (projects === null) return new Response("error", { status: 500 });
+          return Response.json({ data: projects, count: projects.length });
+        },
+      } as unknown as Fetcher,
+    };
+  }
+
+  it("is true when a project is actually bound to launchpad-fulfillment-v1", async () => {
+    const bound = await isFulfillmentAgentBound("space1", "tenant1", makeEnv([{ default_agent_id: "launchpad-fulfillment-v1" }]));
+    expect(bound).toBe(true);
+  });
+
+  it("is false for a project merely NAMED Orders with no binding — the name-fallback isn't strong enough evidence the agent is installed", async () => {
+    const bound = await isFulfillmentAgentBound("space1", "tenant1", makeEnv([{ default_agent_id: null }]));
+    expect(bound).toBe(false);
+  });
+
+  it("is false when the bound project is archived", async () => {
+    const bound = await isFulfillmentAgentBound("space1", "tenant1", makeEnv([{ default_agent_id: "launchpad-fulfillment-v1", status: "archived" }]));
+    expect(bound).toBe(false);
+  });
+
+  it("fails soft (false, never throws) when SPACES_WORKER errors", async () => {
+    const bound = await isFulfillmentAgentBound("space1", "tenant1", makeEnv(null));
+    expect(bound).toBe(false);
+  });
+});
+
+describe("handleLemonSqueezyWebhook — routes order-completed to the fulfillment specialist's own DO (F: trigger was never woken)", () => {
+  function makeDb(spaceId: string, tenantId: string) {
+    return {
+      prepare(sql: string) {
+        const stmt = {
+          bind() { return stmt; },
+          async first() {
+            if (/FROM spaces WHERE/.test(sql)) return { tenant_id: tenantId };
+            if (/FROM tenant_hierarchy/.test(sql)) return null;
+            return null;
+          },
+          async run() { return { meta: { changes: 1 } }; },
+        };
+        return stmt;
+      },
+    } as unknown as D1Database;
+  }
+
+  it("wakes launchpad-fulfillment-v1's own DO for a payment.success event when it's actually bound to a project", async () => {
+    const spaceId = "space1";
+    const tenantId = "tenant1";
+    const agentsFetch = vi.fn(async () => new Response("{}"));
+    const env: LemonSqueezyEnv = {
+      LEMON_SQUEEZY_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      PLATFORM_SECRET,
+      PLATFORM_DB: makeDb(spaceId, tenantId),
+      AGENTS_WORKER: { fetch: agentsFetch } as unknown as Fetcher,
+      SPACES_WORKER: {
+        async fetch() {
+          return Response.json({ data: [{ id: "orders-proj", name: "Orders", default_agent_id: "launchpad-fulfillment-v1" }], count: 1 });
+        },
+      } as unknown as Fetcher,
+    };
+
+    const raw = makeOrderPaidBody(spaceId);
+    const res = await handleLemonSqueezyWebhook(
+      new Request("https://billing.naelao.com/webhooks/lemon-squeezy", {
+        method: "POST",
+        headers: { "X-Signature": await signBody(raw) },
+        body: raw,
+      }),
+      env
+    );
+    expect(res.status).toBe(200);
+    expect(agentsFetch).toHaveBeenCalledTimes(1);
+    const calledUrl = (agentsFetch.mock.calls[0]![0] as Request).url;
+    expect(calledUrl).toBe("http://agents-worker/agents/launchpad-fulfillment-v1/script/run");
+  });
+
+  it("falls back to the Space Assistant for a payment.success event when the project is only name-matched, not bound", async () => {
+    const spaceId = "space1";
+    const tenantId = "tenant1";
+    const agentsFetch = vi.fn(async () => new Response("{}"));
+    const env: LemonSqueezyEnv = {
+      LEMON_SQUEEZY_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      PLATFORM_SECRET,
+      PLATFORM_DB: makeDb(spaceId, tenantId),
+      AGENTS_WORKER: { fetch: agentsFetch } as unknown as Fetcher,
+      SPACES_WORKER: {
+        // "Orders" by name only — no default_agent_id, e.g. a space provisioned before that
+        // binding existed, or a builder-created project that coincidentally shares the name.
+        async fetch() { return Response.json({ data: [{ id: "orders-proj", name: "Orders" }], count: 1 }); },
+      } as unknown as Fetcher,
+    };
+
+    const raw = makeOrderPaidBody(spaceId);
+    await handleLemonSqueezyWebhook(
+      new Request("https://billing.naelao.com/webhooks/lemon-squeezy", {
+        method: "POST",
+        headers: { "X-Signature": await signBody(raw) },
+        body: raw,
+      }),
+      env
+    );
+    expect(agentsFetch).toHaveBeenCalledTimes(1);
+    const calledUrl = (agentsFetch.mock.calls[0]![0] as Request).url;
+    expect(calledUrl).toBe("http://agents-worker/agents/naelao-agent/script/run");
+  });
+
+  it("never routes a non-order billing event (subscription.updated) to the fulfillment specialist, even when it's bound", async () => {
+    const spaceId = "space1";
+    const tenantId = "tenant1";
+    const agentsFetch = vi.fn(async () => new Response("{}"));
+    const env: LemonSqueezyEnv = {
+      LEMON_SQUEEZY_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      PLATFORM_SECRET,
+      PLATFORM_DB: makeDb(spaceId, tenantId),
+      AGENTS_WORKER: { fetch: agentsFetch } as unknown as Fetcher,
+      SPACES_WORKER: {
+        async fetch() {
+          return Response.json({ data: [{ id: "orders-proj", name: "Orders", default_agent_id: "launchpad-fulfillment-v1" }], count: 1 });
+        },
+      } as unknown as Fetcher,
+    };
+
+    const raw = makeSubscriptionUpdatedBody(spaceId);
+    await handleLemonSqueezyWebhook(
+      new Request("https://billing.naelao.com/webhooks/lemon-squeezy", {
+        method: "POST",
+        headers: { "X-Signature": await signBody(raw) },
+        body: raw,
+      }),
+      env
+    );
+    expect(agentsFetch).toHaveBeenCalledTimes(1);
+    const calledUrl = (agentsFetch.mock.calls[0]![0] as Request).url;
+    expect(calledUrl).toBe("http://agents-worker/agents/naelao-agent/script/run");
+  });
+
+  it("never wakes both the Space Assistant AND the fulfillment specialist for the same event", async () => {
+    const spaceId = "space1";
+    const tenantId = "tenant1";
+    const agentsFetch = vi.fn(async () => new Response("{}"));
+    const env: LemonSqueezyEnv = {
+      LEMON_SQUEEZY_WEBHOOK_SECRET: WEBHOOK_SECRET,
+      PLATFORM_SECRET,
+      PLATFORM_DB: makeDb(spaceId, tenantId),
+      AGENTS_WORKER: { fetch: agentsFetch } as unknown as Fetcher,
+      SPACES_WORKER: {
+        async fetch() {
+          return Response.json({ data: [{ id: "orders-proj", name: "Orders", default_agent_id: "launchpad-fulfillment-v1" }], count: 1 });
+        },
+      } as unknown as Fetcher,
+    };
+
+    const raw = makeOrderPaidBody(spaceId);
+    await handleLemonSqueezyWebhook(
+      new Request("https://billing.naelao.com/webhooks/lemon-squeezy", {
+        method: "POST",
+        headers: { "X-Signature": await signBody(raw) },
+        body: raw,
+      }),
+      env
+    );
+    // Exactly one wake — never both the specialist and the Space Assistant for one event.
     expect(agentsFetch).toHaveBeenCalledTimes(1);
   });
 });

@@ -292,6 +292,22 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     `recordUsageEvent` (renamed from `incrementUsage`) invalidate the KV cache entry rather than
     incrementing it — the next `checkQuota` call is forced back through the real D1 aggregate,
     eliminating the race instead of relocating it. Full detail: appendix §A1.16.18.
+28. **Launchpad's core agents (§11) were installed as R2 configs but never actually WOKEN — now
+    FIXED.** Every dispatcher hardcoded `"naelao-agent"`; nothing ever read
+    `LaunchpadAgentDefinition.trigger`, so a Creator Store builder's Fulfillment/Support agents
+    and the Content agent's daily cron never ran — which also made item 22's approval-gates fix
+    a dead letter in production (those gates only apply when the specialist's own config
+    actually loads). Schedule triggers now write a real `scheduled_jobs` row (migration 0043
+    adds `agent_id`/`goal` columns and a new goal-based dispatch mode — `handleAgentTick` wakes
+    the FULL reasoning loop against the named agent's own DO, not just a direct script fire).
+    Webhook triggers are deliberately NOT routed through `event_triggers` (it only fires on
+    structural in-space events, not `order.completed`/`message.received`) — fulfillment's
+    `order.completed` is instead resolved directly by `billing/lemon-squeezy.ts`, routing to
+    `launchpad-fulfillment-v1`'s own DO only when a project is actually bound to it
+    (`isFulfillmentAgentBound`), never both agents for one event. Also rewrote the three
+    Launchpad system prompts off "the Stripe/email/CRM tool" language onto the real script-native
+    surface (`commerce`/`notifications`/`mcp-connector`/`script.find`). Full detail: appendix
+    §A1.16.24.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

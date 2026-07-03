@@ -21,6 +21,10 @@ const SCHEDULED_JOBS_FAILURES_MIGRATION = readFileSync(
   join(__dirname, "../../infra/migrations/0042_scheduled_jobs_failures.sql"),
   "utf8"
 );
+const SCHEDULED_JOBS_AGENT_GOAL_MIGRATION = readFileSync(
+  join(__dirname, "../../infra/migrations/0043_scheduled_jobs_agent_goal.sql"),
+  "utf8"
+);
 const SPACES_TABLE_SQL = `
   CREATE TABLE spaces (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
@@ -29,7 +33,7 @@ const SPACES_TABLE_SQL = `
 `;
 
 function makeSpacesEnv(spaceId: string, tenantId: string): Record<string, unknown> {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, SCHEDULED_JOBS_MIGRATION, SCHEDULED_JOBS_FAILURES_MIGRATION]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, SCHEDULED_JOBS_MIGRATION, SCHEDULED_JOBS_FAILURES_MIGRATION, SCHEDULED_JOBS_AGENT_GOAL_MIGRATION]);
   fakeDb.db.exec(`INSERT INTO spaces (id, tenant_id, status, name) VALUES ('${spaceId}', '${tenantId}', 'active', 'Test Space')`);
   return { PLATFORM_SECRET: "s", ENVIRONMENT: "test", PLATFORM_DB: fakeDb };
 }

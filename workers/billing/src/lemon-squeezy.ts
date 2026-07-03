@@ -178,11 +178,13 @@ const FULFILLMENT_AGENT_ID = "launchpad-fulfillment-v1";
  * or no matching project exists — the caller falls back to the space-wide Space Assistant run
  * exactly as before, so a builder who deletes/reassigns the project doesn't break anything.
  */
-export async function resolveFulfillmentProjectId(
+type SpaceProject = { id: string; name: string; status?: string; default_agent_id?: string | null };
+
+async function fetchSpaceProjects(
   spaceId: string,
   tenantId: string,
   env: LemonSqueezyEnv
-): Promise<string | undefined> {
+): Promise<SpaceProject[] | undefined> {
   if (!env.SPACES_WORKER) return undefined;
   try {
     const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
@@ -192,14 +194,43 @@ export async function resolveFulfillmentProjectId(
       },
     }));
     if (!resp.ok) return undefined;
-    const { data } = await resp.json<{ data: Array<{ id: string; name: string; status?: string; default_agent_id?: string | null }> }>();
-    const byBinding = data.find((p) => p.default_agent_id === FULFILLMENT_AGENT_ID && p.status !== "archived");
-    if (byBinding) return byBinding.id;
-    const byName = data.find((p) => p.name?.trim().toLowerCase() === "orders" && p.status !== "archived");
-    return byName?.id;
+    const { data } = await resp.json<{ data: SpaceProject[] }>();
+    return data;
   } catch {
     return undefined;
   }
+}
+
+export async function resolveFulfillmentProjectId(
+  spaceId: string,
+  tenantId: string,
+  env: LemonSqueezyEnv
+): Promise<string | undefined> {
+  const data = await fetchSpaceProjects(spaceId, tenantId, env);
+  if (!data) return undefined;
+  const byBinding = data.find((p) => p.default_agent_id === FULFILLMENT_AGENT_ID && p.status !== "archived");
+  if (byBinding) return byBinding.id;
+  const byName = data.find((p) => p.name?.trim().toLowerCase() === "orders" && p.status !== "archived");
+  return byName?.id;
+}
+
+/**
+ * Whether launchpad-fulfillment-v1 is actually bound to a project in this space — the STRONG
+ * signal (a real default_agent_id, set only when the builder's template installed this exact
+ * agent), unlike resolveFulfillmentProjectId's looser name-only "Orders" fallback above (kept
+ * for scoping an already-decided Space Assistant run, not for deciding WHICH agent to wake — a
+ * space that merely happens to have a project literally named "Orders" without the agent
+ * actually being provisioned must not get routed to an agent that 404s). Used by the routing
+ * decision in handleLemonSqueezyWebhook. Best-effort: false (never throws) on any failure — the
+ * caller falls back to the Space Assistant, exactly as every billing event did before this fix.
+ */
+export async function isFulfillmentAgentBound(
+  spaceId: string,
+  tenantId: string,
+  env: LemonSqueezyEnv
+): Promise<boolean> {
+  const data = await fetchSpaceProjects(spaceId, tenantId, env);
+  return data?.some((p) => p.default_agent_id === FULFILLMENT_AGENT_ID && p.status !== "archived") ?? false;
 }
 
 /** POST to agents worker: wake the agent with a billing event goal. */
@@ -368,12 +399,31 @@ export async function handleLemonSqueezyWebhook(
     console.error("[billing/ls] Order recording failed:", (err as Error).message);
   }
 
-  // 6. Wake the Space Assistant agent asynchronously (ctx.waitUntil equivalent: fire-and-forget).
-  //    Pass the order id so the fulfilment agent can look it up and deliver the product, and
-  //    scope the run to the space's "Orders" project when the template seeded one (best-effort
-  //    — falls back to a space-wide run when there isn't one).
+  // 6. Wake an agent asynchronously (ctx.waitUntil equivalent: fire-and-forget). Pass the order
+  //    id so the fulfilment agent can look it up and deliver the product, and scope the run to
+  //    the space's "Orders" project when the template seeded one (best-effort — falls back to a
+  //    space-wide run when there isn't one).
   const projectId = await resolveFulfillmentProjectId(event.spaceId, agent.tenantId, env);
-  await wakeAgent(event.spaceId, agent.agentId, agent.tenantId, event, env.AGENTS_WORKER, orderId, projectId);
+
+  // F: routing decision (spec §11 / appendix A1.16.x) — LaunchpadAgentDefinition.trigger for
+  // launchpad-fulfillment-v1 is `{ type: "webhook", event: "order.completed" }`, but nothing
+  // ever woke that agent; every order fired against the generic Space Assistant instead, so the
+  // specialist's own system prompt AND its own requires_approval_for gates (customer_email_send,
+  // refund_issue — see approval-gates-structural.test.ts) never actually applied to a real order.
+  // Decision: an order-completed event ("payment.success") routes to the fulfillment specialist's
+  // OWN agent DO instead of the Space Assistant, but ONLY when isFulfillmentAgentBound confirms
+  // the specialist is actually provisioned in this space (a real default_agent_id binding — not
+  // the looser "a project happens to be named Orders" fallback resolveFulfillmentProjectId also
+  // accepts for scoping, since routing to an agent that was never installed would just 404 and
+  // silently drop the order). No binding (a space provisioned before projects.default_agent_id
+  // existed, a manually reassigned/removed project, or a raw core-agents install with no
+  // template) falls back to the Space Assistant exactly as before — never left unhandled. Every
+  // OTHER billing event type (subscription changes, payment failures, refunds) keeps waking the
+  // Space Assistant unchanged: order-completed is the only event this SpaceType defines a
+  // specialist trigger for. Only one agent is ever woken per event — never both.
+  const fulfillmentBound = event.type === "payment.success" && (await isFulfillmentAgentBound(event.spaceId, agent.tenantId, env));
+  const targetAgentId = fulfillmentBound ? FULFILLMENT_AGENT_ID : agent.agentId;
+  await wakeAgent(event.spaceId, targetAgentId, agent.tenantId, event, env.AGENTS_WORKER, orderId, projectId);
 
   return Response.json({ ok: true, event_type: event.type, space_id: event.spaceId, order_id: orderId });
 }
