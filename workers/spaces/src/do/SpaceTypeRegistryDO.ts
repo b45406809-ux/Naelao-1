@@ -215,6 +215,64 @@ export interface SpaceTypeProductConfig {
     /** "subscription" (recurring seat) or "one_time" (lifetime seat). */
     interval?: "subscription" | "one_time";
   };
+
+  // ── Three-Tier Platform Model (spec "How Builders Use Naelao") — Phase 1 additions ──
+  // Stored the same way memberBilling/assistantMode already are: a per-space config_json
+  // override that loadEffectiveProductConfig merges over the manifest's base productConfig.
+  // Not real D1 columns (see migration 0044's comment for why) — a builder edits these via the
+  // Builder Dashboard, never a manifest fork.
+
+  /** White-label branding (Builder Dashboard wizard "Branding" step). */
+  branding?: {
+    brandColor?: string; // hex
+    logoUrl?: string;    // R2 object URL
+    faviconUrl?: string; // R2 object URL
+    productDescription?: string;
+    /** Default true for custom domains — cannot suppress legally-required disclosures. */
+    suppressNaelaoBranding?: boolean;
+  };
+
+  /** Auth provider for this product's end users (wizard "Auth Config" step). */
+  authProvider?: {
+    provider: "naelao-native" | "clerk" | "custom-oidc" | "saml-sso";
+    requireAdminApproval?: boolean;
+    allowedEmailDomains?: string[];
+    /** Only set for custom-oidc/saml-sso; secrets live in the credentials vault, never here. */
+    ssoConfig?: { issuerUrl?: string; clientId?: string; acsUrl?: string };
+  };
+
+  /** Builder-defined pricing shown to end users (wizard "Pricing" step; distinct from the
+   *  Naelao->builder wholesale relationship, which is billingRelationship above). */
+  pricingConfig?: {
+    model: "free" | "credits" | "subscription" | "seats";
+    creditsIncludedPerMonth?: number;
+    overageCreditsPriceCents?: number;
+    pricePerSeatCents?: number;
+    includedSeats?: number;
+    trialDays?: number;
+  };
+
+  /** Sub-space terminology + depth cap the end-user-facing shell renders (spec Scenario C
+   *  subSpaceTerminology). Depth enforcement itself lives in SpaceDO.createSubSpace — this is
+   *  display/config only. */
+  subSpaceDisplay?: {
+    terminology?: string; // e.g. "workspace", "team", "project" — builder's own word for it
+    maxDepth?: 1 | 2;
+  };
+
+  /** Builder Dashboard "Users" tab gates (spec adminFeatures — conversationLogAccess is ALSO
+   *  gated by the D1 conversation_access_approved_by/_at audit columns; both must be true). */
+  adminFeatures?: {
+    conversationLogAccess?: boolean;
+    analyticsAccess?: boolean;
+    webhookEndpoints?: boolean;
+  };
+
+  /** Per-product feature flags a builder toggles for their own end users (Builder Dashboard
+   *  "Feature Flags" tab). Distinct from FeatureFlagDO, which is Naelao's own platform-wide
+   *  gradual-rollout system for internal capability rollouts — different actor, different
+   *  lifecycle, not reused here. */
+  featureFlags?: Record<string, boolean>;
 }
 
 // resolveTenancy lives in the pure ./tenancy module (no cloudflare:workers import) so it

@@ -12,6 +12,7 @@ export { LockDO } from "./do/LockDO.js";
 export { FeatureFlagDO } from "./do/FeatureFlagDO.js";
 export { TransactionCoordinatorDO } from "./do/TransactionCoordinatorDO.js";
 export { SpaceTypeRegistryDO } from "./do/SpaceTypeRegistryDO.js";
+export { BuilderAccountDO } from "./do/BuilderAccountDO.js";
 
 export interface Env {
   ENVIRONMENT: string;
@@ -19,6 +20,8 @@ export interface Env {
   PLATFORM_DB: D1Database;
   SPACE_DO: DurableObjectNamespace<SpaceDO>;
   SPACE_TYPE_REGISTRY_DO: DurableObjectNamespace<SpaceTypeRegistryDO>;
+  /** Three-Tier Platform Model, Phase 1 — one per builder (tenant). */
+  BUILDER_ACCOUNT_DO: DurableObjectNamespace;
   NAELAO_CONFIG_KV: KVNamespace;
   EXPORTS_BUCKET: R2Bucket;
   /** Producer to the provisioning queue — consumed by naelao-provisioner. */
@@ -584,6 +587,14 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
 async function spaceDoStub(env: Env, spaceId: string, tenantId: string) {
   const doId = env.SPACE_DO.idFromName(await getDOName("space", spaceId, tenantId, env.PLATFORM_SECRET));
   return env.SPACE_DO.get(doId);
+}
+
+/** Get the BuilderAccountDO stub for a builder (== tenant), HMAC-named like every other DO. */
+async function builderAccountDoStub(env: Env, tenantId: string) {
+  const doId = env.BUILDER_ACCOUNT_DO.idFromName(
+    await getDOName("builder", tenantId, tenantId, env.PLATFORM_SECRET)
+  );
+  return env.BUILDER_ACCOUNT_DO.get(doId);
 }
 
 /** Forward a request to a path on the SpaceDO, preserving method/headers/body. */

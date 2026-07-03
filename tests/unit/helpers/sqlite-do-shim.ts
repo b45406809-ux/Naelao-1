@@ -24,8 +24,18 @@ export function createDOSqlStorage(): DOSqlStorage {
   return {
     exec(query: string, ...params: unknown[]) {
       const trimmed = query.trim();
+      // A SELECT always goes through a prepared statement, REGARDLESS of param count — a
+      // param-less "SELECT * FROM t" (no WHERE-clause placeholders) is a legitimate query real
+      // DO SqlStorage.exec() returns rows for (see SpaceTypeRegistryDO's `GET /types`, which
+      // does exactly this). The old `params.length === 0` branch below used to swallow this
+      // case into the DDL path (db.exec() executes but discards results), silently returning
+      // empty rows for any param-less SELECT.
+      if (/^select/i.test(trimmed)) {
+        return { toArray: () => db.prepare(trimmed).all(...(params as never[])) as never[] };
+      }
       if (params.length === 0) {
-        // Multi-statement DDL/transaction control (BEGIN/COMMIT/CREATE TABLE; ...; ALTER ...).
+        // Multi-statement DDL/transaction control (BEGIN/COMMIT/CREATE TABLE; ...; ALTER ...),
+        // or a single non-SELECT statement with no placeholders (e.g. "DELETE FROM buckets").
         // CF's DO SQLite tolerates `PRAGMA journal_mode`/`synchronous` changes inside an
         // open transaction (DOs commonly set these right after `BEGIN EXCLUSIVE` in
         // ensureInit); stock SQLite (and node:sqlite) rejects that with "Safety level may
@@ -36,9 +46,6 @@ export function createDOSqlStorage(): DOSqlStorage {
         return { toArray: () => [] };
       }
       const stmt = db.prepare(trimmed);
-      if (/^select/i.test(trimmed)) {
-        return { toArray: () => stmt.all(...(params as never[])) as never[] };
-      }
       stmt.run(...(params as never[]));
       return { toArray: () => [] };
     },

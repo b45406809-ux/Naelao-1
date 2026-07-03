@@ -43,6 +43,11 @@ class_name = "TransactionCoordinatorDO"
 name = "SPACE_TYPE_REGISTRY_DO"
 class_name = "SpaceTypeRegistryDO"
 
+# Three-Tier Platform Model, Phase 1 (docs/spec-appendix A1.17) — one per builder (tenant).
+[[durable_objects.bindings]]
+name = "BUILDER_ACCOUNT_DO"
+class_name = "BuilderAccountDO"
+
 [[migrations]]
 tag = "v2"
 new_classes = ["LockDO"]
@@ -58,6 +63,10 @@ new_classes = ["TransactionCoordinatorDO"]
 [[migrations]]
 tag = "v5"
 new_classes = ["SpaceTypeRegistryDO"]
+
+[[migrations]]
+tag = "v6"
+new_classes = ["BuilderAccountDO"]
 
 [[d1_databases]]
 binding = "PLATFORM_DB"

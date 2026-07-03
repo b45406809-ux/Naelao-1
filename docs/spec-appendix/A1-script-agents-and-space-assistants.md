@@ -2436,4 +2436,54 @@ canonical UI; `dashboard/settings` links to it instead of duplicating it. `dashb
 `dashboard/usage` call equally-unbacked `/v1/team/*`/`/v1/usage/*` routes — flagged as a known,
 separate, out-of-scope gap (CLAUDE.md item 30), not touched by this phase.
 
-Remaining phases (1-8) will each get their own subsection here as they land.
+**Phase 1 — DONE.** Migration `0044_naelao_product.sql` adds only two genuinely new,
+cross-space-queryable columns to `spaces` — `product_slug` (unique platform-subdomain identity,
+partial unique index excluding NULL) and `conversation_access_approved_by`/`_at` (the spec's
+legally-gated conversation-log-access approval, which Naelao staff need to query across every
+space for the platform-wide approval queue). Everything else from the spec's ~20-field
+NaelaoProduct list — branding, auth provider config, pricing, sub-space terminology/depth
+display, admin features, per-product feature flags — extends `SpaceTypeProductConfig`
+(`workers/spaces/src/do/SpaceTypeRegistryDO.ts`) instead: new optional `branding`/`authProvider`/
+`pricingConfig`/`subSpaceDisplay`/`adminFeatures`/`featureFlags` fields, stored as a
+`config_json.productConfig` override on the space row exactly like member billing (#17) and
+assistant policy (#20) already work. A `product_domain`/`custom_domain_verified` pair was
+deliberately NOT added — that would duplicate what `business_services` already tracks end-to-end
+for storefront/custom-domain identity (#16); a per-product feature-flags mechanism deliberately
+does NOT reuse `FeatureFlagDO` — that DO is Naelao's own platform-wide gradual-rollout system
+(global flags, staff-controlled), a different actor/lifecycle from a builder toggling a flag for
+their own product's end users.
+
+New `workers/spaces/src/do/BuilderAccountDO.ts`, one per builder (`getDOName("builder", tenantId,
+tenantId, PLATFORM_SECRET)` — same HMAC-named pattern as every other DO, preventing
+enumeration), registered in `wrangler.toml` (`BUILDER_ACCOUNT_DO` binding, migration tag v6).
+Deliberately thin: only `products` (an index of this builder's product spaceIds — source of
+truth stays the `spaces` D1 row) and `api_keys` tables. Does NOT reimplement usage aggregation,
+invoicing, or rate limiting — Phase 3's Builder Dashboard API will call `@naelao/entitlements` +
+Analytics Engine, `reseller_ledger`/`GET /reseller/statement`, and
+`workers/router/src/RateLimitDO.ts` directly for those. API keys mint a `nbk_...`-prefixed raw
+key shown exactly once; only its SHA-256 hash and an 11-char display prefix persist. `POST
+/api-keys/verify` is the endpoint Phase 3's `validateProductScope` middleware will call to
+resolve a Bearer key to its scopes before any `/builder/*` route runs.
+
+Consolidated the dashboard onto this from Phase 0: `apps/dashboard/src/lib/api.ts`'s
+`listApiKeys`/`createApiKey`/`revokeApiKey` now point at `/builder/api-keys*` (still 404s until
+Phase 3 wires the route — expected, sequencing is intentional).
+
+**Incidental fix found while writing `BuilderAccountDO`'s tests:** the shared test helper
+`tests/unit/helpers/sqlite-do-shim.ts` (used by `RateLimitDO`'s tests and now this DO's) had a
+real bug — its `exec(query, ...params)` treated ANY call with zero bound params as
+multi-statement DDL (routed through `db.exec()`, which discards result rows), even a legitimate
+param-less `SELECT` (e.g. `SpaceTypeRegistryDO`'s `GET /types`, which hardcodes its `WHERE`
+clause values with no `?` placeholders at all — a pattern real DO SqlStorage handles fine
+regardless of param count). Fixed by checking for a `SELECT` prefix first, unconditionally, before
+falling through to the param-count-based DDL branch. All 14 existing consumers of this shim
+(`rate-limit-do.test.ts`, `concurrency-do.test.ts`, `spacedo-*.test.ts`, etc.) still pass
+unchanged — the fix only changes behavior for the previously-broken param-less-SELECT case.
+
+Tests: `tests/unit/builder-account-do.test.ts` (9 — product index, key mint/list/verify/revoke,
+expiry, forged-key rejection) and `tests/unit/naelao-product-migration.test.ts` (6 — migration
+applies cleanly, columns default to NULL, slug uniqueness enforced but NULL-excluded, audit
+columns settable independently). 794/794 platform tests pass; `naelao-spaces` and the dashboard
+typecheck clean.
+
+Remaining phases (2-8) will each get their own subsection here as they land.
