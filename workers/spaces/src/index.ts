@@ -7,6 +7,8 @@ import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
 import { cfSaasConfig, createCustomHostname, getCustomHostname } from "./cf-saas.js";
 import { validateCronExpression } from "@naelao/events";
 import { registerBuilderRoutes } from "./builder-routes.js";
+import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
+import type { ProvisionMessage } from "./create-space.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
@@ -40,116 +42,6 @@ export interface Env {
 }
 
 /** Message enqueued on space creation; consumed by the provisioner (installs agents etc.). */
-interface ProvisionMessage {
-  type: "space_provision" | "space_deprovision";
-  spaceId: string;
-  tenantId: string;
-  spaceTypeId: string;
-  spaceName: string;
-  templateId?: string;
-  requestedAt: string;
-  /** The creator — the provisioner registers them as space_members owner (step 5c). */
-  userId?: string;
-}
-
-// Plan-tier space limits (G-I13: quota enforcement)
-const SPACE_LIMITS: Record<string, number> = {
-  free: 3,
-  starter: 25,
-  pro: 100,
-  enterprise: 1000,
-};
-
-async function enforceSpaceQuota(db: D1Database, tenantId: string): Promise<void> {
-  const org = await db.prepare(
-    "SELECT plan_tier FROM organizations WHERE id = ?"
-  ).bind(tenantId).first<{ plan_tier: string }>();
-
-  const tier = org?.plan_tier ?? "free";
-  const limit = SPACE_LIMITS[tier] ?? SPACE_LIMITS["free"] ?? 3;
-
-  const row = await db.prepare(
-    "SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ? AND status != 'deleted'"
-  ).bind(tenantId).first<{ count: number }>();
-
-  const count = row?.count ?? 0;
-  if (count >= limit) {
-    const err = new Error(`Space limit reached for ${tier} plan (${limit} spaces)`);
-    (err as unknown as Record<string, unknown>)["status"] = 402;
-    (err as unknown as Record<string, unknown>)["error_code"] = "quota_exceeded";
-    throw err;
-  }
-}
-
-// G-AV02: Lightweight JSON Schema (draft-07 subset) validator for SpaceType config.
-// Validates: type, required, properties (type+enum), minLength, minimum, maximum.
-// Returns field-level errors without importing ajv (keeps Workers bundle small).
-interface SchemaValidationError {
-  field: string;
-  error: string;
-}
-
-function validateConfigSchema(
-  config: Record<string, unknown>,
-  schema: Record<string, unknown>
-): SchemaValidationError[] {
-  const errors: SchemaValidationError[] = [];
-  const properties = schema["properties"] as Record<string, Record<string, unknown>> | undefined;
-  const required = schema["required"] as string[] | undefined;
-
-  if (required) {
-    for (const field of required) {
-      if (config[field] === undefined || config[field] === null || config[field] === "") {
-        errors.push({ field, error: "required field missing" });
-      }
-    }
-  }
-
-  if (properties) {
-    for (const [field, fieldSchema] of Object.entries(properties)) {
-      const value = config[field];
-      if (value === undefined || value === null) continue;
-
-      const expectedType = fieldSchema["type"] as string | undefined;
-      if (expectedType) {
-        const actualType = Array.isArray(value) ? "array" : typeof value;
-        if (actualType !== expectedType) {
-          errors.push({ field, error: `expected type ${expectedType}, got ${actualType}` });
-          continue;
-        }
-      }
-
-      const enumValues = fieldSchema["enum"] as unknown[] | undefined;
-      if (enumValues && !enumValues.includes(value)) {
-        errors.push({ field, error: `value must be one of: ${enumValues.join(", ")}` });
-      }
-
-      if (typeof value === "string") {
-        const minLen = fieldSchema["minLength"] as number | undefined;
-        if (minLen !== undefined && value.length < minLen) {
-          errors.push({ field, error: `minimum length is ${minLen}` });
-        }
-        const maxLen = fieldSchema["maxLength"] as number | undefined;
-        if (maxLen !== undefined && value.length > maxLen) {
-          errors.push({ field, error: `maximum length is ${maxLen}` });
-        }
-      }
-
-      if (typeof value === "number") {
-        const minimum = fieldSchema["minimum"] as number | undefined;
-        if (minimum !== undefined && value < minimum) {
-          errors.push({ field, error: `minimum value is ${minimum}` });
-        }
-        const maximum = fieldSchema["maximum"] as number | undefined;
-        if (maximum !== undefined && value > maximum) {
-          errors.push({ field, error: `maximum value is ${maximum}` });
-        }
-      }
-    }
-  }
-
-  return errors;
-}
 
 // G-A11: Validate required secrets at startup
 function validateEnv(env: Env): void {
@@ -195,93 +87,22 @@ app.post("/spaces", async (c) => {
     config_overrides?: Record<string, unknown>;
   }>();
 
-  if (!body.name || !body.spacetype_id) {
-    return c.json(
-      { error_code: "bad_request", message: "name and spacetype_id are required" },
-      400
-    );
-  }
-
-  // G-AV02: Validate config_overrides against SpaceType's declared config_schema
-  if (body.config_overrides) {
-    const spaceTypeRow = await c.env.PLATFORM_DB.prepare(
-      "SELECT config_schema FROM spacetypes WHERE id = ?"
-    ).bind(body.spacetype_id).first<{ config_schema: string | null }>();
-
-    if (spaceTypeRow?.config_schema) {
-      try {
-        const schema = JSON.parse(spaceTypeRow.config_schema) as Record<string, unknown>;
-        const validationErrors = validateConfigSchema(body.config_overrides, schema);
-        if (validationErrors.length > 0) {
-          return c.json({
-            error_code: "config_validation_failed",
-            message: "SpaceType config validation failed",
-            errors: validationErrors,
-          }, 400);
-        }
-      } catch {
-        // Malformed schema stored in DB — skip validation, don't block creation
-      }
-    }
-  }
-
-  // G-I13: Enforce per-plan space quota
   try {
-    await enforceSpaceQuota(c.env.PLATFORM_DB, tenantId);
+    const result = await createSpaceRecord(c.env, {
+      tenantId,
+      ...(userId ? { userId } : {}),
+      name: body.name,
+      spacetypeId: body.spacetype_id,
+      ...(body.template_id ? { templateId: body.template_id } : {}),
+      ...(body.config_overrides ? { configOverrides: body.config_overrides } : {}),
+    });
+    return c.json({ id: result.id, name: body.name, status: result.status, created_at: result.created_at }, 201);
   } catch (err) {
-    const e = err as Record<string, unknown>;
-    if (e["error_code"] === "quota_exceeded") {
-      return c.json({ error_code: "quota_exceeded", message: String(e["message"] ?? "Space limit exceeded") }, 402);
+    if (err instanceof SpaceCreationError) {
+      return c.json({ error_code: err.error_code, message: err.message, ...(err.errors ? { errors: err.errors } : {}) }, err.status as 400 | 402 | 409);
     }
     throw err;
   }
-
-  const id = crypto.randomUUID();
-  const now = new Date().toISOString();
-
-  // Persist the selected template in config so the space record is self-describing.
-  const configJson = JSON.stringify({
-    ...(body.config_overrides ?? {}),
-    ...(body.template_id ? { template_id: body.template_id } : {}),
-  });
-
-  // Create as 'provisioning'; the provisioner installs agents (4 R2 config files), then
-  // flips the space to 'active'. Falls back to immediate 'active' if no queue is bound
-  // (e.g. local dev without the provisioning queue).
-  const initialStatus = c.env.PROVISION_QUEUE ? "provisioning" : "active";
-
-  await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, created_at, updated_at, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  )
-    .bind(
-      id,
-      tenantId,
-      body.spacetype_id,
-      body.name,
-      initialStatus,
-      configJson,
-      now,
-      now,
-      userId
-    )
-    .run();
-
-  // Enqueue provisioning (installs SpaceType agents, KB, welcome message, Space Assistant).
-  if (c.env.PROVISION_QUEUE) {
-    await c.env.PROVISION_QUEUE.send({
-      type: "space_provision",
-      spaceId: id,
-      tenantId,
-      spaceTypeId: body.spacetype_id,
-      spaceName: body.name,
-      ...(body.template_id ? { templateId: body.template_id } : {}),
-      ...(userId ? { userId } : {}),
-      requestedAt: now,
-    });
-  }
-
-  return c.json({ id, name: body.name, status: initialStatus, created_at: now }, 201);
 });
 
 // ── GET /spaces/:id ─────────────────────────────────────────────────────────

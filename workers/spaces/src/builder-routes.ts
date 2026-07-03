@@ -25,15 +25,18 @@ import type { Hono } from "hono";
 import { getDOName } from "@naelao/crypto";
 import { createCustomHostname, getCustomHostname, cfSaasConfig } from "./cf-saas.js";
 import type { SpaceTypeProductConfig } from "./do/SpaceTypeRegistryDO.js";
+import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
+import type { CreateSpaceEnv } from "./create-space.js";
 
 /** The minimal env shape this file needs — kept local (not imported from index.ts's Env) so
  *  index.ts -> builder-routes.ts -> index.ts never forms a circular import. index.ts's real Env
  *  is a structural superset and satisfies this at the call site. */
-export interface BuilderRoutesEnv {
+export interface BuilderRoutesEnv extends CreateSpaceEnv {
   PLATFORM_DB: D1Database;
   PLATFORM_SECRET: string;
   BUILDER_ACCOUNT_DO: DurableObjectNamespace;
   PRODUCT_USER_DO: DurableObjectNamespace;
+  SPACE_TYPE_REGISTRY_DO: DurableObjectNamespace;
   NAELAO_CONFIG_KV: KVNamespace;
   CF_API_TOKEN?: string;
   CF_SAAS_ZONE_ID?: string;
@@ -172,37 +175,47 @@ export function registerBuilderRoutes(app: Hono<any>): void {
   });
 
   // ── /builder/products — CRUD ─────────────────────────────────────────────────────────────────
+  // POST delegates to createSpaceRecord (create-space.js) — the SAME code path /spaces POST uses
+  // (quota check, config-schema validation, provisioning-queue enqueue, template_id support).
+  // Phase 3's first draft of this route reimplemented a bare INSERT with none of that — a real
+  // split-brain, fixed in Phase 4 once the wizard needed template_id/provisioning to actually
+  // work. There is no separate "draft" DB status: the wizard collects everything client-side
+  // across its steps and calls this route exactly once, at "Review & Launch" — the product is
+  // real (provisioning/active) from the moment it exists, same as any other Space.
   app.post("/builder/products", async (c) => {
     const env = c.env as BuilderRoutesEnv;
     const auth = await resolveBuilderAuth(env, c.req.raw.headers);
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
 
-    const body = await c.req.json<{ name: string; spacetype_id: string; product_slug?: string }>();
-    if (!body.name || !body.spacetype_id) {
-      return c.json({ error_code: "bad_request", message: "name and spacetype_id are required" }, 400);
-    }
-    if (body.product_slug && !/^[a-z0-9-]{2,40}$/.test(body.product_slug)) {
-      return c.json({ error_code: "bad_request", message: "product_slug must match ^[a-z0-9-]{2,40}$" }, 400);
-    }
+    const body = await c.req.json<{
+      name: string;
+      spacetype_id: string;
+      template_id?: string;
+      product_slug?: string;
+      product_config?: Partial<SpaceTypeProductConfig>;
+    }>();
 
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
+    let result;
     try {
-      await env.PLATFORM_DB.prepare(
-        `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, product_slug, created_at, updated_at, created_by)
-         VALUES (?, ?, ?, ?, 'draft', '{}', ?, ?, ?, ?)`
-      ).bind(id, auth.tenantId, body.spacetype_id, body.name, body.product_slug ?? null, now, now, auth.tenantId).run();
+      result = await createSpaceRecord(env, {
+        tenantId: auth.tenantId,
+        name: body.name,
+        spacetypeId: body.spacetype_id,
+        ...(body.template_id ? { templateId: body.template_id } : {}),
+        ...(body.product_slug ? { productSlug: body.product_slug } : {}),
+        ...(body.product_config ? { configOverrides: { productConfig: body.product_config } } : {}),
+      });
     } catch (err) {
-      if ((err as Error).message?.includes("UNIQUE")) {
-        return c.json({ error_code: "conflict", message: "product_slug is already taken" }, 409);
+      if (err instanceof SpaceCreationError) {
+        return c.json({ error_code: err.error_code, message: err.message, ...(err.errors ? { errors: err.errors } : {}) }, err.status as 400 | 402 | 409);
       }
       throw err;
     }
 
     const stub = await builderAccountDoStubFor(env, auth.tenantId);
-    await stub.fetch(new Request("http://do/products", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ product_space_id: id }) }));
+    await stub.fetch(new Request("http://do/products", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ product_space_id: result.id }) }));
 
-    return c.json({ id, name: body.name, spacetype_id: body.spacetype_id, status: "draft", product_slug: body.product_slug ?? null, created_at: now }, 201);
+    return c.json({ id: result.id, name: body.name, spacetype_id: body.spacetype_id, status: result.status, product_slug: body.product_slug ?? null, created_at: result.created_at }, 201);
   });
 
   app.get("/builder/products", async (c) => {
@@ -265,6 +278,24 @@ export function registerBuilderRoutes(app: Hono<any>): void {
       "UPDATE spaces SET status = 'deleted', updated_at = ? WHERE id = ? AND tenant_id = ?"
     ).bind(new Date().toISOString(), product.id, auth.tenantId).run();
     return new Response(null, { status: 204 });
+  });
+
+  // ── /builder/space-types — the wizard's "Space-Type Selection" step needs a real listing
+  // source. The legacy /spacetypes REST CRUD (dashboard/spacetypes/*) calls a route that was
+  // NEVER implemented in any worker — dead code, same class of bug Phase 0 fixed for API keys.
+  // Rather than resurrecting that dead system, this wraps the REAL, currently-authoritative
+  // registry (SpaceTypeRegistryDO's already-working GET /types, spec §62 / CLAUDE.md #7-8) with
+  // a thin builder-facing route — exactly the same "add the missing wrapper, don't rebuild the
+  // backend" pattern as the domain endpoint below. Flagged, not fixed: the legacy /spacetypes
+  // dead CRUD is a separate, out-of-scope gap (same treatment as /v1/team, /v1/usage in Phase 0).
+  app.get("/builder/space-types", async (c) => {
+    const env = c.env as BuilderRoutesEnv;
+    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
+    const registryId = env.SPACE_TYPE_REGISTRY_DO.idFromName("global-space-type-registry");
+    const registry = env.SPACE_TYPE_REGISTRY_DO.get(registryId);
+    const resp = await registry.fetch(new Request("http://registry/types"));
+    return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
   });
 
   // ── /builder/products/:id/domain — the missing builder-facing wrapper the CF-for-SaaS custom

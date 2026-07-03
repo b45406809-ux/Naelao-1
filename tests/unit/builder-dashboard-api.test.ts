@@ -22,6 +22,9 @@ const SPACES_TABLE_SQL = `
     config_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')), created_by TEXT
   );
+  -- createSpaceRecord (create-space.ts) queries these; real schema per 0002_orgs.sql / 0003_spaces.sql.
+  CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
+  CREATE TABLE spacetypes (id TEXT PRIMARY KEY, config_schema TEXT);
 `;
 const NAELAO_PRODUCT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0044_naelao_product.sql"), "utf8");
 const BUILDER_DASHBOARD_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0045_builder_dashboard_api.sql"), "utf8");
@@ -107,13 +110,15 @@ describe("Builder Dashboard API — auth resolution", () => {
 });
 
 describe("Builder Dashboard API — /builder/products CRUD", () => {
-  it("creates a product in draft status, rejects a malformed slug, enforces slug uniqueness", async () => {
+  it("creates a real, immediately-live product (no separate draft DB status — the wizard collects everything client-side and calls this once at launch), rejects a malformed slug, enforces slug uniqueness", async () => {
     const env = makeEnv();
     const created = await (await spacesWorker.fetch(
       req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "My Shop", spacetype_id: "launchpad", product_slug: "my-shop" } }),
       env as never, execCtx
     )).json() as { id: string; status: string };
-    expect(created.status).toBe("draft");
+    // No PROVISION_QUEUE bound in this test env, so createSpaceRecord's fallback (matching
+    // /spaces POST's own local-dev behavior) is immediate 'active', not 'provisioning'.
+    expect(created.status).toBe("active");
 
     const badSlug = await spacesWorker.fetch(
       req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "X", spacetype_id: "launchpad", product_slug: "NOT VALID" } }),
