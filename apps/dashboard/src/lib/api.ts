@@ -537,3 +537,108 @@ export async function getTemplates(): Promise<TemplateInfo[]> {
   const res = await apiFetch<{ templates: TemplateInfo[] }>("/templates");
   return res.templates ?? [];
 }
+
+// ── Builder Dashboard API (Three-Tier Platform Model — /builder/*) ───────────────────────────
+// Named `BuilderProduct` (not `Product`) to avoid colliding with the existing `Product` type
+// above, which means a Launchpad commerce item a store sells — a completely different concept
+// from a builder's own product/business (a NaelaoProduct, i.e. a Space with the Phase 1-3
+// fields). See docs/spec-appendix/A1-script-agents-and-space-assistants.md §A1.17.
+
+export interface BuilderProductSummary {
+  id: string;
+  name: string;
+  status: string;
+  spacetype_id: string;
+  product_slug: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BuilderProductConfig {
+  branding?: { brandColor?: string; logoUrl?: string; faviconUrl?: string; productDescription?: string; suppressNaelaoBranding?: boolean };
+  authProvider?: { provider: "naelao-native" | "clerk" | "custom-oidc" | "saml-sso"; requireAdminApproval?: boolean; allowedEmailDomains?: string[] };
+  pricingConfig?: { model: "free" | "credits" | "subscription" | "seats"; creditsIncludedPerMonth?: number; overageCreditsPriceCents?: number; pricePerSeatCents?: number; includedSeats?: number; trialDays?: number };
+  featureFlags?: Record<string, boolean>;
+}
+
+export interface BuilderProductDetail extends BuilderProductSummary {
+  tenant_id: string;
+  conversation_access_approved_by: string | null;
+  conversation_access_approved_at: string | null;
+  product_config: BuilderProductConfig;
+}
+
+export interface CreateBuilderProductInput {
+  name: string;
+  spacetype_id: string;
+  template_id?: string;
+  product_slug?: string;
+  product_config?: BuilderProductConfig;
+}
+
+export async function listBuilderProducts(): Promise<BuilderProductSummary[]> {
+  const res = await apiFetch<{ data: BuilderProductSummary[] }>("/builder/products");
+  return res.data ?? [];
+}
+
+export async function getBuilderProduct(id: string): Promise<BuilderProductDetail> {
+  return apiFetch<BuilderProductDetail>(`/builder/products/${encodeURIComponent(id)}`);
+}
+
+export async function createBuilderProduct(input: CreateBuilderProductInput): Promise<BuilderProductSummary> {
+  return apiFetch<BuilderProductSummary>("/builder/products", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateBuilderProduct(
+  id: string,
+  input: { name?: string; status?: string; product_config?: BuilderProductConfig }
+): Promise<{ ok: true }> {
+  return apiFetch(`/builder/products/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteBuilderProduct(id: string): Promise<void> {
+  return apiFetch<void>(`/builder/products/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export interface BuilderProductDomain {
+  custom_domain: string | null;
+  status: string;
+  ssl_status?: string;
+  dns?: { type: string; name: string; value: string };
+  validation_records?: unknown[];
+}
+
+export async function configureBuilderProductDomain(id: string, customDomain: string): Promise<BuilderProductDomain> {
+  return apiFetch<BuilderProductDomain>(`/builder/products/${encodeURIComponent(id)}/domain`, {
+    method: "POST",
+    body: JSON.stringify({ custom_domain: customDomain }),
+  });
+}
+
+export async function getBuilderProductDomain(id: string): Promise<BuilderProductDomain> {
+  return apiFetch<BuilderProductDomain>(`/builder/products/${encodeURIComponent(id)}/domain`);
+}
+
+export interface BuilderSpaceTypeListing {
+  id: string;
+  name: string;
+  description: string;
+  author: string;
+  current_version: string;
+  price_usd: number;
+  install_count: number;
+}
+
+/** The real, currently-seeded SpaceTypes a builder can pick (today: just Launchpad — see
+ *  docs/spec-appendix A1.17, Phase 4). Deliberately not the same as the legacy, dead
+ *  `listSpaceTypes()`/`GET /spacetypes` above, which calls a route no worker implements. */
+export async function listBuilderSpaceTypes(): Promise<BuilderSpaceTypeListing[]> {
+  const res = await apiFetch<{ types: BuilderSpaceTypeListing[] }>("/builder/space-types");
+  return res.types ?? [];
+}

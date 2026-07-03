@@ -2611,4 +2611,66 @@ treated as a hard content/metadata boundary in the legal/compliance sense the tr
 Tests: 30 new across the two files (19 + 11); 835/835 platform tests pass; `naelao-spaces`
 typechecks clean, full monorepo typecheck clean.
 
-Remaining phases (4-8) will each get their own subsection here as they land.
+**Phase 4 — DONE.** The Product Creation Wizard: `apps/dashboard/src/app/dashboard/products/new/page.tsx`
++ 7 step components (`Identity`/`SpaceType`/`AuthConfig`/`Pricing`/`Branding`/`Domain`/`Review`)
+sharing client-side-only state (`wizardTypes.ts`) — there is no server-side "draft" concept; the
+wizard collects everything across its steps and calls `createBuilderProduct()` exactly once, at
+"Review & Launch." A new `apps/dashboard/src/app/dashboard/products/page.tsx` list page and a
+"Products" nav item round out the surface.
+
+**Found and fixed two real backend gaps before the wizard could even work, not just planned
+ones.** (1) Phase 3's `POST /builder/products` had reimplemented space creation from scratch — a
+bare INSERT with no quota check, no config-schema validation, no provisioning-queue enqueue, no
+`template_id` support. Extracted the REAL, working logic from `POST /spaces` into
+`workers/spaces/src/create-space.ts`'s `createSpaceRecord()`; both routes now call the same
+function — no more split-brain. (2) While doing that extraction, found `enforceSpaceQuota`
+queried a table called `organizations`, which no migration anywhere creates (the real table is
+`orgs`, `infra/migrations/0002_orgs.sql`) — meaning `POST /spaces` had likely hard-500'd on every
+call in any real deployment, silently, because nothing in this repo's test suite exercised that
+route before this phase. Fixed the table name; added `tests/unit/create-space-record.test.ts` (11
+tests) with a dedicated regression test for this exact bug.
+
+**Temple Gallery needed no new backend at all.** `GET /templates` (in `workers/agents/src/index.ts`,
+serving the real `LAUNCHPAD_TEMPLATES` — creator-store, newsletter-business, micro-saas,
+service-agency, coaching-community) and the dashboard's `getTemplates()` client function already
+existed and worked. Rather than fabricating spec-style Temple entries for SpaceTypes that don't
+exist yet (LexSpace/DevPilot/etc. all require SpaceTypes never seeded), `apps/dashboard/src/lib/temples.ts`
+wraps these 5 real, already-tested templates as the wizard's Temple catalogue — honest scope, not
+invented data. When more SpaceTypes ship with their own templates, they extend this the same way.
+
+**Third instance of the "UI calls a route no worker implements" bug, found and worked around
+(not fixed — flagged, matching the `/v1/team`/`/v1/usage` precedent from Phase 0).**
+`dashboard/spacetypes/*`'s `listSpaceTypes()`/`createSpaceType()` call `GET/POST /spacetypes`,
+which no worker implements — dead code. The wizard's Space-Type Selection step needed a REAL
+listing source, so added `GET /builder/space-types` (thin wrapper around `SpaceTypeRegistryDO`'s
+already-working `GET /types` — the actual, current, authoritative registry, today seeded with
+only Launchpad). The legacy `/spacetypes` dead CRUD itself is untouched, explicitly out of scope.
+
+**Branding step is URL inputs, not file upload — a deliberate scope line, not an oversight.** The
+Builder Dashboard API (Phase 3) stores `logoUrl`/`faviconUrl` as plain strings; no R2 upload
+endpoint for product branding assets exists, and building one (authenticated upload route +
+bucket policy) is real, separate infrastructure this wizard step doesn't invent.
+
+**UI verification: found and worked around a real pre-existing dashboard-wide bug, not
+introduced by this phase.** No browser-automation package (playwright/puppeteer) exists anywhere
+in this repo, so verification used raw Chrome DevTools Protocol (Node's built-in `WebSocket`,
+`/opt/pw-browsers`'s prebuilt Chromium) driven by hand. That process surfaced a real bug in
+`apps/dashboard/src/lib/auth-provider.tsx`: on a hard reload of ANY nested `/dashboard/*` route
+(not just this one — reproduced identically on the pre-existing `/dashboard/clients`), a race
+between `DashboardLayout`'s auth-guard effect and `AuthProvider`'s own localStorage-hydration
+effect bounces the user through `/login` and back to the generic `/dashboard`, silently dropping
+the originally-requested path. This is a real, separate, dashboard-wide bug — flagged here, not
+fixed (out of scope for a wizard feature; a future pass should fix `AuthProvider`'s hydration
+ordering). Once reached via realistic client-side `<Link>` navigation (the way an actual user
+gets there — click "Products" in the sidebar, then "+ New Product"), the wizard itself works
+correctly end-to-end: all 7 steps render, the step indicator advances, Identity-step validation
+blocks progression on a missing name, the Temple/SpaceType step's fetch-failure path degrades to
+a clean "Failed to fetch" message (correct, since no backend worker was running in this
+verification session) rather than crashing, and no console errors originated from any of this
+phase's own components (the only warning present — `LoginPage`'s render-time `router.push` — is
+that same pre-existing bug, not new code).
+
+Tests: `tests/unit/create-space-record.test.ts` (11), `tests/unit/product-wizard-api.test.ts` (6)
+— 852/852 platform tests pass, full monorepo typecheck clean.
+
+Remaining phases (5-8) will each get their own subsection here as they land.

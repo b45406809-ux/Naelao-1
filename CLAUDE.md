@@ -372,9 +372,28 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     endpoint. Auth resolves via either a router session header (how the Dashboard itself calls
     these, unchanged from every other builder route) or a Bearer `nbk_...` key routed through a
     pure-routing `builder_api_key_index` table (never a second authority — the key is always
-    re-verified against its owning `BuilderAccountDO`). Remaining: 4 (launch/domain wizard), 5
-    (management tabs), 6 (manifest-driven Product Shell), 7 (sub-space/reseller UI), 8 (deferred
-    product-sdk + per-product CF Pages deploy).
+    re-verified against its owning `BuilderAccountDO`). **Phase 4 built the Product Creation
+    Wizard** (`apps/dashboard/src/app/dashboard/products/new/`, 7 steps + a Products list page).
+    Found and fixed two real backend gaps before the wizard could work at all: `POST
+    /builder/products` had reimplemented space creation from scratch (Phase 3's gap) instead of
+    reusing the real, working `POST /spaces` logic — extracted into
+    `workers/spaces/src/create-space.ts`'s `createSpaceRecord()`, now the single shared path for
+    both routes; and `enforceSpaceQuota` queried a table called `organizations` that no migration
+    anywhere creates (real table: `orgs`) — meaning `POST /spaces` had likely hard-500'd on every
+    call in any real deployment, an undetected pre-existing bug since nothing tested that route
+    before now. The wizard's Temple Gallery needed no new backend — it wraps the already-working
+    `GET /templates` (real `LAUNCHPAD_TEMPLATES`) rather than fabricating entries for SpaceTypes
+    that don't exist. A third instance of Phase 0's "UI calls a route no worker implements" bug
+    was found (`dashboard/spacetypes/*`) and worked around, not fixed, by adding `GET
+    /builder/space-types` (wraps `SpaceTypeRegistryDO`'s real registry) rather than resurrecting
+    the legacy dead CRUD. UI verification (no playwright/puppeteer in this repo — used raw Chrome
+    DevTools Protocol by hand) surfaced a real, separate, dashboard-WIDE bug in `auth-provider.tsx`
+    (a hard reload of any nested `/dashboard/*` route bounces through `/login` back to the generic
+    `/dashboard`, dropping the original path — reproduced on the pre-existing `/dashboard/clients`
+    too) — flagged, not fixed, out of scope for a wizard feature. Once reached via realistic
+    client-side navigation, all 7 steps render and validate correctly. Remaining: 5 (management
+    tabs), 6 (manifest-driven Product Shell), 7 (sub-space/reseller UI), 8 (deferred product-sdk +
+    per-product CF Pages deploy).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
