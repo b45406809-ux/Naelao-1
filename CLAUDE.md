@@ -342,7 +342,7 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     anonymous today), a Builder Dashboard API, the launch/domain wizard, ongoing management tabs,
     a manifest-driven Product Shell, and UI for the already-built sub-space/reseller mechanisms.
     Full phased plan + design decisions: appendix §A1.17 (filled in as each phase lands).
-    **Landed so far — Phases 0-2** (of 8): Phase 0 consolidated two dead API-key UIs onto one
+    **Landed so far — Phases 0-3** (of 8): Phase 0 consolidated two dead API-key UIs onto one
     typed `/builder/api-keys` shape (`dashboard/api-keys` canonical, `dashboard/settings` links
     to it); flagged `/v1/team/*` + `/v1/usage/*` as an equally-unbacked, out-of-scope gap. Phase 1
     added the NaelaoProduct foundation: migration `0044` adds ONLY `product_slug` (unique
@@ -359,8 +359,20 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     flagged. Credit ledger is a ledger only; token→credit conversion still settles through
     billing-core's `tokensToCredits()`, never re-derived. Incidental: fixed a real bug in the
     shared test helper `tests/unit/helpers/sqlite-do-shim.ts` (it silently dropped rows from any
-    param-less `SELECT`, a pattern production code already relies on). Remaining: Phase 3 (Builder
-    Dashboard API + the legally-gated conversation-access endpoint), 4 (launch/domain wizard), 5
+    param-less `SELECT`, a pattern production code already relies on). **Phase 3 built the Builder
+    Dashboard API** (`workers/spaces/src/builder-routes.ts`): `/builder/products*` CRUD (draft→
+    active→paused→suspended→deleted, allow-listed), a domain wrapper around the already-existing
+    CF-for-SaaS logic, a `product_end_users` roster (migration 0045, deliberately distinct from
+    both SpaceDO's Team-collaborator `space_members` and the legacy Whop-era D1 one), honest
+    analytics (real DAU/MAU, `credits_consumed: null` flagged rather than fabricated since it
+    isn't bulk-aggregatable without Analytics Engine wiring this phase didn't add), and the
+    triple-gated conversation-access endpoint (feature flag + Naelao-staff approval + end-user
+    consent, ALL required, audits only successful disclosures, never message content) with its
+    own dedicated 11-test file per the plan's call for security-review-grade coverage on that one
+    endpoint. Auth resolves via either a router session header (how the Dashboard itself calls
+    these, unchanged from every other builder route) or a Bearer `nbk_...` key routed through a
+    pure-routing `builder_api_key_index` table (never a second authority — the key is always
+    re-verified against its owning `BuilderAccountDO`). Remaining: 4 (launch/domain wizard), 5
     (management tabs), 6 (manifest-driven Product Shell), 7 (sub-space/reseller UI), 8 (deferred
     product-sdk + per-product CF Pages deploy).
 

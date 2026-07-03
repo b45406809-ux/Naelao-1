@@ -107,8 +107,11 @@ export class BuilderAccountDO extends DurableObject {
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         id, body.name, keyHash, keyPrefix, JSON.stringify(body.scopes), expiresAt, now.toISOString()
       );
+      // key_hash is included for the calling worker route ONLY — it needs it to write the
+      // builder_api_key_index routing row (migration 0045). The route strips it before the raw
+      // client response goes out; it must never appear in a client-facing payload.
       return Response.json({
-        id, key: rawKey, name: body.name, key_prefix: keyPrefix,
+        id, key: rawKey, key_hash: keyHash, name: body.name, key_prefix: keyPrefix,
         scopes: body.scopes, last_used_at: null, expires_at: expiresAt, created_at: now.toISOString(),
       }, { status: 201 });
     }

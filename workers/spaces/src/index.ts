@@ -6,6 +6,7 @@ import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManife
 import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
 import { cfSaasConfig, createCustomHostname, getCustomHostname } from "./cf-saas.js";
 import { validateCronExpression } from "@naelao/events";
+import { registerBuilderRoutes } from "./builder-routes.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
@@ -1916,6 +1917,9 @@ app.post("/reseller/clients/:childTenantId/promote", async (c) => {
   console.log(`[reseller][promote] child=${childTenantId} detached from parent=${tenantId} at=${now}`);
   return c.json({ promoted: true, child_tenant_id: childTenantId, promoted_at: now, note: "Business detached from reseller; now an independent product." });
 });
+
+// Three-Tier Platform Model, Phase 3 (docs/spec-appendix A1.17) — /builder/* routes.
+registerBuilderRoutes(app);
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
 

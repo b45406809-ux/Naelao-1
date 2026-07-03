@@ -2523,4 +2523,92 @@ grant/deduct/over-draw-fail-closed/validation, preferences round-trip, conversat
 notification queue, and a GDPR export that asserts no `token_hash` leaks). 805/805 platform tests
 pass; `naelao-spaces` typechecks clean.
 
-Remaining phases (3-8) will each get their own subsection here as they land.
+**Phase 3 — DONE.** The Builder Dashboard API: `workers/spaces/src/builder-routes.ts`
+(`registerBuilderRoutes(app)`, called once from `index.ts` — the first split-out file that
+registers routes rather than pure logic like `cf-saas.ts`; it declares its own minimal
+`BuilderRoutesEnv` structural type instead of importing `index.ts`'s `Env` to avoid a circular
+import, and the registration function takes `Hono<any>` because Hono's Context typing is
+invariant on `Bindings`, not just structural — a narrower type can't be accepted where the
+caller's wider one is expected without either the circular import or this widening).
+
+**Auth: both paths resolve through one function, `resolveBuilderAuth`.** A router-authenticated
+session (`x-naelao-tenant-id` header — the SAME mechanism every other builder-facing route in this
+worker already uses, e.g. `/reseller/clients`) gets full access; this is how the Dashboard UI
+itself calls these routes, and is why Phases 4/5 work today without any router change. A Bearer
+`nbk_...` API key (the spec's programmatic surface) is routed to the right `BuilderAccountDO` via
+`builder_api_key_index` (migration 0045 — pure routing data, key_hash→tenant_id; NOT a second
+source of truth, since the actual valid/expired/revoked/scopes decision is always re-verified
+against the authoritative DO — a stale index row after a revoke is harmless, it just costs one
+wasted DO round-trip that correctly reports invalid). **Flagged, not built:** wiring
+`naelao-router` to actually forward external `Authorization: Bearer nbk_...` calls through to this
+worker (today the router only forwards already-JWT-authenticated sessions) is a separate,
+tracked router-level follow-up — out of this phase's scope, and not a blocker since the Dashboard
+itself uses the header path.
+
+**Migration 0045** adds four tables, each with a specific non-duplication rationale: `builder_api_key_index`
+(routing only, see above); `product_end_users` (the enumerable roster a Users tab lists from —
+deliberately NOT the same table as SpaceDO's internal `space_members`, which is platform-user Team
+collaborators, a structurally different population per #23's Bucket A/B split, and NOT the legacy
+D1 `space_members` from migration 0021/the retired Whop-niche `BusinessDO`; `ProductUserDO`
+instances hold the real per-user state but aren't bulk-enumerable, hence this roster index —
+population starts in Phase 6 when end-user sessions are actually created); `conversation_access_audit`
+(append-only, written only on a SUCCESSFUL disclosure — a denied attempt discloses nothing, so
+there's nothing to audit, verified by 3 dedicated tests); `product_webhooks` (kept as its own small
+table, not folded into `config_json`, because webhooks are operational plumbing added/removed
+frequently — same reasoning as keeping `api_keys` off `config_json` in Phase 1).
+
+**A design correction found while implementing, not just planned:** the original plan text said
+feature-flag writes would need "KV TTL invalidation." Reading `loadEffectiveProductConfig`
+closely showed this was based on a misreading — only the SpaceType *manifest* base config is
+KV-cached (`space-type-manifest:{spaceTypeId}`, 1h TTL); a space's `config_json.productConfig`
+*override* is read live from D1 on every call, never cached. So `PUT /builder/products/:id/feature-flags`
+needed no cache invalidation at all — just the same read-merge-write into
+`config_json.productConfig.featureFlags` that member billing (#17) already established. Also
+corrected: `workers/spaces/src/do/FeatureFlagDO.ts` was NOT reused for this (as originally
+worried about) — it's Naelao's own platform-wide gradual-rollout system (global flags,
+staff-controlled, account/plan/tenant targeting), a different actor/lifecycle from a builder
+toggling a flag for their own product's end users.
+
+**Domain endpoint** (`POST/GET /builder/products/:id/domain`) is a genuine builder-facing wrapper
+around the CF-for-SaaS logic that already existed only behind the internal HMAC-gated
+`/internal/business-services` route (#16) — the create/poll logic itself (`createCustomHostname`/
+`getCustomHostname` from `cf-saas.ts`, the `business_services` upsert) is inlined directly rather
+than self-HTTP-calling the internal route (same worker, no HTTP hop needed), so there are now two
+call sites sharing the same underlying `cf-saas.ts` functions and `business_services` table — not
+two competing implementations.
+
+**Analytics is honest, not fabricated.** `GET /builder/products/:id/analytics` computes DAU/MAU/
+total_users from `product_end_users.last_seen_at` (real once Phase 6 populates it) but returns
+`credits_consumed: null` — per-end-user `ProductUserDO` credit ledgers aren't bulk-aggregatable
+from D1 without wiring an Analytics Engine event stream, which this phase doesn't add. That's a
+flagged, real follow-up, not a fabricated number. `analytics/revenue` and `/builder/billing[/history]`
+wrap the *already-existing, already-correct* `launchpad_orders` and `reseller_ledger` rollup
+queries (the same ones `/spaces/:spaceId/revenue` and `/reseller/statement` use) — no new revenue
+computation logic was invented.
+
+**Conversation-access gate — the highest-liability endpoint, per its own dedicated test file**
+(`tests/unit/conversation-access-gate.test.ts`, 11 tests, separate from the broader
+`builder-dashboard-api.test.ts`, 19 tests). Three independent gates, checked in order and ALL
+required: (1) `feature_flag` — builder's own `adminFeatures.conversationLogAccess` toggle; (2)
+`staff_approval` — Naelao platform-staff manual approval, `conversation_access_approved_by/_at`
+(migration 0044, legally required, never builder-settable — no route in this phase sets it,
+matching the spec's Surface 1 approval-queue model; a Tier-0 staff approval console is a future
+phase); (3) `user_consent` — the end user's own `product_end_users.consented_at`. Ownership
+(tenant owns the product) is checked BEFORE any gate, so a non-owner always gets 404, never a
+gate-specific 403 that would confirm the product exists (tested). A denied attempt writes ZERO
+audit rows (tested for all three gate failures independently) — nothing was disclosed, nothing to
+audit. A successful read returns ONLY `thread_id`/`space_id`/`session_id`/`title`/`created_at`
+from `ProductUserDO.conversation_refs` (never message content — `ProductUserDO` itself never
+stores message bodies, only refs) and writes exactly one audit row attributing the accessing
+builder + an optional caller-supplied `purpose` string.
+
+**Residual risk flagged for the security reviewer, not resolved here:** thread `title` is treated
+as metadata, but this phase did not trace whether any thread-title-generation path elsewhere in
+the platform (e.g. an LLM auto-summarizing a thread's first message into its title) could leak
+message content into what's nominally "metadata only." Worth verifying before this endpoint is
+treated as a hard content/metadata boundary in the legal/compliance sense the triple-gate implies.
+
+Tests: 30 new across the two files (19 + 11); 835/835 platform tests pass; `naelao-spaces`
+typechecks clean, full monorepo typecheck clean.
+
+Remaining phases (4-8) will each get their own subsection here as they land.
