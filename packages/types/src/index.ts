@@ -30,7 +30,12 @@ export interface NaelaoJwtClaims {
   tv?: number;
 }
 
-export type UserRole = "owner" | "admin" | "editor" | "viewer";
+// "product_end_user": a Three-Tier Platform Model end user authenticated against ProductUserDO
+// (Phase 2) — NOT a platform Team collaborator. claims.tid for this role is still the product's
+// OWNING tenant (the builder), so internal-HMAC + quota middleware keep working unchanged; only
+// claims.sub (the end_user_id) and claims.role distinguish them. See
+// workers/router/src/index.ts's product-session auth path and docs/spec-appendix A1.17 Phase 6.
+export type UserRole = "owner" | "admin" | "editor" | "viewer" | "product_end_user";
 
 // ── Plan tiers ───────────────────────────────────────────────────────────────
 export type PlanTier = "free" | "growth" | "business" | "enterprise";

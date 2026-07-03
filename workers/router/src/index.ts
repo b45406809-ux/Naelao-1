@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { requestId, jwtAuth, errorResponse } from "@naelao/http";
+import { requestId, jwtAuth, errorResponse, unauthorized } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
 import type { NaelaoJwtClaims } from "@naelao/types";
 export { RateLimitDO } from "./RateLimitDO";
@@ -173,12 +173,83 @@ app.all("/v1/channels/:channel/inbound/:spaceId", async (c) => {
   );
 });
 
+// Three-Tier Platform Model, Phase 6: routes a product end user (authenticated against
+// ProductUserDO, Phase 2 — no platform tenant, no JWT) is allowed to reach directly, carrying a
+// Bearer nps_... session token + x-naelao-end-user-id instead of a platform JWT. Deliberately a
+// narrow allowlist, not "any Bearer nps_ token works everywhere" — kb ingestion, credentials,
+// member-billing etc. stay JWT-only. Extend this list as more end-user surfaces come online
+// (threads, once product-scoped thread access ships).
+const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
+  /^\/spaces\/([^/]+)\/sessions(\/|$)/,
+];
+
+/** Resolve productId from the path if it matches an end-user-reachable route pattern. Strips the
+ *  /v1 mount prefix first — c.req.path inside the `api` sub-app still carries it (same reason
+ *  proxyTo strips it before forwarding downstream; see its comment above). */
+function matchProductEndUserPath(path: string): string | null {
+  const stripped = path.replace(/^\/v1(?=\/|$)/, "") || "/";
+  for (const pattern of PRODUCT_END_USER_PATH_PATTERNS) {
+    const m = pattern.exec(stripped);
+    if (m) return m[1] ?? null;
+  }
+  return null;
+}
+
+/** Verify a Bearer nps_... product session token against the space's ProductUserDO via the
+ *  spaces worker's internal endpoint, returning router-shaped claims on success. The chicken-
+ *  and-egg here (we don't know the owning tenantId until AFTER verifying) is why this is gated
+ *  by a direct platform-secret header, not requireInternalHmac — same precedent as
+ *  /internal/space-types/seed. */
+async function resolveProductEndUserClaims(
+  env: Env,
+  productId: string,
+  endUserId: string,
+  sessionToken: string
+): Promise<NaelaoJwtClaims | null> {
+  const res = await env.SPACES_WORKER.fetch(
+    new Request("http://spaces/internal/product-sessions/verify", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-platform-secret": env.PLATFORM_SECRET },
+      body: JSON.stringify({ productId, endUserId, sessionToken }),
+    })
+  );
+  if (!res.ok) return null;
+  const result = await res.json<{ valid: boolean; tenant_id?: string }>();
+  if (!result.valid || !result.tenant_id) return null;
+
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    sub: endUserId,
+    tid: result.tenant_id,
+    email: "",
+    role: "product_end_user",
+    scopes: [],
+    iat: now,
+    exp: now + 3600,
+    jti: "",
+  };
+}
+
 // ── Protected API routes ─────────────────────────────────────────────────────
 const api = new Hono<{ Bindings: Env }>();
-api.use(
-  "*",
-  jwtAuth((c) => (c as unknown as { env: Env }).env.JWT_SECRET)
-);
+api.use("*", async (c, next) => {
+  const authHeader = c.req.header("authorization") ?? "";
+  const bearerMatch = /^Bearer\s+(nps_\S+)$/.exec(authHeader);
+  const endUserId = c.req.header("x-naelao-end-user-id");
+  const productId = matchProductEndUserPath(c.req.path);
+
+  if (bearerMatch && endUserId && productId) {
+    const claims = await resolveProductEndUserClaims(c.env, productId, endUserId, bearerMatch[1]!);
+    if (!claims) throw unauthorized("Invalid or expired product session");
+    c.set("claims", claims);
+    return next();
+  }
+
+  // Not a product end-user request (or missing required pieces for one) — fall through to the
+  // ordinary platform JWT path. A Bearer nps_ token on a non-allowlisted path is rejected here,
+  // same as any other malformed/foreign token.
+  return jwtAuth((cc) => (cc as unknown as { env: Env }).env.JWT_SECRET)(c, next);
+});
 
 // G-AX27: Replay attack prevention — timestamp skew + nonce dedup
 api.use("*", async (c, next) => {
@@ -325,12 +396,34 @@ api.all("/spaces/:spaceId/credentials/:credId", async (c) =>
   proxyTo(c.env.CREDENTIALS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 
-// Agent sessions + messages → agents worker
-api.all("/spaces/:spaceId/sessions/*", async (c) =>
+// Three-Tier Platform Model, Phase 6: found and fixed a real routing mismatch here — every
+// /spaces/:spaceId/sessions/* request was sent to AGENTS_WORKER, but session CREATE and
+// message GET/POST are implemented in the SPACES worker (forwarded to SpaceDO, gated by
+// requireInternalHmac — see workers/spaces/src/index.ts's SpaceDO session proxy comment).
+// AGENTS_WORKER only implements the agent-run sub-paths (kicking off/polling/streaming the
+// actual reasoning loop) and approvals — never session/message CRUD itself. Previously this
+// meant startSession()/getMessages()/sendMessage()'s first step 404'd even once auth was fixed.
+// The more specific agent/approvals sub-paths are registered FIRST so they win over the general
+// catch-all below.
+api.all("/spaces/:spaceId/sessions/:sessionId/agent/*", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
-api.all("/spaces/:spaceId/sessions", async (c) =>
+api.all("/spaces/:spaceId/sessions/:sessionId/approvals/*", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/sessions/:sessionId/approvals", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
+// Session + message CRUD (session create/get, message get/post, feedback) → spaces worker,
+// which owns this via SpaceDO. proxyTo already mints the x-naelao-internal-token
+// requireInternalHmac checks there, using claims.tid (the product's owning tenant for a
+// product_end_user, or the real tenant for a Team collaborator) — no separate gate needed here.
+api.all("/spaces/:spaceId/sessions/*", async (c) =>
+  proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/sessions", async (c) =>
+  proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 
 // First-run bootstrap (create projects + run setup scripts) → agents worker

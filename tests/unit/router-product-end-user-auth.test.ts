@@ -1,0 +1,124 @@
+import { describe, it, expect } from "vitest";
+import routerWorker from "../../workers/router/src/index.js";
+import { signJwt } from "@naelao/auth";
+
+// Three-Tier Platform Model, Phase 6: the router required a platform JWT unconditionally
+// (api.use("*", jwtAuth(...))) — a product end user, authenticated against ProductUserDO
+// (Phase 2, no platform tenant, no JWT), had no way through at all. This is the exact gap
+// CLAUDE.md item 23 flagged as deferred ("end-user chat through the router is currently
+// non-functional end-to-end"). Fixed with a hybrid auth check: a Bearer nps_... token +
+// x-naelao-end-user-id on an ALLOWLISTED path (only /spaces/:spaceId/sessions* today) is
+// verified against the space's ProductUserDO via the spaces worker's internal endpoint;
+// everything else still requires the ordinary platform JWT, unchanged.
+
+const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
+const JWT_SECRET = "test-jwt-secret";
+
+function namedFetcher(name: string, handler?: (req: Request) => Promise<Response> | Response): Fetcher {
+  return { fetch: async (req: Request) => (handler ? handler(req) : Response.json({ worker: name })) } as unknown as Fetcher;
+}
+
+function makeEnv(spacesHandler?: (req: Request) => Promise<Response> | Response) {
+  return {
+    ENVIRONMENT: "test",
+    JWT_SECRET,
+    PLATFORM_SECRET: "test-platform-secret",
+    SPACES_WORKER: namedFetcher("SPACES", spacesHandler),
+    KNOWLEDGE_WORKER: namedFetcher("KNOWLEDGE"),
+    AGENTS_WORKER: namedFetcher("AGENTS"),
+    CREDENTIALS_WORKER: namedFetcher("CREDENTIALS"),
+  };
+}
+
+/** Stub SPACES_WORKER's /internal/product-sessions/verify to simulate a valid or invalid
+ *  product session, and echo back the claims the router actually forwarded on the real request. */
+function makeSpacesStub(opts: { validSession: boolean; resolvedTenant?: string }) {
+  return async (req: Request): Promise<Response> => {
+    const url = new URL(req.url);
+    if (url.pathname === "/internal/product-sessions/verify") {
+      if (req.headers.get("x-naelao-platform-secret") !== "test-platform-secret") {
+        return Response.json({ valid: false }, { status: 403 });
+      }
+      if (!opts.validSession) return Response.json({ valid: false });
+      return Response.json({ valid: true, tenant_id: opts.resolvedTenant ?? "product-owner-tenant" });
+    }
+    // The actual proxied request after auth resolves — echo forwarded identity headers.
+    return Response.json({
+      worker: "SPACES",
+      forwarded_tenant: req.headers.get("x-naelao-tenant-id"),
+      forwarded_user: req.headers.get("x-naelao-user-id"),
+      forwarded_role: req.headers.get("x-naelao-role"),
+    });
+  };
+}
+
+describe("router — product end-user hybrid auth", () => {
+  it("a valid nps_ session token + end-user-id on an allowlisted path resolves and forwards product_end_user claims", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "builder-tenant-1" }));
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/spaces/prod-1/sessions", {
+        method: "POST",
+        headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { forwarded_tenant: string; forwarded_user: string; forwarded_role: string };
+    expect(body.forwarded_tenant).toBe("builder-tenant-1");
+    expect(body.forwarded_user).toBe("user-42");
+    expect(body.forwarded_role).toBe("product_end_user");
+  });
+
+  it("rejects an invalid/expired product session token with 401", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: false }));
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/spaces/prod-1/sessions", {
+        method: "POST",
+        headers: { authorization: "Bearer nps_expired", "x-naelao-end-user-id": "user-42" },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("a Bearer nps_ token on a NON-allowlisted path is rejected, not silently granted platform access", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true }));
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/spaces/prod-1/kb/documents", {
+        method: "GET",
+        headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
+      }),
+      env as never, execCtx
+    );
+    // Falls through to ordinary JWT verification, which fails for a non-JWT token.
+    expect(res.status).toBe(401);
+  });
+
+  it("a Bearer nps_ token WITHOUT x-naelao-end-user-id falls through to the JWT path and is rejected", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true }));
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/spaces/prod-1/sessions", {
+        method: "POST",
+        headers: { authorization: "Bearer nps_realtoken" },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("an ordinary platform JWT still works on the same allowlisted path — unchanged for Team collaborators", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true }));
+    const token = await signJwt({ sub: "user-1", tid: "tenant-1", email: "u@example.com", role: "owner", scopes: [] }, JWT_SECRET);
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/spaces/prod-1/sessions", {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { forwarded_tenant: string; forwarded_role: string };
+    expect(body.forwarded_tenant).toBe("tenant-1");
+    expect(body.forwarded_role).toBe("owner");
+  });
+});

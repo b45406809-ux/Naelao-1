@@ -2721,4 +2721,89 @@ fires `PUT .../feature-flags` and refetches, and the delete confirmation button 
 disabled by default, disabled while the WRONG name is typed, and only enabled once the EXACT
 product name is typed — all with zero console errors.
 
-Remaining phases (6-8) will each get their own subsection here as they land.
+**Phase 6 — IN PROGRESS. Foundational backend fix landed first: end-user chat auth + routing,
+the two real bugs blocking ANY of the rich Product Shell from being real.**
+
+**Scope correction, from the user directly, not inferred:** the mockup driving this phase (a
+full agentic workspace — sidebar with Projects/Threads, a chat/thread view, an Agents panel,
+Businesses switcher) is NOT a simplified "customer support widget" view. It is the actual
+**Product Shell** a builder ships to their own end users — the same rich workspace serves both
+the builder managing their business AND that builder's end users using the product directly
+(the user's own analogy: "the builder becomes Anthropic that owns Claude Code" — end users just
+sign in and use it, exactly like Claude Code/Cursor). A storefront (a simple site Launchpad
+agents build for selling) is a completely separate, much simpler surface — not this. This
+directly corrects an assumption Phase 4/5 planning carried over from `launchpad-manifest.ts`'s
+`ui.operatorShell.hiddenCoreItems: ["threads","projects"]`, which was written for a NARROWER
+"revenue-dashboard-only" framing that turns out not to match what's wanted here — the manifest
+field itself is still real and useful (some products SHOULD hide threads/projects), it just
+shouldn't be assumed true for what end users see across the board.
+
+**Investigated before writing any shell code — and found the rich UI could not have worked
+regardless of how it was built, for two independent, real, pre-existing reasons:**
+
+1. **Auth: the router required a platform JWT unconditionally, with zero path for a
+   ProductUserDO-authenticated end user.** `workers/router/src/index.ts`'s `api.use("*",
+   jwtAuth(...))` applies to literally every route, and `jwtAuth` only understands platform
+   JWTs — a product end user (Phase 2, no tenant, no JWT, just an opaque `nps_...` session
+   token) had no way through at all. This is the exact gap CLAUDE.md item 23 already flagged as
+   deferred ("end-user chat through the router is currently non-functional end-to-end").
+   Fixed with a **narrow, explicit allowlist**, not a blanket bypass: a new hybrid-auth check in
+   the router recognizes `Authorization: Bearer nps_...` + `x-naelao-end-user-id` ONLY on
+   `/spaces/:spaceId/sessions*` (extend the allowlist as more end-user surfaces ship — threads,
+   once product-scoped thread access lands); every other route (kb ingestion, credentials,
+   member-billing, etc.) stays JWT-only, unchanged. Verification itself can't happen locally in
+   the router (it doesn't know which tenant owns the product until AFTER verifying — a genuine
+   chicken-and-egg), so a new `POST /internal/product-sessions/verify` on the spaces worker
+   resolves the space's owning tenant from D1, then asks the correct `ProductUserDO` instance to
+   verify the raw token. Gated by a direct `x-naelao-platform-secret` header check (same
+   precedent as the pre-existing `/internal/space-types/seed` route) rather than
+   `requireInternalHmac`, which needs a pre-known tenantId — exactly the thing not yet known.
+   On success the router mints `NaelaoJwtClaims`-shaped claims with `role: "product_end_user"`
+   (a new `UserRole` value, additive — `packages/auth/src/rbac.ts`'s `ROLE_PERMISSIONS` table
+   fails CLOSED for it: an empty permission array, since none of the builder-dashboard RBAC
+   permissions apply to this structurally different population) and `tid` set to the PRODUCT'S
+   OWNING tenant — not empty, not the end user's own identity — so every downstream
+   internal-HMAC check and quota gate keeps working unchanged for the rest of the request's
+   lifetime, with zero special-casing needed anywhere past the router.
+
+2. **Routing: even with valid auth, session/message CRUD would have 404'd — the router sent it
+   to the wrong worker.** `api.all("/spaces/:spaceId/sessions/*", ...)` proxied unconditionally
+   to `AGENTS_WORKER`, but `workers/agents/src/index.ts` only ever implemented the `agent/run`,
+   `agent/runs/*`, and `approvals/*` sub-paths there — session CREATE and message GET/POST are
+   actually implemented in `workers/spaces/src/index.ts` (forwarded to `SpaceDO` — see its
+   "SpaceDO session proxy" comment, itself written by a PRIOR pass this session that fixed the
+   auth-adjacent problem but never checked whether the router even reaches the right callee).
+   `apps/portal`'s existing `startSession()`/`getMessages()`/`sendMessage()` (already-built SSE
+   chat client, reused rather than rewritten) would have 404'd on session create and message
+   post specifically, even once authenticated. Fixed by splitting the route: the agent-run and
+   approvals sub-paths (registered FIRST, so they win — same F15 precedent) still go to
+   `AGENTS_WORKER`; bare session/message CRUD now goes to `SPACES_WORKER`, which already mints
+   the correct `x-naelao-internal-token` via the existing `proxyTo()` (using `claims.tid` — the
+   SAME claims the new hybrid-auth check produces for a product end user) — no new gating
+   mechanism needed on the receiving end, it was already built for exactly this. An existing
+   test (`tests/unit/router-dispatch.test.ts`, from the F15 pass) had asserted plain `POST
+   /sessions → AGENTS_WORKER`, which was true against that test's own always-answers stub but
+   never verified the REAL agents worker implements that path — updated it to the corrected
+   split, and added coverage the original F15 pass's stub-based approach couldn't have caught in
+   the first place (a stub that only echoes `{worker: name}` will never surface "this worker has
+   no handler for this path at all").
+
+Tests: `tests/unit/product-sessions-verify.test.ts` (5 — wrong platform secret, nonexistent
+product, forged token, real token round-trip, cross-end-user isolation) and
+`tests/unit/router-product-end-user-auth.test.ts` (5 — valid session resolves + forwards
+`product_end_user` claims with the correct tenant, invalid session rejected, non-allowlisted
+path rejected even with a valid token, missing end-user-id header rejected, ordinary platform
+JWT still works unchanged). `router-dispatch.test.ts` extended with 4 more cases locking in the
+corrected session/agent-run/approvals split. 866/866 platform tests pass, full monorepo
+typecheck clean.
+
+**Remaining for Phase 6** (not yet built): the portal's end-user login flow against
+`ProductUserDO`'s real session endpoints (today `apps/portal/src/lib/account.ts` is explicitly
+legacy Whop-niche code, and the magic-link flow `apps/portal/src/lib/api.ts` calls
+`/spaces/:spaceId/auth/*`, which no worker implements — a fourth instance of the "UI calls a dead
+route" pattern, to be replaced rather than fixed, since ProductUserDO's session model supersedes
+it per Phase 2's own resolved decision) — then the actual Product Shell UI (sidebar chrome,
+Projects/Threads lists, the chat view reusing the now-reachable existing SSE mechanism) driven by
+the SpaceType manifest's `ui.externalPortal`/`ui.operatorShell`.
+
+Remaining phases (7-8) will each get their own subsection here as they land.

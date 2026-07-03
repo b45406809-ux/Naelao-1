@@ -1436,6 +1436,39 @@ app.post("/internal/space-types/seed", async (c) => {
   return c.json({ seeded: results });
 });
 
+// POST /internal/product-sessions/verify — the missing link for Three-Tier Platform Model end
+// users (Phase 6): naelao-router calls this to resolve a Bearer nps_... ProductUserDO session
+// token into the owning tenant BEFORE it can mint the router's own claims for that request.
+// Gated by a direct platform-secret check (same pattern as /internal/space-types/seed just
+// above), not requireInternalHmac — that gate needs to already know the caller's tenantId, but
+// resolving the tenantId is exactly what this endpoint is FOR (a real chicken-and-egg the seed
+// route's precedent already solved the same way).
+app.post("/internal/product-sessions/verify", async (c) => {
+  if (c.req.header("x-naelao-platform-secret") !== c.env.PLATFORM_SECRET) {
+    return c.json({ valid: false }, 403);
+  }
+  const body = await c.req.json<{ productId: string; endUserId: string; sessionToken: string }>();
+  if (!body.productId || !body.endUserId || !body.sessionToken) {
+    return c.json({ valid: false }, 400);
+  }
+
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(body.productId).first<{ tenant_id: string }>();
+  if (!space) return c.json({ valid: false });
+
+  const stub = await productUserDoStub(c.env, body.productId, body.endUserId, space.tenant_id);
+  const verifyRes = await stub.fetch(new Request("http://do/sessions/verify", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ session_token: body.sessionToken }),
+  }));
+  const verified = await verifyRes.json<{ valid: boolean }>();
+  if (!verified.valid) return c.json({ valid: false });
+
+  return c.json({ valid: true, tenant_id: space.tenant_id, end_user_id: body.endUserId });
+});
+
 // ── Reseller / tenant membership (spec G-AS34/G-AS35; productConfig.membershipModel) ──
 // When a builder's product has membershipModel "tenant"|"hybrid", a customer who signs up
 // through that product creates their OWN business (a space under their own child tenant,

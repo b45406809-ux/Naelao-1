@@ -407,8 +407,31 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     `Access-Control-Allow-Origin` on mocked responses — worth remembering for any future session
     using this technique), letting all 7 tabs be exercised with realistic data end-to-end,
     including the feature-flag toggle round-trip and the delete-confirmation button's
-    disabled/enabled states. Remaining: 6 (manifest-driven Product Shell), 7 (sub-space/reseller
-    UI), 8 (deferred product-sdk + per-product CF Pages deploy).
+    disabled/enabled states. **Phase 6 (Manifest-driven Product Shell) is IN PROGRESS.** Scope
+    correction from the user: the Product Shell mockup driving this phase is the rich agentic
+    workspace (sidebar, Projects/Threads, chat, Agents panel) a builder ships to their OWN end
+    users — not a simplified widget. This means `launchpad-manifest.ts`'s
+    `hiddenCoreItems:["threads","projects"]` was written for a narrower framing than what's
+    wanted; the manifest field itself stays real, just don't assume it applies broadly. Before
+    any shell UI, found and fixed two real, independent bugs blocking it entirely: (1) the
+    router required a platform JWT unconditionally with zero path for a ProductUserDO-
+    authenticated end user — fixed with a narrow allowlisted hybrid-auth check (Bearer `nps_...`
+    + `x-naelao-end-user-id` on `/spaces/:spaceId/sessions*` only), verified via a new
+    `POST /internal/product-sessions/verify` on the spaces worker (platform-secret-gated, same
+    precedent as `/internal/space-types/seed`, since the router can't know the tenant until
+    after verifying); (2) even with valid auth, session/message CRUD would have 404'd — the
+    router sent ALL of `/spaces/:spaceId/sessions/*` to `AGENTS_WORKER`, but that worker only
+    ever implemented the `agent/run`/`approvals` sub-paths; the real session/message CRUD lives
+    in `SPACES_WORKER` (→ SpaceDO). Split the route (agent-run/approvals sub-paths first, so
+    they still win; bare session/message CRUD → SPACES_WORKER) and updated an existing test that
+    had asserted the old (wrong) destination against a stub that could never have caught it not
+    actually being implemented there. New `UserRole` value `"product_end_user"` added
+    (additive; `packages/auth/src/rbac.ts` fails closed — empty permissions). Remaining for
+    Phase 6: the portal's end-user login against ProductUserDO (today's `account.ts` is legacy
+    Whop-niche code, and the magic-link routes are a 4th instance of "UI calls a dead route" —
+    to be replaced, not fixed, since Phase 2 already decided ProductUserDO sessions supersede
+    it), then the actual shell UI reusing the now-reachable SSE chat mechanism. Remaining after
+    6: 7 (sub-space/reseller UI), 8 (deferred product-sdk + per-product CF Pages deploy).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

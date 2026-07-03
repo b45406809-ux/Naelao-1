@@ -39,6 +39,12 @@ const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     "api_keys:read",
   ],
   viewer: ["spaces:read", "kb:read", "analytics:read"],
+  // Three-Tier Platform Model: a product end user (ProductUserDO-authenticated, no platform
+  // tenant membership) is a structurally different population from Team collaborators — none of
+  // these builder-dashboard permissions apply. Fails closed (empty), not inherited from viewer;
+  // end-user access to their own product surface is governed by the product-scoped session/
+  // route allowlist in workers/router/src/index.ts, not this RBAC table.
+  product_end_user: [],
 };
 
 export function hasPermission(role: UserRole, permission: Permission): boolean {

@@ -9,6 +9,15 @@ import { signJwt } from "@naelao/auth";
 // requests was misrouted to SPACES_WORKER instead of KNOWLEDGE_WORKER/CREDENTIALS_WORKER/
 // AGENTS_WORKER. Fixed by moving the two catch-alls below every specific /spaces/:spaceId/...
 // route. This test locks in correct dispatch for one representative request per target worker.
+//
+// Three-Tier Platform Model, Phase 6: the original F15 fix asserted plain "POST /sessions" (no
+// sub-path) went to AGENTS_WORKER — that was true for THIS test's stub (which answers any path),
+// but AGENTS_WORKER's real handler never implemented bare session/message CRUD at all — only
+// its /agent/run, /agent/runs/*, and /approvals/* sub-paths exist there. Session CREATE and
+// message GET/POST are actually implemented in SPACES_WORKER (forwarded to SpaceDO — see its
+// "SpaceDO session proxy" comment). Updated the split: bare /sessions[/*] → SPACES_WORKER, the
+// agent-run/approvals sub-paths → AGENTS_WORKER (registered first so they win over the general
+// catch-all, same F15 reasoning).
 
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 const JWT_SECRET = "test-jwt-secret";
@@ -55,8 +64,28 @@ describe("router — /spaces dispatch order (F15)", () => {
     expect(await res.json()).toEqual({ worker: "CREDENTIALS" });
   });
 
-  it("POST /v1/spaces/s1/sessions → AGENTS_WORKER", async () => {
+  it("POST /v1/spaces/s1/sessions → SPACES_WORKER (session CRUD lives on SpaceDO)", async () => {
     const res = await authedFetch("POST", "/v1/spaces/s1/sessions", makeEnv());
+    expect(await res.json()).toEqual({ worker: "SPACES" });
+  });
+
+  it("POST /v1/spaces/s1/sessions/sess1/messages → SPACES_WORKER", async () => {
+    const res = await authedFetch("POST", "/v1/spaces/s1/sessions/sess1/messages", makeEnv());
+    expect(await res.json()).toEqual({ worker: "SPACES" });
+  });
+
+  it("POST /v1/spaces/s1/sessions/sess1/agent/run → AGENTS_WORKER", async () => {
+    const res = await authedFetch("POST", "/v1/spaces/s1/sessions/sess1/agent/run", makeEnv());
+    expect(await res.json()).toEqual({ worker: "AGENTS" });
+  });
+
+  it("GET /v1/spaces/s1/sessions/sess1/agent/runs/run1/stream → AGENTS_WORKER", async () => {
+    const res = await authedFetch("GET", "/v1/spaces/s1/sessions/sess1/agent/runs/run1/stream", makeEnv());
+    expect(await res.json()).toEqual({ worker: "AGENTS" });
+  });
+
+  it("PUT /v1/spaces/s1/sessions/sess1/approvals/a1/approve → AGENTS_WORKER", async () => {
+    const res = await authedFetch("PUT", "/v1/spaces/s1/sessions/sess1/approvals/a1/approve", makeEnv());
     expect(await res.json()).toEqual({ worker: "AGENTS" });
   });
 
