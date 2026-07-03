@@ -106,5 +106,23 @@ describe("reserved-capability guard (income-wallet protection)", () => {
       expect(isReservedToolName("get_member")).toBe(false);
       expect(isReservedToolName("post_announcement")).toBe(false);
     });
+
+    // Appendix A1.9 honest-scope note: EXTERNAL_PAYMENT_HOSTS is a hostname/substring match, so
+    // a bare IP literal trivially bypasses it — a real payment processor is always DNS-named,
+    // so isReservedPaymentHost now rejects IP literals outright as an extra (still
+    // defense-in-depth, not airtight) layer.
+    it("rejects a bare IPv4 literal host (denylist bypass attempt)", () => {
+      expect(isReservedPaymentHost("http://151.101.1.1/v1/charges")).toBe(true);
+      expect(isReservedPaymentHost("151.101.1.1")).toBe(true);
+    });
+
+    it("rejects a bracketed IPv6 literal host", () => {
+      expect(isReservedPaymentHost("http://[2606:4700::1]/v1/charges")).toBe(true);
+    });
+
+    it("does not misclassify a normal versioned hostname-like string as an IP literal", () => {
+      // Sanity: a legitimate connector host must not accidentally trip the IP-literal check.
+      expect(isReservedPaymentHost("https://api.whop.com/v2")).toBe(false);
+    });
   });
 });

@@ -19,6 +19,24 @@
  * CF/Lemon Squeezy note: even Naelao's own processor (api.lemonsqueezy.com) is off-limits to
  * user scripts — only the prebuilt commerce op holds the LS credentials (Workers Secret), so
  * the fee + store association can never be stripped.
+ *
+ * HONEST SCOPE NOTE (appendix A1.9): the checks in this file — a substring host denylist plus
+ * self-declared tags/domain — are DEFENSE IN DEPTH, not the primary control. A script author can
+ * trivially dodge the substring match (string concatenation, base64/hex-encoding a host, a
+ * connector to an as-yet-unlisted processor) and the tags/domain check only catches an agent
+ * that HONESTLY states what it's building. The actual guarantee that money-in can't be routed
+ * around Naelao is credential possession, not code inspection: only the `commerce` prebuilt
+ * (`workers/agents/src/script-engine/prebuilt/commerce.ts`) ever holds the Lemon Squeezy store
+ * API key (a Workers Secret on the billing worker, gated by `requireInternalHmac` — see F20 /
+ * appendix A1.16.25), and no execution tier this engine grants a script exposes that secret to
+ * script code. A script that fully evades this file's checks still cannot charge a customer
+ * without Naelao's credentials — it can at most fail loudly against a real processor with no
+ * key, which is a worse outcome for the builder than just using `commerce.checkout`. This file
+ * exists to catch the honest/careless case early with a clear error, not to be an airtight
+ * sandbox. It is also intentionally NOT trying to stop Model A (the connector/automation-layer
+ * platforms — Whop, Gumroad, etc.): those are read-mostly, the CONNECTED PLATFORM processes the
+ * payment on the builder's own account, and Naelao is paid for the labor, not a cut of that
+ * sale — by design, not a gap in this guard (see `connectors/catalogue.ts`'s "MODEL A" note).
  */
 
 /** Capabilities only the Naelao prebuilt catalogue may provide. Money-in + payouts. */
@@ -157,10 +175,30 @@ export function findReservedViolation(input: {
   return null;
 }
 
+/** Bare IPv4, or bare/bracketed IPv6 — a legitimate payment processor is always DNS-named
+ *  (api.stripe.com, api.lemonsqueezy.com, …); a connector/endpoint addressed by raw IP is
+ *  already the kind of denylist bypass this module exists to catch (see the module-level
+ *  defense-in-depth note above `isReservedPaymentHost`). Not exhaustive IP validation — just
+ *  enough shape-matching to flag "this looks like an IP literal, not a hostname." */
+const IPV4_LITERAL = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+const IPV6_LITERAL = /^\[?[0-9a-f:]+\]?$/i;
+
+function isIpLiteralHost(host: string): boolean {
+  const bare = host.replace(/^\[|\]$/g, "");
+  if (IPV4_LITERAL.test(bare)) return bare.split(".").every((o) => Number(o) <= 255);
+  return bare.includes(":") && IPV6_LITERAL.test(host);
+}
+
 /**
  * True if a URL/host is an external payment processor (or Naelao's own LS). Used by the
  * mcp-connector to refuse registering a payment endpoint as a connector — money-in is reserved
  * to the prebuilt commerce script. Accepts a full URL or a bare hostname.
+ *
+ * Also rejects a bare IP-literal host outright (`isIpLiteralHost`) — the denylist below is a
+ * substring/hostname match, which a raw IP trivially bypasses (see the defense-in-depth note
+ * at the top of this file). A real payment processor is never addressed by IP, so this adds
+ * coverage without touching the documented "Model A" carve-out (Whop/Gumroad/etc. are
+ * DNS-named connector hosts, never IP literals, so they're unaffected).
  */
 export function isReservedPaymentHost(urlOrHost: string): boolean {
   let host = urlOrHost.toLowerCase();
@@ -169,6 +207,7 @@ export function isReservedPaymentHost(urlOrHost: string): boolean {
   } catch {
     // Not a full URL — treat the input as a host/substring.
   }
+  if (isIpLiteralHost(host)) return true;
   return EXTERNAL_PAYMENT_HOSTS.some((h) => host === h || host.endsWith(`.${h}`) || host.includes(h));
 }
 

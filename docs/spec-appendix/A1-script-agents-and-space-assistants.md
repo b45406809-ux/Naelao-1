@@ -182,6 +182,27 @@ via **reserved capabilities** (`workers/agents/src/script-engine/reserved-capabi
   initiates the reserved money-in checkout (redirect to Lemon Squeezy). Service bindings wired
   (portal→billing, billing→spaces, agents→billing).
 
+**Honest scope note on `reserved-capabilities.ts`.** The guard described above — a substring host
+denylist (`EXTERNAL_PAYMENT_HOSTS`) plus self-declared tags/domain on a script being authored —
+is **defense in depth, not the primary revenue control**. It's bypassable: string
+concatenation/encoding around the substring match, or simply reaching a payment processor that
+isn't yet in the list, both slip past it; the tags/domain check only catches a script that
+honestly states what it's doing. The actual guarantee is **credential possession**: only the
+`commerce` prebuilt holds the Lemon Squeezy store API key (a Workers Secret on the billing
+worker, itself gated by `requireInternalHmac` — F20 / A1.16.25), and no execution tier this
+engine grants a script ever exposes that secret to script code. A script that fully evades this
+file's checks still cannot actually charge anyone without Naelao's credentials — worst case it
+fails loudly against a real processor with no key. This file exists to catch the honest/careless
+case early with a clear error, not to be an airtight sandbox. It's also deliberately not trying
+to block **Model A** (the connector/automation-layer platforms — Whop, Gumroad, etc., see
+`connectors/catalogue.ts`): those are read-mostly, the **connected platform** processes the sale
+on the builder's own account, and Naelao is paid for the labor, not a cut — that's the intended
+product, not a gap in this guard. One small hardening landed alongside this note:
+`isReservedPaymentHost` (used by the mcp-connector registration gate) now also rejects a bare
+IP-literal host outright, since a real payment processor is always DNS-named and an IP literal
+is one of the cheapest ways to dodge a hostname-substring match — still defense in depth, not a
+claim of completeness.
+
 ## A1.10 Connector layer, federated learning, webhooks & template bootstrap — BUILT
 
 **Connector catalogue (`workers/agents/src/connectors/catalogue.ts`).** "Whop first, everything
