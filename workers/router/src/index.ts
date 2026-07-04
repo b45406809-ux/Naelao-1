@@ -265,6 +265,13 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/my-businesses$/,
   /^\/spaces\/([^/]+)\/invites(\/|$)/,
   /^\/spaces\/([^/]+)\/business-members(\/|$)/,
+  // Phase E (§A1.17): pricing display + checkout initiation. All three are additionally gated by
+  // requireBusinessMembership on the spaces worker (member+) — this allowlist only proves the
+  // caller is a valid product end user, never that they belong to the specific business in the
+  // URL (same "identity, not authorization" split every other entry above documents).
+  /^\/spaces\/([^/]+)\/pricing$/,
+  /^\/spaces\/([^/]+)\/business-subscription\/checkout$/,
+  /^\/spaces\/([^/]+)\/credit-packs\/checkout$/,
 ];
 
 /** Resolve productId from the path if it matches an end-user-reachable route pattern. Strips the

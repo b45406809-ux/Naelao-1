@@ -554,10 +554,38 @@ export interface BuilderProductSummary {
   updated_at: string;
 }
 
+export interface PricingPlan {
+  id: string;
+  name: string;
+  priceCents: number;
+  interval: "month" | "year";
+  creditAllowance?: number;
+  limits?: { maxThreadsPerUser?: number | null; maxCreditsPerMonth?: number | null };
+  lsVariantId?: string;
+}
+
+export interface CreditPack {
+  id: string;
+  name: string;
+  credits: number;
+  priceCents: number;
+  lsVariantId?: string;
+}
+
 export interface BuilderProductConfig {
   branding?: { brandColor?: string; logoUrl?: string; faviconUrl?: string; productDescription?: string; suppressNaelaoBranding?: boolean };
   authProvider?: { provider: "naelao-native" | "clerk" | "custom-oidc" | "saml-sso"; requireAdminApproval?: boolean; allowedEmailDomains?: string[] };
-  pricingConfig?: { model: "free" | "credits" | "subscription" | "seats"; creditsIncludedPerMonth?: number; overageCreditsPriceCents?: number; pricePerSeatCents?: number; includedSeats?: number; trialDays?: number };
+  pricingConfig?: {
+    model: "free" | "credits" | "subscription" | "seats";
+    creditsIncludedPerMonth?: number;
+    overageCreditsPriceCents?: number;
+    pricePerSeatCents?: number;
+    includedSeats?: number;
+    trialDays?: number;
+    // Phase E (§A1.17) — subscription plans + credit packs a reseller/hybrid product offers.
+    plans?: PricingPlan[];
+    creditPacks?: CreditPack[];
+  };
   featureFlags?: Record<string, boolean>;
   // Phase D (§A1.17) — product mode, limits, and the template catalog. All three already exist
   // on the backend's SpaceTypeProductConfig (workers/spaces/src/do/SpaceTypeRegistryDO.ts); this
@@ -614,6 +642,19 @@ export async function updateBuilderProduct(
   input: { name?: string; status?: string; product_config?: BuilderProductConfig }
 ): Promise<{ ok: true }> {
   return apiFetch(`/builder/products/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+// Phase E (§A1.17): PATCH /builder/products/:id/pricing provisions Lemon Squeezy variants for
+// any new plan/pack (once, on save — an already-provisioned item's lsVariantId is left alone)
+// and persists into product_config.pricingConfig.{plans,creditPacks}.
+export async function updateBuilderProductPricing(
+  id: string,
+  input: { plans?: PricingPlan[]; creditPacks?: CreditPack[] }
+): Promise<{ pricing_config: BuilderProductConfig["pricingConfig"] }> {
+  return apiFetch(`/builder/products/${encodeURIComponent(id)}/pricing`, {
     method: "PATCH",
     body: JSON.stringify(input),
   });

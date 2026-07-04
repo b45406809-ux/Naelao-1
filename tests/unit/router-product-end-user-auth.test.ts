@@ -192,6 +192,27 @@ describe("router — product end-user hybrid auth", () => {
     }
   });
 
+  // Phase E (§A1.17) added pricing display + checkout initiation. Same "identity, not
+  // authorization" split — requireBusinessMembership on the spaces worker does the actual
+  // per-business check; this only proves the router will forward a valid end-user session.
+  it("a valid nps_ session CAN reach the allowlisted pricing/checkout paths", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "biz-tenant-1" }));
+    for (const path of [
+      "/spaces/biz-1/pricing",
+      "/spaces/biz-1/business-subscription/checkout",
+      "/spaces/biz-1/credit-packs/checkout",
+    ]) {
+      const res = await routerWorker.fetch(
+        new Request(`https://router.naelao.com/v1${path}`, {
+          method: "GET",
+          headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
+        }),
+        env as never, execCtx
+      );
+      expect(res.status).toBe(200);
+    }
+  });
+
   it("a Bearer nps_ token WITHOUT x-naelao-end-user-id falls through to the JWT path and is rejected", async () => {
     const env = makeEnv(makeSpacesStub({ validSession: true }));
     const res = await routerWorker.fetch(

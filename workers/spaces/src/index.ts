@@ -1516,6 +1516,63 @@ app.get("/spaces/:spaceId/pricing", async (c) => {
   });
 });
 
+// POST /spaces/:spaceId/business-subscription/checkout — an end user (member+) starts a
+// checkout for their business to subscribe to one of the product's plans. Proxies to the billing
+// worker (only it holds Lemon Squeezy credentials) rather than duplicating checkout-construction
+// logic here.
+app.use("/spaces/:spaceId/business-subscription/checkout", requireBusinessMembership({ POST: "member" }));
+app.post("/spaces/:spaceId/business-subscription/checkout", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId } = getCallerIdentity(c);
+  if (!c.env.BILLING_WORKER) return c.json({ error_code: "unavailable", message: "Billing is not available" }, 503);
+  const body = await c.req.json<{ plan_id: string; customer_email?: string }>();
+  if (!body.plan_id) return c.json({ error_code: "bad_request", message: "plan_id is required" }, 400);
+
+  const resp = await c.env.BILLING_WORKER.fetch(
+    new Request("http://billing-worker/internal/business-subscriptions/checkout", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+      },
+      body: JSON.stringify({ business_space_id: spaceId, plan_id: body.plan_id, ...(body.customer_email ? { customer_email: body.customer_email } : {}) }),
+    })
+  );
+  return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
+});
+
+// POST /spaces/:spaceId/credit-packs/checkout — an end user buys a one-time credit pack for
+// their OWN balance (not the business's). end_user_id is derived from the caller's OWN verified
+// identity, never a client-supplied field.
+app.use("/spaces/:spaceId/credit-packs/checkout", requireBusinessMembership({ POST: "member" }));
+app.post("/spaces/:spaceId/credit-packs/checkout", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!userId) return c.json({ error_code: "unauthorized", message: "Missing end user identity" }, 401);
+  if (!c.env.BILLING_WORKER) return c.json({ error_code: "unavailable", message: "Billing is not available" }, 503);
+  const body = await c.req.json<{ pack_id: string; customer_email?: string }>();
+  if (!body.pack_id) return c.json({ error_code: "bad_request", message: "pack_id is required" }, 400);
+
+  const resp = await c.env.BILLING_WORKER.fetch(
+    new Request("http://billing-worker/internal/credit-packs/checkout", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+      },
+      body: JSON.stringify({
+        business_space_id: spaceId,
+        pack_id: body.pack_id,
+        end_user_id: userId,
+        ...(body.customer_email ? { customer_email: body.customer_email } : {}),
+      }),
+    })
+  );
+  return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
+});
+
 // GET /internal/pricing-catalog?space_id= — the billing worker's checkout routes resolve a
 // plan/pack's lsVariantId here (requireInternalHmac, not a builder/end-user-facing shape).
 app.use("/internal/pricing-catalog", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));

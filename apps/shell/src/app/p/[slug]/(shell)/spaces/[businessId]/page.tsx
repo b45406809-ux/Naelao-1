@@ -10,9 +10,18 @@ import {
   removeBusinessMember,
   inviteToBusiness,
   listMyBusinesses,
+  getPricing,
+  checkoutBusinessSubscription,
+  checkoutCreditPack,
   type BusinessMember,
   type Business,
+  type PricingPlan,
+  type CreditPack,
 } from "@/lib/api";
+
+function centsToDisplay(cents: number): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(cents / 100);
+}
 
 export default function BusinessDetailPage() {
   const params = useParams<{ businessId: string }>();
@@ -27,6 +36,9 @@ export default function BusinessDetailPage() {
   const [inviteRole, setInviteRole] = React.useState<"member" | "admin">("member");
   const [inviting, setInviting] = React.useState(false);
   const [lastInviteToken, setLastInviteToken] = React.useState<string | null>(null);
+  const [plans, setPlans] = React.useState<PricingPlan[]>([]);
+  const [creditPacks, setCreditPacks] = React.useState<CreditPack[]>([]);
+  const [checkingOut, setCheckingOut] = React.useState<string | null>(null);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -34,12 +46,15 @@ export default function BusinessDetailPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      const [mine, mem] = await Promise.all([
+      const [mine, mem, pricing] = await Promise.all([
         listMyBusinesses(product.space_id, creds),
         listBusinessMembers(params.businessId, creds),
+        getPricing(params.businessId, creds).catch(() => ({ plans: [], credit_packs: [] })),
       ]);
       setBusiness(mine.find((b) => b.id === params.businessId) ?? null);
       setMembers(mem);
+      setPlans(pricing.plans);
+      setCreditPacks(pricing.credit_packs);
     } catch {
       show("Couldn't load this business — you may not be a member");
     } finally {
@@ -74,6 +89,34 @@ export default function BusinessDetailPage() {
       await refresh();
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to remove member");
+    }
+  }
+
+  async function handleSubscribe(planId: string) {
+    if (!creds) return;
+    setCheckingOut(`plan:${planId}`);
+    try {
+      const { checkout_url, dev } = await checkoutBusinessSubscription(params.businessId, creds, planId);
+      if (dev) show(`Dev mode — no Lemon Squeezy credentials configured (${checkout_url})`);
+      else window.location.href = checkout_url;
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to start checkout");
+    } finally {
+      setCheckingOut(null);
+    }
+  }
+
+  async function handleBuyCredits(packId: string) {
+    if (!creds) return;
+    setCheckingOut(`pack:${packId}`);
+    try {
+      const { checkout_url, dev } = await checkoutCreditPack(params.businessId, creds, packId);
+      if (dev) show(`Dev mode — no Lemon Squeezy credentials configured (${checkout_url})`);
+      else window.location.href = checkout_url;
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to start checkout");
+    } finally {
+      setCheckingOut(null);
     }
   }
 
@@ -114,6 +157,57 @@ export default function BusinessDetailPage() {
           </div>
         ))}
       </div>
+
+      {plans.length > 0 && (
+        <>
+          <div className="section-label">Subscription Plans</div>
+          <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
+            {business.name} subscribes to one of these plans as a whole.
+          </p>
+          <div className="settings-block">
+            {plans.map((plan) => (
+              <div className="settings-row" key={plan.id}>
+                <div>
+                  <div className="settings-row-label">{plan.name}</div>
+                  <div className="settings-row-sub">
+                    {centsToDisplay(plan.price_cents)}/{plan.interval}
+                    {plan.credit_allowance ? ` · ${plan.credit_allowance} credits/mo` : ""}
+                  </div>
+                </div>
+                {canManage && (
+                  <Button onClick={() => handleSubscribe(plan.id)} disabled={checkingOut === `plan:${plan.id}`}>
+                    {checkingOut === `plan:${plan.id}` ? "Starting…" : "Subscribe"}
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {creditPacks.length > 0 && (
+        <>
+          <div className="section-label">Credit Packs</div>
+          <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
+            One-time purchases added to YOUR OWN credit balance, not the business&rsquo;s.
+          </p>
+          <div className="settings-block">
+            {creditPacks.map((pack) => (
+              <div className="settings-row" key={pack.id}>
+                <div>
+                  <div className="settings-row-label">{pack.name}</div>
+                  <div className="settings-row-sub">
+                    {pack.credits} credits — {centsToDisplay(pack.price_cents)}
+                  </div>
+                </div>
+                <Button onClick={() => handleBuyCredits(pack.id)} disabled={checkingOut === `pack:${pack.id}`}>
+                  {checkingOut === `pack:${pack.id}` ? "Starting…" : "Buy"}
+                </Button>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <Modal
         open={inviteOpen}

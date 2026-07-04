@@ -621,7 +621,35 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     provisioner's install step, flagged as a real follow-up rather than rushed in. Verified the
     Configuration/Agents tabs end-to-end via a second CDP session mocking `GET /builder/products/
     :id` and screenshotting the pre-populated, correctly-checked form. 938/938 tests pass (1 new),
-    `pnpm turbo run typecheck` clean (75 tasks). Phase E (monetization) is next.
+    `pnpm turbo run typecheck` clean (75 tasks). **Phase E (monetization) is BUILT.** Precondition:
+    fixed `@naelao/entitlements` querying `organizations`/`tenant_id` columns that don't exist
+    (real: `orgs`/`org_id` — confirmed `NaelaoJwtClaims.tid` literally means org id) and found the
+    same bug plus two more in `workers/admin` while there (a feature-flags route shape migration
+    0023 never created, and `/admin/stats` querying a `sessions` D1 table that has never existed —
+    both 500'd on every call). Also found and fixed a real migration-history bug: migration 0022's
+    `CREATE TABLE IF NOT EXISTS api_keys` was a no-op against 0004's earlier, different-shaped
+    table, so its own index creation has silently failed in every deployment since (new migration
+    0048 fixes it forward). Main build: a business subscribes to a builder-defined plan as a whole
+    (mirroring `memberBilling`'s "the whole space pays" shape, per the plan's own migration-name
+    hint), while credit packs top up an individual end user's own balance —
+    `productConfig.pricingConfig.plans/creditPacks`, provisioned as real Lemon Squeezy variants via
+    `PATCH /builder/products/:id/pricing` (provision-once-per-item, same pattern as memberBilling).
+    A business resolves the catalog by walking up to its product root (`loadPricingCatalog`, the
+    same parent-walk `/internal/product-sessions/verify` established) via `GET
+    /spaces/:spaceId/pricing`; new billing-worker routes
+    `/internal/business-subscriptions/checkout` and `/internal/credit-packs/checkout` follow the
+    existing commerce/seat checkout pattern exactly. New migration 0049 (`business_subscriptions`,
+    one row per business, upserted not accumulated) plus LS webhook handling for
+    `subscription.*`/credit-pack `payment.success` events. Closed a real double-grant risk the
+    credit-pack path introduced: converted `ProductUserDO`'s ad-hoc `CREATE TABLE IF NOT EXISTS`
+    schema init to `@naelao/db`'s versioned `applyMigrations` (matching `SpaceDO`'s convention) and
+    added a real migration giving `credit_ledger` an idempotency key. Frontend: a 9th dashboard
+    product tab (Pricing, with live Provisioned/Not-provisioned badges) and a Shell billing section
+    on the business detail page (Subscribe / Buy Credits, redirecting to the LS checkout URL).
+    973/973 tests pass (34 new + the precondition's 11), `pnpm turbo run typecheck` clean (75
+    tasks). Not verified against a live multi-worker backend or a real Lemon Squeezy sandbox — the
+    dev-fallback checkout path is what every automated test exercises, same stated limitation as
+    every prior phase.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

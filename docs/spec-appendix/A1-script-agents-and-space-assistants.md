@@ -3212,3 +3212,123 @@ live multi-worker backend, same stated limitation as Phases B and C.
 
 **Remaining for the Three-Tier build:** Phase E (monetization — subscriptions + credit packs, and
 the `packages/entitlements` table-name reconciliation the phased plan calls a precondition for it).
+
+## A1.17 continued — Phase E: monetization (subscriptions + credit packs) — BUILT
+
+**Precondition — entitlements + admin worker schema reconciliation.** `@naelao/entitlements`
+queried `organizations` (real table: `orgs`), `users.tenant_id` (real column: `users.org_id`), and
+`api_keys.tenant_id` (real column: `api_keys.org_id`) — confirmed by tracing `NaelaoJwtClaims.tid`'s
+own "tenantId (orgId)" comment: every builder-facing "tenantId" IS an org id, never a Launchpad
+business's `spaces.tenant_id` (a genuinely different concept the `spaces` query correctly kept
+using `tenant_id` for). Every `EntitlementsChecker` call would have thrown against a real D1
+database — fixed all three, plus added `revoked_at IS NULL` to the api_keys usage count (a revoked
+key shouldn't count toward quota, a real correctness gap the original query ignored). `workers/admin`
+had the identical `organizations` bug (5 call sites) plus two more found while tracing it: its
+feature-flags routes used a `key`/`value_json`/`tenant_id` shape that migration
+`0023_feature_flags.sql` never created (real: `name`/`enabled`/`rollout_pct`/`overrides_json`) with
+an `ON CONFLICT` target matching no UNIQUE constraint, and `/admin/stats` queried a `sessions` D1
+table that has never existed (sessions live in each SpaceDO's own per-space SQLite, not D1 — no
+single-query cross-space aggregate is possible) — both would 500 on every call. Fixed the
+feature-flags routes to match the real schema; replaced the impossible `sessions_24h` count with an
+honest `null` (same precedent as the Builder Dashboard's `credits_consumed: null`) rather than
+fabricating a number. Also found and fixed a genuine migration-history bug while tracing `api_keys`:
+`0022_api_key_scopes.sql`'s `CREATE TABLE IF NOT EXISTS` was a no-op against the table
+`0004_billing.sql` already created with different columns, so its own `CREATE INDEX ... ON api_keys
+(tenant_id, ...)` has been failing silently in every deployment since (deploy workflows swallow
+migration errors with `|| true`) — new migration `0048_admin_schema_fixes.sql` recreates the
+intended indexes against the columns that actually exist, and adds the `orgs.updated_at` column the
+admin worker's PATCH route was writing to but no migration had ever created. Extended
+`tests/stubs/d1-sqlite.ts`'s `createFakeD1` shim to support `first()/all()/run()` directly on
+`prepare()` without requiring `bind()` first (matching real D1's API for parameterless queries) —
+needed to test `/admin/feature-flags` GET and `/admin/stats`, which never bind anything. 949/949
+tests pass (11 new across two new files).
+
+**Design decision, confirmed against the phased plan's own migration-name hint
+(`0048_business_subscriptions.sql`) and the existing `memberBilling` precedent: a BUSINESS
+subscribes to a plan as a whole, not an individual end user.** Mirrors `memberBilling`'s "the whole
+space pays" shape exactly, not a per-user charge — consistent with Launchpad's existing mental model
+(a business's credits/limits are shared org-wide, spec `userPermissions.maxCreditsPerMonth` is
+already framed per-product-user as a CEILING, not a wallet). Credit packs are the one thing that
+genuinely IS per-individual (an end user tops up their OWN `ProductUserDO` balance), so the two
+money paths deliberately land on different owners even though both are configured on the same
+product-root catalog.
+
+**Catalog resolution — a business never carries its own catalog.** `productConfig.pricingConfig`
+gained `plans: [{id,name,priceCents,interval,creditAllowance,limits,lsVariantId}]` and
+`creditPacks: [{id,name,credits,priceCents,lsVariantId}]` (`SpaceTypeRegistryDO.ts`). The builder
+authors these ONCE on the product root via `PATCH /builder/products/:id/pricing`
+(`workers/spaces/src/builder-routes.ts`) — provisioning a real Lemon Squeezy variant for any
+plan/pack that doesn't have one yet (exactly the `memberBilling`/product-publish provision-on-save
+pattern; an already-provisioned item's `lsVariantId` is left untouched even if its price changes
+here, since silently repricing a live LS variant out from under active subscribers should never be
+an implicit side effect). Any business (child space) resolves the SAME catalog by walking up
+`parent_space_id` to the product root — new `loadPricingCatalog()` helper in
+`workers/spaces/src/index.ts`, the same one-hop-max parent-walk `/internal/product-sessions/verify`
+already established, reused by both `GET /spaces/:spaceId/pricing` (business-scoped display, gated
+`requireBusinessMembership({GET:"member"})`) and `GET /internal/pricing-catalog` (the billing
+worker's checkout-time variant lookup, `requireInternalHmac`-gated).
+
+**Checkout — new billing worker routes follow the existing commerce/seat checkout pattern exactly,
+not a new shape.** `POST /internal/business-subscriptions/checkout` and `POST
+/internal/credit-packs/checkout` (`workers/billing/src/index.ts`): resolve the plan/pack via the
+spaces worker's `/internal/pricing-catalog` (this worker doesn't know the business/product
+hierarchy rules — that's the spaces worker's job), same dev-fallback-without-LS-creds precedent, same
+`requireInternalHmac` gate. End users reach these through two new spaces-worker proxy routes,
+`POST /spaces/:spaceId/business-subscription/checkout` and `POST /spaces/:spaceId/credit-packs/checkout`
+(both `requireBusinessMembership({POST:"member"})`-gated, `end_user_id` always derived from the
+caller's OWN verified identity, never a client-supplied field) — allowlisted on the router
+(`PRODUCT_END_USER_PATH_PATTERNS`) alongside the existing `/pricing` display route, all three
+carrying the same "identity, not authorization" caveat every prior allowlist entry documents.
+
+**Webhook wiring + the state that didn't exist before this phase.** New migration
+`0049_business_subscriptions.sql`: one row per business (`UNIQUE(business_space_id)` — a business
+switching plans overwrites the row rather than accumulating history; `reseller_ledger` stays the
+historical revenue record, unchanged). The Lemon Squeezy webhook
+(`workers/billing/src/lemon-squeezy.ts`) gained `recordBusinessSubscription` (upserts by
+`business_space_id` on every `subscription.*` event whose checkout metadata carries
+`kind=business_subscription` — a webhook retry or a later status transition is an in-place update,
+never a duplicate row) and `grantCreditPackPurchase` (on `payment.success` with
+`kind=credit_pack`, calls a new `POST /internal/credit-packs/grant` on the spaces worker — the only
+worker holding the `PRODUCT_USER_DO` binding). `NormalizedBillingEvent` gained `providerStatus`/
+`currentPeriodEnd` (`packages/billing-core`) since the LS provider's `parseWebhookEvent` was
+discarding the raw subscription status/renewal date entirely — needed to map LS's status vocabulary
+onto `business_subscriptions.status`'s narrower CHECK-constrained enum.
+
+**Idempotency — closed a real double-grant risk the credit-pack path introduced.**
+`launchpad_orders` already had a `provider_event_id` unique-partial-index precedent for D1 tables,
+but `ProductUserDO`'s `credit_ledger` is per-DO SQLite with no such mechanism — a webhook retry on a
+credit-pack grant would have double-credited the buyer. Converted `ProductUserDO`'s schema init from
+a bare `CREATE TABLE IF NOT EXISTS` (a no-op against an already-provisioned DO, the exact class of
+bug the entitlements/admin-worker precondition above just found and fixed elsewhere) to
+`@naelao/db`'s `applyMigrations` — matching `SpaceDO`'s existing versioned-migration convention —
+and added a real migration (v2) giving `credit_ledger` an `idempotency_key` column with a partial
+unique index. `POST /credits/grant` now accepts an optional `idempotency_key`; a repeat call
+returns the balance as of the ORIGINAL grant (`deduplicated: true`) instead of granting twice.
+
+**Frontend.** Dashboard gained a 9th product tab, **Pricing** — plan/pack editors with a live
+"Provisioned"/"Not provisioned" badge per item (from `lsVariantId` presence), round-tripping through
+`PATCH /builder/products/:id/pricing`; hidden behind an explanatory empty state for `team`-mode
+products (pricing only makes sense once a product allows businesses at all). Shell's business detail
+page (`spaces/[businessId]/page.tsx`, already the Members-management surface from Phase C) gained
+Subscription Plans (owner/admin can Subscribe — redirects to the LS checkout URL) and Credit Packs
+sections (any member can Buy, explicitly labeled as topping up the BUYER'S OWN balance, not the
+business's, to avoid the natural confusion of a per-individual purchase appearing on a
+business-scoped page). Both verified end-to-end: the dashboard's Pricing tab via the established CDP
+Fetch-mock screenshot technique (a provisioned "Pro" plan correctly shows "Provisioned", an
+unprovisioned "Basic" plan shows "Not provisioned"); the backend via 23 new tests across two files
+(`pricing-catalog.test.ts` — parent-walk resolution, the cross-business isolation assertion every
+`requireBusinessMembership` route gets, builder pricing PATCH provisioning idempotency, credit-pack
+grant idempotency; `business-subscriptions-billing.test.ts` — checkout route construction against a
+mocked Lemon Squeezy API, webhook status-mapping, the seat/product/business-subscription/credit-pack
+`kind` discriminator never cross-firing).
+
+**Verification:** `pnpm turbo run typecheck` clean across all 75 packages/workers/apps.
+`pnpm exec vitest run`: 973/973 tests pass (34 new across three files, on top of the precondition's
+11). `apps/dashboard` and `apps/shell` both verified via `next build` (all new routes/pages compile).
+Not verified against a live multi-worker backend or a real Lemon Squeezy sandbox account, same
+stated limitation as every prior phase — the dev-fallback checkout path (no LS credentials) is what
+every automated test exercises.
+
+**Remaining for the Three-Tier build:** Phase 7/8 of the original full-vision plan (sub-space/
+reseller UI polish beyond what Phases C/D/E already cover, deferred product-sdk + per-product CF
+Pages deploy) — see the plan's own phase list for what's left unbuilt.

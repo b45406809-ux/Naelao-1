@@ -337,3 +337,50 @@ export async function acceptBusinessInvite(
 ): Promise<{ business_space_id: string; role: string }> {
   return apiFetch(`/v1/spaces/${businessSpaceId}/invites/${encodeURIComponent(token)}/accept`, { method: "POST", session });
 }
+
+// ── Pricing + checkout (Phase E — subscription plans + credit packs) ───────────────────────
+// A business subscribes to a plan as a whole; a credit pack tops up the buyer's OWN balance.
+// Both checkout calls redirect the browser to the returned checkout_url (Lemon Squeezy).
+
+export interface PricingPlan {
+  id: string;
+  name: string;
+  price_cents: number;
+  interval: "month" | "year";
+  credit_allowance: number | null;
+}
+
+export interface CreditPack {
+  id: string;
+  name: string;
+  credits: number;
+  price_cents: number;
+}
+
+export async function getPricing(spaceId: string, session: SessionCredentials): Promise<{ plans: PricingPlan[]; credit_packs: CreditPack[] }> {
+  return apiFetch(`/v1/spaces/${spaceId}/pricing`, { session });
+}
+
+export async function checkoutBusinessSubscription(
+  spaceId: string,
+  session: SessionCredentials,
+  planId: string
+): Promise<{ checkout_url: string; dev?: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/business-subscription/checkout`, {
+    method: "POST",
+    body: JSON.stringify({ plan_id: planId }),
+    session,
+  });
+}
+
+export async function checkoutCreditPack(
+  spaceId: string,
+  session: SessionCredentials,
+  packId: string
+): Promise<{ checkout_url: string; dev?: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/credit-packs/checkout`, {
+    method: "POST",
+    body: JSON.stringify({ pack_id: packId }),
+    session,
+  });
+}
