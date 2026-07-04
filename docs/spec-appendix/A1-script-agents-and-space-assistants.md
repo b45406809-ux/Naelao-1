@@ -3445,4 +3445,33 @@ list, and seeds the guided policy default via a verified token, non-fatal on fai
 tests pass (10 new). `pnpm turbo run typecheck` clean (75 tasks). `apps/dashboard` verified via
 `next build`.
 
-**Remaining for Launchpad go-live:** Phase H (builder domain/name post-creation UI polish).
+## A1.17 continued — Launchpad go-live: Phase H (domain/name post-creation UI) — BUILT
+
+**Goal:** close the gap the earlier gap-analysis found — `POST/GET /builder/products/:id/domain`
+(CF-for-SaaS custom hostname create + DNS/DCV + poll) was real backend with zero post-creation UI;
+the product-creation wizard's domain call was fire-and-forget with its DNS instructions discarded,
+and the product's display name had no edit surface despite `PATCH /builder/products/:id` already
+supporting it. Pure UI wiring — no backend changes.
+
+**New Domain tab** (`apps/dashboard/.../products/[productId]/domain/page.tsx`, added to
+`layout.tsx`'s tab list) calls the existing `getBuilderProductDomain`/`configureBuilderProductDomain`
+functions. Renders the connected domain, a status badge (Not configured / Pending DNS / Active), the
+CNAME + TXT DCV records returned by `createCustomHostname`, and a "Check status" button that re-polls
+`GET .../domain` (which itself flips the stored status to `active` once Cloudflare reports both
+`status` and `ssl_status` as active). This is exactly what the wizard's fire-and-forget call was
+missing a home for — the DNS instructions are now viewable and the domain retriable after creation.
+
+**Product name edit** — a "Product Name" field added to the top of the Configuration page
+(`apps/dashboard/.../products/[productId]/configuration/page.tsx`), pre-populated from
+`product.name`, saved via the already-existing `updateBuilderProduct(id, { name, product_config })`
+(the PATCH handler already accepted `name`; there was simply no input for it anywhere).
+
+**Verification:** `pnpm turbo run typecheck` clean (75 tasks); `apps/dashboard` verified via
+`next build` (new Domain route compiles) AND a real headless-Chromium CDP session (the established
+Fetch-domain mock technique) — screenshots confirmed the Domain tab renders a "Pending DNS" badge,
+the connected domain, and both DNS records correctly from mocked backend data, and the Configuration
+page's new Name field is pre-populated. No backend changes → no new backend tests (both API
+functions already existed; only their UI consumers were missing).
+
+**Launchpad go-live (Phases F/G/H) is now COMPLETE.** Remaining work is the larger script-engine/
+execution-ladder/container roadmap (Phases I onward) tracked in the session's plan file.

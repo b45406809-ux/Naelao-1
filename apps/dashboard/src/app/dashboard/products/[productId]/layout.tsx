@@ -9,6 +9,7 @@ const TABS = [
   { label: "Users", segment: "users" },
   { label: "Analytics", segment: "analytics" },
   { label: "Configuration", segment: "configuration" },
+  { label: "Domain", segment: "domain" },
   { label: "Pricing", segment: "pricing" },
   { label: "Agents", segment: "agents" },
   { label: "Feature Flags", segment: "feature-flags" },

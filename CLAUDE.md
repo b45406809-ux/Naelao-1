@@ -694,8 +694,21 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     NOT built as a separate step: an unembedded skill is unfindable by `script.find`'s ANN search,
     so half-building it would be worse than folding the methodology into the profile's prompt
     directly, which is what happened instead. 987/987 tests pass (10 new), `pnpm turbo run
-    typecheck` clean (75 tasks), `apps/dashboard` verified via `next build`. Next: Phase H
-    (builder domain/name post-creation UI polish).
+    typecheck` clean (75 tasks), `apps/dashboard` verified via `next build`.
+    **Phase H (builder domain/name post-creation UI) is BUILT — Launchpad go-live (F/G/H) is now
+    COMPLETE.** New Domain tab (`apps/dashboard/.../products/[productId]/domain/page.tsx`) renders
+    the already-real CF-for-SaaS backend's DNS/DCV records (CNAME + TXT) and status
+    (not_configured/pending_dns/active) with a "Check status" re-poll button — closing the gap
+    where the creation wizard's domain call was fire-and-forget with its DNS instructions
+    discarded and no way to view or retry them after creation. Added a Product Name field to the
+    Configuration tab, wired to the already-existing `updateBuilderProduct(id, {name})` (the PATCH
+    handler already accepted `name`; there was just no input for it). No backend changes — both API
+    functions already existed. Verified via `next build` AND a real headless-Chromium CDP session
+    (the established Fetch-mock technique): screenshots confirm the Domain tab renders a real
+    "Pending DNS" badge + connected domain + both DNS records from mocked data, and the
+    Configuration page's Name field is pre-populated correctly. Remaining work is the larger
+    script-engine/execution-ladder/container roadmap (Phases I onward), tracked in the session's
+    plan file, not yet mirrored into this doc.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

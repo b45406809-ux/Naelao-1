@@ -9,6 +9,7 @@ import { useProduct } from "../productContext";
 export default function ProductConfigurationPage() {
   const params = useParams<{ productId: string }>();
   const { product, loading, refetch } = useProduct();
+  const [name, setName] = useState("");
   const [form, setForm] = useState<BuilderProductConfig>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -18,7 +19,10 @@ export default function ProductConfigurationPage() {
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
 
   useEffect(() => {
-    if (product) setForm(product.product_config);
+    if (product) {
+      setForm(product.product_config);
+      setName(product.name);
+    }
   }, [product]);
 
   useEffect(() => {
@@ -30,7 +34,7 @@ export default function ProductConfigurationPage() {
     setError(null);
     setSaved(false);
     try {
-      await updateBuilderProduct(params.productId, { product_config: form });
+      await updateBuilderProduct(params.productId, { name: name.trim() || product?.name || "Untitled Product", product_config: form });
       await refetch();
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
@@ -45,6 +49,17 @@ export default function ProductConfigurationPage() {
 
   return (
     <div className="space-y-6">
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Product Name</h2>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Product name"
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 outline-none"
+        />
+      </div>
+
       <div className="bg-white rounded-xl border border-gray-200 p-5">
         <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Branding</h2>
         <div className="space-y-3">
