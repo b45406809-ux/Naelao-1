@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { buildCodeRunner, type WorkerLoaderBinding, type WorkerLoaderModuleConfig } from "../../workers/agents/src/script-engine/code-runner.js";
+import { verifyInternalToken } from "@naelao/http";
 
 // A fake Worker Loader that actually executes the assembled module's `fetch` handler by
 // evaluating it with `new Function` — enough to verify the harness wiring (user code +
@@ -39,6 +40,7 @@ describe("code-runner — Tier 2/3 isolate execution", () => {
       args: { n: 21 },
       spaceId: "space1",
       agentId: "agent1",
+      tenantId: "tenant1",
     });
     expect(result.ok).toBe(true);
     expect(result.output).toEqual({ doubled: 42 });
@@ -54,6 +56,7 @@ describe("code-runner — Tier 2/3 isolate execution", () => {
       args: {},
       spaceId: "space1",
       agentId: "agent1",
+      tenantId: "tenant1",
     });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("boom");
@@ -61,21 +64,21 @@ describe("code-runner — Tier 2/3 isolate execution", () => {
 
   it("reports unavailable (not a crash) when no LOADER binding is configured", async () => {
     const runner = buildCodeRunner({});
-    const result = await runner.run({ name: "x", code: "export async function run(){}", tier: 2, args: {}, spaceId: "s", agentId: "a" });
+    const result = await runner.run({ name: "x", code: "export async function run(){}", tier: 2, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("unavailable");
   });
 
   it("Tier 5 (container) is routed separately and reports unavailable without a ToolSandboxDO binding", async () => {
     const runner = buildCodeRunner({ loader: fakeLoader() });
-    const result = await runner.run({ name: "x", code: "export async function run(){}", tier: 5, args: {}, spaceId: "s", agentId: "a" });
+    const result = await runner.run({ name: "x", code: "export async function run(){}", tier: 5, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("Tier 5");
   });
 
   it("Tier 1 is rejected — execution-ladder.ts must handle it in-process, never via codeRunner", async () => {
     const runner = buildCodeRunner({ loader: fakeLoader() });
-    const result = await runner.run({ name: "x", code: "export async function run(){}", tier: 1, args: {}, spaceId: "s", agentId: "a" });
+    const result = await runner.run({ name: "x", code: "export async function run(){}", tier: 1, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
     expect(result.ok).toBe(false);
   });
 });
@@ -90,6 +93,7 @@ describe("code-runner — F10 SSRF guard inside the isolate", () => {
       args: {},
       spaceId: "space1",
       agentId: "agent1",
+      tenantId: "tenant1",
     });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("ssrf_blocked");
@@ -104,6 +108,7 @@ describe("code-runner — F10 SSRF guard inside the isolate", () => {
       args: {},
       spaceId: "space1",
       agentId: "agent1",
+      tenantId: "tenant1",
     });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("ssrf_blocked");
@@ -118,6 +123,7 @@ describe("code-runner — F10 SSRF guard inside the isolate", () => {
       args: {},
       spaceId: "space1",
       agentId: "agent1",
+      tenantId: "tenant1",
     });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("ssrf_blocked");
@@ -139,6 +145,7 @@ describe("code-runner — Tier 4 browser capability injection", () => {
       args: { url: "https://example.com" },
       spaceId: "space1",
       agentId: "agent1",
+      tenantId: "tenant1",
     });
     expect(result.ok).toBe(true);
     expect(result.output).toEqual({ url: "https://example.com", text: "hello" });
@@ -147,9 +154,127 @@ describe("code-runner — Tier 4 browser capability injection", () => {
 
   it("Tier 4 reports unavailable without a browserWorker binding", async () => {
     const runner = buildCodeRunner({ loader: fakeLoader() });
-    const result = await runner.run({ name: "x", code: "export async function run(){}", tier: 4, args: {}, spaceId: "s", agentId: "a" });
+    const result = await runner.run({ name: "x", code: "export async function run(){}", tier: 4, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
     expect(result.ok).toBe(false);
     expect(result.error).toContain("Tier 4");
+  });
+});
+
+// §A1.17 Phase I: ctx.mcp lets ONE authored script deterministically chain several MCP servers
+// (get data from A, act on B) instead of that composition only happening across multiple
+// model-driven reasoning-loop turns. The isolate never receives a credential — mcp-hub still
+// resolves auth server-side — it receives only a short-lived (60s), tenant-scoped internal
+// token, minted in real TS before the isolate is constructed, never the platform secret itself.
+describe("code-runner — Tier 2 ctx.mcp capability injection (§A1.17 Phase I)", () => {
+  it("injects ctx.mcp proxied to the MCP_HUB binding with a verified internal token", async () => {
+    const hubSpy = vi.fn(async (req: Request) => {
+      const url = new URL(req.url);
+      if (url.pathname.endsWith("/mcp-servers") && req.method === "GET") {
+        return new Response(JSON.stringify({ data: [{ id: "srv-1", name: "whop" }] }), { status: 200 });
+      }
+      if (url.pathname.endsWith("/tools/call")) {
+        const body = await req.json<{ tool_name: string; input: unknown }>();
+        return new Response(JSON.stringify({ result: { echoed: body.tool_name } }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const mcpHubWorker = { fetch: hubSpy } as unknown as Fetcher;
+
+    const runner = buildCodeRunner({ loader: fakeLoader(), mcpHubWorker, platformSecret: "shh" });
+    const result = await runner.run({
+      name: "single-mcp-call",
+      code: `export async function run(args, ctx) { return await ctx.mcp.call("whop", "list_members", {}); }`,
+      tier: 2,
+      args: {},
+      spaceId: "space1",
+      agentId: "agent1",
+      tenantId: "tenant1",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.output).toEqual({ result: { echoed: "list_members" } });
+
+    // Every hub call carried a token verifiable against the caller's own tenant.
+    for (const call of hubSpy.mock.calls) {
+      const req = call[0] as Request;
+      const token = req.headers.get("x-naelao-internal-token");
+      expect(await verifyInternalToken(token ?? undefined, "tenant1", "shh")).toBe(true);
+    }
+  });
+
+  it("one script chains TWO different MCP servers deterministically — the core multi-MCP ask", async () => {
+    const hubSpy = vi.fn(async (req: Request) => {
+      const url = new URL(req.url);
+      if (url.pathname.endsWith("/mcp-servers")) {
+        return new Response(JSON.stringify({ data: [{ id: "srv-a", name: "server-a" }, { id: "srv-b", name: "server-b" }] }), { status: 200 });
+      }
+      if (url.pathname.endsWith("/tools/call")) {
+        const body = await req.json<{ tool_name: string; input: Record<string, unknown> }>();
+        if (url.pathname.includes("srv-a")) return new Response(JSON.stringify({ result: { value: 42 } }), { status: 200 });
+        if (url.pathname.includes("srv-b")) return new Response(JSON.stringify({ result: { acked: body.input["value"] } }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const mcpHubWorker = { fetch: hubSpy } as unknown as Fetcher;
+
+    const runner = buildCodeRunner({ loader: fakeLoader(), mcpHubWorker, platformSecret: "shh" });
+    const result = await runner.run({
+      name: "multi-mcp-chain",
+      code: `
+        export async function run(args, ctx) {
+          const a = await ctx.mcp.call("server-a", "get_value", {});
+          const b = await ctx.mcp.call("server-b", "act_on_value", { value: a.result.value });
+          return { chained: b.result.acked };
+        }
+      `,
+      tier: 2,
+      args: {},
+      spaceId: "space1",
+      agentId: "agent1",
+      tenantId: "tenant1",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.output).toEqual({ chained: 42 });
+  });
+
+  it("ctx.mcp.list_servers/list_tools work without a tool call", async () => {
+    const hubSpy = vi.fn(async (req: Request) => {
+      const url = new URL(req.url);
+      if (url.pathname.endsWith("/mcp-servers")) {
+        return new Response(JSON.stringify({ data: [{ id: "srv-1", name: "whop" }] }), { status: 200 });
+      }
+      if (url.pathname.endsWith("/tools")) {
+        return new Response(JSON.stringify({ tools: [{ name: "list_members" }] }), { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const mcpHubWorker = { fetch: hubSpy } as unknown as Fetcher;
+    const runner = buildCodeRunner({ loader: fakeLoader(), mcpHubWorker, platformSecret: "shh" });
+    const result = await runner.run({
+      name: "list-mcp",
+      code: `export async function run(args, ctx) { const servers = await ctx.mcp.list_servers(); const tools = await ctx.mcp.list_tools("whop"); return { servers, tools }; }`,
+      tier: 2,
+      args: {},
+      spaceId: "space1",
+      agentId: "agent1",
+      tenantId: "tenant1",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.output).toEqual({ servers: [{ id: "srv-1", name: "whop" }], tools: { tools: [{ name: "list_members" }] } });
+  });
+
+  it("ctx.mcp is absent (not a crash) when no mcpHubWorker binding is configured", async () => {
+    const runner = buildCodeRunner({ loader: fakeLoader() });
+    const result = await runner.run({
+      name: "no-mcp",
+      code: `export async function run(args, ctx) { return typeof ctx.mcp; }`,
+      tier: 2,
+      args: {},
+      spaceId: "space1",
+      agentId: "agent1",
+      tenantId: "tenant1",
+    });
+    expect(result.ok).toBe(true);
+    expect(result.output).toBe("undefined");
   });
 });
 
@@ -169,6 +294,7 @@ describe("code-runner — Tier 5 container execution", () => {
       args: { commands: "echo hi" },
       spaceId: "space1",
       agentId: "agent1",
+      tenantId: "tenant1",
     });
     expect(result.ok).toBe(true);
     expect(result.output).toEqual({ stdout: "hi" });
@@ -182,7 +308,7 @@ describe("code-runner — Tier 5 container execution", () => {
       get: vi.fn().mockReturnValue({ fetch: fetchSpy }),
     } as unknown as DurableObjectNamespace;
     const runner = buildCodeRunner({ toolSandbox });
-    const result = await runner.run({ name: "x", code: "bad code", tier: 5, args: {}, spaceId: "s", agentId: "a" });
+    const result = await runner.run({ name: "x", code: "bad code", tier: 5, args: {}, spaceId: "s", agentId: "a", tenantId: "t" });
     expect(result.ok).toBe(false);
     expect(result.error).toBe("build failed");
   });

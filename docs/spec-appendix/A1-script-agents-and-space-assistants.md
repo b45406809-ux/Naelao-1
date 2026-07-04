@@ -3475,3 +3475,89 @@ functions already existed; only their UI consumers were missing).
 
 **Launchpad go-live (Phases F/G/H) is now COMPLETE.** Remaining work is the larger script-engine/
 execution-ladder/container roadmap (Phases I onward) tracked in the session's plan file.
+
+## A1.17 continued — Phase I: Code-Mode multi-MCP workflow engine — BUILT (scoped)
+
+**Goal:** let ONE agent-authored script deterministically chain several MCP servers (get data
+from A, act on B) instead of that composition only happening across separate model-driven
+reasoning-loop turns, with credentials never exposed to the model, and real LLM usage billed to
+the right balance. Built on substrates the agents worker already declared
+(`[[worker_loaders]] LOADER`) but the isolate never actually used for this.
+
+**I1 — `ctx.mcp` in the Tier 2-4 isolate** (`workers/agents/src/script-engine/code-runner.ts`).
+When the host wires `mcpHubWorker` (`NaelaoAgentDO` → `this.env.MCP_HUB`), every isolate gets
+`ctx.mcp.{call,list_servers,list_tools}`, looping back to the SAME `naelao-mcp-hub` worker the
+`mcp-connector` prebuilt already uses, via the exact same request shape
+(`http://mcp-hub/v1/spaces/{space}/mcp-servers/...`) so the two paths stay behaviorally identical.
+The isolate never receives a credential — mcp-hub still resolves auth server-side exactly as it
+does for the prebuilt path — it receives a short-lived (60s), tenant-scoped internal token minted
+in real TS (`mintInternalToken`) just before isolate construction, never the platform secret
+itself. **Available at every isolate tier (2-4)**, not gated to Tier 4, since fast pure-JS
+multi-MCP orchestration is the core Code-Mode use case, not something that should require a
+browser. A real bug was found and fixed before shipping: `loader.get(id, factory)` caches
+isolates by id and does NOT re-invoke `factory` (so does not refresh `env`) while a warm isolate
+exists — which would have silently gone stale on the 60s-token freshness check the moment an
+isolate stayed warm past a minute. Fixed by folding a coarse 45-second time bucket into the lock
+id, but ONLY when `mcpHubWorker` is configured — scripts that never touch `ctx.mcp` keep the
+original stable id, so their isolate-reuse cache hit rate is unaffected.
+
+**I2 — mcp-hub hardening.** Two real, independent gaps closed: (a) `requireInternalHmac` added to
+`/v1/spaces/*` (the worker's only real ingress is direct service bindings, never the public
+router, so this is the same defense-in-depth backstop every other internal-only worker already
+has — `workers_dev=false` was the sole control before this). Every existing caller updated to mint
+a real token: `mcp-connector.ts`'s `hubHeaders()`, and three direct `c.env.MCP_HUB.fetch(...)`
+call sites in `workers/agents/src/index.ts` (`/connectors/status`, `/connectors/:platform/connect`
+list + register) that had never sent one. (b) The reserved-tool-name guard
+(`isReservedToolName` — money-in-shaped tool names are reserved to the prebuilt `commerce` script)
+previously existed ONLY inside the `mcp-connector` prebuilt — a CLIENT of the hub's `/tools/call`
+route — so the new `ctx.mcp.call` isolate loopback would have bypassed it entirely by calling the
+hub directly. Mirrored the guard into `workers/mcp-hub/src/index.ts` itself (kept in sync by hand,
+same precedent as the existing `isReservedPaymentHost` duplication) so it's now enforced
+authoritatively for every caller, present and future, not just the one prebuilt.
+**Deliberately NOT built this pass:** per-user MCP credential resolution (`on_behalf_of_user_id`
+threaded into `buildAuthHeaders` so a member's own connected account, not just the space-level
+fallback, resolves) — this needs a new "acting end-user id" field plumbed through
+`ScriptEngineEnv`/`buildScriptEngineEnv` that nothing currently populates; flagged as a real
+follow-up rather than adding an unused field.
+
+**I3 — Naelao-LLM-in-script billing, scoped to the end-user sink.** `tokensToCredits` (already
+real) is now actually debited for a **non-project** run (Space Assistant / product-shell Home
+chat) by a signed-in **product end user**: new `POST /internal/product-users/:spaceId/:endUserId/
+credits/deduct` on the spaces worker (HMAC-gated) wraps `ProductUserDO`'s existing, already-
+tested, fails-closed `/credits/deduct` — the missing piece was purely a caller; `NaelaoAgentDO`
+never had a way to reach it. New `debitEndUserCredits()` in `NaelaoAgentDO`, called from
+`handleScriptRun` as the mutually-exclusive `else` branch of the existing project-spend-cap logic
+(`callerRole === "product_end_user"` — read from the router-set `x-naelao-role` header, the same
+trust boundary as `x-naelao-tenant-id`, never client-suppliable). Post-hoc, best-effort — matches
+the existing project-spend accounting's own posture (never crashes an already-completed run's
+response over a billing hiccup) but surfaces insufficient-balance/failure in the run's `notes` so
+it's visible, not silently swallowed. **Deliberately NOT built this pass:** the `space_credits`
+sink for builder/team-owned runs — that table has ZERO existing read/write code anywhere in the
+platform (only its migration), so "wiring an existing sink" (the plan's framing) doesn't apply;
+building one from scratch (daily-reset semantics implied by its `daily_spent`/`last_reset_date`
+columns, fail-closed insufficient-balance handling) is a real, separate, money-adjacent feature
+that deserves its own focused pass rather than being rushed alongside everything else in this one.
+
+**I4 — no new authoring mechanism needed.** The reasoning loop's existing `distill` action already
+accepts arbitrary `metadata.requires_tier` + `code` — a model authoring a Tier-2 script that calls
+`ctx.mcp.call(...)` multiple times distills and re-runs through the SAME `script.find`/`script.run`
+path every other capability already uses. I1 alone is what makes multi-MCP workflow scripts
+possible; no "codemode script kind" or new distill affordance was required.
+
+**Tests:** extended `tests/unit/code-runner.test.ts` (4 new — single-call token verification, a
+**two-different-servers-in-one-script** chain proving the core deterministic multi-MCP ask, list
+ops, graceful absence without a binding); new `tests/unit/mcp-hub-hmac.test.ts` (5 — rejects
+without/with-wrong-tenant token, accepts a valid one, blocks a reserved tool name server-side even
+when called directly bypassing the prebuilt, allows an ordinary tool through); new
+`tests/unit/mcp-connector-hmac.test.ts` (2 — the prebuilt's own calls now carry a verified token);
+new `tests/unit/end-user-credit-debit.test.ts` (5 — token-gated, debits correctly, fails closed at
+402 on insufficient balance without going negative, 404 for an unknown product, rejects non-
+positive amounts). All existing `code-runner.test.ts` calls updated for the new required
+`tenantId` field on `TieredCodeRunner.run()` (threaded through `execution-ladder.ts` and the two
+other direct callers, `browser-use.ts` and `code-exec.ts`). 1003/1003 tests pass (16 new).
+`pnpm turbo run typecheck` clean (75 tasks).
+
+**Remaining (documented, not dropped):** per-user MCP credentials (I2b), the `space_credits` sink
+for builder-owned runs (part of I3), and Phases J (Workflows tier), K (per-project R2-mounted
+container), N (Launchpad operator-shell UI + cleanup), L (Container Marketplace), M
+(local-machine-as-container) — see the session's plan file for the full roadmap.

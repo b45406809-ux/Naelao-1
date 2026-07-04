@@ -706,9 +706,36 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     functions already existed. Verified via `next build` AND a real headless-Chromium CDP session
     (the established Fetch-mock technique): screenshots confirm the Domain tab renders a real
     "Pending DNS" badge + connected domain + both DNS records from mocked data, and the
-    Configuration page's Name field is pre-populated correctly. Remaining work is the larger
-    script-engine/execution-ladder/container roadmap (Phases I onward), tracked in the session's
-    plan file, not yet mirrored into this doc.
+    Configuration page's Name field is pre-populated correctly.
+32. **Phase I (Code-Mode multi-MCP workflow engine) is BUILT, scoped.** Goal: let ONE
+    agent-authored script deterministically chain several MCP servers (get data from A, act on B)
+    instead of that composition only happening across separate model-driven reasoning-loop turns.
+    New `ctx.mcp.{call,list_servers,list_tools}` injected into the Tier 2-4 Worker Loader isolate
+    (`workers/agents/src/script-engine/code-runner.ts`) whenever `mcpHubWorker` is wired — loops
+    back to the same `naelao-mcp-hub` worker the `mcp-connector` prebuilt already uses, with the
+    isolate receiving only a short-lived (60s), tenant-scoped internal token, never a credential or
+    the platform secret. A real bug was caught before shipping: the Worker Loader caches isolates
+    by id and won't refresh `env` on a warm hit, which would have silently staled the 60s token —
+    fixed by folding a 45s time bucket into the lock id, only for scripts that use `ctx.mcp`, so
+    other scripts' isolate-reuse cache rate is unaffected. Hardened mcp-hub with
+    `requireInternalHmac` (its only real ingress was already direct service bindings, never the
+    router, but every other internal-only worker has this backstop) and found + closed a real gap:
+    the reserved-tool-name guard (money-in tool names reserved to `commerce`) existed only inside
+    the `mcp-connector` prebuilt client, so the new `ctx.mcp.call` isolate path would have bypassed
+    it entirely — mirrored the guard into mcp-hub itself so it's enforced for every caller, not just
+    one. Wired real LLM-usage billing to the end-user sink: new `POST /internal/product-users/
+    :spaceId/:endUserId/credits/deduct` wraps `ProductUserDO`'s existing fails-closed
+    `/credits/deduct` (the sink already existed; nothing ever called it), debited from
+    `NaelaoAgentDO.handleScriptRun` for non-project Space-Assistant runs by a signed-in product end
+    user. No new "codemode" authoring mechanism was needed — the reasoning loop's existing `distill`
+    action already lets a model author any Tier-2 script, so `ctx.mcp` alone makes multi-MCP
+    workflow scripts possible. **Deliberately deferred (documented, not dropped):** per-user MCP
+    credential resolution (needs a new "acting end-user id" field nothing currently populates), and
+    the `space_credits` billing sink for builder/team-owned runs (that table has zero existing
+    read/write code anywhere — a real feature to build, not a wiring job). 1003/1003 tests pass (16
+    new), `pnpm turbo run typecheck` clean (75 tasks). Next: Phase J (Workflows tier), K
+    (per-project R2-mounted container), N (Launchpad operator-shell UI + cleanup) — full roadmap
+    including Phases L/M in the session's plan file.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

@@ -25,6 +25,7 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { isReservedPaymentHost, isReservedToolName } from "../reserved-capabilities.js";
+import { mintInternalToken } from "@naelao/http";
 
 interface HubServer {
   id: string;
@@ -40,13 +41,17 @@ function hub(ctx: PrebuiltOpContext): Fetcher {
   return f;
 }
 
-/** Common headers for hub calls — tenant scopes the registry; agent id is for credential audit. */
-function hubHeaders(ctx: PrebuiltOpContext): Record<string, string> {
+/** Common headers for hub calls — tenant scopes the registry; agent id is for credential audit.
+ *  §A1.17 Phase I: mcp-hub now gates its routes with requireInternalHmac (defense-in-depth on
+ *  top of workers_dev=false, matching every other internal-only worker) — mints a real,
+ *  60s-scoped token rather than trusting a static identity header. */
+async function hubHeaders(ctx: PrebuiltOpContext): Promise<Record<string, string>> {
   return {
     "content-type": "application/json",
     "x-naelao-tenant-id": ctx.env.tenantId,
     "x-naelao-user-id": ctx.env.agentId,
     "x-naelao-agent-id": ctx.env.agentId,
+    "x-naelao-internal-token": await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId),
   };
 }
 
@@ -58,7 +63,7 @@ async function hubFetch(
   const resp = await hub(ctx).fetch(
     new Request(`http://mcp-hub/v1/spaces/${ctx.env.spaceId}${path}`, {
       method: init.method,
-      headers: hubHeaders(ctx),
+      headers: await hubHeaders(ctx),
       ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
     })
   );

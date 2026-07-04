@@ -183,6 +183,10 @@ export interface TieredCodeRunner {
     args: Record<string, unknown>;
     spaceId: string;
     agentId: string;
+    /** §A1.17 Phase I: needed so Tier 2-4 isolates can mint a scoped internal token for the
+     *  ctx.mcp loopback (mcp-hub is HMAC-gated) without ever exposing the platform secret itself
+     *  to the isolate. */
+    tenantId: string;
   }): Promise<ScriptRunResult>;
 }
 

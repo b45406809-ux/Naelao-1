@@ -1029,7 +1029,10 @@ app.get("/connectors/status", async (c) => {
     try {
       const resp = await c.env.MCP_HUB.fetch(
         new Request(`http://mcp-hub/v1/spaces/${spaceId}/mcp-servers`, {
-          headers: { "x-naelao-tenant-id": tenantId },
+          headers: {
+            "x-naelao-tenant-id": tenantId,
+            "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+          },
         })
       );
       if (resp.ok) {
@@ -1101,9 +1104,10 @@ app.post("/connectors/:platform/connect", async (c) => {
   }
 
   // 2. Reuse an existing MCP server with this name, else register a new one.
+  const mcpInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
   const listResp = await c.env.MCP_HUB.fetch(
     new Request(`http://mcp-hub/v1/spaces/${body.space_id}/mcp-servers`, {
-      headers: { "x-naelao-tenant-id": tenantId },
+      headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": mcpInternalToken },
     })
   );
   let serverId: string | null = null;
@@ -1116,7 +1120,12 @@ app.post("/connectors/:platform/connect", async (c) => {
     const regResp = await c.env.MCP_HUB.fetch(
       new Request(`http://mcp-hub/v1/spaces/${body.space_id}/mcp-servers`, {
         method: "POST",
-        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-user-id": userId },
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-user-id": userId,
+          "x-naelao-internal-token": mcpInternalToken,
+        },
         body: JSON.stringify({
           name: connector.id,
           url: body.mcp_url ?? connector.mcp_endpoint,

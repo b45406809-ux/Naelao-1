@@ -38,6 +38,7 @@ async function navigate(
     args: body,
     spaceId: ctx.env.spaceId,
     agentId: ctx.env.agentId,
+    tenantId: ctx.env.tenantId,
   });
   if (!result.ok) throw new Error(result.error ?? "browser navigation failed");
   return result.output;

@@ -1287,6 +1287,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     env.codeRunner = buildCodeRunner({
       ...(this.env.LOADER ? { loader: this.env.LOADER } : {}),
       ...(this.env.BROWSER_WORKER ? { browserWorker: this.env.BROWSER_WORKER } : {}),
+      ...(this.env.MCP_HUB ? { mcpHubWorker: this.env.MCP_HUB } : {}),
       ...(this.env.PLATFORM_SECRET ? { platformSecret: this.env.PLATFORM_SECRET } : {}),
       ...(this.env.TOOL_SANDBOX ? { toolSandbox: this.env.TOOL_SANDBOX } : {}),
     });
@@ -1667,6 +1668,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // it shares one filesystem") — absent means this run is the Space Assistant, operating
     // space-wide. Never inferred; a caller that wants project scoping must say so explicitly.
     const projectId = body.projectId ?? request.headers.get("x-naelao-project-id") ?? undefined;
+    // §A1.17 Phase I: which credit balance a non-project (Space Assistant) run's real LLM usage
+    // debits from — a signed-in product end user's OWN balance, never inferred from anything the
+    // caller could spoof at the script-args level (this is a header the router sets from verified
+    // claims for every proxied request, same trust boundary as x-naelao-tenant-id above).
+    const callerRole = request.headers.get("x-naelao-role") ?? undefined;
     const runId = crypto.randomUUID();
 
     if (!body.goal || !spaceId) {
@@ -1783,6 +1789,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // this project); the local table is kept only as this DO's own telemetry/cache.
         this.addProjectSpend(projectId, credits);
         if (hasSpendCap) await this.checkAndDebitProjectSpend(spaceId, tenantId, projectId, credits);
+      } else if (!projectId && callerRole === "product_end_user" && userId && result.result?.tokens_used) {
+        // §A1.17 Phase I: a non-project run (Space Assistant / Home chat) by a signed-in product
+        // end user debits THEIR OWN ProductUserDO balance, not a project cap — mutually exclusive
+        // with the branch above (a project-scoped run never reaches here). Post-hoc, best-effort,
+        // same posture as the project-spend accounting above: never fails an already-completed
+        // run's response over a billing-side hiccup, but insufficient balance is still surfaced
+        // in the result notes so it's visible, not silently swallowed.
+        const credits =
+          result.result.input_tokens || result.result.output_tokens
+            ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, body.model ?? "claude-haiku-4-5-20251001")
+            : result.result.tokens_used;
+        await this.debitEndUserCredits(spaceId, tenantId, userId, credits, body.model, result.notes);
       }
 
       // Layer 4 (Fabric) auto-consolidation (spec: "runs LLM-driven session extraction
@@ -1976,6 +1994,32 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return data;
     } catch {
       return { capped: true, spent_today: Number.POSITIVE_INFINITY };
+    }
+  }
+
+  /** §A1.17 Phase I: debit a signed-in product end user's OWN ProductUserDO balance for a
+   *  non-project run's real LLM usage. Best-effort — a billing-side failure never crashes an
+   *  already-completed run, but is surfaced in `notes` so it isn't silently swallowed (same
+   *  "fail closed on the money, fail open on the response" posture as project-spend above). */
+  private async debitEndUserCredits(
+    spaceId: string, tenantId: string, endUserId: string, credits: number, model: string | undefined, notes: string[]
+  ): Promise<void> {
+    try {
+      const resp = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/internal/product-users/${spaceId}/${endUserId}/credits/deduct`,
+        {
+          method: "POST",
+          headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+          body: JSON.stringify({ credits, reason: "agent_run", ...(model ? { model } : {}) }),
+        }
+      ));
+      if (resp.status === 402) {
+        notes.push(`Billing: insufficient credits to cover this run's ${credits} credit(s) — balance was not debited.`);
+      } else if (!resp.ok) {
+        notes.push(`Billing: failed to debit ${credits} credit(s) for this run (${resp.status}) — see logs.`);
+      }
+    } catch (err) {
+      notes.push(`Billing: failed to debit ${credits} credit(s) for this run (${(err as Error).message}).`);
     }
   }
 

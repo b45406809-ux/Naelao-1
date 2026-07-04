@@ -14,6 +14,17 @@
  *   export async function run(args, ctx) { ... return result; }
  * `ctx` always exposes `fetch`; Tier 4 additionally exposes `browser.navigate(...)`.
  *
+ * §A1.17 Phase I — `ctx.mcp` (Code Mode, Tiers 2-4): when the host wires a `mcpHubWorker`
+ * binding, every isolate ALSO gets `ctx.mcp.{call,list_servers,list_tools}`, looping back to the
+ * SAME `naelao-mcp-hub` worker the `mcp-connector` prebuilt already uses — so ONE authored
+ * script can deterministically chain several MCP servers (get data from A, act on B) instead of
+ * that composition living only in the model-driven, one-op-per-turn reasoning loop. The isolate
+ * never receives a credential: mcp-hub still resolves auth server-side exactly as it does for
+ * the prebuilt path. What the isolate DOES receive is a short-lived (60s), tenant-scoped internal
+ * token minted just before isolate construction — never the platform secret itself — so the
+ * mcp-hub's `requireInternalHmac` gate is satisfied without widening what a compromised script
+ * could do with it.
+ *
  * The CF Worker Loader binding (`worker_loaders`) is a 2025 beta primitive — not yet in
  * @cloudflare/workers-types, so its shape is declared locally (same pattern ToolSandboxDO
  * uses for the Container runtime). When the binding is absent (older account / local dev
@@ -22,6 +33,7 @@
  */
 
 import type { TieredCodeRunner, ScriptRunResult, ExecutionTier } from "./types.js";
+import { mintInternalToken } from "@naelao/http";
 
 // ── CF Worker Loader binding (beta) — minimal local typing ─────────────────────────────
 
@@ -51,7 +63,10 @@ export interface CodeRunnerOptions {
   loader?: WorkerLoaderBinding;
   /** naelao-browser service binding (Tier 4). */
   browserWorker?: Fetcher;
-  /** Shared internal token the browser worker requires (x-naelao-internal-token). */
+  /** naelao-mcp-hub service binding — powers Tiers 2-4's ctx.mcp (§A1.17 Phase I). */
+  mcpHubWorker?: Fetcher;
+  /** Used to mint short-lived internal tokens for the browser/mcp-hub loopbacks — never handed
+   *  to the isolate directly. */
   platformSecret?: string;
   /** ToolSandboxDO namespace (Tier 5). */
   toolSandbox?: DurableObjectNamespace;
@@ -136,6 +151,46 @@ export default {
         },
       };
     }
+    if (env.__MCP_HUB__) {
+      const mcpHeaders = () => ({
+        "content-type": "application/json",
+        "x-naelao-tenant-id": env.__MCP_TENANT__ || "",
+        "x-naelao-user-id": env.__MCP_AGENT__ || "",
+        "x-naelao-agent-id": env.__MCP_AGENT__ || "",
+        "x-naelao-internal-token": env.__MCP_TOKEN__ || "",
+      });
+      const mcpFetch = async (path, init) => {
+        const r = await env.__MCP_HUB__.fetch(new Request("http://mcp-hub/v1/spaces/" + env.__MCP_SPACE__ + path, {
+          method: init.method,
+          headers: mcpHeaders(),
+          ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+        }));
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error((body && body.message) || ("mcp-hub " + path + " failed: " + r.status));
+        return body;
+      };
+      const resolveServerId = async (ref) => {
+        const listed = await mcpFetch("/mcp-servers", { method: "GET" });
+        const servers = (listed && listed.data) || [];
+        const match = servers.find((s) => s.id === ref) || servers.find((s) => s.name === ref);
+        if (!match) throw new Error("ctx.mcp: no registered server named '" + ref + "'");
+        return match.id;
+      };
+      ctx.mcp = {
+        list_servers: async () => {
+          const listed = await mcpFetch("/mcp-servers", { method: "GET" });
+          return listed.data || [];
+        },
+        list_tools: async (server) => {
+          const id = await resolveServerId(server);
+          return mcpFetch("/mcp-servers/" + id + "/tools", { method: "GET" });
+        },
+        call: async (server, tool, params) => {
+          const id = await resolveServerId(server);
+          return mcpFetch("/mcp-servers/" + id + "/tools/call", { method: "POST", body: { tool_name: tool, input: params || {} } });
+        },
+      };
+    }
     if (typeof run !== "function") {
       return Response.json({ ok: false, error: "script must export an async function named 'run'" }, { status: 500 });
     }
@@ -165,7 +220,7 @@ async function fetchEsmModule(pkg: string): Promise<string | null> {
 
 async function runIsolate(
   opts: CodeRunnerOptions,
-  params: { name: string; code: string; tier: ExecutionTier; args: Record<string, unknown>; spaceId: string; agentId: string }
+  params: { name: string; code: string; tier: ExecutionTier; args: Record<string, unknown>; spaceId: string; agentId: string; tenantId: string }
 ): Promise<ScriptRunResult> {
   const started = Date.now();
   if (!opts.loader) {
@@ -204,8 +259,28 @@ async function runIsolate(
     env.__BROWSER_TOKEN__ = opts.platformSecret ?? "";
   }
 
+  // ctx.mcp is available at every isolate tier (2-4) — Code Mode's core use case is fast,
+  // pure-JS multi-MCP orchestration, not something that should require Tier 4. Mints a
+  // short-lived (60s), tenant-scoped token here in real TS — the isolate only ever receives
+  // the finished token string, never the platform secret itself.
+  if (opts.mcpHubWorker) {
+    env.__MCP_HUB__ = opts.mcpHubWorker;
+    env.__MCP_TOKEN__ = await mintInternalToken(opts.platformSecret ?? "", params.tenantId);
+    env.__MCP_TENANT__ = params.tenantId;
+    env.__MCP_SPACE__ = params.spaceId;
+    env.__MCP_AGENT__ = params.agentId;
+  }
+
   // One isolate per (space, script, code revision) — never share isolates across spaces.
-  const lockId = `${params.spaceId}:${params.name}:${hashCode(params.code)}`;
+  // `loader.get(id, factory)` caches by id and does NOT re-invoke `factory` (so does not
+  // refresh `env`) while a warm isolate for that id exists. That's fine for env values with no
+  // expiry (browser token, static bindings) but would silently stale-out __MCP_TOKEN__ (60s
+  // freshness window) if the isolate stayed warm longer than that. So ONLY when mcp-hub is
+  // wired, fold a coarse time bucket into the id — well inside the token's freshness window —
+  // forcing a fresh isolate (and a fresh token) periodically. Scripts that never touch ctx.mcp
+  // keep the original stable id, so their isolate-reuse cache hit rate is unaffected.
+  const mcpTimeBucket = opts.mcpHubWorker ? `:mcp${Math.floor(Date.now() / 45_000)}` : "";
+  const lockId = `${params.spaceId}:${params.name}:${hashCode(params.code)}${mcpTimeBucket}`;
 
   try {
     const stub = opts.loader.get(lockId, () => ({

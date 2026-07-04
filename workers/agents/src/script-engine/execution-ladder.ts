@@ -71,6 +71,7 @@ export async function runStoredScript(
       args,
       spaceId: env.spaceId,
       agentId: env.agentId,
+      tenantId: env.tenantId,
     });
   } catch (err) {
     return {

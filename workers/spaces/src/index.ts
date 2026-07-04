@@ -1613,6 +1613,34 @@ app.post("/internal/credit-packs/grant", async (c) => {
   return c.json(result, grantRes.status as 200 | 201);
 });
 
+// POST /internal/product-users/:spaceId/:endUserId/credits/deduct — §A1.17 Phase I. The agents
+// worker calls this after a script/reasoning-loop run that consumed real LLM tokens, so a signed-
+// in product end user's OWN credit balance (not the business's) is what pays for their own chat
+// usage. tokensToCredits() is the single conversion (packages/billing-core) — the caller has
+// already converted; this route only debits. Fails closed on insufficient balance (402), matching
+// ProductUserDO's own posture.
+app.use("/internal/product-users/:spaceId/:endUserId/credits/deduct", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/product-users/:spaceId/:endUserId/credits/deduct", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const endUserId = c.req.param("endUserId");
+  const body = await c.req.json<{ credits: number; reason?: string; model?: string }>();
+  if (!Number.isFinite(body.credits) || body.credits <= 0) {
+    return c.json({ error_code: "bad_request", message: "credits must be a positive number" }, 400);
+  }
+  const product = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'")
+    .bind(spaceId).first<{ tenant_id: string }>();
+  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+
+  const stub = await productUserDoStub(c.env, spaceId, endUserId, product.tenant_id);
+  const deductRes = await stub.fetch(new Request("http://do/credits/deduct", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ credits: body.credits, reason: body.reason ?? "agent_run", ...(body.model ? { model: body.model } : {}) }),
+  }));
+  const result = await deductRes.json<{ balance_credits: number; error?: string }>();
+  return c.json(result, deductRes.status as 201 | 402 | 400);
+});
+
 // ── Internal: SpaceType manifest registry (spec §62) ────────────────────────
 // These routes are called by the provisioner via SPACES_WORKER service binding.
 // They are NOT exposed to end-users — caller identity is validated by the internal header.

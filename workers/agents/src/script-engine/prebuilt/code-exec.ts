@@ -71,6 +71,7 @@ async function runTier(
     args,
     spaceId: ctx.env.spaceId,
     agentId: ctx.env.agentId,
+    tenantId: ctx.env.tenantId,
   });
   if (!result.ok) throw new Error(result.error ?? `${name} failed`);
   return result.output;

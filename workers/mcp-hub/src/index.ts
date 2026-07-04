@@ -1,6 +1,6 @@
 // G-I17: MCP Tool Server Registry — registers MCP servers per Space and proxies tool calls
 import { Hono } from "hono";
-import { errorResponse, requestId } from "@naelao/http";
+import { errorResponse, requestId, requireInternalHmac } from "@naelao/http";
 
 interface Env {
   ENVIRONMENT: string;
@@ -27,6 +27,20 @@ const RESERVED_PAYMENT_HOSTS: readonly string[] = [
 function isReservedPaymentHost(hostname: string): boolean {
   const h = hostname.toLowerCase();
   return RESERVED_PAYMENT_HOSTS.some((p) => h === p || h.endsWith(`.${p}`));
+}
+
+// Mirrors workers/agents/src/script-engine/reserved-capabilities.ts's RESERVED_CAPABILITIES +
+// isReservedToolName (kept in sync by hand — same precedent as the payment-host list above).
+const RESERVED_TOOL_CAPABILITIES: readonly string[] = [
+  "collect_payment", "create_checkout", "charge_customer", "subscription_charge",
+  "issue_invoice", "payout", "wallet_withdraw", "wallet_balance", "connect_payment_account",
+];
+
+function isReservedToolName(toolName: string): boolean {
+  const n = toolName.toLowerCase().replace(/[^a-z]/g, "_");
+  if (RESERVED_TOOL_CAPABILITIES.some((cap) => n.includes(cap))) return true;
+  return /(create|start|new|capture|collect)_?(payment|checkout|charge|invoice|payout|subscription)/.test(n)
+    || /\b(charge|payout|refund|withdraw)\b/.test(toolName.toLowerCase());
 }
 
 /**
@@ -67,6 +81,13 @@ app.use("*", async (c, next) => {
   validateEnv(c.env);
   await next();
 });
+// §A1.17 Phase I: this worker's only real ingress is direct service bindings from the agents
+// worker (mcp-connector's ctx.env.mcpHubWorker, and now the ctx.mcp isolate loopback) — never
+// the public router — so `workers_dev = false` is the primary control. This adds the same
+// defense-in-depth `requireInternalHmac` backstop every other internal-only worker in the
+// platform already has (credentials, billing's /internal/*, spaces' /internal/*) in case that
+// ever slips.
+app.use("/v1/spaces/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 
 function getCallerIdentity(c: { req: { header: (h: string) => string | undefined } }): {
   tenantId: string;
@@ -329,6 +350,18 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
   const body = await c.req.json<{ tool_name: string; input: Record<string, unknown> }>();
   if (!body.tool_name) {
     return c.json({ error_code: "bad_request", message: "tool_name is required" }, 400);
+  }
+
+  // §A1.17 Phase I: this guard previously existed ONLY in the mcp-connector prebuilt (a client
+  // of this route), so any caller that reaches this endpoint directly — e.g. the new ctx.mcp
+  // isolate loopback — bypassed it entirely. Enforced here too so it protects every caller, not
+  // just one; kept in sync with reserved-capabilities.ts's isReservedToolName by hand (same
+  // precedent as isReservedPaymentHost above).
+  if (isReservedToolName(body.tool_name)) {
+    return c.json({
+      error_code: "reserved_capability",
+      message: `Tool '${body.tool_name}' looks like a money-in capability, which is reserved to the prebuilt commerce script.`,
+    }, 403);
   }
 
   let headers: Record<string, string>;
