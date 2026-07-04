@@ -1776,6 +1776,27 @@ async function loadManifest(env: Env, spaceTypeId: string): Promise<NaelaoSpaceT
 }
 
 /**
+ * Load the Launchpad business-template catalog (id/name/coming_soon only — never the full
+ * bootstrap/agents/skills shape, which is builder/provisioner-internal) from the agents worker's
+ * real GET /templates, KV-cached 1h like loadManifest above. This is the single source of truth
+ * the shell's create-business dialog and the dashboard's Templates Catalog config both render
+ * from — replacing the two hand-maintained, drift-prone copies of LAUNCHPAD_TEMPLATES that used
+ * to live in apps/dashboard and apps/shell (CLAUDE.md Phase F).
+ */
+async function loadTemplateCatalog(env: Env): Promise<Array<{ id: string; name: string; coming_soon: boolean }>> {
+  const cacheKey = "launchpad-template-catalog";
+  const cached = await env.NAELAO_CONFIG_KV.get(cacheKey, "json") as Array<{ id: string; name: string; coming_soon: boolean }> | null;
+  if (cached) return cached;
+  if (!env.AGENTS_WORKER) return [];
+  const resp = await env.AGENTS_WORKER.fetch(new Request("http://agents-worker/templates"));
+  if (!resp.ok) return [];
+  const body = await resp.json<{ templates: Array<{ id: string; name: string; coming_soon?: boolean }> }>();
+  const catalog = body.templates.map((t) => ({ id: t.id, name: t.name, coming_soon: t.coming_soon ?? false }));
+  await env.NAELAO_CONFIG_KV.put(cacheKey, JSON.stringify(catalog), { expirationTtl: 3600 });
+  return catalog;
+}
+
+/**
  * Resolve the effective productConfig for a product space: the SpaceType manifest's
  * productConfig, overlaid with any per-space override in spaces.config_json.productConfig.
  */
@@ -1850,6 +1871,14 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
   if (!manifest) return c.json({ error_code: "not_found", message: "SpaceType manifest not found" }, 404);
   const pc = await loadEffectiveProductConfig(c.env, space.spacetype_id, space.config_json);
 
+  const businessTemplates = pc?.catalog?.businessTemplates ?? [];
+  const fullCatalog = await loadTemplateCatalog(c.env);
+  // Phase F (CLAUDE.md): intersect the real coming_soon-aware catalog with the builder's
+  // narrowing — empty/unset businessTemplates means "every template the SpaceType ships,"
+  // matching business_templates' existing "not configured yet" semantics below.
+  const templateCatalog =
+    businessTemplates.length > 0 ? fullCatalog.filter((t) => businessTemplates.includes(t.id)) : fullCatalog;
+
   return c.json({
     space_id: space.id,
     space_type_id: space.spacetype_id,
@@ -1882,7 +1911,10 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
     // Phase D (§A1.17): which business templates a builder actually offers — empty means "every
     // template the SpaceType ships," so the shell's create-business dialog treats [] the same as
     // "not configured yet" rather than "none allowed."
-    business_templates: pc?.catalog?.businessTemplates ?? [],
+    business_templates: businessTemplates,
+    // Phase F (§A1.17): the real, coming_soon-aware template catalog (id/name only) — the shell's
+    // create-business dialog renders straight from this instead of a hardcoded duplicate list.
+    template_catalog: templateCatalog,
   });
 });
 

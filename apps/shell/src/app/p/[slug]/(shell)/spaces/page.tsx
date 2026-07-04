@@ -7,20 +7,10 @@ import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { getShellManifest, listMyBusinesses, createBusiness, type ShellManifest, type Business } from "@/lib/api";
 
-// Hardcoded to match workers/agents/src/launchpad/spacetype.ts's LAUNCHPAD_TEMPLATES — there is
-// no product-scoped, end-user-reachable /templates read route yet (only the builder dashboard's
-// GET /templates on the agents worker), so this is a deliberate Phase C simplification rather
-// than plumbing a new backend route for a 7-item static catalogue. Revisit if templates ever
-// become dynamic per-product (a `catalog` productConfig field, per the phased plan's Phase D).
-const LAUNCHPAD_TEMPLATES = [
-  { id: "creator-store", name: "Creator Store" },
-  { id: "newsletter-business", name: "Newsletter Business" },
-  { id: "micro-saas", name: "Micro-SaaS" },
-  { id: "service-agency", name: "Service Agency" },
-  { id: "coaching-community", name: "Coaching / Community" },
-  { id: "whop-seller", name: "Whop Seller" },
-  { id: "customer-service", name: "Customer Service Desk" },
-];
+// Phase F (§A1.17): a sentinel selection meaning "no template — the assistant helps build this
+// business from scratch," distinct from an empty Set (which used to mean the same thing but
+// wasn't a labeled choice). Never sent to the backend as a template id.
+const CUSTOM_BUSINESS = "__custom__";
 
 export default function SpacesPage() {
   const product = useProduct();
@@ -57,7 +47,11 @@ export default function SpacesPage() {
 
   function toggleTemplate(id: string) {
     setSelectedTemplates((prev) => {
+      // Selecting Custom clears any real templates (and vice versa) — they're mutually exclusive:
+      // Custom means "no template at all," so mixing it with a real one is meaningless.
+      if (id === CUSTOM_BUSINESS) return prev.has(CUSTOM_BUSINESS) ? new Set() : new Set([CUSTOM_BUSINESS]);
       const next = new Set(prev);
+      next.delete(CUSTOM_BUSINESS);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
@@ -70,10 +64,11 @@ export default function SpacesPage() {
     setCreating(true);
     try {
       const allowed = manifest?.allowed_child_space_types ?? ["launchpad"];
+      const templateIds = Array.from(selectedTemplates).filter((id) => id !== CUSTOM_BUSINESS);
       await createBusiness(product.space_id, creds, {
         name: name.trim(),
         spacetype_id: allowed[0] ?? "launchpad",
-        template_ids: Array.from(selectedTemplates),
+        template_ids: templateIds,
       });
       setModalOpen(false);
       setName("");
@@ -88,13 +83,10 @@ export default function SpacesPage() {
   }
 
   const canCreate = manifest?.membership_model === "tenant" || manifest?.membership_model === "hybrid";
-  // Phase D: a builder can narrow the offered templates via productConfig.catalog.businessTemplates
-  // (shell/manifest's business_templates) — empty/unset means "not configured yet," so fall back
-  // to every template the SpaceType ships rather than showing an empty picker.
-  const availableTemplates =
-    manifest?.business_templates && manifest.business_templates.length > 0
-      ? LAUNCHPAD_TEMPLATES.filter((t) => manifest.business_templates.includes(t.id))
-      : LAUNCHPAD_TEMPLATES;
+  // Phase F: render from the real, coming_soon-aware catalog (shell/manifest's template_catalog,
+  // already intersected server-side with the builder's business_templates narrowing) instead of a
+  // hardcoded duplicate of LAUNCHPAD_TEMPLATES.
+  const availableTemplates = manifest?.template_catalog ?? [];
 
   return (
     <div className="page-view">
@@ -155,12 +147,27 @@ export default function SpacesPage() {
           <div className="section-label" style={{ marginTop: 8 }}>
             Templates (optional — pick one or more)
           </div>
-          {availableTemplates.map((t) => (
-            <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
-              <Toggle on={selectedTemplates.has(t.id)} onChange={() => toggleTemplate(t.id)} label={t.name} />
-              {t.name}
-            </label>
-          ))}
+          <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
+            <Toggle on={selectedTemplates.has(CUSTOM_BUSINESS)} onChange={() => toggleTemplate(CUSTOM_BUSINESS)} label="Custom" />
+            Custom — build from scratch with the assistant
+          </label>
+          {availableTemplates.map((t) =>
+            t.coming_soon ? (
+              <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, opacity: 0.5 }}>
+                <Toggle on={false} onChange={() => {}} disabled label={t.name} />
+                {t.name}
+                <Badge color="amber">Coming soon</Badge>
+              </label>
+            ) : (
+              <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
+                <Toggle on={selectedTemplates.has(t.id)} onChange={() => toggleTemplate(t.id)} label={t.name} />
+                {t.name}
+              </label>
+            )
+          )}
+          {selectedTemplates.has(CUSTOM_BUSINESS) && (
+            <p style={{ fontSize: 12, color: "var(--text3)" }}>The assistant will help you design and set up this business.</p>
+          )}
         </form>
       </Modal>
       <Toast toast={toast} />

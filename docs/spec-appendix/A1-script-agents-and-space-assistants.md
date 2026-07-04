@@ -3332,3 +3332,49 @@ every automated test exercises.
 **Remaining for the Three-Tier build:** Phase 7/8 of the original full-vision plan (sub-space/
 reseller UI polish beyond what Phases C/D/E already cover, deferred product-sdk + per-product CF
 Pages deploy) — see the plan's own phase list for what's left unbuilt.
+
+## A1.17 continued — Launchpad go-live: Phase F (Whop-first rollout + explicit Custom) — BUILT
+
+**Goal:** activate the "Whop first, everything else coming soon" framing that was already
+architecturally present (`LaunchpadTemplate.coming_soon`) but never actually set on any template,
+and de-drift two hand-maintained copies of the template list that had grown across the codebase.
+
+**Backend.** Set `coming_soon: true` on the six non-Whop `LAUNCHPAD_TEMPLATES`
+(`workers/agents/src/launchpad/spacetype.ts`): creator-store, newsletter-business, micro-saas,
+service-agency, coaching-community, customer-service. `whop-seller` stays live. The existing
+`GET /templates` route (agents worker) and `apps/dashboard/src/lib/temples.ts`'s wizard filter
+already honored this flag — setting it was the only change needed on that path.
+
+New `loadTemplateCatalog()` (`workers/spaces/src/index.ts`) is the single source of truth the
+shell and dashboard both now render from: a KV-cached (1h, same pattern as `loadManifest`) call to
+the agents worker's `GET /templates` via the existing `AGENTS_WORKER` service binding, projected
+down to `{id, name, coming_soon}` (never the full bootstrap/agents/skills shape, which stays
+builder/provisioner-internal). Wired into `GET /spaces/:spaceId/shell/manifest` as a new
+`template_catalog` field, intersected server-side with the builder's existing
+`productConfig.catalog.businessTemplates` narrowing (empty/unset = every template, matching
+`business_templates`' existing semantics) — so the client never re-implements that intersection.
+Caught a real bug before it shipped: the first draft of `loadTemplateCatalog` parsed the agents
+worker's response as `{data: [...]}`, but the real `GET /templates` route returns `{templates:
+[...]}` — a test asserting the actual field ("fetches the real catalog ... from GET /templates")
+failed immediately and caught it.
+
+**Frontend.** `apps/shell`'s create-business dialog (`spaces/page.tsx`) now renders from
+`manifest.template_catalog` instead of a hardcoded `LAUNCHPAD_TEMPLATES` duplicate — coming-soon
+templates render disabled with a "Coming soon" badge — and gained an explicit **"Custom — build
+from scratch with the assistant"** toggle (mutually exclusive with real template selections; maps
+to `template_ids: []`, which `business-create.ts` already supported as an implicit empty-selection
+state before this pass, now a labeled choice with copy explaining the assistant will help). The
+dashboard's Configuration page Templates Catalog section now fetches the same real, coming_soon-
+aware list via the existing `getTemplates()` client function (already used by the wizard's Temple
+Gallery) instead of its own separate hardcoded copy, with a "Coming soon" annotation per item.
+
+**Tests:** extended `tests/unit/product-shell-manifest.test.ts` with 4 new cases — no-binding
+returns empty catalog, the real catalog round-trips with correct `coming_soon` values, the
+business_templates intersection narrows correctly, and the KV cache prevents a second agents-worker
+call. 977/977 tests pass (4 new). `pnpm turbo run typecheck` clean (75 tasks). Both `apps/dashboard`
+and `apps/shell` verified via `next build`.
+
+**Remaining for Launchpad go-live:** Phase G (business-builder Space Assistant — the actual Polsia
+differentiator), Phase H (builder domain/name post-creation UI polish). Full phased plan (including
+the larger script-engine/execution-ladder/container roadmap beyond Launchpad) is tracked in the
+session's plan file, not yet mirrored into this doc section by section — update as each phase lands.

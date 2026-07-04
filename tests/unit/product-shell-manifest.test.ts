@@ -69,10 +69,24 @@ const FAKE_MANIFEST = {
   },
 };
 
-function makeEnv() {
+const FAKE_TEMPLATES = [
+  { id: "creator-store", name: "Creator Store", description: "d", free_tier_eligible: true, connectors: [], coming_soon: true },
+  { id: "whop-seller", name: "Whop Seller", description: "d", free_tier_eligible: false, connectors: ["whop"], coming_soon: false },
+  { id: "micro-saas", name: "Micro-SaaS", description: "d", free_tier_eligible: false, connectors: [], coming_soon: true },
+];
+
+function makeEnv(opts: { withAgentsWorker?: boolean; templateFetchCalls?: number[] } = {}) {
   const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION]);
   const kvStore = new Map<string, string>();
   kvStore.set("space-type-manifest:launchpad", JSON.stringify(FAKE_MANIFEST));
+  const agentsWorker = opts.withAgentsWorker
+    ? {
+        fetch: async () => {
+          if (opts.templateFetchCalls) opts.templateFetchCalls.push(1);
+          return new Response(JSON.stringify({ templates: FAKE_TEMPLATES }), { status: 200 });
+        },
+      }
+    : undefined;
   return {
     PLATFORM_SECRET: "test-platform-secret",
     ENVIRONMENT: "test",
@@ -81,6 +95,7 @@ function makeEnv() {
     PRODUCT_USER_DO: makeStatefulDoNamespace(ProductUserDO),
     SPACE_TYPE_REGISTRY_DO: makeStatefulDoNamespace(SpaceTypeRegistryDO),
     SPACE_DO: makeStatefulDoNamespace(SpaceDO),
+    AGENTS_WORKER: agentsWorker,
     NAELAO_CONFIG_KV: {
       get: async (key: string, type?: string) => {
         const raw = kvStore.get(key) ?? null;
@@ -171,6 +186,48 @@ describe("GET /spaces/:spaceId/shell/manifest", () => {
     const res = await spacesWorker.fetch(authedReq("/spaces/prod-catalog/shell/manifest"), env as never, execCtx);
     const body = await res.json() as { business_templates: string[] };
     expect(body.business_templates).toEqual(["creator-store", "micro-saas"]);
+  });
+
+  // Phase F (§A1.17): template_catalog is the real, coming_soon-aware catalog the shell's
+  // create-business dialog and the dashboard's Templates Catalog config both render from —
+  // replacing two hand-maintained, drift-prone hardcoded copies of LAUNCHPAD_TEMPLATES.
+  it("returns an empty template_catalog when no AGENTS_WORKER binding is configured", async () => {
+    const env = makeEnv({ withAgentsWorker: false });
+    await seedSpace(env, "prod-1", "tenant-1");
+    const res = await spacesWorker.fetch(authedReq("/spaces/prod-1/shell/manifest"), env as never, execCtx);
+    const body = await res.json() as { template_catalog: unknown[] };
+    expect(body.template_catalog).toEqual([]);
+  });
+
+  it("fetches the real catalog (with coming_soon) from the agents worker's GET /templates", async () => {
+    const env = makeEnv({ withAgentsWorker: true });
+    await seedSpace(env, "prod-1", "tenant-1");
+    const res = await spacesWorker.fetch(authedReq("/spaces/prod-1/shell/manifest"), env as never, execCtx);
+    const body = await res.json() as { template_catalog: Array<{ id: string; name: string; coming_soon: boolean }> };
+    expect(body.template_catalog).toHaveLength(3);
+    expect(body.template_catalog.find((t) => t.id === "whop-seller")).toMatchObject({ coming_soon: false });
+    expect(body.template_catalog.find((t) => t.id === "creator-store")).toMatchObject({ coming_soon: true });
+  });
+
+  it("intersects the real catalog with the builder's business_templates narrowing", async () => {
+    const calls: number[] = [];
+    const env = makeEnv({ withAgentsWorker: true, templateFetchCalls: calls });
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json) VALUES
+       ('prod-narrow', 'tenant-1', 'launchpad', 'Narrow Store', 'active', ?)`
+    ).bind(JSON.stringify({ productConfig: { catalog: { businessTemplates: ["whop-seller"] } } })).run();
+    const res = await spacesWorker.fetch(authedReq("/spaces/prod-narrow/shell/manifest"), env as never, execCtx);
+    const body = await res.json() as { template_catalog: Array<{ id: string }> };
+    expect(body.template_catalog).toEqual([{ id: "whop-seller", name: "Whop Seller", coming_soon: false }]);
+  });
+
+  it("KV-caches the catalog fetch — a second call does not re-hit the agents worker", async () => {
+    const calls: number[] = [];
+    const env = makeEnv({ withAgentsWorker: true, templateFetchCalls: calls });
+    await seedSpace(env, "prod-1", "tenant-1");
+    await spacesWorker.fetch(authedReq("/spaces/prod-1/shell/manifest"), env as never, execCtx);
+    await spacesWorker.fetch(authedReq("/spaces/prod-1/shell/manifest"), env as never, execCtx);
+    expect(calls).toHaveLength(1);
   });
 
   it("never serializes internal manifest fields (agentEnvironment, backend, lifecycle, marketplace, commerce)", async () => {

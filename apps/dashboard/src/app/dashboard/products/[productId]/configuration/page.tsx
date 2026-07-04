@@ -2,22 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { updateBuilderProduct } from "@/lib/api";
-import type { BuilderProductConfig } from "@/lib/api";
+import { updateBuilderProduct, getTemplates } from "@/lib/api";
+import type { BuilderProductConfig, TemplateInfo } from "@/lib/api";
 import { useProduct } from "../productContext";
-
-// Hardcoded to match workers/agents/src/launchpad/spacetype.ts's LAUNCHPAD_TEMPLATES — same
-// simplification as apps/shell's create-business dialog (Phase C): no product-scoped, builder-
-// reachable /templates read route exists yet, so this is a static catalogue, not a fetched one.
-const LAUNCHPAD_TEMPLATES = [
-  { id: "creator-store", name: "Creator Store" },
-  { id: "newsletter-business", name: "Newsletter Business" },
-  { id: "micro-saas", name: "Micro-SaaS" },
-  { id: "service-agency", name: "Service Agency" },
-  { id: "coaching-community", name: "Coaching / Community" },
-  { id: "whop-seller", name: "Whop Seller" },
-  { id: "customer-service", name: "Customer Service Desk" },
-];
 
 export default function ProductConfigurationPage() {
   const params = useParams<{ productId: string }>();
@@ -26,10 +13,17 @@ export default function ProductConfigurationPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
+  // Phase F (§A1.17): fetched from the real, coming_soon-aware GET /templates catalog instead of
+  // a hardcoded duplicate of LAUNCHPAD_TEMPLATES — de-drifts this page from apps/shell's dialog.
+  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
 
   useEffect(() => {
     if (product) setForm(product.product_config);
   }, [product]);
+
+  useEffect(() => {
+    void getTemplates().then(setTemplates).catch(() => setTemplates([]));
+  }, []);
 
   async function save() {
     setSaving(true);
@@ -168,14 +162,18 @@ export default function ProductConfigurationPage() {
           <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Templates Catalog</h2>
           <p className="text-xs text-gray-400 mb-3">
             Which business templates end users can pick from when creating their own business.
-            Leave everything unchecked to offer all of them.
+            Leave everything unchecked to offer all of them. Templates marked "Coming soon" are
+            not yet selectable by end users regardless of this setting.
           </p>
           <div className="grid grid-cols-2 gap-2">
-            {LAUNCHPAD_TEMPLATES.map((t) => {
+            {templates.map((t) => {
               const selected = form.catalog?.businessTemplates ?? [];
               const checked = selected.includes(t.id);
               return (
-                <label key={t.id} className="flex items-center gap-2 text-sm text-gray-700">
+                <label
+                  key={t.id}
+                  className={`flex items-center gap-2 text-sm ${t.coming_soon ? "text-gray-400" : "text-gray-700"}`}
+                >
                   <input
                     type="checkbox"
                     checked={checked}
@@ -189,6 +187,9 @@ export default function ProductConfigurationPage() {
                     className="rounded border-gray-300 text-brand-600 focus:ring-brand-500"
                   />
                   {t.name}
+                  {t.coming_soon && (
+                    <span className="text-xs px-1.5 py-0.5 rounded-full bg-yellow-50 text-yellow-700">Coming soon</span>
+                  )}
                 </label>
               );
             })}

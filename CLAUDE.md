@@ -650,6 +650,26 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     tasks). Not verified against a live multi-worker backend or a real Lemon Squeezy sandbox — the
     dev-fallback checkout path is what every automated test exercises, same stated limitation as
     every prior phase.
+31. **Launchpad go-live is now IN PROGRESS (a follow-on to the Three-Tier build, phases F onward —
+    full plan including the larger script-engine/execution-ladder/container roadmap is tracked in
+    the active session's plan file).** Verified gaps blocking a deployable, Whop-first Launchpad
+    product: the `coming_soon` template flag existed but was never set on anything; the business-
+    builder Space Assistant (the actual differentiator vs. competitors like Polsia) didn't exist;
+    and builder domain/name management had no post-creation UI despite a real CF-for-SaaS backend.
+    **Phase F (Whop-first rollout + explicit Custom option) is BUILT.** Set `coming_soon: true` on
+    the six non-Whop `LAUNCHPAD_TEMPLATES` (creator-store, newsletter-business, micro-saas,
+    service-agency, coaching-community, customer-service) — `whop-seller` stays live. New
+    `loadTemplateCatalog()` (`workers/spaces/src/index.ts`) is a KV-cached call to the agents
+    worker's real `GET /templates` via the existing `AGENTS_WORKER` binding, projected into a new
+    `template_catalog` field on `GET /spaces/:spaceId/shell/manifest` (intersected server-side with
+    the builder's `businessTemplates` narrowing) — the single source of truth both
+    `apps/shell`'s create-business dialog (coming-soon templates greyed with a badge, plus a new
+    explicit "Custom — build from scratch with the assistant" toggle mapping to `template_ids: []`)
+    and `apps/dashboard`'s Configuration Templates Catalog now render from, replacing two
+    hand-maintained, drift-prone hardcoded copies. A test asserting the real agents-worker response
+    shape (`{templates: [...]}`, not `{data: [...]}`) caught a real bug in the first draft before it
+    shipped. 977/977 tests pass (4 new), `pnpm turbo run typecheck` clean (75 tasks), both apps
+    verified via `next build`. Next: Phase G (business-builder assistant), Phase H (domain/name UI).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

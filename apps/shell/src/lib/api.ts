@@ -85,6 +85,9 @@ export interface ShellManifest {
   /** Phase D: which business templates this product actually offers. Empty = every template the
    *  SpaceType ships (not yet configured by the builder) — the shell falls back to the full list. */
   business_templates: string[];
+  /** Phase F: the real, coming_soon-aware template catalog — render the create-business dialog
+   *  from this instead of a hardcoded copy of LAUNCHPAD_TEMPLATES. */
+  template_catalog: Array<{ id: string; name: string; coming_soon: boolean }>;
 }
 
 /** GET /v1/spaces/:spaceId/shell/manifest — safe projection, works pre- and post-login. */

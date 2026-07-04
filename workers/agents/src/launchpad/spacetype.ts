@@ -195,6 +195,9 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-fulfillment-v1", "launchpad-support-v1"],
     skills: ["commerce", "email-tool", "file-manager"],
     free_tier_eligible: true,
+    // Whop-first rollout (CLAUDE.md Phase F): Whop Seller is the only live template at launch;
+    // this one is fully built but deliberately gated coming_soon until the wider rollout.
+    coming_soon: true,
     bootstrap: {
       prompts: [
         { id: "brand_name", type: "text", question: "What's your store/brand name?", required: true },
@@ -220,6 +223,8 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-content-v1", "launchpad-fulfillment-v1"],
     skills: ["web-search", "email-tool", "commerce"],
     free_tier_eligible: true,
+    // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
+    coming_soon: true,
     // Both installed agents get their own pre-wired project + starter thread: "Content" for
     // drafting issues, "Orders" for subscription/payment events (so billing/lemon-squeezy.ts's
     // resolveFulfillmentProjectId scopes there instead of running space-wide). Either project
@@ -240,6 +245,8 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-support-v1", "launchpad-fulfillment-v1"],
     skills: ["commerce", "email-tool", "crm-tool"],
     free_tier_eligible: false,
+    // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
+    coming_soon: true,
     // Same reasoning as newsletter-business above: "Support" for tier-1 questions, "Orders"
     // for billing events — both pre-wired, both reassignable/removable.
     bootstrap: {
@@ -257,6 +264,8 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-content-v1", "launchpad-support-v1"],
     skills: ["email-tool", "file-manager", "web-search"],
     free_tier_eligible: false,
+    // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
+    coming_soon: true,
     bootstrap: {
       prompts: [],
       projects: [
@@ -272,6 +281,8 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-support-v1", "launchpad-content-v1"],
     skills: ["email-tool", "web-search", "file-manager"],
     free_tier_eligible: true,
+    // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
+    coming_soon: true,
     bootstrap: {
       prompts: [],
       projects: [
@@ -322,6 +333,8 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     agents: ["launchpad-support-v1"],
     skills: ["email-tool", "web-search", "mcp-connector"],
     free_tier_eligible: true,
+    // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
+    coming_soon: true,
     bootstrap: {
       prompts: [
         { id: "escalation_email", type: "text", question: "Where should the agent escalate questions it can't answer?", required: true },
