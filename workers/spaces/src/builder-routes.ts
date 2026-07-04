@@ -23,6 +23,7 @@
 
 import type { Hono } from "hono";
 import { getDOName } from "@naelao/crypto";
+import { mintInternalToken } from "@naelao/http";
 import { createCustomHostname, getCustomHostname, cfSaasConfig } from "./cf-saas.js";
 import type { SpaceTypeProductConfig } from "./do/SpaceTypeRegistryDO.js";
 import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
@@ -41,6 +42,7 @@ export interface BuilderRoutesEnv extends CreateSpaceEnv {
   CF_API_TOKEN?: string;
   CF_SAAS_ZONE_ID?: string;
   STOREFRONT_ROOT?: string;
+  BILLING_WORKER?: Fetcher;
 }
 
 interface SpaceRow {
@@ -266,6 +268,93 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     ).bind(body.name ?? null, body.status ?? null, JSON.stringify(config), now, product.id, auth.tenantId).run();
 
     return c.json({ ok: true });
+  });
+
+  // PATCH /builder/products/:id/pricing — define/update the subscription plans + credit packs a
+  // reseller/hybrid product offers. Provisions each new plan/pack's Lemon Squeezy variant exactly
+  // once (the same provision-on-save pattern PATCH /spaces/:id/member-billing already uses for
+  // seats) — a plan/pack that already has an lsVariantId is left untouched even if its price
+  // changes here (changing an existing LS variant's price out from under active subscribers is a
+  // separate, deliberate operation, not an implicit side effect of an unrelated field edit).
+  app.patch("/builder/products/:id/pricing", async (c) => {
+    const env = c.env as BuilderRoutesEnv;
+    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
+    const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
+    if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+
+    const body = await c.req.json<{
+      plans?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["plans"];
+      creditPacks?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["creditPacks"];
+    }>();
+
+    const tenantId = auth.tenantId;
+    const productId = product.id;
+    const productName = product.name;
+    const config = parseProductConfig(product.config_json);
+    const currentPricing = config.productConfig?.pricingConfig ?? { model: "credits" as const };
+
+    async function provisionVariant(
+      name: string,
+      priceCents: number,
+      kind: "one_time" | "subscription"
+    ): Promise<string | undefined> {
+      if (!env.BILLING_WORKER) return undefined;
+      try {
+        const resp = await env.BILLING_WORKER.fetch(
+          new Request("http://billing-worker/internal/products/ls-variant", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+            },
+            body: JSON.stringify({ name, price_cents: priceCents, kind }),
+          })
+        );
+        if (!resp.ok) {
+          console.error(`[builder-routes/pricing] variant create failed product=${productId}: ${await resp.text()}`);
+          return undefined;
+        }
+        return (await resp.json<{ ls_variant_id: string }>()).ls_variant_id;
+      } catch (err) {
+        console.error(`[builder-routes/pricing] variant create error product=${productId}:`, (err as Error).message);
+        return undefined;
+      }
+    }
+
+    let plans = currentPricing.plans;
+    if (body.plans) {
+      plans = await Promise.all(
+        body.plans.map(async (plan) => {
+          if (plan.lsVariantId) return plan;
+          const lsVariantId = await provisionVariant(`${productName} — ${plan.name}`, plan.priceCents, "subscription");
+          return lsVariantId ? { ...plan, lsVariantId } : plan;
+        })
+      );
+    }
+
+    let creditPacks = currentPricing.creditPacks;
+    if (body.creditPacks) {
+      creditPacks = await Promise.all(
+        body.creditPacks.map(async (pack) => {
+          if (pack.lsVariantId) return pack;
+          const lsVariantId = await provisionVariant(`${productName} — ${pack.name}`, pack.priceCents, "one_time");
+          return lsVariantId ? { ...pack, lsVariantId } : pack;
+        })
+      );
+    }
+
+    config.productConfig = {
+      ...(config.productConfig ?? {}),
+      pricingConfig: { ...currentPricing, ...(plans ? { plans } : {}), ...(creditPacks ? { creditPacks } : {}) },
+    };
+    const now = new Date().toISOString();
+    await env.PLATFORM_DB.prepare(
+      "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
+    ).bind(JSON.stringify(config), now, productId, tenantId).run();
+
+    return c.json({ pricing_config: config.productConfig.pricingConfig });
   });
 
   app.delete("/builder/products/:id", async (c) => {

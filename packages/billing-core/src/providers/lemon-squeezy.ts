@@ -92,6 +92,9 @@ export class LemonSqueezyProvider implements BillingProvider {
     const isOrder = eventName.startsWith("order_");
     const amountCents = parseInt(String(attrs["total"] ?? attrs["total_usd"] ?? "0"), 10) || 0;
 
+    const providerStatus = !isOrder && attrs["status"] ? String(attrs["status"]) : null;
+    const currentPeriodEnd = !isOrder && (attrs["renews_at"] ?? attrs["ends_at"]) ? String(attrs["renews_at"] ?? attrs["ends_at"]) : null;
+
     return {
       type,
       provider: "lemon_squeezy",
@@ -102,6 +105,8 @@ export class LemonSqueezyProvider implements BillingProvider {
       amountCents,
       currency: String(attrs["currency"] ?? "USD"),
       metadata: event.meta?.custom_data ?? attrs.custom_data ?? {},
+      ...(providerStatus ? { providerStatus } : {}),
+      ...(currentPeriodEnd ? { currentPeriodEnd } : {}),
     };
   }
 

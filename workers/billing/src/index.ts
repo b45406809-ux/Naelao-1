@@ -554,6 +554,137 @@ app.post("/internal/products/ls-variant", async (c) => {
   }
 });
 
+// ── POST /internal/business-subscriptions/checkout ───────────────────────────
+// Phase E (§A1.17): a business subscribes to one of its product's builder-defined plans
+// (productConfig.pricingConfig.plans, authored via PATCH /builder/products/:id/pricing). The
+// catalog lives on the product ROOT, not the business itself, so resolution goes through the
+// spaces worker's /internal/pricing-catalog (same parent-walk /internal/product-sessions/verify
+// already established) rather than reading D1 directly here — this worker doesn't know the
+// business/product space hierarchy rules, spaces worker does.
+app.use("/internal/business-subscriptions/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.post("/internal/business-subscriptions/checkout", async (c) => {
+  const body = await c.req.json<{ business_space_id: string; plan_id: string; customer_email?: string }>();
+  if (!body.business_space_id || !body.plan_id) {
+    return c.json({ error_code: "bad_request", message: "business_space_id and plan_id are required" }, 400);
+  }
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
+
+  const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+    .bind(body.business_space_id).first<{ tenant_id: string }>();
+  if (!spaceRow) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+
+  const catalogResp = await c.env.SPACES_WORKER.fetch(
+    new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, {
+      headers: {
+        "x-naelao-tenant-id": spaceRow.tenant_id,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, spaceRow.tenant_id),
+      },
+    })
+  );
+  if (!catalogResp.ok) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const catalog = await catalogResp.json<{ product_space_id: string; plans: Array<{ id: string; name: string; priceCents: number; interval: string; lsVariantId?: string }> }>();
+  const plan = catalog.plans.find((p) => p.id === body.plan_id);
+  if (!plan) return c.json({ error_code: "not_found", message: "Plan not found" }, 404);
+
+  const feeBps = parseInt(c.env.LAUNCHPAD_FEE_BPS ?? "500", 10);
+
+  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !plan.lsVariantId) {
+    return c.json({
+      checkout_url: `https://checkout.naelao.com/dev/business-subscription/${body.business_space_id}/${plan.id}`,
+      plan: { id: plan.id, name: plan.name, price_cents: plan.priceCents, interval: plan.interval },
+      fee_bps: feeBps,
+      dev: true,
+    });
+  }
+
+  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
+  const provider = new LemonSqueezyProvider({
+    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
+    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
+  });
+  const { url } = await provider.createCheckout({
+    spaceId: body.business_space_id,
+    variantOrPriceId: plan.lsVariantId,
+    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+    metadata: {
+      kind: "business_subscription",
+      plan_id: plan.id,
+      product_space_id: catalog.product_space_id,
+      fee_bps: String(feeBps),
+    },
+  });
+  return c.json({
+    checkout_url: url,
+    plan: { id: plan.id, name: plan.name, price_cents: plan.priceCents, interval: plan.interval },
+    fee_bps: feeBps,
+  });
+});
+
+// ── POST /internal/credit-packs/checkout ──────────────────────────────────────
+// Phase E: an end user buys a one-time credit pack for their OWN ProductUserDO balance (distinct
+// from business-subscriptions above — the pack's catalog still lives on the product root, but the
+// credits land on the buyer's individual balance, not the business).
+app.use("/internal/credit-packs/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.post("/internal/credit-packs/checkout", async (c) => {
+  const body = await c.req.json<{ business_space_id: string; pack_id: string; end_user_id: string; customer_email?: string }>();
+  if (!body.business_space_id || !body.pack_id || !body.end_user_id) {
+    return c.json({ error_code: "bad_request", message: "business_space_id, pack_id, and end_user_id are required" }, 400);
+  }
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
+
+  const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+    .bind(body.business_space_id).first<{ tenant_id: string }>();
+  if (!spaceRow) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+
+  const catalogResp = await c.env.SPACES_WORKER.fetch(
+    new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, {
+      headers: {
+        "x-naelao-tenant-id": spaceRow.tenant_id,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, spaceRow.tenant_id),
+      },
+    })
+  );
+  if (!catalogResp.ok) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const catalog = await catalogResp.json<{ product_space_id: string; credit_packs: Array<{ id: string; name: string; credits: number; priceCents: number; lsVariantId?: string }> }>();
+  const pack = catalog.credit_packs.find((p) => p.id === body.pack_id);
+  if (!pack) return c.json({ error_code: "not_found", message: "Credit pack not found" }, 404);
+
+  const feeBps = parseInt(c.env.LAUNCHPAD_FEE_BPS ?? "500", 10);
+
+  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !pack.lsVariantId) {
+    return c.json({
+      checkout_url: `https://checkout.naelao.com/dev/credit-pack/${body.business_space_id}/${pack.id}`,
+      pack: { id: pack.id, name: pack.name, credits: pack.credits, price_cents: pack.priceCents },
+      fee_bps: feeBps,
+      dev: true,
+    });
+  }
+
+  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
+  const provider = new LemonSqueezyProvider({
+    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
+    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
+  });
+  const { url } = await provider.createCheckout({
+    spaceId: body.business_space_id,
+    variantOrPriceId: pack.lsVariantId,
+    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+    metadata: {
+      kind: "credit_pack",
+      pack_id: pack.id,
+      credits: String(pack.credits),
+      end_user_id: body.end_user_id,
+      product_space_id: catalog.product_space_id,
+      fee_bps: String(feeBps),
+    },
+  });
+  return c.json({
+    checkout_url: url,
+    pack: { id: pack.id, name: pack.name, credits: pack.credits, price_cents: pack.priceCents },
+    fee_bps: feeBps,
+  });
+});
+
 // ── POST /webhooks/lemon-squeezy ─────────────────────────────────────────────
 // Primary billing provider (spec Appendix H). Unauthenticated — LS calls this directly.
 // On payment/subscription events, wakes the Space Assistant agent via NaelaoAgentDO.

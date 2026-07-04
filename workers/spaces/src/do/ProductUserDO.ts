@@ -25,6 +25,7 @@
 // conversion point — CLAUDE.md #12). This DO only debits/credits and reports the running balance.
 
 import { DurableObject } from "cloudflare:workers";
+import { applyMigrations, type Migration } from "@naelao/db";
 
 interface SessionRow {
   session_id: string;
@@ -51,13 +52,13 @@ async function sha256Hex(input: string): Promise<string> {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export class ProductUserDO extends DurableObject {
-  private initialized = false;
+const MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    description: "initial schema",
+    up: `
+      PRAGMA journal_mode=WAL;
 
-  private ensureInit(): void {
-    if (this.initialized) return;
-    this.ctx.storage.sql.exec("PRAGMA journal_mode=WAL");
-    this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS session_state (
         session_id     TEXT PRIMARY KEY,
         token_hash     TEXT NOT NULL,
@@ -98,7 +99,29 @@ export class ProductUserDO extends DurableObject {
         status         TEXT NOT NULL DEFAULT 'pending',
         created_at     TEXT NOT NULL DEFAULT (datetime('now'))
       );
-    `);
+    `,
+  },
+  {
+    // Phase E (§A1.17): credit-pack purchases grant credits via a Lemon Squeezy webhook, which
+    // can retry — without a dedupe key, a retry would double-grant. `launchpad_orders` has the
+    // same problem solved with a `provider_event_id` unique partial index (D1); this is the
+    // per-DO-SQLite equivalent for ProductUserDO's own credit_ledger.
+    version: 2,
+    description: "add idempotency_key to credit_ledger for webhook-safe grants",
+    up: `
+      ALTER TABLE credit_ledger ADD COLUMN idempotency_key TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_ledger_idempotency
+        ON credit_ledger(idempotency_key) WHERE idempotency_key IS NOT NULL;
+    `,
+  },
+];
+
+export class ProductUserDO extends DurableObject {
+  private initialized = false;
+
+  private ensureInit(): void {
+    if (this.initialized) return;
+    applyMigrations(this.ctx.storage.sql as never, MIGRATIONS);
     this.initialized = true;
   }
 
@@ -177,16 +200,27 @@ export class ProductUserDO extends DurableObject {
       return Response.json({ balance_credits: this.currentBalance() });
     }
 
-    // POST /credits/grant — top-up / initial allocation (positive delta).
+    // POST /credits/grant — top-up / initial allocation (positive delta). `idempotency_key` is
+    // optional (internal callers with no retry risk can omit it) but REQUIRED for anything driven
+    // by a webhook that Lemon Squeezy may redeliver (Phase E credit-pack purchases) — a repeat
+    // call with the same key is a no-op, returning the balance as of the original grant.
     if (method === "POST" && url.pathname === "/credits/grant") {
-      const body = await request.json<{ credits: number; reason?: string }>();
+      const body = await request.json<{ credits: number; reason?: string; idempotency_key?: string }>();
       if (!Number.isFinite(body.credits) || body.credits <= 0) {
         return Response.json({ error: "credits must be a positive number" }, { status: 400 });
       }
+      if (body.idempotency_key) {
+        const existing = this.ctx.storage.sql
+          .exec("SELECT balance_after FROM credit_ledger WHERE idempotency_key = ?", body.idempotency_key)
+          .toArray() as unknown as { balance_after: number }[];
+        if (existing[0]) {
+          return Response.json({ balance_credits: existing[0].balance_after, deduplicated: true }, { status: 200 });
+        }
+      }
       const balanceAfter = this.currentBalance() + Math.floor(body.credits);
       this.ctx.storage.sql.exec(
-        `INSERT INTO credit_ledger (id, delta_credits, reason, balance_after) VALUES (?, ?, ?, ?)`,
-        crypto.randomUUID(), Math.floor(body.credits), body.reason ?? "grant", balanceAfter
+        `INSERT INTO credit_ledger (id, delta_credits, reason, balance_after, idempotency_key) VALUES (?, ?, ?, ?, ?)`,
+        crypto.randomUUID(), Math.floor(body.credits), body.reason ?? "grant", balanceAfter, body.idempotency_key ?? null
       );
       return Response.json({ balance_credits: balanceAfter }, { status: 201 });
     }

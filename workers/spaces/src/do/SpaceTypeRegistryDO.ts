@@ -250,6 +250,35 @@ export interface SpaceTypeProductConfig {
     pricePerSeatCents?: number;
     includedSeats?: number;
     trialDays?: number;
+
+    /** Phase E (§A1.17): subscription plans a builder defines for a reseller/hybrid product's
+     *  BUSINESSES (not individual end users — a business as a whole subscribes, mirroring
+     *  memberBilling's "the whole space pays" shape rather than a per-user charge). Each plan is
+     *  provisioned as its own Lemon Squeezy variant (lsVariantId, filled in once by the same
+     *  provision-on-save pattern memberBilling already uses) — money always flows through
+     *  Naelao's store, never a builder's own Stripe/LS account. `limits` overrides a subset of
+     *  `userPermissions` while the plan is active; unset fields fall back to the product's base
+     *  userPermissions. */
+    plans?: Array<{
+      id: string;
+      name: string;
+      priceCents: number;
+      interval: "month" | "year";
+      creditAllowance?: number;
+      limits?: { maxThreadsPerUser?: number | null; maxCreditsPerMonth?: number | null };
+      lsVariantId?: string;
+    }>;
+
+    /** One-time credit packs an end user can buy for their OWN ProductUserDO balance (distinct
+     *  from `plans`, which are recurring and business-scoped). Each pack is its own LS variant,
+     *  kind="one_time". */
+    creditPacks?: Array<{
+      id: string;
+      name: string;
+      credits: number;
+      priceCents: number;
+      lsVariantId?: string;
+    }>;
   };
 
   /** Sub-space terminology + depth cap the end-user-facing shell renders (spec Scenario C

@@ -26,6 +26,13 @@ export interface NormalizedBillingEvent {
   amountCents: number;
   currency: string;
   metadata: Record<string, string>;
+  /** Raw provider subscription status (e.g. LS's "active"/"cancelled"/"past_due"/"paused"/
+   *  "expired"/"on_trial"/"unpaid") — only present on subscription.* events. Provider-specific
+   *  vocabulary; callers that need a normalized status should map it themselves per-provider. */
+  providerStatus?: string;
+  /** ISO timestamp of the next renewal (or, once cancelled, the period end) — only present on
+   *  subscription.* events. */
+  currentPeriodEnd?: string;
 }
 
 export interface CheckoutParams {

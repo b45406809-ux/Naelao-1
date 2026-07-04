@@ -1458,6 +1458,104 @@ app.patch("/spaces/:spaceId/member-billing", async (c) => {
   return c.json({ member_billing: memberBilling });
 });
 
+// ── Phase E (§A1.17) — subscription plans + credit packs ────────────────────────────────────
+// A business subscribes to a plan the BUILDER defined on the product root (productConfig.
+// pricingConfig.plans/creditPacks) — the catalog is authored once on the product, not per
+// business. A business (child space, parent_space_id set) never carries its own catalog, so
+// resolving "what can this business buy" always walks up to the product root first, mirroring
+// /internal/product-sessions/verify's parent-walk (same one-hop-max invariant, spec §49).
+
+type PlanDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["plans"]>[number];
+type CreditPackDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["creditPacks"]>[number];
+
+/** Resolve the effective plan/credit-pack catalog for `spaceId` — walks to the product root if
+ *  `spaceId` is a business (has a parent_space_id), since the catalog is authored on the root. */
+async function loadPricingCatalog(
+  env: Env,
+  spaceId: string
+): Promise<{ productSpaceId: string; productTenantId: string; plans: PlanDef[]; creditPacks: CreditPackDef[] } | null> {
+  const space = await env.PLATFORM_DB.prepare(
+    "SELECT tenant_id, spacetype_id, config_json, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(spaceId).first<{ tenant_id: string; spacetype_id: string; config_json: string | null; parent_space_id: string | null }>();
+  if (!space) return null;
+
+  let productSpaceId = spaceId;
+  let productTenantId = space.tenant_id;
+  let productSpacetypeId = space.spacetype_id;
+  let productConfigJson = space.config_json;
+  if (space.parent_space_id) {
+    const root = await env.PLATFORM_DB.prepare(
+      "SELECT id, tenant_id, spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
+    ).bind(space.parent_space_id).first<{ id: string; tenant_id: string; spacetype_id: string; config_json: string | null }>();
+    if (!root) return null;
+    productSpaceId = root.id;
+    productTenantId = root.tenant_id;
+    productSpacetypeId = root.spacetype_id;
+    productConfigJson = root.config_json;
+  }
+
+  const pc = await loadEffectiveProductConfig(env, productSpacetypeId, productConfigJson);
+  return {
+    productSpaceId,
+    productTenantId,
+    plans: pc?.pricingConfig?.plans ?? [],
+    creditPacks: pc?.pricingConfig?.creditPacks ?? [],
+  };
+}
+
+// GET /spaces/:spaceId/pricing — the plans + credit packs a business's end users can buy. Safe
+// to show any member (same "purchasers should see prices" precedent as a storefront) — never
+// leaks lsVariantId internals beyond what's needed to reference the item at checkout.
+app.use("/spaces/:spaceId/pricing", requireBusinessMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/pricing", async (c) => {
+  const catalog = await loadPricingCatalog(c.env, c.req.param("spaceId"));
+  if (!catalog) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  return c.json({
+    plans: catalog.plans.map((p) => ({ id: p.id, name: p.name, price_cents: p.priceCents, interval: p.interval, credit_allowance: p.creditAllowance ?? null })),
+    credit_packs: catalog.creditPacks.map((p) => ({ id: p.id, name: p.name, credits: p.credits, price_cents: p.priceCents })),
+  });
+});
+
+// GET /internal/pricing-catalog?space_id= — the billing worker's checkout routes resolve a
+// plan/pack's lsVariantId here (requireInternalHmac, not a builder/end-user-facing shape).
+app.use("/internal/pricing-catalog", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/internal/pricing-catalog", async (c) => {
+  const spaceId = c.req.query("space_id") ?? "";
+  const catalog = await loadPricingCatalog(c.env, spaceId);
+  if (!catalog) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  return c.json({
+    product_space_id: catalog.productSpaceId,
+    product_tenant_id: catalog.productTenantId,
+    plans: catalog.plans,
+    credit_packs: catalog.creditPacks,
+  });
+});
+
+// POST /internal/credit-packs/grant — the billing worker's webhook handler calls this after a
+// credit-pack payment.success to credit the buyer's OWN ProductUserDO (never the business's
+// balance — credit packs are a per-end-user purchase, spec-distinct from business subscriptions
+// above). idempotency_key is REQUIRED here (unlike ProductUserDO's own optional param) since every
+// caller of this route is, by construction, a webhook that Lemon Squeezy may redeliver.
+app.use("/internal/credit-packs/grant", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/credit-packs/grant", async (c) => {
+  const body = await c.req.json<{ product_space_id: string; end_user_id: string; credits: number; idempotency_key: string }>();
+  if (!body.product_space_id || !body.end_user_id || !body.credits || !body.idempotency_key) {
+    return c.json({ error_code: "bad_request", message: "product_space_id, end_user_id, credits, and idempotency_key are required" }, 400);
+  }
+  const product = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'")
+    .bind(body.product_space_id).first<{ tenant_id: string }>();
+  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+
+  const stub = await productUserDoStub(c.env, body.product_space_id, body.end_user_id, product.tenant_id);
+  const grantRes = await stub.fetch(new Request("http://do/credits/grant", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ credits: body.credits, reason: "credit_pack_purchase", idempotency_key: body.idempotency_key }),
+  }));
+  const result = await grantRes.json<{ balance_credits: number; deduplicated?: boolean }>();
+  return c.json(result, grantRes.status as 200 | 201);
+});
+
 // ── Internal: SpaceType manifest registry (spec §62) ────────────────────────
 // These routes are called by the provisioner via SPACES_WORKER service binding.
 // They are NOT exposed to end-users — caller identity is validated by the internal header.

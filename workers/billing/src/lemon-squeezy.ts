@@ -130,6 +130,117 @@ async function recordProductOrder(
   return id;
 }
 
+/** Map Lemon Squeezy's own subscription status vocabulary onto business_subscriptions' narrower
+ *  CHECK-constrained enum. "on_trial" and "unpaid" don't have their own column value — trialing
+ *  counts as active access, unpaid is a stronger past_due (the builder's UI doesn't currently
+ *  need to distinguish them; add a value if that changes). */
+function mapSubscriptionStatus(event: NormalizedBillingEvent): string {
+  switch (event.type) {
+    case "subscription.cancelled": return "cancelled";
+    case "subscription.paused": return "paused";
+    case "subscription.resumed": return "active";
+    default: break;
+  }
+  switch (event.providerStatus) {
+    case "active":
+    case "on_trial": return "active";
+    case "past_due":
+    case "unpaid": return "past_due";
+    case "paused": return "paused";
+    case "cancelled": return "cancelled";
+    case "expired": return "expired";
+    default: return "active";
+  }
+}
+
+/**
+ * Phase E (§A1.17): a business subscribing to one of its product's builder-defined plans
+ * (productConfig.pricingConfig.plans). Fires on every subscription.* event whose checkout
+ * metadata carries kind="business_subscription" (set by POST /internal/business-subscriptions/
+ * checkout). Upserts by business_space_id (a business has at most one current plan — switching
+ * plans overwrites the row rather than accumulating history; reseller_ledger is the historical
+ * revenue record) so a webhook retry or a later status transition is a no-op / in-place update,
+ * never a duplicate row.
+ */
+async function recordBusinessSubscription(
+  event: NormalizedBillingEvent,
+  env: LemonSqueezyEnv
+): Promise<boolean> {
+  const custom = (event.metadata ?? {}) as Record<string, unknown>;
+  if (custom["kind"] !== "business_subscription" || !event.spaceId) return false;
+  const planId = custom["plan_id"] ? String(custom["plan_id"]) : null;
+  const productSpaceId = custom["product_space_id"] ? String(custom["product_space_id"]) : null;
+  if (!planId || !productSpaceId) return false;
+
+  const status = mapSubscriptionStatus(event);
+  await env.PLATFORM_DB.prepare(
+    `INSERT INTO business_subscriptions
+       (id, business_space_id, product_space_id, plan_id, status, ls_subscription_id, ls_customer_id, current_period_end, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(business_space_id) DO UPDATE SET
+       product_space_id = excluded.product_space_id,
+       plan_id = excluded.plan_id,
+       status = excluded.status,
+       ls_subscription_id = excluded.ls_subscription_id,
+       ls_customer_id = excluded.ls_customer_id,
+       current_period_end = excluded.current_period_end,
+       updated_at = excluded.updated_at`
+  ).bind(
+    crypto.randomUUID(), event.spaceId, productSpaceId, planId, status,
+    event.subscriptionId ?? null, event.customerId ?? null, event.currentPeriodEnd ?? null,
+    new Date().toISOString()
+  ).run();
+  console.log(`[billing/ls] Business subscription ${status}: business=${event.spaceId} plan=${planId}`);
+  return true;
+}
+
+/**
+ * Phase E: an end user buying a one-time credit pack for their OWN ProductUserDO balance. Fires
+ * on payment.success with checkout metadata kind="credit_pack". Grants via the spaces worker
+ * (only it holds the PRODUCT_USER_DO binding) with a stable idempotency_key so a webhook retry
+ * never double-grants — ProductUserDO's own credit_ledger enforces this with a unique partial
+ * index (see workers/spaces/src/do/ProductUserDO.ts migration v2).
+ */
+async function grantCreditPackPurchase(
+  event: NormalizedBillingEvent,
+  env: LemonSqueezyEnv
+): Promise<boolean> {
+  if (event.type !== "payment.success") return false;
+  const custom = (event.metadata ?? {}) as Record<string, unknown>;
+  if (custom["kind"] !== "credit_pack" || !event.spaceId) return false;
+  const endUserId = custom["end_user_id"] ? String(custom["end_user_id"]) : null;
+  const productSpaceId = custom["product_space_id"] ? String(custom["product_space_id"]) : null;
+  const credits = custom["credits"] ? parseInt(String(custom["credits"]), 10) : 0;
+  if (!endUserId || !productSpaceId || !credits) return false;
+  if (!env.SPACES_WORKER) return false;
+
+  const product = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+    .bind(productSpaceId).first<{ tenant_id: string }>();
+  if (!product) return false;
+
+  const idempotencyKey = event.subscriptionId ?? `credit_pack:${event.customerId ?? ""}:${event.amountCents}:${endUserId}:${credits}`;
+  try {
+    const resp = await env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/credit-packs/grant", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": product.tenant_id,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, product.tenant_id),
+      },
+      body: JSON.stringify({ product_space_id: productSpaceId, end_user_id: endUserId, credits, idempotency_key: idempotencyKey }),
+    }));
+    if (!resp.ok) {
+      console.error(`[billing/ls] Credit pack grant failed for end_user=${endUserId}: ${await resp.text()}`);
+      return false;
+    }
+    console.log(`[billing/ls] Granted ${credits} credits to end_user=${endUserId} product=${productSpaceId}`);
+    return true;
+  } catch (err) {
+    console.error("[billing/ls] Credit pack grant error:", (err as Error).message);
+    return false;
+  }
+}
+
 const GOAL_MAP: Record<NormalizedBillingEvent["type"], string> = {
   "payment.success": "A new payment was completed. Fulfil the order, send confirmation, and provision access.",
   "payment.failed": "A payment has failed. Trigger the dunning flow and notify the customer.",
@@ -397,6 +508,20 @@ export async function handleLemonSqueezyWebhook(
     orderId = (await recordSeatActivation(event, env)) ?? (await recordProductOrder(event, env));
   } catch (err) {
     console.error("[billing/ls] Order recording failed:", (err as Error).message);
+  }
+
+  // 5b. Phase E: business subscription state (subscription.* events only) and credit-pack grants
+  //     (payment.success only) — both keyed off checkout metadata.kind, so they never collide
+  //     with the seat/product paths above (each event matches at most one of these four kinds).
+  try {
+    await recordBusinessSubscription(event, env);
+  } catch (err) {
+    console.error("[billing/ls] Business subscription recording failed:", (err as Error).message);
+  }
+  try {
+    await grantCreditPackPurchase(event, env);
+  } catch (err) {
+    console.error("[billing/ls] Credit pack grant failed:", (err as Error).message);
   }
 
   // 6. Wake an agent asynchronously (ctx.waitUntil equivalent: fire-and-forget). Pass the order
