@@ -1,3 +1,12 @@
+/* Phase D reskin: the launchpad-6 design tokens (warm paper background, DM Sans, the accent
+   color the Tailwind `brand` scale in tailwind.config.ts is now derived from) plus the shared
+   component classes (.nav-item, .topbar, .card, .btn, etc — consumed via @naelao/ui's React
+   components in the dashboard shell). Imported before Tailwind's layers so Tailwind utility
+   classes (higher specificity than a bare element selector) still win wherever an existing page
+   sets its own colors explicitly — no per-page markup rewrites required for this to be additive. */
+@import "@naelao/ui/tokens.css";
+@import "@naelao/ui/styles.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

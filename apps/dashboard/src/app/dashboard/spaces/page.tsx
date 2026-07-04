@@ -92,15 +92,11 @@ function CreateSpaceModal({
             </label>
             {spaceTypes.length === 0 ? (
               <p className="text-sm text-red-600">
-                No SpaceTypes available.{" "}
-                <Link
-                  href="/dashboard/spacetypes/new"
-                  className="underline"
-                  onClick={onClose}
-                >
-                  Create one first
-                </Link>
-                .
+                No SpaceTypes available. Use the{" "}
+                <Link href="/dashboard/products/new" className="underline" onClick={onClose}>
+                  New Space wizard
+                </Link>{" "}
+                instead — SpaceTypes are authored by Naelao, not builders.
               </p>
             ) : (
               <select

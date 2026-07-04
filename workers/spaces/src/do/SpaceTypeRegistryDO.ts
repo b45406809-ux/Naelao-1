@@ -273,6 +273,18 @@ export interface SpaceTypeProductConfig {
    *  gradual-rollout system for internal capability rollouts — different actor, different
    *  lifecycle, not reused here. */
   featureFlags?: Record<string, boolean>;
+
+  /** Phase D (§A1.17): which of the SpaceType's business/project templates a builder offers
+   *  their own end users — narrows the Product Shell's create-business template multi-select
+   *  (apps/shell) below "every template that exists." Distinct from `allowedChildSpaceTypes`
+   *  (which SpaceTypes, plural, a tenant/hybrid product may instantiate) — this is which
+   *  TEMPLATES within a single already-allowed SpaceType (e.g. which of Launchpad's 7 business
+   *  templates: creator-store, newsletter-business, etc). Unset/empty = every template the
+   *  SpaceType ships is offered (the pre-Phase-D default, unchanged). */
+  catalog?: {
+    businessTemplates?: string[];
+    projectTemplates?: string[];
+  };
 }
 
 // resolveTenancy lives in the pure ./tenancy module (no cloudflare:workers import) so it

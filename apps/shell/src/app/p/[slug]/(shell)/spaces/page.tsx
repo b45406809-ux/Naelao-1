@@ -88,6 +88,13 @@ export default function SpacesPage() {
   }
 
   const canCreate = manifest?.membership_model === "tenant" || manifest?.membership_model === "hybrid";
+  // Phase D: a builder can narrow the offered templates via productConfig.catalog.businessTemplates
+  // (shell/manifest's business_templates) — empty/unset means "not configured yet," so fall back
+  // to every template the SpaceType ships rather than showing an empty picker.
+  const availableTemplates =
+    manifest?.business_templates && manifest.business_templates.length > 0
+      ? LAUNCHPAD_TEMPLATES.filter((t) => manifest.business_templates.includes(t.id))
+      : LAUNCHPAD_TEMPLATES;
 
   return (
     <div className="page-view">
@@ -148,7 +155,7 @@ export default function SpacesPage() {
           <div className="section-label" style={{ marginTop: 8 }}>
             Templates (optional — pick one or more)
           </div>
-          {LAUNCHPAD_TEMPLATES.map((t) => (
+          {availableTemplates.map((t) => (
             <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
               <Toggle on={selectedTemplates.has(t.id)} onChange={() => toggleTemplate(t.id)} label={t.name} />
               {t.name}

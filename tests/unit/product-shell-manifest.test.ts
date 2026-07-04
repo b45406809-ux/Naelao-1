@@ -156,6 +156,23 @@ describe("GET /spaces/:spaceId/shell/manifest", () => {
     expect(body.allowed_child_space_types).toEqual(["launchpad"]);
   });
 
+  // Phase D (§A1.17): productConfig.catalog.businessTemplates narrows the shell's create-business
+  // template picker below "every template the SpaceType ships."
+  it("exposes an empty business_templates by default and the configured list when set", async () => {
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    const defaultRes = await spacesWorker.fetch(authedReq("/spaces/prod-1/shell/manifest"), env as never, execCtx);
+    expect(((await defaultRes.json()) as { business_templates: string[] }).business_templates).toEqual([]);
+
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json) VALUES
+       ('prod-catalog', 'tenant-1', 'launchpad', 'Catalog Store', 'active', ?)`
+    ).bind(JSON.stringify({ productConfig: { catalog: { businessTemplates: ["creator-store", "micro-saas"] } } })).run();
+    const res = await spacesWorker.fetch(authedReq("/spaces/prod-catalog/shell/manifest"), env as never, execCtx);
+    const body = await res.json() as { business_templates: string[] };
+    expect(body.business_templates).toEqual(["creator-store", "micro-saas"]);
+  });
+
   it("never serializes internal manifest fields (agentEnvironment, backend, lifecycle, marketplace, commerce)", async () => {
     const env = makeEnv();
     await seedSpace(env, "prod-1", "tenant-1");

@@ -82,6 +82,9 @@ export interface ShellManifest {
   /** Phase C: "team" never shows a Create Business entry point; "tenant"/"hybrid" do. */
   membership_model: "team" | "tenant" | "hybrid";
   allowed_child_space_types: string[];
+  /** Phase D: which business templates this product actually offers. Empty = every template the
+   *  SpaceType ships (not yet configured by the builder) — the shell falls back to the full list. */
+  business_templates: string[];
 }
 
 /** GET /v1/spaces/:spaceId/shell/manifest — safe projection, works pre- and post-login. */

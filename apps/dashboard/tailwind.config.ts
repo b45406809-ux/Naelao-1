@@ -9,17 +9,21 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
+        // Phase D reskin: retargeted from the original sky-blue scale onto the launchpad-6
+        // mockup's accent (packages/ui/src/tokens.css's --accent #5b52f0) so every existing
+        // bg-brand-*/text-brand-*/border-brand-*/ring-brand-* utility across the app picks up
+        // the new design language without per-page markup rewrites.
         brand: {
-          50: "#f0f9ff",
-          100: "#e0f2fe",
-          200: "#bae6fd",
-          300: "#7dd3fc",
-          400: "#38bdf8",
-          500: "#0ea5e9",
-          600: "#0284c7",
-          700: "#0369a1",
-          800: "#075985",
-          900: "#0c4a6e",
+          50: "#f1f0fe",
+          100: "#e4e2fd",
+          200: "#cac6fb",
+          300: "#a29bf7",
+          400: "#8177f4",
+          500: "#5b52f0",
+          600: "#4a3fd1",
+          700: "#3c33a8",
+          800: "#2f2985",
+          900: "#221f61",
         },
       },
     },

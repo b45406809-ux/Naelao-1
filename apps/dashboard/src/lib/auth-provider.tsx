@@ -19,6 +19,13 @@ export interface AuthContextValue {
   login(email: string, password: string): Promise<void>;
   logout(): void;
   isAuthenticated: boolean;
+  /** False until localStorage has been read on mount. A hard reload of any nested route must
+   *  gate its redirect-to-login on this — otherwise the child route's own effect (which fires
+   *  BEFORE this provider's own hydration effect, since React runs effects child-first within a
+   *  single mount commit) sees the default `isAuthenticated: false` and bounces to /login even
+   *  when a valid token exists in storage. This was a real, reproducible bug on every nested
+   *  /dashboard/* route (including /dashboard/clients) before this field existed. */
+  isHydrated: boolean;
 }
 
 export const AuthContext = createContext<AuthContextValue>({
@@ -27,11 +34,13 @@ export const AuthContext = createContext<AuthContextValue>({
   login: async () => {},
   logout: () => {},
   isAuthenticated: false,
+  isHydrated: false,
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }): React.JSX.Element {
   const [token, setToken] = useState<string | null>(null);
   const [claims, setClaims] = useState<NaelaoJwtClaims | null>(null);
+  const [isHydrated, setIsHydrated] = useState(false);
 
   // Initialize from localStorage on mount
   useEffect(() => {
@@ -46,6 +55,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
         clearToken();
       }
     }
+    setIsHydrated(true);
   }, []);
 
   // Auto-logout when token expires
@@ -87,6 +97,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     login,
     logout,
     isAuthenticated: token !== null && claims !== null,
+    isHydrated,
   };
 
   return React.createElement(AuthContext.Provider, { value }, children);

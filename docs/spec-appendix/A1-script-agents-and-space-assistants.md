@@ -3119,3 +3119,96 @@ smoke test — not verified against a live multi-worker backend, same stated lim
 **Remaining for the Three-Tier build:** Phase D (builder UI reskin + config, including the
 `isHydrated` fix and a real per-product `/builder/products/:id/businesses` team-mode creation
 route), Phase E (monetization).
+
+## A1.17 continued — Phase D: builder UI reskin + product configuration — BUILT
+
+**The `isHydrated` bug, confirmed and fixed with a real browser test, not just reasoning about
+it.** `apps/dashboard/src/lib/auth-provider.tsx`'s `isAuthenticated` was `token !== null && claims
+!== null`, both `null` until a `useEffect` reads `localStorage` on mount. `DashboardLayout`'s own
+`useEffect(() => { if (!isAuthenticated) router.replace("/login") })` is a CHILD of `AuthProvider`
+— React fires effects child-first within one mount commit — so on every hard reload of any nested
+`/dashboard/*` route, the layout's redirect effect ran BEFORE `AuthProvider`'s hydration effect,
+saw the default `isAuthenticated: false`, and bounced to `/login` even with a valid token sitting
+in storage. Added `isHydrated` (false until the mount effect completes, same pattern `apps/shell`
+already shipped in Phase A) and gated both `DashboardLayout`'s and the root `HomePage`'s redirects
+on it. Verified with a real headless-Chromium CDP session (no Playwright/npm package available in
+this environment, so driven via raw CDP over Node's built-in `WebSocket` — same class of technique
+as the Fetch-domain mocking established in Phase 5): stored a valid-shaped JWT in `localStorage`,
+hard-navigated straight to `/dashboard/clients`, and confirmed it stays there (previously would
+have bounced); a second run with `localStorage` explicitly cleared confirms the unauthenticated
+path still correctly redirects to `/login` — both directions of the gate checked, not just one.
+
+**Reskin approach — retarget + shell swap, not a per-page rewrite.** A full Tailwind-to-`@naelao/ui`
+markup conversion across ~25 existing dashboard pages was judged disproportionate to what "reskin"
+needs; instead: (1) `tailwind.config.ts`'s `brand` color scale was regenerated from the mockup's
+actual accent (`packages/ui/src/tokens.css`'s `--accent #5b52f0`) — every existing
+`bg-brand-*`/`text-brand-*`/`border-brand-*`/`ring-brand-*` utility across every page picks up the
+new violet identity instantly, zero markup changes, zero regression risk; (2) `globals.css` imports
+`@naelao/ui/tokens.css` + `@naelao/ui/styles.css` (no class-name collisions found — the dashboard
+never used bare `.btn`/`.card` class names) so the DM Sans font, warm paper background, and shared
+component classes are available; (3) the root layout's `<body>` now reads `var(--bg)`/`var(--text)`
+directly instead of `bg-gray-50 text-gray-900` (Tailwind utility classes still win by specificity
+wherever an existing page sets its own colors, so this is additive, not a repaint of every page).
+The highest-visibility piece — the shell chrome — got a REAL component swap: `DashboardLayout` now
+renders `@naelao/ui`'s `Sidebar`/`TopBar`/`Badge` (all three already generic enough for an admin
+nav; `Sidebar`'s `projects`/`threads`/`spaceSwitcher` props are optional and simply don't render
+when omitted, so it fits without dragging in end-user chat-shell concepts) instead of hand-rolled
+Tailwind markup — verified visually via the same CDP screenshot technique (warm paper background,
+violet accent, Instrument Serif logo wordmark all render correctly with a live dev server).
+
+**IA restructure — real functionality preserved, not the plan's literal 3-item list.** Nav
+collapsed to Dashboard / Spaces (same URL as the old "Products" nav item — `/dashboard/products`,
+just relabeled, since to a builder "my products" and "my spaces" are the same thing) / Clients /
+Settings. Deliberate deviation from the phased plan's literally-stated "nav = Dashboard, Spaces,
+Settings": Clients (the reseller portfolio drawer — real, working, tested functionality) was KEPT
+rather than dropped, since removing a working feature was never actually requested, just implied
+by an enumerated list that didn't mention it. Removed for real: `/dashboard/spacetypes/*`
+(confirmed dead on TWO axes — `listSpaceTypes()` calls `GET /spacetypes`, a route no worker
+implements per the Phase 0 audit, AND it linked to `/dashboard/spacetypes/:id` and `.../edit`,
+neither of which was ever a page, a 404 on click; also conceptually obsolete since CLAUDE.md #7
+established Naelao authors all SpaceTypes, not builders), `/dashboard/usage/*` and
+`/dashboard/team/*` (both call `/v1/usage/*` and `/v1/team/*`, the exact unbacked routes Phase 0
+flagged as an out-of-scope gap and never fixed). Fixed two dangling links this removal exposed
+(`dashboard/page.tsx`'s quick action, the legacy `dashboard/spaces/page.tsx` modal's empty-state
+link) to point at the real `/dashboard/products/new` wizard instead of the now-deleted dead page.
+Deliberately NOT deleted: the legacy `/dashboard/spaces` raw Space-CRUD list and its
+`[spaceId]/{commerce,connectors,credentials,eval,kb,onboarding,sessions,webhooks}` sub-pages — real,
+working per-space admin tools nothing else replaces yet — just no longer linked from top nav (the
+Products wizard is now the canonical "create a space" path); still reachable by direct URL.
+
+**Config surfaces — all three backend fields already existed on `SpaceTypeProductConfig`
+(`membershipModel`, `allowedChildSpaceTypes`, `userPermissions`) except one new one.** The
+Configuration tab gained: a Product Mode picker (team/tenant/hybrid, with `allowPublicSignup` +
+`allowedChildSpaceTypes` shown only for tenant/hybrid), a Limits section (`userPermissions`:
+max threads/user, max credits/month, can-create-sub-spaces, can-create-projects), and a Templates
+Catalog (checkboxes over the same hardcoded `LAUNCHPAD_TEMPLATES` list `apps/shell`'s create-
+business dialog already uses — same "no builder-reachable `/templates` route yet" simplification,
+applied consistently in both places). The Templates Catalog needed one genuinely new backend field,
+`productConfig.catalog.businessTemplates` (`SpaceTypeRegistryDO.ts`) — plumbed through
+`shell/manifest`'s existing safe-projection pattern as `business_templates`, and `apps/shell`'s
+create-business dialog now filters its template picker by it (empty/unset = every template, the
+pre-Phase-D default, so this is non-breaking for every product that hasn't configured it yet). All
+three config sections round-tripped through `PATCH /builder/products/:id`'s existing
+shallow-merge-into-`productConfig` handler with ZERO backend route changes — confirmed by feeding
+the full config shape through a mocked `GET /builder/products/:id` via CDP's Fetch domain and
+screenshotting the rendered, pre-populated form (Product Mode correctly showed "Hybrid" selected;
+Templates Catalog correctly checked exactly the two configured templates and left the other five
+unchecked). New **Agents tab** (8th tab) is a deliberately READ-ONLY view of the SpaceType's 3 core
+agents (name, trigger, required-approval actions) — hardcoded like the templates lists, for the
+same reason. Per-agent enable/disable (which the phased plan's Agents bullet also mentioned) was
+NOT built: it would require a new `productConfig.catalog.disabledCoreAgents`-style field AND
+threading it into the provisioner's agent-install step (`workers/provisioner/src/index.ts`,
+`installLaunchpadAgents`) — a real, separate follow-up, flagged here rather than rushed in without
+adequate test coverage for a path that touches what actually gets provisioned.
+
+**Verification:** `pnpm turbo run typecheck` clean across all 75 packages/workers/apps (unchanged
+count — `@naelao/dashboard` was already in it). `pnpm exec vitest run`: 938/938 tests pass (1 new —
+`business_templates` manifest coverage). `apps/dashboard` verified via `next build` (all pages
+compile, removed routes 404 as expected) AND two real headless-Chromium CDP sessions: one proving
+the `isHydrated` fix in both directions (valid token survives a hard reload of a nested route; no
+token still redirects to login), one mocking `GET /builder/products/:id` to screenshot the
+Configuration and Agents tabs end-to-end with realistic pre-populated data. Not verified against a
+live multi-worker backend, same stated limitation as Phases B and C.
+
+**Remaining for the Three-Tier build:** Phase E (monetization — subscriptions + credit packs, and
+the `packages/entitlements` table-name reconciliation the phased plan calls a precondition for it).

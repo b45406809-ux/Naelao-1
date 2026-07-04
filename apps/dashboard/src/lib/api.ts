@@ -559,6 +559,23 @@ export interface BuilderProductConfig {
   authProvider?: { provider: "naelao-native" | "clerk" | "custom-oidc" | "saml-sso"; requireAdminApproval?: boolean; allowedEmailDomains?: string[] };
   pricingConfig?: { model: "free" | "credits" | "subscription" | "seats"; creditsIncludedPerMonth?: number; overageCreditsPriceCents?: number; pricePerSeatCents?: number; includedSeats?: number; trialDays?: number };
   featureFlags?: Record<string, boolean>;
+  // Phase D (§A1.17) — product mode, limits, and the template catalog. All three already exist
+  // on the backend's SpaceTypeProductConfig (workers/spaces/src/do/SpaceTypeRegistryDO.ts); this
+  // is the first UI to actually read/write them.
+  membershipModel?: "team" | "tenant" | "hybrid";
+  allowPublicSignup?: boolean;
+  allowedChildSpaceTypes?: string[];
+  userPermissions?: {
+    canCreateSpace?: boolean;
+    canCreateSubSpaces?: boolean;
+    canCreateProjects?: boolean;
+    maxThreadsPerUser?: number | null;
+    maxCreditsPerMonth?: number | null;
+  };
+  catalog?: {
+    businessTemplates?: string[];
+    projectTemplates?: string[];
+  };
 }
 
 export interface BuilderProductDetail extends BuilderProductSummary {

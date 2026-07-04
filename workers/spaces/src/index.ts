@@ -1724,6 +1724,10 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
     // actual creation route re-derives and re-checks both server-side regardless of what this says.
     membership_model: pc?.membershipModel ?? "team",
     allowed_child_space_types: pc?.allowedChildSpaceTypes ?? [],
+    // Phase D (§A1.17): which business templates a builder actually offers — empty means "every
+    // template the SpaceType ships," so the shell's create-business dialog treats [] the same as
+    // "not configured yet" rather than "none allowed."
+    business_templates: pc?.catalog?.businessTemplates ?? [],
   });
 });
 

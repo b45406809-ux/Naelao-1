@@ -100,14 +100,8 @@ export default function DashboardPage() {
           {/* Quick actions */}
           <div className="flex gap-3 mb-8">
             <Link
-              href="/dashboard/spacetypes/new"
+              href="/dashboard/products/new"
               className="inline-flex items-center gap-2 px-4 py-2 bg-brand-600 text-white text-sm font-semibold rounded-lg hover:bg-brand-700 transition-colors"
-            >
-              + New SpaceType
-            </Link>
-            <Link
-              href="/dashboard/spaces"
-              className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 text-gray-700 text-sm font-semibold rounded-lg hover:border-gray-300 hover:bg-gray-50 transition-colors"
             >
               + New Space
             </Link>

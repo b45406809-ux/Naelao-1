@@ -586,7 +586,42 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     threads to operate on it — Home/Projects/Threads still run on the product root; that's a real
     architectural question (URL structure, active-space state) left for its own pass rather than a
     rushed bolt-on. 937/937 tests pass (21 new, including a dedicated cross-business isolation
-    test file). Phase D (builder UI reskin + config) is next.
+    test file). **Phase D (builder UI reskin + config) is BUILT.** Fixed a real bug, confirmed
+    with a live headless-Chromium CDP session (no Playwright in this environment — driven via raw
+    CDP over Node's built-in `WebSocket`): `apps/dashboard`'s `auth-provider.tsx` had the exact
+    same hydration-redirect bug `apps/shell` was built to avoid from day one — `DashboardLayout`'s
+    redirect effect is a CHILD of `AuthProvider` and React fires child effects before parent
+    effects within one mount commit, so on every hard reload of a nested `/dashboard/*` route the
+    redirect ran before `AuthProvider`'s own localStorage-hydration effect, saw the default
+    `isAuthenticated: false`, and bounced to `/login` even with a valid token in storage. Added
+    `isHydrated` (same pattern as `apps/shell`) and verified BOTH directions with a real browser:
+    a valid stored token survives a hard reload of `/dashboard/clients`; an explicitly-cleared one
+    still redirects. Reskin: retargeted `tailwind.config.ts`'s `brand` color scale onto the
+    mockup's actual accent (`packages/ui/src/tokens.css`'s `#5b52f0`) so every existing
+    `bg-brand-*`/`text-brand-*` utility across all ~25 pages updates instantly with zero markup
+    changes; imported `@naelao/ui`'s tokens+styles globally; rebuilt `DashboardLayout`'s chrome
+    with `@naelao/ui`'s `Sidebar`/`TopBar`/`Badge` (a real component swap, not just palette
+    changes — `Sidebar`'s project/thread/switcher sections are optional and simply don't render
+    for an admin nav). IA: nav collapsed to Dashboard/Spaces (relabeled "Products")/Clients
+    (kept — a deliberate deviation from the phased plan's literal 3-item list, since dropping
+    real working reseller functionality was never actually requested)/Settings. Removed
+    `/dashboard/spacetypes/*` (dead on two axes: calls `GET /spacetypes`, a route no worker
+    implements, AND links to a `/dashboard/spacetypes/:id` detail page that never existed —
+    also conceptually obsolete per CLAUDE.md #7, Naelao authors all SpaceTypes now), `/dashboard/
+    usage/*` and `/dashboard/team/*` (both call the `/v1/usage/*`/`/v1/team/*` routes Phase 0
+    flagged as an unbacked, out-of-scope gap and never fixed) — fixed two dangling links this
+    exposed. Config: Configuration tab gained a Product Mode picker, a Limits section, and a
+    Templates Catalog — the first two round-trip through `PATCH /builder/products/:id`'s existing
+    handler with ZERO backend changes (the fields already existed on `SpaceTypeProductConfig`);
+    the catalog needed one new field, `productConfig.catalog.businessTemplates`, plumbed through
+    `shell/manifest` so `apps/shell`'s create-business dialog can actually be narrowed by it
+    (empty/unset = every template, non-breaking default). New read-only Agents tab (hardcoded
+    core-agent list, same simplification precedent as the templates lists) — per-agent
+    enable/disable was explicitly NOT built since it would require threading a new field into the
+    provisioner's install step, flagged as a real follow-up rather than rushed in. Verified the
+    Configuration/Agents tabs end-to-end via a second CDP session mocking `GET /builder/products/
+    :id` and screenshotting the pre-populated, correctly-checked form. 938/938 tests pass (1 new),
+    `pnpm turbo run typecheck` clean (75 tasks). Phase E (monetization) is next.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
