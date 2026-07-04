@@ -89,7 +89,7 @@ app.get("/admin/tenants", async (c) => {
   const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
 
   const { results } = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, name, plan_tier, status, created_at FROM organizations ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    "SELECT id, name, plan_tier, status, created_at FROM orgs ORDER BY created_at DESC LIMIT ? OFFSET ?"
   ).bind(limit, offset).all();
 
   return c.json({ data: results, count: results.length });
@@ -100,7 +100,7 @@ app.get("/admin/tenants/:tenantId", async (c) => {
   const tenantId = c.req.param("tenantId");
 
   const [org, userCount, spaceCount] = await Promise.all([
-    c.env.PLATFORM_DB.prepare("SELECT * FROM organizations WHERE id = ?").bind(tenantId).first(),
+    c.env.PLATFORM_DB.prepare("SELECT * FROM orgs WHERE id = ?").bind(tenantId).first(),
     c.env.PLATFORM_DB.prepare("SELECT COUNT(*) as count FROM users WHERE org_id = ?").bind(tenantId).first<{ count: number }>(),
     c.env.PLATFORM_DB.prepare("SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ? AND status != 'deleted'").bind(tenantId).first<{ count: number }>(),
   ]);
@@ -118,12 +118,12 @@ app.patch("/admin/tenants/:tenantId", async (c) => {
 
   if (body.plan_tier !== undefined) {
     await c.env.PLATFORM_DB.prepare(
-      "UPDATE organizations SET plan_tier = ?, updated_at = ? WHERE id = ?"
+      "UPDATE orgs SET plan_tier = ?, updated_at = ? WHERE id = ?"
     ).bind(body.plan_tier, now, tenantId).run();
   }
   if (body.status !== undefined) {
     await c.env.PLATFORM_DB.prepare(
-      "UPDATE organizations SET status = ?, updated_at = ? WHERE id = ?"
+      "UPDATE orgs SET status = ?, updated_at = ? WHERE id = ?"
     ).bind(body.status, now, tenantId).run();
   }
 
@@ -147,39 +147,65 @@ app.get("/admin/users", async (c) => {
   return c.json({ data: results });
 });
 
-// POST /admin/feature-flags — set a feature flag
+// POST /admin/feature-flags — set a platform-wide gradual-rollout flag (infra/migrations/
+// 0023_feature_flags.sql: name/enabled/rollout_pct/overrides_json — NOT the same table as
+// FeatureFlagDO, which owns its own per-DO SQLite `flags` table; this D1 table is the platform
+// operator's own rollout registry, distinct from both FeatureFlagDO and a builder's per-product
+// productConfig.featureFlags). Previously queried a `key`/`value_json`/`tenant_id` shape that
+// migration 0023 never created and an `ON CONFLICT(key, tenant_id)` target with no matching
+// UNIQUE constraint — every call would have thrown a D1 error; fixed to match the real schema.
 app.post("/admin/feature-flags", async (c) => {
-  const body = await c.req.json<{ key: string; value: unknown; tenant_id?: string }>();
-  if (!body.key) return c.json({ error_code: "bad_request", message: "key is required" }, 400);
+  const body = await c.req.json<{
+    name: string;
+    enabled?: boolean;
+    rollout_pct?: number;
+    description?: string;
+    overrides?: Record<string, boolean>;
+  }>();
+  if (!body.name) return c.json({ error_code: "bad_request", message: "name is required" }, 400);
 
   const now = new Date().toISOString();
   await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO feature_flags (id, key, value_json, tenant_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT(key, tenant_id) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`
+    `INSERT INTO feature_flags (id, name, description, enabled, rollout_pct, overrides_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET
+       description = excluded.description,
+       enabled = excluded.enabled,
+       rollout_pct = excluded.rollout_pct,
+       overrides_json = excluded.overrides_json,
+       updated_at = excluded.updated_at`
   ).bind(
     crypto.randomUUID(),
-    body.key,
-    JSON.stringify(body.value),
-    body.tenant_id ?? null,
+    body.name,
+    body.description ?? null,
+    body.enabled ? 1 : 0,
+    body.rollout_pct ?? 0,
+    JSON.stringify(body.overrides ?? {}),
     now,
     now,
   ).run();
 
-  return c.json({ key: body.key, value: body.value, tenant_id: body.tenant_id ?? null });
+  return c.json({
+    name: body.name,
+    enabled: body.enabled ?? false,
+    rollout_pct: body.rollout_pct ?? 0,
+    overrides: body.overrides ?? {},
+  });
 });
 
-// GET /admin/feature-flags — list feature flags
+// GET /admin/feature-flags — list platform-wide rollout flags
 app.get("/admin/feature-flags", async (c) => {
   const { results } = await c.env.PLATFORM_DB.prepare(
-    "SELECT key, value_json, tenant_id, updated_at FROM feature_flags ORDER BY key"
-  ).all<{ key: string; value_json: string; tenant_id: string | null; updated_at: string }>();
+    "SELECT name, description, enabled, rollout_pct, overrides_json, updated_at FROM feature_flags ORDER BY name"
+  ).all<{ name: string; description: string | null; enabled: number; rollout_pct: number; overrides_json: string; updated_at: string }>();
 
   return c.json({
-    data: results.map(r => ({
-      key: r.key,
-      value: JSON.parse(r.value_json) as unknown,
-      tenant_id: r.tenant_id,
+    data: results.map((r) => ({
+      name: r.name,
+      description: r.description,
+      enabled: r.enabled === 1,
+      rollout_pct: r.rollout_pct,
+      overrides: JSON.parse(r.overrides_json) as Record<string, boolean>,
       updated_at: r.updated_at,
     })),
   });
@@ -187,18 +213,23 @@ app.get("/admin/feature-flags", async (c) => {
 
 // GET /admin/stats — platform-wide stats
 app.get("/admin/stats", async (c) => {
-  const [tenants, users, spaces, sessions] = await Promise.all([
-    c.env.PLATFORM_DB.prepare("SELECT COUNT(*) as count FROM organizations WHERE status = 'active'").first<{ count: number }>(),
+  const [tenants, users, spaces] = await Promise.all([
+    c.env.PLATFORM_DB.prepare("SELECT COUNT(*) as count FROM orgs WHERE status = 'active'").first<{ count: number }>(),
     c.env.PLATFORM_DB.prepare("SELECT COUNT(*) as count FROM users WHERE status = 'active'").first<{ count: number }>(),
     c.env.PLATFORM_DB.prepare("SELECT COUNT(*) as count FROM spaces WHERE status = 'active'").first<{ count: number }>(),
-    c.env.PLATFORM_DB.prepare("SELECT COUNT(*) as count FROM sessions WHERE created_at > datetime('now', '-24 hours')").first<{ count: number }>(),
   ]);
 
   return c.json({
     active_tenants: tenants?.count ?? 0,
     active_users: users?.count ?? 0,
     active_spaces: spaces?.count ?? 0,
-    sessions_24h: sessions?.count ?? 0,
+    // Found while reconciling this file's other table-name bugs: this previously queried a D1
+    // `sessions` table that has never existed (sessions/messages live in each SpaceDO's own
+    // per-space SQLite, not D1 — there's no single-query cross-space aggregate). The whole
+    // Promise.all threw on every call, so /admin/stats has always 500'd. Honest null (same
+    // precedent as the Builder Dashboard's credits_consumed: null) rather than fabricating a
+    // number — a real 24h-active-sessions count needs Analytics Engine wiring, not D1.
+    sessions_24h: null,
     timestamp: new Date().toISOString(),
   });
 });

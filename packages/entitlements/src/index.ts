@@ -96,8 +96,11 @@ export class EntitlementsChecker {
   constructor(private readonly db: D1Database) {}
 
   async getTenantTier(tenantId: string): Promise<PlanTier> {
+    // `tenantId` here is the JWT claims' `tid` — which is the org id (see
+    // NaelaoJwtClaims.tid's "tenantId (orgId)" comment in @naelao/types), not a Launchpad
+    // business's `spaces.tenant_id`. The real table is `orgs` (infra/migrations/0002_orgs.sql).
     const row = await this.db.prepare(
-      "SELECT plan_tier FROM organizations WHERE id = ?"
+      "SELECT plan_tier FROM orgs WHERE id = ?"
     ).bind(tenantId).first<{ plan_tier: string }>();
     return (row?.plan_tier ?? "free") as PlanTier;
   }
@@ -117,7 +120,7 @@ export class EntitlementsChecker {
     const tier = await this.getTenantTier(tenantId);
     const limits = getPlanLimits(tier);
     const row = await this.db.prepare(
-      "SELECT COUNT(*) as count FROM users WHERE tenant_id = ? AND status = 'active'"
+      "SELECT COUNT(*) as count FROM users WHERE org_id = ? AND status = 'active'"
     ).bind(tenantId).first<{ count: number }>();
     if ((row?.count ?? 0) >= limits.seats) {
       throw Object.assign(new Error(`Seat limit reached (${limits.seats}) for ${tier} plan`), { error_code: "quota_exceeded" });
@@ -136,8 +139,8 @@ export class EntitlementsChecker {
     const limits = getPlanLimits(tier);
     const [spaces, seats, apiKeys] = await Promise.all([
       this.db.prepare("SELECT COUNT(*) as count FROM spaces WHERE tenant_id = ? AND status != 'deleted'").bind(tenantId).first<{ count: number }>(),
-      this.db.prepare("SELECT COUNT(*) as count FROM users WHERE tenant_id = ? AND status = 'active'").bind(tenantId).first<{ count: number }>(),
-      this.db.prepare("SELECT COUNT(*) as count FROM api_keys WHERE tenant_id = ? AND (expires_at IS NULL OR expires_at > datetime('now'))").bind(tenantId).first<{ count: number }>(),
+      this.db.prepare("SELECT COUNT(*) as count FROM users WHERE org_id = ? AND status = 'active'").bind(tenantId).first<{ count: number }>(),
+      this.db.prepare("SELECT COUNT(*) as count FROM api_keys WHERE org_id = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > datetime('now'))").bind(tenantId).first<{ count: number }>(),
     ]);
     return {
       tier,
