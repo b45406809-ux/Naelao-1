@@ -543,8 +543,21 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     tri-state from day one — the dashboard's own `AuthProvider` still has the hydration-redirect
     bug this pattern is meant to avoid, unfixed until Phase D. One new
     backend route, `GET /v1/products/by-slug/:slug` (spaces worker + router unauthenticated
-    allowlist), resolves a product from its slug pre-login. 897/897 tests pass. Phase B (chat +
-    Projects + Threads) is next.
+    allowlist), resolves a product from its slug pre-login. 897/897 tests pass. **Phase B (chat +
+    Projects + Threads) is BUILT:** new `requireBusinessMembership` gate
+    (`workers/spaces/src/business-auth.ts`) is additive-only for `product_end_user` callers —
+    every builder role's access is unchanged — and per-method (projects/threads allow GET+POST,
+    never their admin-only rules/spend/PATCH sub-paths; agent-definitions allows GET only).
+    Router allowlist grew accordingly, capped so `/projects/:id/rules` etc. still don't match.
+    `product-sessions/verify` gained a parent-walk for child business spaces (unexercised until
+    Phase C actually creates one, but the security model is settled now rather than later).
+    `apps/shell` gained a real chat surface (`Chat.tsx`, ports `apps/portal`'s SSE client onto
+    the mockup's markup), Projects/Threads views, and a real (not placeholder) sidebar. Chat
+    sessions and structural threads are still separate tables with no server link — a documented,
+    deliberate approximation, not a bug. Incidental fix: `forwardToSpaceDO` needed `duplex:
+    "half"` for streaming bodies (same defect class already fixed once for the session proxy).
+    908/908 tests pass (15 new). Phase C (businesses, space switcher, invites, multi-template) is
+    next.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

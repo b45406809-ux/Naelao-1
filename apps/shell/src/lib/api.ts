@@ -115,3 +115,157 @@ export async function updateMe(
     session,
   });
 }
+
+// ── Chat (sessions + streaming) — ported from apps/portal's proven SSE client ────────────────
+
+export interface Message {
+  id: string;
+  role: "user" | "assistant" | "system" | "tool";
+  content: string;
+  created_at: string;
+}
+
+export interface AgentRun {
+  id: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  final_answer?: string;
+  error?: string;
+}
+
+/** POST /v1/spaces/:spaceId/sessions — start a new chat session. */
+export async function startSession(spaceId: string, session: SessionCredentials): Promise<{ id: string; space_id: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/sessions`, { method: "POST", body: JSON.stringify({}), session });
+}
+
+export async function getMessages(spaceId: string, sessionId: string, session: SessionCredentials): Promise<Message[]> {
+  const res = await apiFetch<{ data?: Message[]; messages?: Message[] } | Message[]>(
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/messages`,
+    { session }
+  );
+  if (Array.isArray(res)) return res;
+  return res.data ?? res.messages ?? [];
+}
+
+/** Persists the user's message, then kicks off an agent run. */
+export async function sendMessage(
+  spaceId: string,
+  sessionId: string,
+  content: string,
+  session: SessionCredentials
+): Promise<{ userMessage: Message; agentRunId: string }> {
+  const userMessage = await apiFetch<Message>(`/v1/spaces/${spaceId}/sessions/${sessionId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ role: "user", content }),
+    session,
+  });
+  const agentRun = await apiFetch<{ id?: string; run_id?: string }>(
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/run`,
+    { method: "POST", body: JSON.stringify({ session_id: sessionId }), session }
+  );
+  return { userMessage, agentRunId: agentRun.id ?? agentRun.run_id ?? "" };
+}
+
+/** The browser's native EventSource can't set headers, so the stream URL carries credentials as
+ *  query params — the router's GET-only query-param fallback (see workers/router/src/index.ts). */
+export function getStreamUrl(spaceId: string, sessionId: string, runId: string, session: SessionCredentials): string {
+  const params = new URLSearchParams({ session_token: session.sessionToken, end_user_id: session.endUserId });
+  return `${API_URL}/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}/stream?${params.toString()}`;
+}
+
+/** Polling fallback for environments without SSE. */
+export async function pollRun(spaceId: string, sessionId: string, runId: string, session: SessionCredentials): Promise<AgentRun> {
+  const res = await apiFetch<{ id: string; status: string; final_answer?: string; error?: string }>(
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}`,
+    { session }
+  );
+  return {
+    id: res.id,
+    status: (res.status as AgentRun["status"]) ?? "running",
+    ...(res.final_answer !== undefined ? { final_answer: res.final_answer } : {}),
+    ...(res.error !== undefined ? { error: res.error } : {}),
+  };
+}
+
+// ── Projects ───────────────────────────────────────────────────────────────
+
+export interface Project {
+  id: string;
+  name: string;
+  description?: string;
+  status: string;
+  default_agent_id: string | null;
+  max_threads: number;
+  allowed_agent_ids: string[] | null;
+  created_at: string;
+}
+
+export async function listProjects(spaceId: string, session: SessionCredentials): Promise<Project[]> {
+  const res = await apiFetch<{ data: Project[]; count: number }>(`/v1/spaces/${spaceId}/projects`, { session });
+  return res.data;
+}
+
+export async function createProject(spaceId: string, session: SessionCredentials, name: string, description?: string): Promise<Project> {
+  return apiFetch(`/v1/spaces/${spaceId}/projects`, {
+    method: "POST",
+    body: JSON.stringify({ name, ...(description ? { description } : {}) }),
+    session,
+  });
+}
+
+export async function getProject(spaceId: string, projectId: string, session: SessionCredentials): Promise<Project> {
+  return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}`, { session });
+}
+
+// ── Threads ────────────────────────────────────────────────────────────────
+
+export interface ThreadSummary {
+  id: string;
+  space_id: string;
+  project_id: string | null;
+  title: string | null;
+  status: string;
+  thread_kind: string;
+  parent_thread_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listThreads(
+  spaceId: string,
+  session: SessionCredentials,
+  opts: { projectId?: string } = {}
+): Promise<ThreadSummary[]> {
+  const qs = opts.projectId ? `?project_id=${encodeURIComponent(opts.projectId)}` : "";
+  const res = await apiFetch<{ data: ThreadSummary[]; count: number }>(`/v1/spaces/${spaceId}/threads${qs}`, { session });
+  return res.data;
+}
+
+export async function createThread(
+  spaceId: string,
+  session: SessionCredentials,
+  opts: { title?: string; project_id?: string } = {}
+): Promise<ThreadSummary> {
+  return apiFetch(`/v1/spaces/${spaceId}/threads`, { method: "POST", body: JSON.stringify(opts), session });
+}
+
+export async function getThread(spaceId: string, threadId: string, session: SessionCredentials): Promise<ThreadSummary> {
+  return apiFetch(`/v1/spaces/${spaceId}/threads/${threadId}`, { session });
+}
+
+// ── Agent definitions (read-only picker) ─────────────────────────────────────
+
+export interface AgentDefinitionSummary {
+  id: string;
+  name?: string;
+  description?: string;
+}
+
+export async function listAgentDefinitions(spaceId: string, session: SessionCredentials): Promise<AgentDefinitionSummary[]> {
+  // space_id must be explicit — SpaceDO returns EVERY agent definition in the DO instance when
+  // it's omitted (fine for single-space DOs, wrong once sub-space registry rows share one DO).
+  const res = await apiFetch<{ data?: AgentDefinitionSummary[] } | AgentDefinitionSummary[]>(
+    `/v1/spaces/${spaceId}/agent-definitions?space_id=${encodeURIComponent(spaceId)}`,
+    { session }
+  );
+  return Array.isArray(res) ? res : res.data ?? [];
+}

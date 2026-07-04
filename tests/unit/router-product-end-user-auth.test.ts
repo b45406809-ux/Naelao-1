@@ -99,11 +99,12 @@ describe("router — product end-user hybrid auth", () => {
 
   // Product Shell (Phase 6 continued): kb/documents and kb/search reads, shell/manifest, and
   // product-users/me were deliberately ADDED to the allowlist (Journey 1B: end users read the
-  // knowledge base and their own profile) — /projects, /threads, /agent-definitions, and
-  // /scheduled-jobs were deliberately NOT added (see the allowlist's own comment: each already
-  // carries a "builder-only, confirmed" gate on the spaces worker, and end-user claims.tid is
-  // set to the space's OWNING tenant, so a tenant-match-only gate would silently start accepting
-  // end-user traffic the moment it's allowlisted).
+  // knowledge base and their own profile). Phase B (§A1.17) later added projects/threads/
+  // agent-definitions/presence too, each paired with a requireBusinessMembership floor on the
+  // spaces worker — see the tests below. /scheduled-jobs remains deliberately excluded (see the
+  // allowlist's own comment: its gate is still tenant-match-only with no per-caller floor, and
+  // end-user claims.tid is set to the space's OWNING tenant, so allowlisting it without that
+  // floor would silently accept end-user traffic never audited for that caller).
   it("a valid nps_ session CAN reach the allowlisted kb/documents (read) path", async () => {
     const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "builder-tenant-1" }));
     const res = await routerWorker.fetch(
@@ -137,9 +138,13 @@ describe("router — product end-user hybrid auth", () => {
     expect(meRes.status).toBe(200);
   });
 
-  it("a valid nps_ session is still rejected on the deliberately builder-only /projects and /threads paths", async () => {
-    const env = makeEnv(makeSpacesStub({ validSession: true }));
-    for (const path of ["/spaces/prod-1/projects", "/spaces/prod-1/threads", "/spaces/prod-1/agent-definitions", "/spaces/prod-1/scheduled-jobs"]) {
+  // Phase B (§A1.17) revisited this: /projects, /threads, /agent-definitions, and /presence are
+  // now allowlisted (the spaces worker's own requireBusinessMembership gate enforces the actual
+  // per-method floor — the router only resolves identity, it never authorizes actions). /
+  // scheduled-jobs stays rejected — its gate is still tenant-match-only with no per-caller floor.
+  it("a valid nps_ session CAN now reach the allowlisted projects, threads, agent-definitions, and presence paths", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "builder-tenant-1" }));
+    for (const path of ["/spaces/prod-1/projects", "/spaces/prod-1/threads", "/spaces/prod-1/agent-definitions", "/spaces/prod-1/presence"]) {
       const res = await routerWorker.fetch(
         new Request(`https://router.naelao.com/v1${path}`, {
           method: "GET",
@@ -147,8 +152,20 @@ describe("router — product end-user hybrid auth", () => {
         }),
         env as never, execCtx
       );
-      expect(res.status).toBe(401);
+      expect(res.status).toBe(200);
     }
+  });
+
+  it("a valid nps_ session is still rejected on the deliberately excluded /scheduled-jobs path", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true }));
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/spaces/prod-1/scheduled-jobs", {
+        method: "GET",
+        headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(401);
   });
 
   it("a Bearer nps_ token WITHOUT x-naelao-end-user-id falls through to the JWT path and is rejected", async () => {

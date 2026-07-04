@@ -35,3 +35,7 @@ export function CardTitle({ children }: { children: React.ReactNode }) {
 export function CardDesc({ children }: { children: React.ReactNode }) {
   return <div className="card-desc">{children}</div>;
 }
+
+export function CardMeta({ children }: { children: React.ReactNode }) {
+  return <div className="card-meta">{children}</div>;
+}

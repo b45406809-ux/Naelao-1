@@ -10,6 +10,7 @@ import { registerBuilderRoutes } from "./builder-routes.js";
 import { registerProductEndUserRoutes } from "./product-end-user-routes.js";
 import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
 import type { ProvisionMessage } from "./create-space.js";
+import { requireBusinessMembership } from "./business-auth.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
@@ -305,8 +306,11 @@ app.post("/spaces/:spaceId/me/injection", async (c) => {
 // ── SpaceDO agent_definitions proxy ─────────────────────────────────────────
 // Forward /spaces/:spaceId/agent-definitions* to the SpaceDO.
 // Per spec §11 and CLAUDE.md: SpaceDO owns agent_definitions.
-// A1.16.10 (layer-3 backstop, bucket A): builder-authored config, never end-user-facing
-// (confirmed against apps/widget + apps/portal — neither ever calls this route) — safe to gate.
+// A1.16.10 (layer-3 backstop, bucket A) gated this builder-only (confirmed against apps/widget +
+// apps/portal — neither ever called this route). Phase B (§A1.17) changes that narrowly: the
+// Product Shell's chat/project agent picker needs a READ-ONLY list of agent definitions — a
+// product_end_user caller is allowed through for GET only (write methods stay admin-only, which
+// no product_end_user ever reaches since Phase B grants none that role).
 // Gated inline (not via a separate app.use(...)) — see the /internal/space-types-record-install/
 // :id route's comment for the full root-cause writeup: a separate app.use(...) on an overlapping
 // wildcard pattern was found, at this app's route-table scale, to be silently bypassable (a
@@ -321,6 +325,9 @@ app.all("/spaces/:spaceId/agent-definitions*", async (c) => {
   const token = c.req.header("x-naelao-internal-token");
   if (!(await verifyInternalToken(token, tenantId, c.env.PLATFORM_SECRET))) {
     return errorResponse(forbidden("Missing or invalid internal token — this endpoint is not directly reachable"), c.get("requestId") ?? "unknown");
+  }
+  if (getCallerIdentity(c).role === "product_end_user" && c.req.method !== "GET") {
+    return errorResponse(forbidden("product_end_user callers may only read agent definitions"), c.get("requestId") ?? "unknown");
   }
 
   const doId = c.env.SPACE_DO.idFromName(
@@ -478,7 +485,10 @@ async function productUserDoStub(env: Env, productId: string, endUserId: string,
   return env.PRODUCT_USER_DO.get(doId);
 }
 
-/** Forward a request to a path on the SpaceDO, preserving method/headers/body. */
+/** Forward a request to a path on the SpaceDO, preserving method/headers/body. Spec-compliant
+ *  fetch implementations (Node's undici, used by this repo's own tests) require `duplex: "half"`
+ *  whenever a streaming body is attached — the same fix already applied to the session proxy
+ *  (see CLAUDE.md item 30, "Product Shell data layer" pass) for the identical reason. */
 async function forwardToSpaceDO(
   stub: ReturnType<Env["SPACE_DO"]["get"]>,
   path: string,
@@ -488,7 +498,7 @@ async function forwardToSpaceDO(
   return stub.fetch(new Request(`http://space-do${path}`, {
     method,
     headers: { "content-type": "application/json" },
-    ...(body !== undefined && body !== null ? { body } : {}),
+    ...(body !== undefined && body !== null ? { body, duplex: "half" as const } : {}),
   }));
 }
 
@@ -518,12 +528,19 @@ app.post("/internal/spaces/:spaceId/events/fire", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
-// Projects (thread grouping) — builder-only surface (never end-user-facing), so safe to gate
-// broadly: real traffic always arrives either via the router (proxyTo already mints the token
-// off verified JWT claims) or a direct internal caller (NaelaoAgentDO, agents worker — both
-// updated to mint it too).
+// Projects (thread grouping) — real traffic always arrives either via the router (proxyTo
+// already mints the token off verified JWT OR product_end_user claims) or a direct internal
+// caller (NaelaoAgentDO, agents worker — both updated to mint it too), so requireInternalHmac
+// stays the "came through the router" gate for everyone. Phase B (§A1.17): the Product Shell
+// needs list/create/read here for a product_end_user caller — requireBusinessMembership adds the
+// extra floor ONLY for that role (every other role is unaffected). rules/spend stay OFF the
+// router's product_end_user allowlist entirely (server-to-server agent accounting, no-code rule
+// config) — requireInternalHmac alone still fully gates them; no product_end_user request can
+// ever reach them regardless of what's declared below.
 app.use("/spaces/:spaceId/projects", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects", requireBusinessMembership({ GET: "member", POST: "member" }));
 app.use("/spaces/:spaceId/projects/:projectId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId", requireBusinessMembership({ GET: "member" }));
 app.use("/spaces/:spaceId/projects/:projectId/rules", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId/spend", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 
@@ -619,7 +636,10 @@ app.post("/spaces/:spaceId/projects/:projectId/spend", async (c) => {
 });
 
 // Presence (space collaboration, A1.8) — heartbeat: "I'm here" (space-level, or scoped to a
-// project/thread). Callers poll GET periodically to see who's currently active.
+// project/thread). Callers poll GET periodically to see who's currently active. Phase B
+// (§A1.17): allowlisted for product_end_user callers on the router — the same membership floor
+// as projects/threads above (every other role's access is unchanged).
+app.use("/spaces/:spaceId/presence", requireBusinessMembership({ GET: "member", POST: "member" }));
 app.post("/spaces/:spaceId/presence", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -818,10 +838,15 @@ app.patch("/spaces/:spaceId/assistant-policy", async (c) => {
 // Threads (spec-canonical). A sub-agent spawn or a channel session mirrors in here as a
 // subthread (thread_kind + parent_thread_id) — hidden from the default list unless the
 // project's show_sub_threads is on, or the caller passes include_sub_threads=true.
-// A1.16.10 (layer-3 backstop, bucket A): the dashboard's structural browse view (builder-only —
-// confirmed widget/portal never call this; end-user chat transport is /sessions, not /threads).
+// A1.16.10 (layer-3 backstop, bucket A) gated this builder-only (widget/portal never called it —
+// end-user chat transport was /sessions, not /threads). Phase B (§A1.17) changes that: the
+// Product Shell's Projects/Threads views need to list/create/read threads directly (distinct
+// from the chat transport) — requireBusinessMembership adds the product_end_user floor here the
+// same way as the projects routes above; every other role's access is unchanged.
 app.use("/spaces/:spaceId/threads", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/threads", requireBusinessMembership({ GET: "member", POST: "member" }));
 app.use("/spaces/:spaceId/threads/:threadId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/threads/:threadId", requireBusinessMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/threads", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
@@ -1511,6 +1536,18 @@ app.post("/internal/space-types/seed", async (c) => {
 // above), not requireInternalHmac — that gate needs to already know the caller's tenantId, but
 // resolving the tenantId is exactly what this endpoint is FOR (a real chicken-and-egg the seed
 // route's precedent already solved the same way).
+//
+// Phase B parent-walk (§A1.17): a reseller-mode end user's OWN business (Phase C) is a real
+// child-tenant space with `parent_space_id` set to the product root (spec §49 Scenario C,
+// depth ≤ 2 — never more than one hop). Its ProductUserDO does NOT live under the business's own
+// id — end users are a PRODUCT-scoped concept (one ProductUserDO per productId×endUserId), not a
+// per-business one, so the session lives under the product root regardless of which business the
+// URL is for. When `body.productId` (the URL space the caller is actually hitting) has a
+// `parent_space_id`, walk to that root FIRST to find the right ProductUserDO, but return the URL
+// SPACE's own tenant_id (not the root's) — the router uses this as `claims.tid` for
+// requireInternalHmac against the space actually being accessed. No child business spaces exist
+// yet (that's Phase C), so this is a no-op for every caller today; it exists so Phase C doesn't
+// have to re-open this endpoint's security model under time pressure later.
 app.post("/internal/product-sessions/verify", async (c) => {
   if (c.req.header("x-naelao-platform-secret") !== c.env.PLATFORM_SECRET) {
     return c.json({ valid: false }, 403);
@@ -1520,12 +1557,23 @@ app.post("/internal/product-sessions/verify", async (c) => {
     return c.json({ valid: false }, 400);
   }
 
-  const space = await c.env.PLATFORM_DB.prepare(
-    "SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
-  ).bind(body.productId).first<{ tenant_id: string }>();
-  if (!space) return c.json({ valid: false });
+  const urlSpace = await c.env.PLATFORM_DB.prepare(
+    "SELECT tenant_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(body.productId).first<{ tenant_id: string; parent_space_id: string | null }>();
+  if (!urlSpace) return c.json({ valid: false });
 
-  const stub = await productUserDoStub(c.env, body.productId, body.endUserId, space.tenant_id);
+  let productRootId = body.productId;
+  let productRootTenantId = urlSpace.tenant_id;
+  if (urlSpace.parent_space_id) {
+    const root = await c.env.PLATFORM_DB.prepare(
+      "SELECT id, tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
+    ).bind(urlSpace.parent_space_id).first<{ id: string; tenant_id: string }>();
+    if (!root) return c.json({ valid: false });
+    productRootId = root.id;
+    productRootTenantId = root.tenant_id;
+  }
+
+  const stub = await productUserDoStub(c.env, productRootId, body.endUserId, productRootTenantId);
   const verifyRes = await stub.fetch(new Request("http://do/sessions/verify", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -1534,7 +1582,7 @@ app.post("/internal/product-sessions/verify", async (c) => {
   const verified = await verifyRes.json<{ valid: boolean }>();
   if (!verified.valid) return c.json({ valid: false });
 
-  return c.json({ valid: true, tenant_id: space.tenant_id, end_user_id: body.endUserId });
+  return c.json({ valid: true, tenant_id: urlSpace.tenant_id, end_user_id: body.endUserId });
 });
 
 // ── Reseller / tenant membership (spec G-AS34/G-AS35; productConfig.membershipModel) ──

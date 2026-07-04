@@ -2939,3 +2939,85 @@ expansion and `requireBusinessMembership` gate, `product-sessions/verify`'s pare
 business spaces), then Phase C (businesses/invites/multi-template), Phase D (builder UI reskin —
 including the `isHydrated` fix flagged above), Phase E (monetization). Full detail in the phased
 plan referenced from CLAUDE.md item 30.
+
+## A1.17 continued — Phase B: chat + Projects + Threads — BUILT
+
+**Backend — `requireBusinessMembership` (new `workers/spaces/src/business-auth.ts`).** The
+routes the shell's Projects/Threads views need (`/spaces/:id/projects*`, `/spaces/:id/threads*`,
+`/spaces/:id/agent-definitions*`, `/spaces/:id/presence`) were previously builder-only, gated
+ONLY by `requireInternalHmac` — which passes for a `product_end_user` caller exactly the same as
+a builder, since `proxyTo` mints the internal token off any verified claims, role included. What
+was missing was a FLOOR on what a `product_end_user` may do once past that gate (nothing checked
+`role` at all). `requireBusinessMembership(methodMinRole)` is **additive-only**: a
+non-`product_end_user` caller always passes unchanged (every builder role keeps whatever access
+it already had); for `product_end_user` it enforces a per-method minimum role, defaulting to
+`"admin"` (fail closed) for any method not explicitly listed. Phase B treats every verified
+`product_end_user` as `"member"` — there is no real per-business role yet, since businesses
+themselves don't exist until Phase C's `business_memberships` index; `productEndUserBusinessRole()`
+is a single-function seam Phase C replaces with a real lookup. Applied narrowly: projects/threads
+allow GET+POST (list/create/read) but NOT their admin-only sub-paths (rules, spend, per-project
+PATCH config) — those never even reach the router's allowlist, so `requireBusinessMembership`
+gating them is belt-and-suspenders, not the only thing stopping them. `agent-definitions` allows
+GET only (the picker) — POST/PATCH/DELETE stay off-limits for a `product_end_user` regardless.
+The `/spaces/:spaceId/agent-definitions*` route is a single inline `app.all` handler (kept that
+way per the Hono routing-table landmine precedent — see its own comment) so the method check is
+inline there rather than a separate `app.use`.
+
+**Backend — router allowlist.** `PRODUCT_END_USER_PATH_PATTERNS` gained
+`/spaces/:id/projects(/:id)?`, `/spaces/:id/threads(/:id)?`, `/spaces/:id/agent-definitions(/...)?`,
+and `/spaces/:id/presence` — each capped to a single extra path segment via `(\/[^/]+)?$` so
+`/projects/:id/rules` and `/projects/:id/spend` do NOT match (verified: the regex requires the
+string to end right after the optional segment). `/scheduled-jobs` stays deliberately excluded —
+its own gate (`loadOwnedSpace`) is still tenant-match-only with no per-caller floor, exactly the
+footgun the router's allowlist comment already warned about.
+
+**Backend — `product-sessions/verify` parent-walk.** Extended (not yet exercised by any real
+caller, since Phase C is what introduces child business spaces) to resolve the URL space first;
+if it has a `parent_space_id` (spec §49 Scenario C, depth ≤ 2 — a single hop, never a chain), walk
+to that PRODUCT ROOT to find the right `ProductUserDO` (end users are a product-scoped concept —
+one `ProductUserDO` per `productId×endUserId`, not per-business) — but return the URL SPACE's own
+`tenant_id` (not the root's), since the router uses this as `claims.tid` for
+`requireInternalHmac` against the space actually being accessed. Exists now so Phase C doesn't
+have to re-open this endpoint's security model under time pressure later.
+
+**Incidental fix:** `forwardToSpaceDO`'s `new Request(..., { body })` needed `duplex: "half"` for
+spec-compliant fetch implementations (Node's undici, used by this repo's own tests) whenever a
+body is attached — the exact same defect class CLAUDE.md item 30 already fixed once for the
+session proxy, just never applied here. Surfaced by the first test in this pass to exercise a
+body-bearing PATCH through this helper (`PATCH /projects/:id`) — previously untested.
+
+**Frontend (`apps/shell`).** Real chat: `Chat.tsx` ports `apps/portal`'s proven SSE client
+(session start/resume, SSE streaming with a polling fallback, optimistic user-message rendering)
+onto the mockup's markup (`msg-row`/`bubble`/`chat-area`/`thread-panel` classes from
+`packages/ui`) instead of Tailwind. Chat "sessions" (the message-history transport,
+`SpaceDO.sessions`) and "threads" (the structural browse table, `SpaceDO.threads`) are separate
+tables with **no server-side link yet** — `sessionKey={threadId}` keeps each thread's chat
+session persisted independently client-side (`chatSession.ts`, keyed per `(spaceId, key)`,
+ported from `apps/portal/src/lib/session.ts`), which is an honest client-side approximation, not
+a real link — flagged in code for Phase C or later to close properly if a tighter integration
+turns out to be needed. Projects view: list/create/detail (read-only config — PATCH stays
+builder-only per the membership floor above) with its threads. Threads view: list/create across
+the whole space. Sidebar's Projects/Threads collapsible sections and "New Thread" button are now
+wired to real data (previously Phase A placeholders). Agents view: read-only library reading the
+now-allowlisted `GET agent-definitions` (client explicitly passes `?space_id=` — the proxy is a
+raw passthrough that returns EVERY agent definition in the DO instance if that param is omitted).
+Minimal "coming soon" placeholders added for Spaces/Assistant/Knowledge/Workflows/Settings so
+sidebar navigation never 404s — Phase C/D build these out for real.
+
+**Verification:** `pnpm turbo run typecheck` clean across all 75 packages/workers/apps.
+`tests/unit/business-auth.test.ts` (new, 7 tests — per-method role floors for projects/threads/
+agent-definitions/presence, and that builder roles are completely unaffected),
+`tests/unit/product-sessions-verify.test.ts` (+3 — parent-walk resolves the right ProductUserDO
+and returns the business's own tenant_id, a session opened under the wrong id doesn't verify, an
+orphaned parent returns invalid), `tests/unit/router-product-end-user-auth.test.ts` (updated —
+the four previously-rejected paths now accept, `/scheduled-jobs` still rejects). 908/908 tests
+pass (15 new). `apps/shell` verified via `next build` (all new routes compile) + a live
+`next dev` + curl smoke test (page routing/404 behavior) — **not** verified against a live
+multi-worker backend (spaces+router+agents+knowledge+billing with real D1/DO/KV bindings), since
+that requires Cloudflare tooling/credentials not available in this environment; stated here
+explicitly rather than implied.
+
+**Remaining for the Three-Tier build:** Phase C (businesses, space switcher, invites,
+multi-template — the point at which child business spaces and the parent-walk above finally get
+exercised for real), Phase D (builder UI reskin, including the `isHydrated` fix), Phase E
+(monetization).

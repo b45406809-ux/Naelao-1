@@ -227,21 +227,30 @@ app.get("/v1/spaces/:spaceId/shell/manifest", async (c) => {
 // narrow allowlist, not "any Bearer nps_ token works everywhere" — kb ingestion, credentials,
 // member-billing etc. stay JWT-only.
 //
-// Product Shell (§A1.17 Phase 6 continued): /projects, /threads, /agent-definitions, and
-// /scheduled-jobs were considered for this list and deliberately REJECTED after reading their
-// own gates — each already carries an explicit "builder-only, confirmed never end-user-facing"
-// comment in workers/spaces/src/index.ts (some specifically audited against apps/widget/portal),
-// and /threads' own comment states the end-user chat transport is /sessions, not /threads. Worse,
-// resolveProductEndUserClaims below sets an end user's claims.tid to the SPACE'S OWNING tenant —
-// so a tenant-match-only gate (e.g. scheduled-jobs' loadOwnedSpace) would silently start
-// accepting end-user traffic the moment it's allowlisted, even though it was never audited with
-// that caller in mind. Do not add those four routes here; add a new, narrowly-scoped route
-// instead if a genuine need shows up (as sessions' own list route below did).
+// Phase 6's own note here previously rejected /projects, /threads, and /agent-definitions
+// outright because each carried a blanket "builder-only, confirmed never end-user-facing"
+// comment with no per-caller floor. Phase B (§A1.17) revisits that: the Product Shell's
+// Projects/Threads views need list/create/read access to exactly those three, so
+// `workers/spaces/src/index.ts` grew a `requireBusinessMembership` gate (business-auth.ts) that
+// is additive-only for `product_end_user` — every other role's access is completely unchanged —
+// and per-route/per-method: agent-definitions only allows GET for a product_end_user (never a
+// write); projects/threads allow GET+POST but NOT the admin-only sub-paths (rules, spend,
+// per-project PATCH config) — those stay off this allowlist entirely, so no product_end_user
+// request can reach them regardless of what the spaces worker's gate would otherwise allow.
+// `/scheduled-jobs` is still deliberately excluded — nothing in the shell needs it yet, and its
+// own gate (`loadOwnedSpace`) is tenant-match-only with no per-caller floor at all, exactly the
+// footgun this comment originally warned about (claims.tid is the space's OWNING tenant, so a
+// tenant-match-only gate would silently accept end-user traffic the moment it's allowlisted).
+// Do not add it without first giving it the same treatment projects/threads got here.
 const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/sessions(\/|$)/,
   /^\/spaces\/([^/]+)\/shell\/manifest$/,
   /^\/spaces\/([^/]+)\/kb\/(documents|search)(\/|$)/,
   /^\/spaces\/([^/]+)\/product-users\/me$/,
+  /^\/spaces\/([^/]+)\/projects(\/[^/]+)?$/,
+  /^\/spaces\/([^/]+)\/threads(\/[^/]+)?$/,
+  /^\/spaces\/([^/]+)\/agent-definitions(\/|$)/,
+  /^\/spaces\/([^/]+)\/presence$/,
 ];
 
 /** Resolve productId from the path if it matches an end-user-reachable route pattern. Strips the

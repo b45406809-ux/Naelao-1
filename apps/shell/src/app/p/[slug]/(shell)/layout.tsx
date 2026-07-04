@@ -14,7 +14,17 @@ import { usePathname, useRouter } from "next/navigation";
 import { Sidebar, Toast, useToast, useTheme, type SidebarNavEntry } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { getShellManifest, getMe, type ShellManifest, type ProductUserMe } from "@/lib/api";
+import {
+  getShellManifest,
+  getMe,
+  listProjects,
+  listThreads,
+  createThread,
+  type ShellManifest,
+  type ProductUserMe,
+  type Project,
+  type ThreadSummary,
+} from "@/lib/api";
 
 const DEFAULT_PRIMARY_NAV: SidebarNavEntry[] = [
   { key: "home", icon: "home", label: "Home" },
@@ -40,6 +50,8 @@ export default function ShellLayout({ children }: { children: React.ReactNode })
 
   const [manifest, setManifest] = React.useState<ShellManifest | null>(null);
   const [me, setMe] = React.useState<ProductUserMe | null>(null);
+  const [projects, setProjects] = React.useState<Project[]>([]);
+  const [threads, setThreads] = React.useState<ThreadSummary[]>([]);
 
   React.useEffect(() => {
     if (isHydrated && !isAuthenticated) {
@@ -47,12 +59,26 @@ export default function ShellLayout({ children }: { children: React.ReactNode })
     }
   }, [isHydrated, isAuthenticated, product.slug, router]);
 
+  const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
+
   React.useEffect(() => {
-    if (!session) return;
-    const creds = { sessionToken: session.session_token, endUserId: session.end_user_id };
+    if (!creds) return;
     getShellManifest(product.space_id, creds).then(setManifest).catch(() => show("Couldn't load workspace"));
     getMe(product.space_id, creds).then(setMe).catch(() => {});
-  }, [session, product.space_id, product.slug, show]);
+    listProjects(product.space_id, creds).then(setProjects).catch(() => {});
+    listThreads(product.space_id, creds).then((all) => setThreads(all.slice(0, 3))).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, product.space_id, product.slug]);
+
+  async function handleNewThread() {
+    if (!creds) return;
+    try {
+      const created = await createThread(product.space_id, creds, { title: "New thread" });
+      router.push(`/p/${product.slug}/threads/${created.id}`);
+    } catch {
+      show("Failed to create thread");
+    }
+  }
 
   if (!isHydrated || !isAuthenticated) {
     return (
@@ -75,7 +101,13 @@ export default function ShellLayout({ children }: { children: React.ReactNode })
         onNavigate={(key) => router.push(key === "home" ? `/p/${product.slug}` : `/p/${product.slug}/${key}`)}
         primaryNav={primaryNav}
         moreNav={moreNav}
-        onNewThread={() => router.push(`/p/${product.slug}`)}
+        onNewThread={handleNewThread}
+        projects={projects.map((p) => ({ id: p.id, label: p.name }))}
+        onOpenProject={(id) => router.push(`/p/${product.slug}/projects/${id}`)}
+        onNewProject={() => router.push(`/p/${product.slug}/projects`)}
+        threads={threads.map((t) => ({ id: t.id, label: t.title ?? "Untitled thread" }))}
+        onOpenThread={(id) => router.push(`/p/${product.slug}/threads/${id}`)}
+        onMoreThreads={() => router.push(`/p/${product.slug}/threads`)}
         spaceSwitcher={{
           current: { id: product.space_id, name: manifest?.space_name ?? product.product_name, meta: me ? `${me.credits_balance} credits` : "…" },
           entries: [
