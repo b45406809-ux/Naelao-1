@@ -1,0 +1,9 @@
+@import "@naelao/ui/tokens.css";
+@import "@naelao/ui/styles.css";
+
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300&family=Instrument+Serif:ital@0;1&display=swap");
+
+html,
+body {
+  height: 100%;
+}

@@ -185,6 +185,22 @@ app.all("/v1/spaces/:spaceId/end-users/*", async (c) => {
   );
 });
 
+// Three-Tier Platform Model, Phase A (apps/shell): the shell resolves a product by its
+// subdomain-style slug (/p/[slug]) before a visitor has any credential — same reasoning and same
+// "strip client-supplied identity headers" precaution as shell/manifest below (the spaces
+// worker's handler already returns a fully public-safe projection regardless of caller identity).
+app.get("/v1/products/by-slug/:slug", async (c) => {
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  const headers = new Headers(c.req.raw.headers);
+  headers.delete("x-naelao-tenant-id");
+  headers.delete("x-naelao-user-id");
+  headers.delete("x-naelao-role");
+  headers.delete("x-naelao-scopes");
+  headers.delete("x-naelao-internal-token");
+  return c.env.SPACES_WORKER.fetch(new Request(u.toString(), { method: c.req.method, headers, body: c.req.raw.body }));
+});
+
 // Three-Tier Platform Model, Phase 6: the shell's login page needs branding (logo/color/name)
 // and auth_provider BEFORE a visitor has any credential at all — registered unauthenticated,
 // same reasoning as end-users/* above. The spaces worker's handler already returns a fully

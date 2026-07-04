@@ -531,6 +531,21 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     left before an end user can sign up and use a Product for real. Remaining after 6: 7
     (sub-space/reseller UI), 8 (deferred product-sdk + per-product CF Pages deploy).
 
+    **A full-vision execution plan for the shell UI + everything around it (businesses, invites,
+    builder reskin, monetization) is now underway, phased A-E — see
+    `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.17 continued for the
+    per-phase detail; this line just tracks top-level status. Phase A (design
+    system + shell skeleton) is BUILT:** new `packages/ui` (tokens.css + styles.css ported
+    verbatim from the `apps/launchpad/src/index.html` mockup, consumed as plain global CSS by
+    both the new shell and — in Phase D — the reskinned dashboard, so they never fork the same
+    stylesheet twice) and new `apps/shell` (Next.js 14, `/p/[slug]` product resolution, hybrid
+    `nps_...` auth ported from `apps/portal`, an `AuthProvider` built with an `isHydrated`
+    tri-state from day one — the dashboard's own `AuthProvider` still has the hydration-redirect
+    bug this pattern is meant to avoid, unfixed until Phase D. One new
+    backend route, `GET /v1/products/by-slug/:slug` (spaces worker + router unauthenticated
+    allowlist), resolves a product from its slug pre-login. 897/897 tests pass. Phase B (chat +
+    Projects + Threads) is next.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

@@ -2849,4 +2849,93 @@ the chat view reusing the now-reachable existing SSE mechanism) driven by the Sp
 manifest's `ui.externalPortal`/`ui.operatorShell` — this is the only piece left before an end
 user can sign up, log in, and actually use a Product the way Journey 1B describes.
 
-Remaining phases (7-8) will each get their own subsection here as they land.
+*(Note: `shell/manifest`, `product-users/me`, and the end-user-scoped `sessions` list route
+described above as "remaining" were subsequently built — see CLAUDE.md's CURRENT DIRECTION item
+30 for the fuller narrative of that work and the Hono routing-table bug it surfaced. This
+appendix file lagged that narrative; picking back up below with the full-vision Three-Tier build
+plan's Phase A.)*
+
+## A1.17 continued — Phase A: design system + shell skeleton — BUILT
+
+First concrete step of the full-vision plan (Naelao → Builder → End User, end user gets the
+launchpad-6-mockup agentic workspace; see CLAUDE.md item 30 for the complete phased plan A-E).
+Phase A had two deliverables: a shared design system, and a running end-user shell app that can
+resolve a product, sign an end user up or in, and render the manifest-driven chrome — no chat yet
+(that's Phase B).
+
+**`packages/ui`** — new workspace package, plain `tsc` build (matches every other package's
+convention, no bundler). `tokens.css` ports the mockup's `:root`/`[data-theme=dark]` custom
+properties verbatim (warm paper palette, `--accent #5b52f0`, DM Sans/Instrument Serif). `styles.css`
+ports the mockup's ~600 lines of component classes verbatim (sidebar, nav, space-switcher,
+chat/thread-panel, home view, input box, page views, cards, badges, buttons, workflows, kb items,
+settings, assistant layout, modal, toast, and the full responsive/mobile layer) — kept as global
+CSS classes (not CSS-in-JS or Tailwind) specifically so the exact same stylesheet can be consumed
+by both the new shell AND the reskinned dashboard (Phase D) without forking styles twice. A handful
+of the mockup's singleton `#id` selectors were converted to classes (`.topbar`, `.chat-area`,
+`.thread-panel`, `.home-view`, `.modal-overlay`, `.toast`, etc.) since these are now reusable React
+components, not one-off page elements — `#sidebar`/`#app`/`#main` stayed as ids since the
+responsive media queries key off `#sidebar.icon-only` specifically. React primitives:
+`Sidebar`/`NavItem`/`HistoryItem`/`SpaceSwitcher` (all data-driven — no hardcoded nav items, since
+different SpaceTypes and `hidden_core_items` need different sidebars), `Card`/`Badge`/`Button`/
+`Modal`/`Toast`/`Avatar`/`FormInput`/`FormSelect`/`Toggle`/`TopBar`/`PageView`, an icon registry
+(`icons.tsx`, inline SVGs matching the mockup's exact paths for pixel parity), and a `useTheme`
+hook (localStorage-persisted, falls back to `prefers-color-scheme`).
+
+**`apps/shell`** — new Next.js 14 app (same tooling as `apps/dashboard`: `next-on-pages`, plain
+`tsc --noEmit` typecheck, no Tailwind — consumes `@naelao/ui`'s CSS directly via
+`transpilePackages`). Product resolution is path-based: `/p/[slug]`. `lib/api.ts` and
+`lib/productAccount.ts` port `apps/portal`'s proven hybrid-auth pattern verbatim (Bearer `nps_...`
++ `x-naelao-end-user-id`, per-`spaceId` localStorage session keys) — a person can be signed into
+several different builder products in the same browser. `lib/auth-provider.tsx`
+(`ProductAuthProvider`/`useProductAuth`) is built with an **`isHydrated` tri-state from day one**:
+no consumer may redirect on `isAuthenticated` until `isHydrated` is true. This directly targets a
+bug already known to exist in the dashboard's own `AuthProvider` (`apps/dashboard/src/lib/auth-provider.tsx`,
+still unfixed — that's Phase D's job) — it initializes `token`/`claims` to `null` and only reads
+`localStorage` in a post-mount `useEffect`, so the first render of any protected route sees
+`isAuthenticated=false` and can redirect to `/login` before the real session is ever read.
+`/p/[slug]/layout.tsx` is a server component that resolves the product once (see backend below)
+and calls Next's `notFound()` for an unknown/inactive slug; `/p/[slug]/login` and `/p/[slug]/signup`
+call the existing `POST /v1/spaces/:spaceId/end-users/{login,signup}` routes (already
+unauthenticated on the router, built in an earlier pass); `/p/[slug]/(shell)/layout.tsx` renders
+`@naelao/ui`'s `Sidebar` + top bar driven by `GET shell/manifest` (branding, `hidden_core_items`)
+and `GET product-users/me` (name, credit balance) — the nav item SET itself is a fixed default
+list matching the mockup (Home/Spaces/Assistant/Projects, More→Agents/Knowledge/Workflows/Settings
+— Marketplace/Analytics/Explore deliberately deferred per the decided Shell v1 scope), filtered by
+`hidden_core_items`, deliberately NOT driven by the manifest's `ui.sidebar_items` — that field is
+the BUILDER dashboard's own operator-shell config (Revenue/Orders/Customers/Products/Campaigns/
+Agents for Launchpad), a structurally different surface from the end-user Product Shell nav
+(same distinction CLAUDE.md item 30's Phase 6 scope-correction already drew out for
+`hiddenCoreItems`). The space-switcher is wired to real `shell/manifest` data but only shows the
+current business for now — real multi-business switching is Phase C.
+
+**Backend — one new route, `GET /products/by-slug/:slug`:** the shell needs to resolve a product
+from its subdomain-style slug before an end user has any credential at all (the login page needs
+branding/`auth_provider` to render). Added to `workers/spaces/src/index.ts`, querying
+`spaces WHERE product_slug = ? AND status = 'active'` and returning the same class of fully
+public-safe projection `shell/manifest` already established (`space_id`, `product_name`,
+`brand_color`, `logo_url`, `auth_provider` only — nothing from `productConfig` that would leak
+builder-internal config). Router: `GET /v1/products/by-slug/:slug` added to the UNAUTHENTICATED
+path list, stripping client-supplied identity headers first — identical precaution to
+`shell/manifest`'s own unauthenticated route just above it. No schema changes (`product_slug`
+already existed, migration 0044).
+
+**A pre-existing environment gap found while verifying this phase (not a regression from this
+change):** `hono` and other worker-only dependencies were missing from `node_modules` entirely in
+this session's checkout, and none of the workspace packages (`@naelao/http`, etc.) had been built
+to `dist/` — the test suite couldn't even resolve imports until a full `pnpm install` +
+`pnpm turbo run build --filter="./packages/*"` ran. Worth remembering for any future session that
+inherits a fresh checkout: a filtered `pnpm install --filter X...` only pulls in `X`'s own
+dependency subgraph, not the whole workspace's.
+
+Tests: 4 new cases in `tests/unit/product-shell-manifest.test.ts` (`by-slug` resolves an active
+product's safe projection with zero credentials, 404 for an unknown slug, 404 for a
+non-`active`/suspended product, never leaks internal manifest/productConfig fields). Verified
+`apps/shell` end-to-end via `next build` + `next dev` + curl (no backend running, so
+`/p/<slug>` correctly 404s through the `notFound()` path; `/` renders with fonts/tokens applied).
+897/897 platform tests pass, full monorepo typecheck clean.
+
+**Remaining for the Three-Tier build:** Phase B (chat + Projects + Threads — the router allowlist
+expansion and `requireBusinessMembership` gate, `product-sessions/verify`'s parent-walk for child
+business spaces), then Phase C (businesses/invites/multi-template), Phase D (builder UI reskin —
+including the `isHydrated` fix flagged above), Phase E (monetization). Full detail in the phased
+plan referenced from CLAUDE.md item 30.

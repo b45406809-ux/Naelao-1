@@ -1,0 +1,97 @@
+/* @naelao/ui design tokens — ported verbatim from apps/launchpad/src/index.html (the "launchpad-6" mockup). */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+:root {
+  --bg: #f5f4f0;
+  --surface: #ffffff;
+  --surface2: #f9f8f5;
+  --surface3: #f2f0ec;
+  --sidebar-bg: #fafaf8;
+  --border: #e8e6e0;
+  --border2: #d4d1c8;
+  --text: #1a1917;
+  --text2: #6b6860;
+  --text3: #9e9b94;
+  --accent: #5b52f0;
+  --accent2: #7b73f5;
+  --accent-dim: rgba(91, 82, 240, 0.1);
+  --accent-glow: rgba(91, 82, 240, 0.2);
+  --user-bubble: #1a1917;
+  --user-text: #f5f4f0;
+  --ai-bubble: #f0efeb;
+  --ai-text: #1a1917;
+  --input-bg: #ffffff;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 4px 16px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.08), 0 8px 32px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 4px 24px rgba(0, 0, 0, 0.1), 0 16px 48px rgba(0, 0, 0, 0.08);
+  --radius: 14px;
+  --radius-sm: 9px;
+  --transition: 0.18s ease;
+  --sidebar-rgb: 250, 250, 248;
+  --surface-rgb: 255, 255, 255;
+}
+[data-theme="dark"] {
+  --bg: #0d0c0b;
+  --surface: #191817;
+  --surface2: #1e1d1b;
+  --surface3: #232220;
+  --sidebar-bg: #131210;
+  --border: #272523;
+  --border2: #333130;
+  --text: #f0ede6;
+  --text2: #8a8780;
+  --text3: #504e4a;
+  --accent: #7b73f5;
+  --accent2: #9b95f8;
+  --accent-dim: rgba(123, 115, 245, 0.12);
+  --accent-glow: rgba(123, 115, 245, 0.25);
+  --user-bubble: #272523;
+  --user-text: #f0ede6;
+  --ai-bubble: #1e1d1b;
+  --ai-text: #f0ede6;
+  --input-bg: #1e1d1b;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 4px 16px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.4), 0 8px 32px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 4px 24px rgba(0, 0, 0, 0.5), 0 16px 48px rgba(0, 0, 0, 0.4);
+  --sidebar-rgb: 19, 18, 16;
+  --surface-rgb: 25, 24, 23;
+}
+/* prefers-color-scheme fallback for consumers that haven't stamped data-theme yet */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d0c0b;
+    --surface: #191817;
+    --surface2: #1e1d1b;
+    --surface3: #232220;
+    --sidebar-bg: #131210;
+    --border: #272523;
+    --border2: #333130;
+    --text: #f0ede6;
+    --text2: #8a8780;
+    --text3: #504e4a;
+    --accent: #7b73f5;
+    --accent2: #9b95f8;
+    --accent-dim: rgba(123, 115, 245, 0.12);
+    --accent-glow: rgba(123, 115, 245, 0.25);
+    --user-bubble: #272523;
+    --user-text: #f0ede6;
+    --ai-bubble: #1e1d1b;
+    --ai-text: #f0ede6;
+    --input-bg: #1e1d1b;
+    --sidebar-rgb: 19, 18, 16;
+    --surface-rgb: 25, 24, 23;
+  }
+}
+body {
+  font-family: "DM Sans", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+  transition: background 0.3s, color 0.3s;
+}

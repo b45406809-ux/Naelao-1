@@ -1583,6 +1583,30 @@ async function loadEffectiveProductConfig(
   return { ...(base ?? {}), ...(override ?? {}) } as SpaceTypeProductConfig;
 }
 
+// ── Three-Tier Platform Model, Phase A (apps/shell): public slug→space lookup ───────────────
+// GET /products/by-slug/:slug — the shell resolves a product by its subdomain-style slug
+// (product_slug, unique) before an end user has any credential at all: the login/signup page
+// needs the product's name/branding/auth_provider to render before a session exists. Same
+// "fully public-safe projection" precedent as shell/manifest below — deliberately returns only
+// what a pre-login visitor needs, nothing from productConfig that would leak builder-internal
+// config (pricing, commerce, adminFeatures, etc).
+app.get("/products/by-slug/:slug", async (c) => {
+  const slug = c.req.param("slug");
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT id, name, spacetype_id, config_json FROM spaces WHERE product_slug = ? AND status = 'active'"
+  ).bind(slug).first<{ id: string; name: string; spacetype_id: string; config_json: string | null }>();
+  if (!space) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+
+  const pc = await loadEffectiveProductConfig(c.env, space.spacetype_id, space.config_json);
+  return c.json({
+    space_id: space.id,
+    product_name: space.name,
+    brand_color: pc?.branding?.brandColor ?? null,
+    logo_url: pc?.branding?.logoUrl ?? null,
+    auth_provider: pc?.authProvider?.provider ?? "naelao-native",
+  });
+});
+
 // ── Three-Tier Platform Model, Phase 6: Product Shell data layer ────────────────────────────
 // GET /spaces/:spaceId/shell/manifest — a SAFE PROJECTION of the SpaceType manifest for a
 // browser client (the manifest-driven Product Shell in apps/portal). Deliberately excludes

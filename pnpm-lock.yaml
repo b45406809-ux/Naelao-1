@@ -135,6 +135,37 @@ importers:
         specifier: ^5.6.3
         version: 5.9.3
 
+  apps/shell:
+    dependencies:
+      '@naelao/types':
+        specifier: workspace:*
+        version: link:../../packages/types
+      '@naelao/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
+      next:
+        specifier: 14.2.18
+        version: 14.2.18(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.1
+        version: 18.3.1(react@18.3.1)
+    devDependencies:
+      '@cloudflare/next-on-pages':
+        specifier: ^1.13.5
+        version: 1.13.16(@cloudflare/workers-types@4.20260623.1)(next@14.2.18(react-dom@18.3.1(react@18.3.1))(react@18.3.1))(wrangler@3.114.17(@cloudflare/workers-types@4.20260623.1))
+      '@types/react':
+        specifier: ^18.3.12
+        version: 18.3.31
+      '@types/react-dom':
+        specifier: ^18.3.1
+        version: 18.3.7(@types/react@18.3.31)
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+
   apps/widget:
     devDependencies:
       esbuild:
@@ -413,6 +444,25 @@ importers:
       '@cloudflare/workers-types':
         specifier: '*'
         version: 4.20260623.1
+      typescript:
+        specifier: '*'
+        version: 5.9.3
+
+  packages/ui:
+    dependencies:
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.1
+        version: 18.3.1(react@18.3.1)
+    devDependencies:
+      '@types/react':
+        specifier: ^18.3.12
+        version: 18.3.31
+      '@types/react-dom':
+        specifier: ^18.3.1
+        version: 18.3.7(@types/react@18.3.31)
       typescript:
         specifier: '*'
         version: 5.9.3

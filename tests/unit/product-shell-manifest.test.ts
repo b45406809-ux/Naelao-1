@@ -27,7 +27,8 @@ const SPACES_TABLE_SQL = `
   CREATE TABLE spaces (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
     name TEXT NOT NULL DEFAULT '', spacetype_id TEXT NOT NULL DEFAULT 'launchpad',
-    config_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    config_json TEXT NOT NULL DEFAULT '{}', product_slug TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')), created_by TEXT
   );
 `;
@@ -272,5 +273,48 @@ describe("GET /spaces/:spaceId/sessions (list)", () => {
     );
     const body = await res.json() as { count: number };
     expect(body.count).toBe(2);
+  });
+});
+
+describe("GET /products/by-slug/:slug", () => {
+  it("resolves an active product's space id + safe branding from its slug, with no credentials at all", async () => {
+    const env = makeEnv();
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, product_slug) VALUES ('prod-1', 'tenant-1', 'active', 'Acme Store', 'launchpad', 'acme-store')"
+    ).bind().run();
+    const res = await spacesWorker.fetch(new Request("https://spaces.naelao.com/products/by-slug/acme-store"), env as never, execCtx);
+    expect(res.status).toBe(200);
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.space_id).toBe("prod-1");
+    expect(body.product_name).toBe("Acme Store");
+    expect(body.brand_color).toBe("#e8692a");
+    expect(body.auth_provider).toBe("naelao-native");
+  });
+
+  it("404s for an unknown slug", async () => {
+    const env = makeEnv();
+    const res = await spacesWorker.fetch(new Request("https://spaces.naelao.com/products/by-slug/no-such-slug"), env as never, execCtx);
+    expect(res.status).toBe(404);
+  });
+
+  it("404s for a slug belonging to a non-active (e.g. suspended) product", async () => {
+    const env = makeEnv();
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, product_slug) VALUES ('prod-2', 'tenant-1', 'suspended', 'Suspended Co', 'launchpad', 'suspended-co')"
+    ).bind().run();
+    const res = await spacesWorker.fetch(new Request("https://spaces.naelao.com/products/by-slug/suspended-co"), env as never, execCtx);
+    expect(res.status).toBe(404);
+  });
+
+  it("never leaks internal manifest or productConfig fields not in the safe projection", async () => {
+    const env = makeEnv();
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, product_slug) VALUES ('prod-1', 'tenant-1', 'active', 'Acme Store', 'launchpad', 'acme-store')"
+    ).bind().run();
+    const res = await spacesWorker.fetch(new Request("https://spaces.naelao.com/products/by-slug/acme-store"), env as never, execCtx);
+    const raw = await res.text();
+    expect(raw).not.toContain("secret-internal-skill");
+    expect(raw).not.toContain("naelaoFeeBps");
+    expect(raw).not.toContain("commerce");
   });
 });
