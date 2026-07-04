@@ -3378,3 +3378,71 @@ and `apps/shell` verified via `next build`.
 differentiator), Phase H (builder domain/name post-creation UI polish). Full phased plan (including
 the larger script-engine/execution-ladder/container roadmap beyond Launchpad) is tracked in the
 session's plan file, not yet mirrored into this doc section by section — update as each phase lands.
+
+## A1.17 continued — Launchpad go-live: Phase G (business-builder Space Assistant) — BUILT
+
+**Goal:** give the Launchpad Space Assistant the actual capability the spec/user vision describes
+— help an owner go from "I want to build a business" to a running one, Whop-first — rather than
+the generic coordinator prompt every other SpaceType's assistant gets.
+
+**G1 — `LAUNCHPAD_ASSISTANT_PROFILE`** (`workers/agents/src/script-engine/profiles.ts`), the SAME
+`agentId: "naelao-agent"` every dispatcher already hardcodes, just a richer bundle: adds a
+"Business-Building Methodology" section to `agents.md` (discover → propose 1-3 Whop-first options
+→ scaffold on approval → launch checklist → recurring revenue review) and a matching system prompt,
+on top of the generic assistant's existing continuous-existence/channels/honest-escalation framing.
+Explicitly leans into transparency/honest-escalation as the differentiator from "runs while you
+sleep" black-box competitors (Polsia) rather than chasing full autonomy by default. Adds
+`commerce`, `storefront`, `mcp-connector`, and the new `workspace-admin` prebuilt to the assistant's
+`scripts.prebuilt` (the generic assistant doesn't get business capabilities). The provisioner
+(`installLaunchpadAgents`) writes this profile instead of `DEFAULT_NAELAO_AGENT` — safe because
+that function is only ever called when `spacetype_id === "launchpad"`.
+
+**G2 — new `workspace-admin` prebuilt**
+(`workers/agents/src/script-engine/prebuilt/workspace-admin.ts`) is what makes the assistant able
+to actually DO something, not just describe a plan: `project.create_from_template` (mirrors the
+exact 4-step sequence — create, configure, seed rules, seed scheduled jobs — that the agents
+worker's own `POST /spaces/:spaceId/projects/from-template` route already performs, replicated
+directly against the spaces-worker binding rather than an HTTP self-call, since a Durable Object in
+the same Worker as that route has no "call my own router" primitive), `project.list`,
+`project.configure`, and `agent.list` (read-only). All HMAC-token-verified against the spaces
+worker, same pattern as `commerce.ts`.
+
+**G3 — business-building skill library was deliberately NOT built as a separate R2/Vectorize skill
+seed in this pass.** A proper `script.find`-discoverable skill needs embeddings, and half-building
+that pipeline (skills with no embeddings are unfindable by the ANN search that makes `script.find`
+useful) would be worse than not building it — the methodology instead lives directly in G1's
+`agents.md`/system prompt, which is real, honest value without the half-built risk. Flagged as a
+real follow-up, not silently dropped.
+
+**G4 — autonomy toggle reuses the ALREADY-BUILT `assistant_policy` gate (SpaceDO migration v14) —
+no new gate engine.** Two things had to be gotten right that weren't obvious from the plan: (1) for
+the Space Assistant specifically (no `projectId`), `AgentConfig.requiresApprovalFor` is completely
+ignored by `NaelaoAgentDO.handleScriptRun` — the assistant's gate list comes exclusively from the
+space's `assistant_policy` row, fetched fresh per run, so G1's profile does NOT set that field; (2)
+`assistant_policy` has no provisioning-time seed anywhere in the codebase (the row is created
+lazily via PATCH), so a fresh Launchpad space's assistant would default to `always_ask` with an
+EMPTY `auto_approved_actions` — gating even harmless reads like listing projects. New
+`seedLaunchpadAssistantPolicy` (provisioner) PATCHes a "guided" default (`always_ask` +
+`LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED`: `project.list`, `agent.list`,
+`commerce.list_products`, `commerce.get_order`, `mcp.list_servers`, `mcp.list_tools`,
+`memory.recall`) at install time, best-effort/non-fatal like `seedOwnerMember`. The builder-facing
+toggle is a new "Naelao Agent — Space Assistant" card at the top of the dashboard's existing Agents
+tab (`apps/dashboard/.../products/[productId]/agents/page.tsx`) with Guided/Autonomous buttons that
+PATCH `approval_mode` between `always_ask` and `yolo` via two new thin API functions
+(`getAssistantPolicy`/`updateAssistantPolicy` in `apps/dashboard/src/lib/api.ts`) calling the
+already-HMAC-gated `/spaces/:spaceId/assistant-policy` route directly (the product root space IS
+the product, so no new builder-scoped endpoint was needed) — deliberately NOT exposed in
+`apps/shell` yet, since that route only checks tenant-match, not per-business ownership, and
+allowlisting it for `product_end_user` callers would need a `requireBusinessMembership`-style
+owner/admin floor first (the same "identity, not authorization" gap every prior router-allowlist
+addition has had to close) — a real, scoped follow-up rather than rushed in.
+
+**Tests:** `tests/unit/workspace-admin-prebuilt.test.ts` (6 tests — verified-token calls, the full
+create-from-template sequence, project_id validation, missing-binding error); extended
+`tests/unit/launchpad-assistant-profile.test.ts` (4 tests — the provisioner writes the
+business-builder profile under `naelao-agent` with `workspace-admin`/`commerce` in its prebuilt
+list, and seeds the guided policy default via a verified token, non-fatal on failure). 987/987
+tests pass (10 new). `pnpm turbo run typecheck` clean (75 tasks). `apps/dashboard` verified via
+`next build`.
+
+**Remaining for Launchpad go-live:** Phase H (builder domain/name post-creation UI polish).

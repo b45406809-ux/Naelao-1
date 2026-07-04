@@ -28,7 +28,8 @@ import {
   writeAgentConfig,
   launchpadAgentToProfile,
   businessServicePrebuilts,
-  DEFAULT_NAELAO_AGENT,
+  LAUNCHPAD_ASSISTANT_PROFILE,
+  LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED,
 } from "../../agents/src/script-engine/index.js";
 import { SkillLibrary } from "../../agents/src/script-engine/skill-library.js";
 import { inheritTemplateSkills } from "../../agents/src/script-engine/federation.js";
@@ -113,9 +114,12 @@ export async function installLaunchpadAgents(
       ? cfg
       : { ...cfg, scripts: { ...cfg.scripts, prebuilt: [...new Set([...cfg.scripts.prebuilt, ...extraPrebuilt])] } };
 
-  // Default Naelao Agent — every space gets this (spec §15)
-  await writeAgentConfig(env.SCRIPTS_R2, spaceId, DEFAULT_NAELAO_AGENT.agentId, withServices(DEFAULT_NAELAO_AGENT.config));
-  await registerAgentIndex(spaceId, tenantId, DEFAULT_NAELAO_AGENT.agentId, "Naelao Agent", "General-purpose agent", null, env);
+  // Space Assistant — every space gets this (spec §15). Launchpad gets the business-builder
+  // profile (§A1.17 Phase G) instead of the generic one — same agentId ("naelao-agent"), same
+  // dispatch, richer prompt.
+  await writeAgentConfig(env.SCRIPTS_R2, spaceId, LAUNCHPAD_ASSISTANT_PROFILE.agentId, withServices(LAUNCHPAD_ASSISTANT_PROFILE.config));
+  await registerAgentIndex(spaceId, tenantId, LAUNCHPAD_ASSISTANT_PROFILE.agentId, "Naelao Agent", "Business-builder Space Assistant", null, env);
+  await seedLaunchpadAssistantPolicy(spaceId, tenantId, env);
 
   for (const agentDef of agentsToInstall) {
     const profile = launchpadAgentToProfile(agentDef);
@@ -126,6 +130,38 @@ export async function installLaunchpadAgents(
     );
     await installAgentTrigger(spaceId, tenantId, agentDef, env);
   }
+}
+
+/**
+ * §A1.17 Phase G: seed the "guided" assistant_policy default (always_ask + a read-only
+ * auto_approved_actions allowlist) for a new Launchpad space, so the business-builder assistant
+ * can look around (list projects/agents, check orders, list MCP servers) without asking
+ * permission for every read, but still asks before it scaffolds a project or spends anything.
+ * The builder can flip this to `yolo` (fully autonomous) any time via the existing
+ * PATCH /assistant-policy endpoint. Best-effort: a failed seed logs and does not fail
+ * provisioning (same posture as seedOwnerMember) — fetchAssistantPolicy's own fail-closed
+ * default (always_ask, no auto-approved actions) is a safe fallback if this never lands.
+ */
+export async function seedLaunchpadAssistantPolicy(spaceId: string, tenantId: string, env: Env): Promise<boolean> {
+  const resp = await env.SPACES_WORKER.fetch(
+    new Request(`http://spaces-worker/spaces/${spaceId}/assistant-policy`, {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+      },
+      body: JSON.stringify({ approval_mode: "always_ask", auto_approved_actions: LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED }),
+    })
+  ).catch((err: Error) => {
+    console.warn(`[provisioner] assistant policy seed request failed for ${spaceId}: ${err.message}`);
+    return null;
+  });
+  if (!resp || !resp.ok) {
+    console.warn(`[provisioner] assistant policy seed failed for ${spaceId}${resp ? `: ${await resp.text()}` : ""}`);
+    return false;
+  }
+  return true;
 }
 
 /**

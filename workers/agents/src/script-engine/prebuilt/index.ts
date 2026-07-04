@@ -31,6 +31,7 @@ import { memory } from "./memory.js";
 import { fabric } from "./fabric.js";
 import { wiki } from "./wiki.js";
 import { lock } from "./lock.js";
+import { workspaceAdmin } from "./workspace-admin.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -79,6 +80,9 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // Generic named-lock primitive — the building block for script-composed concurrency
   // strategies (e.g. CSV row locking), not a bespoke locking mechanism per use case.
   [lock.name]: lock,
+  // Workspace scaffolding (§A1.17 Phase G) — lets the Launchpad business-builder assistant
+  // actually create/configure projects and read the agent roster, not just describe them.
+  [workspaceAdmin.name]: workspaceAdmin,
 };
 
 /**
@@ -116,4 +120,5 @@ export {
   fabric,
   wiki,
   lock,
+  workspaceAdmin,
 };

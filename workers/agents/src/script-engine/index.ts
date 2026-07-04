@@ -42,6 +42,8 @@ export {
 } from "./agent-config.js";
 export {
   DEFAULT_NAELAO_AGENT,
+  LAUNCHPAD_ASSISTANT_PROFILE,
+  LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED,
   launchpadAgentToProfile,
   launchpadProfiles,
   businessServicePrebuilts,

@@ -683,6 +683,26 @@ export async function getBuilderProductDomain(id: string): Promise<BuilderProduc
   return apiFetch<BuilderProductDomain>(`/builder/products/${encodeURIComponent(id)}/domain`);
 }
 
+// §A1.17 Phase G: the Space Assistant's approval policy — `spaceId` here is the product root
+// space itself (a builder-owned product IS a space), not a `/builder/*` route. Reuses the
+// already-built `GET/PATCH /spaces/:spaceId/assistant-policy` (SpaceDO migration v14) rather
+// than adding a parallel builder-scoped endpoint.
+export interface AssistantPolicy {
+  approval_mode: "always_ask" | "yolo";
+  auto_approved_actions: string[];
+}
+
+export async function getAssistantPolicy(spaceId: string): Promise<AssistantPolicy> {
+  return apiFetch<AssistantPolicy>(`/spaces/${encodeURIComponent(spaceId)}/assistant-policy`);
+}
+
+export async function updateAssistantPolicy(spaceId: string, input: Partial<AssistantPolicy>): Promise<AssistantPolicy> {
+  return apiFetch<AssistantPolicy>(`/spaces/${encodeURIComponent(spaceId)}/assistant-policy`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
 export interface BuilderSpaceTypeListing {
   id: string;
   name: string;

@@ -669,7 +669,33 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     hand-maintained, drift-prone hardcoded copies. A test asserting the real agents-worker response
     shape (`{templates: [...]}`, not `{data: [...]}`) caught a real bug in the first draft before it
     shipped. 977/977 tests pass (4 new), `pnpm turbo run typecheck` clean (75 tasks), both apps
-    verified via `next build`. Next: Phase G (business-builder assistant), Phase H (domain/name UI).
+    verified via `next build`. **Phase G (business-builder Space Assistant) is BUILT.**
+    `LAUNCHPAD_ASSISTANT_PROFILE` (`workers/agents/src/script-engine/profiles.ts`) gives the
+    Launchpad assistant (same `agentId: "naelao-agent"` every dispatcher hardcodes) a
+    "Business-Building Methodology" — discover → propose Whop-first options → scaffold on approval
+    → launch checklist → recurring revenue review — leaning into honest escalation/transparency as
+    the differentiator from "runs while you sleep" black-box competitors like Polsia, rather than
+    defaulting to full autonomy. New `workspace-admin` prebuilt
+    (`workers/agents/src/script-engine/prebuilt/workspace-admin.ts`) is what lets the assistant
+    actually scaffold a business, not just describe a plan: `project.create_from_template` (mirrors
+    the agents worker's own 4-step from-template sequence directly against the spaces-worker
+    binding, since a DO can't call its own Worker's router), `project.list`, `project.configure`,
+    `agent.list`. The autonomy toggle reuses the already-built `assistant_policy` gate — no new
+    engine — but needed two real fixes to actually work: the Space Assistant's gate list comes
+    exclusively from `assistant_policy` (its `AgentConfig.requiresApprovalFor` is ignored), and
+    that table has no provisioning-time seed anywhere in the codebase, so a fresh space would
+    default to gating even harmless reads. New `seedLaunchpadAssistantPolicy` seeds a "guided"
+    default (`always_ask` + a read-only auto-approved allowlist) at install time, best-effort like
+    `seedOwnerMember`. Builder-facing Guided/Autonomous toggle added to the dashboard's existing
+    Agents tab, calling the already-HMAC-gated `/spaces/:spaceId/assistant-policy` route directly.
+    Deliberately NOT exposed in the shell yet — that route only checks tenant-match, not per-
+    business ownership, so allowlisting it for end users needs a `requireBusinessMembership`-style
+    floor first, flagged as a real follow-up. A planned skill-library seed (G3) was deliberately
+    NOT built as a separate step: an unembedded skill is unfindable by `script.find`'s ANN search,
+    so half-building it would be worse than folding the methodology into the profile's prompt
+    directly, which is what happened instead. 987/987 tests pass (10 new), `pnpm turbo run
+    typecheck` clean (75 tasks), `apps/dashboard` verified via `next build`. Next: Phase H
+    (builder domain/name post-creation UI polish).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
