@@ -132,6 +132,30 @@ describe("GET /spaces/:spaceId/shell/manifest", () => {
     expect(body.allow_public_signup).toBe(true);
   });
 
+  // Phase C (§A1.17): membership_model + allowed_child_space_types tell the shell whether to show
+  // a "Create Business" entry point at all — the manifest's base productConfig is "team", so a
+  // product without a per-space override never shows it.
+  it("exposes membership_model (team, from the manifest base) and an empty allowed_child_space_types", async () => {
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    const res = await spacesWorker.fetch(authedReq("/spaces/prod-1/shell/manifest"), env as never, execCtx);
+    const body = await res.json() as { membership_model: string; allowed_child_space_types: string[] };
+    expect(body.membership_model).toBe("team");
+    expect(body.allowed_child_space_types).toEqual([]);
+  });
+
+  it("a per-space hybrid override surfaces membership_model + allowed_child_space_types for real", async () => {
+    const env = makeEnv();
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json) VALUES
+       ('prod-hybrid', 'tenant-1', 'launchpad', 'Hybrid Store', 'active', ?)`
+    ).bind(JSON.stringify({ productConfig: { membershipModel: "hybrid", allowedChildSpaceTypes: ["launchpad"] } })).run();
+    const res = await spacesWorker.fetch(authedReq("/spaces/prod-hybrid/shell/manifest"), env as never, execCtx);
+    const body = await res.json() as { membership_model: string; allowed_child_space_types: string[] };
+    expect(body.membership_model).toBe("hybrid");
+    expect(body.allowed_child_space_types).toEqual(["launchpad"]);
+  });
+
   it("never serializes internal manifest fields (agentEnvironment, backend, lifecycle, marketplace, commerce)", async () => {
     const env = makeEnv();
     await seedSpace(env, "prod-1", "tenant-1");

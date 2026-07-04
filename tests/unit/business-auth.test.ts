@@ -3,22 +3,45 @@ import spacesWorker from "../../workers/spaces/src/index.js";
 import { mintInternalToken } from "@naelao/http";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
 import { makeStatefulDoNamespace } from "./helpers/fake-do-namespace.js";
+import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
-// Three-Tier Platform Model, Phase B (§A1.17): requireBusinessMembership adds a floor for
-// product_end_user callers on routes that were previously builder-only (projects, threads,
-// agent-definitions, presence) — additive only, every other role's access must stay unchanged.
-// Phase B treats every verified product_end_user as "member" (Phase C replaces this with a real
-// per-business role lookup); write/admin sub-paths (project PATCH, agent-definitions writes)
-// require "admin", which no product_end_user reaches yet — so those must 403, not 200.
+// Three-Tier Platform Model (§A1.17): requireBusinessMembership adds a floor for product_end_user
+// callers on routes that were previously builder-only (projects, threads, agent-definitions,
+// presence) — additive only, every other role's access must stay unchanged. All tests in this
+// file operate on "prod-1", a PRODUCT ROOT space (no parent_space_id) — a verified product
+// session for that exact space implies "member" (resolveEndUserBusinessRole's product-root
+// branch). Cross-business membership enforcement (a business space with parent_space_id set,
+// requiring a real business_memberships row) is covered in business-membership-role.test.ts.
 
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 const PLATFORM_SECRET = "test-platform-secret";
 
+const SPACES_TABLE_SQL = `
+  CREATE TABLE spaces (
+    id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+    name TEXT NOT NULL DEFAULT '', spacetype_id TEXT NOT NULL DEFAULT 'launchpad',
+    config_json TEXT NOT NULL DEFAULT '{}', parent_space_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')), created_by TEXT
+  );
+`;
+const BUSINESS_MEMBERSHIPS_SQL = `
+  CREATE TABLE business_memberships (
+    business_space_id TEXT NOT NULL, product_space_id TEXT NOT NULL, end_user_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'member', status TEXT NOT NULL DEFAULT 'active',
+    invited_by TEXT, joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (business_space_id, end_user_id)
+  );
+`;
+
 function makeEnv() {
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUSINESS_MEMBERSHIPS_SQL]);
+  fakeDb.db.exec("INSERT INTO spaces (id, tenant_id, status, name) VALUES ('prod-1', 'tenant-1', 'active', 'Product Root')");
   return {
     PLATFORM_SECRET,
     ENVIRONMENT: "test",
     SPACE_DO: makeStatefulDoNamespace(SpaceDO),
+    PLATFORM_DB: fakeDb,
   };
 }
 

@@ -368,6 +368,23 @@ export function agentsForTemplate(templateId: string): LaunchpadAgentDefinition[
     .filter((a): a is LaunchpadAgentDefinition => Boolean(a));
 }
 
+/** Multi-template union, deduped by agent id (a business built from several templates gets the
+ *  agents each one needs, once each — order-preserving on first occurrence). Three-Tier
+ *  Platform Model Phase C (§A1.17): businesses can be created from more than one template. */
+export function agentsForTemplates(templateIds: string[]): LaunchpadAgentDefinition[] {
+  const seen = new Set<string>();
+  const result: LaunchpadAgentDefinition[] = [];
+  for (const id of templateIds) {
+    for (const agent of agentsForTemplate(id)) {
+      if (!seen.has(agent.id)) {
+        seen.add(agent.id);
+        result.push(agent);
+      }
+    }
+  }
+  return result;
+}
+
 /**
  * Validate the SpaceType: every template references known core agents, and ids are unique.
  * Throws on a structural error (called at module load to fail fast).

@@ -10,7 +10,9 @@ import { registerBuilderRoutes } from "./builder-routes.js";
 import { registerProductEndUserRoutes } from "./product-end-user-routes.js";
 import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
 import type { ProvisionMessage } from "./create-space.js";
-import { requireBusinessMembership } from "./business-auth.js";
+import { requireBusinessMembership, resolveEndUserBusinessRole } from "./business-auth.js";
+import { createBusinessForEndUser } from "./business-create.js";
+import { registerBusinessRoutes } from "./business-routes.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
@@ -307,10 +309,13 @@ app.post("/spaces/:spaceId/me/injection", async (c) => {
 // Forward /spaces/:spaceId/agent-definitions* to the SpaceDO.
 // Per spec §11 and CLAUDE.md: SpaceDO owns agent_definitions.
 // A1.16.10 (layer-3 backstop, bucket A) gated this builder-only (confirmed against apps/widget +
-// apps/portal — neither ever called this route). Phase B (§A1.17) changes that narrowly: the
+// apps/portal — neither ever called this route). Phase B (§A1.17) changed that narrowly: the
 // Product Shell's chat/project agent picker needs a READ-ONLY list of agent definitions — a
-// product_end_user caller is allowed through for GET only (write methods stay admin-only, which
-// no product_end_user ever reaches since Phase B grants none that role).
+// product_end_user caller is allowed through for GET only (write methods stay admin-only). Phase
+// C closed a cross-business hole in that check: a flat "any product_end_user may GET" would let
+// one business's end user read another business's agent roster just by changing :spaceId in the
+// URL — resolveEndUserBusinessRole now requires an actual (product-root or business-membership)
+// role before the GET is allowed, same as requireBusinessMembership's other routes.
 // Gated inline (not via a separate app.use(...)) — see the /internal/space-types-record-install/
 // :id route's comment for the full root-cause writeup: a separate app.use(...) on an overlapping
 // wildcard pattern was found, at this app's route-table scale, to be silently bypassable (a
@@ -326,8 +331,15 @@ app.all("/spaces/:spaceId/agent-definitions*", async (c) => {
   if (!(await verifyInternalToken(token, tenantId, c.env.PLATFORM_SECRET))) {
     return errorResponse(forbidden("Missing or invalid internal token — this endpoint is not directly reachable"), c.get("requestId") ?? "unknown");
   }
-  if (getCallerIdentity(c).role === "product_end_user" && c.req.method !== "GET") {
-    return errorResponse(forbidden("product_end_user callers may only read agent definitions"), c.get("requestId") ?? "unknown");
+  const callerIdentity = getCallerIdentity(c);
+  if (callerIdentity.role === "product_end_user") {
+    if (c.req.method !== "GET") {
+      return errorResponse(forbidden("product_end_user callers may only read agent definitions"), c.get("requestId") ?? "unknown");
+    }
+    const businessRole = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, callerIdentity.userId);
+    if (!businessRole) {
+      return errorResponse(forbidden("Not a member of this business"), c.get("requestId") ?? "unknown");
+    }
   }
 
   const doId = c.env.SPACE_DO.idFromName(
@@ -1706,6 +1718,12 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
     sub_space_display: pc?.subSpaceDisplay ?? null,
     allow_public_signup: pc?.allowPublicSignup ?? false,
     auth_provider: pc?.authProvider?.provider ?? "naelao-native",
+    // Phase C (§A1.17): whether an end user may create their own business at all (membershipModel
+    // "team" never shows a create-business entry point) and, if so, which SpaceTypes it may be.
+    // Both are safe to expose pre-authorization — they gate a UI affordance, not data access; the
+    // actual creation route re-derives and re-checks both server-side regardless of what this says.
+    membership_model: pc?.membershipModel ?? "team",
+    allowed_child_space_types: pc?.allowedChildSpaceTypes ?? [],
   });
 });
 
@@ -1763,6 +1781,10 @@ app.patch("/spaces/:spaceId/product-users/me", async (c) => {
 // query param.
 
 // POST /reseller/spaces — a customer creates their own business under a reseller's product.
+// Thin wrapper over createBusinessForEndUser (business-create.ts) — the actual gating/tenant-
+// hierarchy/provisioning logic is shared with the Phase C product-scoped wrapper
+// (POST /spaces/:productSpaceId/businesses, business-routes.ts) so there is exactly one copy of
+// this security-sensitive path, not two that could drift.
 app.post("/reseller/spaces", async (c) => {
   const { userId } = getCallerIdentity(c);
   if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
@@ -1774,85 +1796,19 @@ app.post("/reseller/spaces", async (c) => {
     template_id?: string;
     config_overrides?: Record<string, unknown>;
   }>();
-  if (!body.reseller_product_space_id || !body.name || !body.spacetype_id) {
-    return c.json(
-      { error_code: "bad_request", message: "reseller_product_space_id, name, spacetype_id are required" },
-      400
-    );
-  }
 
-  // 1. Resolve the reseller (parent tenant) from the product space.
-  const product = await c.env.PLATFORM_DB.prepare(
-    "SELECT tenant_id, spacetype_id, config_json FROM spaces WHERE id = ? AND status = 'active'"
-  ).bind(body.reseller_product_space_id).first<{ tenant_id: string; spacetype_id: string; config_json: string | null }>();
-  if (!product) return c.json({ error_code: "not_found", message: "Reseller product not found" }, 404);
-  const parentTenantId = product.tenant_id;
-
-  // 2. Load effective productConfig and gate the request.
-  const pc = await loadEffectiveProductConfig(c.env, product.spacetype_id, product.config_json);
-  if (!pc || (pc.membershipModel !== "tenant" && pc.membershipModel !== "hybrid")) {
-    return c.json({ error_code: "not_allowed", message: "This product does not allow customers to create their own businesses" }, 403);
-  }
-  if (!pc.allowPublicSignup) {
-    return c.json({ error_code: "signup_closed", message: "Public signup is disabled for this product" }, 403);
-  }
-  const allowed = pc.allowedChildSpaceTypes ?? [];
-  if (!allowed.includes(body.spacetype_id)) {
-    return c.json({ error_code: "spacetype_not_allowed", message: `SpaceType '${body.spacetype_id}' is not offered by this product` }, 403);
-  }
-
-  // 3. Find or mint the customer's child tenant (one per customer per reseller).
-  const existing = await c.env.PLATFORM_DB.prepare(
-    "SELECT child_tenant_id FROM tenant_hierarchy WHERE parent_tenant_id = ? AND child_owner_user_id = ? LIMIT 1"
-  ).bind(parentTenantId, userId).first<{ child_tenant_id: string }>();
-  const childTenantId = existing?.child_tenant_id ?? `ten_${crypto.randomUUID().replace(/-/g, "")}`;
-  const now = new Date().toISOString();
-
-  // Ensure a reseller_accounts row exists for the parent (lazily, from productConfig).
-  await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO reseller_accounts (tenant_id, product_space_id, billing_relationship, wholesale_cents, referral_share_pct, updated_at)
-     VALUES (?, ?, ?, NULL, 0.0, ?)
-     ON CONFLICT(tenant_id) DO UPDATE SET product_space_id = excluded.product_space_id, updated_at = excluded.updated_at`
-  ).bind(parentTenantId, body.reseller_product_space_id, pc.billingRelationship ?? "platform", now).run();
-
-  // 4. Create the child business (space) under the child tenant.
-  const spaceId = crypto.randomUUID();
-  const initialStatus = c.env.PROVISION_QUEUE ? "provisioning" : "active";
-  const configJson = JSON.stringify({
-    ...(body.config_overrides ?? {}),
-    ...(body.template_id ? { template_id: body.template_id } : {}),
+  const result = await createBusinessForEndUser(c.env, {
+    resellerProductSpaceId: body.reseller_product_space_id,
+    userId,
+    name: body.name,
+    spacetypeId: body.spacetype_id,
+    ...(body.template_id ? { templateId: body.template_id } : {}),
+    ...(body.config_overrides ? { configOverrides: body.config_overrides } : {}),
   });
-  // The child business is its OWN top-level space under its OWN tenant (saas per-end-user
-  // isolation, G-Y16): own SpaceDO, own SQLite. parent_space_id links it to the reseller's
-  // product for portfolio/promotion queries; scenario_type marks it a user-created business.
-  await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO spaces (id, tenant_id, spacetype_id, name, status, config_json, parent_space_id, depth, tenancy_mode, scenario_type, created_at, updated_at, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'saas', 'user-workspace', ?, ?, ?)`
-  ).bind(spaceId, childTenantId, body.spacetype_id, body.name, initialStatus, configJson, body.reseller_product_space_id, now, now, userId).run();
-
-  // 5. Record the hierarchy on first business for this child tenant.
-  if (!existing) {
-    await c.env.PLATFORM_DB.prepare(
-      `INSERT INTO tenant_hierarchy (child_tenant_id, parent_tenant_id, reseller_product_space_id, child_space_id, child_owner_user_id)
-       VALUES (?, ?, ?, ?, ?)`
-    ).bind(childTenantId, parentTenantId, body.reseller_product_space_id, spaceId, userId).run();
+  if (!result.ok) {
+    return c.json({ error_code: result.error_code, message: result.message }, result.status);
   }
-
-  // 6. Provision under the CHILD tenant (reuses the 10-step provisioner unchanged).
-  if (c.env.PROVISION_QUEUE) {
-    await c.env.PROVISION_QUEUE.send({
-      type: "space_provision",
-      spaceId,
-      tenantId: childTenantId,
-      spaceTypeId: body.spacetype_id,
-      spaceName: body.name,
-      ...(body.template_id ? { templateId: body.template_id } : {}),
-      userId,
-      requestedAt: now,
-    });
-  }
-
-  return c.json({ tenant_id: childTenantId, space_id: spaceId, status: initialStatus, parent_tenant_id: parentTenantId }, 201);
+  return c.json({ tenant_id: result.tenantId, space_id: result.spaceId, status: result.status, parent_tenant_id: result.parentTenantId }, 201);
 });
 
 // GET /reseller/clients — the calling reseller's client portfolio (G-AS34 dashboard data).
@@ -2029,6 +1985,8 @@ app.post("/reseller/clients/:childTenantId/promote", async (c) => {
 registerBuilderRoutes(app);
 // Three-Tier Platform Model, Phase 6 — public, unauthenticated end-user signup/login.
 registerProductEndUserRoutes(app);
+// Three-Tier Platform Model, Phase C (docs/spec-appendix A1.17) — businesses, space switcher, invites.
+registerBusinessRoutes(app);
 
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
 

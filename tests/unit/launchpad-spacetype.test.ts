@@ -5,6 +5,7 @@ import {
   LAUNCHPAD_CORE_AGENTS,
   getLaunchpadTemplate,
   agentsForTemplate,
+  agentsForTemplates,
   validateLaunchpadSpaceType,
 } from "../../workers/agents/src/launchpad/spacetype.js";
 
@@ -42,6 +43,25 @@ describe("Launchpad SpaceType (§11)", () => {
     expect(getLaunchpadTemplate("creator-store")?.name).toBe("Creator Store");
     expect(getLaunchpadTemplate("does-not-exist")).toBeNull();
     expect(agentsForTemplate("does-not-exist")).toEqual([]);
+  });
+
+  // Phase C (§A1.17): a business can be built from more than one template — the union must be
+  // deduped by agent id (creator-store and newsletter-business both install
+  // launchpad-fulfillment-v1, so it should only appear once).
+  it("agentsForTemplates unions multiple templates' agents, deduped by id", () => {
+    const combined = agentsForTemplates(["creator-store", "newsletter-business"]);
+    const ids = combined.map((a) => a.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toContain("launchpad-fulfillment-v1");
+    expect(ids).toContain("launchpad-support-v1");
+    expect(ids).toContain("launchpad-content-v1");
+    // Union, not concatenation — fulfillment appears in both source templates but only once here.
+    expect(ids.filter((id) => id === "launchpad-fulfillment-v1")).toHaveLength(1);
+  });
+
+  it("agentsForTemplates ignores unknown template ids and returns [] for an empty list", () => {
+    expect(agentsForTemplates([])).toEqual([]);
+    expect(agentsForTemplates(["does-not-exist"])).toEqual([]);
   });
 
   it("validate throws when a template points at a missing agent", () => {

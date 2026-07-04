@@ -3021,3 +3021,101 @@ explicitly rather than implied.
 multi-template — the point at which child business spaces and the parent-walk above finally get
 exercised for real), Phase D (builder UI reskin, including the `isHydrated` fix), Phase E
 (monetization).
+
+## A1.17 continued — Phase C: businesses, space switcher, invites, multi-template — BUILT
+
+**Backend — the security-critical fix first.** Building the membership index surfaced a real hole
+the phased plan flagged in advance but Phase B's `requireBusinessMembership` hadn't yet closed:
+`resolveProductEndUserClaims` proves a caller holds a valid `ProductUserDO` session scoped to the
+PRODUCT (one instance per `productId×endUserId`, not per-business) — so a flat "every
+`product_end_user` is a member" floor would let any end user of a product reach ANY OTHER end
+user's business just by changing `:spaceId` in the URL. `resolveEndUserBusinessRole`
+(`business-auth.ts`) closes it: a space with no `parent_space_id` (the product root) keeps Phase
+B's behavior — a verified session for that exact space implies `"member"`, which is safe because
+the session literally IS scoped to it — but a space WITH `parent_space_id` set (a real business)
+now requires an ACTIVE row in the new `business_memberships` table (migration `0047`), no row, no
+access, full stop. Applied to `requireBusinessMembership` (all its callers, unchanged call sites)
+AND the `agent-definitions` inline gate (which had the identical flat-check hole). A dedicated
+test file (`business-membership-role.test.ts`) exercises exactly this: two businesses under the
+same product, each owned by a different end user, and asserts neither can read the other's role.
+
+**Backend — `business_memberships` + `business_invites`** (migration `0047`, both explicitly
+documented as routing/index tables — like `builder_api_key_index` — never a second authority;
+SpaceDO's own `space_members` stays authoritative for in-space authorization). New
+`workers/spaces/src/business-create.ts` extracts `createBusinessForEndUser` — the exact gating +
+tenant-hierarchy + provisioning logic the original `POST /reseller/spaces` handler had inline — so
+the new product-scoped wrapper (`POST /spaces/:productSpaceId/businesses`, needed because the
+router's allowlist has to key off a path `:spaceId` that the bare `/reseller/spaces` route never
+had) reuses it instead of a second copy that could drift; `/reseller/spaces` itself became a thin
+wrapper over the same function (zero behavior change, verified by the full existing suite staying
+green). New `workers/spaces/src/business-routes.ts` adds: the creation wrapper (dual-writes the
+owner into `business_memberships` and best-effort mirrors into the business's own SpaceDO
+`space_members`, matching `seedOwnerMember`'s non-fatal precedent); `GET .../my-businesses` (the
+switcher's list, reading the index rather than opening every business's SpaceDO); invite
+create/accept (`POST .../invites`, `POST .../invites/:token/accept`) with a single-use,
+7-day-expiring, SHA-256-hashed token (a fast digest, not PBKDF2, since an invite token is
+high-entropy random, not user-chosen — same reasoning as `builder_api_key_index`); and
+`GET/DELETE .../business-members` as a **purpose-built, safe projection of the membership index**
+— deliberately NOT a relaxation of the existing hardened `/spaces/:id/members*` proxy, whose
+"never make product customers into SpaceDO members" rule is about the shared PRODUCT ROOT, a
+different population from a business's own end-user-owned member roster.
+
+**Deliberate scope narrowing from the phased plan's original sketch:** invite accept requires the
+accepting identity to already hold a valid product session (`product_end_user` claims) rather than
+being a fully unauthenticated route trusting an emailed link alone — consistent with this
+codebase's convention of authenticating the acting identity everywhere else. The shell's invite UI
+surfaces the accept link under `/p/[slug]/spaces/[businessId]/accept-invite/[token]`, which lives
+inside the `(shell)` route group and therefore requires sign-in first (redirects to login,
+matching every other shell page) — a rough edge (no return-URL preservation through the login
+redirect yet) flagged rather than silently accepted as finished.
+
+**Backend — multi-template.** `agentsForTemplates(templateIds)` (`spacetype.ts`) unions multiple
+templates' agent lists deduped by id. `installLaunchpadAgents`'s third parameter widened from
+`string | undefined` to `string | string[] | undefined` (every existing single-id call site keeps
+working unchanged — verified by the pre-existing `provisioner-agent-triggers.test.ts` staying
+green with zero edits, plus a new test exercising the array form). Provisioner step 9b's bootstrap
+merge (`mergeTemplatesBootstrap`) unions projects (deduped by name, later template wins on a name
+collision) and setup_scripts (deduped by value) across every template a business was built from.
+`ProvisionMessage` gained `templateIds?: string[]`, with `templateId` (singular) staying the
+first-entry back-compat field for any already-queued message.
+
+**Backend — `shell/manifest` gained two fields**: `membership_model` and
+`allowed_child_space_types`, both safe to expose pre-authorization (they gate a UI affordance —
+whether to show "Create Business" at all — never a data-access decision; the actual creation route
+re-derives and re-checks both server-side regardless of what the manifest says).
+
+**Frontend (`apps/shell`).** The sidebar's space switcher is now real: product root + every
+business from `my-businesses`, "Create Business" only shown when `membership_model` is `tenant` or
+`hybrid`. New Spaces view (`/p/[slug]/spaces`) lists the product root plus the caller's own
+businesses and hosts the create-business dialog (name + a multi-select of Launchpad templates —
+hardcoded to match `LAUNCHPAD_TEMPLATES` since there is no product-scoped, end-user-reachable
+`/templates` read route yet; a deliberate simplification flagged in code, not a silent gap). New
+business detail view (`/p/[slug]/spaces/[businessId]`) shows the caller's role, lists members, and
+lets an owner/admin invite (email + role) or remove a non-owner member — the owner itself can
+never be removed this way (ownership transfer is out of this phase's scope, so simply disallowed
+rather than left as a footgun).
+
+**Deliberately NOT done this phase** (scope boundary, not an oversight): switching to a business
+does not re-scope the ENTIRE shell (chat/projects/threads) to operate against that business's own
+space — Home/Projects/Threads still operate on the product root. Making an arbitrary business's
+own chat/projects/threads reachable through the existing shell routes is a real, separate
+architectural question (URL structure, active-space state, and re-auditing every existing shell
+page's assumption that `product.space_id` is the operative space) that deserves its own pass
+rather than a rushed bolt-on here. The Spaces view's business detail page is the interim surface
+for what a business actually needs right now (membership management); a business's own
+chat/projects/threads is the natural next increment once that architectural question is settled.
+
+**Verification:** `pnpm turbo run typecheck` clean across all 75 packages/workers/apps. New tests:
+`business-membership-role.test.ts` (5 — the cross-business security assertion),
+`business-create.test.ts` (7 — every gating branch of `createBusinessForEndUser` plus child-tenant
+reuse/isolation), `business-routes.test.ts` (11 — the full HTTP-level creation/switcher/invite/
+members surface, including cross-business isolation for the new routes), extended
+`launchpad-spacetype.test.ts` (+2) and `provisioner-agent-triggers.test.ts` (+1) for multi-template,
+extended `product-shell-manifest.test.ts` (+2) for the new manifest fields, extended
+`router-product-end-user-auth.test.ts` (+1) for the new allowlist entries. 937/937 tests pass (21
+new). `apps/shell` verified via `next build` (all new routes compile) + a live `next dev` + curl
+smoke test — not verified against a live multi-worker backend, same stated limitation as Phase B.
+
+**Remaining for the Three-Tier build:** Phase D (builder UI reskin + config, including the
+`isHydrated` fix and a real per-product `/builder/products/:id/businesses` team-mode creation
+route), Phase E (monetization).

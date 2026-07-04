@@ -20,7 +20,7 @@ import { Hono } from "hono";
 import { errorResponse, requestId, mintInternalToken } from "@naelao/http";
 import {
   LAUNCHPAD_CORE_AGENTS,
-  agentsForTemplate,
+  agentsForTemplates,
   getLaunchpadTemplate,
   type LaunchpadAgentDefinition,
 } from "../../agents/src/launchpad/spacetype.js";
@@ -56,6 +56,9 @@ interface ProvisionMessage {
   spaceTypeId: string;
   spaceName: string;
   templateId?: string;
+  /** Phase C (§A1.17): a business built from more than one template. When set, takes priority
+   *  over the singular `templateId` (which stays as the first entry for back-compat readers). */
+  templateIds?: string[];
   requestedAt: string;
   /** The user who created this space — registered as space_members owner in step 5c.
    *  Optional only for backward compatibility with any already-queued messages; every new
@@ -91,11 +94,15 @@ async function loadManifest(
 export async function installLaunchpadAgents(
   spaceId: string,
   tenantId: string,
-  templateId: string | undefined,
+  templateId: string | string[] | undefined,
   manifest: NaelaoSpaceTypeManifestV2,
   env: Env
 ): Promise<void> {
-  const agentsToInstall = templateId ? agentsForTemplate(templateId) : LAUNCHPAD_CORE_AGENTS;
+  // Phase C (§A1.17): a business can be built from more than one template — normalize to an
+  // array so the single-id call sites (every one before this pass) keep working unchanged.
+  const templateIds = Array.isArray(templateId) ? templateId : templateId ? [templateId] : [];
+  const agentsToInstall = templateIds.length > 0 ? agentsForTemplates(templateIds) : LAUNCHPAD_CORE_AGENTS;
+  const primaryTemplateId = templateIds[0] ?? null;
 
   // Manifest-gated business primitives (commerce/storefront/business-email). Merged into
   // every installed agent so the owner's assistant can run the storefront and the
@@ -115,7 +122,7 @@ export async function installLaunchpadAgents(
     await writeAgentConfig(env.SCRIPTS_R2, spaceId, profile.agentId, withServices(profile.config));
     await registerAgentIndex(
       spaceId, tenantId, profile.agentId, agentDef.name, agentDef.description,
-      templateId ?? null, env
+      primaryTemplateId, env
     );
     await installAgentTrigger(spaceId, tenantId, agentDef, env);
   }
@@ -232,10 +239,32 @@ interface OnboardingProject {
 /** Merge a first-run onboarding record into the space's config_json (read-merge-write). */
 interface OnboardingState {
   template_id: string;
+  /** Phase C (§A1.17): every template this business was built from; template_id stays the
+   *  first entry for back-compat readers of the singular field. */
+  template_ids?: string[];
   status: "pending" | "complete";
   projects: OnboardingProject[];
   setup_scripts: string[];
   created_at: string;
+}
+
+/** Merge bootstrap (projects + setup_scripts) across multiple templates. Projects dedupe by
+ *  name — a later template's definition of the same project name overrides an earlier one
+ *  (e.g. a different default_agent_id); setup_scripts dedupe by value, insertion order
+ *  preserved. */
+function mergeTemplatesBootstrap(templateIds: string[]): { projects: OnboardingProject[]; setup_scripts: string[] } {
+  const projectsByName = new Map<string, OnboardingProject>();
+  const setupScripts = new Set<string>();
+  for (const id of templateIds) {
+    const tpl = getLaunchpadTemplate(id);
+    if (!tpl?.bootstrap) continue;
+    for (const p of tpl.bootstrap.projects ?? []) {
+      const project: OnboardingProject = typeof p === "string" ? { name: p } : p;
+      projectsByName.set(project.name, project);
+    }
+    for (const s of tpl.bootstrap.setup_scripts ?? []) setupScripts.add(s);
+  }
+  return { projects: Array.from(projectsByName.values()), setup_scripts: Array.from(setupScripts) };
 }
 async function mergeOnboarding(
   env: Env,
@@ -292,7 +321,10 @@ export async function seedOwnerMember(
 // ── 10-step transactional provisioner ───────────────────────────────────────
 
 export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
-  const { spaceId, tenantId, spaceTypeId, spaceName, templateId, userId } = msg;
+  const { spaceId, tenantId, spaceTypeId, spaceName, templateId, templateIds, userId } = msg;
+  // Phase C (§A1.17): templateIds (plural) takes priority when present; templateId (singular)
+  // stays the back-compat single-template path for any already-queued message.
+  const effectiveTemplateIds = templateIds && templateIds.length > 0 ? templateIds : templateId ? [templateId] : [];
   const now = new Date().toISOString();
   const provisioned: string[] = [];
 
@@ -428,37 +460,38 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
 
     // Step 9: Install agents — write 4 R2 config files per agent + register index in SpaceDO
     if (spaceTypeId === "launchpad") {
-      await installLaunchpadAgents(spaceId, tenantId, templateId, manifest, env);
+      await installLaunchpadAgents(spaceId, tenantId, effectiveTemplateIds, manifest, env);
     }
     provisioned.push("agents");
 
     // Step 9b: Template bootstrap — inherit the shared template skill library (federated
     // learning) so the space starts with what the fleet has learned, then record the first-run
     // onboarding state (credential/preference prompts + projects) for the dashboard wizard.
-    if (spaceTypeId === "launchpad" && templateId) {
-      try {
-        const spaceLib = new SkillLibrary(env.SCRIPTS_R2, spaceId);
-        const templateLib = SkillLibrary.forTemplate(env.SCRIPTS_R2, templateId);
-        const res = await inheritTemplateSkills(templateLib, spaceLib);
-        if (res.inherited.length > 0) {
-          console.log(`[provisioner] inherited ${res.inherited.length} shared skill(s) into ${spaceId} from template ${templateId}`);
+    // Phase C (§A1.17): a business built from multiple templates inherits skills from EACH one
+    // and gets the union of their bootstrap projects/setup_scripts (mergeTemplatesBootstrap —
+    // projects dedupe by name, later template wins on conflict; setup_scripts dedupe by value).
+    if (spaceTypeId === "launchpad" && effectiveTemplateIds.length > 0) {
+      const spaceLib = new SkillLibrary(env.SCRIPTS_R2, spaceId);
+      for (const tid of effectiveTemplateIds) {
+        try {
+          const templateLib = SkillLibrary.forTemplate(env.SCRIPTS_R2, tid);
+          const res = await inheritTemplateSkills(templateLib, spaceLib);
+          if (res.inherited.length > 0) {
+            console.log(`[provisioner] inherited ${res.inherited.length} shared skill(s) into ${spaceId} from template ${tid}`);
+          }
+        } catch (err) {
+          console.warn(`[provisioner] skill inheritance failed for ${spaceId} (template ${tid}):`, (err as Error).message);
         }
-      } catch (err) {
-        console.warn(`[provisioner] skill inheritance failed for ${spaceId}:`, (err as Error).message);
       }
 
-      const tpl = getLaunchpadTemplate(templateId);
-      if (tpl?.bootstrap) {
-        // Normalize each project seed to the object shape — a plain string (an unbound,
-        // reference-only project like "Products") becomes { name } with no default_agent_id.
-        const projects: OnboardingProject[] = (tpl.bootstrap.projects ?? []).map((p) =>
-          typeof p === "string" ? { name: p } : p
-        );
+      const { projects, setup_scripts } = mergeTemplatesBootstrap(effectiveTemplateIds);
+      if (projects.length > 0 || setup_scripts.length > 0) {
         await mergeOnboarding(env, spaceId, tenantId, {
-          template_id: templateId,
+          template_id: effectiveTemplateIds[0]!,
+          template_ids: effectiveTemplateIds,
           status: "pending",
           projects,
-          setup_scripts: tpl.bootstrap.setup_scripts ?? [],
+          setup_scripts,
           created_at: now,
         });
       }

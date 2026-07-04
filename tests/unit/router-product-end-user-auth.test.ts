@@ -168,6 +168,30 @@ describe("router — product end-user hybrid auth", () => {
     expect(res.status).toBe(401);
   });
 
+  // Phase C (§A1.17) added the business/invite routes: /businesses, /my-businesses (called with a
+  // PRODUCT ROOT :spaceId) and /invites*, /business-members* (called with a BUSINESS :spaceId —
+  // the first real exerciser of product-sessions/verify's parent-walk).
+  it("a valid nps_ session CAN reach the allowlisted business/invite paths", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "biz-tenant-1" }));
+    for (const path of [
+      "/spaces/prod-1/businesses",
+      "/spaces/prod-1/my-businesses",
+      "/spaces/biz-1/invites",
+      "/spaces/biz-1/invites/some-token/accept",
+      "/spaces/biz-1/business-members",
+      "/spaces/biz-1/business-members/user-42",
+    ]) {
+      const res = await routerWorker.fetch(
+        new Request(`https://router.naelao.com/v1${path}`, {
+          method: "GET",
+          headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
+        }),
+        env as never, execCtx
+      );
+      expect(res.status).toBe(200);
+    }
+  });
+
   it("a Bearer nps_ token WITHOUT x-naelao-end-user-id falls through to the JWT path and is rejected", async () => {
     const env = makeEnv(makeSpacesStub({ validSession: true }));
     const res = await routerWorker.fetch(

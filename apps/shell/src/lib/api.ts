@@ -79,6 +79,9 @@ export interface ShellManifest {
   sub_space_display: unknown;
   allow_public_signup: boolean;
   auth_provider: string;
+  /** Phase C: "team" never shows a Create Business entry point; "tenant"/"hybrid" do. */
+  membership_model: "team" | "tenant" | "hybrid";
+  allowed_child_space_types: string[];
 }
 
 /** GET /v1/spaces/:spaceId/shell/manifest — safe projection, works pre- and post-login. */
@@ -268,4 +271,66 @@ export async function listAgentDefinitions(spaceId: string, session: SessionCred
     { session }
   );
   return Array.isArray(res) ? res : res.data ?? [];
+}
+
+// ── Businesses (Phase C — reseller-mode end users create/switch/invite into their own
+// businesses) ─────────────────────────────────────────────────────────────────
+
+export interface Business {
+  id: string;
+  name: string;
+  role: "member" | "admin" | "owner";
+  membership_status: string;
+  space_status: string;
+  joined_at: string;
+}
+
+/** GET /v1/spaces/:productSpaceId/my-businesses — the space switcher's list. */
+export async function listMyBusinesses(productSpaceId: string, session: SessionCredentials): Promise<Business[]> {
+  const res = await apiFetch<{ data: Business[]; count: number }>(`/v1/spaces/${productSpaceId}/my-businesses`, { session });
+  return res.data;
+}
+
+/** POST /v1/spaces/:productSpaceId/businesses — create a new business under this product.
+ *  Only reachable when the product's membershipModel allows it (shell/manifest surfaces this via
+ *  allow_public_signup + auth_provider today; a dedicated membershipModel field is a small
+ *  follow-up if the create-business entry point needs to hide itself for "team" mode products). */
+export async function createBusiness(
+  productSpaceId: string,
+  session: SessionCredentials,
+  opts: { name: string; spacetype_id: string; template_ids?: string[] }
+): Promise<{ tenant_id: string; space_id: string; status: string }> {
+  return apiFetch(`/v1/spaces/${productSpaceId}/businesses`, { method: "POST", body: JSON.stringify(opts), session });
+}
+
+export interface BusinessMember {
+  end_user_id: string;
+  role: "member" | "admin" | "owner";
+  status: string;
+  joined_at: string;
+}
+
+export async function listBusinessMembers(businessSpaceId: string, session: SessionCredentials): Promise<BusinessMember[]> {
+  const res = await apiFetch<{ data: BusinessMember[]; count: number }>(`/v1/spaces/${businessSpaceId}/business-members`, { session });
+  return res.data;
+}
+
+export async function removeBusinessMember(businessSpaceId: string, endUserId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${businessSpaceId}/business-members/${encodeURIComponent(endUserId)}`, { method: "DELETE", session });
+}
+
+export async function inviteToBusiness(
+  businessSpaceId: string,
+  session: SessionCredentials,
+  opts: { email: string; role?: "member" | "admin" }
+): Promise<{ id: string; token: string; expires_at: string }> {
+  return apiFetch(`/v1/spaces/${businessSpaceId}/invites`, { method: "POST", body: JSON.stringify(opts), session });
+}
+
+export async function acceptBusinessInvite(
+  businessSpaceId: string,
+  token: string,
+  session: SessionCredentials
+): Promise<{ business_space_id: string; role: string }> {
+  return apiFetch(`/v1/spaces/${businessSpaceId}/invites/${encodeURIComponent(token)}/accept`, { method: "POST", session });
 }

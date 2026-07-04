@@ -114,4 +114,25 @@ describe("installLaunchpadAgents / installAgentTrigger (provisioner step 9 trigg
     expect(jobCalls).toHaveLength(1);
     expect((jobCalls[0]!.body as { agent_id: string }).agent_id).toBe("launchpad-content-v1");
   });
+
+  // Phase C (§A1.17): a business built from MULTIPLE templates — installLaunchpadAgents now
+  // accepts a template id array and installs the deduped union (creator-store +
+  // newsletter-business both install launchpad-fulfillment-v1; it must register only once).
+  it("accepts an array of template ids and installs the deduped union of their agents", async () => {
+    const { env, calls } = makeEnv();
+    await installLaunchpadAgents("space-6", "tenant-1", ["creator-store", "newsletter-business"], MANIFEST, env);
+
+    const agentDefCalls = calls.filter((c) => c.url.endsWith("/agent-definitions"));
+    const agentIds = agentDefCalls.map((c) => (c.body as { config: { agent_id: string } }).config.agent_id);
+    // Default Naelao Agent + fulfillment + support (creator-store) + content (newsletter) — no dupes.
+    expect(new Set(agentIds).size).toBe(agentIds.length);
+    expect(agentIds).toContain("launchpad-fulfillment-v1");
+    expect(agentIds).toContain("launchpad-support-v1");
+    expect(agentIds).toContain("launchpad-content-v1");
+
+    // Content's schedule trigger still wires even though it came from the second template.
+    const jobCalls = calls.filter((c) => c.url.endsWith("/scheduled-jobs"));
+    expect(jobCalls).toHaveLength(1);
+    expect((jobCalls[0]!.body as { agent_id: string }).agent_id).toBe("launchpad-content-v1");
+  });
 });

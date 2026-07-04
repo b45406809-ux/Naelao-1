@@ -242,6 +242,16 @@ app.get("/v1/spaces/:spaceId/shell/manifest", async (c) => {
 // footgun this comment originally warned about (claims.tid is the space's OWNING tenant, so a
 // tenant-match-only gate would silently accept end-user traffic the moment it's allowlisted).
 // Do not add it without first giving it the same treatment projects/threads got here.
+//
+// Phase C (§A1.17) added the business/invite routes. /businesses and /my-businesses are always
+// called with a PRODUCT ROOT :spaceId (no parent_space_id) — safe under the same reasoning as
+// projects/threads above. /invites* and /business-members* are called with a BUSINESS :spaceId
+// (parent_space_id set) — this is the first real exerciser of product-sessions/verify's
+// parent-walk (previously unexercised since no businesses existed yet): the router resolves the
+// caller's identity against the PRODUCT ROOT's ProductUserDO (sessions are product-scoped, not
+// per-business) but the spaces worker's own resolveEndUserBusinessRole is what actually enforces
+// "does this end user belong to THIS specific business" — the router's allowlist only proves
+// identity, never authorization, exactly as documented at the top of this list.
 const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/sessions(\/|$)/,
   /^\/spaces\/([^/]+)\/shell\/manifest$/,
@@ -251,6 +261,10 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/threads(\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/agent-definitions(\/|$)/,
   /^\/spaces\/([^/]+)\/presence$/,
+  /^\/spaces\/([^/]+)\/businesses$/,
+  /^\/spaces\/([^/]+)\/my-businesses$/,
+  /^\/spaces\/([^/]+)\/invites(\/|$)/,
+  /^\/spaces\/([^/]+)\/business-members(\/|$)/,
 ];
 
 /** Resolve productId from the path if it matches an end-user-reachable route pattern. Strips the

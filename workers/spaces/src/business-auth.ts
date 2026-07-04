@@ -1,19 +1,25 @@
-// Three-Tier Platform Model, Phase B (§A1.17): the extra authorization floor a `product_end_user`
-// caller needs on routes that were previously builder-only. These routes (projects, threads,
+// Three-Tier Platform Model (§A1.17): the extra authorization floor a `product_end_user` caller
+// needs on routes that were previously builder-only. These routes (projects, threads,
 // agent-definitions, presence) are gated by `requireInternalHmac` for "did this request actually
 // come through the router" — that check passes for a product_end_user exactly the same as a
 // builder, since `proxyTo` mints the internal token off ANY verified claims, role included. What
 // was MISSING is a floor on what a product_end_user is allowed to do once past that gate.
 //
-// For Phase B there is no real per-business role yet — `resolveProductEndUserClaims` only proves
-// the caller holds a valid ProductUserDO session scoped to this exact space, which is treated as
-// "member" of the product root. Phase C's `business_memberships` index replaces this with a real
-// owner/admin/member lookup once end users can own/administer their own businesses; nothing here
-// should be read as a permanent authority model.
-//
 // Deliberately additive-only: a non-product_end_user caller (any builder JWT role) always passes
 // unchanged — this file only adds a new floor for the new population, it never re-litigates
 // existing builder authorization.
+//
+// Phase C (§A1.17) upgraded this from Phase B's flat "every product_end_user is a member"
+// constant to a REAL per-business lookup — closing a genuine cross-business access hole the
+// phased plan flagged in advance: `resolveProductEndUserClaims` only proves the caller holds a
+// valid ProductUserDO session scoped to the PRODUCT (one ProductUserDO per productId×endUserId,
+// not per-business), so a session verified for the product root would, without this lookup, also
+// satisfy the identity check for ANY business under that product — a caller could simply change
+// the :spaceId in the URL to reach a different end user's business. `resolveEndUserBusinessRole`
+// closes this: the product ROOT space (no parent_space_id) keeps Phase B's behavior (a verified
+// session for that exact space implies "member" — safe, since the session literally IS scoped to
+// it), but a BUSINESS space (parent_space_id set) requires an ACTIVE row in `business_memberships`
+// — no row, no access, regardless of whether the caller is a valid end user of the product.
 
 import { createMiddleware } from "hono/factory";
 
@@ -21,22 +27,54 @@ export type BusinessRole = "viewer" | "member" | "admin" | "owner";
 
 const ROLE_RANK: Record<BusinessRole, number> = { viewer: 0, member: 1, admin: 2, owner: 3 };
 
-/** Phase B: every verified product_end_user is a "member". Phase C replaces this constant
- *  mapping with a real per-business role lookup. */
-export function productEndUserBusinessRole(): BusinessRole {
-  return "member";
+interface BusinessAuthEnv {
+  PLATFORM_DB: D1Database;
+}
+
+/** Resolve the real role an end user holds on `spaceId`. Returns null when the caller has NO
+ *  access at all (a business they aren't a member of) — callers must treat null as forbidden,
+ *  never fall back to a default role. Fails closed on any lookup error. */
+export async function resolveEndUserBusinessRole(
+  db: D1Database,
+  spaceId: string,
+  endUserId: string
+): Promise<BusinessRole | null> {
+  if (!spaceId || !endUserId) return null;
+  try {
+    const space = await db.prepare("SELECT parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'")
+      .bind(spaceId).first<{ parent_space_id: string | null }>();
+    if (!space) return null;
+    if (!space.parent_space_id) {
+      // The product root — resolveProductEndUserClaims already proved a valid session scoped to
+      // exactly this space, so "member" is safe here (this is the Phase B behavior, unchanged).
+      return "member";
+    }
+    const membership = await db.prepare(
+      "SELECT role FROM business_memberships WHERE business_space_id = ? AND end_user_id = ? AND status = 'active'"
+    ).bind(spaceId, endUserId).first<{ role: string }>();
+    if (!membership) return null;
+    return membership.role as BusinessRole;
+  } catch {
+    return null;
+  }
 }
 
 /** Returns a Hono middleware that, ONLY for `x-naelao-role: product_end_user` callers, requires
- *  at least `methodMinRole[method]` (default: "admin", fail closed for methods not listed). Every
- *  other role passes through untouched. */
+ *  at least `methodMinRole[method]` (default: "admin", fail closed for methods not listed) on the
+ *  space named by the `spaceId` route param. Every other role passes through untouched. */
 export function requireBusinessMembership(methodMinRole: Partial<Record<string, BusinessRole>>) {
   return createMiddleware(async (c, next) => {
     const role = c.req.header("x-naelao-role") ?? "";
     if (role !== "product_end_user") return next();
 
+    const spaceId = c.req.param("spaceId") ?? "";
+    const endUserId = c.req.header("x-naelao-user-id") ?? "";
+    const env = c.env as BusinessAuthEnv;
+    const callerRole = await resolveEndUserBusinessRole(env.PLATFORM_DB, spaceId, endUserId);
+    if (!callerRole) {
+      return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
+    }
     const minRole = methodMinRole[c.req.method] ?? "admin";
-    const callerRole = productEndUserBusinessRole();
     if (ROLE_RANK[callerRole] < ROLE_RANK[minRole]) {
       return c.json({ error_code: "forbidden", message: "Insufficient role for this action" }, 403);
     }

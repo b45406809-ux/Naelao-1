@@ -20,10 +20,12 @@ import {
   listProjects,
   listThreads,
   createThread,
+  listMyBusinesses,
   type ShellManifest,
   type ProductUserMe,
   type Project,
   type ThreadSummary,
+  type Business,
 } from "@/lib/api";
 
 const DEFAULT_PRIMARY_NAV: SidebarNavEntry[] = [
@@ -52,6 +54,8 @@ export default function ShellLayout({ children }: { children: React.ReactNode })
   const [me, setMe] = React.useState<ProductUserMe | null>(null);
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [threads, setThreads] = React.useState<ThreadSummary[]>([]);
+  const [businesses, setBusinesses] = React.useState<Business[]>([]);
+  const [switcherOpen, setSwitcherOpen] = React.useState(false);
 
   React.useEffect(() => {
     if (isHydrated && !isAuthenticated) {
@@ -67,6 +71,7 @@ export default function ShellLayout({ children }: { children: React.ReactNode })
     getMe(product.space_id, creds).then(setMe).catch(() => {});
     listProjects(product.space_id, creds).then(setProjects).catch(() => {});
     listThreads(product.space_id, creds).then((all) => setThreads(all.slice(0, 3))).catch(() => {});
+    listMyBusinesses(product.space_id, creds).then(setBusinesses).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, product.space_id, product.slug]);
 
@@ -111,12 +116,20 @@ export default function ShellLayout({ children }: { children: React.ReactNode })
         spaceSwitcher={{
           current: { id: product.space_id, name: manifest?.space_name ?? product.product_name, meta: me ? `${me.credits_balance} credits` : "…" },
           entries: [
-            { id: product.space_id, name: manifest?.space_name ?? product.product_name, meta: me ? `${me.credits_balance} credits` : "…" },
+            { id: product.space_id, name: manifest?.space_name ?? product.product_name, meta: "Product" },
+            ...businesses.map((b) => ({ id: b.id, name: b.name, meta: `${b.role} · ${b.space_status}` })),
           ],
-          open: false,
-          onToggle: () => show("Business switching lands in a later phase"),
-          onSwitch: () => {},
-          canCreate: false,
+          open: switcherOpen,
+          onToggle: () => setSwitcherOpen((v) => !v),
+          onSwitch: (id) => {
+            setSwitcherOpen(false);
+            router.push(id === product.space_id ? `/p/${product.slug}` : `/p/${product.slug}/spaces/${id}`);
+          },
+          onCreate: () => {
+            setSwitcherOpen(false);
+            router.push(`/p/${product.slug}/spaces`);
+          },
+          canCreate: manifest?.membership_model !== "team",
         }}
       />
       <div id="main">{children}</div>

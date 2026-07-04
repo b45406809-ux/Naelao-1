@@ -556,8 +556,37 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     sessions and structural threads are still separate tables with no server link — a documented,
     deliberate approximation, not a bug. Incidental fix: `forwardToSpaceDO` needed `duplex:
     "half"` for streaming bodies (same defect class already fixed once for the session proxy).
-    908/908 tests pass (15 new). Phase C (businesses, space switcher, invites, multi-template) is
-    next.
+    908/908 tests pass (15 new). **Phase C (businesses, space switcher, invites, multi-template)
+    is BUILT.** Found and closed a real cross-business security hole in the process: Phase B's
+    `requireBusinessMembership` treated every `product_end_user` as a flat "member" — safe for the
+    product root (a verified session IS scoped to it) but NOT for a business space, since
+    `ProductUserDO` sessions are product-scoped, not per-business, so any end user could have
+    reached any other end user's business by changing `:spaceId` in the URL. New
+    `resolveEndUserBusinessRole` (`business-auth.ts`) requires an active `business_memberships`
+    row (migration `0047`, an index table like `builder_api_key_index` — SpaceDO's own
+    `space_members` stays authoritative) for anything that isn't the product root. New
+    `business-create.ts` extracts `createBusinessForEndUser` so the new product-scoped
+    `POST /spaces/:productSpaceId/businesses` and the original `POST /reseller/spaces` share one
+    implementation instead of two that could drift. New `business-routes.ts`: the creation
+    wrapper (dual-writes `business_memberships` + best-effort SpaceDO member mirror), `GET
+    .../my-businesses` (the switcher's list), and invite create/accept with a single-use,
+    7-day-expiring, hashed token — deliberately requiring the accepting identity to already hold a
+    product session rather than trusting an emailed link alone (this codebase's standing
+    convention). `GET/DELETE .../business-members` is a purpose-built safe projection, NOT a
+    relaxation of the already-hardened generic `/spaces/:id/members*` proxy (different
+    population). Multi-template: `agentsForTemplates` unions agent lists across templates deduped
+    by id; `installLaunchpadAgents`'s templateId param widened to also accept an array (every
+    existing single-id caller unchanged); provisioner step 9b merges bootstrap projects/
+    setup_scripts across every template. `shell/manifest` gained `membership_model` +
+    `allowed_child_space_types` (safe pre-auth — gates a UI affordance only, never data access).
+    `apps/shell` gained a real space switcher, a Spaces view with a create-business dialog
+    (template multi-select, hardcoded to match `LAUNCHPAD_TEMPLATES` since no end-user-reachable
+    `/templates` route exists yet), and a business detail view with member management +
+    invites. Deliberately NOT done: switching to a business does not re-scope chat/projects/
+    threads to operate on it — Home/Projects/Threads still run on the product root; that's a real
+    architectural question (URL structure, active-space state) left for its own pass rather than a
+    rushed bolt-on. 937/937 tests pass (21 new, including a dedicated cross-business isolation
+    test file). Phase D (builder UI reskin + config) is next.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
