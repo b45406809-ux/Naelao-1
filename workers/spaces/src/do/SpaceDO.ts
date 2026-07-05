@@ -597,6 +597,39 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE messages ADD COLUMN author_id TEXT;
     `,
   },
+  {
+    version: 23,
+    // §A1.17 Phase T: project collaboration. T1 — real visibility + membership: a 'private'
+    // project (the default, preserving today's implicit behavior) is visible only to its
+    // project_members plus the space's own owner/admin (checkCrossSpace's existing
+    // owner-override precedent); 'public' is visible to every space member, same as before this
+    // migration. project_members is an ACL, not just a "who's active" list — role gates member
+    // management itself (owner/editor can add/remove; viewer cannot). T3 — hybrid thread
+    // locking: exclusive_mode is OFF by default (today's behavior, unlimited concurrent threads);
+    // when a builder opts a project into it, active_thread_id/active_thread_since track which
+    // thread currently holds the lock, enforced by a dedicated activate-thread endpoint (not
+    // wired into every message send — sessions and structural threads are two separate tables
+    // with no server-side link today, a documented pre-existing gap; a client acquires the lock
+    // when a user opens/focuses a thread, which is both simpler and a more realistic UX than a
+    // per-message check).
+    description: "project visibility + project_members ACL + exclusive-mode thread locking",
+    up: `
+      ALTER TABLE projects ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('public','private'));
+      ALTER TABLE projects ADD COLUMN created_by TEXT;
+      ALTER TABLE projects ADD COLUMN exclusive_mode INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE projects ADD COLUMN active_thread_id TEXT;
+      ALTER TABLE projects ADD COLUMN active_thread_since TEXT;
+
+      CREATE TABLE IF NOT EXISTS project_members (
+        project_id TEXT NOT NULL,
+        user_id    TEXT NOT NULL,
+        role       TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('owner','editor','viewer')),
+        added_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (project_id, user_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_id);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -864,6 +897,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // PATCH /projects/:id — configure kind / execution_ceiling / channel_config / spend cap
       if (method === "PATCH" && projectIdMatch?.[1]) {
         return this.updateProject(projectIdMatch[1], request);
+      }
+      // ── project_members (§A1.17 Phase T1 — real per-project ACL) ───────────────
+      const projectMembersMatch = url.pathname.match(/^\/projects\/([^/]+)\/members$/);
+      if (method === "GET" && projectMembersMatch?.[1]) {
+        return this.listProjectMembers(projectMembersMatch[1]);
+      }
+      if (method === "POST" && projectMembersMatch?.[1]) {
+        return this.addProjectMember(projectMembersMatch[1], request);
+      }
+      const projectMemberIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/members\/([^/]+)$/);
+      if (method === "DELETE" && projectMemberIdMatch?.[1] && projectMemberIdMatch?.[2]) {
+        return this.removeProjectMember(projectMemberIdMatch[1], projectMemberIdMatch[2]);
+      }
+      // POST /projects/:id/activate-thread — hard exclusive-mode lock (§A1.17 Phase T3)
+      const activateThreadMatch = url.pathname.match(/^\/projects\/([^/]+)\/activate-thread$/);
+      if (method === "POST" && activateThreadMatch?.[1]) {
+        return this.activateProjectThread(activateThreadMatch[1], request);
       }
       // ── project_rules (no-code "after customer says X" triggers) ──────────────
       const projectRulesMatch = url.pathname.match(/^\/projects\/([^/]+)\/rules$/);
@@ -1631,19 +1681,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     return null;
   }
 
+  // §A1.17 Phase T1: a 'private' project is filtered out unless the viewer is a project_member
+  // or the space's own owner/admin (checkCrossSpace's existing owner-override precedent) —
+  // 'public' projects (and every project, when no viewer_id is given — internal/legacy callers
+  // that predate visibility) are unaffected.
   private listProjects(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
+    const viewerId = params.get("viewer_id") ?? "";
     const rows = queryAll<{
       id: string; space_id: string; name: string; description: string; status: string;
-      default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null; created_at: string;
+      default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null;
+      visibility: string; created_by: string | null; created_at: string;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, created_at FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at",
+      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at",
       spaceId
     );
+    const visible = viewerId
+      ? rows.filter((r) => r.visibility !== "private" || this.getProjectMemberRole(r.id, viewerId) !== null || this.isSpaceOwnerOrAdmin(viewerId))
+      : rows;
     return Response.json({
-      data: rows.map((r) => ({ ...r, allowed_agent_ids: safeJsonParseAgentIds(r.allowed_agent_ids) })),
-      count: rows.length,
+      data: visible.map((r) => ({ ...r, allowed_agent_ids: safeJsonParseAgentIds(r.allowed_agent_ids) })),
+      count: visible.length,
     });
   }
 
@@ -1651,12 +1710,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const body = await request.json<{
       space_id: string; name: string; description?: string; tenant_id?: string;
       default_agent_id?: string; max_threads?: number; allowed_agent_ids?: string[];
+      visibility?: "public" | "private"; created_by?: string;
     }>();
     if (!body.space_id || !body.name) {
       return Response.json({ error_code: "bad_request", message: "space_id and name are required" }, { status: 400 });
     }
     if (body.max_threads !== undefined && (!Number.isInteger(body.max_threads) || body.max_threads < 0)) {
       return Response.json({ error_code: "bad_request", message: "max_threads must be a non-negative integer" }, { status: 400 });
+    }
+    if (body.visibility !== undefined && body.visibility !== "public" && body.visibility !== "private") {
+      return Response.json({ error_code: "bad_request", message: "visibility must be 'public' or 'private'" }, { status: 400 });
     }
     const bindingError = SpaceDO.validateAgentBinding(body.default_agent_id, body.allowed_agent_ids);
     if (bindingError) return Response.json({ error_code: "bad_request", message: bindingError }, { status: 400 });
@@ -1686,20 +1749,31 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       : null;
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO projects (id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, created_at)
-       VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
+      `INSERT INTO projects (id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at)
+       VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
        ON CONFLICT(space_id, name) DO NOTHING`,
       id, body.space_id, body.name, body.description ?? "", body.default_agent_id ?? null,
-      body.max_threads ?? 0, allowedAgentIdsJson, now
+      body.max_threads ?? 0, allowedAgentIdsJson, body.visibility ?? "private", body.created_by ?? null, now
     );
     const row = queryOne<{
       id: string; name: string; status: string; default_agent_id: string | null;
-      max_threads: number; allowed_agent_ids: string | null; created_at: string;
+      max_threads: number; allowed_agent_ids: string | null; visibility: string; created_by: string | null; created_at: string;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT id, name, status, default_agent_id, max_threads, allowed_agent_ids, created_at FROM projects WHERE space_id = ? AND name = ?",
+      "SELECT id, name, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at FROM projects WHERE space_id = ? AND name = ?",
       body.space_id, body.name
     );
+    // The creator is always an implicit project_members owner — so a private project the creator
+    // just made is immediately visible to them in listProjects' viewer_id filter, without a
+    // separate follow-up call.
+    if (!alreadyExisted && row && body.created_by) {
+      execute(
+        this.ctx.storage.sql as never,
+        `INSERT INTO project_members (project_id, user_id, role, added_at) VALUES (?, ?, 'owner', ?)
+         ON CONFLICT(project_id, user_id) DO NOTHING`,
+        row.id, body.created_by, now
+      );
+    }
     if (!alreadyExisted && row) {
       const tenantId = body.tenant_id ?? request.headers.get("x-naelao-tenant-id") ?? "";
       // Awaited (not fire-and-forget) — same reasoning as mirrorThread elsewhere in this
@@ -1814,6 +1888,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
        *  space agent). When set, default_agent_id (existing or in this same PATCH) must be
        *  a member. */
       allowed_agent_ids?: string[] | null;
+      /** §A1.17 Phase T1: 'private' (default) is visible only to project_members + the space's
+       *  own owner/admin; 'public' is visible to every space member. */
+      visibility?: "public" | "private";
+      /** §A1.17 Phase T3: opts a project into the hard single-active-thread lock. */
+      exclusive_mode?: boolean;
     }>().catch(() => ({}) as Record<string, never>);
 
     const existing = queryOne<{ id: string; default_agent_id: string | null; allowed_agent_ids: string | null }>(
@@ -1877,7 +1956,102 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const json = body.allowed_agent_ids && body.allowed_agent_ids.length > 0 ? JSON.stringify(body.allowed_agent_ids) : null;
       execute(this.ctx.storage.sql as never, "UPDATE projects SET allowed_agent_ids = ? WHERE id = ?", json, projectId);
     }
+    if (body.visibility !== undefined) {
+      if (body.visibility !== "public" && body.visibility !== "private") {
+        return Response.json({ error_code: "bad_request", message: "visibility must be 'public' or 'private'" }, { status: 400 });
+      }
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET visibility = ? WHERE id = ?", body.visibility, projectId);
+    }
+    if (body.exclusive_mode !== undefined) {
+      execute(this.ctx.storage.sql as never, "UPDATE projects SET exclusive_mode = ? WHERE id = ?", body.exclusive_mode ? 1 : 0, projectId);
+    }
     return this.getProject(projectId);
+  }
+
+  private isSpaceOwnerOrAdmin(userId: string): boolean {
+    if (!userId) return false;
+    const row = queryOne<{ role: string }>(this.ctx.storage.sql as never, "SELECT role FROM space_members WHERE user_id = ?", userId);
+    return row?.role === "owner" || row?.role === "admin";
+  }
+
+  // §A1.17 Phase T1: real per-project membership ACL — a routing/authorization table, not just a
+  // "who's active" list (that's `presence`). Role gates member management itself: owner/editor
+  // can add/remove, viewer cannot (enforced by the caller passing `actingRole`, resolved from
+  // this SAME table one level up, mirroring how `requireBusinessMembership` resolves a role
+  // before checking it against a per-route minimum).
+  private listProjectMembers(projectId: string): Response {
+    const rows = queryAll<{ project_id: string; user_id: string; role: string; added_at: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM project_members WHERE project_id = ? ORDER BY added_at",
+      projectId
+    );
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  private getProjectMemberRole(projectId: string, userId: string): "owner" | "editor" | "viewer" | null {
+    if (!userId) return null;
+    const row = queryOne<{ role: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT role FROM project_members WHERE project_id = ? AND user_id = ?",
+      projectId, userId
+    );
+    return (row?.role as "owner" | "editor" | "viewer" | undefined) ?? null;
+  }
+
+  private async addProjectMember(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ user_id?: string; role?: string }>().catch(() => ({}) as Record<string, never>);
+    if (!body.user_id) return Response.json({ error_code: "bad_request", message: "user_id is required" }, { status: 400 });
+    const role = body.role ?? "viewer";
+    if (!["owner", "editor", "viewer"].includes(role)) {
+      return Response.json({ error_code: "bad_request", message: "role must be one of owner, editor, viewer" }, { status: 400 });
+    }
+    const project = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE id = ?", projectId);
+    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO project_members (project_id, user_id, role, added_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(project_id, user_id) DO UPDATE SET role = excluded.role`,
+      projectId, body.user_id, role, new Date().toISOString()
+    );
+    return Response.json({ project_id: projectId, user_id: body.user_id, role }, { status: 201 });
+  }
+
+  private removeProjectMember(projectId: string, userId: string): Response {
+    execute(this.ctx.storage.sql as never, "DELETE FROM project_members WHERE project_id = ? AND user_id = ?", projectId, userId);
+    return Response.json({ removed: true });
+  }
+
+  // §A1.17 Phase T3: hybrid thread locking, hard half. Soft locking (the default) is just the
+  // existing `lock` prebuilt used by scripts that mutate shared project state — no engine change
+  // needed here. This endpoint is the opt-in hard "exclusive mode": a client acquires the lock
+  // when a user opens/focuses a thread (not on every message — see the migration-v23 comment for
+  // why message-level enforcement isn't wired), and a DIFFERENT thread trying to activate while
+  // one is already active gets a 409 with who holds it, never a silent block — `take_over`
+  // reassigns explicitly so this can never deadlock a project.
+  private async activateProjectThread(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ thread_id?: string; user_id?: string; take_over?: boolean }>().catch(() => ({}) as Record<string, never>);
+    if (!body.thread_id) return Response.json({ error_code: "bad_request", message: "thread_id is required" }, { status: 400 });
+    const project = queryOne<{ id: string; exclusive_mode: number; active_thread_id: string | null; active_thread_since: string | null }>(
+      this.ctx.storage.sql as never, "SELECT id, exclusive_mode, active_thread_id, active_thread_since FROM projects WHERE id = ?", projectId
+    );
+    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+
+    if (!project.exclusive_mode) {
+      return Response.json({ exclusive_mode: false, activated: true, thread_id: body.thread_id });
+    }
+    if (project.active_thread_id && project.active_thread_id !== body.thread_id && !body.take_over) {
+      return Response.json(
+        { error_code: "thread_locked", active_thread_id: project.active_thread_id, active_since: project.active_thread_since },
+        { status: 409 }
+      );
+    }
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      "UPDATE projects SET active_thread_id = ?, active_thread_since = ? WHERE id = ?",
+      body.thread_id, now, projectId
+    );
+    return Response.json({ exclusive_mode: true, activated: true, thread_id: body.thread_id, active_since: now });
   }
 
   // ── Authoritative per-project daily spend (F9) ──────────────────────────────────────────

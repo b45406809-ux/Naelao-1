@@ -11,6 +11,7 @@ import { errorResponse, requestId, notFound, badRequest, unauthorized, mintInter
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { getDOName, verifyDOTenantPrefix } from "@naelao/crypto";
 import { detectPromptInjection, moderateText } from "@naelao/moderation";
+import { parseMentions, type MentionableAgent } from "@naelao/events";
 import { screenNiche } from "./whop/onboarding-guard.js";
 import { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
@@ -578,8 +579,14 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     );
   }
 
-  // Get agent DO stub and forward the run request
-  const stub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
+  // §A1.17 Phase T2: an explicit agent_definition_id addresses its OWN DO instance
+  // (`{sessionId}:{agentId}`), not the thread's bare-sessionId instance — this is what lets
+  // @Agent1 and @Agent2 mentioned in the SAME thread have separate memories/reasoning state
+  // (per the confirmed decision: per-thread-PER-AGENT instances, not one shared thread agent).
+  // Omitting agent_definition_id keeps today's exact addressing — every existing single-agent
+  // session is unaffected.
+  const doKey = rawBody.agent_definition_id ? `${sessionId}:${rawBody.agent_definition_id}` : sessionId;
+  const stub = await getAgentDO(c.env, tenantId, doKey, c.get("requestId"));
 
   const doResponse = await stub.fetch(
     new Request("http://agent-do/run", {
@@ -622,6 +629,112 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   }
 
   return c.json(doBody, doResponse.status as 200 | 201 | 400 | 404 | 422 | 500);
+});
+
+// §A1.17 Phase T2: @mention multi-agent dispatch within one thread. Per the confirmed decision,
+// each (thread, agentId) pair gets its OWN NaelaoAgentDO instance/memory — Agent1 in this thread
+// and Agent1 in a different thread do NOT share state — so /agent/run's DO addressing above
+// switches to `{sessionId}:{agentId}` whenever an explicit agent_definition_id is given. Bounded
+// to MAX_MENTION_DISPATCH agents per message so one message can't fan out unboundedly. Uses
+// `Prefer: respond-sync` deliberately (bypassing Phase Q's durable-by-default path) because the
+// reply must be persisted into the thread's shared message transcript, attributed to the
+// replying agent, before this endpoint returns — the async Workflow path has no such
+// callback-to-messages wiring today (a separate, real follow-up, not solved here).
+const MAX_MENTION_DISPATCH = 5;
+
+/** Resolves the project's @mentionable agent roster (id+name, filtered to allowed_agent_ids) and
+ *  its default_agent_id fallback. Degrades to an empty roster/no default (never throws) when
+ *  project_id is absent or the lookup fails — a message with no resolvable mention target simply
+ *  dispatches nothing, matching parseMentions' own "unknown mention resolves to nothing" posture. */
+async function resolveMentionRoster(
+  env: AgentsEnv,
+  tenantId: string,
+  spaceId: string,
+  projectId: string | undefined
+): Promise<{ roster: MentionableAgent[]; defaultAgentId: string | null }> {
+  if (!projectId) return { roster: [], defaultAgentId: null };
+  try {
+    const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
+    const internalHeaders = { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token };
+    const projResp = await env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${spaceId}/projects/${encodeURIComponent(projectId)}`,
+      { headers: internalHeaders }
+    ));
+    if (!projResp.ok) return { roster: [], defaultAgentId: null };
+    const proj = await projResp.json<{ default_agent_id: string | null; allowed_agent_ids: string[] | null }>();
+    if (!proj.allowed_agent_ids || proj.allowed_agent_ids.length === 0) {
+      return { roster: [], defaultAgentId: proj.default_agent_id };
+    }
+    const defsResp = await env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${spaceId}/agent-definitions?space_id=${encodeURIComponent(spaceId)}`,
+      { headers: internalHeaders }
+    ));
+    if (!defsResp.ok) return { roster: [], defaultAgentId: proj.default_agent_id };
+    const defs = await defsResp.json<{ data: Array<{ id: string; name: string }> }>();
+    const allowedSet = new Set(proj.allowed_agent_ids);
+    const roster = defs.data.filter((d) => allowedSet.has(d.id)).map((d) => ({ id: d.id, name: d.name }));
+    return { roster, defaultAgentId: proj.default_agent_id };
+  } catch {
+    return { roster: [], defaultAgentId: null };
+  }
+}
+
+app.post("/spaces/:spaceId/sessions/:sessionId/agent/mention-run", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const spaceId = c.req.param("spaceId");
+  const sessionId = c.req.param("sessionId");
+  const body = await c.req.json<{ text?: string; project_id?: string }>().catch(() => ({}) as Record<string, never>);
+  if (!body.text || typeof body.text !== "string") {
+    throw badRequest("text is required and must be a string");
+  }
+
+  const { roster, defaultAgentId } = await resolveMentionRoster(c.env, tenantId, spaceId, body.project_id);
+  const mentioned = parseMentions(body.text, roster);
+  const targets = (mentioned.length > 0 ? mentioned : (defaultAgentId ? [defaultAgentId] : [])).slice(0, MAX_MENTION_DISPATCH);
+
+  const dispatched = await Promise.all(targets.map(async (agentId) => {
+    const runResp = await app.request(
+      `/spaces/${spaceId}/sessions/${sessionId}/agent/run`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: c.req.header("authorization") ?? "",
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-user-id": c.req.header("x-naelao-user-id") ?? "",
+          "x-naelao-role": c.req.header("x-naelao-role") ?? "",
+          prefer: "respond-sync",
+        },
+        body: JSON.stringify({ goal: body.text, agent_definition_id: agentId }),
+      },
+      c.env,
+      c.executionCtx
+    );
+    const runBody = await runResp.json<{ finalAnswer?: string; final_answer?: string; error_code?: string; message?: string }>().catch(() => ({}) as Record<string, never>);
+    const finalAnswer = runBody.finalAnswer ?? runBody.final_answer;
+
+    if (finalAnswer) {
+      // Post the reply into the thread's shared transcript, attributed to THIS agent. No
+      // x-naelao-role header on this internal write-back — appendMessage trusts body.agent_id
+      // for exactly this case (Phase O's precedent: NaelaoAgentDO's own write-back path).
+      await c.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/messages`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-naelao-tenant-id": tenantId,
+            "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+          },
+          body: JSON.stringify({ role: "assistant", content: finalAnswer, agent_id: agentId }),
+        }
+      ));
+    }
+    return { agent_id: agentId, final_answer: finalAnswer ?? null, error: runBody.message, status: runResp.status };
+  }));
+
+  return c.json({ dispatched, mentioned_count: mentioned.length });
 });
 
 // ── POST /agents/:agentId/script/run — script-first agent entrypoint ──────────
@@ -2691,7 +2804,7 @@ async function handleScheduled(env: AgentsEnv): Promise<void> {
 
 // Exported for end-to-end tests that drive the assembled app the way the router does, and for
 // the agent-ticks fan-out unit tests (enqueue planning + consumer dispatch).
-export { app, enqueueAgentTicks, handleAgentTick, handleAgentTicksQueue, resolveRunGoal, fetchRunOrTaskStatus };
+export { app, enqueueAgentTicks, handleAgentTick, handleAgentTicksQueue, resolveRunGoal, fetchRunOrTaskStatus, resolveMentionRoster };
 export type { AgentTickMessage };
 
 export default {

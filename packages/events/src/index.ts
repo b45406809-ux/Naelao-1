@@ -220,6 +220,45 @@ export function isPresenceFresh(lastSeenAtMs: number, nowMs: number, windowMs: n
   return nowMs - lastSeenAtMs <= windowMs;
 }
 
+/** §A1.17 Phase T2: an agent an @mention can resolve to — just enough to match a token against
+ *  (id + display name), deliberately not the full agent_definitions row. */
+export interface MentionableAgent {
+  id: string;
+  name: string;
+}
+
+/** A name usable in an `@token` — lowercased, spaces/punctuation collapsed to nothing, so
+ *  "Support Agent" matches both `@SupportAgent` and `@support-agent`. Deliberately simple (no
+ *  NLP): the roster a project allows is always small and admin-curated. */
+function mentionKey(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** Scans `text` for `@token` mentions and resolves each to an agent in `roster` by name (not a
+ *  substring/NLP match — an @mention names one specific agent or it names nothing). Returns the
+ *  matched agent ids, DEDUPED and in first-mention order, so `@Agent1 do X and @Agent1 also do Y`
+ *  dispatches to Agent1 exactly once — the mentioned agent's own reasoning loop is responsible
+ *  for handling everything it was asked, not the routing layer. An agent not in `roster` (not
+ *  allowed for this project) is silently skipped, never an error — a typo'd or since-removed
+ *  mention just doesn't resolve, the same way an unknown @mention on any chat platform does. */
+export function parseMentions(text: string, roster: MentionableAgent[]): string[] {
+  const byKey = new Map<string, string>();
+  for (const agent of roster) byKey.set(mentionKey(agent.name), agent.id);
+
+  const matched: string[] = [];
+  const seen = new Set<string>();
+  const tokenPattern = /@([a-zA-Z0-9][a-zA-Z0-9_-]*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = tokenPattern.exec(text)) !== null) {
+    const agentId = byKey.get(mentionKey(m[1]!));
+    if (agentId && !seen.has(agentId)) {
+      seen.add(agentId);
+      matched.push(agentId);
+    }
+  }
+  return matched;
+}
+
 // ── Time-based scheduling (spec §05 "cron-jobs.json — the assistant's schedule of recurring
 // tasks") — the no-code equivalent of "every day at 9am, run this script." Complements the
 // event-driven triggers above with a TIME-driven one. A lightweight, dependency-free 5-field

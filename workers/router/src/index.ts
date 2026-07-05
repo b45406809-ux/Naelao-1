@@ -262,6 +262,12 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/kb\/(documents|search)(\/|$)/,
   /^\/spaces\/([^/]+)\/product-users\/me$/,
   /^\/spaces\/([^/]+)\/projects(\/[^/]+)?$/,
+  // Phase T (§A1.17): project collaboration — real per-project membership + the exclusive-mode
+  // thread lock. Additionally gated by requireBusinessMembership on the spaces worker exactly
+  // like every other business-scoped route above (identity here, authorization there); capped so
+  // /rules and /spend still don't match, matching the Phase B precedent for this same route family.
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/members(\/[^/]+)?$/,
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/activate-thread$/,
   /^\/spaces\/([^/]+)\/threads(\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/agent-definitions(\/|$)/,
   /^\/spaces\/([^/]+)\/presence$/,
