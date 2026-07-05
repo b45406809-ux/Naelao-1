@@ -3962,3 +3962,60 @@ another API call the client isn't authenticated to make, a real design question 
 non-Node reference client (the protocol is documented in the README specifically so this is
 portable). With Phase M done, every phase in the full-vision roadmap (A through N, plus L and M)
 is now built.
+
+## §A1.18 — Second full-vision pass: Phases O-V (agent identity, events, connectors, durable
+## runs, workspace model, collaboration, real-time sync)
+
+A new user-directed batch layered on top of A-N/L/M, not a correction of it. CLAUDE.md's numbered
+CURRENT DIRECTION list (item 38) carries the authoritative, kept-current summary of what's built
+in each phase — this section is a pointer, not a duplicate, to avoid the two drifting apart.
+Read CLAUDE.md item 38 first for the phase-by-phase detail (what shipped, what bugs were found
+and fixed along the way, test counts); come here only for anything CLAUDE.md's summary doesn't
+have room for.
+
+**Phases O, Q, R, S are BUILT** (agent API keys + HTTP approval gate + events; durable-by-default
+runs; the explicit R2/container workspace model; local-machine grants UI on both dashboard and
+shell). **P, T, U, V remain**:
+
+- **P — Composio + Pipedream connector providers.** Extend whatever table backs registered MCP
+  servers in `workers/mcp-hub` with `connector_provider: 'direct'|'composio'|'pipedream'`; a
+  Composio/Pipedream-backed connector stores only that provider's own opaque connection
+  reference (never the underlying OAuth token) and routes `ctx.mcp.call`/`mcp-connector` calls
+  through the provider's execute-action API server-side — the script-native "6 ops only" contract
+  (CLAUDE.md ground rule #8) is unchanged; this is more connector inventory behind the same
+  surface, never a new agent capability class. Needs real `COMPOSIO_API_KEY`/`PIPEDREAM_API_KEY`
+  (or Pipedream Connect client credentials) supplied via CF Workers Secrets before it can run
+  against live providers — build and test the routing logic with mocked provider APIs regardless
+  of whether those credentials are available yet.
+- **T — Project collaboration.** T1: `projects.visibility` (public/private) + a real
+  `project_members` ACL table (mirrors the `business_memberships` index-table precedent) —
+  public visible to all space members, private only to members + the space owner/admin override.
+  T2 (the architecturally significant one): per-thread-per-agent addressing
+  (`space:project:thread:agentId`, default = the project's `default_agent_id` for backward
+  compatibility) so `@agent1`/`@agent2` in one thread route to distinct agent instances, deduped
+  so mentioning the same agent twice in one message still dispatches once. **Load-bearing
+  prerequisite this needs that doesn't exist yet:** the shell's chat currently calls the LEGACY
+  generic `/spaces/:spaceId/sessions/:sessionId/agent/run` (a SpaceType-driven ReAct loop with no
+  concept of "which named agent"), NOT the script-native `/agents/:agentId/script/run` — Phase Q's
+  fixes made the legacy path actually work end-to-end but did not change WHICH path the shell
+  calls. T2 requires routing per-thread runs through the script-native per-agent endpoint instead
+  (with sessionId threaded through so runs persist tied to a session) before @mention can mean
+  anything. T3: hybrid thread locking — soft (default, the existing `lock` prebuilt, plus an
+  implicit lock wrapping Tier-1 `r2-workspace` writes keyed `project:{id}:file:{path}`) and hard
+  ("exclusive mode" opt-in, `projects.active_thread_id`, a 409 + explicit "take over" affordance,
+  never a silent permanent block).
+- **U — Memory OS project-shared layers.** Depends on T2 shipping first: per-thread-per-agent
+  memory means two threads in the same project would otherwise share ZERO agent memory. Promote
+  Layers 3 (`structured_facts`), 4 (`fabric_store`), 6 (`wiki_store`) from per-DO SQLite to
+  SpaceDO keyed by `project_id` (reuse SpaceDO's existing per-space SQLite, not a new DO class);
+  Layer 5 (episodic/session vector memory) stays exactly where it is — deliberately private per
+  (thread, agentId). The Space Assistant's own facts/fabric/wiki stay scoped to its `_assistant`
+  slot, unaffected. No forced backfill of pre-existing per-DO rows — additive only.
+- **V — Whole-business real-time sync.** `WsHubDO` (`workers/ws-gateway`) and presence
+  (`POST /presence`) are fully built but completely unwired — no other worker binds it, no app
+  calls `/broadcast`. Add one shared `broadcastSpaceEvent()` helper called from every natural
+  mutation point (project created/updated, thread activated/deactivated via T3's lock
+  transitions, agent run started/completed, `approval.requested`/`resolved` from Phase O);
+  `apps/shell`/`apps/dashboard` open one `WsHubDO` connection per active space using a short-lived
+  signed WS-URL param for auth (the same browser constraint Phase 6's SSE stream already solved,
+  since WS upgrades can't carry custom headers either).

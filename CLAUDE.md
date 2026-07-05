@@ -862,6 +862,74 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     read/write round trip and a real `exec` call. 1076/1076 tests pass (39 new), `pnpm turbo run
     typecheck` clean (75 tasks). With Phase M done, every phase in the full-vision roadmap (A
     through N, plus L and M) is now built.
+38. **A SECOND FULL-VISION PASS (Phases O-V) is IN PROGRESS** — a new batch of user-directed work
+    layered on top of A-N/L/M, NOT a correction of it. User asks covered: agents get their own
+    platform API identity; a real approval-events pipeline; broader MCP connector reach via
+    Composio/Pipedream; runs that survive a closed tab; an honest container/workspace model;
+    local-machine-grants UI; and project collaboration (visibility, @mention multi-agent threads,
+    single-active-thread locking) plus whole-business real-time sync. Full plan + phase-by-phase
+    detail: appendix §A1.18. **Phases O, Q, R, S are BUILT; P, T, U, V remain.**
+    - **O (agent API keys + HTTP approval gate + events) BUILT.** New `nak_...` agent API key
+      family (SpaceDO `agent_api_keys`, mirrors `BuilderAccountDO`'s hash+prefix pattern),
+      verified via a new `/internal/agent-keys/verify` chicken-and-egg endpoint and mapped to a
+      new `"agent"` `UserRole`/`claims.role`. Per-agent approval policy (`agent_policy_overrides`,
+      falls back to the existing space-wide `assistant_policy`, fails closed). A new HTTP-level
+      approval gate in the router: an agent's mutating request is allowed under `'yolo'` or a
+      pre-approved action key, otherwise it opens a `HITLApprovalDO` request (now supports a
+      configurable `ttl_ms` + a single-use `/consume` endpoint, since the in-loop gate's 30s
+      auto-reject is wrong for a real HTTP caller) and returns `202 pending_approval`. New
+      `approval.requested`/`resolved` events (`@naelao/events`); the moment an approval opens
+      (in-loop OR via the HTTP gate), `NaelaoAgentDO` best-effort notifies the space owner by
+      email (`GET /internal/spaces/:spaceId/owner-contact`) — the assistant always knows an agent
+      is waiting on a human, no builder-configured trigger rule required. `messages` gained
+      `author_type`/`author_id` (derived from the caller's VERIFIED identity, never a
+      client-trusted field) so a thread bubble can render "Agent1" vs "Agent2" vs the Space
+      Assistant. 26 new tests.
+    - **Q (durable-by-default agent runs) BUILT — and fixed a real, previously-undetected broken
+      chat path in the process.** The Workflow+TaskDO async path (`G-AX04`, previously opt-in
+      behind `Prefer: respond-async`) is now the DEFAULT for `/agent/run`; `Prefer: respond-sync`
+      is the new opt-out. While wiring this, confirmed against git HEAD that BOTH `apps/shell`'s
+      AND `apps/portal`'s chat send flow have never actually worked past the first message: (1)
+      `sendMessage()` posts `{session_id}` with no `goal` — this endpoint required `body.goal`
+      unconditionally, so the call always 400'd (fixed with `resolveRunGoal`, falling back to the
+      session's own latest 'user' message; both apps now also pass `goal` explicitly); (2)
+      `NaelaoAgentDO.handleGetRun` returned camelCase (`finalAnswer`/`reactSteps`) while every
+      consumer (the SSE poller, both apps' clients) read snake_case — `final_answer` always came
+      through `undefined` (fixed at the source). The run/stream GET endpoints now transparently
+      fall back to TaskDO (`fetchRunOrTaskStatus`, translating `queued`/`processing`/`complete` to
+      the `running`/`completed` vocabulary clients already use) when an id isn't one of
+      `NaelaoAgentDO`'s own synchronous `agent_runs` rows. 17 new tests.
+    - **R (explicit multi-workspace model) BUILT, replacing Phase K's blind R2<->container
+      sync.** Phase K silently materialized/collected the FULL R2 workspace around every single
+      Tier-5 `/exec` call (bounded 300 files/2MB/25MB) — a tax paid whether or not a script
+      touched files, and dishonest about persistence. Replaced with an explicit model: R2 (always
+      available, durable, small/text) and the container's own local disk (large/binary/
+      stateful-capable, but only persists while that warm instance stays up, genuinely EMPTY on a
+      cold start) are two DIFFERENT filesystems an agent moves files between on purpose via a new
+      `workspace` prebuilt (`workspace.copy/move/list`). `ToolSandboxDO` is now a pure proxy to
+      the harness (`/exec` + new `/workspace/{read,write,list,delete}`) with zero R2 logic left in
+      the DO; `container/server.mjs`'s `/workspace` is just that warm container's own persistent-
+      while-warm disk. New `ContainerWorkspaceGateway` (`script-engine/types.ts`), wired in
+      `NaelaoAgentDO.buildScriptEngineEnv` with the same per-project addressing `runContainer`
+      already uses. Explicitly did NOT add `@cloudflare/workspace`/isomorphic-git tooling — an
+      agent that needs git just runs it via `code.execute_bash`. 17 new/updated tests.
+    - **S (local-machine grants UI) BUILT on both surfaces.** Phase M shipped the full mechanism
+      with zero frontend. Dashboard: a new "Local Machine" product tab — needed NO backend auth
+      changes, since `requireInternalHmac` verifies the SAME token naelao-router mints for every
+      proxied request (JWT or `nps_` alike), not an exclusively service-to-service gate. Shell: a
+      "My Local Machine" section on the business detail page DID need real backend work — added
+      `requireBusinessMembership` to `/local-grants*`/`/local-tunnel/connect-token` (POST needs
+      "admin") plus a `user_id` filter on `SpaceDO.listLocalGrants` so one business member can
+      never see another's grant directory paths. 7 new tests (cross-business isolation).
+    - **Remaining: P (Composio/Pipedream connector providers — needs real API keys the user must
+      supply before it can run against live providers), T (project visibility/membership +
+      @mention multi-agent-per-thread addressing + hybrid thread locking — T2's @mention needs the
+      shell to call the script-native per-agent endpoint instead of the legacy generic ReAct
+      `/agent/run` path, a real architectural gap Phase Q's fixes did NOT touch), U (Memory OS
+      Layers 3/4/6 promoted to project-scoped storage in SpaceDO, since T2's per-thread-per-agent
+      addressing means two threads in one project would otherwise share zero memory), V (wire the
+      already-built-but-dead `WsHubDO` into real-time project/thread/approval broadcasts).** Full
+      phase detail in appendix §A1.18.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
