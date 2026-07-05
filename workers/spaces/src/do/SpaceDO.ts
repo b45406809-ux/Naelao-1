@@ -13,6 +13,14 @@ function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
 }
 
+/** Same shape as BuilderAccountDO's local copy — a raw API key is hashed before it's ever
+ *  persisted, never the other way around. Small enough that a shared package isn't worth it
+ *  (matches this codebase's existing precedent of small crypto helpers duplicated per-DO). */
+async function sha256Hex(input: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 function safeJsonParseObj(text: string): Record<string, unknown> {
   try {
     const v = JSON.parse(text) as unknown;
@@ -546,6 +554,49 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_local_grants_user ON local_grants(user_id);
     `,
   },
+  {
+    version: 22,
+    // §A1.17 Phase O: "make an API for the whole platform — what a user can do manually, an
+    // agent can do the same way, through the same routes, just attributed to itself." An agent
+    // authenticates with its own nak_... key (never the builder's JWT); agent_api_keys is this
+    // space's own key store (mirrors BuilderAccountDO.api_keys — hash + prefix only, raw key
+    // returned once at mint time and never persisted). agent_policy_overrides is a PER-AGENT
+    // approval policy, additive to (never replacing) the existing space-wide `assistant_policy`
+    // row: an agent with no override row here falls back to assistant_policy's gate_unless_listed
+    // default (always_ask, nothing pre-approved) — fail closed, same posture as
+    // fetchAssistantPolicy. A separate table rather than widening assistant_policy's PK because
+    // assistant_policy is keyed PRIMARY KEY(space_id) alone (one space-wide row) and changing that
+    // key shape would risk the existing single-row-per-space call sites; this is purely additive.
+    // messages.author_type/author_id: so a thread bubble can say "Agent1" vs "Agent2" vs the
+    // Space Assistant instead of every non-user message collapsing into a bare 'assistant' role —
+    // the same field Phase T's @mention multi-agent replies key off of.
+    description: "agent_api_keys, agent_policy_overrides, messages.author_type/author_id",
+    up: `
+      CREATE TABLE IF NOT EXISTS agent_api_keys (
+        id           TEXT PRIMARY KEY,
+        agent_id     TEXT NOT NULL,
+        key_hash     TEXT NOT NULL,
+        key_prefix   TEXT NOT NULL,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        last_used_at TEXT,
+        revoked_at   TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_api_keys_hash ON agent_api_keys(key_hash);
+      CREATE INDEX IF NOT EXISTS idx_agent_api_keys_agent ON agent_api_keys(agent_id);
+
+      CREATE TABLE IF NOT EXISTS agent_policy_overrides (
+        space_id              TEXT NOT NULL,
+        agent_id              TEXT NOT NULL,
+        approval_mode         TEXT NOT NULL DEFAULT 'always_ask' CHECK (approval_mode IN ('always_ask','yolo')),
+        auto_approved_actions TEXT NOT NULL DEFAULT '[]',
+        updated_at            TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (space_id, agent_id)
+      );
+
+      ALTER TABLE messages ADD COLUMN author_type TEXT NOT NULL DEFAULT 'user' CHECK (author_type IN ('user','agent','assistant','tool'));
+      ALTER TABLE messages ADD COLUMN author_id TEXT;
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -577,6 +628,12 @@ interface MessageRow {
   tool_name: string | null;
   token_count: number | null;
   created_at: string;
+  // §A1.17 Phase O: which identity actually produced an 'assistant'-role message — the Space
+  // Assistant (author_id 'naelao-agent'), a named project agent (author_id = its agentId), or a
+  // human ('user'/author_id = their user/end-user id). Lets a thread bubble render "Agent1" vs
+  // "Agent2" vs the assistant instead of every non-user message collapsing into one identity.
+  author_type: string;
+  author_id: string | null;
 }
 
 interface AgentStateRow {
@@ -886,6 +943,36 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
         return this.updateAssistantPolicy(url.searchParams.get("space_id") ?? "", request);
       }
 
+      // ── Agent API keys (§A1.17 Phase O: "the same API a human can use, attributed to the
+      // agent itself") ───────────────────────────────────────────────────────────
+      const agentKeysMatch = url.pathname.match(/^\/agents\/([^/]+)\/api-keys$/);
+      if (method === "POST" && agentKeysMatch?.[1]) {
+        return this.createAgentApiKey(agentKeysMatch[1]);
+      }
+      if (method === "GET" && agentKeysMatch?.[1]) {
+        return this.listAgentApiKeys(agentKeysMatch[1]);
+      }
+      const agentKeyIdMatch = url.pathname.match(/^\/agents\/([^/]+)\/api-keys\/([^/]+)$/);
+      if (method === "DELETE" && agentKeyIdMatch?.[1] && agentKeyIdMatch?.[2]) {
+        return this.revokeAgentApiKey(agentKeyIdMatch[1], agentKeyIdMatch[2]);
+      }
+      // POST /internal/agent-keys/verify — chicken-and-egg (the caller doesn't know which
+      // space's DO to ask until the key resolves), same trust model as
+      // /internal/product-sessions/verify: gated by a direct platform-secret check upstream in
+      // workers/spaces/src/index.ts, not requireInternalHmac.
+      if (method === "POST" && url.pathname === "/internal/agent-keys/verify") {
+        return this.verifyAgentApiKey(request);
+      }
+
+      // ── Per-agent approval policy override (falls back to assistant_policy when absent) ──
+      const agentPolicyMatch = url.pathname.match(/^\/agents\/([^/]+)\/policy$/);
+      if (method === "GET" && agentPolicyMatch?.[1]) {
+        return this.getAgentPolicy(url.searchParams.get("space_id") ?? "", agentPolicyMatch[1]);
+      }
+      if (method === "PATCH" && agentPolicyMatch?.[1]) {
+        return this.updateAgentPolicy(url.searchParams.get("space_id") ?? "", agentPolicyMatch[1], request);
+      }
+
       // ── threads (spec-canonical; sub-agent/channel mirrors are ordinary subthreads) ────
       // GET /threads?space_id=&project_id=&include_sub_threads=
       if (method === "GET" && url.pathname === "/threads") {
@@ -1074,6 +1161,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       tool_name?: string;
       token_count?: number;
       end_user_id?: string;
+      // §A1.17 Phase O: only honored for a caller reaching this route via a TRUSTED internal
+      // write-back (NaelaoAgentDO.writeConversationToSession/runScriptLoop's final answer),
+      // never a human — those calls carry no x-naelao-role header at all (internalHeaders()
+      // only sets tenant + internal-token), so this is how they name which agent replied.
+      agent_id?: string;
     }>();
 
     // G-D02: Reject oversized messages before writing to SQLite
@@ -1111,10 +1203,36 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
 
+    // §A1.17 Phase O: derive WHO actually authored this message from the caller's own verified
+    // identity, never from a client-trustable-only field. x-naelao-role/x-naelao-user-id are set
+    // by naelao-router's proxyTo from verified JWT/nak_/nps_ claims for every router-originated
+    // call; a caller with no such headers (NaelaoAgentDO's own internalHeaders()) already passed
+    // verifyInternalToken upstream in this same route's dispatcher, so its explicit body.agent_id
+    // is trusted at the same level every other internal-only write path in this codebase is.
+    const headerRole = request.headers.get("x-naelao-role");
+    const headerUserId = request.headers.get("x-naelao-user-id");
+    let authorType: "user" | "agent" | "assistant" | "tool" = "user";
+    let authorId: string | null = null;
+    if (body.role === "tool") {
+      authorType = "tool";
+    } else if (headerRole === "agent" && headerUserId) {
+      authorType = headerUserId === "naelao-agent" ? "assistant" : "agent";
+      authorId = headerUserId;
+    } else if (body.agent_id) {
+      authorType = body.agent_id === "naelao-agent" ? "assistant" : "agent";
+      authorId = body.agent_id;
+    } else if (body.role === "assistant") {
+      authorType = "assistant";
+      authorId = "naelao-agent";
+    } else {
+      authorType = "user";
+      authorId = headerUserId ?? body.end_user_id ?? null;
+    }
+
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO messages (id, session_id, role, content, tool_call_id, tool_name, token_count, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (id, session_id, role, content, tool_call_id, tool_name, token_count, created_at, author_type, author_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       sessionId,
       body.role,
@@ -1122,7 +1240,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.tool_call_id ?? null,
       body.tool_name ?? null,
       body.token_count ?? null,
-      now
+      now,
+      authorType,
+      authorId
     );
 
     // Update session updated_at
@@ -1134,7 +1254,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     );
 
     return Response.json(
-      { id, session_id: sessionId, role: body.role, created_at: now },
+      { id, session_id: sessionId, role: body.role, author_type: authorType, author_id: authorId, created_at: now },
       { status: 201 }
     );
   }
@@ -2005,6 +2125,111 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       spaceId, approvalMode, JSON.stringify(autoApproved), now
     );
     return this.getAssistantPolicy(spaceId);
+  }
+
+  // ── Agent API keys (§A1.17 Phase O) ──────────────────────────────────────────
+  // Mirrors BuilderAccountDO's api_keys pattern exactly (hash + short prefix persisted, raw
+  // key returned exactly once at mint time and never stored). One space's agent_api_keys table
+  // holds keys for every agent provisioned in this space — an agentId is not itself unique
+  // cross-space, but this DO only ever sees its own space's rows.
+  private async createAgentApiKey(agentId: string): Promise<Response> {
+    const id = crypto.randomUUID();
+    const rawKey = `nak_${crypto.randomUUID().replace(/-/g, "")}`;
+    const keyHash = await sha256Hex(rawKey);
+    const keyPrefix = rawKey.slice(0, 11); // "nak_" + 7 chars
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO agent_api_keys (id, agent_id, key_hash, key_prefix, created_at) VALUES (?, ?, ?, ?, ?)`,
+      id, agentId, keyHash, keyPrefix, now
+    );
+    return Response.json(
+      { id, agent_id: agentId, key: rawKey, key_prefix: keyPrefix, created_at: now },
+      { status: 201 }
+    );
+  }
+
+  private listAgentApiKeys(agentId: string): Response {
+    const rows = queryAll<{ id: string; agent_id: string; key_prefix: string; last_used_at: string | null; revoked_at: string | null; created_at: string }>(
+      this.ctx.storage.sql as never,
+      `SELECT id, agent_id, key_prefix, last_used_at, revoked_at, created_at FROM agent_api_keys WHERE agent_id = ? ORDER BY created_at DESC`,
+      agentId
+    );
+    return Response.json({ data: rows });
+  }
+
+  private revokeAgentApiKey(agentId: string, keyId: string): Response {
+    execute(
+      this.ctx.storage.sql as never,
+      "UPDATE agent_api_keys SET revoked_at = ? WHERE id = ? AND agent_id = ? AND revoked_at IS NULL",
+      new Date().toISOString(), keyId, agentId
+    );
+    return Response.json({ revoked: true, id: keyId });
+  }
+
+  /** POST /internal/agent-keys/verify — { space_id, key } -> { valid, agent_id?, approval_mode?,
+   *  auto_approved_actions? }. The approval-policy fields are folded into the SAME round trip
+   *  the router already makes to verify the key, rather than a second call per request. */
+  private async verifyAgentApiKey(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; key?: string }>().catch(() => ({}) as Record<string, never>);
+    if (!body.key || !body.key.startsWith("nak_") || !body.space_id) return Response.json({ valid: false });
+    const keyHash = await sha256Hex(body.key);
+    const row = queryOne<{ id: string; agent_id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, agent_id FROM agent_api_keys WHERE key_hash = ? AND revoked_at IS NULL",
+      keyHash
+    );
+    if (!row) return Response.json({ valid: false });
+    execute(this.ctx.storage.sql as never, "UPDATE agent_api_keys SET last_used_at = ? WHERE id = ?", new Date().toISOString(), row.id);
+    const policy = this.resolveAgentPolicy(body.space_id, row.agent_id);
+    return Response.json({ valid: true, agent_id: row.agent_id, ...policy });
+  }
+
+  /** Resolve an agent's effective approval policy: its own agent_policy_overrides row if one
+   *  exists, else the space-wide assistant_policy row, else the fail-closed default
+   *  (always_ask, nothing pre-approved) — same three-step fallback fetchAssistantPolicy already
+   *  documents for the Space Assistant itself. */
+  private resolveAgentPolicy(spaceId: string, agentId: string): { approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] } {
+    const override = queryOne<{ approval_mode: string; auto_approved_actions: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT approval_mode, auto_approved_actions FROM agent_policy_overrides WHERE space_id = ? AND agent_id = ?",
+      spaceId, agentId
+    );
+    if (override) {
+      return { approval_mode: override.approval_mode as "always_ask" | "yolo", auto_approved_actions: safeJsonParseArr(override.auto_approved_actions) as string[] };
+    }
+    const spaceWide = queryOne<{ approval_mode: string; auto_approved_actions: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT approval_mode, auto_approved_actions FROM assistant_policy WHERE space_id = ?",
+      spaceId
+    );
+    if (spaceWide) {
+      return { approval_mode: spaceWide.approval_mode as "always_ask" | "yolo", auto_approved_actions: safeJsonParseArr(spaceWide.auto_approved_actions) as string[] };
+    }
+    return { approval_mode: "always_ask", auto_approved_actions: [] };
+  }
+
+  private getAgentPolicy(spaceId: string, agentId: string): Response {
+    const policy = this.resolveAgentPolicy(spaceId, agentId);
+    return Response.json({ space_id: spaceId, agent_id: agentId, ...policy });
+  }
+
+  private async updateAgentPolicy(spaceId: string, agentId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ approval_mode?: "always_ask" | "yolo"; auto_approved_actions?: string[] }>().catch(() => ({}) as Record<string, never>);
+    if (body.approval_mode !== undefined && body.approval_mode !== "always_ask" && body.approval_mode !== "yolo") {
+      return Response.json({ error_code: "bad_request", message: "approval_mode must be 'always_ask' or 'yolo'" }, { status: 400 });
+    }
+    const existing = this.resolveAgentPolicy(spaceId, agentId);
+    const approvalMode = body.approval_mode ?? existing.approval_mode;
+    const autoApproved = body.auto_approved_actions ?? existing.auto_approved_actions;
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO agent_policy_overrides (space_id, agent_id, approval_mode, auto_approved_actions, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(space_id, agent_id) DO UPDATE SET approval_mode = excluded.approval_mode, auto_approved_actions = excluded.auto_approved_actions, updated_at = excluded.updated_at`,
+      spaceId, agentId, approvalMode, JSON.stringify(autoApproved), now
+    );
+    return this.getAgentPolicy(spaceId, agentId);
   }
 
   // ── Threads (spec-canonical) ─────────────────────────────────────────────────

@@ -1008,6 +1008,17 @@ app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/approve", as
   return stub.fetch(`http://do/requests/${approvalId}/approve`, { method: "PUT" });
 });
 
+// GET a single approval — added for §A1.17 Phase O's agent-key HTTP gate: the agent's own
+// caller (its script, or the @naelao/agent-sdk wrapper) polls this by id rather than the whole
+// pending list. Kept under the existing /sessions/:sessionId path so naelao-router's existing
+// approvals proxy rule needs no change; sessionId is unused here (HITLApprovalDO is addressed by
+// spaceId alone) exactly like the approve/reject routes above already ignore it too.
+app.get("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId", async (c) => {
+  const { spaceId, approvalId } = c.req.param();
+  const stub = getHitlDo(c.env, spaceId);
+  return stub.fetch(`http://do/requests/${approvalId}`);
+});
+
 app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/reject", async (c) => {
   const { spaceId, approvalId } = c.req.param();
   const body = await c.req.json<{ reason?: string }>().catch(() => ({}));
@@ -1017,6 +1028,56 @@ app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/reject", asy
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+});
+
+// §A1.17 Phase O: naelao-router's agent-key HTTP approval gate. An agent authenticated with its
+// own Bearer nak_... key making a mutating platform-API call outside the reasoning loop needs
+// the SAME "requires approval unless pre-approved" gate the in-loop hitlGateway already
+// enforces — these two routes are its create/consume backend, both delegating the actual
+// approval-request bookkeeping + owner-notification side effect to NaelaoAgentDO (see
+// handleCreateExternalApproval) rather than duplicating that logic here. Routed through the
+// Space Assistant's own DO instance ("naelao-agent") since it's always provisioned in any space
+// that has agent keys at all — the create/consume logic itself doesn't touch that DO's own
+// state, it only proxies to HITL_APPROVAL_DO.
+app.post("/internal/agent-approvals", async (c) => {
+  const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const validToken = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
+  if (!headerTenantId || !validToken) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+
+  const body = await c.req.json<{ spaceId: string; tenantId: string; agentId: string; actionKey: string; description: string }>().catch(() => null);
+  if (!body?.spaceId || !body.agentId || !body.actionKey) {
+    return c.json({ error_code: "bad_request", message: "spaceId, agentId, and actionKey are required" }, 400);
+  }
+  if (body.tenantId !== headerTenantId) {
+    return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
+  }
+  const stub = await getAgentDOForSpace(c.env, headerTenantId, body.spaceId, "naelao-agent", c.get("requestId"));
+  const doResp = await stub.fetch(new Request("http://agent-do/approvals/create-external", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+  const doBody = await doResp.json<unknown>();
+  return c.json(doBody, doResp.status as 200 | 201 | 400 | 503);
+});
+
+app.post("/internal/agent-approvals/consume", async (c) => {
+  const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const validToken = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
+  if (!headerTenantId || !validToken) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+
+  const body = await c.req.json<{ spaceId: string; approvalId: string; agentId: string; actionKey: string }>().catch(() => null);
+  if (!body?.spaceId || !body.approvalId || !body.agentId || !body.actionKey) {
+    return c.json({ consumed: false, reason: "bad_request" }, 400);
+  }
+  const stub = getHitlDo(c.env, body.spaceId);
+  const consumeResp = await stub.fetch(new Request(`http://hitl/requests/${body.approvalId}/consume`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ run_id: `agent-api:${body.spaceId}:${body.agentId}`, tool_name: body.actionKey }),
+  }));
+  const consumeBody = await consumeResp.json<unknown>();
+  return c.json(consumeBody, consumeResp.status as 200);
 });
 
 // ── Catalog (roadmap / coming-soon) ───────────────────────────────────────────

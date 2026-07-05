@@ -1164,6 +1164,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         return this.handleTriggerFire(request);
       }
 
+      // POST /approvals/create-external — §A1.17 Phase O: naelao-router's agent-key HTTP gate
+      // (a Bearer nak_... agent calling the platform API directly, not through the reasoning
+      // loop) opens a HITL approval the exact same way the in-loop hitlGateway does, including
+      // the notify-the-owner side effect — see notifyApprovalRequested.
+      if (method === "POST" && url.pathname === "/approvals/create-external") {
+        return this.handleCreateExternalApproval(request);
+      }
+
       // GET /runs/:runId
       const runMatch = url.pathname.match(/^\/runs\/([^/]+)$/);
       if (method === "GET" && runMatch?.[1]) {
@@ -1348,6 +1356,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             }),
           }));
           const { approval_id } = await createResp.json<{ approval_id: string }>();
+
+          // §A1.17 Phase O: "if the agent wants human approval, the assistant is triggered so it
+          // always knows what's going on, and uses a channel script to tell the user." Fire this
+          // concurrently with the poll below (never awaited) — a slow/failed notification must
+          // never delay or fail the approval flow itself.
+          void this.notifyApprovalRequested(spaceId, tenantId, agentId, approval_id, params.actionName, params.description);
 
           // Poll for resolution (28s — HITLApprovalDO auto-rejects at 30s)
           const deadline = Date.now() + 28_000;
@@ -1764,6 +1778,45 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     return Response.json({ result });
   }
 
+  /** POST /approvals/create-external — see the dispatcher comment above. run_id is namespaced
+   *  `agent-api:{spaceId}:{agentId}` (distinct from the in-loop gateway's `params.runId`, which
+   *  is an actual reasoning-run id) so HITLApprovalDO.consume's run_id check can never confuse
+   *  the two approval sources. */
+  private async handleCreateExternalApproval(request: Request): Promise<Response> {
+    const body = await request.json<{
+      spaceId: string; tenantId: string; agentId: string; actionKey: string; description: string;
+    }>().catch(() => null);
+    if (!body?.spaceId || !body.tenantId || !body.agentId || !body.actionKey) {
+      return Response.json({ error: "spaceId, tenantId, agentId, and actionKey are required" }, { status: 400 });
+    }
+    if (!this.env.HITL_APPROVAL_DO) {
+      return Response.json({ error: "HITL_APPROVAL_DO not configured" }, { status: 503 });
+    }
+    const runId = `agent-api:${body.spaceId}:${body.agentId}`;
+    const stub = this.env.HITL_APPROVAL_DO.get(this.env.HITL_APPROVAL_DO.idFromName(`hitl:${body.spaceId}`));
+    const createResp = await stub.fetch(new Request("http://hitl/requests", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        run_id: runId,
+        session_id: body.spaceId,
+        tool_name: body.actionKey,
+        tool_input: {},
+        action_description: body.description,
+        ttl_ms: 24 * 60 * 60 * 1000, // 24h — a human reviewing an HTTP API call, not the in-loop 30s poll
+      }),
+    }));
+    if (!createResp.ok) return Response.json({ error: "failed to create approval" }, { status: 502 });
+    const { approval_id } = await createResp.json<{ approval_id: string }>();
+
+    void this.notifyApprovalRequested(body.spaceId, body.tenantId, body.agentId, approval_id, body.actionKey, body.description);
+
+    return Response.json({
+      approval_id,
+      poll_url: `/spaces/${body.spaceId}/sessions/agent-api/approvals/${approval_id}`,
+    }, { status: 201 });
+  }
+
   private async handleScriptRun(request: Request): Promise<Response> {
     const body = await request.json<{
       goal: string;
@@ -2069,6 +2122,50 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId),
       ...extra,
     };
+  }
+
+  /**
+   * §A1.17 Phase O: "the assistant is triggered via events this way it always knows what's
+   * going on, and uses a channel script to tell the user an agent needs approval." Best-effort
+   * and never awaited by its caller — a slow/failed notification must never delay or fail the
+   * approval flow itself (matches the fetchAssistantPolicy/checkAndDebitProjectSpend precedent
+   * of failing closed on the SECURITY decision while never blocking on the SIDE EFFECT). Calls
+   * the notifications worker directly (not via ScriptToolSurface) specifically to avoid running
+   * a script under a DIFFERENT agentId than the DO instance actually addresses — this DO's own
+   * SQLite is whichever agent's memory it was constructed for, and notify.email touches no
+   * memory anyway, so there is nothing to gain from routing through the script engine here.
+   */
+  private async notifyApprovalRequested(
+    spaceId: string,
+    tenantId: string,
+    agentId: string,
+    approvalId: string,
+    actionName: string,
+    description: string
+  ): Promise<void> {
+    if (!this.env.NOTIFICATIONS_WORKER || !this.env.SPACES_WORKER || !tenantId) return;
+    try {
+      const contactRes = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/internal/spaces/${spaceId}/owner-contact`,
+        { headers: await this.internalHeaders(tenantId) }
+      ));
+      if (!contactRes.ok) return;
+      const contact = await contactRes.json<{ found: boolean; email?: string }>();
+      if (!contact.found || !contact.email) return;
+      await this.env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+        body: JSON.stringify({
+          channel: "email",
+          space_id: spaceId,
+          to: contact.email,
+          subject: `Approval needed: agent '${agentId}' wants to ${actionName}`,
+          body: `${description}\n\nApproval id: ${approvalId}. Review and approve or reject it from your Naelao dashboard.`,
+        }),
+      }));
+    } catch {
+      // best-effort — never block or fail the approval flow over a notification hiccup
+    }
   }
 
   /** Fetch a customer-bot project's config (execution ceiling, spend cap) from SpaceDO. */

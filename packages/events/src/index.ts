@@ -22,6 +22,14 @@ export type NaelaoEventType =
   | "thread.closed"
   | "project.created"
   | "project.possible_duplicate"
+  // §A1.17 Phase O: an agent's HITL gate opened/resolved an approval request. Unlike every
+  // other event above, this ALSO drives a platform guarantee outside the builder-configurable
+  // event_triggers table — NaelaoAgentDO wakes the Space Assistant directly the moment
+  // approval.requested fires, rather than only when a builder happens to have wired a trigger
+  // rule to it (see NaelaoAgentDO.notifyApprovalRequested). Still recorded through the ordinary
+  // fireMatchingTriggers path too, so a builder CAN additionally hook their own automation.
+  | "approval.requested"
+  | "approval.resolved"
   | (string & {});
 
 export interface EventEnvelope {

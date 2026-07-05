@@ -35,7 +35,12 @@ export interface NaelaoJwtClaims {
 // OWNING tenant (the builder), so internal-HMAC + quota middleware keep working unchanged; only
 // claims.sub (the end_user_id) and claims.role distinguish them. See
 // workers/router/src/index.ts's product-session auth path and docs/spec-appendix A1.17 Phase 6.
-export type UserRole = "owner" | "admin" | "editor" | "viewer" | "product_end_user";
+// "agent" (§A1.17 Phase O): an agent acting through its own nak_... API key — the SAME routes a
+// human builder/end-user can call, attributed to the agent itself rather than collapsing into the
+// builder's identity. claims.tid is the owning space's tenant (like product_end_user); claims.sub
+// is the agentId. A structurally different population from product_end_user (no platform tenant
+// at all) — an agent key IS scoped to a tenant's space, just not to a human.
+export type UserRole = "owner" | "admin" | "editor" | "viewer" | "product_end_user" | "agent";
 
 // ── Plan tiers ───────────────────────────────────────────────────────────────
 export type PlanTier = "free" | "growth" | "business" | "enterprise";

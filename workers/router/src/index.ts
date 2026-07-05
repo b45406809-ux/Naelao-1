@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { requestId, jwtAuth, errorResponse, unauthorized } from "@naelao/http";
+import { requestId, jwtAuth, errorResponse, unauthorized, mintInternalToken } from "@naelao/http";
 import { signHmac } from "@naelao/crypto";
 import type { NaelaoJwtClaims } from "@naelao/types";
 export { RateLimitDO } from "./RateLimitDO";
@@ -88,6 +88,10 @@ declare module "hono" {
   interface ContextVariableMap {
     requestId: string;
     claims: NaelaoJwtClaims;
+    // §A1.17 Phase O: an agent (role:"agent") caller's effective approval policy, resolved in
+    // the SAME round trip as its nak_... key so the approval-gate middleware below never needs
+    // a second call just to find out whether this request needs to be gated.
+    agentApproval?: { mode: "always_ask" | "yolo"; autoApproved: string[] };
   }
 }
 
@@ -327,6 +331,62 @@ async function resolveProductEndUserClaims(
   };
 }
 
+// §A1.17 Phase O: "make an API for the whole platform — what a builder/user can do manually, an
+// agent can do the same way, through the same routes." An agent authenticates with its own
+// Bearer nak_... key (minted per agents/:agentId/api-keys, workers/spaces) against ANY
+// /spaces/:spaceId/... route — deliberately broad (not a narrow allowlist like
+// PRODUCT_END_USER_PATH_PATTERNS above) because the whole point is the agent gets the same
+// surface a human builder has, just attributed to itself. What's actually money/identity-
+// sensitive is protected by the mutating-action approval gate below, not by narrowing which
+// routes an agent key can reach.
+function matchAgentSpacePath(path: string): string | null {
+  const stripped = path.replace(/^\/v1(?=\/|$)/, "") || "/";
+  const m = /^\/spaces\/([^/]+)(?:\/|$)/.exec(stripped);
+  return m ? m[1]! : null;
+}
+
+/** Verify a Bearer nak_... agent key against the space's SpaceDO (via the spaces worker's
+ *  internal verify endpoint), returning router-shaped claims plus the agent's effective
+ *  approval policy in the same round trip — see SpaceDO.resolveAgentPolicy. */
+async function resolveAgentApiKeyClaims(
+  env: Env,
+  spaceId: string,
+  apiKey: string
+): Promise<{ claims: NaelaoJwtClaims; approval: { mode: "always_ask" | "yolo"; autoApproved: string[] } } | null> {
+  const res = await env.SPACES_WORKER.fetch(
+    new Request("http://spaces/internal/agent-keys/verify", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-platform-secret": env.PLATFORM_SECRET },
+      body: JSON.stringify({ spaceId, key: apiKey }),
+    })
+  );
+  if (!res.ok) return null;
+  const result = await res.json<{
+    valid: boolean; tenant_id?: string; agent_id?: string;
+    approval_mode?: "always_ask" | "yolo"; auto_approved_actions?: string[];
+  }>();
+  if (!result.valid || !result.tenant_id || !result.agent_id) return null;
+
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    claims: {
+      sub: result.agent_id, tid: result.tenant_id, email: "", role: "agent", scopes: [],
+      iat: now, exp: now + 3600, jti: "",
+    },
+    approval: { mode: result.approval_mode ?? "always_ask", autoApproved: result.auto_approved_actions ?? [] },
+  };
+}
+
+/** Coarse action name a mutating agent request maps to for the approval gate —
+ *  "METHOD:firstSegmentAfterSpaceId" (e.g. POST /spaces/S/projects -> "POST:projects"). Coarse
+ *  by design: matches the granularity agents.md's own requires_approval_for list already uses
+ *  for script actions, not a full URL-per-permission model. */
+function agentActionKey(method: string, path: string, spaceId: string): string {
+  const stripped = path.replace(/^\/v1(?=\/|$)/, "") || "/";
+  const rest = stripped.slice(`/spaces/${spaceId}`.length).replace(/^\//, "");
+  return `${method.toUpperCase()}:${rest.split("/")[0] || ""}`;
+}
+
 // ── Protected API routes ─────────────────────────────────────────────────────
 const api = new Hono<{ Bindings: Env }>();
 api.use("*", async (c, next) => {
@@ -349,10 +409,72 @@ api.use("*", async (c, next) => {
     return next();
   }
 
-  // Not a product end-user request (or missing required pieces for one) — fall through to the
-  // ordinary platform JWT path. A Bearer nps_ token on a non-allowlisted path is rejected here,
-  // same as any other malformed/foreign token.
+  const agentKeyMatch = /^Bearer\s+(nak_\S+)$/.exec(authHeader);
+  const agentSpaceId = agentKeyMatch ? matchAgentSpacePath(c.req.path) : null;
+  if (agentKeyMatch && agentSpaceId) {
+    const resolved = await resolveAgentApiKeyClaims(c.env, agentSpaceId, agentKeyMatch[1]!);
+    if (!resolved) throw unauthorized("Invalid or expired agent API key");
+    c.set("claims", resolved.claims);
+    c.set("agentApproval", { mode: resolved.approval.mode, autoApproved: resolved.approval.autoApproved });
+    return next();
+  }
+
+  // Not a product end-user or agent-key request (or missing required pieces for one) — fall
+  // through to the ordinary platform JWT path. A Bearer nps_/nak_ token on a non-matching path
+  // is rejected here, same as any other malformed/foreign token.
   return jwtAuth((cc) => (cc as unknown as { env: Env }).env.JWT_SECRET)(c, next);
+});
+
+// §A1.17 Phase O: "agents are given a default API key that requires approval for actions — but
+// the user can always change that." An agent's mutating request (POST/PUT/PATCH/DELETE) is
+// gated exactly like the in-loop HITL gate (loop.ts's gate_unless_listed): allowed straight
+// through under 'yolo' or when its coarse action key is in auto_approved_actions; otherwise it
+// opens a (longer-lived, non-30s-auto-reject) HITLApprovalDO request, fires approval.requested
+// (which wakes the Space Assistant to notify the owner over its configured channel — see
+// NaelaoAgentDO.notifyApprovalRequested), and returns 202 instead of proxying. The agent's own
+// caller (its script, or the @naelao/agent-sdk wrapper around this API) polls
+// GET /spaces/:spaceId/approvals/:id and, once approved, resubmits the SAME request with an
+// `X-Naelao-Approval-Id` header — checked and single-use-consumed by the second branch below.
+api.use("*", async (c, next) => {
+  const claims = c.get("claims");
+  const approval = c.get("agentApproval");
+  const isMutating = ["POST", "PUT", "PATCH", "DELETE"].includes(c.req.method);
+  if (claims?.role !== "agent" || !approval || !isMutating) return next();
+
+  const spaceId = matchAgentSpacePath(c.req.path);
+  if (!spaceId) return next();
+  const actionKey = agentActionKey(c.req.method, c.req.path, spaceId);
+  const preApproved = approval.mode === "yolo" || approval.autoApproved.includes(actionKey);
+  if (preApproved) return next();
+
+  const internalToken = await mintInternalToken(c.env.PLATFORM_SECRET, claims.tid);
+  const approvalIdHeader = c.req.header("x-naelao-approval-id");
+  if (approvalIdHeader) {
+    const consumeRes = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/agent-approvals/consume", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": claims.tid, "x-naelao-internal-token": internalToken },
+      body: JSON.stringify({ spaceId, approvalId: approvalIdHeader, agentId: claims.sub, actionKey }),
+    }));
+    if (consumeRes.ok) {
+      const { consumed } = await consumeRes.json<{ consumed: boolean }>();
+      if (consumed) return next();
+    }
+    return c.json({ error_code: "approval_not_ready", message: "Approval is not approved (or already used) for this exact action" }, 409);
+  }
+
+  const createRes = await c.env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/agent-approvals", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-tenant-id": claims.tid, "x-naelao-internal-token": internalToken },
+    body: JSON.stringify({
+      spaceId, tenantId: claims.tid, agentId: claims.sub, actionKey,
+      description: `Agent '${claims.sub}' wants to ${c.req.method} ${c.req.path}`,
+    }),
+  }));
+  if (!createRes.ok) {
+    return c.json({ error_code: "approval_unavailable", message: "Could not create an approval request" }, 503);
+  }
+  const { approval_id, poll_url } = await createRes.json<{ approval_id: string; poll_url: string }>();
+  return c.json({ status: "pending_approval", approval_id, poll_url }, 202);
 });
 
 // G-AX27: Replay attack prevention — timestamp skew + nonce dedup

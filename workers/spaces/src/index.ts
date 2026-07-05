@@ -395,6 +395,27 @@ app.all("/spaces/:spaceId/members*", async (c) => {
   );
 });
 
+// §A1.17 Phase O: GET /internal/spaces/:spaceId/owner-contact — resolves an email address the
+// Space Assistant can notify when an agent needs approval (NaelaoAgentDO.notifyApprovalRequested
+// / the router's agent-key approval gate). Two round trips because space_members lives in this
+// space's own SpaceDO SQLite while the email lives in PLATFORM_DB's users table — no single JOIN
+// is possible across that boundary. Internal-only (agents worker is the only caller); never
+// end-user or even builder-dashboard reachable.
+app.use("/internal/spaces/:spaceId/owner-contact", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/internal/spaces/:spaceId/owner-contact", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/members?space_id=${encodeURIComponent(spaceId)}`, "GET");
+  if (!res.ok) return c.json({ found: false }, 404);
+  const { data } = await res.json<{ data?: Array<{ user_id: string; role: string }> }>();
+  const owner = (data ?? []).find((m) => m.role === "owner");
+  if (!owner) return c.json({ found: false }, 404);
+  const user = await c.env.PLATFORM_DB.prepare("SELECT email FROM users WHERE id = ?").bind(owner.user_id).first<{ email: string }>();
+  if (!user?.email) return c.json({ found: false }, 404);
+  return c.json({ found: true, email: user.email });
+});
+
 // ── SpaceDO session proxy ────────────────────────────────────────────────────
 // Forward /spaces/:spaceId/sessions/* to the SpaceDO for that space
 // A1.16.10 (layer-3 backstop, bucket B): investigated before gating — the router mounts this
@@ -993,6 +1014,93 @@ app.patch("/spaces/:spaceId/assistant-policy", async (c) => {
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/assistant-policy?space_id=${encodeURIComponent(spaceId)}`, "PATCH", c.req.raw.body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// ── Agent API keys (§A1.17 Phase O) ──────────────────────────────────────────
+// "The same API a human can use, but attributed to the agent itself." Builder-only (owner/admin,
+// tenant-match via x-naelao-tenant-id — same authorization depth as member-billing/scheduled-jobs
+// above): minting a key for an agent is a builder action, never something the agent or an end
+// user can do to itself.
+app.post("/spaces/:spaceId/agents/:agentId/api-keys", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const agentId = c.req.param("agentId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/agents/${encodeURIComponent(agentId)}/api-keys`, "POST");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.get("/spaces/:spaceId/agents/:agentId/api-keys", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const agentId = c.req.param("agentId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/agents/${encodeURIComponent(agentId)}/api-keys`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.delete("/spaces/:spaceId/agents/:agentId/api-keys/:keyId", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const agentId = c.req.param("agentId");
+  const keyId = c.req.param("keyId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/agents/${encodeURIComponent(agentId)}/api-keys/${encodeURIComponent(keyId)}`, "DELETE");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// GET/PATCH — an agent's own approval-policy override. Same shape/authorization as
+// assistant-policy above; falls back to the space-wide row when no override exists (SpaceDO's
+// resolveAgentPolicy).
+app.get("/spaces/:spaceId/agents/:agentId/policy", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const agentId = c.req.param("agentId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/agents/${encodeURIComponent(agentId)}/policy?space_id=${encodeURIComponent(spaceId)}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.patch("/spaces/:spaceId/agents/:agentId/policy", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const agentId = c.req.param("agentId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/agents/${encodeURIComponent(agentId)}/policy?space_id=${encodeURIComponent(spaceId)}`, "PATCH", c.req.raw.body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// POST /internal/agent-keys/verify — naelao-router calls this to resolve a Bearer nak_...
+// agent key into the owning tenant + agentId + effective approval policy BEFORE it can mint the
+// router's own claims for that request. Gated by a direct platform-secret check (same
+// chicken-and-egg precedent as /internal/product-sessions/verify above), not requireInternalHmac.
+app.post("/internal/agent-keys/verify", async (c) => {
+  if (c.req.header("x-naelao-platform-secret") !== c.env.PLATFORM_SECRET) {
+    return c.json({ valid: false }, 403);
+  }
+  const body = await c.req.json<{ spaceId: string; key: string }>().catch(() => ({}) as Record<string, never>);
+  if (!body.spaceId || !body.key) return c.json({ valid: false }, 400);
+
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(body.spaceId).first<{ tenant_id: string }>();
+  if (!space) return c.json({ valid: false });
+
+  const stub = await spaceDoStub(c.env, body.spaceId, space.tenant_id);
+  const res = await forwardToSpaceDO(
+    stub,
+    "/internal/agent-keys/verify",
+    "POST",
+    JSON.stringify({ space_id: body.spaceId, key: body.key })
+  );
+  const verified = await res.json<{ valid: boolean; agent_id?: string; approval_mode?: string; auto_approved_actions?: string[] }>();
+  if (!verified.valid) return c.json({ valid: false });
+  return c.json({ ...verified, tenant_id: space.tenant_id });
 });
 
 // Threads (spec-canonical). A sub-agent spawn or a channel session mirrors in here as a

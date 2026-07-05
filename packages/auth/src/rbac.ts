@@ -45,6 +45,10 @@ const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
   // end-user access to their own product surface is governed by the product-scoped session/
   // route allowlist in workers/router/src/index.ts, not this RBAC table.
   product_end_user: [],
+  // §A1.17 Phase O: an agent's nak_... key is gated by its own assistant_policy/agent_policy_
+  // overrides row (workers/spaces/src/do/SpaceDO.ts), not this RBAC table — fails closed here too
+  // (no builder-dashboard permission implied by holding an agent key).
+  agent: [],
 };
 
 export function hasPermission(role: UserRole, permission: Permission): boolean {

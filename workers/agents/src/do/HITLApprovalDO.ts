@@ -31,6 +31,11 @@ interface ApprovalRow {
   created_at: string;
   resolved_at: string | null;
   expires_at: number;   // unix ms
+  // §A1.17 Phase O: set the first (and only) time an approved request is redeemed via
+  // /requests/:id/consume — a Bearer nak_... agent's own resubmitted HTTP request, not the
+  // in-loop reasoning gate (which never calls consume; it just polls until resolved). Without
+  // this, the same approval_id could authorize an unbounded number of later, different requests.
+  consumed_at: string | null;
 }
 
 export class HITLApprovalDO extends DurableObject {
@@ -51,7 +56,8 @@ export class HITLApprovalDO extends DurableObject {
         reject_reason      TEXT,
         created_at         TEXT NOT NULL DEFAULT (datetime('now')),
         resolved_at        TEXT,
-        expires_at         INTEGER NOT NULL
+        expires_at         INTEGER NOT NULL,
+        consumed_at        TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_approvals_run ON approvals(run_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at DESC);
@@ -64,7 +70,10 @@ export class HITLApprovalDO extends DurableObject {
     const url = new URL(request.url);
     const method = request.method;
 
-    // POST /requests — create a new approval request
+    // POST /requests — create a new approval request. ttl_ms lets a caller outside the in-loop
+    // reasoning gate (§A1.17 Phase O's HTTP-level agent-key approval gate) ask for a realistic
+    // human-review window instead of the 30s default the reasoning loop's own synchronous poll
+    // was tuned for.
     if (method === "POST" && url.pathname === "/requests") {
       const body = await request.json<{
         run_id: string;
@@ -72,6 +81,7 @@ export class HITLApprovalDO extends DurableObject {
         tool_name: string;
         tool_input: Record<string, unknown>;
         action_description: string;
+        ttl_ms?: number;
       }>();
 
       if (!body.run_id || !body.tool_name) {
@@ -80,7 +90,7 @@ export class HITLApprovalDO extends DurableObject {
 
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
-      const expiresAt = Date.now() + AUTO_REJECT_MS;
+      const expiresAt = Date.now() + (body.ttl_ms && body.ttl_ms > 0 ? body.ttl_ms : AUTO_REJECT_MS);
 
       this.ctx.storage.sql.exec(
         `INSERT INTO approvals (id, run_id, session_id, tool_name, tool_input, action_description, status, created_at, expires_at)
@@ -140,6 +150,37 @@ export class HITLApprovalDO extends DurableObject {
     if (method === "PUT" && rejectMatch?.[1]) {
       const body = await request.json<{ reason?: string }>().catch(() => ({ reason: undefined }));
       return this.resolveApproval(rejectMatch[1], "rejected", (body as { reason?: string }).reason ?? "Builder rejected");
+    }
+
+    // POST /requests/:approvalId/consume — §A1.17 Phase O: single-use redemption of an
+    // APPROVED request by the router's agent-key gate, once the agent's caller resubmits the
+    // original request with X-Naelao-Approval-Id. The read-then-write below is safe from a
+    // double-consume race WITHOUT needing to inspect the UPDATE's affected-row count: a
+    // Durable Object processes one request to completion before starting the next (CF's
+    // single-threaded-per-instance guarantee), so a second concurrent /consume call can only
+    // ever observe this row AFTER the first call's UPDATE has already committed — it will see
+    // consumed_at already set and be rejected by the check above, never racing the WHERE clause
+    // itself. run_id/tool_name must match the EXACT agent+action this approval was opened for,
+    // so an approval granted for one action can never be replayed against a different one.
+    const consumeMatch = url.pathname.match(/^\/requests\/([^/]+)\/consume$/);
+    if (method === "POST" && consumeMatch?.[1]) {
+      const body = await request.json<{ run_id?: string; tool_name?: string }>().catch(() => ({}) as Record<string, never>);
+      const row = this.ctx.storage.sql
+        .exec(`SELECT * FROM approvals WHERE id = ?`, consumeMatch[1])
+        .toArray() as unknown as ApprovalRow[];
+      const approval = row[0];
+      if (!approval) return Response.json({ consumed: false, reason: "not_found" });
+      if (approval.status === "pending" && approval.expires_at < Date.now()) this.expireApproval(approval.id);
+      if (approval.status !== "approved" || approval.consumed_at) {
+        return Response.json({ consumed: false, reason: approval.consumed_at ? "already_consumed" : "not_approved" });
+      }
+      if (body.run_id && approval.run_id !== body.run_id) return Response.json({ consumed: false, reason: "run_id_mismatch" });
+      if (body.tool_name && approval.tool_name !== body.tool_name) return Response.json({ consumed: false, reason: "action_mismatch" });
+      this.ctx.storage.sql.exec(
+        `UPDATE approvals SET consumed_at = ? WHERE id = ? AND status = 'approved' AND consumed_at IS NULL`,
+        new Date().toISOString(), approval.id
+      );
+      return Response.json({ consumed: true });
     }
 
     return Response.json({ error: "not_found" }, { status: 404 });
