@@ -25,6 +25,7 @@ import {
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
+import { buildProjectMemoryStore, buildHybridMemoryStore } from "../script-engine/project-memory-client.js";
 import { isChannelType, getAdapter, type NormalizedInbound } from "../launchpad/channels.js";
 import {
   sanitizeSubAgentOutput,
@@ -1283,7 +1284,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // Memory OS — backed by this DO's own SQLite + (optionally) MEMORY_VECTORIZE for the
       // semantic layer. Always available (Layer 3 works with no Vectorize binding at all).
       const memoryEmbedder = this.env.AI ? new WorkersAIEmbedder(this.env.AI) : undefined;
-      env.memoryStore = buildMemoryStore({
+      const localMemoryStore = buildMemoryStore({
         sql: this.ctx.storage.sql,
         spaceId,
         ...(this.env.MEMORY_VECTORIZE
@@ -1291,6 +1292,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           : {}),
         ...(memoryEmbedder ? { embedder: memoryEmbedder } : {}),
       });
+      // §A1.17 Phase U: a project-bound run (this DO instance addressed per (thread, agentId) —
+      // see T2) composes the local store with SpaceDO's project-scoped Layers 3/4/6, so agents
+      // sharing a project share facts/fabric/wiki even though each has its own local
+      // episodic/semantic memory. The Space Assistant's own `_assistant` slot (no projectId)
+      // keeps using localMemoryStore directly, unwrapped — unaffected by this migration.
+      env.memoryStore = (projectId && this.env.SPACES_WORKER)
+        ? buildHybridMemoryStore(localMemoryStore, buildProjectMemoryStore({
+            spacesWorker: this.env.SPACES_WORKER,
+            platformSecret: this.env.PLATFORM_SECRET,
+            spaceId,
+            tenantId,
+            projectId,
+            mintInternalToken,
+          }))
+        : localMemoryStore;
     }
     if (this.env.KNOWLEDGE_WORKER) env.knowledgeWorker = this.env.KNOWLEDGE_WORKER;
     if (this.env.SPACES_WORKER) env.spacesWorker = this.env.SPACES_WORKER;

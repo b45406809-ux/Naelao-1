@@ -630,6 +630,54 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_id);
     `,
   },
+  {
+    version: 24,
+    // §A1.17 Phase U: Memory OS project-shared layers. T2 committed each (thread, agentId) pair
+    // to its OWN NaelaoAgentDO instance/memory — meaning without this table, two threads in the
+    // SAME project sharing an agent (or two different mentioned agents in the same project) would
+    // have ZERO shared knowledge, since Memory OS Layers 3 (facts)/4 (fabric)/6 (wiki) live in
+    // each DO's own SQLite today. Promoted here to SpaceDO (one instance per SPACE, reused rather
+    // than a new DO class), keyed by project_id so a project's agents share a "team knowledge"
+    // layer while staying isolated from every other project's. Layer 5 (episodic/semantic vector
+    // memory) deliberately stays exactly where it is — private per (thread, agentId), never
+    // promoted here. The Space Assistant's own facts/fabric/wiki (its `_assistant` slot, no
+    // projectId) are UNAFFECTED — they keep using NaelaoAgentDO's local memory-os.ts tables
+    // exactly as before this migration; only project-bound agent threads route here.
+    description: "project-scoped Memory OS Layers 3/4/6 (facts, fabric, wiki)",
+    up: `
+      CREATE TABLE IF NOT EXISTS project_facts (
+        id          TEXT PRIMARY KEY,
+        project_id  TEXT NOT NULL,
+        entity      TEXT NOT NULL,
+        relation    TEXT NOT NULL,
+        attribute   TEXT NOT NULL,
+        trust_score REAL NOT NULL DEFAULT 1.0,
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_project_facts_unique ON project_facts(project_id, entity, relation);
+      CREATE INDEX IF NOT EXISTS idx_project_facts_project ON project_facts(project_id);
+
+      CREATE TABLE IF NOT EXISTS project_fabric (
+        id           TEXT PRIMARY KEY,
+        project_id   TEXT NOT NULL,
+        session_id   TEXT NOT NULL,
+        summary      TEXT NOT NULL,
+        key_insights TEXT NOT NULL DEFAULT '[]',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_project_fabric_project ON project_fabric(project_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS project_wiki (
+        project_id    TEXT NOT NULL,
+        concept       TEXT NOT NULL,
+        definition    TEXT NOT NULL,
+        relationships TEXT NOT NULL DEFAULT '[]',
+        updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (project_id, concept)
+      );
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -915,6 +963,26 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && activateThreadMatch?.[1]) {
         return this.activateProjectThread(activateThreadMatch[1], request);
       }
+      // ── project-scoped Memory OS Layers 3/4/6 (§A1.17 Phase U) ─────────────────
+      const projFactsMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/facts$/);
+      if (method === "POST" && projFactsMatch?.[1]) return this.rememberProjectFact(projFactsMatch[1], request);
+      if (method === "GET" && projFactsMatch?.[1]) return this.recallProjectFacts(projFactsMatch[1], url.searchParams);
+      const projFactIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/facts\/([^/]+)$/);
+      if (method === "DELETE" && projFactIdMatch?.[1] && projFactIdMatch?.[2]) return this.deleteProjectFact(projFactIdMatch[1], projFactIdMatch[2]);
+
+      const projFabricBriefMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/fabric\/brief$/);
+      if (method === "GET" && projFabricBriefMatch?.[1]) return this.briefProjectFabric(projFabricBriefMatch[1], url.searchParams);
+      const projFabricMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/fabric$/);
+      if (method === "POST" && projFabricMatch?.[1]) return this.recordProjectFabric(projFabricMatch[1], request);
+      if (method === "GET" && projFabricMatch?.[1]) return this.recallProjectFabric(projFabricMatch[1], url.searchParams);
+
+      const projWikiConceptMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/wiki\/([^/]+)$/);
+      if (method === "GET" && projWikiConceptMatch?.[1] && projWikiConceptMatch?.[2]) {
+        return this.lookupProjectWikiConcept(projWikiConceptMatch[1], decodeURIComponent(projWikiConceptMatch[2]));
+      }
+      const projWikiMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/wiki$/);
+      if (method === "POST" && projWikiMatch?.[1]) return this.upsertProjectWikiConcept(projWikiMatch[1], request);
+      if (method === "GET" && projWikiMatch?.[1]) return this.searchProjectWiki(projWikiMatch[1], url.searchParams);
       // ── project_rules (no-code "after customer says X" triggers) ──────────────
       const projectRulesMatch = url.pathname.match(/^\/projects\/([^/]+)\/rules$/);
       if (method === "GET" && projectRulesMatch?.[1]) {
@@ -2052,6 +2120,144 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.thread_id, now, projectId
     );
     return Response.json({ exclusive_mode: true, activated: true, thread_id: body.thread_id, active_since: now });
+  }
+
+  // ── Memory OS project-shared layers (§A1.17 Phase U) ────────────────────────
+  // Layers 3 (facts)/4 (fabric)/6 (wiki), promoted here so every agent thread bound to the SAME
+  // project shares them — Layer 5 (episodic/semantic) deliberately stays per-(thread,agentId) in
+  // NaelaoAgentDO's own memory-os.ts tables, untouched. Mirrors memory-os.ts's own SQL shape and
+  // merge logic (LIKE-based text match, trust-score refresh on remember, relevance scoring for
+  // fabric) but scoped by project_id instead of user_id — the agents-worker side composes this
+  // with the local per-agent store via a hybrid MemoryStore (project-memory-client.ts).
+
+  private async rememberProjectFact(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ entity?: string; relation?: string; attribute?: string }>().catch(() => ({}) as Record<string, never>);
+    if (!body.entity || !body.relation || !body.attribute) {
+      return Response.json({ error_code: "bad_request", message: "entity, relation, and attribute are required" }, { status: 400 });
+    }
+    const now = new Date().toISOString();
+    const existing = queryOne<{ id: string }>(
+      this.ctx.storage.sql as never, "SELECT id FROM project_facts WHERE project_id = ? AND entity = ? AND relation = ?",
+      projectId, body.entity, body.relation
+    );
+    if (existing) {
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE project_facts SET attribute = ?, trust_score = 1.0, updated_at = ? WHERE id = ?",
+        body.attribute, now, existing.id
+      );
+      return Response.json({ id: existing.id });
+    }
+    const id = crypto.randomUUID();
+    execute(
+      this.ctx.storage.sql as never,
+      "INSERT INTO project_facts (id, project_id, entity, relation, attribute, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      id, projectId, body.entity, body.relation, body.attribute, now, now
+    );
+    return Response.json({ id }, { status: 201 });
+  }
+
+  private recallProjectFacts(projectId: string, params: URLSearchParams): Response {
+    const q = params.get("q") ?? "";
+    const limit = Math.min(parseInt(params.get("limit") ?? "5", 10) || 5, 50);
+    const like = `%${q.replace(/[%_]/g, (c) => `\\${c}`)}%`;
+    const rows = queryAll<{ id: string; entity: string; relation: string; attribute: string; trust_score: number }>(
+      this.ctx.storage.sql as never,
+      `SELECT id, entity, relation, attribute, trust_score FROM project_facts
+       WHERE project_id = ? AND (entity LIKE ? ESCAPE '\\' OR relation LIKE ? ESCAPE '\\' OR attribute LIKE ? ESCAPE '\\')
+       ORDER BY trust_score DESC LIMIT ?`,
+      projectId, like, like, like, limit
+    );
+    return Response.json({ data: rows });
+  }
+
+  private deleteProjectFact(projectId: string, factId: string): Response {
+    execute(this.ctx.storage.sql as never, "DELETE FROM project_facts WHERE id = ? AND project_id = ?", factId, projectId);
+    return Response.json({ deleted: true });
+  }
+
+  private async recordProjectFabric(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ session_id?: string; summary?: string; key_insights?: string[] }>().catch(() => ({}) as Record<string, never>);
+    if (!body.session_id || !body.summary) {
+      return Response.json({ error_code: "bad_request", message: "session_id and summary are required" }, { status: 400 });
+    }
+    const id = crypto.randomUUID();
+    execute(
+      this.ctx.storage.sql as never,
+      "INSERT INTO project_fabric (id, project_id, session_id, summary, key_insights, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      id, projectId, body.session_id, body.summary, JSON.stringify(body.key_insights ?? []), new Date().toISOString()
+    );
+    return Response.json({ id }, { status: 201 });
+  }
+
+  private recallProjectFabric(projectId: string, params: URLSearchParams): Response {
+    const q = (params.get("q") ?? "").toLowerCase().trim();
+    const limit = Math.min(parseInt(params.get("limit") ?? "5", 10) || 5, 50);
+    const rows = queryAll<{ id: string; session_id: string; summary: string; key_insights: string; created_at: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM project_fabric WHERE project_id = ? ORDER BY created_at DESC LIMIT 100",
+      projectId
+    );
+    const scored = rows.map((r) => {
+      const haystack = `${r.summary} ${r.key_insights}`.toLowerCase();
+      let score = 0;
+      if (q) {
+        if (haystack.includes(q)) score = 1;
+        else {
+          const terms = new Set(q.split(/\s+/).filter((t) => t.length > 2));
+          const hayTerms = new Set(haystack.split(/\s+/));
+          let hits = 0;
+          for (const t of terms) if (hayTerms.has(t)) hits++;
+          score = terms.size > 0 ? hits / terms.size : 0;
+        }
+      }
+      return { ...r, score };
+    });
+    const data = scored.filter((r) => r.score > 0.7).sort((a, b) => b.score - a.score).slice(0, limit);
+    return Response.json({ data });
+  }
+
+  private briefProjectFabric(projectId: string, params: URLSearchParams): Response {
+    const limit = Math.min(parseInt(params.get("limit") ?? "5", 10) || 5, 50);
+    const rows = queryAll<{ id: string; session_id: string; summary: string; key_insights: string; created_at: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM project_fabric WHERE project_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+      projectId, limit
+    );
+    return Response.json({ data: rows });
+  }
+
+  private async upsertProjectWikiConcept(projectId: string, request: Request): Promise<Response> {
+    const body = await request.json<{ concept?: string; definition?: string; relationships?: string[] }>().catch(() => ({}) as Record<string, never>);
+    if (!body.concept || !body.definition) {
+      return Response.json({ error_code: "bad_request", message: "concept and definition are required" }, { status: 400 });
+    }
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO project_wiki (project_id, concept, definition, relationships, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(project_id, concept) DO UPDATE SET definition = excluded.definition, relationships = excluded.relationships, updated_at = excluded.updated_at`,
+      projectId, body.concept, body.definition, JSON.stringify(body.relationships ?? []), new Date().toISOString()
+    );
+    return Response.json({ concept: body.concept });
+  }
+
+  private lookupProjectWikiConcept(projectId: string, concept: string): Response {
+    const row = queryOne<{ concept: string; definition: string; relationships: string; updated_at: string }>(
+      this.ctx.storage.sql as never, "SELECT * FROM project_wiki WHERE project_id = ? AND concept = ?", projectId, concept
+    );
+    return Response.json({ data: row ?? null });
+  }
+
+  private searchProjectWiki(projectId: string, params: URLSearchParams): Response {
+    const q = params.get("q") ?? "";
+    const limit = Math.min(parseInt(params.get("limit") ?? "5", 10) || 5, 50);
+    const like = `%${q.replace(/[%_]/g, (c) => `\\${c}`)}%`;
+    const rows = queryAll<{ concept: string; definition: string; relationships: string; updated_at: string }>(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM project_wiki WHERE project_id = ? AND (concept LIKE ? ESCAPE '\\' OR definition LIKE ? ESCAPE '\\') ORDER BY updated_at DESC LIMIT ?`,
+      projectId, like, like, limit
+    );
+    return Response.json({ data: rows });
   }
 
   // ── Authoritative per-project daily spend (F9) ──────────────────────────────────────────

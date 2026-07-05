@@ -655,6 +655,23 @@ app.post("/spaces/:spaceId/projects/:projectId/activate-thread", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// §A1.17 Phase U: project-scoped Memory OS Layers 3/4/6 — internal-only (agents worker is the
+// only caller, via project-memory-client.ts's remote MemoryStore), never end-user or builder
+// dashboard reachable, matching /rules and /spend's existing internal-only posture.
+app.use("/spaces/:spaceId/projects/:projectId/memory/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+
+app.all("/spaces/:spaceId/projects/:projectId/memory/*", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const url = new URL(c.req.url);
+  const marker = `/projects/${projectId}`;
+  const suffix = url.pathname.slice(url.pathname.indexOf(marker) + marker.length);
+  const res = await forwardToSpaceDO(stub, `${marker}${suffix}${url.search}`, c.req.method, c.req.raw.body ?? undefined);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // GET/PATCH a single project — config surface for customer-bot projects (kind,
 // execution_ceiling, channel_config, daily_spend_cap_credits). No-code: the dashboard
 // renders these as form fields, never as a code editor.
