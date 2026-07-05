@@ -461,3 +461,47 @@ export async function listBusinessOrders(spaceId: string, session: SessionCreden
 export async function getBusinessRevenue(spaceId: string, session: SessionCredentials): Promise<RevenueSummary> {
   return apiFetch(`/v1/spaces/${spaceId}/revenue`, { session });
 }
+
+// §A1.17 Phase S: local-machine-as-container grants — a business member opting THEIR OWN
+// machine in so the business's assistant can read/write files or run exact commands on it. The
+// spaces worker filters GET to the caller's own grants automatically (requireBusinessMembership
+// + SpaceDO's user_id filter) — never trust a client-supplied user_id for that.
+export interface LocalGrant {
+  id: string;
+  space_id: string;
+  project_id: string | null;
+  user_id: string;
+  grant_type: "read" | "write" | "readwrite" | "exec";
+  directory?: string | null;
+  commands: string[];
+  created_at: string;
+}
+
+export async function listLocalGrants(spaceId: string, session: SessionCredentials): Promise<LocalGrant[]> {
+  const res = await apiFetch<{ data: LocalGrant[] }>(`/v1/spaces/${spaceId}/local-grants`, { session });
+  return res.data;
+}
+
+export async function createLocalGrant(
+  spaceId: string,
+  session: SessionCredentials,
+  input: { grant_type: "read" | "write" | "readwrite" | "exec"; directory?: string; commands?: string[] }
+): Promise<LocalGrant> {
+  return apiFetch(`/v1/spaces/${spaceId}/local-grants`, { method: "POST", body: JSON.stringify(input), session });
+}
+
+export async function deleteLocalGrant(spaceId: string, grantId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/local-grants/${encodeURIComponent(grantId)}`, { method: "DELETE", session });
+}
+
+export interface LocalTunnelConnectInfo {
+  token: string;
+  space_id: string;
+  user_id: string;
+  connect_path: string;
+  expires_in_seconds: number;
+}
+
+export async function mintLocalTunnelConnectToken(spaceId: string, session: SessionCredentials): Promise<LocalTunnelConnectInfo> {
+  return apiFetch(`/v1/spaces/${spaceId}/local-tunnel/connect-token`, { method: "POST", session });
+}

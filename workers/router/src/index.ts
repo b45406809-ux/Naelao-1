@@ -282,6 +282,11 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/products(\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/orders$/,
   /^\/spaces\/([^/]+)\/revenue$/,
+  // Phase S (§A1.17): a business member granting the assistant access to their OWN machine —
+  // additionally gated by requireBusinessMembership on the spaces worker exactly like the
+  // pricing/products routes above (identity here, authorization there).
+  /^\/spaces\/([^/]+)\/local-grants(\/|$)/,
+  /^\/spaces\/([^/]+)\/local-tunnel\/connect-token$/,
 ];
 
 /** Resolve productId from the path if it matches an end-user-reachable route pattern. Strips the

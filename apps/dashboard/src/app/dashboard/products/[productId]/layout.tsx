@@ -12,6 +12,7 @@ const TABS = [
   { label: "Domain", segment: "domain" },
   { label: "Pricing", segment: "pricing" },
   { label: "Agents", segment: "agents" },
+  { label: "Local Machine", segment: "local-machine" },
   { label: "Feature Flags", segment: "feature-flags" },
   { label: "Billing", segment: "billing" },
   { label: "Danger Zone", segment: "danger-zone" },

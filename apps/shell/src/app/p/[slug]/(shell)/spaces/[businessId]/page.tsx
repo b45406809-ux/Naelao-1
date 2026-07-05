@@ -19,6 +19,10 @@ import {
   updateBusinessProduct,
   listBusinessOrders,
   getBusinessRevenue,
+  listLocalGrants,
+  createLocalGrant,
+  deleteLocalGrant,
+  mintLocalTunnelConnectToken,
   type BusinessMember,
   type Business,
   type PricingPlan,
@@ -26,7 +30,10 @@ import {
   type LaunchpadProduct,
   type LaunchpadOrder,
   type RevenueSummary,
+  type LocalGrant,
 } from "@/lib/api";
+
+const GRANT_TYPES = ["read", "write", "readwrite", "exec"] as const;
 
 function centsToDisplay(cents: number): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 }).format(cents / 100);
@@ -58,6 +65,13 @@ export default function BusinessDetailPage() {
   const [newProductName, setNewProductName] = React.useState("");
   const [newProductPrice, setNewProductPrice] = React.useState("");
   const [creatingProduct, setCreatingProduct] = React.useState(false);
+  const [localGrants, setLocalGrants] = React.useState<LocalGrant[]>([]);
+  const [grantType, setGrantType] = React.useState<(typeof GRANT_TYPES)[number]>("read");
+  const [grantDirectory, setGrantDirectory] = React.useState("");
+  const [grantCommands, setGrantCommands] = React.useState("");
+  const [creatingGrant, setCreatingGrant] = React.useState(false);
+  const [connectInfo, setConnectInfo] = React.useState<{ token: string; connect_path: string; expires_in_seconds: number } | null>(null);
+  const [connecting, setConnecting] = React.useState(false);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -65,16 +79,18 @@ export default function BusinessDetailPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      const [mine, mem, pricing, manifest] = await Promise.all([
+      const [mine, mem, pricing, manifest, grants] = await Promise.all([
         listMyBusinesses(product.space_id, creds),
         listBusinessMembers(params.businessId, creds),
         getPricing(params.businessId, creds).catch(() => ({ plans: [], credit_packs: [] })),
         getShellManifest(params.businessId, creds).catch(() => null),
+        listLocalGrants(params.businessId, creds).catch(() => []),
       ]);
       setBusiness(mine.find((b) => b.id === params.businessId) ?? null);
       setMembers(mem);
       setPlans(pricing.plans);
       setCreditPacks(pricing.credit_packs);
+      setLocalGrants(grants);
       const commerce = manifest?.ui.sidebar_items.some((item) => item.id === "revenue") ?? false;
       setHasCommerce(commerce);
       if (commerce) {
@@ -121,6 +137,51 @@ export default function BusinessDetailPage() {
       await refresh();
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to remove member");
+    }
+  }
+
+  async function handleCreateGrant() {
+    if (!creds) return;
+    setCreatingGrant(true);
+    try {
+      if (grantType === "exec") {
+        const list = grantCommands.split("\n").map((c) => c.trim()).filter(Boolean);
+        if (list.length === 0) throw new Error("Enter at least one exact command");
+        const created = await createLocalGrant(params.businessId, creds, { grant_type: "exec", commands: list });
+        setLocalGrants((prev) => [...prev, created]);
+      } else {
+        if (!grantDirectory.trim()) throw new Error("Enter a directory");
+        const created = await createLocalGrant(params.businessId, creds, { grant_type: grantType, directory: grantDirectory.trim() });
+        setLocalGrants((prev) => [...prev, created]);
+      }
+      setGrantDirectory("");
+      setGrantCommands("");
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to add grant");
+    } finally {
+      setCreatingGrant(false);
+    }
+  }
+
+  async function handleDeleteGrant(grantId: string) {
+    if (!creds) return;
+    try {
+      await deleteLocalGrant(params.businessId, grantId, creds);
+      setLocalGrants((prev) => prev.filter((g) => g.id !== grantId));
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to revoke grant");
+    }
+  }
+
+  async function handleConnectLocalMachine() {
+    if (!creds) return;
+    setConnecting(true);
+    try {
+      setConnectInfo(await mintLocalTunnelConnectToken(params.businessId, creds));
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to mint a connect token");
+    } finally {
+      setConnecting(false);
     }
   }
 
@@ -218,6 +279,64 @@ export default function BusinessDetailPage() {
           </div>
         ))}
       </div>
+
+      <div className="section-label">My Local Machine</div>
+      <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
+        Let this business&rsquo;s agents read/write files or run exact commands on YOUR OWN
+        machine. No access is granted by default — you see only your own grants here.
+      </p>
+      <div className="settings-block">
+        <div className="settings-row">
+          <div>
+            <div className="settings-row-label">Connection</div>
+            <div className="settings-row-sub">Mint a connect token, then run the Naelao Local Agent with it.</div>
+          </div>
+          <Button onClick={handleConnectLocalMachine} disabled={connecting}>
+            {connecting ? "Minting…" : "Connect"}
+          </Button>
+        </div>
+        {connectInfo && (
+          <div style={{ padding: "0 12px 12px" }}>
+            <code style={{ fontSize: 11, wordBreak: "break-all", display: "block", padding: 10, background: "var(--bg2)", borderRadius: 8 }}>
+              node naelao-local-agent.mjs --token {connectInfo.token} --path {connectInfo.connect_path}
+            </code>
+            <div className="settings-row-sub" style={{ marginTop: 4 }}>Expires in {connectInfo.expires_in_seconds}s.</div>
+          </div>
+        )}
+        {localGrants.length === 0 && <div className="settings-row-sub" style={{ padding: 12 }}>No grants yet.</div>}
+        {localGrants.map((g) => (
+          <div className="settings-row" key={g.id}>
+            <div>
+              <Badge color="blue">{g.grant_type}</Badge>{" "}
+              <span className="settings-row-label">{g.grant_type === "exec" ? g.commands.join(", ") : g.directory}</span>
+              <div className="settings-row-sub">Added {new Date(g.created_at).toLocaleDateString()}</div>
+            </div>
+            <button className="btn btn-secondary" type="button" onClick={() => handleDeleteGrant(g.id)}>
+              Revoke
+            </button>
+          </div>
+        ))}
+      </div>
+      {canManage && (
+        <form
+          onSubmit={(e) => { e.preventDefault(); void handleCreateGrant(); }}
+          style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap", alignItems: "flex-end" }}
+        >
+          <FormSelect value={grantType} onChange={(e) => setGrantType(e.target.value as (typeof GRANT_TYPES)[number])} style={{ maxWidth: 140 }}>
+            {GRANT_TYPES.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </FormSelect>
+          {grantType === "exec" ? (
+            <FormInput placeholder="npm test" value={grantCommands} onChange={(e) => setGrantCommands(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
+          ) : (
+            <FormInput placeholder="/Users/you/projects/my-repo" value={grantDirectory} onChange={(e) => setGrantDirectory(e.target.value)} style={{ flex: 1, minWidth: 200 }} />
+          )}
+          <Button type="submit" disabled={creatingGrant}>
+            {creatingGrant ? "Adding…" : "Add grant"}
+          </Button>
+        </form>
+      )}
 
       {hasCommerce && (
         <>

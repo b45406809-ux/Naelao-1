@@ -731,21 +731,31 @@ app.delete("/spaces/:spaceId/projects/:projectId/container-slots/:slotId", async
 });
 
 // ── Local-machine-as-container (spec "Local PC as a Container Target", gap G-3; §A1.17
-// Phase M) — a builder opts their OWN machine in as a grant-checked Tier-5c target. Builder/
-// operator-only (requireInternalHmac): a grant names a real directory or exact commands on a
-// real human's computer, so this is never end-user-reachable. user_id is ALWAYS derived from the
-// verified caller identity, never a client-supplied field — a builder can only grant/connect
-// their OWN machine, never name someone else's.
+// Phase M, UI added Phase S) — a builder OR a business's own end-user member opts their OWN
+// machine in as a grant-checked Tier-5c target. Gated by requireInternalHmac (the SAME token
+// naelao-router's proxyTo mints for every authenticated request it forwards, builder JWT or
+// product_end_user alike — not an exclusively service-to-service check) PLUS
+// requireBusinessMembership for a product_end_user caller specifically, since tenant-match alone
+// would let any end user of ANY business under the same owning tenant reach another business's
+// grants. user_id is ALWAYS derived from the verified caller identity, never a client-supplied
+// field — a caller can only grant/connect their OWN machine, never name someone else's.
 app.use("/spaces/:spaceId/local-grants", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/local-grants/:grantId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/local-tunnel/connect-token", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/local-grants", requireBusinessMembership({ GET: "member", POST: "admin" }));
+app.use("/spaces/:spaceId/local-grants/:grantId", requireBusinessMembership({ DELETE: "admin" }));
+app.use("/spaces/:spaceId/local-tunnel/connect-token", requireBusinessMembership({ POST: "member" }));
 
 app.get("/spaces/:spaceId/local-grants", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const res = await forwardToSpaceDO(stub, `/local-grants?space_id=${encodeURIComponent(spaceId)}`, "GET");
+  // A business member sees only their OWN grants (directory paths are sensitive); a builder/
+  // owner JWT caller keeps seeing the whole space's grants, unchanged from before this pass.
+  const userFilter = identity.role === "product_end_user" && identity.userId ? `&user_id=${encodeURIComponent(identity.userId)}` : "";
+  const res = await forwardToSpaceDO(stub, `/local-grants?space_id=${encodeURIComponent(spaceId)}${userFilter}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 

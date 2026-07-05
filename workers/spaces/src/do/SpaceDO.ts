@@ -900,7 +900,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
       // ── Local-machine-as-container permission grants (§A1.17 Phase M) ─────────
       if (method === "GET" && url.pathname === "/local-grants") {
-        return this.listLocalGrants(url.searchParams.get("space_id") ?? "");
+        return this.listLocalGrants(url.searchParams.get("space_id") ?? "", url.searchParams.get("user_id") ?? undefined);
       }
       if (method === "POST" && url.pathname === "/local-grants") {
         return this.createLocalGrant(url.searchParams.get("space_id") ?? "", request);
@@ -2033,15 +2033,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // per-space ceiling as defense in depth.
   private static readonly MAX_LOCAL_GRANTS_PER_SPACE_HARD_CEILING = 25;
 
-  private listLocalGrants(spaceId: string): Response {
-    const rows = queryAll<{
-      id: string; space_id: string; project_id: string | null; user_id: string;
-      grant_type: string; directory: string | null; commands_json: string; created_at: string;
-    }>(
-      this.ctx.storage.sql as never,
-      "SELECT * FROM local_grants WHERE space_id = ? ORDER BY created_at",
-      spaceId
-    );
+  // §A1.17 Phase S: filterUserId narrows the list to one user's own grants — the spaces-worker
+  // route sets this from the CALLER's own verified identity for a product_end_user (a business
+  // member), never a client-supplied field, so one member can't browse another's local-machine
+  // grants (directory paths are sensitive). A builder/owner JWT caller sees the whole space's
+  // grants unfiltered, unchanged from before this pass.
+  private listLocalGrants(spaceId: string, filterUserId?: string): Response {
+    const rows = filterUserId
+      ? queryAll<{
+          id: string; space_id: string; project_id: string | null; user_id: string;
+          grant_type: string; directory: string | null; commands_json: string; created_at: string;
+        }>(
+          this.ctx.storage.sql as never,
+          "SELECT * FROM local_grants WHERE space_id = ? AND user_id = ? ORDER BY created_at",
+          spaceId, filterUserId
+        )
+      : queryAll<{
+          id: string; space_id: string; project_id: string | null; user_id: string;
+          grant_type: string; directory: string | null; commands_json: string; created_at: string;
+        }>(
+          this.ctx.storage.sql as never,
+          "SELECT * FROM local_grants WHERE space_id = ? ORDER BY created_at",
+          spaceId
+        );
     const data = rows.map((r) => ({ ...r, commands: JSON.parse(r.commands_json || "[]") as string[] }));
     return Response.json({ data, count: data.length });
   }

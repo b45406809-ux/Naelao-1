@@ -703,6 +703,58 @@ export async function updateAssistantPolicy(spaceId: string, input: Partial<Assi
   });
 }
 
+// §A1.17 Phase S: local-machine-as-container grants + the connect-token flow. These routes
+// (workers/spaces/src/index.ts) are gated by requireInternalHmac, the SAME mechanism every other
+// builder-only route in this dashboard already goes through (naelao-router's proxyTo mints that
+// token for any authenticated request it proxies) — no new backend auth path was needed, only
+// this UI, which never previously existed for either surface (Phase M shipped the mechanism with
+// no frontend at all).
+export interface LocalGrant {
+  id: string;
+  space_id: string;
+  project_id: string | null;
+  user_id: string;
+  grant_type: "read" | "write" | "readwrite" | "exec";
+  directory?: string | null;
+  commands_json?: string;
+  created_at: string;
+}
+
+export async function listLocalGrants(spaceId: string): Promise<LocalGrant[]> {
+  const res = await apiFetch<{ data: LocalGrant[] }>(`/spaces/${encodeURIComponent(spaceId)}/local-grants`);
+  return res.data ?? [];
+}
+
+export async function createLocalGrant(
+  spaceId: string,
+  input: { grant_type: "read" | "write" | "readwrite" | "exec"; directory?: string; commands?: string[]; project_id?: string }
+): Promise<LocalGrant> {
+  return apiFetch<LocalGrant>(`/spaces/${encodeURIComponent(spaceId)}/local-grants`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteLocalGrant(spaceId: string, grantId: string): Promise<void> {
+  await apiFetch<void>(`/spaces/${encodeURIComponent(spaceId)}/local-grants/${encodeURIComponent(grantId)}`, {
+    method: "DELETE",
+  });
+}
+
+export interface LocalTunnelConnectInfo {
+  token: string;
+  space_id: string;
+  user_id: string;
+  connect_path: string;
+  expires_in_seconds: number;
+}
+
+export async function mintLocalTunnelConnectToken(spaceId: string): Promise<LocalTunnelConnectInfo> {
+  return apiFetch<LocalTunnelConnectInfo>(`/spaces/${encodeURIComponent(spaceId)}/local-tunnel/connect-token`, {
+    method: "POST",
+  });
+}
+
 export interface BuilderSpaceTypeListing {
   id: string;
   name: string;
