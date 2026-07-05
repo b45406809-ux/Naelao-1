@@ -167,11 +167,14 @@ export async function sendMessage(
     body: JSON.stringify({ role: "user", content }),
     session,
   });
-  const agentRun = await apiFetch<{ id?: string; run_id?: string }>(
+  // §A1.17 Phase Q: pass `goal` explicitly (the message just persisted above) — the backend
+  // will still derive it from the session's latest user message if this is ever omitted, but
+  // sending it directly avoids that extra round trip on every single message.
+  const agentRun = await apiFetch<{ id?: string; run_id?: string; task_id?: string }>(
     `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/run`,
-    { method: "POST", body: JSON.stringify({ session_id: sessionId }), session }
+    { method: "POST", body: JSON.stringify({ session_id: sessionId, goal: content }), session }
   );
-  return { userMessage, agentRunId: agentRun.id ?? agentRun.run_id ?? "" };
+  return { userMessage, agentRunId: agentRun.id ?? agentRun.run_id ?? agentRun.task_id ?? "" };
 }
 
 /** The browser's native EventSource can't set headers, so the stream URL carries credentials as

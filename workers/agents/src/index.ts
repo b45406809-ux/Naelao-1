@@ -237,6 +237,44 @@ async function getAgentDOForSpace(
   return env.NAELAO_AGENT_DO.get(doId);
 }
 
+// §A1.17 Phase Q: apps/shell AND apps/portal's sendMessage() both POST here with only
+// `{session_id}` — no `goal` — because they already posted the user's message via
+// `POST .../messages` immediately before this call and never repeated its content. This
+// endpoint required `body.goal` unconditionally with no fallback, so end-user chat through
+// EITHER app has always 400'd on this exact call, confirmed against git HEAD (no test exercised
+// this route with a realistic client body). Fixed by deriving the goal from the session's own
+// most recent 'user' message when the caller doesn't supply one, rather than requiring every
+// caller to duplicate content it already persisted a moment earlier.
+async function resolveRunGoal(
+  env: AgentsEnv,
+  tenantId: string,
+  spaceId: string,
+  sessionId: string,
+  providedGoal: unknown
+): Promise<string | null> {
+  if (typeof providedGoal === "string" && providedGoal.trim()) return providedGoal;
+  try {
+    const resp = await env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/messages?limit=20`,
+      {
+        headers: {
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+        },
+      }
+    ));
+    if (!resp.ok) return null;
+    const data = await resp.json<{ data?: Array<{ role: string; content: string }> }>();
+    const messages = data.data ?? [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]!.role === "user") return messages[i]!.content;
+    }
+  } catch {
+    // fall through to null — the caller turns this into the same 400 as a missing goal always was
+  }
+  return null;
+}
+
 // ── POST /spaces/:spaceId/sessions/:sessionId/agent/run ───────────────────────
 
 app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
@@ -248,13 +286,15 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.param("sessionId");
 
-  const body = await c.req.json<{ goal: string; agent_definition_id?: string }>();
-  if (!body.goal || typeof body.goal !== "string") {
-    throw badRequest("goal is required and must be a string");
+  const rawBody = await c.req.json<{ goal?: string; agent_definition_id?: string }>();
+  const resolvedGoal = await resolveRunGoal(c.env, tenantId, spaceId, sessionId, rawBody.goal);
+  if (!resolvedGoal) {
+    throw badRequest("goal is required and must be a string (or the session must already have a user message)");
   }
-  if (body.goal.length > 10_000) {
+  if (resolvedGoal.length > 10_000) {
     throw badRequest("goal must not exceed 10,000 characters");
   }
+  const body = { ...rawBody, goal: resolvedGoal };
 
   // G-AO17: Runtime prompt injection detection — silent detection, no oracle
   const { userId } = getCallerIdentity(c);
@@ -472,11 +512,17 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     // Cache lookup errors must never block the main request
   }
 
-  // G-AX04: Async task dispatch — if client sends Prefer: respond-async, return 202 immediately
-  const preferAsync = (c.req.header("prefer") ?? "").toLowerCase().includes("respond-async");
+  // §A1.17 Phase Q: "closing the tab should never lose an in-flight run" — the durable
+  // Workflow+TaskDO path (G-AX04) is now the DEFAULT for an ordinary chat run whenever it's
+  // configured, not an opt-in behind `Prefer: respond-async`. `Prefer: respond-sync` is the
+  // escape hatch for a caller that genuinely wants a blocking result (e.g. a script author
+  // testing locally); absent either preference, or when AGENT_TASK_WORKFLOW/TASK_DO aren't
+  // wired at all, this falls through to the synchronous path below unchanged.
+  const preferHeader = (c.req.header("prefer") ?? "").toLowerCase();
+  const preferSync = preferHeader.includes("respond-sync");
   const callbackUrl = (body as Record<string, unknown>)["callback_url"] as string | undefined;
 
-  if (preferAsync && c.env.AGENT_TASK_WORKFLOW && c.env.TASK_DO) {
+  if (!preferSync && c.env.AGENT_TASK_WORKFLOW && c.env.TASK_DO) {
     const taskId = crypto.randomUUID();
     const taskDoName = `tasks:${spaceId}`;
     const taskStub = getTaskDO(c.env, spaceId);
@@ -515,9 +561,16 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
       },
     });
 
+    // run_id is an alias of task_id — every existing poll/stream client (apps/shell,
+    // apps/portal) reads run_id/id from this response and polls/streams
+    // .../agent/runs/:runId[/stream], which now transparently falls back to TaskDO when the id
+    // isn't one of NaelaoAgentDO's own synchronous agent_runs rows (see the run/stream handlers
+    // below) — so neither client needed to change which field they read OR which URL they poll.
     return c.json(
       {
         task_id: taskId,
+        run_id: taskId,
+        id: taskId,
         status: "queued",
         status_url: `/spaces/${spaceId}/tasks/${taskId}`,
       },
@@ -755,6 +808,41 @@ app.post("/internal/scripts/run-durable", async (c) => {
   return c.json(doBody, doResp.status as 200 | 400 | 404 | 500 | 503);
 });
 
+// §A1.17 Phase Q: NaelaoAgentDO's own `agent_runs` table only ever holds SYNCHRONOUS
+// (Prefer: respond-sync) runs — now that the default `/agent/run` response hands back a
+// TaskDO task_id as run_id/id (see the async-dispatch branch above), a poll/stream client
+// reading this exact same GET route needs the SAME id to also resolve against TaskDO. Tried in
+// this order rather than branching on id shape, since task_id and a synchronous runId are both
+// opaque crypto.randomUUID()s with no way to tell them apart without asking.
+const TASK_STATUS_TO_RUN_STATUS: Record<string, "running" | "completed" | "failed"> = {
+  queued: "running", processing: "running", complete: "completed", failed: "failed",
+};
+
+async function fetchRunOrTaskStatus(
+  env: AgentsEnv, tenantId: string, sessionId: string, spaceId: string, runId: string
+): Promise<{ status: number; body: { id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[] } }> {
+  const stub = await getAgentDO(env, tenantId, sessionId);
+  const doResponse = await stub.fetch(new Request(`http://agent-do/runs/${runId}`, { method: "GET" }));
+  if (doResponse.ok) {
+    const doBody = await doResponse.json<{ id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[] }>();
+    return { status: 200, body: doBody };
+  }
+  if (!env.TASK_DO) return { status: doResponse.status, body: { id: runId, status: "failed", error: "run not found" } };
+  const taskStub = getTaskDO(env, spaceId);
+  const taskResponse = await taskStub.fetch(`http://task-do/tasks/${runId}`);
+  if (!taskResponse.ok) return { status: 404, body: { id: runId, status: "failed", error: "run not found" } };
+  const task = await taskResponse.json<{ task_id: string; status: string; result: { final_answer?: string } | null; error: string | null }>();
+  return {
+    status: 200,
+    body: {
+      id: task.task_id,
+      status: TASK_STATUS_TO_RUN_STATUS[task.status] ?? "running",
+      ...(task.result?.final_answer !== undefined ? { final_answer: task.result.final_answer } : {}),
+      ...(task.error ? { error: task.error } : {}),
+    },
+  };
+}
+
 // ── GET /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId ────────────────
 
 app.get(
@@ -776,13 +864,8 @@ app.get(
 
     if (!space) throw notFound("Space");
 
-    const stub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
-    const doResponse = await stub.fetch(
-      new Request(`http://agent-do/runs/${runId}`, { method: "GET" })
-    );
-
-    const doBody = await doResponse.json<unknown>();
-    return c.json(doBody, doResponse.status as 200 | 404 | 500);
+    const { status, body: runBody } = await fetchRunOrTaskStatus(c.env, tenantId, sessionId, spaceId, runId);
+    return c.json(runBody, status as 200 | 404 | 500);
   }
 );
 
@@ -850,22 +933,13 @@ app.get(
       await writer.write(enc.encode(line));
     };
 
-    const stub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
-
-    // Poll the DO until the run terminates (max 2 minutes)
+    // Poll the run until it terminates (max 2 minutes) — falls back to TaskDO for a
+    // durable-by-default run's task_id (see fetchRunOrTaskStatus above).
     const pollTask = async (): Promise<void> => {
       try {
         const deadline = Date.now() + 120_000;
         while (Date.now() < deadline) {
-          const resp = await stub.fetch(
-            new Request(`http://agent-do/runs/${runId}`, { method: "GET" })
-          );
-          const run = await resp.json<{
-            status: string;
-            final_answer?: string;
-            error?: string;
-            react_steps?: unknown[];
-          }>();
+          const { body: run } = await fetchRunOrTaskStatus(c.env, tenantId, sessionId, spaceId, runId);
 
           await sendEvent("status", {
             run_id: runId,
@@ -2617,7 +2691,7 @@ async function handleScheduled(env: AgentsEnv): Promise<void> {
 
 // Exported for end-to-end tests that drive the assembled app the way the router does, and for
 // the agent-ticks fan-out unit tests (enqueue planning + consumer dispatch).
-export { app, enqueueAgentTicks, handleAgentTick, handleAgentTicksQueue };
+export { app, enqueueAgentTicks, handleAgentTick, handleAgentTicksQueue, resolveRunGoal, fetchRunOrTaskStatus };
 export type { AgentTickMessage };
 
 export default {

@@ -3081,19 +3081,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       );
     }
 
+    // §A1.17 Phase Q: this response's only two consumers (the GET .../agent/runs/:runId
+    // passthrough and the SSE /stream poller in workers/agents/src/index.ts, both of which
+    // apps/shell and apps/portal's clients read from) have always expected snake_case
+    // final_answer/react_steps — this handler returned camelCase, so `run.final_answer` read
+    // through every one of those call sites as `undefined`. A real, previously-undetected bug
+    // (nothing exercised this route with a realistic client before now); fixed by matching the
+    // shape every consumer already expects rather than touching three call sites.
     return Response.json({
       id: run.id,
-      sessionId: run.session_id,
-      spaceId: run.space_id,
-      tenantId: run.tenant_id,
+      session_id: run.session_id,
+      space_id: run.space_id,
+      tenant_id: run.tenant_id,
       status: run.status,
-      fsmState: run.fsm_state,
+      fsm_state: run.fsm_state,
       goal: run.goal,
-      reactSteps: JSON.parse(run.react_steps as string) as ReactStep[],
-      finalAnswer: run.final_answer,
+      react_steps: JSON.parse(run.react_steps as string) as ReactStep[],
+      final_answer: run.final_answer,
       error: run.error,
-      createdAt: run.created_at,
-      updatedAt: run.updated_at,
+      created_at: run.created_at,
+      updated_at: run.updated_at,
     });
   }
 

@@ -39,6 +39,7 @@ interface MessageCreateResponse {
 interface AgentRunResponse {
   id: string;
   run_id?: string;
+  task_id?: string;
   status: string;
   final_answer?: string;
   error?: string;
@@ -159,12 +160,14 @@ export async function sendMessage(
     }
   );
 
-  // Step 2: trigger agent run
+  // Step 2: trigger agent run. §A1.17 Phase Q: pass `goal` explicitly (the message just
+  // persisted above) — the backend still derives it from the session's latest user message if
+  // this is ever omitted, but sending it directly avoids that extra round trip every message.
   const agentRun = await portalFetch<AgentRunResponse>(
     `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/run`,
     {
       method: "POST",
-      body: JSON.stringify({ session_id: sessionId }),
+      body: JSON.stringify({ session_id: sessionId, goal: content }),
     }
   );
 
@@ -175,7 +178,7 @@ export async function sendMessage(
       content: userMessage.content,
       created_at: userMessage.created_at,
     },
-    agentRunId: agentRun.id ?? agentRun.run_id ?? "",
+    agentRunId: agentRun.id ?? agentRun.run_id ?? agentRun.task_id ?? "",
   };
 }
 
