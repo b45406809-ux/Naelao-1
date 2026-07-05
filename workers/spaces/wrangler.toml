@@ -109,6 +109,12 @@ service = "naelao-billing"
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
 
+# §A1.17 Phase V — naelao-ws-gateway. SpaceDO calls broadcastSpaceEvent (@naelao/http) on every
+# project/thread-lock/presence mutation to live-sync connected dashboard/shell clients.
+[[services]]
+binding = "WS_GATEWAY"
+service = "naelao-ws-gateway"
+
 [env.staging]
 vars = { ENVIRONMENT = "staging" }
 

@@ -7,7 +7,7 @@ import {
   findPossibleDuplicateProjects, isPresenceFresh, PRESENCE_FRESHNESS_WINDOW_MS,
 } from "@naelao/events";
 import type { TriggerRule, TriggerCondition, EventEnvelope, ConditionContext } from "@naelao/events";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
 
 function todaySpendKey(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD (UTC)
@@ -686,6 +686,9 @@ export interface SpaceDOEnv {
    *  event (thread.created, project.created, ...). Optional: firing is best-effort, never
    *  blocks the state change that triggered it. */
   AGENTS_WORKER?: Fetcher;
+  /** §A1.17 Phase V — naelao-ws-gateway, for live-syncing a mutation to a space's connected
+   *  clients via WsHubDO. Optional: broadcastSpaceEvent degrades to a silent no-op when unbound. */
+  WS_GATEWAY?: Fetcher;
 }
 
 // Row types for internal use
@@ -1849,6 +1852,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // and the DO's request context is free to tear down. fireMatchingTriggers is itself
       // best-effort/non-throwing, so this never fails project creation.
       await this.fireMatchingTriggers({ type: "project.created", space_id: body.space_id, project_id: row.id, occurred_at: Date.now() }, tenantId);
+      // §A1.17 Phase V: live-sync this to any connected client — never blocks/fails project
+      // creation (broadcastSpaceEvent is itself best-effort/non-throwing).
+      await broadcastSpaceEvent(this.env, tenantId, body.space_id, "project.created", { project_id: row.id, name: row.name });
       if (possibleDuplicates.length > 0) {
         // A builder can wire this event to a no-code trigger (e.g. a notifications script) to
         // actually broadcast the heads-up to the space's admin/assistant — the dedup detection
@@ -1879,7 +1885,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // has a project/thread open; listPresence filters by a freshness window so a closed tab or
   // crashed client just ages out rather than appearing present forever.
   private async heartbeatPresence(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id: string; user_id: string; project_id?: string; thread_id?: string }>();
+    const body = await request.json<{ space_id: string; user_id: string; project_id?: string; thread_id?: string; tenant_id?: string }>();
     if (!body.space_id || !body.user_id) {
       return Response.json({ error_code: "bad_request", message: "space_id and user_id are required" }, { status: 400 });
     }
@@ -1890,6 +1896,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
        ON CONFLICT(space_id, user_id) DO UPDATE SET project_id = excluded.project_id, thread_id = excluded.thread_id, last_seen_at = excluded.last_seen_at`,
       body.space_id, body.user_id, body.project_id ?? null, body.thread_id ?? null, now
     );
+    // §A1.17 Phase V: live-sync presence too — online/offline transitions appear live instead of
+    // only on the next GET /presence poll. Best-effort, never blocks the heartbeat response.
+    await broadcastSpaceEvent(this.env, body.tenant_id ?? "", body.space_id, "presence.heartbeat", {
+      user_id: body.user_id, project_id: body.project_id ?? null, thread_id: body.thread_id ?? null,
+    });
     // Opportunistic prune: presence's PK is (space_id, user_id), so a row only ever grows the
     // table when a NEW user heartbeats for the first time — but that row then lives forever
     // (isPresenceFresh only filters GET /presence, it never deletes). A space with high churn
@@ -1963,8 +1974,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       exclusive_mode?: boolean;
     }>().catch(() => ({}) as Record<string, never>);
 
-    const existing = queryOne<{ id: string; default_agent_id: string | null; allowed_agent_ids: string | null }>(
-      this.ctx.storage.sql as never, "SELECT id, default_agent_id, allowed_agent_ids FROM projects WHERE id = ?", projectId
+    const existing = queryOne<{ id: string; space_id: string; default_agent_id: string | null; allowed_agent_ids: string | null }>(
+      this.ctx.storage.sql as never, "SELECT id, space_id, default_agent_id, allowed_agent_ids FROM projects WHERE id = ?", projectId
     );
     if (!existing) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
 
@@ -2033,6 +2044,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (body.exclusive_mode !== undefined) {
       execute(this.ctx.storage.sql as never, "UPDATE projects SET exclusive_mode = ? WHERE id = ?", body.exclusive_mode ? 1 : 0, projectId);
     }
+    // §A1.17 Phase V: live-sync — best-effort, never blocks the PATCH response. tenant_id rides
+    // the query string (see the spaces-worker route's comment for why not a header/body field).
+    const patchTenantId = new URL(request.url).searchParams.get("tenant_id") ?? "";
+    await broadcastSpaceEvent(this.env, patchTenantId, existing.space_id, "project.updated", { project_id: projectId });
     return this.getProject(projectId);
   }
 
@@ -2097,10 +2112,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // one is already active gets a 409 with who holds it, never a silent block — `take_over`
   // reassigns explicitly so this can never deadlock a project.
   private async activateProjectThread(projectId: string, request: Request): Promise<Response> {
-    const body = await request.json<{ thread_id?: string; user_id?: string; take_over?: boolean }>().catch(() => ({}) as Record<string, never>);
+    const body = await request.json<{ thread_id?: string; user_id?: string; take_over?: boolean; tenant_id?: string }>().catch(() => ({}) as Record<string, never>);
     if (!body.thread_id) return Response.json({ error_code: "bad_request", message: "thread_id is required" }, { status: 400 });
-    const project = queryOne<{ id: string; exclusive_mode: number; active_thread_id: string | null; active_thread_since: string | null }>(
-      this.ctx.storage.sql as never, "SELECT id, exclusive_mode, active_thread_id, active_thread_since FROM projects WHERE id = ?", projectId
+    const project = queryOne<{ id: string; space_id: string; exclusive_mode: number; active_thread_id: string | null; active_thread_since: string | null }>(
+      this.ctx.storage.sql as never, "SELECT id, space_id, exclusive_mode, active_thread_id, active_thread_since FROM projects WHERE id = ?", projectId
     );
     if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
 
@@ -2119,6 +2134,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       "UPDATE projects SET active_thread_id = ?, active_thread_since = ? WHERE id = ?",
       body.thread_id, now, projectId
     );
+    // §A1.17 Phase V: live-sync the lock transition — a collaborator viewing this project sees
+    // who just took it over without polling. Best-effort, never blocks the activation response.
+    await broadcastSpaceEvent(this.env, body.tenant_id ?? "", project.space_id, "thread.activated", { project_id: projectId, thread_id: body.thread_id, user_id: body.user_id ?? null });
     return Response.json({ exclusive_mode: true, activated: true, thread_id: body.thread_id, active_since: now });
   }
 

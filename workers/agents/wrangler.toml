@@ -188,6 +188,12 @@ service = "naelao-credentials"
 binding = "BROWSER_WORKER"
 service = "naelao-browser"
 
+# §A1.17 Phase V — naelao-ws-gateway. NaelaoAgentDO calls broadcastSpaceEvent (@naelao/http) so
+# approval.requested live-syncs to any connected dashboard/shell client.
+[[services]]
+binding = "WS_GATEWAY"
+service = "naelao-ws-gateway"
+
 [vars]
 ENVIRONMENT = "development"
 # CF AI Gateway — every LLM call routes through this (spec §15).

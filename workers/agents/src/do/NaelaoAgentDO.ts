@@ -8,7 +8,7 @@
 //   - Alarm used for 30s timeout watchdog
 
 import { DurableObject } from "cloudflare:workers";
-import { mintInternalToken } from "@naelao/http";
+import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
 import type { LlmTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
@@ -795,6 +795,9 @@ export interface AgentDOEnv {
   SPACES_WORKER: Fetcher;
   HITL_APPROVAL_DO?: DurableObjectNamespace; // G-AY01: optional — HITL support
   ANALYTICS?: AnalyticsEngineDataset;         // G-AZ09: unit economics tracking
+  /** §A1.17 Phase V — naelao-ws-gateway, for live-syncing approval.requested to any connected
+   *  dashboard/shell client. Optional: broadcastSpaceEvent degrades to a silent no-op when unbound. */
+  WS_GATEWAY?: Fetcher;
   // ── Script-first engine bindings (authoritative agent model; spec appendix ~6672k) ──
   /** R2 bucket holding the skill library + agent config + workspace. */
   SCRIPTS_R2?: R2Bucket;
@@ -2185,6 +2188,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     actionName: string,
     description: string
   ): Promise<void> {
+    // §A1.17 Phase V: live-sync this the moment it happens, independent of whether email
+    // notification is configured below — a connected dashboard/shell client sees the pending
+    // approval immediately rather than only via the owner's inbox.
+    await broadcastSpaceEvent(this.env, tenantId, spaceId, "approval.requested", { approval_id: approvalId, agent_id: agentId, action: actionName });
+
     if (!this.env.NOTIFICATIONS_WORKER || !this.env.SPACES_WORKER || !tenantId) return;
     try {
       const contactRes = await this.env.SPACES_WORKER.fetch(new Request(

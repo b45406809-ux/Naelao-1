@@ -650,7 +650,7 @@ app.post("/spaces/:spaceId/projects/:projectId/activate-thread", async (c) => {
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(
     stub, `/projects/${encodeURIComponent(projectId)}/activate-thread`, "POST",
-    JSON.stringify({ ...body, user_id: identity.userId })
+    JSON.stringify({ ...body, user_id: identity.userId, tenant_id: tenantId })
   );
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
@@ -689,7 +689,10 @@ app.patch("/spaces/:spaceId/projects/:projectId", async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}`, "PATCH", c.req.raw.body);
+  // §A1.17 Phase V: tenant_id rides the query string (not a header, since forwardToSpaceDO
+  // doesn't forward client headers, and the body is streamed through unparsed) so
+  // updateProject can live-sync via broadcastSpaceEvent.
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}?tenant_id=${encodeURIComponent(tenantId)}`, "PATCH", c.req.raw.body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
@@ -914,7 +917,7 @@ app.post("/spaces/:spaceId/presence", async (c) => {
   if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
   const body = await c.req.json<{ project_id?: string; thread_id?: string }>().catch(() => ({}));
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
-  const res = await forwardToSpaceDO(stub, "/presence", "POST", JSON.stringify({ space_id: spaceId, user_id: userId, ...body }));
+  const res = await forwardToSpaceDO(stub, "/presence", "POST", JSON.stringify({ space_id: spaceId, user_id: userId, tenant_id: tenantId, ...body }));
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
