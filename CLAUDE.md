@@ -736,6 +736,32 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     new), `pnpm turbo run typecheck` clean (75 tasks). Next: Phase J (Workflows tier), K
     (per-project R2-mounted container), N (Launchpad operator-shell UI + cleanup) — full roadmap
     including Phases L/M in the session's plan file.
+33. **Phase J (Durable Workflows tier) is BUILT.** A long-running/cron script now runs as a real
+    Cloudflare Workflow instead of holding a Tier 2-5 isolate or the agent DO open the whole time.
+    New `ScriptMetadata.runtime: "isolate" | "workflow"` (default `"isolate"`, orthogonal to
+    `requires_tier`) — `execution-ladder.ts` routes a `runtime:"workflow"` script to a new
+    `WorkflowRunner` (`ScriptEngineEnv.workflowRunner`) instead of `codeRunner`, returning
+    immediately with `{workflow_id, status:"started"}` rather than blocking; degrades honestly
+    (`ok:false`) when unwired, same precedent as every other optional binding. The workflow IS an
+    ordinary stored script tagged `runtime:"workflow"`, not a second store: `dynamic-workflow`'s
+    `workflow.create/run` ops (previously always "not available" — the orchestration hooks were
+    never actually wired) now delegate straight to `ScriptToolSurface.create/run`, and
+    `workflow.schedule` just writes a normal `scheduled_jobs` row — the existing cron dispatcher
+    (`runScheduledJobs`/`fireScriptDirectly`) needed zero changes; the routing to a durable Workflow
+    instance happens transparently the moment `ScriptToolSurface.run()` resolves the script's own
+    tag. New `ScriptRunWorkflow` class (`workers/agents/src/workflows/`, binding
+    `AGENT_SCRIPT_WORKFLOW`, separate from `AgentTaskWorkflow`'s different payload shape) has one
+    durable step that re-resolves the script BY NAME through a new HMAC-gated
+    `POST /internal/scripts/run-durable` → the existing `fireScriptDirectly` →
+    `agent-do/triggers/fire` path (identical shape/gate to `/internal/triggers/fire`) — so it never
+    carries code through Workflow instance params, and an edit to the script between schedule and
+    fire is picked up automatically. Restructured `buildOrchestrationHooks` (it previously
+    `return {}`ed entirely when `NAELAO_AGENT_DO` was absent, which would have also silently
+    dropped the workflow hooks even though they don't need that binding) so sub-agent and workflow
+    hooks are gated independently. 1013/1013 tests pass (10 new: workflow-tier routing + the new
+    route's HMAC auth boundary), `pnpm turbo run typecheck` clean (75 tasks). Next: Phase K
+    (per-project R2-mounted container), N (Launchpad operator-shell UI + cleanup) — full roadmap
+    including Phases L/M in the session's plan file.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

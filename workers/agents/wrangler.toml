@@ -102,6 +102,14 @@ name = "AgentTaskWorkflow"
 class_name = "AgentTaskWorkflow"
 binding = "AGENT_TASK_WORKFLOW"
 
+# §A1.17 Phase J — durable execution for scripts tagged runtime:"workflow" (long-running/cron
+# automations). Separate from AgentTaskWorkflow (which runs one full agent reasoning turn);
+# this runs one named script directly, no reasoner, with step retries.
+[[workflows]]
+name = "ScriptRunWorkflow"
+class_name = "ScriptRunWorkflow"
+binding = "AGENT_SCRIPT_WORKFLOW"
+
 [[kv_namespaces]]
 binding = "AGENT_CACHE"
 id = "REPLACE_WITH_KV_ID"

@@ -3561,3 +3561,84 @@ other direct callers, `browser-use.ts` and `code-exec.ts`). 1003/1003 tests pass
 for builder-owned runs (part of I3), and Phases J (Workflows tier), K (per-project R2-mounted
 container), N (Launchpad operator-shell UI + cleanup), L (Container Marketplace), M
 (local-machine-as-container) — see the session's plan file for the full roadmap.
+
+### Phase J — Durable Workflows tier (long-running/cron scripts survive restarts)
+
+**Goal:** a script that must run for minutes/hours/days, survive a restart, or fire on a cron runs
+as a Cloudflare Workflow (step retries, long ceiling) instead of holding a Tier 2-5 isolate or the
+agent DO open the whole time. Built on the substrate the agents worker already declared
+(`[[workflows]] AGENT_TASK_WORKFLOW`) but that binding's shape (one full agent reasoning turn,
+`AgentTaskWorkflow`) doesn't fit "run this one named script durably" — so this phase adds a
+second, narrower Workflow class rather than overloading the first.
+
+**J1 — `metadata.runtime` on `ScriptMetadata`, orthogonal to `requires_tier`.** A stored script can
+now carry `runtime: "isolate" | "workflow"` (default `"isolate"`, unchanged behavior for every
+existing script). `requires_tier` still governs WHAT the eventual execution is allowed to do
+(browser/container/etc.); `runtime` governs WHERE it runs — synchronously in the calling
+`script.run`, or dispatched to a durable Workflow instance that the caller doesn't block on.
+
+**J2 — `WorkflowRunner` injected into `ScriptEngineEnv`, wired the same way `codeRunner` is.**
+`execution-ladder.ts`'s `runStoredScript` checks `script.metadata.runtime === "workflow"` BEFORE
+falling through to `env.codeRunner` — if `env.workflowRunner` is absent it degrades honestly
+(`ok:false`, same precedent as every other optional binding), never silently running the script in
+an isolate instead. On success it returns immediately with `{ workflow_id, status: "started" }` —
+this is deliberately fire-and-forget from the caller's perspective (the whole point of "durable" is
+not waiting on it); `workflow.status` (dynamic-workflow prebuilt) is how progress gets checked
+later.
+
+**J3 — the workflow IS a stored script, not a second store.** `dynamic-workflow`'s
+`workflow.create(name, code)` op (previously always "not available" — `buildOrchestrationHooks`
+never set the workflow hooks at all) now just calls `ScriptToolSurface.create()` with
+`metadata.runtime: "workflow"` — the SAME skill library `script.create` already writes to.
+`workflow.run(name, params)` is literally `tools.run(name, params)`; because the script is tagged
+`runtime:"workflow"`, `execution-ladder.ts` routes that particular `script.run` call to
+`ScriptRunWorkflow` regardless of who invoked it (the dynamic-workflow prebuilt, a trigger fire, or
+a scheduled job) — one routing decision, not three call sites that could drift. This is also why no
+code ever needs to travel through a Workflow instance's own params: `ScriptRunWorkflow`'s one step
+re-resolves the script BY NAME through `POST /internal/scripts/run-durable` → the existing
+`fireScriptDirectly` → `agent-do/triggers/fire` → `ScriptToolSurface.run(name)` path (identical
+shape to `/internal/triggers/fire`, same HMAC-verified-token gate, kept as its own route since a
+Workflow instance is a structurally different caller population worth auditing separately later)
+— so an edit to the script between schedule and fire is picked up automatically, matching the
+skill library's own versioning semantics, and the Workflow's durable step gets retries (3,
+exponential backoff, 10-minute step timeout) for free.
+
+**J4 — cron reuses the EXISTING scheduler, zero new dispatch code.** `workflow.schedule(name,
+cron)` just POSTs a normal row to `/spaces/:spaceId/scheduled-jobs` (`script_name: name`, no
+`goal`) — the same table and the same `runScheduledJobs`/`fireScriptDirectly` dispatcher CLAUDE.md
+#20/#28 already built for every other scheduled script. Nothing about the cron path changes; the
+routing to a Workflow instance happens transparently one layer down, purely because of the
+script's own `runtime:"workflow"` tag, at the exact moment `ScriptToolSurface.run()` resolves it.
+This is the plan's "long automations no longer hold an isolate open" outcome, achieved without
+touching the scheduler at all.
+
+**J5 — new binding, new Workflow class, both narrowly scoped.** `wrangler.toml` gained a second
+`[[workflows]]` entry (`ScriptRunWorkflow` / binding `AGENT_SCRIPT_WORKFLOW`), separate from
+`AgentTaskWorkflow`'s `AGENT_TASK_WORKFLOW` — different payload shape (`scriptName`+`params` vs. a
+full agent turn's goal/systemPrompt/tools), different purpose, so two classes rather than
+overloading one. `NaelaoAgentDO.buildScriptEngineEnv` wires `env.workflowRunner` from
+`this.env.AGENT_SCRIPT_WORKFLOW` when present, mirroring `codeRunner`'s wiring exactly (optional,
+degrades honestly). `buildOrchestrationHooks` was restructured (it previously `return {}`ed
+entirely when `NAELAO_AGENT_DO` was absent, which would have also silently dropped the workflow
+hooks even though they don't need that binding) so sub-agent hooks and workflow hooks are gated
+independently, and the hook set now takes the already-constructed `ScriptToolSurface` — moved one
+call site later in `handleScriptRun` (from before `config`/`tools` existed to right after `tools`
+is constructed; nothing in between reads `engineEnv.orchestration`, and every consumer reads it
+lazily at call time inside the reasoning loop, so the reorder is behavior-preserving).
+
+**Tests:** `tests/unit/workflow-tier-routing.test.ts` (5 — dispatches to `workflowRunner.start`
+instead of `codeRunner` and returns immediately without blocking; per-tenant isolation, i.e. two
+different spaces' runs pass their own space/tenant, never a shared/fixed one; honest `ok:false`
+degrade with no runner wired; a runner rejection surfaces as `ok:false` rather than throwing; an
+ordinary `runtime:"isolate"` script is unaffected and still reaches `codeRunner`).
+`tests/unit/internal-scripts-run-durable.test.ts` (5 — the new route's HMAC auth boundary: rejects
+no token, wrong secret, tenant-header/body mismatch, missing `scriptName`; accepts a valid token
+and forwards to the space's agent DO). 1013/1013 tests pass (10 new). `pnpm turbo run typecheck`
+clean (75 tasks).
+
+**Deliberately NOT built this pass:** fine-grained per-statement workflow steps (a script is one
+durable step, not N — decomposing a script into multiple `step.do()` calls would require a new
+authoring primitive the model writes against, which nothing in this pass needed since "durable"
+here means "survives restarts/retries and doesn't hold an isolate open," not "resumable mid-script");
+`workflow.status`'s wiring to `AGENT_SCRIPT_WORKFLOW.get(id).status()` is implemented but not
+exercised by a dedicated test (covered indirectly — the type contract is enforced by `tsc`).

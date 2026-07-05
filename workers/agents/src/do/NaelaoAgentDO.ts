@@ -825,6 +825,11 @@ export interface AgentDOEnv {
   /** Account-level concurrency ceiling (spec §28 ConcurrencyDO) — caps how many sub-agent
    *  spawn trees can be running at once per space, on top of the existing per-spawn 16 cap. */
   CONCURRENCY_DO?: DurableObjectNamespace;
+  /** §A1.17 Phase J — durable dispatch for runtime:"workflow" scripts (ScriptRunWorkflow). */
+  AGENT_SCRIPT_WORKFLOW?: {
+    create(opts: { id?: string; params?: unknown }): Promise<{ id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }> }>;
+    get(id: string): Promise<{ id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }> }>;
+  };
 }
 
 export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
@@ -1292,6 +1297,33 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(this.env.TOOL_SANDBOX ? { toolSandbox: this.env.TOOL_SANDBOX } : {}),
     });
 
+    // §A1.17 Phase J: runtime:"workflow" scripts dispatch here instead of codeRunner —
+    // degrades to an honest "unavailable" (execution-ladder.ts) when AGENT_SCRIPT_WORKFLOW
+    // isn't wired, same precedent as every other optional binding above.
+    if (this.env.AGENT_SCRIPT_WORKFLOW) {
+      const workflowBinding = this.env.AGENT_SCRIPT_WORKFLOW;
+      env.workflowRunner = {
+        start: async (params) => {
+          const instance = await workflowBinding.create({
+            params: {
+              spaceId: params.spaceId,
+              tenantId: params.tenantId,
+              agentId: params.agentId,
+              ...(params.projectId ? { projectId: params.projectId } : {}),
+              scriptName: params.name,
+              params: params.args,
+            },
+          });
+          return { id: instance.id };
+        },
+        status: async (id) => {
+          const instance = await workflowBinding.get(id);
+          const s = await instance.status();
+          return { status: s.status, output: s.output, ...(s.error !== undefined ? { error: String(s.error) } : {}) };
+        },
+      };
+    }
+
     // Wire HITL gateway (spec §10 / CLAUDE.md task #10): polls HITLApprovalDO per space.
     if (this.env.HITL_APPROVAL_DO) {
       const hitlDO = this.env.HITL_APPROVAL_DO;
@@ -1372,13 +1404,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     apiKey: string,
     parentRunId: string,
     parentThreadId?: string,
-    projectId?: string
+    projectId?: string,
+    tools?: ScriptToolSurface
   ): import("../script-engine/types.js").OrchestrationHooks {
-    if (!this.env.NAELAO_AGENT_DO) return {};
-    const agentDO = this.env.NAELAO_AGENT_DO;
+    const hooks: import("../script-engine/types.js").OrchestrationHooks = {};
 
-    return {
-      spawnSubAgent: async (config) => {
+    if (this.env.NAELAO_AGENT_DO) {
+      const agentDO = this.env.NAELAO_AGENT_DO;
+      hooks.spawnSubAgent = async (config) => {
         const rawTasks = Array.isArray((config as { tasks?: unknown[] }).tasks)
           ? ((config as { tasks: Array<Record<string, unknown>> }).tasks)
           : [config];
@@ -1402,17 +1435,79 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         } finally {
           await this.releaseConcurrencySlot(concurrencyKey, parentRunId);
         }
-      },
-      receiveFromSubAgent: this.receiveFromSubAgentImpl.bind(this),
-      terminateSubAgent: this.terminateSubAgentImpl.bind(this),
-
-      sendToSubAgent: async (_id, _task) => {
+      };
+      hooks.receiveFromSubAgent = this.receiveFromSubAgentImpl.bind(this);
+      hooks.terminateSubAgent = this.terminateSubAgentImpl.bind(this);
+      hooks.sendToSubAgent = async (_id, _task) => {
         // Sub-agents in this build run to completion synchronously within agent.spawn — there
         // is no still-running child to message. Fan out additional work via another
         // agent.spawn({ tasks: [...] }) call instead.
         return { ok: false, reason: "sub-agents run synchronously; spawn another batch instead of sending to a running one" };
-      },
-    };
+      };
+    }
+
+    // §A1.17 Phase J: the dynamic-workflow prebuilt's ops. A "workflow" here is not a second
+    // parallel store — it's an ordinary stored script (script.create's own skill library)
+    // tagged metadata.runtime:"workflow", so execution-ladder.ts routes script.run for it to
+    // env.workflowRunner (a durable CF Workflow instance) instead of an isolate. That reuse is
+    // why workflow.create/run just delegate to `tools` rather than a bespoke workflow store.
+    if (tools) {
+      hooks.workflowCreate = async (name, code) => {
+        await tools.create({
+          name,
+          code,
+          metadata: {
+            description: `Durable workflow authored via dynamic-workflow.workflow.create`,
+            domain: "orchestration",
+            requires_tier: 2,
+            runtime: "workflow",
+            origin: "distilled",
+          },
+        });
+        return { id: name };
+      };
+      hooks.workflowRun = async (name, params) => tools.run(name, params);
+      hooks.workflowSchedule = async (name, cron) => {
+        // Reuses the existing scheduled_jobs cron dispatcher (runScheduledJobs /
+        // fireScriptDirectly) rather than a second scheduler — a due fire calls
+        // script.run(name) exactly as any other scheduled script would, and the script's own
+        // runtime:"workflow" tag is what routes that particular fire to a Workflow instance
+        // instead of holding an isolate open for however long it runs.
+        if (!this.env.SPACES_WORKER) return { id: "" };
+        try {
+          const resp = await this.env.SPACES_WORKER.fetch(new Request(
+            `http://spaces-worker/spaces/${spaceId}/scheduled-jobs`,
+            {
+              method: "POST",
+              headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+              body: JSON.stringify({
+                name: `workflow:${name}`,
+                cron_expression: cron,
+                script_name: name,
+                agent_id: agentId,
+                ...(projectId ? { project_id: projectId } : {}),
+              }),
+            }
+          ));
+          if (!resp.ok) return { id: "" };
+          const created = await resp.json<{ id: string }>();
+          return { id: created.id };
+        } catch {
+          return { id: "" };
+        }
+      };
+      hooks.workflowStatus = async (id) => {
+        if (!this.env.AGENT_SCRIPT_WORKFLOW) return { ok: false, reason: "workflow runtime not available" };
+        try {
+          const instance = await this.env.AGENT_SCRIPT_WORKFLOW.get(id);
+          return await instance.status();
+        } catch (err) {
+          return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+        }
+      };
+    }
+
+    return hooks;
   }
 
   private async acquireConcurrencySlot(key: string, holderId: string, limit: number, ttlMs?: number): Promise<{ granted: boolean; active: number; limit?: number; degraded?: boolean }> {
@@ -1683,10 +1778,6 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!engineEnv) {
       return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     }
-    // A sub-agent spawned mid-task inherits the SAME project scoping as its parent — it's
-    // conceptually a subthread of the same project, not a different workspace.
-    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId);
-
     // F14: customer-bot daily spend cap was only enforced in the channel-heartbeat drain path
     // (handleChannelHeartbeat) — a direct /script/run call with the same projectId bypassed it
     // entirely. Apply the identical cap-then-execution-ceiling gate here.
@@ -1754,6 +1845,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
+    // A sub-agent spawned mid-task inherits the SAME project scoping as its parent — it's
+    // conceptually a subthread of the same project, not a different workspace. Built after
+    // `tools` (§A1.17 Phase J's workflow.create/run ops need it to author/re-run stored
+    // scripts) — read lazily at call time, so ordering relative to runScriptLoop is safe.
+    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools);
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
       gateway: {

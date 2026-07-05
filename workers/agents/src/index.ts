@@ -45,6 +45,7 @@ export { BusinessDO } from "./do/BusinessDO.js";
 export { ToolSandboxDO } from "./do/ToolSandboxDO.js";
 export { ConcurrencyDO } from "./do/ConcurrencyDO.js";
 export { AgentTaskWorkflow } from "./workflows/AgentTaskWorkflow.js";
+export { ScriptRunWorkflow } from "./workflows/ScriptRunWorkflow.js";
 
 // ── Env interface ─────────────────────────────────────────────────────────────
 
@@ -706,6 +707,40 @@ app.post("/internal/triggers/fire", async (c) => {
   }
   // The signed token proves the caller legitimately acts for headerTenantId — body.tenantId
   // must be the same tenant, never a caller-chosen value the token doesn't actually cover.
+  if (body.tenantId !== headerTenantId) {
+    return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
+  }
+  const doResp = await fireScriptDirectly(c.env, body, c.get("requestId"));
+  const doBody = await doResp.json<unknown>();
+  return c.json(doBody, doResp.status as 200 | 400 | 404 | 500 | 503);
+});
+
+// ── POST /internal/scripts/run-durable — ScriptRunWorkflow's execute-script step target ───
+// §A1.17 Phase J: a runtime:"workflow" script dispatches to a CF Workflow instance
+// (script-engine/types.ts WorkflowRunner, wired in NaelaoAgentDO.buildScriptEngineEnv), which
+// calls back here from inside its one durable step. Identical shape and identical
+// HMAC-verified-token gate to /internal/triggers/fire above (same trust model: this runs the
+// named script DIRECTLY via ScriptToolSurface, no reasoner) — kept as its own route rather than
+// reused because its caller (a Workflow instance, not SpaceDO) is a structurally different
+// population worth being able to audit/rate-limit separately later.
+app.post("/internal/scripts/run-durable", async (c) => {
+  const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const validToken = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
+  if (!headerTenantId || !validToken) {
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  }
+  interface RunDurableBody {
+    spaceId: string;
+    tenantId: string;
+    agentId?: string;
+    projectId?: string;
+    scriptName: string;
+    params?: Record<string, unknown>;
+  }
+  const body = await c.req.json<RunDurableBody>().catch(() => null);
+  if (!body?.spaceId || !body.tenantId || !body.scriptName) {
+    return c.json({ error_code: "bad_request", message: "spaceId, tenantId, and scriptName are required" }, 400);
+  }
   if (body.tenantId !== headerTenantId) {
     return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
   }

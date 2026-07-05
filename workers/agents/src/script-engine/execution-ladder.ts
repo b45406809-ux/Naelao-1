@@ -52,6 +52,47 @@ export async function runStoredScript(
     };
   }
 
+  // §A1.17 Phase J: a script tagged runtime:"workflow" dispatches to a durable CF Workflow
+  // instance instead of running synchronously here — for long-running/cron automations that
+  // must survive restarts or run for hours/days without holding an isolate or this DO awake.
+  // Orthogonal to tier (which still governs what the eventual execution may do).
+  if (script.metadata.runtime === "workflow") {
+    if (!env.workflowRunner) {
+      return {
+        ok: false,
+        error: `Script '${script.metadata.name}' is marked runtime:"workflow" but no workflow runner is wired in this environment`,
+        tier,
+        duration_ms: Date.now() - started,
+        tokens_used: 0,
+      };
+    }
+    try {
+      const { id } = await env.workflowRunner.start({
+        name: script.metadata.name,
+        args,
+        spaceId: env.spaceId,
+        agentId: env.agentId,
+        tenantId: env.tenantId,
+        ...(env.projectId ? { projectId: env.projectId } : {}),
+      });
+      return {
+        ok: true,
+        output: { workflow_id: id, status: "started" },
+        tier,
+        duration_ms: Date.now() - started,
+        tokens_used: 0,
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        tier,
+        duration_ms: Date.now() - started,
+        tokens_used: 0,
+      };
+    }
+  }
+
   // Tiers 2-5: delegate to the injected runner.
   if (!env.codeRunner) {
     return {

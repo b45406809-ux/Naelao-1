@@ -16,4 +16,9 @@ export interface Env {
   AGENTS_WORKER: Fetcher;
   AGENT_CACHE: KVNamespace;
   AGENT_TASK_WORKFLOW: { create(opts: { id?: string; params?: unknown }): Promise<void> };
+  /** §A1.17 Phase J — durable dispatch for runtime:"workflow" scripts (ScriptRunWorkflow). */
+  AGENT_SCRIPT_WORKFLOW?: {
+    create(opts: { id?: string; params?: unknown }): Promise<{ id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }> }>;
+    get(id: string): Promise<{ id: string; status(): Promise<{ status: string; output?: unknown; error?: unknown }> }>;
+  };
 }

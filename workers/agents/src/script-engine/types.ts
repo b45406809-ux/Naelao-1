@@ -77,6 +77,15 @@ export interface ScriptMetadata {
   // Dependencies (skill graph)
   calls: string[];
   requires_tier: ExecutionTier;
+  /**
+   * §A1.17 Phase J: "isolate" (default) executes synchronously in the Tier 2-5 runner and
+   * blocks the calling script.run for the result. "workflow" dispatches to a durable CF
+   * Workflow instance instead (step retries, survives restarts, can run for hours/days) and
+   * returns immediately with a workflow id to poll — for long-running/cron automations that
+   * must not hold an isolate or a DO awake the whole time. Orthogonal to requires_tier (which
+   * still governs what the eventual execution is allowed to do).
+   */
+  runtime?: "isolate" | "workflow";
 
   // Required credentials (resolved via credentials worker before L1 execution; A1.1)
   required_credentials?: string[];
@@ -206,6 +215,26 @@ export interface OrchestrationHooks {
   workflowStatus?(id: string): Promise<unknown>;
 }
 
+/**
+ * §A1.17 Phase J — dispatches a stored script tagged `metadata.runtime === "workflow"` to a
+ * durable CF Workflow instance instead of running it synchronously in an isolate. The runner
+ * re-resolves the script BY NAME inside the workflow step (the same path a trigger fire or
+ * scheduled job already uses — see `fireScriptDirectly`/`agent-do/triggers/fire`), so it never
+ * needs to carry code through workflow instance params and a script edited between schedule and
+ * fire is picked up automatically, matching the skill library's own versioning semantics.
+ */
+export interface WorkflowRunner {
+  start(params: {
+    name: string;
+    args: Record<string, unknown>;
+    spaceId: string;
+    agentId: string;
+    tenantId: string;
+    projectId?: string;
+  }): Promise<{ id: string }>;
+  status(id: string): Promise<{ status: string; output?: unknown; error?: string }>;
+}
+
 // ── Memory OS (spec "Space Assistants — OpenClaw + CF Thinker + Memory OS", byte ~141822) ──
 // Layer 3 (Structured Facts) + Layer 5 (Vector DB) of the 6-layer pipeline, implemented as
 // NaelaoAgentDO SQLite + Vectorize and injected here the same way codeRunner/hitlGateway are.
@@ -328,6 +357,9 @@ export interface ScriptEngineEnv {
   embedder?: Embedder;
   /** Runner for stored-code tiers (T2-T5). Optional — T1 always works without it. */
   codeRunner?: TieredCodeRunner;
+  /** Dispatches `runtime:"workflow"` scripts to a durable CF Workflow. Optional — such scripts
+   *  fail closed with an honest "unavailable" when absent, same precedent as codeRunner. */
+  workflowRunner?: WorkflowRunner;
   /** Service bindings used by prebuilt scripts. */
   knowledgeWorker?: Fetcher;
   spacesWorker?: Fetcher;
