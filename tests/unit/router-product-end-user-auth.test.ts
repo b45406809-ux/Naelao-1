@@ -249,6 +249,28 @@ describe("router — product end-user hybrid auth", () => {
     expect(res.status).toBe(401);
   });
 
+  // Phase N (§A1.17) added the manifest-driven operator-shell routes (Revenue/Orders/Products) —
+  // same "identity, not authorization" split as pricing above; requireBusinessMembership on the
+  // spaces worker does the actual per-business check.
+  it("a valid nps_ session CAN reach the allowlisted products/orders/revenue paths", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "biz-tenant-1" }));
+    for (const path of [
+      "/spaces/biz-1/products",
+      "/spaces/biz-1/products/prod-1",
+      "/spaces/biz-1/orders",
+      "/spaces/biz-1/revenue",
+    ]) {
+      const res = await routerWorker.fetch(
+        new Request(`https://router.naelao.com/v1${path}`, {
+          method: "GET",
+          headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
+        }),
+        env as never, execCtx
+      );
+      expect(res.status).toBe(200);
+    }
+  });
+
   it("an ordinary platform JWT still works on the same allowlisted path — unchanged for Team collaborators", async () => {
     const env = makeEnv(makeSpacesStub({ validSession: true }));
     const token = await signJwt({ sub: "user-1", tid: "tenant-1", email: "u@example.com", role: "owner", scopes: [] }, JWT_SECRET);

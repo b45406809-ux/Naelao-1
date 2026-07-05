@@ -272,6 +272,12 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/pricing$/,
   /^\/spaces\/([^/]+)\/business-subscription\/checkout$/,
   /^\/spaces\/([^/]+)\/credit-packs\/checkout$/,
+  // Phase N (§A1.17): the manifest-driven operator-shell view (Revenue/Orders/Products) for a
+  // business owner operating their OWN Launchpad business — additionally gated by
+  // requireBusinessMembership on the spaces worker exactly like the pricing routes above.
+  /^\/spaces\/([^/]+)\/products(\/[^/]+)?$/,
+  /^\/spaces\/([^/]+)\/orders$/,
+  /^\/spaces\/([^/]+)\/revenue$/,
 ];
 
 /** Resolve productId from the path if it matches an end-user-reachable route pattern. Strips the

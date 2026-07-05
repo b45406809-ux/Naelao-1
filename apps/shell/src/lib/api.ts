@@ -387,3 +387,74 @@ export async function checkoutCreditPack(
     session,
   });
 }
+
+// ── Business operations (Phase N — manifest-driven operator shell) ─────────────────────────
+// The Revenue/Orders/Products views a business owner sees when operating their OWN Launchpad
+// business, sourced from the SAME commerce backend the builder dashboard's legacy commerce page
+// uses. Only reachable on a business whose SpaceType manifest offers `commerce` (shell/manifest's
+// `ui.sidebar_items` includes "products"/"orders"/"revenue" — the page checks this before calling).
+
+export interface LaunchpadProduct {
+  id: string;
+  name: string;
+  description: string;
+  price_cents: number;
+  currency: string;
+  kind: "one_time" | "subscription";
+  status: "draft" | "published" | "archived";
+  ls_variant_id: string | null;
+  created_at: string;
+}
+
+export interface LaunchpadOrder {
+  id: string;
+  product_id: string | null;
+  product_name: string | null;
+  customer_email: string | null;
+  gross_cents: number;
+  fee_cents: number;
+  net_cents: number;
+  currency: string;
+  status: "paid" | "fulfilling" | "fulfilled" | "refunded" | "failed";
+  created_at: string;
+}
+
+export interface RevenueSummary {
+  period: string;
+  currency: string;
+  gross_cents: number;
+  fee_cents: number;
+  net_cents: number;
+  orders: number;
+}
+
+export async function listBusinessProducts(spaceId: string, session: SessionCredentials): Promise<LaunchpadProduct[]> {
+  const res = await apiFetch<{ data: LaunchpadProduct[] }>(`/v1/spaces/${spaceId}/products`, { session });
+  return res.data;
+}
+
+export async function createBusinessProduct(
+  spaceId: string,
+  session: SessionCredentials,
+  input: { name: string; description?: string; price_cents?: number; kind?: "one_time" | "subscription" }
+): Promise<{ id: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/products`, { method: "POST", body: JSON.stringify(input), session });
+}
+
+export async function updateBusinessProduct(
+  spaceId: string,
+  productId: string,
+  session: SessionCredentials,
+  patch: { status?: "draft" | "published" | "archived" }
+): Promise<{ id: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/products/${productId}`, { method: "PATCH", body: JSON.stringify(patch), session });
+}
+
+export async function listBusinessOrders(spaceId: string, session: SessionCredentials): Promise<LaunchpadOrder[]> {
+  const res = await apiFetch<{ data: LaunchpadOrder[] }>(`/v1/spaces/${spaceId}/orders`, { session });
+  return res.data;
+}
+
+export async function getBusinessRevenue(spaceId: string, session: SessionCredentials): Promise<RevenueSummary> {
+  return apiFetch(`/v1/spaces/${spaceId}/revenue`, { session });
+}

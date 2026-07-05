@@ -786,6 +786,32 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     space-scoped fallback, no-R2-bound skip, plus 3 addressing tests). `pnpm turbo run typecheck`
     clean (75 tasks). Next: Phase N (Launchpad operator-shell UI + cleanup) — full roadmap
     including Phases L/M in the session's plan file.
+35. **Phase N (Launchpad completeness) investigated all 5 remaining gaps (G-4a-e); 2 were real and
+    got BUILT, 1 needed no work (already true), 2 were investigated and explicitly deferred — not
+    silently dropped.** G-4a: `ui.operatorShell`'s sidebar (Revenue/Orders/Customers/Products/
+    Campaigns/Agents) is rendered as an ADDITIONAL "Business Operations" section on `apps/shell`'s
+    business detail page (not a shell-hiding takeover — the Phase 6 scope correction that the rich
+    chat/threads/projects shell always ships stands) — Revenue/Products(+create/publish/archive)/
+    Orders wired to the already-built `launchpad_products`/`launchpad_orders` commerce backend,
+    gated on `shell/manifest` actually advertising a `"revenue"` sidebar item. Customers/Campaigns
+    have no backing data model anywhere in the platform — left unbuilt rather than faked (matches
+    Phase 3's `credits_consumed: null` precedent); Agents needed no new UI (already the shell's
+    Phase C Agents view). New routes' authorization follows the Phase E pricing precedent exactly:
+    `requireBusinessMembership({GET:"member"})` on the spaces worker + router allowlist entries,
+    identity-only at the router, real per-business check via `resolveEndUserBusinessRole`. G-4b:
+    `launchpad-manifest.ts`'s `externalPortal.deploymentType` said `"dynamic-worker"`, a leftover
+    the A1.9 appendix already corrected in prose ("one multitenant surface... CF Pages static shell
+    fronted by the portal Worker") but never in the actual manifest data — now `"cf-pages"`. G-4c
+    (Autopilot CRM/analytics via Whop MCP): verified complete, no new work — Phases F+I already
+    delivered exactly what this gap needed. G-4d (retire legacy `launchpad/manifest.ts`+`whop/*`+
+    `BusinessDO`): investigated, explicitly DEFERRED — this is NOT dead code, it backs ~50+ passing
+    tests (`whop-tool-lifecycle`, `whop-catalog-access`, `whop-onboarding-guard`, and more) as a
+    still-live parallel runtime; decomposing it is a genuine cross-cutting migration deserving its
+    own dedicated pass, not a "completeness polish" line item. G-4e (team-collaborator listing +
+    Product Shell completeness): verified already done by Phases A-C, nothing left to build.
+    1028/1028 tests pass (5 new), `pnpm turbo run typecheck` clean (75 tasks), `apps/shell`
+    verified via `next build`. Remaining: Phase L (Container Marketplace, large) and M
+    (local-machine-as-container + Cowork Desktop, largest) — full detail in the session's plan file.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

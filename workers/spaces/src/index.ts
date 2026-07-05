@@ -1015,6 +1015,15 @@ async function loadCommerceContext(
   return { ok: true, tenantId, commerce: pc.commerce };
 }
 
+// Phase N (§A1.17): a business owner (product_end_user) operating their OWN Launchpad business
+// can view/manage its commerce data through the manifest-driven operator-shell view — any active
+// member may view (GET), mutating the catalog needs admin+ (the requireBusinessMembership
+// default for unlisted methods). Every other caller (builder JWT) is unaffected.
+app.use("/spaces/:spaceId/products", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/products/:id", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/orders", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/revenue", requireBusinessMembership({ GET: "member" }));
+
 // GET /spaces/:spaceId/products
 app.get("/spaces/:spaceId/products", async (c) => {
   const spaceId = c.req.param("spaceId");

@@ -13,10 +13,19 @@ import {
   getPricing,
   checkoutBusinessSubscription,
   checkoutCreditPack,
+  getShellManifest,
+  listBusinessProducts,
+  createBusinessProduct,
+  updateBusinessProduct,
+  listBusinessOrders,
+  getBusinessRevenue,
   type BusinessMember,
   type Business,
   type PricingPlan,
   type CreditPack,
+  type LaunchpadProduct,
+  type LaunchpadOrder,
+  type RevenueSummary,
 } from "@/lib/api";
 
 function centsToDisplay(cents: number): string {
@@ -39,6 +48,16 @@ export default function BusinessDetailPage() {
   const [plans, setPlans] = React.useState<PricingPlan[]>([]);
   const [creditPacks, setCreditPacks] = React.useState<CreditPack[]>([]);
   const [checkingOut, setCheckingOut] = React.useState<string | null>(null);
+  // Phase N: the manifest-driven operator shell (Revenue/Orders/Products) — only offered when
+  // this business's own SpaceType manifest actually advertises commerce sidebar items, so a
+  // non-Launchpad (future) SpaceType's business doesn't show an irrelevant, empty section.
+  const [hasCommerce, setHasCommerce] = React.useState(false);
+  const [revenue, setRevenue] = React.useState<RevenueSummary | null>(null);
+  const [orders, setOrders] = React.useState<LaunchpadOrder[]>([]);
+  const [products, setProducts] = React.useState<LaunchpadProduct[]>([]);
+  const [newProductName, setNewProductName] = React.useState("");
+  const [newProductPrice, setNewProductPrice] = React.useState("");
+  const [creatingProduct, setCreatingProduct] = React.useState(false);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -46,15 +65,28 @@ export default function BusinessDetailPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      const [mine, mem, pricing] = await Promise.all([
+      const [mine, mem, pricing, manifest] = await Promise.all([
         listMyBusinesses(product.space_id, creds),
         listBusinessMembers(params.businessId, creds),
         getPricing(params.businessId, creds).catch(() => ({ plans: [], credit_packs: [] })),
+        getShellManifest(params.businessId, creds).catch(() => null),
       ]);
       setBusiness(mine.find((b) => b.id === params.businessId) ?? null);
       setMembers(mem);
       setPlans(pricing.plans);
       setCreditPacks(pricing.credit_packs);
+      const commerce = manifest?.ui.sidebar_items.some((item) => item.id === "revenue") ?? false;
+      setHasCommerce(commerce);
+      if (commerce) {
+        const [rev, ord, prod] = await Promise.all([
+          getBusinessRevenue(params.businessId, creds).catch(() => null),
+          listBusinessOrders(params.businessId, creds).catch(() => []),
+          listBusinessProducts(params.businessId, creds).catch(() => []),
+        ]);
+        setRevenue(rev);
+        setOrders(ord);
+        setProducts(prod);
+      }
     } catch {
       show("Couldn't load this business — you may not be a member");
     } finally {
@@ -89,6 +121,35 @@ export default function BusinessDetailPage() {
       await refresh();
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to remove member");
+    }
+  }
+
+  async function handleCreateProduct(e: React.FormEvent) {
+    e.preventDefault();
+    if (!creds || !newProductName.trim()) return;
+    setCreatingProduct(true);
+    try {
+      const priceCents = Math.round(parseFloat(newProductPrice || "0") * 100) || 0;
+      await createBusinessProduct(params.businessId, creds, { name: newProductName.trim(), price_cents: priceCents });
+      setNewProductName("");
+      setNewProductPrice("");
+      await refresh();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to create product");
+    } finally {
+      setCreatingProduct(false);
+    }
+  }
+
+  async function handleTogglePublish(prod: LaunchpadProduct) {
+    if (!creds) return;
+    try {
+      await updateBusinessProduct(params.businessId, prod.id, creds, {
+        status: prod.status === "published" ? "archived" : "published",
+      });
+      await refresh();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to update product");
     }
   }
 
@@ -157,6 +218,84 @@ export default function BusinessDetailPage() {
           </div>
         ))}
       </div>
+
+      {hasCommerce && (
+        <>
+          <div className="section-label">Revenue</div>
+          <div className="settings-block">
+            <div className="settings-row">
+              <div>
+                <div className="settings-row-label">This month ({revenue?.period ?? "—"})</div>
+                <div className="settings-row-sub">{revenue?.orders ?? 0} orders</div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div className="settings-row-label">{revenue ? centsToDisplay(revenue.net_cents) : "—"} net</div>
+                <div className="settings-row-sub">
+                  {revenue ? `${centsToDisplay(revenue.gross_cents)} gross · ${centsToDisplay(revenue.fee_cents)} platform fee` : ""}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="section-label">Products</div>
+          <div className="settings-block">
+            {products.length === 0 && <div className="settings-row-sub" style={{ padding: 12 }}>No products yet.</div>}
+            {products.map((p) => (
+              <div className="settings-row" key={p.id}>
+                <div>
+                  <div className="settings-row-label">{p.name}</div>
+                  <div className="settings-row-sub">
+                    {centsToDisplay(p.price_cents)} · {p.kind} · <Badge color={p.status === "published" ? "green" : p.status === "archived" ? "blue" : "amber"}>{p.status}</Badge>
+                  </div>
+                </div>
+                {canManage && p.status !== "archived" && (
+                  <button className="btn btn-secondary" type="button" onClick={() => handleTogglePublish(p)}>
+                    {p.status === "published" ? "Unpublish" : "Publish"}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          {canManage && (
+            <form onSubmit={handleCreateProduct} style={{ display: "flex", gap: 8, marginBottom: 20 }}>
+              <FormInput placeholder="Product name" value={newProductName} onChange={(e) => setNewProductName(e.target.value)} required />
+              <FormInput
+                placeholder="Price (USD)"
+                type="number"
+                min="0"
+                step="0.01"
+                value={newProductPrice}
+                onChange={(e) => setNewProductPrice(e.target.value)}
+                style={{ maxWidth: 140 }}
+              />
+              <Button type="submit" disabled={creatingProduct || !newProductName.trim()}>
+                {creatingProduct ? "Adding…" : "Add product"}
+              </Button>
+            </form>
+          )}
+
+          <div className="section-label">Orders</div>
+          <div className="settings-block">
+            {orders.length === 0 && <div className="settings-row-sub" style={{ padding: 12 }}>No orders yet.</div>}
+            {orders.map((o) => (
+              <div className="settings-row" key={o.id}>
+                <div>
+                  <div className="settings-row-label">{o.product_name ?? "Unknown product"}</div>
+                  <div className="settings-row-sub">
+                    {o.customer_email ?? "unknown customer"} · {new Date(o.created_at).toLocaleDateString()}
+                  </div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div className="settings-row-label">{centsToDisplay(o.net_cents)}</div>
+                  <Badge color={o.status === "fulfilled" || o.status === "paid" ? "green" : o.status === "refunded" || o.status === "failed" ? "red" : "amber"}>
+                    {o.status}
+                  </Badge>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       {plans.length > 0 && (
         <>

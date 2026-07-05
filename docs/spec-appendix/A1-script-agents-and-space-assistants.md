@@ -3706,3 +3706,85 @@ re-fetches the full bounded file set rather than caching what a warm container a
 real optimization opportunity, but correctness-first for a first pass); multi-container-per-project
 and a container marketplace (postgres/redis/ffmpeg/etc. slots) — that's the separate, much larger
 Phase L.
+
+### Phase N — Launchpad completeness: operator-shell UI (G-4a/b), rest investigated and scoped
+
+**Goal:** close the remaining Launchpad-specific spec gaps (G-4a through G-4e) identified when
+Phase 6's manifest work first surfaced that `ui.operatorShell`/`ui.externalPortal` are fully typed
+and fully populated for Launchpad but nothing renders/uses them. Investigated all five before
+touching anything (per this session's standing "reuse, don't reinvent — investigate first"
+practice); two were real and tractable this pass, three were investigated and are documented below
+as deliberate scope decisions rather than silently dropped.
+
+**G-4a — operator-shell UI, built as an addition to the business detail view, not a shell-hiding
+takeover.** Re-confirmed the mid-Phase-6 scope correction (CLAUDE.md #30): the rich agentic shell
+(chat/threads/projects) ships to every business regardless of `hiddenCoreItems`, so the
+`operatorShell.sidebarItems` (Revenue/Orders/Customers/Products/Campaigns/Agents) are rendered as
+an ADDITIONAL "Business Operations" section on `apps/shell`'s existing business detail page
+(`.../spaces/[businessId]/page.tsx`), gated on that business's own `shell/manifest` actually
+advertising a `"revenue"` sidebar item (so a future non-commerce SpaceType's business shows
+nothing extra). Built Revenue (the existing month-to-date gross/fee/net rollup), Products (list +
+create + publish/unpublish/archive toggle, member can view, admin+ can mutate), and Orders
+(read-only list) — all wired to the ALREADY-BUILT `launchpad_products`/`launchpad_orders` commerce
+backend (`loadCommerceContext`, A1.9) with zero backend logic changes beyond authorization (below).
+"Customers" and "Campaigns" sidebar items have no backing data model anywhere in the platform
+(commerce's schema is products+orders+business_services only) — deliberately NOT stubbed with fake
+data (matches this session's own "credits_consumed: null, flagged rather than fabricated"
+precedent from Phase 3); "Agents" is already covered by the shell's existing Agents view from
+Phase C, so it needed no new UI. New `apps/shell/src/lib/api.ts` functions:
+`listBusinessProducts/createBusinessProduct/updateBusinessProduct/listBusinessOrders/
+getBusinessRevenue`.
+
+**Authorization for the new routes** follows the Phase E pricing-route precedent exactly:
+`/spaces/:spaceId/products(/:id)?`, `/orders`, `/revenue` gained `requireBusinessMembership({GET:
+"member"})` on the spaces worker (mutations fall through to the default "admin" floor) and were
+added to the router's `PRODUCT_END_USER_PATH_PATTERNS` allowlist — identity-only at the router,
+real per-business authorization via `resolveEndUserBusinessRole` at the spaces worker, same split
+every other entry in that allowlist documents. `loadCommerceContext`'s own tenant-scoped ownership
+check is untouched and still what every builder-role caller relies on.
+
+**G-4b — manifest `deploymentType` typo fixed.** `launchpad-manifest.ts`'s `externalPortal.
+deploymentType` said `"dynamic-worker"`, a leftover from the framing A1.9 explicitly corrected
+("Storefront = one multitenant surface, not a Worker-per-tenant... a CF Pages static shell fronted
+by the portal Worker as fallback origin"). Now `"cf-pages"`, matching the settled, BUILT
+architecture (CLAUDE.md #16) — this is metadata only (nothing currently branches on this field's
+value), so the fix is a pure correctness cleanup, not a behavior change.
+
+**G-4c — Autopilot CRM/analytics: verified complete, no new work needed.** The plan predicted this
+would "become end-to-end once the Whop MCP is live (Phase I + F)." Both landed in this session
+(Phase F: Whop live/coming-soon rollout; Phase I: `ctx.mcp` + the fulfillment agent's rewritten
+system prompt onto `mcp-connector`/`ctx.mcp` language, from item 28/CLAUDE.md). Nothing left to
+build — the prediction was correct and is now simply true.
+
+**G-4d — legacy `workers/agents/src/launchpad/manifest.ts` + `whop/*` + `BusinessDO` retirement:
+investigated, explicitly DEFERRED, not attempted.** Traced actual usage before deciding: `BusinessDO`
+and the `whop/*` subsystem are still live, tested code paths — exported from `workers/agents/src/
+index.ts`, backing ~50+ passing tests across `whop-tool-lifecycle`, `whop-catalog-access`,
+`whop-onboarding-guard`, `whop-skills`, `connector-whop-shim`, `integration/whop-end-to-end`, and
+more. This is NOT dead code masquerading as legacy — it is a parallel, still-exercised runtime.
+Decomposing it (agent loop → `NaelaoAgentDO`, structure → `SpaceDO`, script engine → the reusable
+behavior module, per CLAUDE.md's standing direction) is a genuine multi-file, cross-cutting
+migration that would need to preserve or intentionally retire each of those ~50 tests one at a
+time — the "cleanup" framing in the original plan undersold this as a small pass; it is not one.
+Attempting it inside Phase N would have risked a rushed, partially-verified rewrite of a whole
+subsystem for a phase framed as "completeness polish." Left for its own dedicated pass, exactly
+like Phase L/M's own explicit "large, later" framing in this roadmap.
+
+**G-4e — team-collaborator listing + Product Shell completeness: verified already done.**
+Re-checked against the actual state after Phases A-C: `space_members` listing exists (the
+credential-hierarchy and `GET/DELETE /spaces/:id/members*` work predates this roadmap), and the
+end-user Product Shell (threads, sub-spaces via businesses, knowledge base) is what Phases A-C
+built in full. The plan's own wording ("largely Phases A-C") already anticipated this — confirmed
+here rather than re-built.
+
+**Tests:** `tests/unit/business-commerce-membership.test.ts` (4 — new: a product_end_user can view
+products/orders/revenue as a business member; can create but not publish a product (admin floor);
+a builder role is unaffected; a non-member of a business is rejected entirely). Extended
+`tests/unit/router-product-end-user-auth.test.ts` (+1 — the three new paths are allowlisted).
+1028/1028 tests pass (5 new). `pnpm turbo run typecheck` clean (75 tasks); `apps/shell` verified
+via `next build` (compiles, all routes generate including the extended business detail page).
+
+**Deliberately NOT built this pass:** Customers/Campaigns operator-shell views (no backing data
+model — see G-4a); G-4d's legacy retirement (see above, its own dedicated pass); a Customers/
+Campaigns data model itself (out of scope — nothing in the spec's gap list calls for one beyond
+the sidebar label, and inventing one would be scope creep beyond "render what already exists").

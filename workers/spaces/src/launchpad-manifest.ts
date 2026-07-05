@@ -63,7 +63,11 @@ export const LAUNCHPAD_MANIFEST: NaelaoSpaceTypeManifestV2 = {
     },
     externalPortal: {
       enabled: true,
-      deploymentType: "dynamic-worker",
+      // §A1.17 Phase N (G-4b): corrected from the early "dynamic-worker" wording — the settled,
+      // built architecture (A1.9) is a CF Pages static shell fronted by the portal Worker as
+      // CF-for-SaaS fallback origin, routing by Host header. One multitenant surface, not a
+      // Worker-per-tenant.
+      deploymentType: "cf-pages",
       templateId: "launchpad-storefront",
       defaultSlug: "shop",
       customDomain: true,
