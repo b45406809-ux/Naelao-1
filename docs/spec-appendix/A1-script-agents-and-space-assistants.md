@@ -3861,3 +3861,104 @@ be worse UX than no page; build it alongside the first live image); per-slot bil
 placeholder this will read from). Phase M (local-machine-as-container + Cowork Desktop) remains
 the one open item in this roadmap, and needs a native client app outside this repo before its
 server-side half has anything to talk to.
+
+### Phase M — Local-machine-as-container (spec gap G-3) is BUILT end-to-end, including a real
+### reference client. Scoped to exactly "local machine as a Tier 5c target" per user direction —
+### the "Cowork Desktop" cloud-container profile named alongside it in the original roadmap sketch
+### was explicitly excluded ("cowork is an example of what it's like to have an agent access your
+### PC", not a feature to build) and is NOT part of this pass.
+
+**Goal:** let a builder opt their OWN machine in as a grant-checked execution target — the agent
+can read/write files or run an allowlisted command on real hardware Naelao doesn't own, with every
+request checked against an explicit, revocable grant BEFORE it ever reaches that machine. Unlike
+Phase L (where the mechanism shipped ahead of any real image), this phase ships completely real:
+the permission model, the tunnel, the prebuilt, AND a working reference client — there is no
+"coming soon" flag here, someone can run this today.
+
+**M1 — the permission model (`local_grants`, SpaceDO migration v21).** A grant is
+`{ user_id, grant_type: read|write|readwrite|exec, directory?, commands? }`, optionally
+`project_id`-scoped (null = space-wide, usable by the Space Assistant). No grant exists by
+default. `user_id` is NEVER a client-supplied field — `POST /spaces/:spaceId/local-grants`
+(spaces worker, `requireInternalHmac`, builder-only) always derives it from the verified caller's
+own identity, so a builder can only grant access to their OWN machine, never name someone else's
+(tested explicitly). Business-rule validation (grant shape, directory-required vs
+commands-required) lives in the worker; SpaceDO is dumb CRUD plus an independent 25-grant hard
+ceiling per space (defense in depth, same precedent as Phase L's slot ceiling).
+
+**M2 — the connect token.** `POST /spaces/:spaceId/local-tunnel/connect-token` mints a
+short-lived (5 minute) HMAC token scoped to exactly `(spaceId, callerUserId)`. New
+`mintLocalTunnelToken`/`verifyLocalTunnelToken` (`packages/http`) use a DELIBERATELY separate HMAC
+payload namespace (`"local-tunnel:"`) from `mintInternalToken`/`verifyInternalToken`'s
+(`"internal:"`) — a worker-to-worker token can never be replayed as a tunnel-connect credential
+and vice versa, even though both are signed with the same `PLATFORM_SECRET` (tested explicitly, in
+both directions). 5 minutes (not the internal token's 60 seconds) because a human has to copy the
+token into a CLI invocation rather than it being minted and consumed within the same request.
+
+**M3 — `LocalTunnelDO` (agents worker, new `LOCAL_TUNNEL` binding, migration v7).** One instance
+per `(spaceId, userId)`, using the CF Hibernation API (`ctx.acceptWebSocket`) — the exact same
+pattern `workers/ws-gateway`'s `WsHubDO` already established, so the DO can sleep between requests.
+`GET /local-tunnel/connect?space=&user=&token=` (agents worker, deliberately unauthenticated at the
+Hono layer — the caller is a native client on someone's own machine, not a browser session with a
+JWT to check; `verifyLocalTunnelToken` inside the DO is the actual gate) upgrades to a WebSocket.
+`POST /exec` on the DO correlates a request to its eventual WS response via an in-memory pending
+map with a 30-second timeout; a clean disconnect resolves any still-pending calls immediately with
+an honest "the Local Agent disconnected" rather than making the caller wait out the full timeout.
+This DO's own test coverage is bounded exactly where `WsHubDO`'s already is: the test harness stubs
+`cloudflare:workers` for plain-Node vitest and explicitly does not instantiate DOs that touch
+`WebSocketPair`/`ctx.acceptWebSocket` (real CF runtime primitives with no Node polyfill in this
+suite) — verified by typecheck + code review, matching the codebase's own established boundary for
+CF-native primitives, not a gap unique to this phase.
+
+**M4 — the `local-machine` prebuilt (`local.read_file`/`write_file`/`exec`/`status`), the actual
+safety layer.** Grant-checks BEFORE ever touching `env.localTunnel`: loads the space's active
+grants (spaces worker), normalizes the requested path (collapses `.`/`..` segments server-side so
+traversal can't bypass a directory check), and requires TRUE path-segment containment — not a
+naive string prefix, which `/home/alice/allowed-evil` would incorrectly satisfy against a grant
+for `/home/alice/allowed` (tested explicitly). `exec` requires an EXACT command match against the
+grant's allowlist, not a prefix, so `npm test && rm -rf /` cannot ride in under an allowed
+`npm test` (tested explicitly). The MATCHING grant's own `user_id` addresses which tunnel to use —
+there is no separate "which machine" parameter for a script to get wrong or spoof. A
+project-scoped grant never applies to a different project's run (tested); a space-wide grant
+(`project_id` null) applies to any run including the Space Assistant's. A denied request never
+reaches `LocalTunnelDO` at all (asserted in every denial test). `env.localTunnel` (new
+`ScriptEngineEnv` field, `LocalTunnelGateway`) is wired in `NaelaoAgentDO.buildScriptEngineEnv`
+exactly like `lockGateway`/`hitlGateway` — a thin per-call DO-stub resolver, addressed
+`local-tunnel:{spaceId}:{userId}`.
+
+**M5 — the Naelao Local Agent reference client** (`workers/agents/local-agent/
+naelao-local-agent.mjs` + README) — the piece every prior phase in this platform has deferred as
+"needs a native client app outside this repo." This ships one INSIDE the repo instead: a small,
+dependency-free Node 22+ script (global `WebSocket`, no npm deps) that connects to
+`/local-tunnel/connect`, relays `read_file`/`write_file`/`exec` requests to the real filesystem/
+shell, and replies over the same socket. Optional `--allow-dir`/`--allow-command` flags are a
+SECOND, independent check that runs on the machine itself — defaults to trusting the server's
+already-passed grant check, but lets a cautious operator narrow what one particular client run
+will do even if the space's grants are broader. On any disconnect the client exits rather than
+silently retrying with what is likely a now-expired 5-minute token — it must be re-launched with a
+freshly minted one, matching the "revoke takes effect on the next request" model M1 established.
+Its pure logic (`normalizePath`, `isWithinAny`, `isAllowedCommand`, `handleRequest`) is unit
+tested directly, including a real temp-directory read/write round trip and a real `exec` call —
+this is graded as "actually works," not just "typechecks."
+
+**Tests:** `tests/unit/local-tunnel-token.test.ts` (7 — mint/verify round trip, cross-space and
+cross-user rejection, wrong secret, missing token, expiry, and the internal-token/tunnel-token
+cross-family replay rejection). `tests/unit/local-grants.test.ts` (9 — grant-shape validation,
+user_id always from caller identity never the request body, CRUD, the 25-grant ceiling, the
+`requireInternalHmac` floor, connect-token mint + verify). `tests/unit/local-machine-prebuilt.test.ts`
+(14 — every grant-type combination, path-prefix vs true-containment, `..` traversal, exact-match
+exec, project-scoping both ways, fail-closed with no tunnel wired, a tunnel-reported error
+surfaced honestly, status reporting). `tests/unit/local-agent-client.test.ts` (9 — the CLI-entry
+guard, the pure helpers, and a real filesystem/exec round trip). 1076/1076 tests pass (39 new),
+`pnpm turbo run typecheck` clean (75 tasks).
+
+**Deliberately NOT built this pass (per explicit user direction, not a shortfall):** the "Cowork
+Desktop" cloud-container profile (`cowork-desktop` `AgentConfig`/`ubuntu-desktop` image) named
+alongside Phase M in the original roadmap sketch — the user clarified Cowork was only an
+illustrative example of "what it's like to have an agent access your PC," not a feature request.
+Also not built: a shell/dashboard UI for managing grants (today it's API-only, like several other
+phases before their UI pass); the client reconnecting automatically with a refreshed token (it
+exits and must be re-launched — an automatic refresh would need a way to mint a new token without
+another API call the client isn't authenticated to make, a real design question left open); a
+non-Node reference client (the protocol is documented in the README specifically so this is
+portable). With Phase M done, every phase in the full-vision roadmap (A through N, plus L and M)
+is now built.

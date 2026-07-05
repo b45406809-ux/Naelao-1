@@ -32,6 +32,7 @@ import { fabric } from "./fabric.js";
 import { wiki } from "./wiki.js";
 import { lock } from "./lock.js";
 import { workspaceAdmin } from "./workspace-admin.js";
+import { localMachine } from "./local-machine.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -83,6 +84,9 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // Workspace scaffolding (§A1.17 Phase G) — lets the Launchpad business-builder assistant
   // actually create/configure projects and read the agent roster, not just describe them.
   [workspaceAdmin.name]: workspaceAdmin,
+  // Local-machine-as-container (§A1.17 Phase M) — grant-checked read/write/exec on a builder's
+  // own machine via the Naelao Local Agent tunnel. No default access; see local-machine.ts.
+  [localMachine.name]: localMachine,
 };
 
 /**
@@ -121,4 +125,5 @@ export {
   wiki,
   lock,
   workspaceAdmin,
+  localMachine,
 };

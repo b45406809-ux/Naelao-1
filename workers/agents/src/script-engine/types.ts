@@ -343,6 +343,19 @@ export interface LockGateway {
 }
 
 /**
+ * Local-machine-as-container (spec "Local PC as a Container Target", gap G-3; §A1.17 Phase M).
+ * Relays a grant-checked op (read_file/write_file/exec) to a builder's own machine over the
+ * WebSocket tunnel LocalTunnelDO holds. `userId` addresses WHICH (space, user) tunnel to use —
+ * the local-machine prebuilt resolves it from the matching grant's own user_id, never from a
+ * caller-supplied field. Grant checking happens entirely in the prebuilt, before this gateway is
+ * ever called; this interface has no opinion on what an op's params mean.
+ */
+export interface LocalTunnelGateway {
+  exec(params: { userId: string; op: string; params: Record<string, unknown> }): Promise<{ ok: boolean; result?: unknown; error?: string }>;
+  status(userId: string): Promise<{ connected: boolean }>;
+}
+
+/**
  * HITL (Human-in-the-Loop) gateway interface (spec §10 / CLAUDE.md task #10).
  * Injected by NaelaoAgentDO when HITL_APPROVAL_DO is bound; absent in unit tests.
  */
@@ -391,6 +404,10 @@ export interface ScriptEngineEnv {
   /** Generic named-lock primitive — present when CONCURRENCY_DO is wired up (the `lock`
    *  prebuilt reports itself degraded, not unavailable, when absent — see LockGateway). */
   lockGateway?: LockGateway;
+  /** Local-machine-as-container (§A1.17 Phase M) — present when LOCAL_TUNNEL is wired up. The
+   *  `local-machine` prebuilt reports itself unavailable, not degraded, when absent (unlike
+   *  lockGateway, there's no safe fallback behavior for "pretend the local machine exists"). */
+  localTunnel?: LocalTunnelGateway;
   /** Memory OS (structured facts + episodic + semantic recall) — present when the host DO
    *  has initialized its memory tables. Absent in environments that haven't wired it yet. */
   memoryStore?: MemoryStore;

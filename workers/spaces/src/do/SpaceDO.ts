@@ -521,6 +521,31 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_container_slots_project ON container_slots(project_id);
     `,
   },
+  {
+    version: 21,
+    // Local-machine-as-container (spec "Local PC as a Container Target", gap G-3; §A1.17 Phase
+    // M). A grant is an explicit, revocable opt-in: "the agent may read/write under THIS
+    // directory" or "the agent may run THESE exact commands" on ONE builder's own machine (the
+    // Naelao Local Agent tunnel is addressed per (space, user_id) — see LocalTunnelDO). No
+    // grant exists by default; the local-machine prebuilt fails closed with no active grant.
+    // project_id nullable = a space-wide grant (usable by the Space Assistant); set = scoped to
+    // one project's threads only.
+    description: "local_grants (Local-machine-as-container permission model)",
+    up: `
+      CREATE TABLE IF NOT EXISTS local_grants (
+        id            TEXT PRIMARY KEY,
+        space_id      TEXT NOT NULL,
+        project_id    TEXT,
+        user_id       TEXT NOT NULL,
+        grant_type    TEXT NOT NULL CHECK (grant_type IN ('read','write','readwrite','exec')),
+        directory     TEXT,
+        commands_json TEXT NOT NULL DEFAULT '[]',
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_local_grants_space ON local_grants(space_id);
+      CREATE INDEX IF NOT EXISTS idx_local_grants_user ON local_grants(user_id);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -814,6 +839,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const containerSlotIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/container-slots\/([^/]+)$/);
       if (method === "DELETE" && containerSlotIdMatch?.[1] && containerSlotIdMatch?.[2]) {
         return this.deleteContainerSlot(containerSlotIdMatch[1], containerSlotIdMatch[2]);
+      }
+
+      // ── Local-machine-as-container permission grants (§A1.17 Phase M) ─────────
+      if (method === "GET" && url.pathname === "/local-grants") {
+        return this.listLocalGrants(url.searchParams.get("space_id") ?? "");
+      }
+      if (method === "POST" && url.pathname === "/local-grants") {
+        return this.createLocalGrant(url.searchParams.get("space_id") ?? "", request);
+      }
+      const localGrantIdMatch = url.pathname.match(/^\/local-grants\/([^/]+)$/);
+      if (method === "DELETE" && localGrantIdMatch?.[1]) {
+        return this.deleteLocalGrant(url.searchParams.get("space_id") ?? "", localGrantIdMatch[1]);
       }
 
       // ── Presence (space collaboration, A1.8) ───────────────────────────────────
@@ -1867,6 +1904,61 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private deleteContainerSlot(projectId: string, slotId: string): Response {
     execute(this.ctx.storage.sql as never, "DELETE FROM container_slots WHERE id = ? AND project_id = ?", slotId, projectId);
+    return Response.json({ deleted: true });
+  }
+
+  // ── Local-machine-as-container permission grants (§A1.17 Phase M) ───────────────
+  // Business-rule validation (grant_type shape, directory/commands requirements) lives in the
+  // spaces worker, same split as container-slots above; this DO independently enforces a hard
+  // per-space ceiling as defense in depth.
+  private static readonly MAX_LOCAL_GRANTS_PER_SPACE_HARD_CEILING = 25;
+
+  private listLocalGrants(spaceId: string): Response {
+    const rows = queryAll<{
+      id: string; space_id: string; project_id: string | null; user_id: string;
+      grant_type: string; directory: string | null; commands_json: string; created_at: string;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM local_grants WHERE space_id = ? ORDER BY created_at",
+      spaceId
+    );
+    const data = rows.map((r) => ({ ...r, commands: JSON.parse(r.commands_json || "[]") as string[] }));
+    return Response.json({ data, count: data.length });
+  }
+
+  private async createLocalGrant(spaceId: string, request: Request): Promise<Response> {
+    const body = await request
+      .json<{ user_id: string; grant_type: string; directory?: string | null; commands?: string[]; project_id?: string | null }>()
+      .catch(() => ({}) as Record<string, never>);
+    if (!body.user_id || !body.grant_type) {
+      return Response.json({ error_code: "bad_request", message: "user_id and grant_type are required" }, { status: 400 });
+    }
+
+    const existing = queryAll<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM local_grants WHERE space_id = ?", spaceId);
+    if (existing.length >= SpaceDO.MAX_LOCAL_GRANTS_PER_SPACE_HARD_CEILING) {
+      return Response.json(
+        { error_code: "grant_limit_reached", message: `A space may not exceed ${SpaceDO.MAX_LOCAL_GRANTS_PER_SPACE_HARD_CEILING} local grants` },
+        { status: 409 }
+      );
+    }
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO local_grants (id, space_id, project_id, user_id, grant_type, directory, commands_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, spaceId, body.project_id ?? null, body.user_id, body.grant_type, body.directory ?? null,
+      JSON.stringify(body.commands ?? []), now
+    );
+    return Response.json(
+      { id, space_id: spaceId, project_id: body.project_id ?? null, user_id: body.user_id, grant_type: body.grant_type, created_at: now },
+      { status: 201 }
+    );
+  }
+
+  private deleteLocalGrant(spaceId: string, grantId: string): Response {
+    execute(this.ctx.storage.sql as never, "DELETE FROM local_grants WHERE id = ? AND space_id = ?", grantId, spaceId);
     return Response.json({ deleted: true });
   }
 

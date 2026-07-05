@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden } from "@naelao/http";
+import { errorResponse, requestId, notFound, requireInternalHmac, mintInternalToken, verifyInternalToken, forbidden, mintLocalTunnelToken } from "@naelao/http";
 import { getDOName, signHmac, verifyHmac } from "@naelao/crypto";
 import type { SpaceDO } from "./do/SpaceDO.js";
 import type { SpaceTypeRegistryDO, SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2 } from "./do/SpaceTypeRegistryDO.js";
@@ -707,6 +707,92 @@ app.delete("/spaces/:spaceId/projects/:projectId/container-slots/:slotId", async
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/container-slots/${encodeURIComponent(slotId)}`, "DELETE");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// ── Local-machine-as-container (spec "Local PC as a Container Target", gap G-3; §A1.17
+// Phase M) — a builder opts their OWN machine in as a grant-checked Tier-5c target. Builder/
+// operator-only (requireInternalHmac): a grant names a real directory or exact commands on a
+// real human's computer, so this is never end-user-reachable. user_id is ALWAYS derived from the
+// verified caller identity, never a client-supplied field — a builder can only grant/connect
+// their OWN machine, never name someone else's.
+app.use("/spaces/:spaceId/local-grants", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/local-grants/:grantId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/local-tunnel/connect-token", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+
+app.get("/spaces/:spaceId/local-grants", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/local-grants?space_id=${encodeURIComponent(spaceId)}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+const VALID_LOCAL_GRANT_TYPES = new Set(["read", "write", "readwrite", "exec"]);
+
+app.post("/spaces/:spaceId/local-grants", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId || !identity.userId) return c.json({ error_code: "unauthorized", message: "Missing tenant or user identity" }, 401);
+
+  const body = await c.req
+    .json<{ grant_type?: string; directory?: string; commands?: string[]; project_id?: string }>()
+    .catch(() => ({}) as Record<string, never>);
+  if (!body.grant_type || !VALID_LOCAL_GRANT_TYPES.has(body.grant_type)) {
+    return c.json({ error_code: "bad_request", message: "grant_type must be one of read, write, readwrite, exec" }, 400);
+  }
+  if (body.grant_type === "exec") {
+    if (!Array.isArray(body.commands) || body.commands.length === 0) {
+      return c.json({ error_code: "bad_request", message: "exec grants require a non-empty commands list" }, 400);
+    }
+  } else if (!body.directory) {
+    return c.json({ error_code: "bad_request", message: `${body.grant_type} grants require a directory` }, 400);
+  }
+
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(
+    stub,
+    `/local-grants?space_id=${encodeURIComponent(spaceId)}`,
+    "POST",
+    JSON.stringify({
+      user_id: identity.userId,
+      grant_type: body.grant_type,
+      directory: body.directory ?? null,
+      commands: body.commands ?? [],
+      project_id: body.project_id ?? null,
+    })
+  );
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.delete("/spaces/:spaceId/local-grants/:grantId", async (c) => {
+  const { spaceId, grantId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/local-grants/${encodeURIComponent(grantId)}?space_id=${encodeURIComponent(spaceId)}`, "DELETE");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// Mints the short-lived (5 min) connect token the Naelao Local Agent client presents to
+// LocalTunnelDO's WebSocket upgrade (agents worker). Deliberately does NOT invent or return a
+// public hostname/URL for the agents worker — that base URL is an operator/deployment concern
+// (same as every other cross-worker public endpoint in this platform), supplied to the Local
+// Agent client via its own config, not guessed here.
+app.post("/spaces/:spaceId/local-tunnel/connect-token", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId || !identity.userId) return c.json({ error_code: "unauthorized", message: "Missing tenant or user identity" }, 401);
+  const token = await mintLocalTunnelToken(c.env.PLATFORM_SECRET, spaceId, identity.userId);
+  return c.json({
+    token,
+    space_id: spaceId,
+    user_id: identity.userId,
+    connect_path: "/local-tunnel/connect",
+    expires_in_seconds: 300,
+  });
 });
 
 // Presence (space collaboration, A1.8) — heartbeat: "I'm here" (space-level, or scoped to a

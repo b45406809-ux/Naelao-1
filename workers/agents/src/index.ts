@@ -18,6 +18,7 @@ import { TaskDO } from "./do/TaskDO.js";
 import { ProductDO } from "./do/ProductDO.js";
 import { BusinessDO } from "./do/BusinessDO.js";
 import { ToolSandboxDO } from "./do/ToolSandboxDO.js";
+import { LocalTunnelDO } from "./do/LocalTunnelDO.js";
 import { observeWhopBusiness, createWhopProduct, registerAffiliate } from "./whop/client.js";
 import { devCatalog, productCatalog } from "./catalog.js";
 import { canAccessBusiness } from "./access.js";
@@ -44,6 +45,7 @@ export { TaskDO } from "./do/TaskDO.js";
 export { ProductDO } from "./do/ProductDO.js";
 export { BusinessDO } from "./do/BusinessDO.js";
 export { ToolSandboxDO } from "./do/ToolSandboxDO.js";
+export { LocalTunnelDO } from "./do/LocalTunnelDO.js";
 export { ConcurrencyDO } from "./do/ConcurrencyDO.js";
 export { AgentTaskWorkflow } from "./workflows/AgentTaskWorkflow.js";
 export { ScriptRunWorkflow } from "./workflows/ScriptRunWorkflow.js";
@@ -69,6 +71,9 @@ export interface AgentsEnv {
   PRODUCT_DO: DurableObjectNamespace<ProductDO>;
   BUSINESS_DO: DurableObjectNamespace<BusinessDO>;
   TOOL_SANDBOX: DurableObjectNamespace<ToolSandboxDO>;
+  /** §A1.17 Phase M — local-machine-as-container. One DO per (spaceId, userId); optional, like
+   *  every other execution-ladder binding — the local-machine prebuilt fails closed without it. */
+  LOCAL_TUNNEL?: DurableObjectNamespace<LocalTunnelDO>;
   BUSINESS_R2: R2Bucket;
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
@@ -1637,6 +1642,27 @@ app.get("/templates", async (c) => {
 // slot-creation validation — never a hand-maintained duplicate.
 app.get("/container-images", async (c) => {
   return c.json({ images: CONTAINER_IMAGE_CATALOGUE });
+});
+
+// GET /local-tunnel/connect?space=&user=&token= — the Naelao Local Agent client's WebSocket
+// upgrade entrypoint (§A1.17 Phase M). This route does no auth itself beyond requiring the query
+// params be present — the actual connect-token verification happens inside LocalTunnelDO
+// (verifyLocalTunnelToken), so a forged/expired/wrong-pair token is rejected by the DO, not here.
+// Deliberately unauthenticated at the Hono layer (like the channel gateway's own signature-
+// verified ingress) because the caller is a native client on someone's own machine, not a
+// browser session — there is no JWT/session to check before the WS upgrade begins.
+app.get("/local-tunnel/connect", async (c) => {
+  if (!c.env.LOCAL_TUNNEL) {
+    return c.json({ error_code: "unavailable", message: "Local-machine-as-container is not configured in this environment" }, 503);
+  }
+  const spaceId = c.req.query("space") ?? "";
+  const userId = c.req.query("user") ?? "";
+  if (!spaceId || !userId) {
+    return c.json({ error_code: "bad_request", message: "space and user query params are required" }, 400);
+  }
+  const doId = c.env.LOCAL_TUNNEL.idFromName(`local-tunnel:${spaceId}:${userId}`);
+  const stub = c.env.LOCAL_TUNNEL.get(doId);
+  return stub.fetch(c.req.raw);
 });
 
 // GET /templates/:templateId/skills — list the shared template library (names + summaries).

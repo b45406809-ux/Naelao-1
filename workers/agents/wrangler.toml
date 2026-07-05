@@ -27,6 +27,13 @@ class_name = "BusinessDO"
 name = "TOOL_SANDBOX"
 class_name = "ToolSandboxDO"
 
+# §A1.17 Phase M — local-machine-as-container (spec gap G-3). One instance per (spaceId, userId);
+# holds the WebSocket to a builder's own Naelao Local Agent client. No [[containers]] binding —
+# this is not a CF Container, it relays to a real human's machine over WS.
+[[durable_objects.bindings]]
+name = "LOCAL_TUNNEL"
+class_name = "LocalTunnelDO"
+
 # Account-level concurrency ceiling (spec §28 "ConcurrencyDO") — gates simultaneous sub-agent
 # spawn trees per (spaceId, holder). See buildOrchestrationHooks' spawnSubAgent in NaelaoAgentDO.
 [[durable_objects.bindings]]
@@ -56,6 +63,10 @@ new_classes = ["ToolSandboxDO"]
 [[migrations]]
 tag = "v6"
 new_classes = ["ConcurrencyDO"]
+
+[[migrations]]
+tag = "v7"
+new_classes = ["LocalTunnelDO"]
 
 [[r2_buckets]]
 binding = "BUSINESS_R2"

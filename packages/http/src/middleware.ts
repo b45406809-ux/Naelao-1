@@ -69,6 +69,32 @@ export function requireInternalHmac(getSecret: (c: { env: Record<string, string>
   });
 }
 
+// §A1.17 Phase M: a Local Tunnel connect token authorizes the Naelao Local Agent (a small
+// client running on a builder's own machine) to open the WebSocket tunnel for exactly one
+// (spaceId, userId) pair. Deliberately a SEPARATE payload namespace from mintInternalToken
+// ("local-tunnel:" vs "internal:") so a stolen inter-worker HMAC token can never be replayed as
+// a tunnel-connect token or vice versa, and a much longer freshness window (5 minutes, not 60s)
+// since a human has to copy the token into a CLI command rather than it being minted and used
+// in the same request like the worker-to-worker token is.
+const LOCAL_TUNNEL_TOKEN_TTL_MS = 5 * 60_000;
+
+export async function mintLocalTunnelToken(secret: string, spaceId: string, userId: string): Promise<string> {
+  const ts = Date.now().toString();
+  const sig = await signHmac(`local-tunnel:${spaceId}:${userId}:${ts}`, secret);
+  return `t=${ts},v1=${sig}`;
+}
+
+export async function verifyLocalTunnelToken(token: string | undefined, spaceId: string, userId: string, secret: string): Promise<boolean> {
+  if (!token) return false;
+  const parts = Object.fromEntries(token.split(",").map((p) => p.split("=")));
+  const ts = parts["t"];
+  const sig = parts["v1"];
+  if (!ts || !sig) return false;
+  const age = Math.abs(Date.now() - parseInt(ts, 10));
+  if (age > LOCAL_TUNNEL_TOKEN_TTL_MS) return false;
+  return verifyHmac(`local-tunnel:${spaceId}:${userId}:${ts}`, sig, secret);
+}
+
 // JWT verification middleware — expects Authorization: Bearer <token>
 export function jwtAuth(getSecret: (c: { env: Record<string, string> }) => string) {
   return createMiddleware(async (c, next) => {

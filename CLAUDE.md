@@ -837,6 +837,31 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     `pnpm turbo run typecheck` clean (75 tasks). Remaining: Phase M (local-machine-as-container +
     Cowork Desktop, largest, needs a native client app outside this repo) — full detail in the
     session's plan file.
+37. **Phase M (local-machine-as-container, spec gap G-3) is BUILT end-to-end, including a real
+    reference client — scoped to exactly what the user asked for.** User direction: build "local
+    machine as a container," NOT "Cowork Desktop" — Cowork was named alongside it in the original
+    roadmap sketch only as an illustrative example of "what it's like to have an agent access your
+    PC," not a feature request, so the `cowork-desktop` cloud-container profile is explicitly
+    excluded from this pass. Unlike Phase L (mechanism-only, zero live images), this phase ships
+    completely real — someone can run it today. Permission model: `local_grants` (SpaceDO migration
+    v21) — explicit, revocable, no default access; `user_id` is ALWAYS derived from the verified
+    caller's own identity server-side, never a client-supplied field, so a builder can only grant
+    their OWN machine. Connect token: `mintLocalTunnelToken`/`verifyLocalTunnelToken`
+    (`packages/http`) use a separate HMAC payload namespace from the existing
+    `mintInternalToken`/`verifyInternalToken` pair so the two token families can never be replayed
+    as each other. `LocalTunnelDO` (agents worker, new `LOCAL_TUNNEL` binding) is one instance per
+    `(spaceId, userId)`, using the same CF Hibernation WebSocket pattern `workers/ws-gateway`'s
+    `WsHubDO` already established. The `local-machine` prebuilt is the actual safety layer: grant
+    checks happen BEFORE the tunnel is ever touched, with true path-segment containment (not a
+    naive string prefix — `/home/alice/allowed-evil` correctly does NOT match a grant for
+    `/home/alice/allowed`), server-side `..`-traversal collapsing, and exact (not prefix) command
+    matching for exec grants. The piece every prior phase deferred as "needs a native client app
+    outside this repo" — shipped anyway: `workers/agents/local-agent/naelao-local-agent.mjs`, a
+    dependency-free Node 22+ reference client with its own optional second-layer
+    `--allow-dir`/`--allow-command` policy check, unit-tested with a real temp-directory
+    read/write round trip and a real `exec` call. 1076/1076 tests pass (39 new), `pnpm turbo run
+    typecheck` clean (75 tasks). With Phase M done, every phase in the full-vision roadmap (A
+    through N, plus L and M) is now built.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

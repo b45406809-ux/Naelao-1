@@ -817,6 +817,9 @@ export interface AgentDOEnv {
   BROWSER_WORKER?: Fetcher;
   /** ToolSandboxDO namespace — Tier 5 (CF Container, full Linux). */
   TOOL_SANDBOX?: DurableObjectNamespace;
+  /** §A1.17 Phase M — local-machine-as-container. One DO per (spaceId, userId); the
+   *  `local-machine` prebuilt reports itself unavailable when absent. */
+  LOCAL_TUNNEL?: DurableObjectNamespace;
   /** Vectorize index for the Memory OS semantic layer (episodic→semantic promotion). */
   MEMORY_VECTORIZE?: VectorizeIndex;
   /** Self-binding — lets a running agent spawn sibling/child NaelaoAgentDO instances as
@@ -1377,6 +1380,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           this.acquireConcurrencySlot(lockNamespace + params.key, params.holderId, params.limit ?? 1, params.ttlMs),
         release: (params) => this.releaseConcurrencySlot(lockNamespace + params.key, params.holderId),
         status: (key) => this.concurrencyStatus(lockNamespace + key),
+      };
+    }
+
+    // Local-machine-as-container (§A1.17 Phase M) — one DO per (spaceId, userId); the
+    // local-machine prebuilt resolves WHICH userId to target from a matching grant, not from
+    // this wiring, so the gateway itself stays a thin per-call address resolver.
+    if (this.env.LOCAL_TUNNEL) {
+      const localTunnelDO = this.env.LOCAL_TUNNEL;
+      env.localTunnel = {
+        exec: async ({ userId, op, params }) => {
+          const stub = localTunnelDO.get(localTunnelDO.idFromName(`local-tunnel:${spaceId}:${userId}`));
+          const resp = await stub.fetch(new Request("http://local-tunnel/exec", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ op, params }),
+          }));
+          return resp.json<{ ok: boolean; result?: unknown; error?: string }>();
+        },
+        status: async (userId) => {
+          const stub = localTunnelDO.get(localTunnelDO.idFromName(`local-tunnel:${spaceId}:${userId}`));
+          const resp = await stub.fetch(new Request("http://local-tunnel/status"));
+          return resp.json<{ connected: boolean }>();
+        },
       };
     }
 
