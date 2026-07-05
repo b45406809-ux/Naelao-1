@@ -7,7 +7,7 @@
 //   2. type-check / transpile it (esbuild)
 //   3. import it and run its exported runTests() -> { passed, results[] }
 //
-// POST /exec  { name, code, args, workspace_files? }  ->  { ok, result?, error?, logs?, workspace_files_out? }
+// POST /exec  { name, code, args }  ->  { ok, result?, error?, logs? }
 //   General Tier-5 script execution (script-engine execution-ladder §8): the script
 //   exports `export async function run(args, ctx) { ... return result; }`. Bundled with
 //   esbuild (so it can use Node builtins/npm deps installed in the image) then imported
@@ -15,11 +15,18 @@
 //   duration of the run) is /workspace — Tier-5 scripts get a real OS (filesystem,
 //   child_process), unlike Tiers 2-4.
 //
-//   §A1.17 Phase K: `workspace_files` (relPath -> text content), when present, is the calling
-//   ToolSandboxDO's R2 workspace sync — materialized under /workspace BEFORE the script runs,
-//   walked back into `workspace_files_out` AFTER it returns, so the DO can write changes (and
-//   deletions) back to R2. This container has no native R2 mount; this request-scoped
-//   materialize/collect is what makes /workspace behave as if it were persistently mounted.
+//   §A1.17 Phase R: /workspace is this container's OWN local disk — it persists across calls
+//   to the SAME warm container instance with NO R2 round-trip, and starts genuinely EMPTY on a
+//   cold start. Phase K's every-/exec-call blind full materialize/collect (workspace_files /
+//   workspace_files_out, bounded 300 files / 2MB / 25MB) is gone: an agent explicitly moves
+//   what it needs via the workspace.copy/move/list prebuilt (POST /workspace/{read,write,list,
+//   delete} below), the same way it would reason about two genuinely different filesystems.
+//
+// POST /workspace/write  { files: {relPath: content} }        -> { ok }
+// POST /workspace/read   { paths?: [relPath, ...] }            -> { files: {relPath: content} }
+//   (paths omitted = every file currently under /workspace, same bound as before)
+// POST /workspace/list   {}                                    -> { files: [relPath, ...] }
+// POST /workspace/delete { paths: [relPath, ...] }              -> { ok }
 
 import { createServer } from "node:http";
 import { writeFile, mkdir, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
@@ -77,6 +84,52 @@ async function collectWorkspace() {
   return out;
 }
 
+// §A1.17 Phase R: explicit read of specific paths (workspace.copy('container','r2', path)) —
+// falls back to collectWorkspace()'s full walk when no paths are given (workspace.list-adjacent
+// callers that want everything).
+async function readWorkspacePaths(paths) {
+  if (!paths || paths.length === 0) return collectWorkspace();
+  const out = {};
+  for (const relPath of paths.slice(0, MAX_WORKSPACE_FILES)) {
+    try {
+      const full = join(WORKSPACE_DIR, relPath);
+      const info = await stat(full);
+      if (info.size > MAX_WORKSPACE_FILE_BYTES) continue;
+      out[relPath] = await readFile(full, "utf8");
+    } catch {
+      // missing/unreadable — simply absent from the result, not an error for the whole batch
+    }
+  }
+  return out;
+}
+
+async function listWorkspacePaths() {
+  const names = [];
+  async function walk(dir) {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (names.length >= MAX_WORKSPACE_FILES) return;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) await walk(full);
+      else if (entry.isFile()) names.push(relative(WORKSPACE_DIR, full));
+    }
+  }
+  await mkdir(WORKSPACE_DIR, { recursive: true });
+  await walk(WORKSPACE_DIR);
+  return names;
+}
+
+async function deleteWorkspacePaths(paths) {
+  for (const relPath of paths ?? []) {
+    await rm(join(WORKSPACE_DIR, relPath), { force: true }).catch(() => {});
+  }
+}
+
 async function buildAndTest(code) {
   const logs = [];
   const dir = await mkdtemp(join(tmpdir(), "tool-"));
@@ -113,17 +166,14 @@ async function buildAndTest(code) {
   }
 }
 
-async function execScript(name, code, args, workspaceFiles) {
+async function execScript(name, code, args) {
   const dir = await mkdtemp(join(tmpdir(), "exec-"));
   const src = join(dir, "script.ts");
   const out = join(dir, "script.mjs");
-  // §A1.17 Phase K: only materialize/collect /workspace when the caller (ToolSandboxDO) is
-  // actually doing the R2 sync dance — a bare /exec call with no workspace_files (e.g. local
-  // dev without SCRIPTS_R2 bound) skips this entirely rather than touching a shared directory
-  // for no reason.
-  const syncWorkspace = workspaceFiles !== undefined;
+  // §A1.17 Phase R: /workspace is untouched here — it's whatever this warm container's own
+  // disk already has from a prior call plus whatever workspace.copy explicitly staged in. No
+  // implicit materialize/collect around the run anymore (see the file header comment).
   try {
-    if (syncWorkspace) await materializeWorkspace(workspaceFiles);
     await writeFile(src, code, "utf8");
     try {
       await build({ entryPoints: [src], outfile: out, bundle: true, format: "esm", platform: "node", logLevel: "silent" });
@@ -138,42 +188,47 @@ async function execScript(name, code, args, workspaceFiles) {
       setTimeout(() => reject(new Error("execution timed out")), EXEC_TIMEOUT_MS)
     );
     const result = await Promise.race([mod.run(args ?? {}, { workspaceDir: WORKSPACE_DIR }), timeout]);
-    return { ok: true, result, ...(syncWorkspace ? { workspace_files_out: await collectWorkspace() } : {}) };
+    return { ok: true, result };
   } catch (err) {
-    // Collect on failure too — a script that wrote files before throwing shouldn't lose that
-    // work (e.g. a multi-step Python job that fails partway through step 3 of 5).
-    return {
-      ok: false,
-      error: String(err).slice(0, 2000),
-      ...(syncWorkspace ? { workspace_files_out: await collectWorkspace().catch(() => undefined) } : {}),
-    };
+    return { ok: false, error: String(err).slice(0, 2000) };
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
+const WORKSPACE_ROUTES = new Set(["/workspace/read", "/workspace/write", "/workspace/list", "/workspace/delete"]);
+
 createServer((req, res) => {
-  if (req.method !== "POST" || (!req.url?.endsWith("/build") && !req.url?.endsWith("/exec"))) {
+  const path = req.url ?? "";
+  const isWorkspaceRoute = [...WORKSPACE_ROUTES].some((r) => path.endsWith(r));
+  if (req.method !== "POST" || (!path.endsWith("/build") && !path.endsWith("/exec") && !isWorkspaceRoute)) {
     res.writeHead(404).end(JSON.stringify({ error: "not_found" }));
     return;
   }
-  const isExec = req.url.endsWith("/exec");
-  // §A1.17 Phase K: an /exec body can now carry a project's synced workspace_files (bounded to
-  // ~25MB by ToolSandboxDO) on top of the script code itself — raised from the original 5MB.
-  const MAX_BODY_BYTES = 30_000_000;
+  const isExec = path.endsWith("/exec");
+  const MAX_BODY_BYTES = 10_000_000; // §A1.17 Phase R: no more bundled workspace_files, back to a script-code-sized budget
   let body = "";
   req.on("data", (c) => { body += c; if (body.length > MAX_BODY_BYTES) req.destroy(); });
   req.on("end", async () => {
     try {
       const parsed = JSON.parse(body || "{}");
+      if (isWorkspaceRoute) {
+        let result;
+        if (path.endsWith("/workspace/write")) { await materializeWorkspace(parsed.files); result = { ok: true }; }
+        else if (path.endsWith("/workspace/read")) result = { files: await readWorkspacePaths(parsed.paths) };
+        else if (path.endsWith("/workspace/list")) result = { files: await listWorkspacePaths() };
+        else { await deleteWorkspacePaths(parsed.paths); result = { ok: true }; }
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
+        return;
+      }
       if (!parsed.code) { res.writeHead(400).end(JSON.stringify({ error: "code required" })); return; }
       const result = isExec
-        ? await execScript(parsed.name ?? "script", parsed.code, parsed.args, parsed.workspace_files)
+        ? await execScript(parsed.name ?? "script", parsed.code, parsed.args)
         : await buildAndTest(parsed.code);
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
     } catch (err) {
       res.writeHead(500).end(JSON.stringify(
-        isExec ? { ok: false, error: String(err) } : { built: false, tests_passed: false, logs: String(err) }
+        isExec || isWorkspaceRoute ? { ok: false, error: String(err) } : { built: false, tests_passed: false, logs: String(err) }
       ));
     }
   });

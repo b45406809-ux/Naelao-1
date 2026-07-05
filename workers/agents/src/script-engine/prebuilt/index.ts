@@ -33,6 +33,7 @@ import { wiki } from "./wiki.js";
 import { lock } from "./lock.js";
 import { workspaceAdmin } from "./workspace-admin.js";
 import { localMachine } from "./local-machine.js";
+import { workspace } from "./workspace.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -87,6 +88,9 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // Local-machine-as-container (§A1.17 Phase M) — grant-checked read/write/exec on a builder's
   // own machine via the Naelao Local Agent tunnel. No default access; see local-machine.ts.
   [localMachine.name]: localMachine,
+  // Explicit R2 <-> container copy/move/list (§A1.17 Phase R) — replaces the old implicit
+  // full-sync-every-/exec-call behavior; see workspace.ts.
+  [workspace.name]: workspace,
 };
 
 /**

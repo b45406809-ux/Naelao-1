@@ -1308,6 +1308,32 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(this.env.TOOL_SANDBOX ? { toolSandbox: this.env.TOOL_SANDBOX } : {}),
     });
 
+    // §A1.17 Phase R: the container half of the explicit multi-workspace model — same
+    // per-project addressing as code-runner.ts's runContainer (a project's threads share one
+    // container, so workspace.copy and code.execute_* operate on the SAME /workspace).
+    if (this.env.TOOL_SANDBOX) {
+      const toolSandbox = this.env.TOOL_SANDBOX;
+      const sandboxStub = () => toolSandbox.get(toolSandbox.idFromName(`sandbox:${spaceId}:${projectId ?? "_assistant"}`));
+      env.containerWorkspace = {
+        list: async () => {
+          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/list", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }));
+          return resp.json();
+        },
+        read: async (paths) => {
+          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/read", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paths }) }));
+          return resp.json();
+        },
+        write: async (files) => {
+          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/write", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ files }) }));
+          return resp.json();
+        },
+        remove: async (paths) => {
+          const resp = await sandboxStub().fetch(new Request("http://sandbox/workspace/delete", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paths }) }));
+          return resp.json();
+        },
+      };
+    }
+
     // §A1.17 Phase J: runtime:"workflow" scripts dispatch here instead of codeRunner —
     // degrades to an honest "unavailable" (execution-ladder.ts) when AGENT_SCRIPT_WORKFLOW
     // isn't wired, same precedent as every other optional binding above.

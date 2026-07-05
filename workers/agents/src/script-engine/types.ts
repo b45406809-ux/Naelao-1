@@ -356,6 +356,25 @@ export interface LocalTunnelGateway {
 }
 
 /**
+ * §A1.17 Phase R: the container side of the explicit multi-workspace model — R2 (always
+ * available, small/text files, durable across restarts) and the Tier-5 container's own local
+ * disk (large/binary/stateful-capable, but only persists while that specific container instance
+ * stays warm) are DIFFERENT filesystems an agent explicitly moves files between via the
+ * `workspace` prebuilt's copy/move/list ops, rather than one being silently kept in sync with
+ * the other on every call. This gateway is only the container half; the R2 half of a copy is an
+ * ordinary R2 read/write in that same prebuilt (same bucket/prefix Tier 1's r2-workspace uses) —
+ * there is no DO-side R2 logic left in ToolSandboxDO at all. Addressed the SAME way
+ * code-runner.ts's runContainer addresses the DO for /exec (sandbox:{space}:{project|_assistant}),
+ * so copy/list/exec all operate on the one container instance a project's threads share.
+ */
+export interface ContainerWorkspaceGateway {
+  list(): Promise<{ files: string[] }>;
+  read(paths?: string[]): Promise<{ files: Record<string, string> }>;
+  write(files: Record<string, string>): Promise<{ ok: boolean }>;
+  remove(paths: string[]): Promise<{ ok: boolean }>;
+}
+
+/**
  * HITL (Human-in-the-Loop) gateway interface (spec §10 / CLAUDE.md task #10).
  * Injected by NaelaoAgentDO when HITL_APPROVAL_DO is bound; absent in unit tests.
  */
@@ -408,6 +427,11 @@ export interface ScriptEngineEnv {
    *  `local-machine` prebuilt reports itself unavailable, not degraded, when absent (unlike
    *  lockGateway, there's no safe fallback behavior for "pretend the local machine exists"). */
   localTunnel?: LocalTunnelGateway;
+  /** §A1.17 Phase R — the container half of the explicit multi-workspace model. Present when
+   *  TOOL_SANDBOX is wired up; the `workspace` prebuilt reports itself unavailable, not
+   *  degraded, when absent (same posture as localTunnel — no safe fallback for "pretend the
+   *  container exists"). */
+  containerWorkspace?: ContainerWorkspaceGateway;
   /** Memory OS (structured facts + episodic + semantic recall) — present when the host DO
    *  has initialized its memory tables. Absent in environments that haven't wired it yet. */
   memoryStore?: MemoryStore;

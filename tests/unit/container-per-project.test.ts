@@ -1,183 +1,97 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { ToolSandboxDO } from "../../workers/agents/src/do/ToolSandboxDO.js";
 
-// §A1.17 Phase K: a Cloudflare Container has no native R2 mount, so ToolSandboxDO approximates
-// one by syncing the project's R2 workspace (workspacePrefix()) around every /exec call — files
-// a script writes under /workspace persist in R2 and are visible to the NEXT call, whether that
-// call comes from the same thread after a simulated restart or a different thread in the same
-// project (the container is now addressed per-project, see code-runner.test.ts's addressing
-// tests, so both land on the same ToolSandboxDO instance/R2 prefix anyway).
-
-/** Minimal in-memory R2Bucket sufficient for ToolSandboxDO's list/get/put/delete usage. */
-function makeFakeR2() {
-  const store = new Map<string, string>();
-  return {
-    store,
-    async get(key: string) {
-      const v = store.get(key);
-      if (v === undefined) return null;
-      return { text: async () => v, size: v.length } as unknown as R2ObjectBody;
-    },
-    async put(key: string, value: string) {
-      store.set(key, value);
-    },
-    async delete(key: string) {
-      store.delete(key);
-    },
-    async list({ prefix }: { prefix: string }) {
-      const objects = [...store.entries()]
-        .filter(([k]) => k.startsWith(prefix))
-        .map(([key, value]) => ({ key, size: value.length, uploaded: new Date() }));
-      return { objects, truncated: false, cursor: undefined } as unknown as R2Objects;
-    },
-  } as unknown as R2Bucket & { store: Map<string, string> };
-}
+// §A1.17 Phase R: ToolSandboxDO no longer does any R2 sync of its own — Phase K's blind
+// full-materialize/collect around every /exec call (bounded 300 files/2MB/25MB, paid on EVERY
+// call whether or not a script touches files) is gone. The container's own /workspace disk now
+// persists across calls to the SAME warm instance with zero R2 traffic, and starts genuinely
+// empty on a cold start; an agent moves files between R2 and the container explicitly via the
+// `workspace` prebuilt (see workspace-prebuilt.test.ts), which talks to the new
+// /workspace/{read,write,list,delete} routes this DO now just proxies straight through to the
+// harness — this file only exercises that proxying + cold-start + honest-degradation behavior.
 
 function makeHarness(handler: (req: Request) => Promise<Response>) {
   return {
     running: true,
-    start() {},
+    started: false,
+    start(this: { started: boolean }) { this.started = true; },
     getTcpPort() {
       return { fetch: handler };
     },
   };
 }
 
-function makeDO(env: { SCRIPTS_R2?: ReturnType<typeof makeFakeR2> }, container: ReturnType<typeof makeHarness>) {
+function makeDO(container: ReturnType<typeof makeHarness> | undefined) {
   const ctx = { container };
-  return new ToolSandboxDO(ctx as never, env as never);
+  return new ToolSandboxDO(ctx as never, {} as never);
 }
 
-describe("ToolSandboxDO — R2 workspace sync around /exec", () => {
-  let r2: ReturnType<typeof makeFakeR2>;
-
-  beforeEach(() => {
-    r2 = makeFakeR2();
-  });
-
-  it("syncs existing R2 files into the harness request as workspace_files", async () => {
-    r2.store.set("spaces/space1/projects/proj-1/workspace/data.csv", "a,b\n1,2");
+describe("ToolSandboxDO — pure proxy to the harness (§A1.17 Phase R)", () => {
+  it("forwards /exec to the harness verbatim, with no workspace_files sync of any kind", async () => {
     let receivedBody: unknown;
     const harness = makeHarness(async (req) => {
       receivedBody = await req.json();
       return Response.json({ ok: true, result: {} });
     });
-    const doInstance = makeDO({ SCRIPTS_R2: r2 }, harness);
+    const doInstance = makeDO(harness);
 
     await doInstance.fetch(new Request("http://sandbox/exec", {
       method: "POST",
-      body: JSON.stringify({ name: "s", code: "c", args: {}, spaceId: "space1", projectId: "proj-1" }),
+      body: JSON.stringify({ name: "s", code: "c", args: { x: 1 } }),
     }));
 
-    expect((receivedBody as { workspace_files: Record<string, string> }).workspace_files).toEqual({ "data.csv": "a,b\n1,2" });
+    expect(receivedBody).toEqual({ name: "s", code: "c", args: { x: 1 } });
+    expect((receivedBody as Record<string, unknown>)).not.toHaveProperty("workspace_files");
   });
 
-  it("writes the harness's workspace_files_out back to R2 under the same project prefix", async () => {
-    const harness = makeHarness(async () =>
-      Response.json({ ok: true, result: { done: true }, workspace_files_out: { "out.txt": "hello" } })
-    );
-    const doInstance = makeDO({ SCRIPTS_R2: r2 }, harness);
-
-    const resp = await doInstance.fetch(new Request("http://sandbox/exec", {
-      method: "POST",
-      body: JSON.stringify({ name: "s", code: "c", args: {}, spaceId: "space1", projectId: "proj-1" }),
-    }));
-    const body = await resp.json();
-
-    expect(r2.store.get("spaces/space1/projects/proj-1/workspace/out.txt")).toBe("hello");
-    // The internal workspace_files_out field is a DO<->harness wire detail, not part of the
-    // client-facing script.run result.
-    expect(body).not.toHaveProperty("workspace_files_out");
-  });
-
-  it("deletes a file from R2 when the script removes it from /workspace", async () => {
-    r2.store.set("spaces/space1/projects/proj-1/workspace/keep.txt", "keep");
-    r2.store.set("spaces/space1/projects/proj-1/workspace/remove.txt", "gone-after-run");
-    const harness = makeHarness(async () =>
-      Response.json({ ok: true, result: {}, workspace_files_out: { "keep.txt": "keep" } })
-    );
-    const doInstance = makeDO({ SCRIPTS_R2: r2 }, harness);
-
-    await doInstance.fetch(new Request("http://sandbox/exec", {
-      method: "POST",
-      body: JSON.stringify({ name: "s", code: "c", args: {}, spaceId: "space1", projectId: "proj-1" }),
-    }));
-
-    expect(r2.store.has("spaces/space1/projects/proj-1/workspace/remove.txt")).toBe(false);
-    expect(r2.store.get("spaces/space1/projects/proj-1/workspace/keep.txt")).toBe("keep");
-  });
-
-  it("a file written for one thread's run is visible to a subsequent run in the SAME project (shared workspace)", async () => {
-    const writer = makeHarness(async () => Response.json({ ok: true, result: {}, workspace_files_out: { "shared.txt": "from-thread-A" } }));
-    const doA = makeDO({ SCRIPTS_R2: r2 }, writer);
-    await doA.fetch(new Request("http://sandbox/exec", {
-      method: "POST",
-      body: JSON.stringify({ name: "s", code: "c", args: {}, spaceId: "space1", projectId: "proj-1" }),
-    }));
-
-    // Simulate a second thread's run (a fresh ToolSandboxDO.fetch call — could even be a
-    // different container instance post-restart) reading the same project's workspace.
-    let receivedBody: unknown;
-    const reader = makeHarness(async (req) => {
-      receivedBody = await req.json();
-      return Response.json({ ok: true, result: {} });
-    });
-    const doB = makeDO({ SCRIPTS_R2: r2 }, reader);
-    await doB.fetch(new Request("http://sandbox/exec", {
-      method: "POST",
-      body: JSON.stringify({ name: "s", code: "c", args: {}, spaceId: "space1", projectId: "proj-1" }),
-    }));
-
-    expect((receivedBody as { workspace_files: Record<string, string> }).workspace_files).toEqual({ "shared.txt": "from-thread-A" });
-  });
-
-  it("keeps different projects' workspaces isolated (a project's own prefix only)", async () => {
-    r2.store.set("spaces/space1/projects/proj-A/workspace/secret.txt", "A's data");
-    let receivedBody: unknown;
+  it("forwards each /workspace/* route straight through to the harness", async () => {
+    const seenPaths: string[] = [];
     const harness = makeHarness(async (req) => {
-      receivedBody = await req.json();
-      return Response.json({ ok: true, result: {} });
+      seenPaths.push(new URL(req.url).pathname);
+      return Response.json({ ok: true });
     });
-    const doInstance = makeDO({ SCRIPTS_R2: r2 }, harness);
+    const doInstance = makeDO(harness);
 
-    await doInstance.fetch(new Request("http://sandbox/exec", {
-      method: "POST",
-      body: JSON.stringify({ name: "s", code: "c", args: {}, spaceId: "space1", projectId: "proj-B" }),
-    }));
+    for (const path of ["/workspace/read", "/workspace/write", "/workspace/list", "/workspace/delete"]) {
+      await doInstance.fetch(new Request(`http://sandbox${path}`, { method: "POST", body: "{}" }));
+    }
 
-    expect((receivedBody as { workspace_files: Record<string, string> }).workspace_files).toEqual({});
+    expect(seenPaths).toEqual(["/workspace/read", "/workspace/write", "/workspace/list", "/workspace/delete"]);
   });
 
-  it("falls back to the space-scoped workspace when no projectId is given (the Space Assistant)", async () => {
-    r2.store.set("spaces/space1/workspace/notes.txt", "assistant notes");
-    let receivedBody: unknown;
-    const harness = makeHarness(async (req) => {
-      receivedBody = await req.json();
-      return Response.json({ ok: true, result: {} });
-    });
-    const doInstance = makeDO({ SCRIPTS_R2: r2 }, harness);
+  it("cold-starts the container on demand when it isn't already running", async () => {
+    const harness = makeHarness(async () => Response.json({ ok: true }));
+    harness.running = false;
+    const doInstance = makeDO(harness);
 
-    await doInstance.fetch(new Request("http://sandbox/exec", {
-      method: "POST",
-      body: JSON.stringify({ name: "s", code: "c", args: {}, spaceId: "space1" }),
-    }));
+    await doInstance.fetch(new Request("http://sandbox/exec", { method: "POST", body: "{}" }));
 
-    expect((receivedBody as { workspace_files: Record<string, string> }).workspace_files).toEqual({ "notes.txt": "assistant notes" });
+    expect(harness.started).toBe(true);
   });
 
-  it("skips sync entirely when no SCRIPTS_R2 is bound, forwarding the raw request", async () => {
-    let receivedBody: unknown;
-    const harness = makeHarness(async (req) => {
-      receivedBody = await req.json();
-      return Response.json({ ok: true, result: {} });
-    });
-    const doInstance = makeDO({}, harness);
+  it("does not restart an already-running container", async () => {
+    const harness = makeHarness(async () => Response.json({ ok: true }));
+    harness.running = true;
+    const doInstance = makeDO(harness);
 
-    await doInstance.fetch(new Request("http://sandbox/exec", {
-      method: "POST",
-      body: JSON.stringify({ name: "s", code: "c", args: {}, spaceId: "space1", projectId: "proj-1" }),
-    }));
+    await doInstance.fetch(new Request("http://sandbox/exec", { method: "POST", body: "{}" }));
 
-    expect((receivedBody as { workspace_files?: unknown }).workspace_files).toBeUndefined();
+    expect(harness.started).toBe(false);
+  });
+
+  it("degrades honestly (503) for /exec when no container runtime is bound", async () => {
+    const doInstance = makeDO(undefined);
+    const resp = await doInstance.fetch(new Request("http://sandbox/exec", { method: "POST", body: "{}" }));
+    expect(resp.status).toBe(503);
+    const body = await resp.json<{ built: boolean; tests_passed: boolean }>();
+    expect(body.built).toBe(false);
+  });
+
+  it("degrades honestly (503) for a /workspace/* route when no container runtime is bound", async () => {
+    const doInstance = makeDO(undefined);
+    const resp = await doInstance.fetch(new Request("http://sandbox/workspace/list", { method: "POST", body: "{}" }));
+    expect(resp.status).toBe(503);
+    const body = await resp.json<{ ok: boolean; error: string }>();
+    expect(body.ok).toBe(false);
   });
 });

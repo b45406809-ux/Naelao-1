@@ -5,7 +5,8 @@
  * a code branch in the reasoning loop.
  *
  * Phase K already gave every project a base Tier-5 sandbox (Python/Bash, ephemeral compute,
- * R2-synced `/workspace`) via `ToolSandboxDO`. The marketplace is for workloads that base sandbox
+ * a `/workspace` an agent explicitly stages via `workspace.copy` — §A1.17 Phase R, see
+ * workspace.ts) via `ToolSandboxDO`. The marketplace is for workloads that base sandbox
  * can't serve: a LONG-RUNNING stateful server (a database, a cache) that needs its own container
  * lifecycle, its own persistence strategy, and its own per-minute billing — NOT a one-shot CLI
  * tool. (A one-shot tool like ffmpeg is better served by adding the binary to the base sandbox

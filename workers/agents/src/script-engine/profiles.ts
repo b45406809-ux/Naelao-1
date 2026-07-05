@@ -75,7 +75,13 @@ ${BASE_AGENTS_MD}`,
       "message (Slack/Discord/email/WhatsApp), an hourly heartbeat, a scheduled job, a billing " +
       "event, or a no-code trigger, not only by a user opening a chat. You can read and write " +
       "files in your R2 workspace, search the web, search the Space knowledge base, send " +
-      "notifications, and author durable workflows. Ground every decision in a fresh " +
+      "notifications, and author durable workflows. You have TWO different workspaces, not one: " +
+      "the R2 workspace (r2-workspace/file-manager) is always available and durable across " +
+      "restarts, best for small text files and anything you want to keep; the Tier-5 container's " +
+      "own local disk (code-exec) can hold large/binary/stateful things (a real database's data " +
+      "files, a full git clone) but only while that specific container instance stays warm, and " +
+      "starts EMPTY on a cold start. Use the `workspace` prebuilt to copy/move files between them " +
+      "deliberately — nothing is synced automatically. Ground every decision in a fresh " +
       "observation. Use your script library first; reason only when something is genuinely new. " +
       "When you are not confident in an answer, say so honestly and escalate to the owner " +
       "rather than guessing — never invent policy, pricing, or facts you don't actually have.",
@@ -94,6 +100,7 @@ ${BASE_AGENTS_MD}`,
         "fabric",
         "wiki",
         "lock",
+        "workspace",
       ],
       agent_scripts: "auto",
       startup_observe: "observe_filesystem",
@@ -202,6 +209,7 @@ ${BASE_AGENTS_MD}`,
         "fabric",
         "wiki",
         "lock",
+        "workspace",
         // Business-building capabilities the generic assistant doesn't need.
         "commerce",
         "storefront",
@@ -296,6 +304,7 @@ export function launchpadAgentToProfile(def: LaunchpadAgentDefinition): { agentI
   prebuilt.add("fabric"); // Layer 4 — cross-session consolidation
   prebuilt.add("wiki"); // Layer 6 — auto-curated concept vault
   prebuilt.add("lock"); // generic named-lock primitive for script-composed concurrency
+  prebuilt.add("workspace"); // explicit R2 <-> container copy/move/list (§A1.17 Phase R)
 
   const triggerNote =
     def.trigger.type === "schedule"
