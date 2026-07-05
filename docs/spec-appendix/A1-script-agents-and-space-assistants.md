@@ -3973,49 +3973,37 @@ Read CLAUDE.md item 38 first for the phase-by-phase detail (what shipped, what b
 and fixed along the way, test counts); come here only for anything CLAUDE.md's summary doesn't
 have room for.
 
-**Phases O, Q, R, S are BUILT** (agent API keys + HTTP approval gate + events; durable-by-default
-runs; the explicit R2/container workspace model; local-machine grants UI on both dashboard and
-shell). **P, T, U, V remain**:
+**Phases O, Q, R, S, T, U, V are all BUILT. Only P remains.** CLAUDE.md item 38 carries the
+authoritative, kept-current phase-by-phase summary (what shipped, real bugs found and fixed along
+the way, test counts) — this section only records what didn't fit there.
 
-- **P — Composio + Pipedream connector providers.** Extend whatever table backs registered MCP
-  servers in `workers/mcp-hub` with `connector_provider: 'direct'|'composio'|'pipedream'`; a
-  Composio/Pipedream-backed connector stores only that provider's own opaque connection
-  reference (never the underlying OAuth token) and routes `ctx.mcp.call`/`mcp-connector` calls
-  through the provider's execute-action API server-side — the script-native "6 ops only" contract
-  (CLAUDE.md ground rule #8) is unchanged; this is more connector inventory behind the same
-  surface, never a new agent capability class. Needs real `COMPOSIO_API_KEY`/`PIPEDREAM_API_KEY`
-  (or Pipedream Connect client credentials) supplied via CF Workers Secrets before it can run
-  against live providers — build and test the routing logic with mocked provider APIs regardless
-  of whether those credentials are available yet.
-- **T — Project collaboration.** T1: `projects.visibility` (public/private) + a real
-  `project_members` ACL table (mirrors the `business_memberships` index-table precedent) —
-  public visible to all space members, private only to members + the space owner/admin override.
-  T2 (the architecturally significant one): per-thread-per-agent addressing
-  (`space:project:thread:agentId`, default = the project's `default_agent_id` for backward
-  compatibility) so `@agent1`/`@agent2` in one thread route to distinct agent instances, deduped
-  so mentioning the same agent twice in one message still dispatches once. **Load-bearing
-  prerequisite this needs that doesn't exist yet:** the shell's chat currently calls the LEGACY
-  generic `/spaces/:spaceId/sessions/:sessionId/agent/run` (a SpaceType-driven ReAct loop with no
-  concept of "which named agent"), NOT the script-native `/agents/:agentId/script/run` — Phase Q's
-  fixes made the legacy path actually work end-to-end but did not change WHICH path the shell
-  calls. T2 requires routing per-thread runs through the script-native per-agent endpoint instead
-  (with sessionId threaded through so runs persist tied to a session) before @mention can mean
-  anything. T3: hybrid thread locking — soft (default, the existing `lock` prebuilt, plus an
-  implicit lock wrapping Tier-1 `r2-workspace` writes keyed `project:{id}:file:{path}`) and hard
-  ("exclusive mode" opt-in, `projects.active_thread_id`, a 409 + explicit "take over" affordance,
-  never a silent permanent block).
-- **U — Memory OS project-shared layers.** Depends on T2 shipping first: per-thread-per-agent
-  memory means two threads in the same project would otherwise share ZERO agent memory. Promote
-  Layers 3 (`structured_facts`), 4 (`fabric_store`), 6 (`wiki_store`) from per-DO SQLite to
-  SpaceDO keyed by `project_id` (reuse SpaceDO's existing per-space SQLite, not a new DO class);
-  Layer 5 (episodic/session vector memory) stays exactly where it is — deliberately private per
-  (thread, agentId). The Space Assistant's own facts/fabric/wiki stay scoped to its `_assistant`
-  slot, unaffected. No forced backfill of pre-existing per-DO rows — additive only.
-- **V — Whole-business real-time sync.** `WsHubDO` (`workers/ws-gateway`) and presence
-  (`POST /presence`) are fully built but completely unwired — no other worker binds it, no app
-  calls `/broadcast`. Add one shared `broadcastSpaceEvent()` helper called from every natural
-  mutation point (project created/updated, thread activated/deactivated via T3's lock
-  transitions, agent run started/completed, `approval.requested`/`resolved` from Phase O);
-  `apps/shell`/`apps/dashboard` open one `WsHubDO` connection per active space using a short-lived
-  signed WS-URL param for auth (the same browser constraint Phase 6's SSE stream already solved,
-  since WS upgrades can't carry custom headers either).
+- **T2's real architectural prerequisite, resolved:** the shell's chat call path
+  (`/spaces/:spaceId/sessions/:sessionId/agent/run`) had no concept of "which named agent" — it
+  always addressed ONE DO instance per bare `sessionId`. Fixed at the source rather than adding a
+  parallel endpoint: `/agent/run` now addresses `{sessionId}:{agentDefinitionId}` whenever an
+  explicit `agent_definition_id` is given (unchanged, bare-`sessionId` addressing when it's
+  absent — every existing single-agent session is unaffected). The new `/agent/mention-run`
+  endpoint is a thin dispatcher on top of this, not a second reasoning path.
+- **T3 scope note:** the soft/implicit lock-wrapping-every-R2-write idea from the original sketch
+  (`project:{id}:file:{path}` around every Tier-1 `r2-workspace` write) was NOT built — soft
+  locking stays exactly what the existing `lock` prebuilt already offers, opt-in per script.
+  Wrapping ALL R2 writes automatically would be a real behavior change to a heavily-used prebuilt
+  outside this pass's scope; flagged as a possible follow-up, not silently added.
+- **V scope note:** agent-run-lifecycle and `approval.resolved` broadcasts were NOT wired — the
+  former needs a broader pass through `NaelaoAgentDO`'s run lifecycle hooks, the latter needs
+  `HITLApprovalDO` to carry `space_id` in its own rows (today it's only addressed by `spaceId`,
+  never stores it). A frontend WS client (`apps/shell`/`apps/dashboard` subscribing per-space via
+  a short-lived signed WS-URL param, the same browser constraint Phase 6's SSE stream already
+  solved) was also not built — the backend fan-out (`broadcastSpaceEvent`, wired into project
+  create/update, the exclusive-mode lock transition, presence heartbeats, and
+  `approval.requested`) is real and tested; a live UI consumer is the next increment.
+- **P — Composio + Pipedream connector providers — the one remaining phase.** Extend whatever
+  table backs registered MCP servers in `workers/mcp-hub` with
+  `connector_provider: 'direct'|'composio'|'pipedream'`; a Composio/Pipedream-backed connector
+  stores only that provider's own opaque connection reference (never the underlying OAuth token)
+  and routes `ctx.mcp.call`/`mcp-connector` calls through the provider's execute-action API
+  server-side — the script-native "6 ops only" contract (CLAUDE.md ground rule #8) is unchanged;
+  this is more connector inventory behind the same surface, never a new agent capability class.
+  Needs real `COMPOSIO_API_KEY`/`PIPEDREAM_API_KEY` (or Pipedream Connect client credentials)
+  supplied via CF Workers Secrets before it can run against live providers — the routing logic
+  itself can be built and tested with mocked provider APIs regardless.

@@ -868,7 +868,7 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     Composio/Pipedream; runs that survive a closed tab; an honest container/workspace model;
     local-machine-grants UI; and project collaboration (visibility, @mention multi-agent threads,
     single-active-thread locking) plus whole-business real-time sync. Full plan + phase-by-phase
-    detail: appendix §A1.18. **Phases O, Q, R, S are BUILT; P, T, U, V remain.**
+    detail: appendix §A1.18. **Phases O, Q, R, S, T, U, V are BUILT; only P remains.**
     - **O (agent API keys + HTTP approval gate + events) BUILT.** New `nak_...` agent API key
       family (SpaceDO `agent_api_keys`, mirrors `BuilderAccountDO`'s hash+prefix pattern),
       verified via a new `/internal/agent-keys/verify` chicken-and-egg endpoint and mapped to a
@@ -921,15 +921,53 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       `requireBusinessMembership` to `/local-grants*`/`/local-tunnel/connect-token` (POST needs
       "admin") plus a `user_id` filter on `SpaceDO.listLocalGrants` so one business member can
       never see another's grant directory paths. 7 new tests (cross-business isolation).
+    - **T (project collaboration) BUILT.** T1: `projects.visibility`/`created_by` + a real
+      `project_members` ACL table (owner/editor/viewer) — a `'private'` project (the new default,
+      matching today's implicit behavior) is hidden from `listProjects` unless the viewer is a
+      member or the space's own owner/admin; the creator is auto-added as an `'owner'` member. T2:
+      a new `parseMentions()` (`@naelao/events`) resolves `@Name` tokens against a project's
+      `allowed_agent_ids` roster, deduped so mentioning the same agent twice dispatches once;
+      `/agent/run`'s DO addressing now switches to `{sessionId}:{agentId}` whenever an explicit
+      `agent_definition_id` is given (bare-sessionId addressing is unchanged when it's absent) —
+      per the confirmed decision, `@Agent1`/`@Agent2` mentioned in the SAME thread get separate
+      memories/reasoning state. New `POST .../agent/mention-run` resolves the roster, dispatches to
+      each matched agent (capped at 5) via a synchronous `/agent/run` call, and posts each reply
+      into the thread's shared message transcript attributed to that agent (Phase O's
+      `author_type`/`author_id`). T3: soft locking is unchanged (the existing `lock` prebuilt); a
+      new opt-in hard "exclusive mode" (`projects.exclusive_mode`/`active_thread_id`) is acquired
+      via `POST .../activate-thread` when a user opens/focuses a thread (deliberately NOT wired
+      into every message send — chat sessions and structural threads are two separate tables with
+      no server-side link today, a documented pre-existing gap this doesn't solve); a different
+      thread activating while one is active gets `409` with who holds it, `take_over` reassigns
+      explicitly so this can never deadlock. 25 new tests.
+    - **U (Memory OS project-shared layers) BUILT.** T2 committed each `(thread, agentId)` pair to
+      its own memory — without this, two threads in the same project (or two @mentioned agents in
+      one project) would share zero knowledge. Promoted Layers 3 (facts)/4 (fabric)/6 (wiki) to
+      SpaceDO (reusing the existing per-space DO, not a new class), keyed by `project_id`; Layer 5
+      (episodic/semantic) deliberately stays exactly where it is — private per `(thread, agentId)`.
+      New `workers/agents/src/script-engine/project-memory-client.ts`: `buildProjectMemoryStore` is
+      a `MemoryStore` backed by HTTP calls to SpaceDO's new project-memory routes;
+      `buildHybridMemoryStore` composes it with the existing local store — a structured fact routes
+      to the project store, a free-text episodic note stays local, `recall` merges both
+      (dedup-by-text, highest score wins), Fabric/Wiki always go to the project store.
+      `NaelaoAgentDO.buildScriptEngineEnv` wires the hybrid store only when `projectId` is present;
+      the Space Assistant's own `_assistant` slot is unaffected. 26 new tests.
+    - **V (whole-business real-time sync) BUILT.** `WsHubDO` (`workers/ws-gateway`) was fully built
+      but completely unwired — no other worker ever called it. New shared `broadcastSpaceEvent`
+      (`packages/http/src/realtime.ts`) — best-effort, degrades to a silent no-op when `WS_GATEWAY`
+      isn't bound — wired into `SpaceDO.createProject`/`updateProject` (`project.created`/
+      `.updated`), `activateProjectThread` (`thread.activated`, only on an actual lock transition,
+      never on a `409`), `heartbeatPresence` (`presence.heartbeat`), and
+      `NaelaoAgentDO.notifyApprovalRequested` (`approval.requested`, independent of whether email
+      notification is configured). New `WS_GATEWAY` service binding added to both
+      `workers/spaces/wrangler.toml` and `workers/agents/wrangler.toml`. Deliberately NOT wired
+      this pass: agent run started/completed and `approval.resolved` (`HITLApprovalDO` doesn't
+      carry `space_id` in its own rows today), and a frontend WS client subscribing in
+      `apps/shell`/`apps/dashboard` — the backend fan-out is real and tested; a live UI consumer is
+      the next step. 12 new tests.
     - **Remaining: P (Composio/Pipedream connector providers — needs real API keys the user must
-      supply before it can run against live providers), T (project visibility/membership +
-      @mention multi-agent-per-thread addressing + hybrid thread locking — T2's @mention needs the
-      shell to call the script-native per-agent endpoint instead of the legacy generic ReAct
-      `/agent/run` path, a real architectural gap Phase Q's fixes did NOT touch), U (Memory OS
-      Layers 3/4/6 promoted to project-scoped storage in SpaceDO, since T2's per-thread-per-agent
-      addressing means two threads in one project would otherwise share zero memory), V (wire the
-      already-built-but-dead `WsHubDO` into real-time project/thread/approval broadcasts).** Full
-      phase detail in appendix §A1.18.
+      supply before it can run against live providers; the routing logic itself can be built and
+      tested with mocked provider APIs regardless).** Full phase detail in appendix §A1.18.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
