@@ -32,7 +32,10 @@ export async function run(args, ctx) {
   const dir = mkdtempSync(join(tmpdir(), "py-"));
   const file = join(dir, "script.py");
   writeFileSync(file, code, "utf8");
-  const stdout = execFileSync("python3", [file], { timeout: timeoutMs, encoding: "utf8" });
+  // §A1.17 Phase K: run with cwd = the project's synced /workspace (ctx.workspaceDir) so a
+  // Python script's relative file I/O reads/writes the same persistent, project-shared
+  // filesystem BASH_HARNESS below already assumed — matches its existing cwd convention.
+  const stdout = execFileSync("python3", [file], { timeout: timeoutMs, encoding: "utf8", cwd: (ctx && ctx.workspaceDir) || "/workspace" });
   return { stdout };
 }
 `;
@@ -72,6 +75,7 @@ async function runTier(
     spaceId: ctx.env.spaceId,
     agentId: ctx.env.agentId,
     tenantId: ctx.env.tenantId,
+    ...(ctx.env.projectId ? { projectId: ctx.env.projectId } : {}),
   });
   if (!result.ok) throw new Error(result.error ?? `${name} failed`);
   return result.output;

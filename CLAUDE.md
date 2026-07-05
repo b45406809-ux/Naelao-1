@@ -762,6 +762,30 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     route's HMAC auth boundary), `pnpm turbo run typecheck` clean (75 tasks). Next: Phase K
     (per-project R2-mounted container), N (Launchpad operator-shell UI + cleanup) — full roadmap
     including Phases L/M in the session's plan file.
+34. **Phase K (per-project, R2-mounted Tier-5 container) is BUILT.** Fixed the two things spec
+    §33b requires that verifiably weren't true before this pass: `runContainer` addressed the
+    sandbox DO per-`{space,agent}` (`sandbox:{spaceId}:{projectId ?? "_assistant"}` now, matching
+    `workspacePrefix()`'s own scoping — two threads' agents in the same project now share ONE
+    container), and the harness only ever used a `mkdtemp`+`rm` scratch dir (nothing survived past
+    a single call). Since Cloudflare Containers have no native R2 filesystem mount, `ToolSandboxDO`
+    approximates one at the request layer: before forwarding `/exec`, it reads the project's R2
+    workspace (the SAME bucket/prefix Tier-1 `r2-workspace` already reads/writes) and hands the
+    files to the harness as `workspace_files`; on response it writes back the harness's reported
+    `/workspace` contents (`workspace_files_out`), deleting anything the script removed — R2 stays
+    the persistent source of truth, so a cold-started container still sees the same files (bounded:
+    300 files / 2MB per file / 25MB per call, text-only, matching the platform's existing R2-
+    workspace convention). The harness (`container/server.mjs`) materializes/collects `/workspace`
+    around the run (collected on both success AND failure, so a script that writes files before
+    throwing doesn't lose that work) and passes `ctx.workspaceDir` to stored scripts — deliberately
+    NOT a global `process.chdir()` (a real concurrency hazard for a long-lived Node process serving
+    overlapping requests to the same warm container). `code-exec.ts`'s `PYTHON_HARNESS` gained
+    `cwd: ctx.workspaceDir || "/workspace"` to match `BASH_HARNESS`'s existing (previously silently
+    non-functional, since nothing populated `/workspace`) convention — both prebuilt harnesses now
+    actually land in the synced, persistent workspace they always claimed to. 1023/1023 tests pass
+    (10 new: R2 sync in/out/delete, cross-thread-same-project sharing, cross-project isolation,
+    space-scoped fallback, no-R2-bound skip, plus 3 addressing tests). `pnpm turbo run typecheck`
+    clean (75 tasks). Next: Phase N (Launchpad operator-shell UI + cleanup) — full roadmap
+    including Phases L/M in the session's plan file.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

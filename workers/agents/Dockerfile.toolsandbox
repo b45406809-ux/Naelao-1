@@ -14,5 +14,9 @@ RUN npm install esbuild@0.24.0
 
 COPY container/server.mjs /app/server.mjs
 
+# §A1.17 Phase K: per-project workspace the harness materializes from R2 before each /exec and
+# collects back into afterward — the container's own approximation of an R2-mounted filesystem.
+RUN mkdir -p /workspace
+
 EXPOSE 8080
 CMD ["node", "/app/server.mjs"]

@@ -113,6 +113,7 @@ export async function runStoredScript(
       spaceId: env.spaceId,
       agentId: env.agentId,
       tenantId: env.tenantId,
+      ...(env.projectId ? { projectId: env.projectId } : {}),
     });
   } catch (err) {
     return {

@@ -3642,3 +3642,67 @@ authoring primitive the model writes against, which nothing in this pass needed 
 here means "survives restarts/retries and doesn't hold an isolate open," not "resumable mid-script");
 `workflow.status`'s wiring to `AGENT_SCRIPT_WORKFLOW.get(id).status()` is implemented but not
 exercised by a dedicated test (covered indirectly — the type contract is enforced by `tsc`).
+
+### Phase K — Per-project, R2-mounted Tier-5 container (Linux persistence)
+
+**Goal:** fix Tier 5 (spec §33b) so `python3.execute_python`/`code.execute_bash` scripts persist
+files across restarts and share them across a project's threads — verified BEFORE this pass that
+neither was true: `runContainer` addressed the sandbox DO per-`{space,agent}` (so two threads'
+agents in the same project got DIFFERENT containers) and the harness only ever wrote/read a
+`mkdtemp`+`rm` scratch dir per call (so nothing survived even a single container instance's next
+request, let alone a restart).
+
+**K1 — per-project addressing.** `code-runner.ts`'s `runContainer` now keys the sandbox DO
+`sandbox:{spaceId}:{projectId ?? "_assistant"}` instead of `sandbox:{spaceId}:{agentId}` —
+matching `workspacePrefix()`'s own space/project scoping exactly (`_assistant` is a fixed
+per-space slot for the Space Assistant, the one case with no project). `TieredCodeRunner.run()`
+gained an optional `projectId`, threaded from `execution-ladder.ts` (`env.projectId`) and from
+`code-exec.ts`'s `runTier` (the `code.execute_python`/`code.execute_bash` prebuilt ops, the only
+OTHER Tier-5 call site — `browser-use.ts` is Tier 4 and untouched).
+
+**K2 — R2 sync as the "mount," since Cloudflare Containers have no native R2 filesystem mount.**
+This is the honest mechanism available on this platform today: `ToolSandboxDO` now reads the
+project's R2 workspace (the SAME `workspacePrefix()`-scoped bucket/prefix Tier-1 `r2-workspace`
+already reads/writes) before forwarding an `/exec` call to the container harness, hands the files
+over as a `workspace_files` map in the request body, and on response writes back whatever the
+harness reports as `/workspace`'s final contents (`workspace_files_out`) — including deleting any
+file that existed before the run but is gone afterward (the script deleted it). R2 is the
+persistent source of truth: a cold-started container (post-sleep or post-restart) still sees the
+same files because they're materialized fresh from R2 on every call, never relied upon to survive
+in the container's own ephemeral disk. Bounded (300 files / 2MB per file / 25MB per call —
+generous for a working set, not unlimited; a project that outgrows this is a Container
+Marketplace-tier problem, §A1.17 Phase L, not a bigger cap here) and text-only (matches the
+existing R2-workspace convention of `.text()`, not binary-safe — an honest, documented
+limitation). `/build` (the legacy Whop micro-tool build/test route) is untouched — it never
+touched a project workspace and still doesn't.
+
+**K3 — the harness (`container/server.mjs`) materializes and collects `/workspace`.** New
+`materializeWorkspace()`/`collectWorkspace()` write the incoming map to `/workspace/<relPath>`
+before the script runs and walk it back afterward (same bounds as K2, enforced independently in
+the container too so a runaway script can't OOM/hang it even if the DO's caps were somehow
+bypassed) — collected on BOTH success and failure, so a multi-step script that writes files before
+throwing partway through doesn't lose that work. `ctx.workspaceDir` (`/workspace`) is now passed
+to `mod.run(args, ctx)` for stored Tier-5 scripts to join paths against explicitly; deliberately
+NOT a global `process.chdir()` (the harness's Node process is long-lived and shared across
+requests to the same warm container — a global chdir would be a real concurrency hazard for two
+overlapping `/exec` calls). `code-exec.ts`'s `PYTHON_HARNESS` picked up `cwd: ctx.workspaceDir ||
+"/workspace"` on its `execFileSync("python3", ...)` call to match `BASH_HARNESS`'s existing (but,
+before K2, silently non-functional) `cwd: args.working_dir || "/workspace"` convention — both
+prebuilt harnesses now actually land in the synced, persistent workspace they always claimed to.
+
+**Tests:** `tests/unit/container-per-project.test.ts` (7 — new: syncs existing R2 files into the
+harness request; writes `workspace_files_out` back to R2 under the project's prefix while
+stripping that DO<->harness wire field from the client-facing result; deletes a file from R2 when
+a script removes it; a file written by one thread's run is visible to a subsequent run in the SAME
+project, proving the "shared workspace" claim; different projects' workspaces stay isolated;
+falls back to the space-scoped workspace with no `projectId`; skips sync entirely with no
+`SCRIPTS_R2` bound). Extended `tests/unit/code-runner.test.ts` (+3 — per-project addressing, the
+`_assistant` fallback, and that `spaceId`/`projectId` are actually sent to the sandbox DO). 1023/
+1023 tests pass (10 new). `pnpm turbo run typecheck` clean (75 tasks).
+
+**Deliberately NOT built this pass:** binary file support (text-only, same limitation the
+platform's Tier-1 R2 workspace already has); incremental/diff-based R2 sync (every `/exec` call
+re-fetches the full bounded file set rather than caching what a warm container already has — a
+real optimization opportunity, but correctness-first for a first pass); multi-container-per-project
+and a container marketplace (postgres/redis/ffmpeg/etc. slots) — that's the separate, much larger
+Phase L.

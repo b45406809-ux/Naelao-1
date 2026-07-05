@@ -328,7 +328,7 @@ async function runIsolate(
 
 async function runContainer(
   opts: CodeRunnerOptions,
-  params: { name: string; code: string; args: Record<string, unknown>; spaceId: string; agentId: string }
+  params: { name: string; code: string; args: Record<string, unknown>; spaceId: string; agentId: string; projectId?: string }
 ): Promise<ScriptRunResult> {
   const started = Date.now();
   if (!opts.toolSandbox) {
@@ -341,7 +341,11 @@ async function runContainer(
     };
   }
 
-  const doId = opts.toolSandbox.idFromName(`sandbox:${params.spaceId}:${params.agentId}`);
+  // §A1.17 Phase K: addressed per PROJECT (not per agent) so every thread's agent in the same
+  // project shares one container + R2 workspace (spec §33b) — matches workspacePrefix()'s own
+  // space/project scoping. "_assistant" is a fixed per-space slot for the Space Assistant
+  // (projectId absent), analogous to workspacePrefix()'s space-scoped fallback.
+  const doId = opts.toolSandbox.idFromName(`sandbox:${params.spaceId}:${params.projectId ?? "_assistant"}`);
   const stub = opts.toolSandbox.get(doId);
 
   const controller = new AbortController();
@@ -352,7 +356,13 @@ async function runContainer(
       new Request("http://sandbox/exec", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: params.name, code: params.code, args: params.args }),
+        body: JSON.stringify({
+          name: params.name,
+          code: params.code,
+          args: params.args,
+          spaceId: params.spaceId,
+          ...(params.projectId ? { projectId: params.projectId } : {}),
+        }),
         signal: controller.signal,
       })
     );

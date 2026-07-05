@@ -312,4 +312,46 @@ describe("code-runner — Tier 5 container execution", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toBe("build failed");
   });
+
+  // §A1.17 Phase K: addressed per PROJECT (not per agent) so every thread's agent in the same
+  // project shares one container + R2 workspace.
+  it("addresses the sandbox DO per project, not per agent — two agents in the same project share one container", async () => {
+    const idFromName = vi.fn().mockReturnValue("do-id");
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }));
+    const toolSandbox = { idFromName, get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
+    const runner = buildCodeRunner({ toolSandbox });
+
+    await runner.run({ name: "x", code: "c", tier: 5, args: {}, spaceId: "space1", agentId: "agent-A", tenantId: "t", projectId: "proj-1" });
+    await runner.run({ name: "x", code: "c", tier: 5, args: {}, spaceId: "space1", agentId: "agent-B", tenantId: "t", projectId: "proj-1" });
+
+    expect(idFromName).toHaveBeenNthCalledWith(1, "sandbox:space1:proj-1");
+    expect(idFromName).toHaveBeenNthCalledWith(2, "sandbox:space1:proj-1");
+  });
+
+  it("falls back to a fixed per-space slot when projectId is absent (the Space Assistant)", async () => {
+    const idFromName = vi.fn().mockReturnValue("do-id");
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }));
+    const toolSandbox = { idFromName, get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
+    const runner = buildCodeRunner({ toolSandbox });
+
+    await runner.run({ name: "x", code: "c", tier: 5, args: {}, spaceId: "space1", agentId: "naelao-agent", tenantId: "t" });
+
+    expect(idFromName).toHaveBeenCalledWith("sandbox:space1:_assistant");
+  });
+
+  it("sends spaceId/projectId to the sandbox DO so it can sync the right R2 workspace prefix", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }));
+    const toolSandbox = {
+      idFromName: vi.fn().mockReturnValue("do-id"),
+      get: vi.fn().mockReturnValue({ fetch: fetchSpy }),
+    } as unknown as DurableObjectNamespace;
+    const runner = buildCodeRunner({ toolSandbox });
+
+    await runner.run({ name: "x", code: "c", tier: 5, args: { a: 1 }, spaceId: "space1", agentId: "agent1", tenantId: "t", projectId: "proj-1" });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    const req = fetchSpy.mock.calls[0]![0] as Request;
+    const parsed = await req.json();
+    expect(parsed).toMatchObject({ spaceId: "space1", projectId: "proj-1" });
+  });
 });
