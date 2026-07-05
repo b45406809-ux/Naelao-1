@@ -3788,3 +3788,76 @@ via `next build` (compiles, all routes generate including the extended business 
 model — see G-4a); G-4d's legacy retirement (see above, its own dedicated pass); a Customers/
 Campaigns data model itself (out of scope — nothing in the spec's gap list calls for one beyond
 the sidebar label, and inventing one would be scope creep beyond "render what already exists").
+
+### Phase L — Container Marketplace: the slot-lifecycle MECHANISM is BUILT; the catalogue ships
+### with zero live images (a deliberate, documented scope line, not a shortfall)
+
+**Goal (spec §33b "Container System", gap G-1):** implement the marketplace a project can add
+DEDICATED containers to, beyond the one base Tier-5 sandbox every project already gets (Phase K).
+The plan's own words called this "infra-heavy; sequence incrementally: one image type end-to-end
+first, then the catalogue" — this pass builds the "then the catalogue" half for real (data model,
+routing, limits, honest failure) and explicitly defers "one image end-to-end" rather than rushing
+a technically shaky first image just to have one.
+
+**Why no image shipped `available:true` this pass (read before adding one).** The base Tier-5
+sandbox's persistence (Phase K) is a per-`/exec`-call R2 TEXT sync — it round-trips small
+script/data files, not a live server's on-disk state. The marketplace's actual differentiating use
+case is a LONG-RUNNING STATEFUL SERVER (postgres, redis) that must survive container restarts —
+which needs a real persistence design (e.g., snapshot-on-write + restore-on-cold-start, not a
+per-call full-bucket sync) that is itself a dedicated undertaking per image, not a mechanical
+extension of Phase K's approach. A one-shot CLI tool (ffmpeg, blender-cli) doesn't actually need a
+SEPARATE container at all — it fits the existing base sandbox (add the apt package, call it via
+the already-working `code.execute_bash` op) — so it would have been a hollow "proof" of the
+marketplace mechanism specifically. Shipping a fabricated "postgres works" implementation without
+solving persistence honestly would have violated this session's own standing bar (no claiming
+something works when it's unverified) worse than shipping the mechanism alone and saying so.
+
+**L1 — the catalogue (`workers/agents/src/script-engine/container-catalogue.ts`).** Naelao-authored
+DATA, the same "Whop first, everything else coming_soon" precedent as `connectors/catalogue.ts` and
+`LAUNCHPAD_TEMPLATES`: 7 curated images (postgres-16, redis-7, chrome-headless, ffmpeg, blender-cli,
+pytorch-gpu, r-statistical), each declaring `exposed_ops`, `persisted_paths`, `network_policy`,
+`billing_tier`, and `available` — every entry ships `available: false` (see above). New
+`GET /container-images` on the agents worker mirrors `GET /templates` exactly.
+
+**L2 — slot registry (`container_slots`, SpaceDO migration v20).** One row per requested slot
+(`project_id`, `image_id`, `slot_name`, `status`). SpaceDO is dumb CRUD + a hard 10-slot-per-project
+ceiling (defense in depth, same precedent as `reserved-capabilities.ts`); the spaces worker owns
+the real business rules: `GET/POST /spaces/:spaceId/projects/:projectId/container-slots` (+
+`DELETE .../:slotId`) validates `image_id` against the REAL catalogue (`loadContainerCatalogue()`,
+KV-cached 1h, mirrors `loadTemplateCatalog`) — 404 for an unknown image, 409 `not_available` for a
+real-but-`coming_soon` one — and enforces a new `productConfig.containerMarketplace.
+maxSlotsPerProject` (default 0 — a product must opt IN once it has a reason to). Builder/
+operator-only for now (`requireInternalHmac`, same floor as project rules/spend) — no router
+allowlist entry, since there is nothing a business owner's day-to-day chat could usefully do with
+an all-`coming_soon` catalogue; revisit end-user exposure once a real image ships.
+
+**L3 — the routing hook, wired ahead of any image (`ScriptMetadata.container_image`).** A
+`requires_tier: 5` script may now carry a `container_image` tag; `execution-ladder.ts` forwards it
+to `codeRunner.run()`, and `code-runner.ts`'s `runContainer` checks a NEW `CodeRunnerOptions.
+containerImages: Record<string, DurableObjectNamespace>` map — if the named image has a bound
+namespace, it addresses that image's own DO (`slot:{image}:{space}:{project ?? "_assistant"}`,
+same addressing convention as Phase K's base sandbox) instead of the shared `ToolSandboxDO`; if
+not, it fails closed with a clear message rather than silently falling back to the base sandbox
+(which would run the script against the WRONG compute — e.g. a `postgres.query` script executing
+in a plain Python/Bash container with no postgres binary at all). This is the extension point
+whichever image lands first will plug into: add its Dockerfile + DO class + `[[containers]]`
+binding, wire the binding into `containerImages`, flip its catalogue `available` to `true` — no
+other code changes needed.
+
+**Tests:** `tests/unit/container-marketplace-slots.test.ts` (7 — catalogue endpoint shape;
+slot creation rejects an unknown image (404) and a real-but-unavailable one (409 `not_available`);
+create/list/delete a slot for an available image; the product's configured slot limit is
+enforced; a product with no override allows zero slots; the `requireInternalHmac` floor rejects an
+unauthenticated request). Extended `tests/unit/code-runner.test.ts` (+2 — `container_image`
+routing fails closed with no binding wired, WITHOUT touching the base sandbox; routes to the
+image's own binding, not `ToolSandboxDO`, when one IS wired). 1037/1037 tests pass (9 new).
+`pnpm turbo run typecheck` clean (75 tasks).
+
+**Deliberately NOT built this pass:** any specific image's Dockerfile/DO/persistence/wrangler
+binding (see the "why" note above — the very next incremental step, not silently dropped); a
+Container Manager UI (there is nothing real to click yet — an all-disabled marketplace page would
+be worse UX than no page; build it alongside the first live image); per-slot billing/metering
+(meaningless with zero running slots — the `billing_tier` field on each catalogue entry is the
+placeholder this will read from). Phase M (local-machine-as-container + Cowork Desktop) remains
+the one open item in this roadmap, and needs a native client app outside this repo before its
+server-side half has anything to talk to.

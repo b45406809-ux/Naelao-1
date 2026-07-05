@@ -86,6 +86,15 @@ export interface ScriptMetadata {
    * still governs what the eventual execution is allowed to do).
    */
   runtime?: "isolate" | "workflow";
+  /**
+   * §A1.17 Phase L: when set on a `requires_tier: 5` script, execution routes to the named
+   * Container Marketplace image's own DO/binding instead of the base per-project ToolSandboxDO
+   * (Phase K) — a dedicated, long-running container (a database, a cache) rather than the shared
+   * ephemeral sandbox. Fails closed with a clear error if the image isn't wired to a live binding
+   * yet (see `container-catalogue.ts`'s `available` flag — every image ships unavailable this
+   * pass; this field's routing hook is real ahead of any image actually going live).
+   */
+  container_image?: string;
 
   // Required credentials (resolved via credentials worker before L1 execution; A1.1)
   required_credentials?: string[];
@@ -200,6 +209,9 @@ export interface TieredCodeRunner {
      *  files with — project-scoped when set, space-scoped (the Space Assistant) when absent.
      *  Only consumed by Tier 5 today; Tiers 2-4 don't touch a filesystem. */
     projectId?: string;
+    /** §A1.17 Phase L: routes a Tier 5 run to this Container Marketplace image's own binding
+     *  instead of the base per-project ToolSandboxDO. Absent = the ordinary Phase K sandbox. */
+    containerImage?: string;
   }): Promise<ScriptRunResult>;
 }
 

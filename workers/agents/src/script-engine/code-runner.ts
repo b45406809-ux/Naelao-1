@@ -68,8 +68,12 @@ export interface CodeRunnerOptions {
   /** Used to mint short-lived internal tokens for the browser/mcp-hub loopbacks — never handed
    *  to the isolate directly. */
   platformSecret?: string;
-  /** ToolSandboxDO namespace (Tier 5). */
+  /** ToolSandboxDO namespace (Tier 5, the Phase K base per-project sandbox). */
   toolSandbox?: DurableObjectNamespace;
+  /** §A1.17 Phase L: Container Marketplace image id -> its own DO namespace binding. Empty/absent
+   *  today — every catalogue image ships `available:false` (see container-catalogue.ts) until a
+   *  real Dockerfile + persistence strategy + wrangler binding lands for it. */
+  containerImages?: Record<string, DurableObjectNamespace>;
   /** Per-call wall-clock timeout for isolate tiers (2-4). Default 15s. */
   isolateTimeoutMs?: number;
   /** Per-call wall-clock timeout for the container tier (5). Default 60s. */
@@ -328,9 +332,32 @@ async function runIsolate(
 
 async function runContainer(
   opts: CodeRunnerOptions,
-  params: { name: string; code: string; args: Record<string, unknown>; spaceId: string; agentId: string; projectId?: string }
+  params: { name: string; code: string; args: Record<string, unknown>; spaceId: string; agentId: string; projectId?: string; containerImage?: string }
 ): Promise<ScriptRunResult> {
   const started = Date.now();
+
+  // §A1.17 Phase L: a script tagged with a Container Marketplace image routes to THAT image's
+  // own binding, never the base sandbox — fails closed with a clear message when the image
+  // isn't wired yet (every catalogue image ships unavailable today; see container-catalogue.ts).
+  if (params.containerImage) {
+    const namespace = opts.containerImages?.[params.containerImage];
+    if (!namespace) {
+      return {
+        ok: false,
+        error: `Container image '${params.containerImage}' is not available in this environment yet`,
+        tier: 5,
+        duration_ms: Date.now() - started,
+        tokens_used: 0,
+      };
+    }
+    // No live image binds a namespace yet (see the comment above), so this branch has no
+    // reachable success path today — the addressing convention (per project, like Phase K's
+    // base sandbox) is documented here for whichever image lands it first.
+    const doId = namespace.idFromName(`slot:${params.containerImage}:${params.spaceId}:${params.projectId ?? "_assistant"}`);
+    const stub = namespace.get(doId);
+    return runContainerRequest(stub, opts, params, started);
+  }
+
   if (!opts.toolSandbox) {
     return {
       ok: false,
@@ -347,7 +374,15 @@ async function runContainer(
   // (projectId absent), analogous to workspacePrefix()'s space-scoped fallback.
   const doId = opts.toolSandbox.idFromName(`sandbox:${params.spaceId}:${params.projectId ?? "_assistant"}`);
   const stub = opts.toolSandbox.get(doId);
+  return runContainerRequest(stub, opts, params, started);
+}
 
+async function runContainerRequest(
+  stub: DurableObjectStub,
+  opts: CodeRunnerOptions,
+  params: { name: string; code: string; args: Record<string, unknown>; spaceId: string; agentId: string; projectId?: string },
+  started: number
+): Promise<ScriptRunResult> {
   const controller = new AbortController();
   const timeoutMs = opts.containerTimeoutMs ?? DEFAULT_CONTAINER_TIMEOUT_MS;
   const timer = setTimeout(() => controller.abort(), timeoutMs);

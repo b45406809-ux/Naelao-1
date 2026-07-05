@@ -497,6 +497,30 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE projects ADD COLUMN allowed_agent_ids TEXT; -- JSON string[]; NULL = unrestricted
     `,
   },
+  {
+    version: 20,
+    // Container Marketplace (spec §33b, gap G-1; §A1.17 Phase L). Phase K gave every project one
+    // base Tier-5 sandbox (ephemeral compute, R2-synced /workspace); this table is the slot
+    // registry for ADDITIONAL, dedicated containers a project can add (a database, a cache) —
+    // each row is one slot, addressed by its own DO once its image is actually wired (see the
+    // catalogue's `available` flag — every image ships `false` this pass; the registry/limit
+    // mechanism is real and tested ahead of any specific image going live).
+    description: "container_slots (Container Marketplace slot registry)",
+    up: `
+      CREATE TABLE IF NOT EXISTS container_slots (
+        id          TEXT PRIMARY KEY,
+        project_id  TEXT NOT NULL,
+        space_id    TEXT NOT NULL,
+        image_id    TEXT NOT NULL,
+        slot_name   TEXT NOT NULL DEFAULT '',
+        status      TEXT NOT NULL DEFAULT 'provisioning'
+          CHECK (status IN ('provisioning','running','stopped','error')),
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_container_slots_project ON container_slots(project_id);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -778,6 +802,18 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (method === "POST" && projectSpendMatch?.[1]) {
         return this.debitProjectSpend(projectSpendMatch[1], request);
+      }
+      // ── Container Marketplace slots (§A1.17 Phase L) ───────────────────────────
+      const containerSlotsMatch = url.pathname.match(/^\/projects\/([^/]+)\/container-slots$/);
+      if (method === "GET" && containerSlotsMatch?.[1]) {
+        return this.listContainerSlots(containerSlotsMatch[1]);
+      }
+      if (method === "POST" && containerSlotsMatch?.[1]) {
+        return this.createContainerSlot(containerSlotsMatch[1], request);
+      }
+      const containerSlotIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/container-slots\/([^/]+)$/);
+      if (method === "DELETE" && containerSlotIdMatch?.[1] && containerSlotIdMatch?.[2]) {
+        return this.deleteContainerSlot(containerSlotIdMatch[1], containerSlotIdMatch[2]);
       }
 
       // ── Presence (space collaboration, A1.8) ───────────────────────────────────
@@ -1784,6 +1820,53 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private deleteProjectRule(projectId: string, ruleId: string): Response {
     execute(this.ctx.storage.sql as never, "DELETE FROM project_rules WHERE id = ? AND project_id = ?", ruleId, projectId);
+    return Response.json({ deleted: true });
+  }
+
+  // ── Container Marketplace slots (§A1.17 Phase L) ────────────────────────────────────────
+  // Catalogue validation (does image_id exist? is it available? does the space's plan allow
+  // another slot?) happens at the spaces-worker route level, which owns the cross-worker
+  // catalogue lookup (mirrors project templates' own split: SpaceDO is dumb CRUD, the worker
+  // layer holds business rules). This DO still enforces a hard sanity ceiling independently —
+  // defense in depth, same precedent as reserved-capabilities.ts's belt-and-suspenders checks.
+  private static readonly MAX_SLOTS_PER_PROJECT_HARD_CEILING = 10;
+
+  private listContainerSlots(projectId: string): Response {
+    const rows = queryAll<{
+      id: string; project_id: string; image_id: string; slot_name: string; status: string; created_at: string; updated_at: string;
+    }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM container_slots WHERE project_id = ? ORDER BY created_at",
+      projectId
+    );
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  private async createContainerSlot(projectId: string, request: Request): Promise<Response> {
+    const project = queryOne<{ id: string; space_id: string }>(this.ctx.storage.sql as never, "SELECT id, space_id FROM projects WHERE id = ?", projectId);
+    if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
+
+    const body = await request.json<{ image_id: string; slot_name?: string }>().catch(() => ({}) as Record<string, never>);
+    if (!body.image_id) return Response.json({ error_code: "bad_request", message: "image_id is required" }, { status: 400 });
+
+    const existing = queryAll<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM container_slots WHERE project_id = ?", projectId);
+    if (existing.length >= SpaceDO.MAX_SLOTS_PER_PROJECT_HARD_CEILING) {
+      return Response.json({ error_code: "slot_limit_reached", message: `A project may not exceed ${SpaceDO.MAX_SLOTS_PER_PROJECT_HARD_CEILING} container slots` }, { status: 409 });
+    }
+
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO container_slots (id, project_id, space_id, image_id, slot_name, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'provisioning', ?, ?)`,
+      id, projectId, project.space_id, body.image_id, body.slot_name ?? "", now, now
+    );
+    return Response.json({ id, project_id: projectId, image_id: body.image_id, status: "provisioning", created_at: now }, { status: 201 });
+  }
+
+  private deleteContainerSlot(projectId: string, slotId: string): Response {
+    execute(this.ctx.storage.sql as never, "DELETE FROM container_slots WHERE id = ? AND project_id = ?", slotId, projectId);
     return Response.json({ deleted: true });
   }
 

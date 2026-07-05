@@ -812,6 +812,31 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     1028/1028 tests pass (5 new), `pnpm turbo run typecheck` clean (75 tasks), `apps/shell`
     verified via `next build`. Remaining: Phase L (Container Marketplace, large) and M
     (local-machine-as-container + Cowork Desktop, largest) — full detail in the session's plan file.
+36. **Phase L (Container Marketplace, spec §33b gap G-1): the slot-lifecycle MECHANISM is BUILT;
+    the catalogue ships with zero live images — a deliberate, documented scope line, not a
+    shortfall.** Why: the base Tier-5 sandbox's persistence (Phase K) is a per-call R2 TEXT sync,
+    fine for small script/data files but not a real design for a long-running stateful server
+    (postgres, redis) surviving container restarts — the marketplace's actual differentiating use
+    case. A one-shot CLI tool (ffmpeg) doesn't need a separate container at all (add the apt
+    package to the base sandbox, call it via the existing `code.execute_bash` op), so it would
+    have been a hollow "proof" of this specific mechanism. Rather than fabricate a "postgres
+    works" implementation without solving persistence honestly, this pass ships the REAL,
+    tested infrastructure and documents the first image as the next incremental step, not
+    silently dropped. Built: `container-catalogue.ts` (7 curated images — postgres-16, redis-7,
+    chrome-headless, ffmpeg, blender-cli, pytorch-gpu, r-statistical — every entry `available:
+    false`), `GET /container-images` (mirrors `GET /templates`); `container_slots` registry
+    (SpaceDO migration v20, dumb CRUD + a 10-slot hard ceiling) with the real business rules
+    (image exists + is available, product's configured `containerMarketplace.
+    maxSlotsPerProject`, default 0) enforced at `GET/POST/DELETE /spaces/:id/projects/:id/
+    container-slots` on the spaces worker (builder-only, `requireInternalHmac`, no router
+    allowlist entry yet — nothing for an end user to usefully do with an all-`coming_soon`
+    catalogue); a routing hook wired ahead of any image (`ScriptMetadata.container_image` →
+    `code-runner.ts`'s new `CodeRunnerOptions.containerImages` map → addresses that image's own
+    DO, `slot:{image}:{space}:{project}`, or fails CLOSED with a clear message rather than
+    silently running against the base sandbox's wrong compute). 1037/1037 tests pass (9 new),
+    `pnpm turbo run typecheck` clean (75 tasks). Remaining: Phase M (local-machine-as-container +
+    Cowork Desktop, largest, needs a native client app outside this repo) — full detail in the
+    session's plan file.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

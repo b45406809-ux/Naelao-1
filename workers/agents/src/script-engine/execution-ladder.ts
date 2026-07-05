@@ -114,6 +114,7 @@ export async function runStoredScript(
       agentId: env.agentId,
       tenantId: env.tenantId,
       ...(env.projectId ? { projectId: env.projectId } : {}),
+      ...(script.metadata.container_image ? { containerImage: script.metadata.container_image } : {}),
     });
   } catch (err) {
     return {

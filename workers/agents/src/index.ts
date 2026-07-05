@@ -26,6 +26,7 @@ import { shouldPromote } from "./whop/cycle-logic.js";
 import { listManifests } from "./launchpad/manifest.js";
 import { LAUNCHPAD_TEMPLATES } from "./launchpad/spacetype.js";
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
+import { CONTAINER_IMAGE_CATALOGUE } from "./script-engine/container-catalogue.js";
 import { isCronDue } from "@naelao/events";
 import { SkillLibrary } from "./script-engine/skill-library.js";
 import { promoteSkill, inheritTemplateSkills } from "./script-engine/federation.js";
@@ -1629,6 +1630,13 @@ app.get("/templates", async (c) => {
       ...(t.bootstrap ? { bootstrap: t.bootstrap } : {}),
     })),
   });
+});
+
+// GET /container-images — the Container Marketplace catalogue (§A1.17 Phase L). Mirrors
+// GET /templates: the spaces worker KV-caches this and is the single source of truth for
+// slot-creation validation — never a hand-maintained duplicate.
+app.get("/container-images", async (c) => {
+  return c.json({ images: CONTAINER_IMAGE_CATALOGUE });
 });
 
 // GET /templates/:templateId/skills — list the shared template library (names + summaries).

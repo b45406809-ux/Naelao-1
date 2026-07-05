@@ -355,3 +355,44 @@ describe("code-runner — Tier 5 container execution", () => {
     expect(parsed).toMatchObject({ spaceId: "space1", projectId: "proj-1" });
   });
 });
+
+// §A1.17 Phase L: a script tagged with a Container Marketplace image routes to that image's OWN
+// binding, never the base sandbox — and fails closed (not silently falling back to the base
+// sandbox, which would run the script against the wrong image's compute) when unwired.
+describe("code-runner — Tier 5 Container Marketplace routing (§A1.17 Phase L)", () => {
+  it("fails closed with a clear message when the named image has no wired binding", async () => {
+    const toolSandbox = {
+      idFromName: vi.fn().mockReturnValue("do-id"),
+      get: vi.fn(),
+    } as unknown as DurableObjectNamespace;
+    const runner = buildCodeRunner({ toolSandbox }); // no containerImages map at all
+
+    const result = await runner.run({
+      name: "x", code: "c", tier: 5, args: {}, spaceId: "space1", agentId: "agent1", tenantId: "t",
+      containerImage: "postgres-16",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/postgres-16.*not available/i);
+    // Must NOT silently fall back to the base sandbox and run against the wrong compute.
+    expect(toolSandbox.get).not.toHaveBeenCalled();
+  });
+
+  it("routes to the image's own binding (not the base ToolSandboxDO) when one IS wired", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, result: { rows: [] } }), { status: 200 }));
+    const idFromName = vi.fn().mockReturnValue("slot-do-id");
+    const postgresNamespace = { idFromName, get: vi.fn().mockReturnValue({ fetch: fetchSpy }) } as unknown as DurableObjectNamespace;
+    const toolSandbox = { idFromName: vi.fn(), get: vi.fn() } as unknown as DurableObjectNamespace;
+
+    const runner = buildCodeRunner({ toolSandbox, containerImages: { "postgres-16": postgresNamespace } });
+    const result = await runner.run({
+      name: "postgres.query", code: "c", tier: 5, args: { sql: "select 1" }, spaceId: "space1", agentId: "agent1", tenantId: "t",
+      projectId: "proj-1", containerImage: "postgres-16",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(idFromName).toHaveBeenCalledWith("slot:postgres-16:space1:proj-1");
+    // The base sandbox binding must never be touched for an image-routed run.
+    expect((toolSandbox as unknown as { get: ReturnType<typeof vi.fn> }).get).not.toHaveBeenCalled();
+  });
+});

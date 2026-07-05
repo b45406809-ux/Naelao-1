@@ -647,6 +647,68 @@ app.post("/spaces/:spaceId/projects/:projectId/spend", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// Container Marketplace slots (§A1.17 Phase L) — builder/operator-only for now (like rules/
+// spend above): no catalogue image is live yet, so there is nothing for an end user's day-to-day
+// chat to reach here. requireInternalHmac (came-through-the-router gate) stays the only floor;
+// revisit end-user exposure once a real image ships and there's something to actually add.
+app.use("/spaces/:spaceId/projects/:projectId/container-slots", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/container-slots/:slotId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+
+app.get("/spaces/:spaceId/projects/:projectId/container-slots", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/container-slots`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// POST validates image_id against the real catalogue (exists + available) and the product's
+// configured slot limit BEFORE ever reaching SpaceDO — SpaceDO's own hard ceiling is a backstop,
+// not the primary control (same split as project templates: the worker layer holds business
+// rules, the DO is CRUD).
+app.post("/spaces/:spaceId/projects/:projectId/container-slots", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+
+  const body = await c.req.json<{ image_id: string; slot_name?: string }>().catch(() => ({}) as Record<string, never>);
+  if (!body.image_id) return c.json({ error_code: "bad_request", message: "image_id is required" }, 400);
+
+  const catalogue = await loadContainerCatalogue(c.env);
+  const image = catalogue.find((i) => i.id === body.image_id);
+  if (!image) return c.json({ error_code: "not_found", message: `Unknown container image '${body.image_id}'` }, 404);
+  if (!image.available) {
+    return c.json({ error_code: "not_available", message: `Container image '${body.image_id}' is not available yet` }, 409);
+  }
+
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT spacetype_id, config_json FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'"
+  ).bind(spaceId, tenantId).first<{ spacetype_id: string; config_json: string | null }>();
+  if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const pc = await loadEffectiveProductConfig(c.env, space.spacetype_id, space.config_json);
+  const maxSlots = pc?.containerMarketplace?.maxSlotsPerProject ?? 0;
+
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const listRes = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/container-slots`, "GET");
+  const existing = await listRes.json<{ count: number }>().catch(() => ({ count: 0 }));
+  if (existing.count >= maxSlots) {
+    return c.json({ error_code: "slot_limit_reached", message: `This product allows at most ${maxSlots} container slot(s) per project` }, 409);
+  }
+
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/container-slots`, "POST", JSON.stringify(body));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.delete("/spaces/:spaceId/projects/:projectId/container-slots/:slotId", async (c) => {
+  const { spaceId, projectId, slotId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/container-slots/${encodeURIComponent(slotId)}`, "DELETE");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // Presence (space collaboration, A1.8) — heartbeat: "I'm here" (space-level, or scoped to a
 // project/thread). Callers poll GET periodically to see who's currently active. Phase B
 // (§A1.17): allowlisted for product_end_user callers on the router — the same membership floor
@@ -1831,6 +1893,23 @@ async function loadTemplateCatalog(env: Env): Promise<Array<{ id: string; name: 
   const catalog = body.templates.map((t) => ({ id: t.id, name: t.name, coming_soon: t.coming_soon ?? false }));
   await env.NAELAO_CONFIG_KV.put(cacheKey, JSON.stringify(catalog), { expirationTtl: 3600 });
   return catalog;
+}
+
+/**
+ * §A1.17 Phase L: load the Container Marketplace catalogue from the agents worker's real
+ * GET /container-images, KV-cached 1h like loadTemplateCatalog above — this worker never
+ * hand-maintains its own copy of image availability/billing-tier data.
+ */
+async function loadContainerCatalogue(env: Env): Promise<Array<{ id: string; name: string; available: boolean; billing_tier: string }>> {
+  const cacheKey = "container-image-catalogue";
+  const cached = await env.NAELAO_CONFIG_KV.get(cacheKey, "json") as Array<{ id: string; name: string; available: boolean; billing_tier: string }> | null;
+  if (cached) return cached;
+  if (!env.AGENTS_WORKER) return [];
+  const resp = await env.AGENTS_WORKER.fetch(new Request("http://agents-worker/container-images"));
+  if (!resp.ok) return [];
+  const body = await resp.json<{ images: Array<{ id: string; name: string; available: boolean; billing_tier: string }> }>();
+  await env.NAELAO_CONFIG_KV.put(cacheKey, JSON.stringify(body.images), { expirationTtl: 3600 });
+  return body.images;
 }
 
 /**

@@ -314,6 +314,14 @@ export interface SpaceTypeProductConfig {
     businessTemplates?: string[];
     projectTemplates?: string[];
   };
+
+  /** §A1.17 Phase L: how many Container Marketplace slots a project on this product may hold,
+   *  beyond the one base Tier-5 sandbox every project already gets (Phase K). Unset/0 = no
+   *  marketplace slots (the pre-Phase-L default) — a builder opts a product INTO the marketplace
+   *  by raising this, once at least one catalogue image is actually `available`. */
+  containerMarketplace?: {
+    maxSlotsPerProject?: number;
+  };
 }
 
 // resolveTenancy lives in the pure ./tenancy module (no cloudflare:workers import) so it
