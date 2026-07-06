@@ -21,6 +21,11 @@ export interface NormalizedBillingEvent {
   spaceId: string;
   customerId: string;
   subscriptionId: string | null;
+  /** The provider's own stable event/resource id (LS's `data.id` — present on every event,
+   *  order or subscription alike). This is the canonical idempotency key for webhook dedup and
+   *  order recording — never a synthetic derived key, which can collide across genuinely
+   *  distinct events (S0.3). */
+  providerEventId: string | null;
   variantOrPriceId: string;
   /** Always an integer, always cents. */
   amountCents: number;

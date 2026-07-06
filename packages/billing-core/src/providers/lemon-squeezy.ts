@@ -101,6 +101,10 @@ export class LemonSqueezyProvider implements BillingProvider {
       spaceId,
       customerId: String(attrs["customer_id"] ?? ""),
       subscriptionId: isOrder ? null : (event.data?.id ?? null),
+      // S0.3: previously discarded for order events (only kept for subscriptions) — this is the
+      // real, stable LS event/resource id and must survive for BOTH kinds so it can serve as the
+      // canonical idempotency key (webhook dedup + order recording), not a synthetic derived one.
+      providerEventId: event.data?.id ?? null,
       variantOrPriceId: String(attrs["variant_id"] ?? attrs["first_order_item"] ?? ""),
       amountCents,
       currency: String(attrs["currency"] ?? "USD"),

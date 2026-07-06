@@ -56,7 +56,10 @@ async function recordSeatActivation(
   const fee = Math.round((gross * feeBps) / 10_000);
   const net = Math.max(0, gross - fee);
   const id = crypto.randomUUID();
-  const providerEventId = event.subscriptionId ?? `seat:${event.customerId ?? ""}:${gross}:${event.spaceId}`;
+  // S0.3: prefer the real provider event id (LS's data.id) over a synthetic key — a synthetic
+  // key built from type+customer+amount+space collides across two genuinely distinct purchases
+  // at the same price.
+  const providerEventId = event.providerEventId ?? event.subscriptionId ?? `seat:${event.customerId ?? ""}:${gross}:${event.spaceId}`;
 
   await env.PLATFORM_DB.prepare(
     `INSERT OR IGNORE INTO launchpad_orders
@@ -114,7 +117,9 @@ async function recordProductOrder(
   const fee = Math.round((gross * feeBps) / 10_000);
   const net = Math.max(0, gross - fee);
   const id = crypto.randomUUID();
-  const providerEventId = event.subscriptionId ?? `${event.type}:${event.customerId ?? ""}:${gross}:${productId}`;
+  // S0.3: prefer the real provider event id — the synthetic fallback collided across two
+  // genuinely distinct same-price purchases of the same product by the same customer.
+  const providerEventId = event.providerEventId ?? event.subscriptionId ?? `${event.type}:${event.customerId ?? ""}:${gross}:${productId}`;
 
   // INSERT OR IGNORE on the unique provider_event_id index → idempotent.
   await env.PLATFORM_DB.prepare(
@@ -397,6 +402,33 @@ async function wakeAgent(
   }
 }
 
+/** Fallback dedup key for the pathological case of an event carrying no provider id at all. */
+async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * S0.3: the top-level idempotency gate — checked BEFORE any side effect (reseller ledger, order
+ * recording, business subscription, credit-pack grant, wakeAgent). Lemon Squeezy retries on any
+ * non-2xx response or timeout, which previously re-ran the ENTIRE handler on every retry; only
+ * launchpad_orders had its own (separately keyed) idempotency, so a plain retry of e.g. a
+ * subscription.updated event re-woke the agent every time. INSERT OR IGNORE on the
+ * (provider, event_id) primary key: returns true (process it) only the first time; false on
+ * every subsequent delivery of the same event.
+ */
+async function markEventProcessedOnce(
+  provider: string,
+  eventId: string,
+  eventType: string,
+  db: D1Database
+): Promise<boolean> {
+  const result = await db.prepare(
+    `INSERT OR IGNORE INTO processed_webhook_events (provider, event_id, event_type) VALUES (?, ?, ?)`
+  ).bind(provider, eventId, eventType).run();
+  return (result.meta?.changes ?? 0) > 0;
+}
+
 /**
  * If the billing event belongs to a child tenant under a reseller, attribute it to the
  * parent and write a reseller-ledger entry (consolidated invoicing — spec G-AS34/G-AS35).
@@ -435,11 +467,15 @@ async function recordResellerAttribution(
   });
   if (!attribution) return;
 
+  // S0.3: INSERT OR IGNORE on the provider_event_id unique index — idempotent upsert. In normal
+  // operation the top-level processed_webhook_events gate (markEventProcessedOnce) already
+  // prevents this from being reached twice for the same event, but this is a real constraint
+  // in its own right (belt-and-suspenders), not just relying on the caller's discipline.
   await db.prepare(
-    `INSERT INTO reseller_ledger
+    `INSERT OR IGNORE INTO reseller_ledger
        (id, parent_tenant_id, child_tenant_id, child_space_id, event_type,
-        retail_cents, wholesale_cents, margin_cents, currency, period)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        retail_cents, wholesale_cents, margin_cents, currency, period, provider_event_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(
     crypto.randomUUID(),
     hierarchy.parent_tenant_id,
@@ -450,7 +486,8 @@ async function recordResellerAttribution(
     attribution.wholesaleCents,
     attribution.marginCents,
     attribution.currency,
-    billingPeriod()
+    billingPeriod(),
+    event.providerEventId ?? null
   ).run();
   console.log(`[billing/ls] Reseller ledger: parent=${hierarchy.parent_tenant_id} margin=${attribution.marginCents}c (${attribution.relationship})`);
 }
@@ -489,6 +526,18 @@ export async function handleLemonSqueezyWebhook(
   if (!event.spaceId) {
     console.warn("[billing/ls] Event missing spaceId — cannot dispatch to agent");
     return Response.json({ ok: true, skipped: true });
+  }
+
+  // 3b. S0.3: top-level exactly-once gate — checked BEFORE any side effect below. A retry of an
+  // event already processed (any event type, not just payment.success) is a silent no-op 200,
+  // never re-running reseller attribution, order recording, or waking the agent a second time.
+  // Falls back to a rawBody hash only in the pathological case where the provider sent no event
+  // id at all (never happens for real Lemon Squeezy traffic — data.id is always present).
+  const eventId = event.providerEventId ?? `hash:${await sha256Hex(rawBody)}`;
+  const isFirstDelivery = await markEventProcessedOnce("lemon_squeezy", eventId, event.type, env.PLATFORM_DB);
+  if (!isFirstDelivery) {
+    console.log(`[billing/ls] Duplicate delivery of event=${eventId} type=${event.type} — no-op`);
+    return Response.json({ ok: true, duplicate: true });
   }
 
   const agent = await resolveDefaultAgent(event.spaceId, env.PLATFORM_DB);
