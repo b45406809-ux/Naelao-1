@@ -1,6 +1,7 @@
 // G-I17: MCP Tool Server Registry — registers MCP servers per Space and proxies tool calls
 import { Hono } from "hono";
 import { errorResponse, requestId, requireInternalHmac } from "@naelao/http";
+import { checkSsrf } from "@naelao/security";
 
 interface Env {
   ENVIRONMENT: string;
@@ -99,31 +100,19 @@ function getCallerIdentity(c: { req: { header: (h: string) => string | undefined
   };
 }
 
-// Validate that a URL is safe (not SSRF-prone)
-function validateMcpUrl(rawUrl: string): { ok: true; url: URL } | { ok: false; message: string } {
-  let u: URL;
-  try {
-    u = new URL(rawUrl);
-  } catch {
-    return { ok: false, message: "Invalid url" };
+// S0.5: was a literal-only hostname/IP blocklist (no DNS resolution, so a DNS-rebinding attack —
+// register a public-IP hostname, then repoint its DNS to an internal address — sailed straight
+// through) checked ONLY at registration time, never again before the actual outbound fetch. Now
+// backed by the shared @naelao/security checkSsrf (DoH resolution, the same guard
+// workers/browser/src/index.ts uses), and called again immediately before every outbound MCP
+// fetch below — not just at registration — so a hostname that resolves safely at registration
+// but is repointed afterward is still caught at call time.
+async function validateMcpUrl(rawUrl: string): Promise<{ ok: true; url: URL } | { ok: false; message: string }> {
+  const result = await checkSsrf(rawUrl);
+  if (result.blocked) {
+    return { ok: false, message: result.reason ?? "url failed SSRF validation" };
   }
-  if (!/^https?:$/.test(u.protocol)) {
-    return { ok: false, message: "url must use http or https" };
-  }
-  const hostname = u.hostname;
-  if (
-    hostname === "localhost" ||
-    hostname === "0.0.0.0" ||
-    hostname === "::1" ||
-    /^127\./.test(hostname) ||
-    /^10\./.test(hostname) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname) ||
-    /^192\.168\./.test(hostname) ||
-    /^169\.254\./.test(hostname)
-  ) {
-    return { ok: false, message: "url must not point to private IP ranges" };
-  }
-  return { ok: true, url: u };
+  return { ok: true, url: new URL(rawUrl) };
 }
 
 /**
@@ -194,7 +183,7 @@ app.post("/v1/spaces/:spaceId/mcp-servers", async (c) => {
     return c.json({ error_code: "bad_request", message: "name and url are required" }, 400);
   }
 
-  const urlValidation = validateMcpUrl(body.url);
+  const urlValidation = await validateMcpUrl(body.url);
   if (!urlValidation.ok) {
     return c.json({ error_code: "bad_request", message: urlValidation.message }, 400);
   }
@@ -288,6 +277,15 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
     return c.json({ error_code: "not_found", message: "MCP server not found or disabled" }, 404);
   }
 
+  // S0.5: re-validate at CALL TIME, not just registration — a hostname that resolved to a
+  // public IP when registered can be repointed via DNS afterward (rebinding) to an internal
+  // address. Checked BEFORE resolving credentials, so a URL that now fails validation never
+  // even causes a credential lookup, let alone gets the resolved credential attached to a fetch.
+  const callTimeValidation = await validateMcpUrl(server.url);
+  if (!callTimeValidation.ok) {
+    return c.json({ error_code: "bad_request", message: `MCP server URL failed SSRF validation: ${callTimeValidation.message}` }, 400);
+  }
+
   let headers: Record<string, string>;
   try {
     headers = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
@@ -362,6 +360,13 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
       error_code: "reserved_capability",
       message: `Tool '${body.tool_name}' looks like a money-in capability, which is reserved to the prebuilt commerce script.`,
     }, 403);
+  }
+
+  // S0.5: re-validate at CALL TIME, not just registration — see the tools/list handler above.
+  // Checked before resolving credentials, same ordering rationale.
+  const callTimeValidation = await validateMcpUrl(server.url);
+  if (!callTimeValidation.ok) {
+    return c.json({ error_code: "bad_request", message: `MCP server URL failed SSRF validation: ${callTimeValidation.message}` }, 400);
   }
 
   let headers: Record<string, string>;
