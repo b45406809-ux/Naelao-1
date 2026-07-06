@@ -1009,9 +1009,20 @@ app.delete("/spaces/:spaceId/event-triggers/:triggerId", async (c) => {
 // DO), scheduled jobs live directly in PLATFORM_DB — the hourly dispatcher (enqueueAgentTicks,
 // agents worker) needs one cheap cross-space query to find everything due, the same reason
 // channel_links is a platform table rather than per-space state.
+// WS-2 (Space Assistant surface): GET is now reachable by a product_end_user viewing their own
+// (or their business's) assistant's Crons panel — loadOwnedSpace is tenant-match-only (no
+// per-caller floor), exactly the footgun the router's PRODUCT_END_USER_PATH_PATTERNS comment
+// warns about, so this adds the same resolveEndUserBusinessRole floor every other end-user-
+// reachable route in this file already has. POST/PATCH/DELETE stay un-allowlisted (never
+// reachable by a product_end_user regardless of this check, per the router's allowlist).
 app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const owned = await loadOwnedSpace(c, c.req.param("spaceId"));
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  const callerIdentity = getCallerIdentity(c);
+  if (callerIdentity.role === "product_end_user") {
+    const role = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, c.req.param("spaceId"), callerIdentity.userId);
+    if (!role) return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
+  }
   const { results } = await c.env.PLATFORM_DB.prepare(
     `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
             consecutive_failures, last_error, created_at, updated_at
@@ -1024,6 +1035,13 @@ app.post("/spaces/:spaceId/scheduled-jobs", async (c) => {
   const spaceId = c.req.param("spaceId");
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+  // WS-2: the router allowlist for this path (GET+POST share one path with no jobId segment)
+  // only proves a product_end_user's identity, never that write access is safe here — this
+  // route creates cron jobs, so (unlike the GET list) a product_end_user must never reach it,
+  // mirroring agent-definitions' "GET only for product_end_user" precedent.
+  if (getCallerIdentity(c).role === "product_end_user") {
+    return c.json({ error_code: "forbidden", message: "product_end_user callers may only read scheduled jobs" }, 403);
+  }
 
   const body = await c.req.json<{
     name: string;
@@ -1119,14 +1137,20 @@ app.delete("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
 });
 
 // Space Assistant approval policy — "same access as the owning user, ask first unless the
-// user has trusted this action." Owner-authenticated only; the assistant can never set its
-// own policy. Also fetched directly by NaelaoAgentDO (fetchAssistantPolicy) — internal,
-// builder-only, never end-user-facing, so safe to gate broadly.
+// user has trusted this action." PATCH stays owner-authenticated only; the assistant can never
+// set its own policy. WS-2: GET is now also reachable by a product_end_user viewing their own
+// Space Assistant's Status panel (which permissions the assistant currently has) — gated by the
+// same resolveEndUserBusinessRole floor every other end-user-reachable route uses.
 app.use("/spaces/:spaceId/assistant-policy", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.get("/spaces/:spaceId/assistant-policy", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const callerIdentity = getCallerIdentity(c);
+  if (callerIdentity.role === "product_end_user") {
+    const role = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, callerIdentity.userId);
+    if (!role) return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
+  }
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/assistant-policy?space_id=${encodeURIComponent(spaceId)}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
@@ -1136,6 +1160,12 @@ app.patch("/spaces/:spaceId/assistant-policy", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  // WS-2: the router allowlist for this path (GET+PATCH share it, no distinguishing sub-path)
+  // only proves identity — a product_end_user must never be able to CHANGE the assistant's own
+  // approval policy, only read it (same "GET only" precedent as agent-definitions/scheduled-jobs).
+  if (getCallerIdentity(c).role === "product_end_user") {
+    return c.json({ error_code: "forbidden", message: "product_end_user callers may only read the assistant policy" }, 403);
+  }
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/assistant-policy?space_id=${encodeURIComponent(spaceId)}`, "PATCH", c.req.raw.body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });

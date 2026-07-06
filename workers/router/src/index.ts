@@ -293,6 +293,14 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // pricing/products routes above (identity here, authorization there).
   /^\/spaces\/([^/]+)\/local-grants(\/|$)/,
   /^\/spaces\/([^/]+)\/local-tunnel\/connect-token$/,
+  // WS-2 (Space Assistant surface): the Status/Crons panels — additionally gated by
+  // resolveEndUserBusinessRole on the spaces worker exactly like the routes above.
+  /^\/spaces\/([^/]+)\/assistant-policy$/,
+  /^\/spaces\/([^/]+)\/scheduled-jobs$/,
+  // The Memory/Channels/Sub-agents/Files panels — additionally gated by
+  // requireEndUserBusinessMembership on the agents worker (same floor, different worker since
+  // these routes live there).
+  /^\/spaces\/([^/]+)\/assistant\/(memory|channels|sub-agents|files)$/,
 ];
 
 /** Resolve productId from the path if it matches an end-user-reachable route pattern. Strips the
@@ -693,6 +701,12 @@ api.all("/spaces/:spaceId/projects/from-template", async (c) =>
 // Customer-bot channel observability + human-takeover admin control → agents worker
 // (proxies straight through to the space's agent DO).
 api.all("/spaces/:spaceId/channels/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+
+// WS-2: Space Assistant surface read-only panels (Memory/Channels/Sub-agents/Files) → agents
+// worker, which owns the NaelaoAgentDO forwarding + R2 workspace listing for these.
+api.all("/spaces/:spaceId/assistant/*", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 

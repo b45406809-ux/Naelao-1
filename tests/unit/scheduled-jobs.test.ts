@@ -28,7 +28,8 @@ const SCHEDULED_JOBS_AGENT_GOAL_MIGRATION = readFileSync(
 const SPACES_TABLE_SQL = `
   CREATE TABLE spaces (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
-    name TEXT NOT NULL DEFAULT '', spacetype_id TEXT NOT NULL DEFAULT 'launchpad', config_json TEXT
+    name TEXT NOT NULL DEFAULT '', spacetype_id TEXT NOT NULL DEFAULT 'launchpad', config_json TEXT,
+    parent_space_id TEXT
   );
 `;
 
@@ -152,6 +153,44 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
       env as never, execCtx
     );
     expect(res.status).toBe(404);
+  });
+});
+
+// WS-2 (Space Assistant surface, Crons panel): GET is now reachable by a signed-in product end
+// user reading their own product's (or business's) scheduled jobs — resolveEndUserBusinessRole
+// treats the product root (no parent_space_id) as an implicit member, matching every other
+// end-user floor's precedent. POST must never be reachable by a product_end_user regardless.
+describe("scheduled-jobs — product_end_user floor (WS-2)", () => {
+  function productEndUserReq(path: string, opts: { method?: string; body?: unknown } = {}): Request {
+    const headers = new Headers({
+      "x-naelao-tenant-id": "tenant-1",
+      "x-naelao-role": "product_end_user",
+      "x-naelao-user-id": "user-42",
+    });
+    if (opts.body !== undefined) headers.set("content-type", "application/json");
+    return new Request(`https://spaces.naelao.com${path}`, {
+      method: opts.method ?? "GET",
+      headers,
+      ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
+    });
+  }
+
+  it("a product_end_user CAN GET scheduled jobs on the product root", async () => {
+    const env = makeSpacesEnv("space-1", "tenant-1");
+    const res = await spacesWorker.fetch(productEndUserReq("/spaces/space-1/scheduled-jobs"), env as never, execCtx);
+    expect(res.status).toBe(200);
+  });
+
+  it("a product_end_user CANNOT POST a new scheduled job", async () => {
+    const env = makeSpacesEnv("space-1", "tenant-1");
+    const res = await spacesWorker.fetch(
+      productEndUserReq("/spaces/space-1/scheduled-jobs", {
+        method: "POST",
+        body: { name: "Malicious cron", cron_expression: "0 9 * * *", script_name: "x" },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(403);
   });
 });
 

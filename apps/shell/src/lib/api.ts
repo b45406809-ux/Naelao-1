@@ -282,6 +282,82 @@ export async function listAgentDefinitions(spaceId: string, session: SessionCred
   return Array.isArray(res) ? res : res.data ?? [];
 }
 
+// ── Space Assistant surface (WS-2) — read-only panels, all pure consumers of existing backends ──
+
+export interface AssistantPolicy {
+  approval_mode: "always_ask" | "gate_unless_listed" | "gate_listed" | "yolo";
+  auto_approved_actions: string[];
+}
+
+export async function getAssistantPolicy(spaceId: string, session: SessionCredentials): Promise<AssistantPolicy> {
+  return apiFetch(`/v1/spaces/${spaceId}/assistant-policy`, { session });
+}
+
+export interface MemoryFact {
+  key: string;
+  category: string;
+  value: unknown;
+  confidence: number;
+}
+
+export async function getAssistantMemory(spaceId: string, session: SessionCredentials): Promise<MemoryFact[]> {
+  const res = await apiFetch<{ entries: MemoryFact[]; count: number }>(`/v1/spaces/${spaceId}/assistant/memory`, { session });
+  return res.entries;
+}
+
+export interface ScheduledJob {
+  id: string;
+  name: string;
+  cron_expression: string;
+  enabled: number;
+  last_run_at: string | null;
+  consecutive_failures: number;
+}
+
+export async function listScheduledJobs(spaceId: string, session: SessionCredentials): Promise<ScheduledJob[]> {
+  const res = await apiFetch<{ data: ScheduledJob[] }>(`/v1/spaces/${spaceId}/scheduled-jobs`, { session });
+  return res.data;
+}
+
+export interface ChannelLink {
+  channel: string;
+  enabled: number;
+  created_at: string;
+}
+
+export async function listAssistantChannels(spaceId: string, session: SessionCredentials): Promise<ChannelLink[]> {
+  const res = await apiFetch<{ data: ChannelLink[] }>(`/v1/spaces/${spaceId}/assistant/channels`, { session });
+  return res.data;
+}
+
+export interface SubAgentSummary {
+  id: string;
+  goal: string;
+  status: string;
+  progress_note: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listSubAgents(spaceId: string, session: SessionCredentials, parentRunId: string): Promise<SubAgentSummary[]> {
+  const res = await apiFetch<{ data?: SubAgentSummary[] } | SubAgentSummary[]>(
+    `/v1/spaces/${spaceId}/assistant/sub-agents?parent_run_id=${encodeURIComponent(parentRunId)}`,
+    { session }
+  );
+  return Array.isArray(res) ? res : res.data ?? [];
+}
+
+export interface WorkspaceFile {
+  path: string;
+  size: number;
+  uploaded: string;
+}
+
+export async function listAssistantFiles(spaceId: string, session: SessionCredentials): Promise<WorkspaceFile[]> {
+  const res = await apiFetch<{ data: WorkspaceFile[] }>(`/v1/spaces/${spaceId}/assistant/files`, { session });
+  return res.data;
+}
+
 // ── Businesses (Phase C — reseller-mode end users create/switch/invite into their own
 // businesses) ─────────────────────────────────────────────────────────────────
 

@@ -7,7 +7,7 @@
 //   POST   /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/cancel
 
 import { Hono } from "hono";
-import { errorResponse, requestId, notFound, badRequest, unauthorized, mintInternalToken, verifyInternalToken } from "@naelao/http";
+import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { getDOName, verifyDOTenantPrefix } from "@naelao/crypto";
 import { detectPromptInjection, moderateText } from "@naelao/moderation";
@@ -1759,6 +1759,84 @@ app.get("/spaces/:spaceId/channels/unanswered", async (c) => {
   if (!tenantId) throw unauthorized("Missing tenant identity");
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
   return stub.fetch(new Request("http://agent-do/channels/unanswered"));
+});
+
+// ── WS-2: Space Assistant surface — read-only panels (Status/Memory/Channels/Sub-agents/Files) ──
+// Every panel is a pure consumer of an already-built backend; none of these routes ever write.
+// A product_end_user is allowed through (their OWN Space Assistant, or their business's) subject
+// to the same resolveEndUserBusinessRole floor every other end-user-reachable route uses — since
+// the agents worker doesn't share spaces worker's business-auth.ts module, this calls the spaces
+// worker's own /internal/business-role endpoint (added for exactly this cross-worker check).
+async function requireEndUserBusinessMembership(c: { env: AgentsEnv; req: { header: (h: string) => string | undefined } }, spaceId: string): Promise<boolean> {
+  const { tenantId, userId, role } = getCallerIdentity(c);
+  if (role !== "product_end_user") return true;
+  if (!c.env.SPACES_WORKER || !userId) return false;
+  try {
+    const token = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
+    const resp = await c.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/internal/business-role?spaceId=${encodeURIComponent(spaceId)}&endUserId=${encodeURIComponent(userId)}`,
+      { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token } }
+    ));
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+// GET /spaces/:spaceId/assistant/memory — the Space Assistant's own Layer 3 facts (+ episodic
+// notes), read-only. Forwards to NaelaoAgentDO's existing GET /memory for the "_assistant" slot
+// (agentId naelao-agent, no projectId — the same identity every dispatcher hardcodes).
+app.get("/spaces/:spaceId/assistant/memory", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
+  const category = c.req.query("category");
+  return stub.fetch(new Request(`http://agent-do/memory${category ? `?category=${encodeURIComponent(category)}` : ""}`));
+});
+
+// GET /spaces/:spaceId/assistant/channels — which channels are configured for this space (the
+// Channels panel). Read-only projection of channel_links; the signing secret itself never leaves
+// the credentials vault.
+app.get("/spaces/:spaceId/assistant/channels", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    "SELECT channel, enabled, created_at FROM channel_links WHERE space_id = ? ORDER BY channel"
+  ).bind(spaceId).all();
+  return c.json({ data: results });
+});
+
+// GET /spaces/:spaceId/assistant/sub-agents?parent_run_id= — poll a run's sub-agent fan-out
+// (the Sub-agents panel's "live" list). Forwards to NaelaoAgentDO's existing GET /sub-agents.
+app.get("/spaces/:spaceId/assistant/sub-agents", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  const parentRunId = c.req.query("parent_run_id") ?? "";
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
+  return stub.fetch(new Request(`http://agent-do/sub-agents?parent_run_id=${encodeURIComponent(parentRunId)}`));
+});
+
+// GET /spaces/:spaceId/assistant/files — the Space Assistant's own R2 workspace listing (the
+// Files panel), space-wide (never a project's, which is a different workspacePrefix — the Space
+// Assistant has no projectId). Read-only: names + sizes, never file contents.
+app.get("/spaces/:spaceId/assistant/files", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
+  const prefix = `spaces/${spaceId}/workspace/`;
+  const listed = await c.env.SCRIPTS_R2.list({ prefix, limit: 200 });
+  const files = listed.objects
+    .filter((o) => !o.key.endsWith("/.keep"))
+    .map((o) => ({ path: o.key.slice(prefix.length), size: o.size, uploaded: o.uploaded.toISOString() }));
+  return c.json({ data: files, count: files.length });
 });
 
 // Admin hands a thread back to the bot (or takes it over themselves) — the human-takeover

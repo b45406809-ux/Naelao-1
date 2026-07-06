@@ -113,6 +113,45 @@ describe("spaces worker — newly-gated routes reject forged direct requests", (
     );
     expect(res.status).not.toBe(403);
   });
+
+  // WS-2 (Space Assistant surface, Status panel): GET is now reachable by a signed-in product
+  // end user reading their own assistant's permissions — PATCH must never be.
+  it("GET /spaces/:spaceId/assistant-policy allows a product_end_user with a valid internal token", async () => {
+    const token = await mintInternalToken(SECRET, "tenant-1");
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/space-1/assistant-policy", {
+        headers: {
+          "x-naelao-tenant-id": "tenant-1",
+          "x-naelao-internal-token": token,
+          "x-naelao-role": "product_end_user",
+          "x-naelao-user-id": "user-42",
+        },
+      }),
+      makeSpacesEnv() as never,
+      execCtx
+    );
+    expect(res.status).not.toBe(403);
+  });
+
+  it("PATCH /spaces/:spaceId/assistant-policy rejects a product_end_user even with a valid internal token", async () => {
+    const token = await mintInternalToken(SECRET, "tenant-1");
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/space-1/assistant-policy", {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": "tenant-1",
+          "x-naelao-internal-token": token,
+          "x-naelao-role": "product_end_user",
+          "x-naelao-user-id": "user-42",
+        },
+        body: JSON.stringify({ approval_mode: "yolo" }),
+      }),
+      makeSpacesEnv() as never,
+      execCtx
+    );
+    expect(res.status).toBe(403);
+  });
 });
 
 // Bucket A/B (following up on the deferred routes): builder-only team surfaces (members,

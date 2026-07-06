@@ -140,8 +140,7 @@ describe("router — product end-user hybrid auth", () => {
 
   // Phase B (§A1.17) revisited this: /projects, /threads, /agent-definitions, and /presence are
   // now allowlisted (the spaces worker's own requireBusinessMembership gate enforces the actual
-  // per-method floor — the router only resolves identity, it never authorizes actions). /
-  // scheduled-jobs stays rejected — its gate is still tenant-match-only with no per-caller floor.
+  // per-method floor — the router only resolves identity, it never authorizes actions).
   it("a valid nps_ session CAN now reach the allowlisted projects, threads, agent-definitions, and presence paths", async () => {
     const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "builder-tenant-1" }));
     for (const path of ["/spaces/prod-1/projects", "/spaces/prod-1/threads", "/spaces/prod-1/agent-definitions", "/spaces/prod-1/presence"]) {
@@ -156,16 +155,36 @@ describe("router — product end-user hybrid auth", () => {
     }
   });
 
-  it("a valid nps_ session is still rejected on the deliberately excluded /scheduled-jobs path", async () => {
-    const env = makeEnv(makeSpacesStub({ validSession: true }));
-    const res = await routerWorker.fetch(
-      new Request("https://router.naelao.com/v1/spaces/prod-1/scheduled-jobs", {
-        method: "GET",
-        headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
-      }),
-      env as never, execCtx
-    );
-    expect(res.status).toBe(401);
+  // WS-2 (Space Assistant surface): /scheduled-jobs (Crons panel) and /assistant-policy (Status
+  // panel) are now allowlisted too — the spaces worker added a resolveEndUserBusinessRole floor
+  // on GET (and explicitly rejects a product_end_user on the write methods that share the same
+  // path) before this was safe to allowlist.
+  it("a valid nps_ session CAN now reach the allowlisted scheduled-jobs and assistant-policy GET paths", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "builder-tenant-1" }));
+    for (const path of ["/spaces/prod-1/scheduled-jobs", "/spaces/prod-1/assistant-policy"]) {
+      const res = await routerWorker.fetch(
+        new Request(`https://router.naelao.com/v1${path}`, {
+          method: "GET",
+          headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
+        }),
+        env as never, execCtx
+      );
+      expect(res.status).toBe(200);
+    }
+  });
+
+  it("a valid nps_ session CAN now reach the allowlisted assistant memory/channels/sub-agents/files paths", async () => {
+    const env = makeEnv(makeSpacesStub({ validSession: true, resolvedTenant: "builder-tenant-1" }));
+    for (const path of ["/spaces/prod-1/assistant/memory", "/spaces/prod-1/assistant/channels", "/spaces/prod-1/assistant/sub-agents", "/spaces/prod-1/assistant/files"]) {
+      const res = await routerWorker.fetch(
+        new Request(`https://router.naelao.com/v1${path}`, {
+          method: "GET",
+          headers: { authorization: "Bearer nps_realtoken", "x-naelao-end-user-id": "user-42" },
+        }),
+        env as never, execCtx
+      );
+      expect(res.status).toBe(200);
+    }
   });
 
   // Phase C (§A1.17) added the business/invite routes: /businesses, /my-businesses (called with a
