@@ -61,40 +61,6 @@ export default function ProductConfigurationPage() {
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Branding</h2>
-        <div className="space-y-3">
-          <div className="flex items-center gap-4">
-            <input
-              type="color"
-              value={form.branding?.brandColor ?? "#4f46e5"}
-              onChange={(e) => setForm((f) => ({ ...f, branding: { ...f.branding, brandColor: e.target.value } }))}
-              className="h-10 w-16 border border-gray-300 rounded-lg cursor-pointer"
-            />
-            <div
-              className="flex-1 h-10 rounded-lg flex items-center px-4 text-white text-sm font-semibold"
-              style={{ backgroundColor: form.branding?.brandColor ?? "#4f46e5" }}
-            >
-              Preview
-            </div>
-          </div>
-          <input
-            type="text"
-            value={form.branding?.logoUrl ?? ""}
-            onChange={(e) => setForm((f) => ({ ...f, branding: { ...f.branding, logoUrl: e.target.value } }))}
-            placeholder="Logo URL"
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 outline-none"
-          />
-          <textarea
-            value={form.branding?.productDescription ?? ""}
-            onChange={(e) => setForm((f) => ({ ...f, branding: { ...f.branding, productDescription: e.target.value } }))}
-            placeholder="Description"
-            rows={2}
-            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 outline-none resize-none"
-          />
-        </div>
-      </div>
-
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
         <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Sign-in</h2>
         <label className="flex items-center gap-2 text-sm text-gray-700">
           <input

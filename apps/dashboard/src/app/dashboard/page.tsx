@@ -112,7 +112,7 @@ export default function DashboardPage() {
             <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
               <h2 className="font-semibold text-gray-900">Recent Spaces</h2>
               <Link
-                href="/dashboard/spaces"
+                href="/dashboard/products"
                 className="text-sm text-brand-600 hover:underline"
               >
                 View all
@@ -123,7 +123,7 @@ export default function DashboardPage() {
               <div className="px-6 py-10 text-center text-gray-400">
                 <p className="text-sm">No spaces yet.</p>
                 <Link
-                  href="/dashboard/spaces"
+                  href="/dashboard/products"
                   className="text-brand-600 text-sm hover:underline mt-1 inline-block"
                 >
                   Create your first Space

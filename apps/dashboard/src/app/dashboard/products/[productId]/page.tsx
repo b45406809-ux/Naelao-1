@@ -72,6 +72,35 @@ export default function ProductOverviewPage() {
           Full analytics →
         </Link>
       </div>
+
+      {/* WS-5.3: a product IS a space (same row, same id — builder-routes.ts's GET
+         /builder/products/:id reads straight from the `spaces` table) — these per-space admin
+         tools (KB, commerce, connectors, credentials, eval, onboarding, sessions, webhooks) are
+         real and still only live under the legacy /dashboard/spaces/:id/* routes; folded in here
+         instead of duplicated, so a builder never needs the separate spaces list to reach them. */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Advanced Space Tools</h2>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
+          {[
+            { label: "Knowledge Base", segment: "kb" },
+            { label: "Commerce", segment: "commerce" },
+            { label: "Connectors", segment: "connectors" },
+            { label: "Credentials", segment: "credentials" },
+            { label: "Evaluations", segment: "eval" },
+            { label: "Onboarding", segment: "onboarding" },
+            { label: "Sessions", segment: "sessions" },
+            { label: "Webhooks", segment: "webhooks" },
+          ].map((tool) => (
+            <Link
+              key={tool.segment}
+              href={`/dashboard/spaces/${params.productId}/${tool.segment}`}
+              className="text-brand-600 hover:underline"
+            >
+              {tool.label} →
+            </Link>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

@@ -10,11 +10,10 @@ import IdentityStep from "./steps/IdentityStep";
 import SpaceTypeStep from "./steps/SpaceTypeStep";
 import AuthConfigStep from "./steps/AuthConfigStep";
 import PricingStep from "./steps/PricingStep";
-import BrandingStep from "./steps/BrandingStep";
 import DomainStep from "./steps/DomainStep";
 import ReviewStep from "./steps/ReviewStep";
 
-const STEPS = ["Identity", "Starting Point", "Sign-in", "Pricing", "Branding", "Domain", "Review & Launch"] as const;
+const STEPS = ["Identity", "Starting Point", "Sign-in", "Pricing", "Domain", "Review & Launch"] as const;
 
 function validateStep(step: number, state: WizardState): string | null {
   if (step === 0) {
@@ -74,12 +73,6 @@ export default function NewProductWizardPage() {
         ...(state.templateId ? { template_id: state.templateId } : {}),
         ...(state.productSlug ? { product_slug: state.productSlug } : {}),
         product_config: {
-          branding: {
-            brandColor: state.brandColor,
-            ...(state.logoUrl ? { logoUrl: state.logoUrl } : {}),
-            ...(state.faviconUrl ? { faviconUrl: state.faviconUrl } : {}),
-            ...(state.productDescription ? { productDescription: state.productDescription } : {}),
-          },
           authProvider: {
             provider: state.authProvider,
             requireAdminApproval: state.requireAdminApproval,
@@ -147,9 +140,8 @@ export default function NewProductWizardPage() {
         {step === 1 && <SpaceTypeStep {...stepProps} />}
         {step === 2 && <AuthConfigStep {...stepProps} />}
         {step === 3 && <PricingStep {...stepProps} />}
-        {step === 4 && <BrandingStep {...stepProps} />}
-        {step === 5 && <DomainStep {...stepProps} />}
-        {step === 6 && <ReviewStep state={state} />}
+        {step === 4 && <DomainStep {...stepProps} />}
+        {step === 5 && <ReviewStep state={state} />}
 
         {error && (
           <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-5">

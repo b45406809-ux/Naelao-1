@@ -26,13 +26,10 @@ export interface WizardState {
   includedSeats: string;
   trialDays: string;
 
-  // Step 5 — Branding
-  brandColor: string;
-  logoUrl: string;
-  faviconUrl: string;
-  productDescription: string;
-
-  // Step 6 — Domain (optional — can be configured later from Product Detail)
+  // Step 5 — Domain (optional — can be configured later from Product Detail). Builders never
+  // configure product UI/branding here — that's a Naelao-authored shell, never a per-builder
+  // reskin (CLAUDE.md decision: "builders configure limits/templates/agents/monetization only,
+  // never UI").
   customDomain: string;
 }
 
@@ -51,10 +48,6 @@ export const INITIAL_WIZARD_STATE: WizardState = {
   pricePerSeatCents: "",
   includedSeats: "",
   trialDays: "",
-  brandColor: "#4f46e5",
-  logoUrl: "",
-  faviconUrl: "",
-  productDescription: "",
   customDomain: "",
 };
 
