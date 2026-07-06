@@ -209,6 +209,13 @@ export interface Project {
   max_threads: number;
   allowed_agent_ids: string[] | null;
   created_at: string;
+  // WS-4.2: the rich, already-built customer-bot/execution config — present on getProject's full
+  // row but not on the lighter listProjects projection.
+  kind?: "workspace" | "customer_bot";
+  execution_ceiling?: number;
+  daily_spend_cap_credits?: number;
+  channel_config?: Record<string, unknown>;
+  visibility?: "public" | "private";
 }
 
 export async function listProjects(spaceId: string, session: SessionCredentials): Promise<Project[]> {
@@ -226,6 +233,32 @@ export async function createProject(spaceId: string, session: SessionCredentials
 
 export async function getProject(spaceId: string, projectId: string, session: SessionCredentials): Promise<Project> {
   return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}`, { session });
+}
+
+// WS-4.2: surfaces the already-built rich project config (customer_bot kind, execution ceiling,
+// spend cap, max threads, agent bindings) — PATCH succeeds for an admin/owner in the target
+// business (or fails 403, same "identity here, authorization there" pattern as every other
+// business-scoped route; the UI surfaces that error rather than pre-computing role).
+export async function updateProject(
+  spaceId: string,
+  projectId: string,
+  session: SessionCredentials,
+  patch: Partial<{
+    name: string;
+    description: string;
+    kind: "workspace" | "customer_bot";
+    execution_ceiling: number;
+    daily_spend_cap_credits: number;
+    max_threads: number;
+    default_agent_id: string | null;
+    allowed_agent_ids: string[] | null;
+  }>
+): Promise<Project> {
+  return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+    session,
+  });
 }
 
 // ── Threads ────────────────────────────────────────────────────────────────
@@ -580,4 +613,38 @@ export interface LocalTunnelConnectInfo {
 
 export async function mintLocalTunnelConnectToken(spaceId: string, session: SessionCredentials): Promise<LocalTunnelConnectInfo> {
   return apiFetch(`/v1/spaces/${spaceId}/local-tunnel/connect-token`, { method: "POST", session });
+}
+
+// ── Knowledge Base (WS-4: optional project_id isolates a document to a project's own KB;
+// omitted = the pre-existing space-wide default) ─────────────────────────────────────────────
+
+export interface KbDocument {
+  id: string;
+  space_id: string;
+  project_id: string | null;
+  title: string;
+  source_url: string | null;
+  content_type: "text" | "url" | "code" | "pdf";
+  status: "pending" | "processing" | "indexed" | "flagged" | "failed";
+  chunk_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listKbDocuments(spaceId: string, session: SessionCredentials, projectId?: string): Promise<KbDocument[]> {
+  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  const res = await apiFetch<{ data: KbDocument[]; count: number }>(`/v1/spaces/${spaceId}/kb/documents${qs}`, { session });
+  return res.data;
+}
+
+export async function createKbDocument(
+  spaceId: string,
+  session: SessionCredentials,
+  input: { title: string; content: string; content_type?: string; source_url?: string; project_id?: string }
+): Promise<KbDocument> {
+  return apiFetch(`/v1/spaces/${spaceId}/kb/documents`, { method: "POST", body: JSON.stringify(input), session });
+}
+
+export async function deleteKbDocument(spaceId: string, docId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/kb/documents/${encodeURIComponent(docId)}`, { method: "DELETE", session });
 }

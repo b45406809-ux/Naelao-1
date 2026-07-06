@@ -35,6 +35,11 @@ interface ChunkRecord {
   tenantId: string;
 }
 
+// WS-4: Vectorize metadata can't filter on a genuinely absent field the same way SQL's
+// `IS NULL` works — an empty string is used as the "space-wide" sentinel so a project-scoped
+// query and a space-wide query never accidentally match each other.
+const SPACE_WIDE_PROJECT_SENTINEL = "";
+
 // ── Hono app ──────────────────────────────────────────────────────────────────
 
 // G-A11: Validate required secrets at startup
@@ -110,9 +115,15 @@ async function sha256Hex(input: string): Promise<string> {
 }
 
 // ── Helper: R2 key for a chunk ────────────────────────────────────────────────
+// WS-4: per-project KB isolation — a project's documents live under their own R2 prefix,
+// distinct from the space-wide default (projectId undefined/null).
 
-function chunkR2Key(spaceId: string, docId: string, index: number): string {
-  return `kb/${spaceId}/${docId}/chunk_${index}.json`;
+function chunkR2Key(spaceId: string, projectId: string | null | undefined, docId: string, index: number): string {
+  return `kb/${spaceId}/${projectId ?? "_space"}/${docId}/chunk_${index}.json`;
+}
+
+function docR2Prefix(spaceId: string, projectId: string | null | undefined, docId: string): string {
+  return `kb/${spaceId}/${projectId ?? "_space"}/${docId}/`;
 }
 
 // ── Helper: read chunk content from R2 ───────────────────────────────────────
@@ -120,10 +131,11 @@ function chunkR2Key(spaceId: string, docId: string, index: number): string {
 async function readChunkFromR2(
   bucket: R2Bucket,
   spaceId: string,
+  projectId: string | null | undefined,
   docId: string,
   chunkIndex: number,
 ): Promise<ChunkRecord | null> {
-  const obj = await bucket.get(chunkR2Key(spaceId, docId, chunkIndex));
+  const obj = await bucket.get(chunkR2Key(spaceId, projectId, docId, chunkIndex));
   if (!obj) return null;
   const text = await obj.text();
   return JSON.parse(text) as ChunkRecord;
@@ -156,16 +168,26 @@ app.get("/spaces/:spaceId/kb/documents", async (c) => {
   const url = new URL(c.req.url);
   const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10), 200);
   const offset = parseInt(url.searchParams.get("offset") ?? "0", 10);
+  // WS-4: no project_id param = the pre-existing default, space-wide documents only
+  // (project_id IS NULL) — never mixes in a project's own isolated documents by accident.
+  const projectId = url.searchParams.get("project_id");
 
   const { results } = await c.env.PLATFORM_DB.prepare(
-    `SELECT id, space_id, tenant_id, title, source_url, content_type, status,
-            chunk_count, created_at, updated_at
-     FROM kb_documents
-     WHERE space_id = ? AND tenant_id = ?
-     ORDER BY created_at DESC
-     LIMIT ? OFFSET ?`
+    projectId
+      ? `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
+                chunk_count, created_at, updated_at
+         FROM kb_documents
+         WHERE space_id = ? AND tenant_id = ? AND project_id = ?
+         ORDER BY created_at DESC
+         LIMIT ? OFFSET ?`
+      : `SELECT id, space_id, tenant_id, project_id, title, source_url, content_type, status,
+                chunk_count, created_at, updated_at
+         FROM kb_documents
+         WHERE space_id = ? AND tenant_id = ? AND project_id IS NULL
+         ORDER BY created_at DESC
+         LIMIT ? OFFSET ?`
   )
-    .bind(spaceId, tenantId, limit, offset)
+    .bind(...(projectId ? [spaceId, tenantId, projectId, limit, offset] : [spaceId, tenantId, limit, offset]))
     .all();
 
   return c.json({ data: results, count: results.length, limit, offset });
@@ -182,7 +204,11 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
     content?: string;
     content_type?: string;
     source_url?: string;
+    /** WS-4: optional — isolates this document to a single project's own KB, distinct from the
+     *  space-wide default (omitted/null). */
+    project_id?: string;
   }>();
+  const projectId = body.project_id ?? null;
 
   // Validate required fields
   if (!body.title || typeof body.title !== "string" || body.title.trim().length === 0) {
@@ -240,10 +266,10 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
   // Insert doc record with status=processing
   await c.env.PLATFORM_DB.prepare(
     `INSERT INTO kb_documents
-       (id, space_id, tenant_id, title, source_url, content_type, status, chunk_count, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?)`
+       (id, space_id, tenant_id, project_id, title, source_url, content_type, status, chunk_count, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'processing', 0, ?, ?)`
   )
-    .bind(docId, spaceId, tenantId, body.title.trim(), body.source_url ?? null, contentType, now, now)
+    .bind(docId, spaceId, tenantId, projectId, body.title.trim(), body.source_url ?? null, contentType, now, now)
     .run();
 
   try {
@@ -292,16 +318,19 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
         tenantId,
       };
       await c.env.KB_BUCKET.put(
-        chunkR2Key(spaceId, docId, i),
+        chunkR2Key(spaceId, projectId, docId, i),
         JSON.stringify(chunkRecord),
       );
 
-      // Prepare Vectorize vector
+      // Prepare Vectorize vector. project_id always set (never omitted) — Vectorize's flat
+      // $eq filter can't distinguish "field absent" from "field present," so the space-wide
+      // sentinel (empty string) makes filtering exact both ways (see SPACE_WIDE_PROJECT_SENTINEL).
       vectorUpserts.push({
         id: `${docId}_chunk_${i}`,
         values: embedResult.embedding,
         metadata: {
           space_id: spaceId,
+          project_id: projectId ?? SPACE_WIDE_PROJECT_SENTINEL,
           doc_id: docId,
           chunk_index: i,
           title: body.title.trim(),
@@ -365,10 +394,11 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
 
   // Verify ownership and get current state
   const existing = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, title, chunk_count FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ?"
-  ).bind(docId, spaceId, tenantId).first<{ id: string; title: string; chunk_count: number }>();
+    "SELECT id, title, chunk_count, project_id FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ?"
+  ).bind(docId, spaceId, tenantId).first<{ id: string; title: string; chunk_count: number; project_id: string | null }>();
 
   if (!existing) throw notFound("KbDocument");
+  const projectId = existing.project_id;
 
   // If only updating title (no content re-index needed)
   if (body.title && !body.content) {
@@ -420,7 +450,7 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     }
 
     // Delete old R2 chunks
-    const prefix = `kb/${spaceId}/${docId}/`;
+    const prefix = docR2Prefix(spaceId, projectId, docId);
     let cursor: string | undefined;
     do {
       const listOpts: R2ListOptions = cursor !== undefined ? { prefix, cursor } : { prefix };
@@ -449,14 +479,21 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       if (chunk === undefined || embedResult === undefined) continue;
 
       await c.env.KB_BUCKET.put(
-        chunkR2Key(spaceId, docId, i),
+        chunkR2Key(spaceId, projectId, docId, i),
         JSON.stringify({ docId, chunkIndex: i, content: chunk, spaceId, tenantId } satisfies ChunkRecord)
       );
 
       vectorUpserts.push({
         id: `${docId}_chunk_${i}`,
         values: embedResult.embedding,
-        metadata: { space_id: spaceId, doc_id: docId, chunk_index: i, title: newTitle, content_preview: chunk.slice(0, 200) },
+        metadata: {
+          space_id: spaceId,
+          project_id: projectId ?? SPACE_WIDE_PROJECT_SENTINEL,
+          doc_id: docId,
+          chunk_index: i,
+          title: newTitle,
+          content_preview: chunk.slice(0, 200),
+        },
       });
     }
 
@@ -488,10 +525,10 @@ app.delete("/spaces/:spaceId/kb/documents/:docId", async (c) => {
 
   // Verify ownership
   const doc = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, chunk_count FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ?"
+    "SELECT id, chunk_count, project_id FROM kb_documents WHERE id = ? AND space_id = ? AND tenant_id = ?"
   )
     .bind(docId, spaceId, tenantId)
-    .first<{ id: string; chunk_count: number }>();
+    .first<{ id: string; chunk_count: number; project_id: string | null }>();
 
   if (!doc) throw notFound("KbDocument");
 
@@ -513,7 +550,7 @@ app.delete("/spaces/:spaceId/kb/documents/:docId", async (c) => {
   }
 
   // ── Delete R2 objects ─────────────────────────────────────────────────────
-  const prefix = `kb/${spaceId}/${docId}/`;
+  const prefix = docR2Prefix(spaceId, doc.project_id, docId);
   let cursor: string | undefined;
   do {
     const listOpts: R2ListOptions = cursor !== undefined ? { prefix, cursor } : { prefix };
@@ -544,15 +581,18 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   const url = new URL(c.req.url);
   const query = url.searchParams.get("q");
   const topK = Math.min(parseInt(url.searchParams.get("top_k") ?? "10", 10), 50);
+  // WS-4: no project_id param = the pre-existing default, search space-wide documents only —
+  // never silently mixes in a project's own isolated KB.
+  const projectId = url.searchParams.get("project_id");
 
   if (!query || query.trim().length === 0) {
     throw badRequest("q parameter is required");
   }
 
   // Ownership already verified by the "/spaces/:spaceId/kb/*" gate above (F8) — the cache key
-  // still folds tenantId in as defense-in-depth so a future refactor of that gate can't
-  // reintroduce a cross-tenant cache-serving path.
-  const cacheHash = await sha256Hex(tenantId + ":" + query + spaceId);
+  // still folds tenantId (and now project_id) in as defense-in-depth so a future refactor of
+  // that gate can't reintroduce a cross-tenant/cross-project cache-serving path.
+  const cacheHash = await sha256Hex(tenantId + ":" + query + spaceId + ":" + (projectId ?? ""));
   const cacheKey = `kbcache:${cacheHash}`;
 
   const cached = await c.env.KB_CACHE.get(cacheKey);
@@ -565,7 +605,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
 
   const denseResponse = await c.env.KB_VECTORS.query(queryEmbed.embedding, {
     topK: topK * 2,
-    filter: { space_id: { $eq: spaceId } },
+    filter: { space_id: { $eq: spaceId }, project_id: { $eq: projectId ?? SPACE_WIDE_PROJECT_SENTINEL } },
     returnMetadata: "indexed",
   });
 
@@ -587,7 +627,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
       const chunkIndex = parseInt(chunkIdxStr, 10);
       if (isNaN(chunkIndex)) return;
 
-      const chunkRecord = await readChunkFromR2(c.env.KB_BUCKET, spaceId, matchDocId, chunkIndex);
+      const chunkRecord = await readChunkFromR2(c.env.KB_BUCKET, spaceId, projectId, matchDocId, chunkIndex);
       if (!chunkRecord) return;
 
       chunkContents.push({
