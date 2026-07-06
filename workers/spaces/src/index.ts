@@ -416,6 +416,26 @@ app.get("/internal/spaces/:spaceId/owner-contact", async (c) => {
   return c.json({ found: true, email: user.email });
 });
 
+// ── /internal/business-role ─────────────────────────────────────────────────
+// Cross-worker authorization check: KV and other workers call this to verify
+// a product_end_user has a real business_memberships row for a target space.
+// Returns the caller's role in the business, or 404 if not a member.
+// Gated with requireInternalHmac to authenticate the calling worker.
+// Query params: spaceId, endUserId
+app.use("/internal/business-role", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/internal/business-role", async (c) => {
+  const spaceId = c.req.query("spaceId") ?? "";
+  const endUserId = c.req.query("endUserId") ?? "";
+  if (!spaceId || !endUserId) {
+    return c.json({ error_code: "bad_request", message: "spaceId and endUserId are required" }, 400);
+  }
+  const role = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, endUserId);
+  if (!role) {
+    return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 404);
+  }
+  return c.json({ role });
+});
+
 // ── SpaceDO session proxy ────────────────────────────────────────────────────
 // Forward /spaces/:spaceId/sessions/* to the SpaceDO for that space
 // A1.16.10 (layer-3 backstop, bucket B): investigated before gating — the router mounts this
@@ -435,11 +455,19 @@ app.get("/internal/spaces/:spaceId/owner-contact", async (c) => {
 // corrupting POST matching platform-wide). Gated inline here too, consistent with that fix.
 app.all("/spaces/:spaceId/sessions*", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const { tenantId } = getCallerIdentity(c);
+  const { tenantId, role, userId } = getCallerIdentity(c);
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const token = c.req.header("x-naelao-internal-token");
   if (!(await verifyInternalToken(token, tenantId, c.env.PLATFORM_SECRET))) {
     return errorResponse(forbidden("Missing or invalid internal token — this endpoint is not directly reachable"), c.get("requestId") ?? "unknown");
+  }
+
+  // S0.1: For product_end_user callers, verify business membership.
+  if (role === "product_end_user" && userId) {
+    const memberRole = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, userId);
+    if (!memberRole) {
+      return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
+    }
   }
 
   // G-BA01: HMAC-derived DO name prevents enumeration by compromised workers
@@ -456,14 +484,23 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
   // signed-in end user's own "recent conversations." The end_user_id filter MUST be derived
   // from this caller's own verified claims, never forwarded from the client's query string —
   // otherwise any end user could pass ?end_user_id=<someone-else> and list a stranger's
-  // sessions. Every other sub-path (create/get/messages/state) is untouched passthrough.
+  // sessions. S0.1: Also apply end_user_id filtering for GET /sessions/:id and
+  // GET /sessions/:id/messages when the caller is a product_end_user.
   let search = url.search;
+  const { role: callerRole, userId: callerId } = getCallerIdentity(c);
+  const isProductEndUser = callerRole === "product_end_user" && callerId;
+
   if (c.req.method === "GET" && doPath === "/sessions") {
-    const { role, userId } = getCallerIdentity(c);
     const qs = new URLSearchParams();
-    if (role === "product_end_user" && userId) qs.set("end_user_id", userId);
+    if (isProductEndUser) qs.set("end_user_id", callerId);
     const limit = url.searchParams.get("limit");
     if (limit) qs.set("limit", limit);
+    search = `?${qs.toString()}`;
+  } else if (c.req.method === "GET" && /^\/sessions\/([^/]+)(\/messages)?$/.test(doPath) && isProductEndUser) {
+    // For GET /sessions/:id and GET /sessions/:id/messages, pass end_user_id so SpaceDO can verify
+    // the caller owns this session before returning it.
+    const qs = new URLSearchParams(url.searchParams);
+    qs.set("end_user_id", callerId);
     search = `?${qs.toString()}`;
   }
   const doUrl = new URL(doPath + search, "http://space-do");
