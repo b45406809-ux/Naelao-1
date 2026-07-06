@@ -118,7 +118,7 @@ export async function installLaunchpadAgents(
   // profile (§A1.17 Phase G) instead of the generic one — same agentId ("naelao-agent"), same
   // dispatch, richer prompt.
   await writeAgentConfig(env.SCRIPTS_R2, spaceId, LAUNCHPAD_ASSISTANT_PROFILE.agentId, withServices(LAUNCHPAD_ASSISTANT_PROFILE.config));
-  await registerAgentIndex(spaceId, tenantId, LAUNCHPAD_ASSISTANT_PROFILE.agentId, "Naelao Agent", "Business-builder Space Assistant", null, env);
+  await registerAgentIndex(spaceId, tenantId, LAUNCHPAD_ASSISTANT_PROFILE.agentId, "Naelao Agent", "Business-builder Space Assistant", null, manifest.id, env);
   await seedLaunchpadAssistantPolicy(spaceId, tenantId, env);
 
   for (const agentDef of agentsToInstall) {
@@ -126,7 +126,7 @@ export async function installLaunchpadAgents(
     await writeAgentConfig(env.SCRIPTS_R2, spaceId, profile.agentId, withServices(profile.config));
     await registerAgentIndex(
       spaceId, tenantId, profile.agentId, agentDef.name, agentDef.description,
-      primaryTemplateId, env
+      primaryTemplateId, manifest.id, env
     );
     await installAgentTrigger(spaceId, tenantId, agentDef, env);
   }
@@ -235,6 +235,7 @@ async function registerAgentIndex(
   name: string,
   description: string,
   templateId: string | null,
+  spaceTypeId: string,
   env: Env
 ): Promise<void> {
   const payload = {
@@ -245,7 +246,7 @@ async function registerAgentIndex(
     config: {
       agent_id: agentId,
       config_path: `spaces/${spaceId}/agents/${agentId}/`,
-      spacetype_id: "launchpad",
+      spacetype_id: spaceTypeId,
       template_id: templateId,
     },
   };
@@ -501,8 +502,12 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
       provisioned.push("custom_provisioner");
     }
 
-    // Step 9: Install agents — write 4 R2 config files per agent + register index in SpaceDO
-    if (spaceTypeId === "launchpad") {
+    // Step 9: Install agents — write 4 R2 config files per agent + register index in SpaceDO.
+    // Manifest-driven (WS-6, audit plan): the provisioner no longer names a SpaceType — any
+    // manifest that opts in via `backend.scriptAgentsEnabled` gets this step; a manifest that
+    // doesn't declare it (the default for a future SpaceType with no script-agent story yet)
+    // installs nothing.
+    if (manifest.backend.scriptAgentsEnabled) {
       await installLaunchpadAgents(spaceId, tenantId, effectiveTemplateIds, manifest, env);
     }
     provisioned.push("agents");
@@ -513,7 +518,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     // Phase C (§A1.17): a business built from multiple templates inherits skills from EACH one
     // and gets the union of their bootstrap projects/setup_scripts (mergeTemplatesBootstrap —
     // projects dedupe by name, later template wins on conflict; setup_scripts dedupe by value).
-    if (spaceTypeId === "launchpad" && effectiveTemplateIds.length > 0) {
+    if (manifest.backend.scriptAgentsEnabled && effectiveTemplateIds.length > 0) {
       const spaceLib = new SkillLibrary(env.SCRIPTS_R2, spaceId);
       for (const tid of effectiveTemplateIds) {
         try {

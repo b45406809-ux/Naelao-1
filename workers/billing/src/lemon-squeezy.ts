@@ -271,12 +271,53 @@ async function resolveDefaultAgent(
 }
 
 /**
- * The Launchpad core agent that handles order fulfillment (spec §11 / launchpad/spacetype.ts).
- * Billing worker deliberately doesn't import the agents worker's module (workers stay
- * independent — mirrors the "naelao-agent" literal every dispatcher hardcodes per A1.16.7)
- * so this is a local literal, kept in sync by convention.
+ * Fallback fulfillment agent id, used only when the manifest-driven lookup below can't resolve
+ * one (SPACES_WORKER unbound, the space/manifest lookup fails, or a pre-WS-6 test double that
+ * doesn't model the manifest fetch) — kept in sync by convention with
+ * workers/agents/src/launchpad/spacetype.ts's launchpad-fulfillment-v1 definition. The real,
+ * SpaceType-driven source of truth is `manifest.backend.fulfillment.agentId` (WS-6, audit plan):
+ * shared billing code no longer needs a second SpaceType's agent id added to its own source —
+ * a SpaceType declares this in its own manifest, or it's absent and this billing worker never
+ * routes anything to a specialist for it.
  */
 const FULFILLMENT_AGENT_ID = "launchpad-fulfillment-v1";
+
+const FULFILLMENT_PROJECT_NAME_FALLBACK = "orders";
+
+/**
+ * WS-6: resolve the fulfillment specialist's agent id + its project-name fallback from the
+ * space's own SpaceType manifest instead of hardcoded Launchpad literals. Best-effort — falls
+ * back to today's Launchpad-shaped values on any failure, so an unbound SPACES_WORKER, a lookup
+ * error, or a manifest that simply hasn't declared `backend.fulfillment` all degrade to the exact
+ * behavior this pass found in place, never a silent no-route regression for Launchpad spaces.
+ */
+async function resolveFulfillmentConfig(
+  spaceId: string,
+  tenantId: string,
+  env: LemonSqueezyEnv
+): Promise<{ agentId: string; projectNameFallback: string }> {
+  const fallback = { agentId: FULFILLMENT_AGENT_ID, projectNameFallback: FULFILLMENT_PROJECT_NAME_FALLBACK };
+  if (!env.SPACES_WORKER) return fallback;
+  try {
+    const spaceRow = await env.PLATFORM_DB.prepare(
+      "SELECT spacetype_id FROM spaces WHERE id = ?"
+    ).bind(spaceId).first<{ spacetype_id?: string }>();
+    if (!spaceRow?.spacetype_id) return fallback;
+    const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/space-types/${spaceRow.spacetype_id}`, {
+      headers: {
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+      },
+    }));
+    if (!resp.ok) return fallback;
+    const manifest = await resp.json<{ backend?: { fulfillment?: { agentId?: string; projectNameFallback?: string } } }>();
+    const fulfillment = manifest.backend?.fulfillment;
+    if (!fulfillment?.agentId) return fallback;
+    return { agentId: fulfillment.agentId, projectNameFallback: fulfillment.projectNameFallback ?? FULFILLMENT_PROJECT_NAME_FALLBACK };
+  } catch {
+    return fallback;
+  }
+}
 
 /**
  * Resolve a pre-seeded project bound to the fulfillment agent for this space, if the builder's
@@ -324,9 +365,10 @@ export async function resolveFulfillmentProjectId(
 ): Promise<string | undefined> {
   const data = await fetchSpaceProjects(spaceId, tenantId, env);
   if (!data) return undefined;
-  const byBinding = data.find((p) => p.default_agent_id === FULFILLMENT_AGENT_ID && p.status !== "archived");
+  const { agentId: fulfillmentAgentId, projectNameFallback } = await resolveFulfillmentConfig(spaceId, tenantId, env);
+  const byBinding = data.find((p) => p.default_agent_id === fulfillmentAgentId && p.status !== "archived");
   if (byBinding) return byBinding.id;
-  const byName = data.find((p) => p.name?.trim().toLowerCase() === "orders" && p.status !== "archived");
+  const byName = data.find((p) => p.name?.trim().toLowerCase() === projectNameFallback && p.status !== "archived");
   return byName?.id;
 }
 
@@ -346,7 +388,9 @@ export async function isFulfillmentAgentBound(
   env: LemonSqueezyEnv
 ): Promise<boolean> {
   const data = await fetchSpaceProjects(spaceId, tenantId, env);
-  return data?.some((p) => p.default_agent_id === FULFILLMENT_AGENT_ID && p.status !== "archived") ?? false;
+  if (!data) return false;
+  const { agentId: fulfillmentAgentId } = await resolveFulfillmentConfig(spaceId, tenantId, env);
+  return data.some((p) => p.default_agent_id === fulfillmentAgentId && p.status !== "archived");
 }
 
 /** POST to agents worker: wake the agent with a billing event goal. */
@@ -600,7 +644,7 @@ export async function handleLemonSqueezyWebhook(
   // Space Assistant unchanged: order-completed is the only event this SpaceType defines a
   // specialist trigger for. Only one agent is ever woken per event — never both.
   const fulfillmentBound = event.type === "payment.success" && (await isFulfillmentAgentBound(event.spaceId, agent.tenantId, env));
-  const targetAgentId = fulfillmentBound ? FULFILLMENT_AGENT_ID : agent.agentId;
+  const targetAgentId = fulfillmentBound ? (await resolveFulfillmentConfig(event.spaceId, agent.tenantId, env)).agentId : agent.agentId;
   await wakeAgent(event.spaceId, targetAgentId, agent.tenantId, event, env.AGENTS_WORKER, env.PLATFORM_SECRET, orderId, projectId);
 
   return Response.json({ ok: true, event_type: event.type, space_id: event.spaceId, order_id: orderId });

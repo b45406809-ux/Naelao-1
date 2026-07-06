@@ -37,6 +37,8 @@ export const LAUNCHPAD_MANIFEST: NaelaoSpaceTypeManifestV2 = {
       { id: "daily-analytics", cron: "0 8 * * *", workerBinding: "ANALYTICS_WORKER" },
     ],
     r2Prefixes: ["workspace", "agents", "scripts", "portal"],
+    scriptAgentsEnabled: true,
+    fulfillment: { agentId: "launchpad-fulfillment-v1", projectNameFallback: "orders" },
     resourceBudget: {
       maxDOsPerInstance: 5,
       maxR2WritesPerDay: 10_000,

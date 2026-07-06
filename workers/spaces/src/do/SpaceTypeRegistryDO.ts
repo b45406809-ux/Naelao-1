@@ -48,6 +48,23 @@ export interface NaelaoSpaceTypeManifestV2 {
     workflowTemplates: Array<{ id: string; name: string; triggerType: string }>;
     cronJobs: Array<{ id: string; cron: string; workerBinding: string }>;
     r2Prefixes: string[];
+    /** WS-6 (audit plan): opts into the provisioner's script-agent install step (writing agent
+     *  R2 config files + registering a SpaceDO index + seeding an assistant policy) — replaces a
+     *  shared-code `if (spaceTypeId === "launchpad")` branch with a manifest-declared capability
+     *  so a manifest that omits this installs no agents at all, keeping the provisioner itself
+     *  free of any hardcoded SpaceType name. The actual agent-definition SOURCE (today: Launchpad's
+     *  own template registry in workers/agents/src/launchpad/spacetype.ts) is still SpaceType-
+     *  specific install logic the provisioner calls into — fully manifest-driven agent-def DATA
+     *  (rather than a capability flag) is a larger follow-up with no second SpaceType yet to
+     *  validate it against; not done in this pass. */
+    scriptAgentsEnabled?: boolean;
+    /** WS-6 (audit plan): the shared billing worker used to hardcode a Launchpad-specific
+     *  fulfillment agent id + an "orders" project-name fallback (workers/billing/src/
+     *  lemon-squeezy.ts). Moved here so a SpaceType that wants "route order-completed events to
+     *  a dedicated specialist agent" declares it in its own manifest instead of the billing
+     *  worker needing a second SpaceType's name added to its own source. Absent = no such
+     *  specialist exists for this SpaceType (payment events just wake the Space Assistant). */
+    fulfillment?: { agentId: string; projectNameFallback?: string };
     resourceBudget: {
       maxDOsPerInstance: number;
       maxR2WritesPerDay: number;

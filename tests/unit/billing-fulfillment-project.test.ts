@@ -407,6 +407,99 @@ describe("handleLemonSqueezyWebhook — routes order-completed to the fulfillmen
   });
 });
 
+describe("WS-6: fulfillment agent id is manifest-driven, not a hardcoded Launchpad literal", () => {
+  function makeEnv(opts: {
+    spacetypeId: string;
+    manifest: { backend?: { fulfillment?: { agentId?: string; projectNameFallback?: string } } } | null;
+    projects: Array<{ id: string; name: string; status?: string; default_agent_id?: string | null }>;
+  }): LemonSqueezyEnv {
+    return {
+      AGENTS_WORKER: { fetch: async () => new Response("{}") } as unknown as Fetcher,
+      PLATFORM_SECRET,
+      PLATFORM_DB: {
+        prepare(sql: string) {
+          return {
+            bind() { return this; },
+            async first() {
+              if (/spacetype_id FROM spaces/.test(sql)) return { spacetype_id: opts.spacetypeId };
+              return null;
+            },
+          };
+        },
+      } as unknown as D1Database,
+      SPACES_WORKER: {
+        async fetch(input: RequestInfo) {
+          const url = typeof input === "string" ? input : (input as Request).url;
+          if (url.includes("/internal/space-types/")) {
+            return opts.manifest ? Response.json(opts.manifest) : new Response("not found", { status: 404 });
+          }
+          return Response.json({ data: opts.projects, count: opts.projects.length });
+        },
+      } as unknown as Fetcher,
+    };
+  }
+
+  it("routes to a non-Launchpad SpaceType's own manifest-declared fulfillment agent", async () => {
+    const bound = await isFulfillmentAgentBound(
+      "space1", "tenant1",
+      makeEnv({
+        spacetypeId: "some-other-spacetype",
+        manifest: { backend: { fulfillment: { agentId: "other-fulfillment-agent" } } },
+        projects: [{ id: "p1", name: "Orders", default_agent_id: "other-fulfillment-agent" }],
+      })
+    );
+    expect(bound).toBe(true);
+  });
+
+  it("does NOT bind to a project using the Launchpad agent id when the manifest declares a different one", async () => {
+    const bound = await isFulfillmentAgentBound(
+      "space1", "tenant1",
+      makeEnv({
+        spacetypeId: "some-other-spacetype",
+        manifest: { backend: { fulfillment: { agentId: "other-fulfillment-agent" } } },
+        projects: [{ id: "p1", name: "Orders", default_agent_id: "launchpad-fulfillment-v1" }],
+      })
+    );
+    expect(bound).toBe(false);
+  });
+
+  it("uses the manifest's own project-name fallback instead of the hardcoded 'orders' literal", async () => {
+    const id = await resolveFulfillmentProjectId(
+      "space1", "tenant1",
+      makeEnv({
+        spacetypeId: "some-other-spacetype",
+        manifest: { backend: { fulfillment: { agentId: "other-fulfillment-agent", projectNameFallback: "tickets" } } },
+        projects: [{ id: "p1", name: "Tickets" }],
+      })
+    );
+    expect(id).toBe("p1");
+  });
+
+  it("falls back to the Launchpad default when the SpaceType manifest declares no fulfillment config", async () => {
+    const bound = await isFulfillmentAgentBound(
+      "space1", "tenant1",
+      makeEnv({
+        spacetypeId: "launchpad",
+        manifest: { backend: {} },
+        projects: [{ id: "p1", name: "Orders", default_agent_id: "launchpad-fulfillment-v1" }],
+      })
+    );
+    expect(bound).toBe(true);
+  });
+
+  it("falls back to the Launchpad default when the manifest fetch fails", async () => {
+    const bound = await isFulfillmentAgentBound(
+      "space1", "tenant1",
+      makeEnv({
+        spacetypeId: "launchpad",
+        manifest: null,
+        projects: [{ id: "p1", name: "Orders", default_agent_id: "launchpad-fulfillment-v1" }],
+      })
+    );
+    expect(bound).toBe(true);
+  });
+});
+
 // Verify mintInternalToken import didn't get dropped from lemon-squeezy.ts (used by
 // resolveFulfillmentProjectId and recordSeatActivation).
 describe("sanity", () => {

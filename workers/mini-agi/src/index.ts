@@ -1,6 +1,6 @@
 // G-AGI01..G-AGI08: Mini-AGI — hierarchical agent orchestration (planner + child agents, depth ≤ 3)
 import { Hono } from "hono";
-import { errorResponse, requestId } from "@naelao/http";
+import { errorResponse, requestId, mintInternalToken } from "@naelao/http";
 
 interface Env {
   ENVIRONMENT: string;
@@ -267,14 +267,23 @@ async function executeSubtasks(
   return results;
 }
 
+// WS-6 (audit plan): this used to send the raw PLATFORM_SECRET as `x-naelao-internal-token` to a
+// plain fetch URL — a secret-in-header egress, not a signed token. Now mints a real short-lived
+// HMAC token the same way every other internal caller does. Separately (not fixed here — a
+// distinct, pre-existing bug documented in CLAUDE.md's Phase 6 log): session/message CRUD lives
+// on the SPACES worker's SpaceDO proxy, not on AGENTS_WORKER_URL, which only ever implemented
+// agent/run + approvals — this dispatch path likely 404s in any live deployment regardless of
+// the token fix. Left as a documented, separate follow-up rather than silently re-pointed at a
+// URL this worker isn't configured with.
 async function dispatchToAgent(tenantId: string, spaceId: string, task: string, env: Env): Promise<string> {
+  const internalToken = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
   // Create a session in the agents worker for this subtask
   const resp = await fetch(`${env.AGENTS_WORKER_URL}/spaces/${spaceId}/sessions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "x-naelao-tenant-id": tenantId,
-      "x-naelao-internal-token": env.PLATFORM_SECRET,
+      "x-naelao-internal-token": internalToken,
     },
     body: JSON.stringify({ end_user_id: `mini-agi-${crypto.randomUUID()}` }),
   });
@@ -287,7 +296,7 @@ async function dispatchToAgent(tenantId: string, spaceId: string, task: string, 
     headers: {
       "Content-Type": "application/json",
       "x-naelao-tenant-id": tenantId,
-      "x-naelao-internal-token": env.PLATFORM_SECRET,
+      "x-naelao-internal-token": internalToken,
     },
     body: JSON.stringify({ content: task }),
   });
