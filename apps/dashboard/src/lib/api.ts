@@ -593,6 +593,14 @@ export interface BuilderProductConfig {
   membershipModel?: "team" | "tenant" | "hybrid";
   allowPublicSignup?: boolean;
   allowedChildSpaceTypes?: string[];
+  // WS-3 (§Polsia / G-AS34/G-AS35): the Naelao->builder wholesale-credit relationship for
+  // tenant/hybrid products. Team mode has no rates — Naelao bills the builder for all end-user
+  // usage, so this is only meaningful once membershipModel is tenant/hybrid.
+  billingRelationship?: "reseller" | "referral" | "platform";
+  resellerRates?: {
+    wholesaleCents?: number | null;
+    referralSharePct?: number;
+  };
   userPermissions?: {
     canCreateSpace?: boolean;
     canCreateSubSpaces?: boolean;
@@ -655,6 +663,18 @@ export async function updateBuilderProductPricing(
   input: { plans?: PricingPlan[]; creditPacks?: CreditPack[] }
 ): Promise<{ pricing_config: BuilderProductConfig["pricingConfig"] }> {
   return apiFetch(`/builder/products/${encodeURIComponent(id)}/pricing`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+// WS-3: the missing write path for reseller economics — updates BOTH the config_json display
+// copy and the live reseller_accounts row (immediate effect for a tenant that already has one).
+export async function updateBuilderProductReseller(
+  id: string,
+  input: { billing_relationship?: "reseller" | "referral" | "platform"; wholesale_cents?: number | null; referral_share_pct?: number }
+): Promise<{ billing_relationship: string; reseller_rates: { wholesale_cents: number | null; referral_share_pct: number } }> {
+  return apiFetch(`/builder/products/${encodeURIComponent(id)}/reseller`, {
     method: "PATCH",
     body: JSON.stringify(input),
   });

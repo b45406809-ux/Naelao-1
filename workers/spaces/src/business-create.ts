@@ -135,12 +135,26 @@ export async function createBusinessForEndUser(
   const childTenantId = existing?.child_tenant_id ?? `ten_${crypto.randomUUID().replace(/-/g, "")}`;
   const now = new Date().toISOString();
 
-  // Ensure a reseller_accounts row exists for the parent (lazily, from productConfig).
+  // Ensure a reseller_accounts row exists for the parent (lazily, from productConfig). WS-3:
+  // previously hardcoded wholesale_cents=NULL/referral_share_pct=0.0 literals with no rate
+  // fields anywhere in productConfig to seed from — now reads pc.resellerRates (set via PATCH
+  // /builder/products/:id/reseller). The ON CONFLICT branch only refreshes product_space_id, not
+  // the rates: a builder's rate change is applied directly to this row by that same PATCH
+  // endpoint (immediate effect on the existing row), not deferred until the next business is
+  // created under this reseller — re-seeding rates here on every conflict would silently
+  // overwrite a rate the builder set AFTER this tenant's account row already existed.
   await env.PLATFORM_DB.prepare(
     `INSERT INTO reseller_accounts (tenant_id, product_space_id, billing_relationship, wholesale_cents, referral_share_pct, updated_at)
-     VALUES (?, ?, ?, NULL, 0.0, ?)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(tenant_id) DO UPDATE SET product_space_id = excluded.product_space_id, updated_at = excluded.updated_at`
-  ).bind(parentTenantId, opts.resellerProductSpaceId, pc.billingRelationship ?? "platform", now).run();
+  ).bind(
+    parentTenantId,
+    opts.resellerProductSpaceId,
+    pc.billingRelationship ?? "platform",
+    pc.resellerRates?.wholesaleCents ?? null,
+    pc.resellerRates?.referralSharePct ?? 0.0,
+    now
+  ).run();
 
   // 4. Create the child business (space) under the child tenant.
   const spaceId = crypto.randomUUID();

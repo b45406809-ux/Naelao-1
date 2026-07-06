@@ -167,6 +167,25 @@ export interface SpaceTypeProductConfig {
    */
   billingRelationship?: "reseller" | "referral" | "platform";
 
+  /**
+   * WS-3: the actual wholesale-credit rates a "reseller"/"referral" billingRelationship needs —
+   * previously billingRelationship existed with no companion rate fields anywhere in
+   * productConfig, so business-create.ts hardcoded wholesale_cents=NULL/referral_share_pct=0.0
+   * literals and there was no builder-facing way to set a non-zero cut through any shipped
+   * surface (the READ half of reseller economics — GET /reseller/statement — was built while the
+   * WRITE half didn't exist). Written via PATCH /builder/products/:id/reseller, which ALSO
+   * updates the live reseller_accounts row directly (the missing UPDATE) — this config_json copy
+   * is the display/source-of-truth a business-create-time upsert seeds a NEW child tenant's row
+   * from, not the only place the rate lives.
+   */
+  resellerRates?: {
+    /** reseller mode: fixed wholesale cost (cents) Naelao charges per child subscription
+     *  period. null = pass-through of the retail amount (zero margin). */
+    wholesaleCents?: number | null;
+    /** referral mode: percent (0-100) of retail revenue Naelao pays back to the reseller. */
+    referralSharePct?: number;
+  };
+
   /** Per-member capability flags (spec `productConfig.userPermissions`). */
   userPermissions?: {
     canCreateSpace?: boolean; // hybrid: members may provision their own businesses

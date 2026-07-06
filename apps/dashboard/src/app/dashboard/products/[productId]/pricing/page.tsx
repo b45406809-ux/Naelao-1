@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { updateBuilderProductPricing } from "@/lib/api";
+import { updateBuilderProductPricing, updateBuilderProductReseller } from "@/lib/api";
 import type { PricingPlan, CreditPack } from "@/lib/api";
 import { useProduct } from "../productContext";
 
@@ -23,12 +23,45 @@ export default function ProductPricingPage() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
+  // WS-3: the Naelao->builder wholesale-credit relationship (spec §Polsia). Own save action,
+  // separate from plans/creditPacks above, since it writes the LIVE reseller_accounts row via
+  // a dedicated PATCH, not just config_json.
+  const [billingRelationship, setBillingRelationship] = useState<"reseller" | "referral" | "platform">("platform");
+  const [wholesaleCents, setWholesaleCents] = useState<number | "">("");
+  const [referralSharePct, setReferralSharePct] = useState<number>(0);
+  const [savingReseller, setSavingReseller] = useState(false);
+  const [resellerError, setResellerError] = useState<string | null>(null);
+  const [resellerSaved, setResellerSaved] = useState(false);
+
   useEffect(() => {
     if (product) {
       setPlans(product.product_config.pricingConfig?.plans ?? []);
       setCreditPacks(product.product_config.pricingConfig?.creditPacks ?? []);
+      setBillingRelationship(product.product_config.billingRelationship ?? "platform");
+      setWholesaleCents(product.product_config.resellerRates?.wholesaleCents ?? "");
+      setReferralSharePct(product.product_config.resellerRates?.referralSharePct ?? 0);
     }
   }, [product]);
+
+  async function saveReseller() {
+    setSavingReseller(true);
+    setResellerError(null);
+    setResellerSaved(false);
+    try {
+      await updateBuilderProductReseller(params.productId, {
+        billing_relationship: billingRelationship,
+        wholesale_cents: wholesaleCents === "" ? null : wholesaleCents,
+        referral_share_pct: referralSharePct,
+      });
+      await refetch();
+      setResellerSaved(true);
+      setTimeout(() => setResellerSaved(false), 2500);
+    } catch (err) {
+      setResellerError(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setSavingReseller(false);
+    }
+  }
 
   async function save() {
     setSaving(true);
@@ -51,18 +84,98 @@ export default function ProductPricingPage() {
   const membershipModel = product.product_config.membershipModel ?? "team";
   if (membershipModel === "team") {
     return (
-      <div className="bg-white rounded-xl border border-dashed border-gray-300 p-12 text-center">
-        <p className="text-gray-500">
-          Subscription plans and credit packs are for products where end users create their own
-          businesses. Switch this product to Tenant or Hybrid mode in{" "}
-          <span className="font-medium">Configuration → Product Mode</span> to configure pricing.
-        </p>
+      <div className="space-y-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-5">
+          <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-2">Monetization</h2>
+          <p className="text-sm text-gray-700">
+            Naelao bills you directly for all end-user usage on this product — there's no reseller
+            cut to configure in Team mode.
+          </p>
+        </div>
+        <div className="bg-white rounded-xl border border-dashed border-gray-300 p-12 text-center">
+          <p className="text-gray-500">
+            Subscription plans and credit packs are for products where end users create their own
+            businesses. Switch this product to Tenant or Hybrid mode in{" "}
+            <span className="font-medium">Configuration → Product Mode</span> to configure pricing.
+          </p>
+        </div>
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-1">Monetization</h2>
+        <p className="text-xs text-gray-400 mb-4">
+          How Naelao settles with you for the businesses your end users create.
+        </p>
+        <div className="flex gap-3 mb-4">
+          {(["reseller", "referral", "platform"] as const).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => setBillingRelationship(mode)}
+              className={`flex-1 text-left px-4 py-3 rounded-lg border text-sm transition-colors ${
+                billingRelationship === mode
+                  ? "border-brand-500 bg-brand-50 text-brand-800"
+                  : "border-gray-200 text-gray-600 hover:border-gray-300"
+              }`}
+            >
+              <div className="font-semibold capitalize">{mode}</div>
+              <div className="text-xs mt-0.5 text-gray-500">
+                {mode === "reseller" && "Naelao bills you wholesale; you set retail and keep the margin."}
+                {mode === "referral" && "Naelao bills each customer directly; you take a revenue share."}
+                {mode === "platform" && "No resale — child businesses are billed like any builder."}
+              </div>
+            </button>
+          ))}
+        </div>
+
+        {billingRelationship === "reseller" && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Wholesale rate (cents per billing period)</label>
+            <input
+              type="number"
+              min={0}
+              value={wholesaleCents}
+              onChange={(e) => setWholesaleCents(e.target.value === "" ? "" : Number(e.target.value))}
+              placeholder="Pass-through (no markup)"
+              className="w-full max-w-xs px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 outline-none"
+            />
+            <p className="text-xs text-gray-400 mt-1">Leave blank to pass through the retail amount with zero margin.</p>
+          </div>
+        )}
+
+        {billingRelationship === "referral" && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Your revenue share (%)</label>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              value={referralSharePct}
+              onChange={(e) => setReferralSharePct(Number(e.target.value))}
+              className="w-full max-w-xs px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-brand-500 outline-none"
+            />
+          </div>
+        )}
+
+        {resellerError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 mt-3">{resellerError}</div>}
+
+        <div className="flex items-center gap-3 mt-4">
+          <button
+            type="button"
+            onClick={() => void saveReseller()}
+            disabled={savingReseller}
+            className="px-5 py-2 bg-brand-600 hover:bg-brand-700 disabled:bg-brand-300 text-white text-sm font-semibold rounded-lg transition-colors"
+          >
+            {savingReseller ? "Saving…" : "Save monetization"}
+          </button>
+          {resellerSaved && <span className="text-sm text-green-600">Saved.</span>}
+        </div>
+      </div>
+
       <div className="bg-white rounded-xl border border-gray-200 p-5">
         <div className="flex items-center justify-between mb-4">
           <div>

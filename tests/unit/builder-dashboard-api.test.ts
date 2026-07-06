@@ -298,6 +298,116 @@ describe("Builder Dashboard API — feature flags and webhooks", () => {
   });
 });
 
+// WS-3: reseller rate config was declared (billingRelationship) but had NO write path anywhere —
+// business-create.ts hardcoded wholesale_cents=NULL/referral_share_pct=0.0 literals and its own
+// ON CONFLICT upsert never refreshed them. This PATCH is the missing write path, and it updates
+// the LIVE reseller_accounts row directly (not just config_json) so an existing tenant's rate
+// takes effect immediately.
+describe("Builder Dashboard API — PATCH /builder/products/:id/reseller (WS-3)", () => {
+  it("sets reseller mode + wholesale rate, persisted in config_json and the live reseller_accounts row", async () => {
+    const env = makeEnv();
+    const created = await (await spacesWorker.fetch(
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+
+    const patchRes = await spacesWorker.fetch(
+      req(`/builder/products/${created.id}/reseller`, {
+        method: "PATCH",
+        tenant: "tenant-1",
+        body: { billing_relationship: "reseller", wholesale_cents: 2000 },
+      }),
+      env as never, execCtx
+    );
+    expect(patchRes.status).toBe(200);
+    const body = await patchRes.json() as { billing_relationship: string; reseller_rates: { wholesale_cents: number | null; referral_share_pct: number } };
+    expect(body.billing_relationship).toBe("reseller");
+    expect(body.reseller_rates.wholesale_cents).toBe(2000);
+
+    // The actual money-path gate (recordResellerAttribution) reads reseller_accounts directly —
+    // prove the row was actually written, not just the config_json display copy.
+    const row = await env.PLATFORM_DB.prepare(
+      "SELECT billing_relationship, wholesale_cents, referral_share_pct FROM reseller_accounts WHERE tenant_id = ?"
+    ).bind("tenant-1").first<{ billing_relationship: string; wholesale_cents: number; referral_share_pct: number }>();
+    expect(row).toMatchObject({ billing_relationship: "reseller", wholesale_cents: 2000 });
+  });
+
+  it("sets referral mode + share pct", async () => {
+    const env = makeEnv();
+    const created = await (await spacesWorker.fetch(
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+
+    await spacesWorker.fetch(
+      req(`/builder/products/${created.id}/reseller`, {
+        method: "PATCH", tenant: "tenant-1", body: { billing_relationship: "referral", referral_share_pct: 25 },
+      }),
+      env as never, execCtx
+    );
+    const row = await env.PLATFORM_DB.prepare(
+      "SELECT billing_relationship, referral_share_pct FROM reseller_accounts WHERE tenant_id = ?"
+    ).bind("tenant-1").first<{ billing_relationship: string; referral_share_pct: number }>();
+    expect(row).toMatchObject({ billing_relationship: "referral", referral_share_pct: 25 });
+  });
+
+  it("REFRESHES an existing reseller_accounts row's rate — the exact gap business-create.ts's own upsert left open", async () => {
+    const env = makeEnv();
+    const created = await (await spacesWorker.fetch(
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+    // Simulate a pre-existing row from an earlier business-create (the old hardcoded literals).
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO reseller_accounts (tenant_id, product_space_id, billing_relationship, wholesale_cents, referral_share_pct) VALUES (?, ?, 'platform', NULL, 0.0)"
+    ).bind("tenant-1", created.id).run();
+
+    await spacesWorker.fetch(
+      req(`/builder/products/${created.id}/reseller`, {
+        method: "PATCH", tenant: "tenant-1", body: { billing_relationship: "reseller", wholesale_cents: 1500 },
+      }),
+      env as never, execCtx
+    );
+    const row = await env.PLATFORM_DB.prepare(
+      "SELECT billing_relationship, wholesale_cents FROM reseller_accounts WHERE tenant_id = ?"
+    ).bind("tenant-1").first<{ billing_relationship: string; wholesale_cents: number }>();
+    expect(row).toMatchObject({ billing_relationship: "reseller", wholesale_cents: 1500 });
+  });
+
+  it("rejects an invalid billing_relationship", async () => {
+    const env = makeEnv();
+    const created = await (await spacesWorker.fetch(
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+    const res = await spacesWorker.fetch(
+      req(`/builder/products/${created.id}/reseller`, { method: "PATCH", tenant: "tenant-1", body: { billing_relationship: "bogus" } }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an out-of-range referral_share_pct", async () => {
+    const env = makeEnv();
+    const created = await (await spacesWorker.fetch(
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+    const res = await spacesWorker.fetch(
+      req(`/builder/products/${created.id}/reseller`, { method: "PATCH", tenant: "tenant-1", body: { referral_share_pct: 150 } }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("404s for a product owned by a different tenant", async () => {
+    const env = makeEnv();
+    const created = await (await spacesWorker.fetch(
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+    const res = await spacesWorker.fetch(
+      req(`/builder/products/${created.id}/reseller`, { method: "PATCH", tenant: "tenant-2", body: { billing_relationship: "reseller" } }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
 describe("Builder Dashboard API — billing", () => {
   it("rolls up the builder's own wholesale statement for the current period, and history across periods", async () => {
     const env = makeEnv();

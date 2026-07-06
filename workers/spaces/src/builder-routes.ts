@@ -357,6 +357,72 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     return c.json({ pricing_config: config.productConfig.pricingConfig });
   });
 
+  // PATCH /builder/products/:id/reseller — WS-3: the missing write path for the
+  // Naelao->builder wholesale-credit relationship (spec §Polsia / G-AS34/G-AS35). Reseller mode:
+  // Naelao bills the builder wholesale, the builder sets retail and keeps the margin. Referral
+  // mode: Naelao bills the customer directly, the builder takes a revenue share. Team mode has
+  // no rates at all — Naelao bills the builder for all end-user usage. Updates BOTH the
+  // config_json display copy (what a NEW child tenant's reseller_accounts row seeds from) AND
+  // the LIVE reseller_accounts row for this tenant directly, so the change takes effect
+  // immediately for businesses that already exist — this second write is the actual gap the
+  // audit found (business-create.ts's own upsert never refreshed the rates on conflict).
+  app.patch("/builder/products/:id/reseller", async (c) => {
+    const env = c.env as BuilderRoutesEnv;
+    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
+    const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
+    if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+
+    const body = await c.req.json<{
+      billing_relationship?: "reseller" | "referral" | "platform";
+      wholesale_cents?: number | null;
+      referral_share_pct?: number;
+    }>();
+
+    if (body.billing_relationship && !["reseller", "referral", "platform"].includes(body.billing_relationship)) {
+      return c.json({ error_code: "bad_request", message: "billing_relationship must be reseller, referral, or platform" }, 400);
+    }
+    if (body.referral_share_pct !== undefined && (body.referral_share_pct < 0 || body.referral_share_pct > 100)) {
+      return c.json({ error_code: "bad_request", message: "referral_share_pct must be between 0 and 100" }, 400);
+    }
+    if (body.wholesale_cents !== undefined && body.wholesale_cents !== null && body.wholesale_cents < 0) {
+      return c.json({ error_code: "bad_request", message: "wholesale_cents must be non-negative" }, 400);
+    }
+
+    const config = parseProductConfig(product.config_json);
+    const currentRates = config.productConfig?.resellerRates ?? {};
+    const resolvedRelationship = body.billing_relationship ?? config.productConfig?.billingRelationship ?? "platform";
+    const resolvedWholesale = body.wholesale_cents !== undefined ? body.wholesale_cents : (currentRates.wholesaleCents ?? null);
+    const resolvedReferralPct = body.referral_share_pct !== undefined ? body.referral_share_pct : (currentRates.referralSharePct ?? 0.0);
+
+    config.productConfig = {
+      ...(config.productConfig ?? {}),
+      billingRelationship: resolvedRelationship,
+      resellerRates: { wholesaleCents: resolvedWholesale, referralSharePct: resolvedReferralPct },
+    };
+    const now = new Date().toISOString();
+    await env.PLATFORM_DB.prepare(
+      "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
+    ).bind(JSON.stringify(config), now, product.id, auth.tenantId).run();
+
+    // The actual money-path fix: refresh the LIVE reseller_accounts row this tenant already has
+    // (or create one if this is the first time rates are set before any business exists yet).
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO reseller_accounts (tenant_id, product_space_id, billing_relationship, wholesale_cents, referral_share_pct, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(tenant_id) DO UPDATE SET
+         billing_relationship = excluded.billing_relationship,
+         wholesale_cents = excluded.wholesale_cents,
+         referral_share_pct = excluded.referral_share_pct,
+         updated_at = excluded.updated_at`
+    ).bind(auth.tenantId, product.id, resolvedRelationship, resolvedWholesale, resolvedReferralPct, now).run();
+
+    return c.json({
+      billing_relationship: resolvedRelationship,
+      reseller_rates: { wholesale_cents: resolvedWholesale, referral_share_pct: resolvedReferralPct },
+    });
+  });
+
   app.delete("/builder/products/:id", async (c) => {
     const env = c.env as BuilderRoutesEnv;
     const auth = await resolveBuilderAuth(env, c.req.raw.headers);
