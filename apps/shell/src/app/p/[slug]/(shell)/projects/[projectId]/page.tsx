@@ -6,11 +6,13 @@ import Link from "next/link";
 import { Button, Badge, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
+import { useActiveSpace } from "@/lib/active-space-context";
 import { getProject, listThreads, createThread, type Project, type ThreadSummary } from "@/lib/api";
 
 export default function ProjectDetailPage() {
   const params = useParams<{ projectId: string }>();
   const product = useProduct();
+  const { activeSpaceId } = useActiveSpace();
   const { session } = useProductAuth();
   const { toast, show } = useToast();
   const [project, setProject] = React.useState<Project | null>(null);
@@ -25,8 +27,8 @@ export default function ProjectDetailPage() {
     setLoading(true);
     try {
       const [p, t] = await Promise.all([
-        getProject(product.space_id, params.projectId, creds),
-        listThreads(product.space_id, creds, { projectId: params.projectId }),
+        getProject(activeSpaceId, params.projectId, creds),
+        listThreads(activeSpaceId, creds, { projectId: params.projectId }),
       ]);
       setProject(p);
       setThreads(t);
@@ -36,7 +38,7 @@ export default function ProjectDetailPage() {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [product.space_id, params.projectId, session]);
+  }, [activeSpaceId, params.projectId, session]);
 
   React.useEffect(() => {
     void refresh();
@@ -46,7 +48,7 @@ export default function ProjectDetailPage() {
     if (!creds) return;
     setCreating(true);
     try {
-      await createThread(product.space_id, creds, { project_id: params.projectId, title: "New thread" });
+      await createThread(activeSpaceId, creds, { project_id: params.projectId, title: "New thread" });
       await refresh();
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to create thread");

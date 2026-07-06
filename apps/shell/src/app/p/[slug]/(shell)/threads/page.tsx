@@ -6,10 +6,12 @@ import { useRouter } from "next/navigation";
 import { Button, Badge, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
+import { useActiveSpace } from "@/lib/active-space-context";
 import { listThreads, createThread, type ThreadSummary } from "@/lib/api";
 
 export default function ThreadsPage() {
   const product = useProduct();
+  const { activeSpaceId } = useActiveSpace();
   const { session } = useProductAuth();
   const { toast, show } = useToast();
   const router = useRouter();
@@ -21,18 +23,18 @@ export default function ThreadsPage() {
 
   React.useEffect(() => {
     if (!creds) return;
-    void listThreads(product.space_id, creds)
+    void listThreads(activeSpaceId, creds)
       .then(setThreads)
       .catch(() => show("Couldn't load threads"))
       .finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [product.space_id, session]);
+  }, [activeSpaceId, session]);
 
   async function handleNewThread() {
     if (!creds) return;
     setCreating(true);
     try {
-      const created = await createThread(product.space_id, creds, { title: "New thread" });
+      const created = await createThread(activeSpaceId, creds, { title: "New thread" });
       router.push(`/p/${product.slug}/threads/${created.id}`);
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to create thread");

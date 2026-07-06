@@ -9,13 +9,13 @@
 import * as React from "react";
 import { useParams } from "next/navigation";
 import { Chat } from "@/components/Chat";
-import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
+import { useActiveSpace } from "@/lib/active-space-context";
 import { getThread, type ThreadSummary } from "@/lib/api";
 
 export default function ThreadChatPage() {
   const params = useParams<{ threadId: string }>();
-  const product = useProduct();
+  const { activeSpaceId } = useActiveSpace();
   const { session } = useProductAuth();
   const [thread, setThread] = React.useState<ThreadSummary | null>(null);
 
@@ -23,17 +23,17 @@ export default function ThreadChatPage() {
 
   React.useEffect(() => {
     if (!creds) return;
-    void getThread(product.space_id, params.threadId, creds)
+    void getThread(activeSpaceId, params.threadId, creds)
       .then(setThread)
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [product.space_id, params.threadId, session]);
+  }, [activeSpaceId, params.threadId, session]);
 
   if (!creds) return null;
 
   return (
     <Chat
-      spaceId={product.space_id}
+      spaceId={activeSpaceId}
       session={creds}
       sessionKey={params.threadId}
       title={thread?.title ?? "Thread"}

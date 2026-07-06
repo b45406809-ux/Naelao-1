@@ -5,10 +5,12 @@ import Link from "next/link";
 import { Button, Card, CardTitle, CardDesc, CardMeta, Modal, FormInput, FormTextarea, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
+import { useActiveSpace } from "@/lib/active-space-context";
 import { listProjects, createProject, type Project } from "@/lib/api";
 
 export default function ProjectsPage() {
   const product = useProduct();
+  const { activeSpaceId } = useActiveSpace();
   const { session } = useProductAuth();
   const { toast, show } = useToast();
   const [projects, setProjects] = React.useState<Project[]>([]);
@@ -24,14 +26,14 @@ export default function ProjectsPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      setProjects(await listProjects(product.space_id, creds));
+      setProjects(await listProjects(activeSpaceId, creds));
     } catch {
       show("Couldn't load projects");
     } finally {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [product.space_id, session]);
+  }, [activeSpaceId, session]);
 
   React.useEffect(() => {
     void refresh();
@@ -42,7 +44,7 @@ export default function ProjectsPage() {
     if (!creds || !name.trim()) return;
     setCreating(true);
     try {
-      await createProject(product.space_id, creds, name.trim(), description.trim() || undefined);
+      await createProject(activeSpaceId, creds, name.trim(), description.trim() || undefined);
       setModalOpen(false);
       setName("");
       setDescription("");
