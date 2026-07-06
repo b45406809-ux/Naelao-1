@@ -378,6 +378,16 @@ type ProjectConfigResult =
   | { status: "not_found" }
   | { status: "error" };
 
+// S0.4: same fail-closed discipline as ProjectConfigResult — fetchProjectRules used to collapse
+// "found, zero rules configured" and "SpaceDO error, rules unknown" into the same `[]`, so a
+// rules-endpoint-only outage (config still loads fine) silently disabled the STOP/UNSUBSCRIBE/
+// human-takeover baseline every no-code project template seeds (A1.13) — the loop would just
+// reply to a customer who texted "STOP". Callers must fail CLOSED (escalate, never run
+// unrestricted) on "error", and only treat an empty list as "no rules configured" on "found".
+type ProjectRulesResult =
+  | { status: "found"; rules: ProjectRule[] }
+  | { status: "error" };
+
 // ── Tool services (injected from DO env) ─────────────────────────────────────
 
 interface ToolServices {
@@ -1435,8 +1445,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     {
       const lockNamespace = `lock:${spaceId}:${projectId ?? "_"}:`;
       env.lockGateway = {
+        // S0.4: failClosed=true — a lock must DENY when ConcurrencyDO is unreachable, never
+        // grant every acquirer (that would silently defeat the whole point of taking a lock).
         acquire: (params) =>
-          this.acquireConcurrencySlot(lockNamespace + params.key, params.holderId, params.limit ?? 1, params.ttlMs),
+          this.acquireConcurrencySlot(lockNamespace + params.key, params.holderId, params.limit ?? 1, params.ttlMs, true),
         release: (params) => this.releaseConcurrencySlot(lockNamespace + params.key, params.holderId),
         status: (key) => this.concurrencyStatus(lockNamespace + key),
       };
@@ -1595,8 +1607,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     return hooks;
   }
 
-  private async acquireConcurrencySlot(key: string, holderId: string, limit: number, ttlMs?: number): Promise<{ granted: boolean; active: number; limit?: number; degraded?: boolean }> {
-    if (!this.env.CONCURRENCY_DO) return { granted: true, active: 0, degraded: true }; // ungated when unbound — flagged, not silent
+  // S0.4: `failClosed` defaults to false (sub-agent spawn's existing fail-open behavior — a
+  // down ConcurrencyDO must not wedge every agent run, a documented product choice). The
+  // `lock` prebuilt (below) passes failClosed:true — a lock that grants every acquirer under an
+  // outage isn't a lock at all (two customer threads writing a shared ledger.csv would both
+  // "win"), so THAT caller must deny rather than silently degrade. Splitting via a parameter
+  // (not a second copy of this method) keeps the two callers' behavior independently correct
+  // without coupling lock safety to spawn availability.
+  private async acquireConcurrencySlot(key: string, holderId: string, limit: number, ttlMs?: number, failClosed = false): Promise<{ granted: boolean; active: number; limit?: number; degraded?: boolean }> {
+    if (!this.env.CONCURRENCY_DO) return { granted: !failClosed, active: 0, degraded: true }; // ungated when unbound — flagged, not silent
     try {
       const stub = this.env.CONCURRENCY_DO.get(this.env.CONCURRENCY_DO.idFromName(key));
       const resp = await stub.fetch(new Request("http://concurrency-do/acquire", {
@@ -1606,7 +1625,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }));
       return await resp.json<{ granted: boolean; active: number; limit?: number }>();
     } catch {
-      return { granted: true, active: 0, degraded: true }; // fail open — a down ConcurrencyDO must not wedge every agent run
+      // failClosed=true (lock path): deny — an unreachable ConcurrencyDO must not grant a lock.
+      // failClosed=false (sub-agent spawn, default): fail open, unchanged from before this pass.
+      return { granted: !failClosed, active: 0, degraded: true };
     }
   }
 
@@ -2306,17 +2327,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
-  /** Fetch a customer-bot project's no-code rules (highest priority first) from SpaceDO. */
-  private async fetchProjectRules(spaceId: string, tenantId: string, projectId: string): Promise<ProjectRule[]> {
+  /** Fetch a customer-bot project's no-code rules (highest priority first) from SpaceDO.
+   *  S0.4: distinguishes "found, possibly zero rules" from "error, rules unknown" — callers
+   *  must fail CLOSED on the latter (see ProjectRulesResult). */
+  private async fetchProjectRules(spaceId: string, tenantId: string, projectId: string): Promise<ProjectRulesResult> {
     try {
       const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}/rules`, {
         headers: await this.internalHeaders(tenantId),
       }));
-      if (!resp.ok) return [];
+      if (!resp.ok) return { status: "error" };
       const { data } = await resp.json<{ data: ProjectRule[] }>();
-      return data.filter((r) => r.enabled !== 0);
+      return { status: "found", rules: data.filter((r) => r.enabled !== 0) };
     } catch {
-      return [];
+      return { status: "error" };
     }
   }
 
@@ -2352,11 +2375,32 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
+  /** Whitespace-delimited word tokens, each stripped of leading/trailing punctuation and
+   *  lowercased — "non-stop" is ONE token ("non-stop"), never split into "non"+"stop", so it
+   *  never collides with a standalone "stop" token. Used by matchProjectRule below. */
+  private static tokenize(text: string): string[] {
+    return text.split(/\s+/).map((t) => t.replace(/^[^\p{L}\p{N}-]+|[^\p{L}\p{N}-]+$/gu, "").toLowerCase()).filter(Boolean);
+  }
+
   /** First enabled rule (priority order — already sorted by the API) whose trigger_pattern
-   *  substring-matches the inbound text, case-insensitive. */
+   *  matches the inbound text as whole word tokens, case-insensitive. S0.4: previously a naive
+   *  substring `includes`, so a trigger_pattern of "STOP" fired inside "doorstop" (one token,
+   *  no internal boundary) AND "non-stop" (a hyphenated compound — a plain \b-boundary regex
+   *  still matches "stop" inside it, since a hyphen breaks \w). Tokenizing on WHITESPACE only
+   *  (not punctuation) keeps "non-stop" as a single token distinct from "stop", while multi-word
+   *  patterns match as a contiguous token subsequence. A false-positive opt-out trigger is a
+   *  nuisance; a false NEGATIVE (missing a real "STOP") is the actual compliance risk this
+   *  guards against by matching precisely rather than loosely. */
   private matchProjectRule(rules: ProjectRule[], text: string): ProjectRule | null {
-    const lower = text.toLowerCase();
-    return rules.find((r) => lower.includes(r.trigger_pattern.toLowerCase())) ?? null;
+    const textTokens = NaelaoAgentDO.tokenize(text);
+    for (const r of rules) {
+      const patternTokens = NaelaoAgentDO.tokenize(r.trigger_pattern);
+      if (patternTokens.length === 0) continue;
+      for (let i = 0; i <= textTokens.length - patternTokens.length; i++) {
+        if (patternTokens.every((tok, j) => textTokens[i + j] === tok)) return r;
+      }
+    }
+    return null;
   }
 
   private todaySpendKey(): string {
@@ -2432,7 +2476,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // per-message loop below can fail closed instead of silently running unrestricted.
     const projectIds = [...new Set(pending.map((m) => m.project_id).filter((id): id is string => !!id))];
     const projectConfigs = new Map<string, ProjectConfigResult>();
-    const projectRules = new Map<string, ProjectRule[]>();
+    // S0.4: store the FULL ProjectRulesResult (found/error) — same fail-closed discipline as
+    // projectConfigs above. Collapsing to a bare array would silently disable the STOP/opt-out/
+    // human-takeover baseline on a rules-endpoint-only outage.
+    const projectRules = new Map<string, ProjectRulesResult>();
     for (const pid of projectIds) {
       const [cfg, rules] = await Promise.all([this.fetchProjectConfig(spaceId, tenantId, pid), this.fetchProjectRules(spaceId, tenantId, pid)]);
       projectConfigs.set(pid, cfg);
@@ -2450,7 +2497,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
       const projectCfgResult = msg.project_id ? projectConfigs.get(msg.project_id) : undefined;
       const projectCfg = projectCfgResult?.status === "found" ? projectCfgResult : undefined;
-      const rules = msg.project_id ? (projectRules.get(msg.project_id) ?? []) : [];
+      const rulesResult = msg.project_id ? projectRules.get(msg.project_id) : undefined;
+      // S0.4: a rules-fetch error for a customer-bot project must escalate, never silently run
+      // with an empty ruleset — that would bypass the STOP/UNSUBSCRIBE/human-takeover baseline
+      // exactly when we can least verify it's safe not to. Only a genuinely empty (found) list
+      // means "this project has no rules configured."
+      if (msg.project_id && rulesResult?.status === "error") {
+        this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover = 1 WHERE id = ?`, msg.session_id);
+        escalated++;
+        continue;
+      }
+      const rules = rulesResult?.status === "found" ? rulesResult.rules : [];
 
       // Identity linking (spec: returning customers should be recognized) — a deterministic,
       // per-space-scoped user id derived from (channel, channel_user_id). Set on the shared
