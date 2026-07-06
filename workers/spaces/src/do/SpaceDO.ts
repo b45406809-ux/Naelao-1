@@ -678,6 +678,74 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 25,
+    // Launchpad Wallet (user-directed feature): a project can be flagged kind='wallet' — a
+    // business's own stored-value balance, topped up via Lemon Squeezy checkout (billing
+    // worker's /internal/wallet/checkout, same pattern as the existing credit-packs/
+    // business-subscriptions checkouts) and drawn down for NAELAO's OWN metered platform costs
+    // (script/container spend beyond a project's normal daily_spend_cap_credits, wallet-funded
+    // add-ons, etc). Deliberately scoped to that — an internal ledger Naelao is the ledger-of-
+    // record for, NOT a payment rail that pays third parties (Whop/Shopify/Stripe) on a
+    // business's behalf. Actually issuing outbound payments to arbitrary vendors is a real
+    // money-transmission/PCI undertaking this build does not attempt; see wallet.ts's own
+    // header comment for the full boundary. wallet_ledger is balance-derived (SUM of deltas,
+    // same append-only-ledger-is-the-source-of-truth pattern as ProductUserDO's credit_ledger)
+    // rather than a cached balance column, so a replayed webhook can never double-credit —
+    // idempotency_key mirrors credit_ledger's own unique-partial-index convention exactly.
+    //
+    // SQLite can't widen an existing CHECK constraint via ALTER TABLE, so this rebuilds
+    // `projects` with every column accumulated by migrations 1/12/13/18/19/23 preserved
+    // byte-for-byte, only the `kind` CHECK widened to add 'wallet'.
+    description: "projects.kind widened to include 'wallet' + wallet_ledger (Launchpad Wallet)",
+    up: `
+      CREATE TABLE projects_new (
+        id                      TEXT PRIMARY KEY,
+        space_id                TEXT NOT NULL,
+        name                    TEXT NOT NULL,
+        description             TEXT NOT NULL DEFAULT '',
+        status                  TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+        created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+        kind                    TEXT NOT NULL DEFAULT 'workspace' CHECK (kind IN ('workspace','customer_bot','wallet')),
+        execution_ceiling       INTEGER NOT NULL DEFAULT 5 CHECK (execution_ceiling BETWEEN 1 AND 5),
+        daily_spend_cap_credits INTEGER NOT NULL DEFAULT 0,
+        channel_config          TEXT NOT NULL DEFAULT '{}',
+        show_sub_threads        INTEGER NOT NULL DEFAULT 0,
+        default_agent_id        TEXT,
+        max_threads             INTEGER NOT NULL DEFAULT 0,
+        allowed_agent_ids       TEXT,
+        visibility              TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('public','private')),
+        created_by              TEXT,
+        exclusive_mode          INTEGER NOT NULL DEFAULT 0,
+        active_thread_id        TEXT,
+        active_thread_since     TEXT
+      );
+      INSERT INTO projects_new SELECT
+        id, space_id, name, description, status, created_at, kind, execution_ceiling,
+        daily_spend_cap_credits, channel_config, show_sub_threads, default_agent_id, max_threads,
+        allowed_agent_ids, visibility, created_by, exclusive_mode, active_thread_id, active_thread_since
+      FROM projects;
+      DROP TABLE projects;
+      ALTER TABLE projects_new RENAME TO projects;
+      CREATE INDEX IF NOT EXISTS idx_projects_space ON projects(space_id, created_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_space_name ON projects(space_id, name);
+
+      CREATE TABLE IF NOT EXISTS wallet_ledger (
+        id                TEXT PRIMARY KEY,
+        project_id        TEXT NOT NULL,
+        space_id          TEXT NOT NULL,
+        delta_cents       INTEGER NOT NULL,
+        currency          TEXT NOT NULL DEFAULT 'USD',
+        reason            TEXT NOT NULL,
+        balance_after_cents INTEGER NOT NULL,
+        idempotency_key   TEXT,
+        created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_wallet_ledger_project ON wallet_ledger(project_id, created_at ASC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_ledger_idempotency
+        ON wallet_ledger(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -966,6 +1034,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const activateThreadMatch = url.pathname.match(/^\/projects\/([^/]+)\/activate-thread$/);
       if (method === "POST" && activateThreadMatch?.[1]) {
         return this.activateProjectThread(activateThreadMatch[1], request);
+      }
+      // ── Launchpad Wallet (kind='wallet' projects only) ─────────────────────────
+      const walletBalanceMatch = url.pathname.match(/^\/projects\/([^/]+)\/wallet\/balance$/);
+      if (method === "GET" && walletBalanceMatch?.[1]) {
+        return this.getWalletBalance(walletBalanceMatch[1]);
+      }
+      const walletCreditMatch = url.pathname.match(/^\/projects\/([^/]+)\/wallet\/credit$/);
+      if (method === "POST" && walletCreditMatch?.[1]) {
+        return this.creditWallet(walletCreditMatch[1], request);
+      }
+      const walletDebitMatch = url.pathname.match(/^\/projects\/([^/]+)\/wallet\/debit$/);
+      if (method === "POST" && walletDebitMatch?.[1]) {
+        return this.debitWallet(walletDebitMatch[1], request);
+      }
+      const walletHistoryMatch = url.pathname.match(/^\/projects\/([^/]+)\/wallet\/history$/);
+      if (method === "GET" && walletHistoryMatch?.[1]) {
+        return this.listWalletHistory(walletHistoryMatch[1], url.searchParams);
       }
       // ── project-scoped Memory OS Layers 3/4/6 (§A1.17 Phase U) ─────────────────
       const projFactsMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/facts$/);
@@ -1973,7 +2058,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private async updateProject(projectId: string, request: Request): Promise<Response> {
     const body = await request.json<{
-      kind?: "workspace" | "customer_bot";
+      kind?: "workspace" | "customer_bot" | "wallet";
       execution_ceiling?: number;
       daily_spend_cap_credits?: number;
       channel_config?: Record<string, unknown>;
@@ -2024,8 +2109,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       execute(this.ctx.storage.sql as never, "UPDATE projects SET status = ? WHERE id = ?", body.status, projectId);
     }
     if (body.kind !== undefined) {
-      if (body.kind !== "workspace" && body.kind !== "customer_bot") {
-        return Response.json({ error_code: "bad_request", message: "kind must be 'workspace' or 'customer_bot'" }, { status: 400 });
+      if (body.kind !== "workspace" && body.kind !== "customer_bot" && body.kind !== "wallet") {
+        return Response.json({ error_code: "bad_request", message: "kind must be 'workspace', 'customer_bot', or 'wallet'" }, { status: 400 });
       }
       execute(this.ctx.storage.sql as never, "UPDATE projects SET kind = ? WHERE id = ?", body.kind, projectId);
     }
@@ -2347,6 +2432,128 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const spentToday = row?.credits ?? 0;
     const cap = project.daily_spend_cap_credits;
     return Response.json({ project_id: projectId, day, spent_today: spentToday, cap, capped: cap > 0 && spentToday >= cap });
+  }
+
+  // ── Launchpad Wallet (user-directed feature) ────────────────────────────────
+  // A project flagged kind='wallet' carries a stored-value balance in wallet_ledger — an
+  // append-only ledger (balance is SUM(delta_cents), never a cached column), same
+  // never-double-credit-on-replay shape as ProductUserDO's credit_ledger. Every op below 404s
+  // for a project that isn't actually kind='wallet' — deliberately strict, since these are
+  // money-adjacent ops and a workspace/customer_bot project should never accumulate a balance
+  // by accident. See wallet.ts (script-engine prebuilt) for the agent-facing surface and the
+  // full custody-boundary writeup this feature keeps to.
+  private requireWalletProject(projectId: string): { space_id: string } | null {
+    const row = queryOne<{ space_id: string; kind: string }>(
+      this.ctx.storage.sql as never, "SELECT space_id, kind FROM projects WHERE id = ?", projectId
+    );
+    if (!row || row.kind !== "wallet") return null;
+    return { space_id: row.space_id };
+  }
+
+  private walletBalance(projectId: string): number {
+    const row = queryOne<{ bal: number | null }>(
+      this.ctx.storage.sql as never, "SELECT SUM(delta_cents) AS bal FROM wallet_ledger WHERE project_id = ?", projectId
+    );
+    return row?.bal ?? 0;
+  }
+
+  private getWalletBalance(projectId: string): Response {
+    const project = this.requireWalletProject(projectId);
+    if (!project) return Response.json({ error_code: "not_found", message: "Not a wallet project" }, { status: 404 });
+    return Response.json({ project_id: projectId, balance_cents: this.walletBalance(projectId), currency: "USD" });
+  }
+
+  private async creditWallet(projectId: string, request: Request): Promise<Response> {
+    const project = this.requireWalletProject(projectId);
+    if (!project) return Response.json({ error_code: "not_found", message: "Not a wallet project" }, { status: 404 });
+    const tenantId = new URL(request.url).searchParams.get("tenant_id") ?? "";
+    const body = await request.json<{ cents?: number; reason?: string; idempotency_key?: string; currency?: string }>()
+      .catch(() => ({}) as Record<string, never>);
+    if (!Number.isFinite(body.cents) || (body.cents ?? 0) <= 0) {
+      return Response.json({ error_code: "bad_request", message: "cents must be a positive number" }, { status: 400 });
+    }
+    if (body.idempotency_key) {
+      const existing = queryOne<{ balance_after_cents: number }>(
+        this.ctx.storage.sql as never,
+        "SELECT balance_after_cents FROM wallet_ledger WHERE project_id = ? AND idempotency_key = ?",
+        projectId, body.idempotency_key
+      );
+      if (existing) return Response.json({ balance_cents: existing.balance_after_cents, deduplicated: true });
+    }
+    const credit = Math.floor(body.cents!);
+    const balanceAfter = this.walletBalance(projectId) + credit;
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO wallet_ledger (id, project_id, space_id, delta_cents, currency, reason, balance_after_cents, idempotency_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      crypto.randomUUID(), projectId, project.space_id, credit, body.currency ?? "USD",
+      body.reason ?? "top_up", balanceAfter, body.idempotency_key ?? null
+    );
+    await this.fireMatchingTriggers(
+      { type: "wallet.credited", space_id: project.space_id, project_id: projectId, occurred_at: Date.now(), payload: { cents: credit, balance_cents: balanceAfter } },
+      tenantId
+    );
+    await broadcastSpaceEvent(this.env, tenantId, project.space_id, "wallet.credited", { project_id: projectId, balance_cents: balanceAfter });
+    return Response.json({ balance_cents: balanceAfter }, { status: 201 });
+  }
+
+  // Fails CLOSED: an over-draw is rejected (402), never silently allowed to go negative — same
+  // contract as ProductUserDO's /credits/deduct.
+  private async debitWallet(projectId: string, request: Request): Promise<Response> {
+    const project = this.requireWalletProject(projectId);
+    if (!project) return Response.json({ error_code: "not_found", message: "Not a wallet project" }, { status: 404 });
+    const tenantId = new URL(request.url).searchParams.get("tenant_id") ?? "";
+    const body = await request.json<{ cents?: number; reason?: string; idempotency_key?: string }>()
+      .catch(() => ({}) as Record<string, never>);
+    if (!Number.isFinite(body.cents) || (body.cents ?? 0) <= 0) {
+      return Response.json({ error_code: "bad_request", message: "cents must be a positive number" }, { status: 400 });
+    }
+    if (body.idempotency_key) {
+      const existing = queryOne<{ balance_after_cents: number }>(
+        this.ctx.storage.sql as never,
+        "SELECT balance_after_cents FROM wallet_ledger WHERE project_id = ? AND idempotency_key = ?",
+        projectId, body.idempotency_key
+      );
+      if (existing) return Response.json({ balance_cents: existing.balance_after_cents, deduplicated: true });
+    }
+    const debit = Math.ceil(body.cents!);
+    const balance = this.walletBalance(projectId);
+    if (debit > balance) {
+      return Response.json({ error_code: "insufficient_balance", balance_cents: balance }, { status: 402 });
+    }
+    const balanceAfter = balance - debit;
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO wallet_ledger (id, project_id, space_id, delta_cents, currency, reason, balance_after_cents, idempotency_key)
+       VALUES (?, ?, ?, ?, 'USD', ?, ?, ?)`,
+      crypto.randomUUID(), projectId, project.space_id, -debit, body.reason ?? "wallet_charge", balanceAfter, body.idempotency_key ?? null
+    );
+    await this.fireMatchingTriggers(
+      { type: "wallet.debited", space_id: project.space_id, project_id: projectId, occurred_at: Date.now(), payload: { cents: debit, balance_cents: balanceAfter, reason: body.reason ?? null } },
+      tenantId
+    );
+    await broadcastSpaceEvent(this.env, tenantId, project.space_id, "wallet.debited", { project_id: projectId, balance_cents: balanceAfter });
+    // Low-balance signal (fixed $5 threshold) — lets a builder wire a no-code trigger to prompt
+    // a top-up before the wallet actually runs dry and starts rejecting debits.
+    if (balanceAfter < 500) {
+      await this.fireMatchingTriggers(
+        { type: "wallet.low_balance", space_id: project.space_id, project_id: projectId, occurred_at: Date.now(), payload: { balance_cents: balanceAfter } },
+        tenantId
+      );
+    }
+    return Response.json({ balance_cents: balanceAfter }, { status: 200 });
+  }
+
+  private listWalletHistory(projectId: string, params: URLSearchParams): Response {
+    const project = this.requireWalletProject(projectId);
+    if (!project) return Response.json({ error_code: "not_found", message: "Not a wallet project" }, { status: 404 });
+    const limit = Math.min(parseInt(params.get("limit") ?? "50", 10) || 50, 200);
+    const rows = queryAll<{ id: string; delta_cents: number; currency: string; reason: string; balance_after_cents: number; created_at: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id, delta_cents, currency, reason, balance_after_cents, created_at FROM wallet_ledger WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
+      projectId, limit
+    );
+    return Response.json({ data: rows });
   }
 
   // ── project_rules — no-code "after the customer says X, this happens" triggers ─────────

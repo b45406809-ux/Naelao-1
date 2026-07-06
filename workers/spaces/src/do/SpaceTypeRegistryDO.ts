@@ -315,6 +315,18 @@ export interface SpaceTypeProductConfig {
       priceCents: number;
       lsVariantId?: string;
     }>;
+
+    /** Launchpad Wallet (user-directed feature): fixed-price top-up packs for a business's own
+     *  wallet_ledger balance (SpaceDO, projects.kind='wallet') — same "checkout for a
+     *  pre-configured LS variant, no arbitrary custom amount" shape as creditPacks, but the
+     *  proceeds fund the BUSINESS's stored-value balance (cents, 1:1 with priceCents) rather
+     *  than an individual end user's LLM-usage credits. */
+    walletTopups?: Array<{
+      id: string;
+      name: string;
+      priceCents: number;
+      lsVariantId?: string;
+    }>;
   };
 
   /** Sub-space terminology + depth cap the end-user-facing shell renders (spec Scenario C

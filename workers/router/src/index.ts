@@ -268,6 +268,12 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // /rules and /spend still don't match, matching the Phase B precedent for this same route family.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/members(\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/activate-thread$/,
+  // Launchpad Wallet (user-directed feature): balance/history are a business owner's own read
+  // surface, gated the same way as the routes above (identity here, requireBusinessMembership on
+  // the spaces worker). Explicitly capped to those two sub-paths so /wallet/credit and
+  // /wallet/debit — money-moving, internal-only (billing worker webhook + the wallet prebuilt) —
+  // never match this allowlist, matching /rules and /spend's existing precedent.
+  /^\/spaces\/([^/]+)\/projects\/([^/]+)\/wallet\/(balance|history)$/,
   /^\/spaces\/([^/]+)\/threads(\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/agent-definitions(\/|$)/,
   /^\/spaces\/([^/]+)\/presence$/,

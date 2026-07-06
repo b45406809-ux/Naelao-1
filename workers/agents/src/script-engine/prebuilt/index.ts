@@ -34,6 +34,7 @@ import { lock } from "./lock.js";
 import { workspaceAdmin } from "./workspace-admin.js";
 import { localMachine } from "./local-machine.js";
 import { workspace } from "./workspace.js";
+import { wallet } from "./wallet.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -91,6 +92,9 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // Explicit R2 <-> container copy/move/list (§A1.17 Phase R) — replaces the old implicit
   // full-sync-every-/exec-call behavior; see workspace.ts.
   [workspace.name]: workspace,
+  // Launchpad Wallet (user-directed feature) — a business's own Naelao-held stored-value
+  // balance; see wallet.ts's header for the money-transmission scope boundary this keeps to.
+  [wallet.name]: wallet,
 };
 
 /**

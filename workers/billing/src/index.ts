@@ -685,6 +685,72 @@ app.post("/internal/credit-packs/checkout", async (c) => {
   });
 });
 
+// ── POST /internal/wallet-topups/checkout ─────────────────────────────────────
+// Launchpad Wallet (user-directed feature): a business tops up its OWN wallet_ledger balance
+// (a project flagged kind='wallet' under the business space) via a fixed-price Lemon Squeezy
+// checkout — same "pick a pre-configured pack, no arbitrary custom amount" shape as
+// credit-packs/checkout above. Scope note (see workers/agents/src/script-engine/prebuilt/
+// wallet.ts's header for the full writeup): this funds an INTERNAL, Naelao-held stored-value
+// balance a business draws down for Naelao's own metered platform costs — it does not, and is
+// not intended to, pay a third party (Whop/Shopify/Stripe) on the business's behalf. Lemon
+// Squeezy itself has no API for that; building it for real would be a money-transmission /
+// PCI-scope undertaking well beyond a checkout-and-webhook wiring pass.
+app.use("/internal/wallet-topups/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.post("/internal/wallet-topups/checkout", async (c) => {
+  const body = await c.req.json<{ business_space_id: string; project_id: string; topup_id: string; customer_email?: string }>();
+  if (!body.business_space_id || !body.project_id || !body.topup_id) {
+    return c.json({ error_code: "bad_request", message: "business_space_id, project_id, and topup_id are required" }, 400);
+  }
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
+
+  const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+    .bind(body.business_space_id).first<{ tenant_id: string }>();
+  if (!spaceRow) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+
+  const catalogResp = await c.env.SPACES_WORKER.fetch(
+    new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, {
+      headers: {
+        "x-naelao-tenant-id": spaceRow.tenant_id,
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, spaceRow.tenant_id),
+      },
+    })
+  );
+  if (!catalogResp.ok) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const catalog = await catalogResp.json<{ product_space_id: string; wallet_topups: Array<{ id: string; name: string; priceCents: number; lsVariantId?: string }> }>();
+  const topup = catalog.wallet_topups.find((p) => p.id === body.topup_id);
+  if (!topup) return c.json({ error_code: "not_found", message: "Wallet top-up pack not found" }, 404);
+
+  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !topup.lsVariantId) {
+    return c.json({
+      checkout_url: `https://checkout.naelao.com/dev/wallet-topup/${body.business_space_id}/${topup.id}`,
+      topup: { id: topup.id, name: topup.name, price_cents: topup.priceCents },
+      dev: true,
+    });
+  }
+
+  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
+  const provider = new LemonSqueezyProvider({
+    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
+    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
+  });
+  const { url } = await provider.createCheckout({
+    spaceId: body.business_space_id,
+    variantOrPriceId: topup.lsVariantId,
+    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+    metadata: {
+      kind: "wallet_topup",
+      topup_id: topup.id,
+      cents: String(topup.priceCents),
+      project_id: body.project_id,
+      product_space_id: catalog.product_space_id,
+    },
+  });
+  return c.json({
+    checkout_url: url,
+    topup: { id: topup.id, name: topup.name, price_cents: topup.priceCents },
+  });
+});
+
 // ── POST /webhooks/lemon-squeezy ─────────────────────────────────────────────
 // Primary billing provider (spec Appendix H). Unauthenticated — LS calls this directly.
 // On payment/subscription events, wakes the Space Assistant agent via NaelaoAgentDO.

@@ -416,6 +416,9 @@ export interface ScriptEngineEnv {
   billingWorker?: Fetcher;
   /** MCP hub worker — registry + tool proxy for external-platform connectors (mcp-connector). */
   mcpHubWorker?: Fetcher;
+  /** Credentials worker — the wallet prebuilt's check_bypass op reads a business's own
+   *  credential list to detect a connected third-party payment provider. */
+  credentialsWorker?: Fetcher;
   /** Host-provided primitives for sub-agent / workflow prebuilt scripts. */
   orchestration?: OrchestrationHooks;
   /** HITL approval gateway — present when HITLApprovalDO is wired up. */

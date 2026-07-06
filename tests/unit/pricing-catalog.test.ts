@@ -214,6 +214,27 @@ describe("PATCH /builder/products/:id/pricing", () => {
     expect(billing.calls[0]!.body).toMatchObject({ kind: "one_time", price_cents: 300 });
   });
 
+  it("provisions wallet top-up packs as one_time variants (Launchpad Wallet)", async () => {
+    const env = makeEnv();
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO spaces (id, tenant_id, status, name, spacetype_id, config_json) VALUES ('prod-1', 'tenant-1', 'active', 'My Product', 'launchpad', '{}')"
+    ).run();
+    const billing = makeBillingWorker("var_topup_new");
+    const res = await spacesWorker.fetch(
+      req("/builder/products/prod-1/pricing", {
+        method: "PATCH",
+        headers: { "x-naelao-tenant-id": "tenant-1" },
+        body: JSON.stringify({ walletTopups: [{ id: "topup-25", name: "$25", priceCents: 2500 }] }),
+      }),
+      { ...env, BILLING_WORKER: billing } as never,
+      execCtx
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { pricing_config: { walletTopups: Array<{ id: string; lsVariantId?: string }> } };
+    expect(body.pricing_config.walletTopups.find((t) => t.id === "topup-25")?.lsVariantId).toBe("var_topup_new");
+    expect(billing.calls[0]!.body).toMatchObject({ kind: "one_time", price_cents: 2500 });
+  });
+
   it("404s for a product the calling tenant does not own", async () => {
     const env = makeEnv();
     await env.PLATFORM_DB.prepare(

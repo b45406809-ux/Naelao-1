@@ -246,6 +246,54 @@ async function grantCreditPackPurchase(
   }
 }
 
+/**
+ * Launchpad Wallet (user-directed feature): a business topping up its OWN wallet_ledger balance
+ * (a project flagged kind='wallet') — same shape as grantCreditPackPurchase above, but the
+ * proceeds land on the BUSINESS's stored-value balance, not an individual end user's. Fires on
+ * payment.success with checkout metadata kind="wallet_topup". idempotency_key mirrors
+ * credit-pack's own convention (prefer the LS-stable subscriptionId/event id, fall back to a
+ * synthetic key derived from stable order attributes) — wallet_ledger enforces this with the
+ * same unique-partial-index shape as credit_ledger.
+ */
+async function grantWalletTopupPurchase(
+  event: NormalizedBillingEvent,
+  env: LemonSqueezyEnv
+): Promise<boolean> {
+  if (event.type !== "payment.success") return false;
+  const custom = (event.metadata ?? {}) as Record<string, unknown>;
+  if (custom["kind"] !== "wallet_topup" || !event.spaceId) return false;
+  const projectId = custom["project_id"] ? String(custom["project_id"]) : null;
+  const cents = custom["cents"] ? parseInt(String(custom["cents"]), 10) : 0;
+  if (!projectId || !cents) return false;
+  if (!env.SPACES_WORKER) return false;
+
+  const space = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+    .bind(event.spaceId).first<{ tenant_id: string }>();
+  if (!space) return false;
+
+  const idempotencyKey = event.subscriptionId ?? `wallet_topup:${event.customerId ?? ""}:${event.amountCents}:${projectId}:${cents}`;
+  try {
+    const resp = await env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/wallet-topups/grant", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": space.tenant_id,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, space.tenant_id),
+      },
+      body: JSON.stringify({ business_space_id: event.spaceId, project_id: projectId, cents, idempotency_key: idempotencyKey }),
+    }));
+    if (!resp.ok) {
+      console.error(`[billing/ls] Wallet top-up grant failed for space=${event.spaceId} project=${projectId}: ${await resp.text()}`);
+      return false;
+    }
+    console.log(`[billing/ls] Granted ${cents} wallet cents to space=${event.spaceId} project=${projectId}`);
+    return true;
+  } catch (err) {
+    console.error("[billing/ls] Wallet top-up grant error:", (err as Error).message);
+    return false;
+  }
+}
+
 const GOAL_MAP: Record<NormalizedBillingEvent["type"], string> = {
   "payment.success": "A new payment was completed. Fulfil the order, send confirmation, and provision access.",
   "payment.failed": "A payment has failed. Trigger the dunning flow and notify the customer.",
@@ -619,6 +667,11 @@ export async function handleLemonSqueezyWebhook(
     await grantCreditPackPurchase(event, env);
   } catch (err) {
     console.error("[billing/ls] Credit pack grant failed:", (err as Error).message);
+  }
+  try {
+    await grantWalletTopupPurchase(event, env);
+  } catch (err) {
+    console.error("[billing/ls] Wallet top-up grant failed:", (err as Error).message);
   }
 
   // 6. Wake an agent asynchronously (ctx.waitUntil equivalent: fire-and-forget). Pass the order

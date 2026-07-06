@@ -286,6 +286,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     const body = await c.req.json<{
       plans?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["plans"];
       creditPacks?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["creditPacks"];
+      walletTopups?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["walletTopups"];
     }>();
 
     const tenantId = auth.tenantId;
@@ -345,9 +346,27 @@ export function registerBuilderRoutes(app: Hono<any>): void {
       );
     }
 
+    // Launchpad Wallet (user-directed feature): a business's own wallet top-up packs — same
+    // provision-once-per-item shape as creditPacks above (one_time LS variants).
+    let walletTopups = currentPricing.walletTopups;
+    if (body.walletTopups) {
+      walletTopups = await Promise.all(
+        body.walletTopups.map(async (topup) => {
+          if (topup.lsVariantId) return topup;
+          const lsVariantId = await provisionVariant(`${productName} — Wallet ${topup.name}`, topup.priceCents, "one_time");
+          return lsVariantId ? { ...topup, lsVariantId } : topup;
+        })
+      );
+    }
+
     config.productConfig = {
       ...(config.productConfig ?? {}),
-      pricingConfig: { ...currentPricing, ...(plans ? { plans } : {}), ...(creditPacks ? { creditPacks } : {}) },
+      pricingConfig: {
+        ...currentPricing,
+        ...(plans ? { plans } : {}),
+        ...(creditPacks ? { creditPacks } : {}),
+        ...(walletTopups ? { walletTopups } : {}),
+      },
     };
     const now = new Date().toISOString();
     await env.PLATFORM_DB.prepare(

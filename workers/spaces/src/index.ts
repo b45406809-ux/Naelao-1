@@ -614,6 +614,18 @@ app.use("/spaces/:spaceId/projects/:projectId", requireBusinessMembership({ GET:
 app.use("/spaces/:spaceId/projects/:projectId/rules", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId/spend", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 
+// Launchpad Wallet (user-directed feature). credit/debit are internal-only (called by the
+// billing worker's LS webhook handler after a top-up, and by the wallet script-engine prebuilt
+// running inside NaelaoAgentDO) — same posture as /spend, never a direct end-user write surface.
+// balance/history ARE end-user-reachable (a business owner checking their own wallet), gated
+// with requireBusinessMembership like the other read surfaces.
+app.use("/spaces/:spaceId/projects/:projectId/wallet/balance", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/wallet/balance", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/wallet/history", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/wallet/history", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/wallet/credit", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/wallet/debit", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+
 // GET lists, POST creates — proxied to the SpaceDO. §A1.17 Phase T1: viewer_id/created_by are
 // ALWAYS derived from the caller's own verified identity (never a client-supplied field) so
 // visibility filtering and project_members ownership can't be spoofed.
@@ -780,6 +792,52 @@ app.post("/spaces/:spaceId/projects/:projectId/spend", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/spend`, "POST", c.req.raw.body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// ── Launchpad Wallet ──────────────────────────────────────────────────────────
+app.get("/spaces/:spaceId/projects/:projectId/wallet/balance", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/wallet/balance`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.get("/spaces/:spaceId/projects/:projectId/wallet/history", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const url = new URL(c.req.url);
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/wallet/history${url.search}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// tenant_id rides the query string (not a header — forwardToSpaceDO doesn't forward client
+// headers, and the body is streamed through unparsed), same shape as PATCH /projects/:id, so
+// creditWallet/debitWallet can fire broadcastSpaceEvent/fireMatchingTriggers against the
+// verified tenant without requiring the body itself to repeat it.
+app.post("/spaces/:spaceId/projects/:projectId/wallet/credit", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(
+    stub, `/projects/${encodeURIComponent(projectId)}/wallet/credit?tenant_id=${encodeURIComponent(tenantId)}`, "POST", c.req.raw.body
+  );
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.post("/spaces/:spaceId/projects/:projectId/wallet/debit", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(
+    stub, `/projects/${encodeURIComponent(projectId)}/wallet/debit?tenant_id=${encodeURIComponent(tenantId)}`, "POST", c.req.raw.body
+  );
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
@@ -1887,13 +1945,15 @@ app.patch("/spaces/:spaceId/member-billing", async (c) => {
 
 type PlanDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["plans"]>[number];
 type CreditPackDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["creditPacks"]>[number];
+type WalletTopupDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["walletTopups"]>[number];
 
-/** Resolve the effective plan/credit-pack catalog for `spaceId` — walks to the product root if
- *  `spaceId` is a business (has a parent_space_id), since the catalog is authored on the root. */
+/** Resolve the effective plan/credit-pack/wallet-topup catalog for `spaceId` — walks to the
+ *  product root if `spaceId` is a business (has a parent_space_id), since the catalog is
+ *  authored on the root. */
 async function loadPricingCatalog(
   env: Env,
   spaceId: string
-): Promise<{ productSpaceId: string; productTenantId: string; plans: PlanDef[]; creditPacks: CreditPackDef[] } | null> {
+): Promise<{ productSpaceId: string; productTenantId: string; plans: PlanDef[]; creditPacks: CreditPackDef[]; walletTopups: WalletTopupDef[] } | null> {
   const space = await env.PLATFORM_DB.prepare(
     "SELECT tenant_id, spacetype_id, config_json, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
   ).bind(spaceId).first<{ tenant_id: string; spacetype_id: string; config_json: string | null; parent_space_id: string | null }>();
@@ -1920,6 +1980,7 @@ async function loadPricingCatalog(
     productTenantId,
     plans: pc?.pricingConfig?.plans ?? [],
     creditPacks: pc?.pricingConfig?.creditPacks ?? [],
+    walletTopups: pc?.pricingConfig?.walletTopups ?? [],
   };
 }
 
@@ -1933,6 +1994,7 @@ app.get("/spaces/:spaceId/pricing", async (c) => {
   return c.json({
     plans: catalog.plans.map((p) => ({ id: p.id, name: p.name, price_cents: p.priceCents, interval: p.interval, credit_allowance: p.creditAllowance ?? null })),
     credit_packs: catalog.creditPacks.map((p) => ({ id: p.id, name: p.name, credits: p.credits, price_cents: p.priceCents })),
+    wallet_topups: catalog.walletTopups.map((p) => ({ id: p.id, name: p.name, price_cents: p.priceCents })),
   });
 });
 
@@ -2005,6 +2067,7 @@ app.get("/internal/pricing-catalog", async (c) => {
     product_tenant_id: catalog.productTenantId,
     plans: catalog.plans,
     credit_packs: catalog.creditPacks,
+    wallet_topups: catalog.walletTopups,
   });
 });
 
@@ -2031,6 +2094,31 @@ app.post("/internal/credit-packs/grant", async (c) => {
   }));
   const result = await grantRes.json<{ balance_credits: number; deduplicated?: boolean }>();
   return c.json(result, grantRes.status as 200 | 201);
+});
+
+// POST /internal/wallet-topups/grant — the billing worker's webhook handler calls this after a
+// wallet-topup payment.success to credit the BUSINESS's own wallet_ledger (a project flagged
+// kind='wallet' under that business space) — never an individual end user's balance, unlike
+// credit-packs/grant above. idempotency_key is REQUIRED (every caller is, by construction, a
+// webhook LS may redeliver).
+app.use("/internal/wallet-topups/grant", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/wallet-topups/grant", async (c) => {
+  const body = await c.req.json<{ business_space_id: string; project_id: string; cents: number; idempotency_key: string }>();
+  if (!body.business_space_id || !body.project_id || !body.cents || !body.idempotency_key) {
+    return c.json({ error_code: "bad_request", message: "business_space_id, project_id, cents, and idempotency_key are required" }, 400);
+  }
+  const space = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'")
+    .bind(body.business_space_id).first<{ tenant_id: string }>();
+  if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+
+  const stub = await spaceDoStub(c.env, body.business_space_id, space.tenant_id);
+  const res = await forwardToSpaceDO(
+    stub,
+    `/projects/${encodeURIComponent(body.project_id)}/wallet/credit?tenant_id=${encodeURIComponent(space.tenant_id)}`,
+    "POST",
+    JSON.stringify({ cents: body.cents, reason: "wallet_topup", idempotency_key: body.idempotency_key })
+  );
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
 // POST /internal/product-users/:spaceId/:endUserId/credits/deduct — §A1.17 Phase I. The agents
