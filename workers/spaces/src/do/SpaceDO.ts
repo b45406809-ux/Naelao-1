@@ -816,7 +816,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // GET /sessions/:id
       const sessionMatch = url.pathname.match(/^\/sessions\/([^/]+)$/);
       if (method === "GET" && sessionMatch?.[1]) {
-        return this.getSession(sessionMatch[1]);
+        const endUserId = url.searchParams.get("end_user_id") ?? undefined;
+        return this.getSession(sessionMatch[1], endUserId);
       }
       // POST /sessions/:id/messages
       const msgMatch = url.pathname.match(/^\/sessions\/([^/]+)\/messages$/);
@@ -1188,13 +1189,20 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     );
   }
 
-  private getSession(sessionId: string): Response {
+  private getSession(sessionId: string, endUserId?: string): Response {
     const session = queryOne<SessionRow>(
       this.ctx.storage.sql as never,
       "SELECT * FROM sessions WHERE id = ?",
       sessionId
     );
     if (!session) {
+      return Response.json(
+        { error_code: "not_found", message: "Session not found" },
+        { status: 404 }
+      );
+    }
+    // S0.1: If end_user_id is provided (product_end_user call), verify the caller owns this session
+    if (endUserId && session.end_user_id !== endUserId) {
       return Response.json(
         { error_code: "not_found", message: "Session not found" },
         { status: 404 }
@@ -1383,6 +1391,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private getMessages(sessionId: string, params: URLSearchParams): Response {
     const limit = Math.min(parseInt(params.get("limit") ?? "50"), 200);
     const before = params.get("before");
+    const endUserId = params.get("end_user_id");
+
+    // S0.1: If end_user_id is provided (product_end_user call), verify the caller owns this session
+    // before returning its messages
+    if (endUserId) {
+      const session = queryOne<SessionRow>(
+        this.ctx.storage.sql as never,
+        "SELECT end_user_id FROM sessions WHERE id = ?",
+        sessionId
+      );
+      if (!session || session.end_user_id !== endUserId) {
+        return Response.json(
+          { error_code: "not_found", message: "Session not found" },
+          { status: 404 }
+        );
+      }
+    }
 
     // G-D01: id as tie-breaker ensures stable ordering when messages share a timestamp
     const rows = before

@@ -620,9 +620,25 @@ async function proxyTo(
 }
 
 // Knowledge (KB) → knowledge worker
-api.all("/spaces/:spaceId/kb/*", async (c) =>
-  proxyTo(c.env.KNOWLEDGE_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
-);
+// S0.1: For product_end_user callers, verify business membership first.
+api.all("/spaces/:spaceId/kb/*", async (c) => {
+  const claims = c.get("claims") as NaelaoJwtClaims | undefined;
+  if (claims?.role === "product_end_user") {
+    const spaceId = c.req.param("spaceId");
+    const endUserId = claims.sub;
+    const token = mintInternalToken(endUserId, c.env.PLATFORM_SECRET);
+    const res = await c.env.SPACES_WORKER.fetch(
+      new Request(`http://spaces/internal/business-role?spaceId=${encodeURIComponent(spaceId)}&endUserId=${encodeURIComponent(endUserId)}`, {
+        method: "GET",
+        headers: { "x-naelao-internal-token": token },
+      })
+    );
+    if (!res.ok) {
+      return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
+    }
+  }
+  return proxyTo(c.env.KNOWLEDGE_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET);
+});
 
 // Credentials (per-user / per-space / privileged-override hierarchy) → credentials worker.
 // Never proxy /internal/* here — internal credential resolution is service-binding-only.
