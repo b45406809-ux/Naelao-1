@@ -626,11 +626,11 @@ api.all("/spaces/:spaceId/kb/*", async (c) => {
   if (claims?.role === "product_end_user") {
     const spaceId = c.req.param("spaceId");
     const endUserId = claims.sub;
-    const token = mintInternalToken(endUserId, c.env.PLATFORM_SECRET);
+    const token = await mintInternalToken(c.env.PLATFORM_SECRET, claims.tid);
     const res = await c.env.SPACES_WORKER.fetch(
       new Request(`http://spaces/internal/business-role?spaceId=${encodeURIComponent(spaceId)}&endUserId=${encodeURIComponent(endUserId)}`, {
         method: "GET",
-        headers: { "x-naelao-internal-token": token },
+        headers: { "x-naelao-tenant-id": claims.tid, "x-naelao-internal-token": token },
       })
     );
     if (!res.ok) {

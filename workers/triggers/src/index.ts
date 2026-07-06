@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { errorResponse, requestId } from "@naelao/http";
+import { errorResponse, requestId, mintInternalToken } from "@naelao/http";
 
 interface Env {
   ENVIRONMENT: string;
@@ -116,6 +116,9 @@ export default {
         if (env.AGENTS_WORKER) {
           // Preferred path: call the agent directly via script/run (spec §9 / CLAUDE.md #8).
           // The default agent for any space is "naelao-agent" (DEFAULT_NAELAO_AGENT profile).
+          // S0.2: mint a real internal HMAC token — the endpoint no longer accepts the static
+          // x-naelao-internal header, since that trusted a caller-chosen tenantId with no proof.
+          const internalToken = await mintInternalToken(env.PLATFORM_SECRET, trigger.tenant_id);
           await env.AGENTS_WORKER.fetch(
             new Request("http://agents-worker/agents/naelao-agent/script/run", {
               method: "POST",
@@ -123,7 +126,7 @@ export default {
                 "content-type": "application/json",
                 "x-naelao-space-id": trigger.space_id,
                 "x-naelao-tenant-id": trigger.tenant_id,
-                "x-naelao-internal": "triggers",
+                "x-naelao-internal-token": internalToken,
               },
               body: JSON.stringify({
                 goal: trigger.message_template,

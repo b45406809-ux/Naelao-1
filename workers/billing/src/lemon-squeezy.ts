@@ -351,12 +351,16 @@ async function wakeAgent(
   tenantId: string,
   event: NormalizedBillingEvent,
   agentsWorker: Fetcher,
+  platformSecret: string,
   orderId?: string | null,
   projectId?: string
 ): Promise<void> {
   const goal = GOAL_MAP[event.type] ?? `Handle billing event: ${event.type}`;
   const sessionId = `billing-${event.type}-${Date.now()}`;
 
+  // S0.2: mint a real internal HMAC token — the endpoint no longer accepts the static
+  // x-naelao-internal header, since that trusted a caller-chosen tenantId with no proof.
+  const internalToken = await mintInternalToken(platformSecret, tenantId);
   const resp = await agentsWorker.fetch(
     new Request(`http://agents-worker/agents/${agentId}/script/run`, {
       method: "POST",
@@ -364,7 +368,7 @@ async function wakeAgent(
         "content-type": "application/json",
         "x-naelao-space-id": spaceId,
         "x-naelao-tenant-id": tenantId,
-        "x-naelao-internal": "billing",
+        "x-naelao-internal-token": internalToken,
       },
       body: JSON.stringify({
         goal,
@@ -548,7 +552,7 @@ export async function handleLemonSqueezyWebhook(
   // specialist trigger for. Only one agent is ever woken per event — never both.
   const fulfillmentBound = event.type === "payment.success" && (await isFulfillmentAgentBound(event.spaceId, agent.tenantId, env));
   const targetAgentId = fulfillmentBound ? FULFILLMENT_AGENT_ID : agent.agentId;
-  await wakeAgent(event.spaceId, targetAgentId, agent.tenantId, event, env.AGENTS_WORKER, orderId, projectId);
+  await wakeAgent(event.spaceId, targetAgentId, agent.tenantId, event, env.AGENTS_WORKER, env.PLATFORM_SECRET, orderId, projectId);
 
   return Response.json({ ok: true, event_type: event.type, space_id: event.spaceId, order_id: orderId });
 }

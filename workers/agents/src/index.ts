@@ -283,6 +283,14 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   if (!tenantId) {
     throw unauthorized("Missing tenant identity");
   }
+  // S0.2 follow-up: this worker has no workers_dev=false backstop (the channel gateway needs
+  // public ingress), so a direct caller bypassing naelao-router could otherwise spoof
+  // x-naelao-tenant-id and run the LLM-spending reasoning loop as any tenant. naelao-router's
+  // proxyTo ALWAYS mints this same internal token for every authenticated request it forwards,
+  // so requiring it here costs legitimate router-routed traffic nothing.
+  if (!(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
+    throw unauthorized("Missing or invalid internal token");
+  }
 
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.param("sessionId");
@@ -682,6 +690,12 @@ async function resolveMentionRoster(
 app.post("/spaces/:spaceId/sessions/:sessionId/agent/mention-run", async (c) => {
   const { tenantId } = getCallerIdentity(c);
   if (!tenantId) throw unauthorized("Missing tenant identity");
+  // S0.2 follow-up: same direct-ingress-bypass risk as /agent/run above — this route also
+  // dispatches the reasoning loop (up to MAX_MENTION_DISPATCH agents), so it must require the
+  // same internal token naelao-router always attaches.
+  if (!(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
+    throw unauthorized("Missing or invalid internal token");
+  }
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.param("sessionId");
   const body = await c.req.json<{ text?: string; project_id?: string }>().catch(() => ({}) as Record<string, never>);
@@ -694,6 +708,9 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/mention-run", async (c) => 
   const targets = (mentioned.length > 0 ? mentioned : (defaultAgentId ? [defaultAgentId] : [])).slice(0, MAX_MENTION_DISPATCH);
 
   const dispatched = await Promise.all(targets.map(async (agentId) => {
+    // S0.2 follow-up: /agent/run now requires the internal token — mint a fresh one for this
+    // in-process dispatch (this handler already verified the OUTER caller above).
+    const dispatchToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
     const runResp = await app.request(
       `/spaces/${spaceId}/sessions/${sessionId}/agent/run`,
       {
@@ -704,6 +721,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/mention-run", async (c) => 
           "x-naelao-tenant-id": tenantId,
           "x-naelao-user-id": c.req.header("x-naelao-user-id") ?? "",
           "x-naelao-role": c.req.header("x-naelao-role") ?? "",
+          "x-naelao-internal-token": dispatchToken,
           prefer: "respond-sync",
         },
         body: JSON.stringify({ goal: body.text, agent_definition_id: agentId }),
@@ -745,8 +763,18 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/mention-run", async (c) => 
 // Internal callers (billing/triggers) set x-naelao-internal + x-naelao-space-id and a
 // trusted x-naelao-tenant-id; owner-initiated calls arrive with the usual JWT-derived
 // headers. spaceId/tenantId may also come from the JSON body.
+// S0.2: Gate with HMAC verification + tenant-match enforcement, mirroring /internal/triggers/fire.
+// This endpoint runs the full reasoning loop with the platform's LLM key — must be internal-only.
+// Legitimate internal callers (triggers, billing webhooks) mint a real token; never accept
+// client-supplied headers.
 app.post("/agents/:agentId/script/run", async (c) => {
   const agentId = c.req.param("agentId");
+  const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const validToken = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
+  if (!headerTenantId || !validToken) {
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  }
+
   interface ScriptRunBody {
     goal: string;
     spaceId?: string;
@@ -759,12 +787,17 @@ app.post("/agents/:agentId/script/run", async (c) => {
   const body = await c.req.json<ScriptRunBody>().catch(() => ({ goal: "" } as ScriptRunBody));
 
   const spaceId = body.spaceId ?? c.req.header("x-naelao-space-id") ?? "";
-  const tenantId = body.tenantId ?? getCallerIdentity(c).tenantId;
+  const tenantId = body.tenantId ?? headerTenantId;
 
   if (!body.goal || typeof body.goal !== "string") throw badRequest("goal is required");
   if (body.goal.length > 10_000) throw badRequest("goal must not exceed 10,000 characters");
   if (!spaceId) throw badRequest("spaceId is required (header x-naelao-space-id or body.spaceId)");
   if (!tenantId) throw unauthorized("Missing tenant identity");
+  // S0.2: The signed token proves the caller legitimately acts for headerTenantId — body.tenantId
+  // must be the same tenant, never a caller-chosen value the token doesn't actually cover.
+  if (body.tenantId && body.tenantId !== headerTenantId) {
+    return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
+  }
 
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, agentId, c.get("requestId"));
   const doResp = await stub.fetch(
