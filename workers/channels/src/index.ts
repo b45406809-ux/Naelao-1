@@ -63,8 +63,25 @@ app.post("/v1/channels", async (c) => {
   ).bind(body.space_id, tenantId).first<{ id: string }>();
   if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
 
-  const id = crypto.randomUUID();
+  // WS-7 (audit plan): a client-supplied routing_key was written straight to a GLOBAL KV key
+  // (`channel:${routing_key}`) with no ownership check — any tenant could overwrite another
+  // tenant's routing config (or race to claim a key before its rightful owner did), silently
+  // hijacking that tenant's inbound email/Slack/webhook traffic. A client-supplied key is only
+  // honored when no OTHER tenant already owns it; otherwise this is rejected outright rather than
+  // silently namespaced (a builder who intentionally chose a memorable key expects to see the
+  // conflict, not have it renamed for them).
   const routingKey = body.routing_key ?? crypto.randomUUID();
+  if (body.routing_key) {
+    const existing = await c.env.CHANNEL_CONFIG.get(`channel:${body.routing_key}`);
+    if (existing) {
+      const existingConfig = JSON.parse(existing) as ChannelConfig;
+      if (existingConfig.tenant_id !== tenantId) {
+        return c.json({ error_code: "conflict", message: "routing_key is already in use" }, 409);
+      }
+    }
+  }
+
+  const id = crypto.randomUUID();
   const now = new Date().toISOString();
   await c.env.PLATFORM_DB.prepare(
     `INSERT INTO channels (id, space_id, tenant_id, channel_type, routing_key, enabled, created_at, updated_at)

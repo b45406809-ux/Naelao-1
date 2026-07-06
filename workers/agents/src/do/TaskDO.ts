@@ -7,6 +7,16 @@
  *   queued → processing → complete | failed
  *
  * Task records expire after 24 hours (alarm-based cleanup).
+ *
+ * WS-7 (audit plan) — DO-naming exception, documented not normalized: this DO is addressed by
+ * plain `idFromName(\`tasks:${spaceId}\`)`, not the HMAC-SHA256(tenantId, secret):type:id
+ * convention SpaceDO/NaelaoAgentDO use (G-BA01). Accepted because spaceId here is always
+ * server-derived from an already-authenticated request (never a raw client-supplied value used
+ * directly), so there's no cross-tenant enumeration path THROUGH this worker's own API surface —
+ * only a compromised worker with direct DO-binding access could enumerate `tasks:*` names, a
+ * different and already-mitigated threat model (workers_dev=false + requireInternalHmac on
+ * worker-to-worker calls). Normalizing to the HMAC convention would require a live-migration plan
+ * for any already-provisioned TaskDO instances, so it's deferred rather than done speculatively.
  */
 
 import { DurableObject } from "cloudflare:workers";

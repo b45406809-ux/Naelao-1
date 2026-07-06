@@ -12,6 +12,13 @@
 // Agent resumes by polling GET /requests/:approvalId.
 //
 // One HITLApprovalDO per Space (named by spaceId).
+//
+// WS-7 (audit plan) — DO-naming exception, documented not normalized: addressed by plain
+// `idFromName(\`hitl:${spaceId}\`)`, not the HMAC-SHA256(tenantId, secret):type:id convention
+// SpaceDO/NaelaoAgentDO use (G-BA01). Accepted because spaceId is always server-derived from an
+// already-authenticated request, never a client-controlled value passed straight through — the
+// same rationale as TaskDO's exception (see its file header for the full writeup). Normalizing
+// would need a live-migration plan for already-provisioned instances; deferred, not dropped.
 
 import { DurableObject } from "cloudflare:workers";
 

@@ -9,7 +9,7 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
-import { getDOName, verifyDOTenantPrefix } from "@naelao/crypto";
+import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, moderateText } from "@naelao/moderation";
 import { parseMentions, type MentionableAgent } from "@naelao/events";
 import { screenNiche } from "./whop/onboarding-guard.js";
@@ -160,42 +160,23 @@ function getCallerIdentity(c: {
   };
 }
 
-// G-BA01: Log cross-tenant DO probe attempts and apply best-effort rate alerting.
-// Uses AGENT_CACHE KV with 5-min TTL windows.
-async function recordCrossTenantProbe(
-  env: AgentsEnv,
-  tenantId: string,
-  doName: string,
-  requestId: string
-): Promise<void> {
-  const windowKey = `security:cross_tenant_probe:${tenantId}:${Math.floor(Date.now() / 300_000)}`;
-  try {
-    const raw = await env.AGENT_CACHE.get(windowKey);
-    const count = raw ? parseInt(raw, 10) + 1 : 1;
-    await env.AGENT_CACHE.put(windowKey, String(count), { expirationTtl: 300 });
-    const severity = count > 3 ? "CRITICAL" : "WARN";
-    console.error(
-      `[Security][${severity}] G-BA01 cross-tenant DO probe: tenantId=${tenantId} doName=${doName} requestId=${requestId} probeCount=${count}`
-    );
-  } catch {
-    console.error(`[Security][WARN] G-BA01 probe detected but count tracking failed: tenantId=${tenantId}`);
-  }
-}
 
-// Get DO stub for agent session
-// G-BA01: HMAC-derived name prevents cross-tenant DO enumeration; prefix verified before access
+// Get DO stub for agent session.
+// G-BA01: cross-tenant isolation comes from getDOName itself — the name is
+// HMAC(tenantId, PLATFORM_SECRET):type:resourceId, so a different tenant can never derive or
+// guess this tenant's DO name without the platform secret. WS-7 (audit plan) removed a
+// `verifyDOTenantPrefix(doName, tenantId, secret)` call that used to follow this: it re-derived
+// the SAME expected prefix from the SAME tenantId that had JUST been used to build `doName` two
+// lines above, so it could never observe a mismatch — a tautology, not a check. Deleted rather
+// than kept as false reassurance, along with the cross-tenant-probe KV logging it gated (which
+// could equally never fire).
 async function getAgentDO(
   env: AgentsEnv,
   tenantId: string,
   sessionId: string,
-  reqId?: string
+  _reqId?: string
 ): Promise<DurableObjectStub<NaelaoAgentDO>> {
   const doName = await getDOName("agent", sessionId, tenantId, env.PLATFORM_SECRET);
-  const valid = await verifyDOTenantPrefix(doName, tenantId, env.PLATFORM_SECRET);
-  if (!valid) {
-    await recordCrossTenantProbe(env, tenantId, doName, reqId ?? "unknown");
-    throw new Error("Cross-tenant DO access denied");
-  }
   const doId = env.NAELAO_AGENT_DO.idFromName(doName);
   return env.NAELAO_AGENT_DO.get(doId);
 }
@@ -220,20 +201,16 @@ function getTaskDO(env: AgentsEnv, spaceId: string): DurableObjectStub<TaskDO> {
 
 // Get the NaelaoAgentDO stub for a space-level agent, addressed by (spaceId, agentId)
 // rather than a session — used by the script-first /script/run entrypoint, which is woken
-// by webhooks/cron (no session exists yet). HMAC-named to prevent cross-tenant enumeration.
+// by webhooks/cron (no session exists yet). HMAC-named to prevent cross-tenant enumeration
+// (see getAgentDO's comment above — the redundant post-hoc "verify" step was removed here too).
 async function getAgentDOForSpace(
   env: AgentsEnv,
   tenantId: string,
   spaceId: string,
   agentId: string,
-  reqId?: string
+  _reqId?: string
 ): Promise<DurableObjectStub<NaelaoAgentDO>> {
   const doName = await getDOName("agent", `${spaceId}:${agentId}`, tenantId, env.PLATFORM_SECRET);
-  const valid = await verifyDOTenantPrefix(doName, tenantId, env.PLATFORM_SECRET);
-  if (!valid) {
-    await recordCrossTenantProbe(env, tenantId, doName, reqId ?? "unknown");
-    throw new Error("Cross-tenant DO access denied");
-  }
   const doId = env.NAELAO_AGENT_DO.idFromName(doName);
   return env.NAELAO_AGENT_DO.get(doId);
 }

@@ -26,6 +26,14 @@
  * workspace.ts), which call straight through to the routes above with zero DO-side R2 logic at
  * all (the R2 side of a copy is a normal R2 read/write in that prebuilt, same bucket/prefix Tier
  * 1's r2-workspace already uses).
+ *
+ * WS-7 (audit plan) — DO-naming exception, documented not normalized: addressed by a plain
+ * `sandbox:{spaceId}:{projectId}` key, not the HMAC-SHA256(tenantId, secret):type:id convention
+ * SpaceDO/NaelaoAgentDO use (G-BA01). Same server-derived-key rationale as TaskDO's exception
+ * (see its file header) — spaceId/projectId here are never raw client input forwarded as-is.
+ * NOTE: BusinessDO's OWN separate sandbox addressing (`sandbox:{userId}`, legacy Whop code path)
+ * is a DIFFERENT and more serious issue already tracked elsewhere (two tenants sharing a userId
+ * collide on one container) — not the same finding as this naming-convention note.
  */
 
 import { DurableObject } from "cloudflare:workers";

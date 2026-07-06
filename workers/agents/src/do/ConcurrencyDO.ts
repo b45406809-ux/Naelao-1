@@ -17,6 +17,14 @@
  * its INSERT in the same synchronous DO SQLite call sequence with no `await` between them, so
  * two concurrent acquire() calls can never both observe the same under-the-limit count and
  * both succeed — the DO's single-threaded execution model makes this atomic by construction.
+ *
+ * WS-7 (audit plan) — DO-naming exception, documented not normalized: callers address this DO by
+ * a plain server-derived key (spaceId/accountKey), not the HMAC-SHA256(tenantId, secret):type:id
+ * convention SpaceDO/NaelaoAgentDO use (G-BA01). Same rationale as TaskDO's exception (see its
+ * file header): the key is never a raw client-supplied value forwarded as-is, so there's no
+ * cross-tenant enumeration path through this worker's own API — only a compromised worker with
+ * direct DO-binding access could enumerate names, already mitigated by workers_dev=false +
+ * requireInternalHmac. Deferred, not dropped, pending a live-migration plan.
  */
 
 import { DurableObject } from "cloudflare:workers";

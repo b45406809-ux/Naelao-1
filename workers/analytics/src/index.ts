@@ -19,7 +19,7 @@
  */
 
 import { Hono } from "hono";
-import { errorResponse, requestId } from "@naelao/http";
+import { errorResponse, requestId, requireInternalHmac } from "@naelao/http";
 import { type AnalyticsEvent, writeEvent } from "./events.js";
 import {
   getPlatformMetrics,
@@ -35,6 +35,21 @@ export interface AnalyticsEnv {
   CF_ANALYTICS_API_TOKEN: string;
   ANALYTICS: AnalyticsEngineDataset;
   METRICS_CACHE: KVNamespace;
+  /** WS-7 (audit plan): /metrics/space/:spaceId had no auth at all (not even the header-trust
+   *  check every other internal worker had before its own HMAC hardening) and its cache key
+   *  didn't fold in tenantId — any caller reaching this worker with a spaceId it didn't own could
+   *  read another tenant's cached metrics for up to 5 minutes. Gated with the same
+   *  requireInternalHmac convention + a real ownership check against PLATFORM_DB. */
+  PLATFORM_SECRET: string;
+  PLATFORM_DB: D1Database;
+}
+
+async function verifySpaceOwnership(db: D1Database, spaceId: string, tenantId: string): Promise<boolean> {
+  const row = await db
+    .prepare("SELECT 1 FROM spaces WHERE id = ? AND tenant_id = ? AND status != 'deleted'")
+    .bind(spaceId, tenantId)
+    .first();
+  return row !== null;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -123,9 +138,11 @@ app.post("/events", async (c) => {
 });
 
 // ── GET /metrics/space/:spaceId ───────────────────────────────────────────────
-// Authenticated — requires x-naelao-tenant-id header (set by router JWT check).
-// Cached in METRICS_CACHE for 5 minutes.
-app.get("/metrics/space/:spaceId", async (c) => {
+// Gated with requireInternalHmac (WS-7) — this worker is never directly reachable
+// (workers_dev = false) but had no verification of its own before this pass.
+// Cached in METRICS_CACHE for 5 minutes, keyed per-tenant so one tenant's cache entry can
+// never be served back to a different tenant querying the same spaceId.
+app.get("/metrics/space/:spaceId", requireInternalHmac((c) => (c.env as unknown as AnalyticsEnv).PLATFORM_SECRET), async (c) => {
   const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!tenantId) {
     return c.json(
@@ -135,9 +152,13 @@ app.get("/metrics/space/:spaceId", async (c) => {
   }
 
   const spaceId = c.req.param("spaceId");
+  const owns = await verifySpaceOwnership(c.env.PLATFORM_DB, spaceId, tenantId);
+  if (!owns) {
+    return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  }
   const period = parsePeriod(new URL(c.req.url).searchParams.get("period"));
 
-  const cacheKey = `metrics:space:${spaceId}:${period}`;
+  const cacheKey = `metrics:space:${tenantId}:${spaceId}:${period}`;
   const cached = await c.env.METRICS_CACHE.get(cacheKey, "text");
   if (cached) {
     return new Response(cached, {

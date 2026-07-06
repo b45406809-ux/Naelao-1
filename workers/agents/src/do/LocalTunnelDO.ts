@@ -19,6 +19,13 @@
  * The WS connection itself requires a short-lived, HMAC-signed connect token (see
  * mintLocalTunnelToken/verifyLocalTunnelToken, @naelao/http) scoped to exactly this
  * (spaceId, userId) pair — stolen or forged tokens for a different space/user never verify.
+ *
+ * WS-7 (audit plan) — DO-naming exception, documented not normalized: this DO is addressed by a
+ * plain `(spaceId, userId)` key, not the HMAC-SHA256(tenantId, secret):type:id convention
+ * SpaceDO/NaelaoAgentDO use (G-BA01). Lower risk than most: even if the DO name were guessed, the
+ * connect-token check above (a SEPARATE HMAC scoped to the same pair) is the real gate — knowing
+ * the name alone grants nothing. Same server-derived-key rationale as TaskDO's exception applies
+ * too. Deferred, not dropped, pending a live-migration plan for already-provisioned instances.
  */
 
 import { DurableObject } from "cloudflare:workers";

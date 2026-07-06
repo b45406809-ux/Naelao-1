@@ -607,12 +607,22 @@ async function proxyTo(
   headers.delete("x-naelao-role");
   headers.delete("x-naelao-scopes");
   headers.delete("x-naelao-internal-token");
+  // WS-7 (audit plan): x-naelao-end-user-id was never stripped here — a latent client-controlled
+  // identity header (not an active authz bypass today, since the business gate keys off
+  // x-naelao-user-id, but closed for defense in depth). Genuinely-public routes that accept an
+  // end_user_id with no JWT at all (GDPR /me/export) already read it from the query string first
+  // (`?end_user_id=`), same precedent as the SSE stream endpoint's ?session_token=&end_user_id=
+  // — so stripping the header here doesn't break their intended, documented usage.
+  headers.delete("x-naelao-end-user-id");
   const ts = Date.now().toString();
   if (claims) {
     headers.set("x-naelao-tenant-id", claims.tid);
     headers.set("x-naelao-user-id", claims.sub);
     headers.set("x-naelao-role", claims.role);
     headers.set("x-naelao-scopes", claims.scopes.join(","));
+    if (claims.role === "product_end_user") {
+      headers.set("x-naelao-end-user-id", claims.sub);
+    }
     const sig = await signHmac(`internal:${claims.tid}:${ts}`, platformSecret);
     headers.set("x-naelao-internal-token", `t=${ts},v1=${sig}`);
   }

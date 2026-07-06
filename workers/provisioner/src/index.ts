@@ -571,19 +571,20 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     console.log(`[provisioner] Space ${spaceId} (${spaceTypeId}) provisioned successfully`);
   } catch (err) {
     console.error(`[provisioner] Provisioning failed at: ${provisioned[provisioned.length - 1] ?? "startup"}`, err);
-    await rollbackSpace(spaceId, tenantId, spaceTypeId, provisioned, env);
+    await rollbackSpace(spaceId, tenantId, spaceTypeId, provisioned, env, userId);
     throw err;
   }
 }
 
 // ── Rollback (deprovision partial state on failure) ──────────────────────────
 
-async function rollbackSpace(
+export async function rollbackSpace(
   spaceId: string,
   tenantId: string,
   spaceTypeId: string,
   provisioned: string[],
-  env: Env
+  env: Env,
+  userId?: string
 ): Promise<void> {
   const has = (step: string) => provisioned.includes(step);
   const now = new Date().toISOString();
@@ -621,11 +622,66 @@ async function rollbackSpace(
     // duplicate cron rows for the same agent. Unconditional: harmless no-op when step 9 never
     // ran or installed none.
     await env.PLATFORM_DB.prepare("DELETE FROM scheduled_jobs WHERE space_id = ?").bind(spaceId).run();
+
+    // WS-8.6 (audit plan): agent_definitions and the owner space_members row live in SpaceDO, not
+    // PLATFORM_DB — a failed provision that got as far as step 9 (agents) or step 5c (owner
+    // member) previously left these as orphans referencing a space stuck in 'error' status
+    // forever, with no GC. Both SpaceDO stores expose the CRUD the provisioner's own forward path
+    // already uses (installLaunchpadAgents / seedOwnerMember), so rollback reuses the same
+    // internal-HMAC-gated routes rather than reaching into SpaceDO storage directly.
+    if (has("agents")) {
+      const listResp = await env.SPACES_WORKER.fetch(
+        new Request(`http://spaces-worker/spaces/${spaceId}/agent-definitions`, {
+          headers: {
+            "x-naelao-tenant-id": tenantId,
+            "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+          },
+        })
+      );
+      if (listResp.ok) {
+        const { data } = await listResp.json<{ data: Array<{ id: string }> }>();
+        for (const row of data) {
+          await env.SPACES_WORKER.fetch(
+            new Request(`http://spaces-worker/spaces/${spaceId}/agent-definitions/${row.id}`, {
+              method: "DELETE",
+              headers: {
+                "x-naelao-tenant-id": tenantId,
+                "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+              },
+            })
+          );
+        }
+      } else {
+        console.warn(`[provisioner] rollback: agent-definitions list failed for ${spaceId}: ${await listResp.text()}`);
+      }
+    }
+    if (has("owner_member") && userId) {
+      const memberResp = await env.SPACES_WORKER.fetch(
+        new Request(
+          `http://spaces-worker/spaces/${spaceId}/members/${encodeURIComponent(userId)}?space_id=${encodeURIComponent(spaceId)}`,
+          {
+            method: "DELETE",
+            headers: {
+              "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+            },
+          }
+        )
+      );
+      if (!memberResp.ok) {
+        console.warn(`[provisioner] rollback: owner member removal failed for ${spaceId}: ${await memberResp.text()}`);
+      }
+    }
   } catch (rollbackErr) {
     console.error("[provisioner] Rollback error:", rollbackErr);
   }
 
-  // Always flip DB to 'error' so the UI can show a failure state
+  // Always flip DB to 'error' so the UI can show a failure state. The `spaces` row itself and its
+  // `config_json.onboarding` are deliberately KEPT (not deleted) — the row is what lets the
+  // builder dashboard show "this space failed to provision" at all; deleting it here would erase
+  // the only record that an attempt was made. The SpaceDO root-space registry row is left for the
+  // same reason (no existing endpoint removes it, and doing so touches sub-space hierarchy state
+  // this pass hasn't audited) — documented as a deferred follow-up, not silently dropped.
   await env.PLATFORM_DB.prepare(
     "UPDATE spaces SET status = 'error', updated_at = ? WHERE id = ? AND tenant_id = ?"
   ).bind(now, spaceId, tenantId).run().catch(() => {});

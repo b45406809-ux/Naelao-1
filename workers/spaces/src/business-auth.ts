@@ -59,6 +59,31 @@ export async function resolveEndUserBusinessRole(
   }
 }
 
+// WS-7 (audit plan): this check runs on every business-scoped end-user request, doing 1-2
+// PLATFORM_DB (single-instance D1, per CLAUDE.md) reads each time — a real chokepoint at
+// "millions of end-users" scale. Short-TTL in-memory cache, same pattern as the router's own
+// per-user token-version cache (5s TTL): a warm isolate skips the D1 round trip for a burst of
+// requests from the same (spaceId, endUserId), while a revoked/changed membership is picked up
+// again within a few seconds. Deliberately only wraps the MIDDLEWARE call site, not the exported
+// `resolveEndUserBusinessRole` function itself — that function is called directly (uncached) by
+// existing tests asserting on membership changes taking effect immediately after a DB mutation;
+// caching belongs to the request-serving path, not the primitive.
+const BUSINESS_ROLE_CACHE_TTL_MS = 5_000;
+const businessRoleCache = new Map<string, { role: BusinessRole | null; expiresAt: number }>();
+
+async function resolveEndUserBusinessRoleCached(
+  db: D1Database,
+  spaceId: string,
+  endUserId: string
+): Promise<BusinessRole | null> {
+  const cacheKey = `${spaceId}:${endUserId}`;
+  const cached = businessRoleCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) return cached.role;
+  const role = await resolveEndUserBusinessRole(db, spaceId, endUserId);
+  businessRoleCache.set(cacheKey, { role, expiresAt: Date.now() + BUSINESS_ROLE_CACHE_TTL_MS });
+  return role;
+}
+
 /** Returns a Hono middleware that, ONLY for `x-naelao-role: product_end_user` callers, requires
  *  at least `methodMinRole[method]` (default: "admin", fail closed for methods not listed) on the
  *  space named by the `spaceId` route param. Every other role passes through untouched. */
@@ -70,7 +95,7 @@ export function requireBusinessMembership(methodMinRole: Partial<Record<string, 
     const spaceId = c.req.param("spaceId") ?? "";
     const endUserId = c.req.header("x-naelao-user-id") ?? "";
     const env = c.env as BusinessAuthEnv;
-    const callerRole = await resolveEndUserBusinessRole(env.PLATFORM_DB, spaceId, endUserId);
+    const callerRole = await resolveEndUserBusinessRoleCached(env.PLATFORM_DB, spaceId, endUserId);
     if (!callerRole) {
       return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
     }
