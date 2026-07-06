@@ -3,24 +3,17 @@ import { app } from "../../workers/agents/src/index.js";
 
 // End-to-end: drive the ASSEMBLED agents worker the way the router does — with the
 // identity headers the router sets after JWT verification — and assert the full
-// user journey wiring: catalog visibility, founder-only dev catalog, and tenant
-// isolation on /business/:userId. This proves roots→products actually connect,
-// not just that the pure seams work in isolation.
+// user journey wiring: catalog visibility and founder-only dev catalog. This proves
+// roots→products actually connect, not just that the pure seams work in isolation.
+// (The BusinessDO/ProductDO tenant-isolation tests this file used to carry were removed
+// along with those retired DOs — see BusinessDO's retirement.)
 
-// Minimal env: the 4 secrets validateEnv() requires, plus a BUSINESS_DO mock so
-// an allowed /business/:userId/status reaches a stub DO and returns.
+// Minimal env: the 2 secrets validateEnv() requires.
 function makeEnv() {
-  const businessStub = {
-    fetch: async () => Response.json({ ok: true, whop_product_id: null, fiber_status: "idle" }),
-  };
   return {
     ENVIRONMENT: "test",
     ANTHROPIC_API_KEY: "x",
     PLATFORM_SECRET: "test-secret",
-    WHOP_API_KEY: "x",
-    NAELAO_WHOP_COMPANY_ID: "x",
-    BUSINESS_DO: { idFromName: (_n: string) => ({}), get: (_id: unknown) => businessStub },
-    PRODUCT_DO: { idFromName: (_n: string) => ({}), get: (_id: unknown) => businessStub },
   } as unknown as Parameters<typeof app.fetch>[1];
 }
 
@@ -59,22 +52,5 @@ describe("dev catalog — founder-only", () => {
     const body = await res.json<{ space_types: unknown[]; templates: unknown[] }>();
     expect(body.space_types.length).toBeGreaterThan(1);
     expect(body.templates.length).toBeGreaterThan(0);
-  });
-});
-
-describe("business access — tenant isolation at the API layer", () => {
-  it("a user cannot read another user's business", async () => {
-    const res = await call("/business/user-2/status", routerHeaders("user-1", "member"));
-    expect(res.status).toBe(403);
-  });
-
-  it("a user can read their own business", async () => {
-    const res = await call("/business/user-1/status", routerHeaders("user-1", "member"));
-    expect(res.status).toBe(200);
-  });
-
-  it("the founder (admin) can read any business — dev access", async () => {
-    const res = await call("/business/user-2/status", routerHeaders("founder", "admin"));
-    expect(res.status).toBe(200);
   });
 });

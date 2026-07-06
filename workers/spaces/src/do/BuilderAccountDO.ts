@@ -11,8 +11,9 @@
 // 3) calls into them directly rather than through this DO. Adding parallel tables here for any
 // of the three would be the exact split-brain this whole effort is trying to avoid.
 //
-// Naming note: workers/agents/src/do/ProductDO.ts already exists (a legacy Whop-niche singleton
-// being retired, CLAUDE.md #4/#11) — this is a different class, do not conflate the two.
+// Naming note: workers/agents/src/do/ProductDO.ts (a legacy Whop-niche singleton, distinct from
+// this class) has since been retired entirely — this comment is left only as a historical marker
+// in case old deployment docs still reference the name.
 
 import { DurableObject } from "cloudflare:workers";
 

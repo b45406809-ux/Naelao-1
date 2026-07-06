@@ -72,46 +72,6 @@ export async function productCatalog(): Promise<{ niches: CatalogNiche[]; live_c
   return call("/v1/catalog/product");
 }
 
-// ── Business (one per user) ─────────────────────────────────────────────────────
-export interface BusinessStatus {
-  whop_product_id: string | null;
-  affiliate_id: string | null;
-  template_id?: string;
-  template_version: string;
-  autonomy_tier: number;
-  custom_business: boolean;
-  cost_multiplier: number;
-  goal: string | null;
-  paused: boolean;
-  fiber_status: string;
-  last_cycle_at: number | null;
-  script_count: number;
-  outcome_count: number;
-}
-
-export async function onboardBusiness(input: {
-  product_name: string; product_description: string; price_usd: number;
-  billing_period?: "monthly" | "one_time"; template_id?: string;
-}): Promise<{ product_id: string | null; affiliate_id: string | null; template_id: string; template_version: string; autonomy_tier: number }> {
-  const user = getUser();
-  if (!user) throw new Error("Not signed in");
-  return call(`/v1/business/${user.id}/onboard`, { method: "POST", body: JSON.stringify(input) });
-}
-
-export async function businessStatus(): Promise<BusinessStatus> {
-  const user = getUser();
-  if (!user) throw new Error("Not signed in");
-  return call(`/v1/business/${user.id}/status`);
-}
-
-export async function runContentCycle(input: { topic?: string }): Promise<{ cycle_id: string; status: string; autonomy_tier: number }> {
-  const user = getUser();
-  if (!user) throw new Error("Not signed in");
-  return call(`/v1/business/${user.id}/content-cycle`, { method: "POST", body: JSON.stringify(input) });
-}
-
-export async function setPaused(paused: boolean): Promise<{ paused: boolean }> {
-  const user = getUser();
-  if (!user) throw new Error("Not signed in");
-  return call(`/v1/business/${user.id}/${paused ? "pause" : "resume"}`, { method: "POST" });
-}
+// The BusinessDO-backed "one business per user" functions that used to live here
+// (onboardBusiness/businessStatus/runContentCycle/setPaused, calling /v1/business/:userId/*)
+// were removed along with BusinessDO's retirement (legacy Whop-niche runtime).

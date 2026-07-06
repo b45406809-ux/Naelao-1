@@ -31,9 +31,9 @@
  * `sandbox:{spaceId}:{projectId}` key, not the HMAC-SHA256(tenantId, secret):type:id convention
  * SpaceDO/NaelaoAgentDO use (G-BA01). Same server-derived-key rationale as TaskDO's exception
  * (see its file header) — spaceId/projectId here are never raw client input forwarded as-is.
- * NOTE: BusinessDO's OWN separate sandbox addressing (`sandbox:{userId}`, legacy Whop code path)
- * is a DIFFERENT and more serious issue already tracked elsewhere (two tenants sharing a userId
- * collide on one container) — not the same finding as this naming-convention note.
+ * (The legacy BusinessDO code path used to address this same container class by a separate,
+ * un-tenant-scoped `sandbox:{userId}` key — that whole code path was retired along with
+ * BusinessDO, so this is the only sandbox-addressing scheme left.)
  */
 
 import { DurableObject } from "cloudflare:workers";

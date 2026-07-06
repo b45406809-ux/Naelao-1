@@ -12,19 +12,12 @@ import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, moderateText } from "@naelao/moderation";
 import { parseMentions, type MentionableAgent } from "@naelao/events";
-import { screenNiche } from "./whop/onboarding-guard.js";
 import { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
-import { ProductDO } from "./do/ProductDO.js";
-import { BusinessDO } from "./do/BusinessDO.js";
 import { ToolSandboxDO } from "./do/ToolSandboxDO.js";
 import { LocalTunnelDO } from "./do/LocalTunnelDO.js";
-import { observeWhopBusiness, createWhopProduct, registerAffiliate } from "./whop/client.js";
 import { devCatalog, productCatalog } from "./catalog.js";
-import { canAccessBusiness } from "./access.js";
-import { safetyFloor } from "./safety.js";
-import { shouldPromote } from "./whop/cycle-logic.js";
 import { listManifests } from "./launchpad/manifest.js";
 import { LAUNCHPAD_TEMPLATES } from "./launchpad/spacetype.js";
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
@@ -43,8 +36,6 @@ function safeParse(s: string): unknown {
 export { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 export { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 export { TaskDO } from "./do/TaskDO.js";
-export { ProductDO } from "./do/ProductDO.js";
-export { BusinessDO } from "./do/BusinessDO.js";
 export { ToolSandboxDO } from "./do/ToolSandboxDO.js";
 export { LocalTunnelDO } from "./do/LocalTunnelDO.js";
 export { ConcurrencyDO } from "./do/ConcurrencyDO.js";
@@ -57,8 +48,6 @@ export interface AgentsEnv {
   ENVIRONMENT: string;
   ANTHROPIC_API_KEY: string;
   PLATFORM_SECRET: string;
-  WHOP_API_KEY: string;
-  NAELAO_WHOP_COMPANY_ID: string;
   // CF AI Gateway — spec §15. Every LLM call routes through the gateway.
   // Set to "placeholder" in dev; override with real values in production secrets.
   NAELAO_ACCOUNT_ID: string;
@@ -69,13 +58,10 @@ export interface AgentsEnv {
   NAELAO_AGENT_DO: DurableObjectNamespace<NaelaoAgentDO>;
   HITL_APPROVAL_DO: DurableObjectNamespace<HITLApprovalDO>;
   TASK_DO: DurableObjectNamespace<TaskDO>;
-  PRODUCT_DO: DurableObjectNamespace<ProductDO>;
-  BUSINESS_DO: DurableObjectNamespace<BusinessDO>;
   TOOL_SANDBOX: DurableObjectNamespace<ToolSandboxDO>;
   /** §A1.17 Phase M — local-machine-as-container. One DO per (spaceId, userId); optional, like
    *  every other execution-ladder binding — the local-machine prebuilt fails closed without it. */
   LOCAL_TUNNEL?: DurableObjectNamespace<LocalTunnelDO>;
-  BUSINESS_R2: R2Bucket;
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
   AGENTS_WORKER: Fetcher;
@@ -128,7 +114,7 @@ interface SpaceTypeRow {
 
 // G-A11: Validate required secrets at startup
 function validateEnv(env: AgentsEnv): void {
-  const required = ["ANTHROPIC_API_KEY", "PLATFORM_SECRET", "WHOP_API_KEY", "NAELAO_WHOP_COMPANY_ID"] as const;
+  const required = ["ANTHROPIC_API_KEY", "PLATFORM_SECRET"] as const;
   for (const key of required) {
     if (!env[key]) throw new Error(`Missing required secret: ${key}`);
   }
@@ -137,17 +123,6 @@ function validateEnv(env: AgentsEnv): void {
 const app = new Hono<{ Bindings: AgentsEnv }>();
 app.use("*", requestId);
 app.use("*", async (c, next) => { validateEnv(c.env); await next(); });
-
-// Tenant isolation at the API layer: a user may only touch their own business;
-// the founder (admin/owner) has dev access to any. Complements HMAC DO names.
-app.use("/business/:userId/*", async (c, next) => {
-  const { userId: authedUserId, role } = getCallerIdentity(c);
-  const pathUserId = c.req.param("userId");
-  if (!canAccessBusiness(authedUserId, role, pathUserId)) {
-    return c.json({ error: "forbidden", message: "You can only access your own business" }, 403);
-  }
-  return next();
-});
 
 // Extract caller identity from request headers (set by router after JWT validation)
 function getCallerIdentity(c: {
@@ -2033,459 +2008,6 @@ app.post("/skills/inherit", async (c) => {
   return c.json({ ...result, template_id: templateId });
 });
 
-// ── ProductDO routes — /product/* ─────────────────────────────────────────────
-
-// HMAC-derived DO names (WG-23 / G-BA01): unguessable, tenant-prefixed so one
-// user can never address another user's BusinessDO. In this collapsed one-business-
-// per-user model the user IS the tenant; the singleton ProductDO is platform-scoped.
-async function getProductDO(env: AgentsEnv) {
-  const name = await getDOName("product", "product", "platform", env.PLATFORM_SECRET);
-  return env.PRODUCT_DO.get(env.PRODUCT_DO.idFromName(name));
-}
-
-async function getBusinessDO(env: AgentsEnv, userId: string) {
-  const name = await getDOName("business", userId, userId, env.PLATFORM_SECRET);
-  return env.BUSINESS_DO.get(env.BUSINESS_DO.idFromName(name));
-}
-
-app.get("/product/config", async (c) => {
-  return (await getProductDO(c.env)).fetch(new Request("http://do/config"));
-});
-
-app.patch("/product/config", async (c) => {
-  return (await getProductDO(c.env)).fetch(new Request("http://do/config", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(await c.req.json()),
-  }));
-});
-
-app.get("/product/signup-gate", async (c) => {
-  return (await getProductDO(c.env)).fetch(new Request("http://do/signup-gate"));
-});
-
-// Business registry (for nightly cron iteration)
-app.get("/product/businesses", async (c) => {
-  return (await getProductDO(c.env)).fetch(new Request("http://do/businesses"));
-});
-
-app.post("/product/businesses", async (c) => {
-  return (await getProductDO(c.env)).fetch(new Request("http://do/businesses", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(await c.req.json()),
-  }));
-});
-
-app.delete("/product/businesses/:userId", async (c) => {
-  const { userId } = c.req.param();
-  return (await getProductDO(c.env)).fetch(new Request(`http://do/businesses/${userId}`, { method: "DELETE" }));
-});
-
-// ── BusinessDO routes — /business/:userId/* ───────────────────────────────────
-
-app.get("/business/:userId/status", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/status"));
-});
-
-app.patch("/business/:userId/config", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/config", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(await c.req.json()),
-  }));
-});
-
-app.post("/business/:userId/cycle", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/cycle", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...(await c.req.json<Record<string, unknown>>()), api_key: c.env.ANTHROPIC_API_KEY }),
-  }));
-});
-
-app.get("/business/:userId/outcome-log", async (c) => {
-  const { userId } = c.req.param();
-  const limit = c.req.query("limit") ?? "50";
-  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/outcome-log?limit=${limit}`));
-});
-
-app.get("/business/:userId/scripts", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/scripts"));
-});
-
-app.post("/business/:userId/scripts", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/scripts", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(await c.req.json()),
-  }));
-});
-
-app.get("/business/:userId/scripts/:name", async (c) => {
-  const { userId, name } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/scripts/${name}`));
-});
-
-app.patch("/business/:userId/scripts/:name", async (c) => {
-  const { userId, name } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/scripts/${name}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(await c.req.json()),
-  }));
-});
-
-app.delete("/business/:userId/scripts/:name", async (c) => {
-  const { userId, name } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/scripts/${name}`, { method: "DELETE" }));
-});
-
-// POST /business/:userId/scripts/:name/promote — spread a proven script to ALL agents.
-// Reads the script from this business, checks it's proven, writes it to the shared
-// registry. The cross-agent flywheel: one agent learns, every agent benefits.
-app.post("/business/:userId/scripts/:name/promote", async (c) => {
-  const { userId, name } = c.req.param();
-  const biz = await getBusinessDO(c.env, userId);
-  const sres = await biz.fetch(new Request(`http://do/scripts/${name}`));
-  if (!sres.ok) return c.json({ error: "script_not_found" }, 404);
-  const s = await sres.json<{ name: string; description: string; code: string; fingerprint_schema: string; parameters: string; tier: number; stability_score: number; success_count: number }>();
-  if (!shouldPromote(s)) {
-    return c.json({ promoted: false, reason: "not yet proven (needs stability ≥ 0.8 and ≥ 5 successes)" }, 409);
-  }
-  return (await getProductDO(c.env)).fetch(new Request("http://do/shared-scripts", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      name: s.name, description: s.description, code: s.code,
-      fingerprint_schema: safeParse(s.fingerprint_schema), parameters: safeParse(s.parameters),
-      tier: s.tier, source_user: userId,
-    }),
-  }));
-});
-
-// GET /product/shared-scripts — the cross-agent skill library
-app.get("/product/shared-scripts", async (c) => {
-  return (await getProductDO(c.env)).fetch(new Request("http://do/shared-scripts"));
-});
-
-app.get("/business/:userId/autonomy", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/autonomy"));
-});
-
-app.patch("/business/:userId/autonomy", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/autonomy", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(await c.req.json()),
-  }));
-});
-
-// POST /business/:userId/scripts/seed — pre-populate script registry
-app.post("/business/:userId/scripts/seed", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/scripts/seed", { method: "POST" }));
-});
-
-// ── Sub-space tree + threads + messages (Product → Sub-Spaces → Threads → Msgs) ──
-app.get("/business/:userId/subspaces", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/subspaces"));
-});
-app.post("/business/:userId/subspaces", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/subspaces", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(await c.req.json()),
-  }));
-});
-app.get("/business/:userId/subspaces/:sid/threads", async (c) => {
-  const { userId, sid } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/subspaces/${sid}/threads`));
-});
-app.post("/business/:userId/subspaces/:sid/threads", async (c) => {
-  const { userId, sid } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/subspaces/${sid}/threads`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(await c.req.json().catch(() => ({}))),
-  }));
-});
-app.get("/business/:userId/threads/:tid/messages", async (c) => {
-  const { userId, tid } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/threads/${tid}/messages`));
-});
-app.post("/business/:userId/threads/:tid/messages", async (c) => {
-  const { userId, tid } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/threads/${tid}/messages`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(await c.req.json()),
-  }));
-});
-
-// Channels (assistant ingress) — inbound webhook, sessions, heartbeat queue
-app.post("/business/:userId/channels/:type/inbound", async (c) => {
-  const { userId, type } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request(`http://do/channels/${type}/inbound`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(await c.req.json().catch(() => ({}))),
-  }));
-});
-app.get("/business/:userId/channels/sessions", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/channels/sessions"));
-});
-app.get("/business/:userId/channels/unanswered", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/channels/unanswered"));
-});
-app.post("/business/:userId/channels/heartbeat", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/channels/heartbeat", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ api_key: c.env.ANTHROPIC_API_KEY }),
-  }));
-});
-
-// Kill switch — pause / resume the whole business
-app.post("/business/:userId/pause", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/pause", { method: "POST" }));
-});
-app.post("/business/:userId/resume", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/resume", { method: "POST" }));
-});
-
-// ── Micro-tool (Tier 5) lifecycle — the sellable product ──────────────────────
-app.get("/business/:userId/tool", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/tool"));
-});
-
-app.get("/business/:userId/tool/versions", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/tool/versions"));
-});
-
-app.post("/business/:userId/tool/build", async (c) => {
-  const { userId } = c.req.param();
-  const body = await c.req.json<{ spec?: string; model?: string }>().catch(() => ({} as { spec?: string; model?: string }));
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/tool/build", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ spec: body.spec ?? "", api_key: c.env.ANTHROPIC_API_KEY, ...(body.model ? { model: body.model } : {}) }),
-  }));
-});
-
-app.post("/business/:userId/tool/deploy", async (c) => {
-  const { userId } = c.req.param();
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/tool/deploy", { method: "POST" }));
-});
-
-// POST /business/:userId/content-cycle — deliberate community-post action:
-// generate → moderate → publish (Tier 2+) or queue a draft for approval (Tier 1).
-// Optional body: { topic?, content?, model? }.
-app.post("/business/:userId/content-cycle", async (c) => {
-  const { userId } = c.req.param();
-  const body = await c.req.json<{ topic?: string; content?: string; model?: string }>().catch(() => ({} as { topic?: string; content?: string; model?: string }));
-  return (await getBusinessDO(c.env, userId)).fetch(new Request("http://do/cycle", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      api_key: c.env.ANTHROPIC_API_KEY,
-      action: "generate_community_post",
-      params: { ...(body.topic ? { topic: body.topic } : {}), ...(body.content ? { content: body.content } : {}) },
-      ...(body.model ? { model: body.model } : {}),
-    }),
-  }));
-});
-
-// POST /business/:userId/onboard — full onboarding flow (§06)
-// 1. Check signup gate   2. Create Whop product   3. Register affiliate
-// 4. Save IDs to BusinessDO   5. Register user in ProductDO businesses list
-app.post("/business/:userId/onboard", async (c) => {
-  const { userId } = c.req.param();
-  const env = c.env;
-
-  // 1. Signup gate
-  const gateResp = await (await getProductDO(env)).fetch(new Request("http://do/signup-gate"));
-  if (!gateResp.ok) {
-    const body = await gateResp.json<{ allowed: boolean; reason?: string }>();
-    return Response.json({ error: body.reason ?? "Signups are closed" }, { status: 403 });
-  }
-
-  const body = await c.req.json<{
-    product_name: string;
-    product_description: string;
-    price_usd: number;
-    billing_period: "monthly" | "one_time";
-    template_id?: string; // "whop-businesses" (default, official) | "custom" (no template → L4)
-  }>();
-
-  if (!body.product_name || !body.price_usd) {
-    return Response.json({ error: "product_name and price_usd required" }, { status: 400 });
-  }
-
-  const isCustom = body.template_id === "custom";
-  const copy = `${body.product_name}\n${body.product_description ?? ""}`;
-
-  // Free-tier gate: custom (L4) business requires a paid plan.
-  if (isCustom) {
-    try {
-      const checker = new EntitlementsChecker(env.PLATFORM_DB);
-      const tier = await checker.getTenantTier(userId);
-      if (tier === "free") {
-        return Response.json({ error: "custom_business_requires_paid_plan", upgrade_required: true }, { status: 403 });
-      }
-    } catch { /* DB unavailable in dev — allow through */ }
-  }
-
-  // 1a. SAFETY FLOOR — template-agnostic. Runs for EVERY path (official template OR
-  // custom/no-template), blocking dangerous/regulated categories before anything is
-  // created. This is the prerequisite for the custom path to exist at all.
-  const floor = safetyFloor(copy);
-  if (!floor.allowed) {
-    return Response.json({ error: floor.reason, blocked: true, category: floor.category }, { status: 422 });
-  }
-
-  // 1b. Niche guardrail (§11/WG-32): the official Whop template has extra, niche-
-  // specific guardrails. The custom path skips these (they're template-specific) but
-  // is still bounded by the safety floor above.
-  if (!isCustom) {
-    const niche = screenNiche(body.product_name, body.product_description ?? "");
-    if (!niche.allowed) {
-      return Response.json({ error: niche.reason, blocked: true }, { status: 422 });
-    }
-  }
-
-  // 1c. General content moderation on the copy (always).
-  const copyVerdict = moderateText(copy);
-  if (!copyVerdict.allowed) {
-    return Response.json(
-      { error: "Product copy flagged by moderation", flags: copyVerdict.flags.map(f => f.type), blocked: true },
-      { status: 422 },
-    );
-  }
-
-  const whopConfig = { apiKey: env.WHOP_API_KEY };
-  const idBase = `${userId}:${Date.now()}`;
-
-  // A CUSTOM business ("describe your own business") has no curated Whop template —
-  // it's driven by the user's free-text goal and runs on Level-4 reasoning + the
-  // Tier-5 container. No Whop product/affiliate is created here; the agent figures out
-  // what to build. The OFFICIAL Whop template creates the product + affiliate-of-record.
-  let product: { id: string } | null = null;
-  let affiliate: { id: string } | null = null;
-
-  if (!isCustom) {
-    // 2. Create Whop product
-    try {
-      product = await createWhopProduct(whopConfig, {
-        name: body.product_name,
-        description: body.product_description ?? "",
-        price_usd: body.price_usd,
-        billing_period: body.billing_period ?? "monthly",
-        idempotency_key: `create-product:${idBase}`,
-        affiliate_percentage: 20,
-      });
-    } catch (err) {
-      return Response.json({ error: `Whop product creation failed: ${String(err)}` }, { status: 502 });
-    }
-
-    // 3. Register Naelao as affiliate-of-record
-    try {
-      affiliate = await registerAffiliate(whopConfig, {
-        product_id: product.id,
-        affiliate_company_id: env.NAELAO_WHOP_COMPANY_ID,
-        commission_percentage: 20,
-        idempotency_key: `affiliate:${idBase}`,
-      });
-    } catch (err) {
-      console.warn(`[onboard] Affiliate registration failed for ${userId}:`, err);
-    }
-  }
-
-  // 4. Save Whop product ID + affiliate ID to BusinessDO. A custom business carries
-  // a higher cost multiplier because it runs on Level-4 live reasoning (no curated
-  // playbook) — so "custom" is mechanically more expensive than the official template,
-  // charged closer to its real token cost rather than as an invented pricing tier.
-  // Determine free-tier defaults before configuring the DO.
-  let isFree = false;
-  try {
-    const checker = new EntitlementsChecker(env.PLATFORM_DB);
-    isFree = (await checker.getTenantTier(userId)) === "free";
-  } catch { /* DB unavailable in dev */ }
-
-  const bizDO = await getBusinessDO(env, userId);
-  await bizDO.fetch(new Request("http://do/config", {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      whop_product_id: product?.id ?? null,
-      affiliate_registration_id: affiliate?.id ?? null,
-      template_id: isCustom ? "custom" : "whop-businesses-v1",
-      template_version: "1",
-      user_id: userId,
-      custom_business: isCustom ? "true" : "false",
-      cost_multiplier: isCustom ? "3" : "1",
-      // Free-tier: use CF Workers AI (cheaper) and start at tier 2 so the agent
-      // acts autonomously, earns revenue, and covers cost without user approval clicks.
-      llm_provider: isFree ? "cf-workers-ai" : "platform",
-      autonomy_tier: isFree ? "2" : "1",
-      // For a custom business the free-text description IS the agent's goal (L4).
-      ...(isCustom ? { goal: body.product_description ?? body.product_name } : {}),
-    }),
-  }));
-
-  // 5. Seed script registry with the built-in action types, then inherit any
-  // proven scripts other agents have promoted to the shared library (cross-agent
-  // learning — a new business starts with what the fleet has already figured out).
-  await bizDO.fetch(new Request("http://do/scripts/seed", { method: "POST" }));
-  try {
-    const sharedResp = await (await getProductDO(env)).fetch(new Request("http://do/shared-scripts"));
-    if (sharedResp.ok) {
-      const { scripts } = await sharedResp.json<{ scripts: Array<{ name: string; description: string; code: string; fingerprint_schema: string; parameters: string; tier: number }> }>();
-      for (const s of scripts) {
-        await bizDO.fetch(new Request("http://do/scripts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: s.name, description: s.description, code: s.code, fingerprint_schema: safeParse(s.fingerprint_schema), parameters: safeParse(s.parameters), tier: s.tier }),
-        }));
-      }
-    }
-  } catch (err) {
-    console.warn(`[onboard] shared-script inheritance failed for ${userId}:`, err);
-  }
-
-  // 6. Register user in ProductDO businesses list (for nightly cron)
-  await (await getProductDO(env)).fetch(new Request("http://do/businesses", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ user_id: userId }),
-  }));
-
-  // Emit analytics
-  try {
-    env.ANALYTICS.writeDataPoint({
-      blobs: ["business.onboarded", userId, product?.id ?? "custom", isCustom ? "custom" : "whop"],
-      doubles: [Date.now()],
-      indexes: [userId],
-    });
-  } catch { /* best-effort */ }
-
-  return Response.json({
-    product_id: product?.id ?? null,
-    affiliate_id: affiliate?.id ?? null,
-    template_id: isCustom ? "custom" : "whop-businesses-v1",
-    template_version: "1",
-    autonomy_tier: isFree ? 2 : 1,
-    llm_provider: isFree ? "cf-workers-ai" : "platform",
-  }, { status: 201 });
-});
-
 // ── Error handler ─────────────────────────────────────────────────────────────
 
 app.onError((err, c) =>
@@ -2803,93 +2325,6 @@ async function handleAgentTicksQueue(batch: MessageBatch<AgentTickMessage>, env:
   }
 }
 
-async function handleScheduled(env: AgentsEnv): Promise<void> {
-  // Fetch all registered business user IDs from ProductDO
-  const productDO = await getProductDO(env);
-  let userIds: string[] = [];
-  try {
-    const resp = await productDO.fetch(new Request("http://do/businesses"));
-    if (resp.ok) {
-      const data = await resp.json<{ user_ids: string[] }>();
-      userIds = data.user_ids ?? [];
-    }
-  } catch (err) {
-    console.error("[scheduled] Failed to fetch business list:", err);
-    return;
-  }
-
-  // Fire nightly cycle for each business (observe snapshot from Whop, then run)
-  const whopConfig = { apiKey: env.WHOP_API_KEY };
-
-  for (const userId of userIds) {
-    try {
-      const bizDO = await getBusinessDO(env, userId);
-
-      const statusResp = await bizDO.fetch(new Request("http://do/status"));
-      if (!statusResp.ok) continue;
-      const status = await statusResp.json<{
-        whop_product_id: string | null;
-        fiber_status: string;
-        manifest_kind: string;
-        paused?: boolean;
-        custom_business?: boolean;
-        goal?: string | null;
-      }>();
-
-      // Skip paused businesses (kill switch) and any with a cycle already running.
-      if (status.paused) continue;
-      if (status.fiber_status === "running") continue;
-
-      // ASSISTANT businesses: drain the unanswered channel queue (heartbeat).
-      // These are "glorified agents" with channel capabilities — no Whop product cycle.
-      if (status.manifest_kind === "assistant") {
-        await bizDO.fetch(new Request("http://do/channels/heartbeat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ api_key: env.ANTHROPIC_API_KEY }),
-        }));
-        continue;
-      }
-
-      if (status.custom_business) {
-        // CUSTOM business: no Whop product to observe — run a Level-4 cycle on the
-        // user's free-text goal. The safety floor inside executeLevel4 bounds it.
-        if (!status.goal) continue;
-        await bizDO.fetch(new Request("http://do/cycle", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            api_key: env.ANTHROPIC_API_KEY,
-            task_description: `Nightly cycle for a custom business. Goal: ${status.goal}. Decide the single most useful action to grow it today and do it.`,
-          }),
-        }));
-        continue;
-      }
-
-      // OFFICIAL Whop template: observe the product, then run the cheap L1 cycle.
-      if (!status.whop_product_id) continue;
-      let snapshot: Record<string, unknown> = {};
-      try {
-        snapshot = await observeWhopBusiness(whopConfig, status.whop_product_id) as unknown as Record<string, unknown>;
-      } catch (err) {
-        console.warn(`[scheduled] Observe failed for ${userId}:`, err);
-      }
-      await bizDO.fetch(new Request("http://do/cycle", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          api_key: env.ANTHROPIC_API_KEY,
-          observe_snapshot: snapshot,
-          action: "observe_whop_snapshot",
-          task_description: "Nightly cycle: observe Whop product state and record baseline",
-        }),
-      }));
-    } catch (err) {
-      console.error(`[scheduled] Cycle failed for user ${userId}:`, err);
-    }
-  }
-}
-
 // Exported for end-to-end tests that drive the assembled app the way the router does, and for
 // the agent-ticks fan-out unit tests (enqueue planning + consumer dispatch).
 export { app, enqueueAgentTicks, handleAgentTick, handleAgentTicksQueue, resolveRunGoal, fetchRunOrTaskStatus, resolveMentionRoster };
@@ -2897,16 +2332,13 @@ export type { AgentTickMessage };
 
 export default {
   fetch: app.fetch,
-  async scheduled(controller: ScheduledController, env: AgentsEnv, _ctx: ExecutionContext): Promise<void> {
+  async scheduled(_controller: ScheduledController, env: AgentsEnv, _ctx: ExecutionContext): Promise<void> {
     // Hourly cron → enumerate-and-enqueue the agent-tick fan-out (connector polls, channel
-    // heartbeats, time-based scheduled jobs — spec §05 cron-jobs.json); daily cron → the
-    // nightly business cycle. See enqueueAgentTicks/handleAgentTicksQueue above for why this
-    // is a queue fan-out rather than a serial in-invocation loop.
-    if (controller.cron === "0 * * * *") {
-      await enqueueAgentTicks(env);
-    } else {
-      await handleScheduled(env);
-    }
+    // heartbeats, time-based scheduled jobs — spec §05 cron-jobs.json). See
+    // enqueueAgentTicks/handleAgentTicksQueue above for why this is a queue fan-out rather than a
+    // serial in-invocation loop. (The old daily "0 2 * * *" trigger drove the retired BusinessDO/
+    // ProductDO nightly Whop cycle — removed from wrangler.toml's crons alongside this.)
+    await enqueueAgentTicks(env);
   },
   queue: handleAgentTicksQueue as unknown as ExportedHandlerQueueHandler<AgentsEnv>,
 } satisfies ExportedHandler<AgentsEnv>;

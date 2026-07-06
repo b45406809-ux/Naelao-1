@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import { safetyFloor } from "../../workers/agents/src/safety.js";
-import { shouldPromote } from "../../workers/agents/src/whop/cycle-logic.js";
 
 // The template-agnostic safety floor — the prerequisite for ANY custom/no-template
 // path. It must block dangerous & regulated categories regardless of how the request
@@ -36,15 +35,5 @@ describe("safetyFloor — blocks dangerous & regulated categories", () => {
     ]) {
       expect(safetyFloor(t).allowed, t).toBe(true);
     }
-  });
-});
-
-describe("shouldPromote — cross-agent learning gate", () => {
-  it("promotes only proven scripts", () => {
-    expect(shouldPromote({ stability_score: 0.9, success_count: 6 })).toBe(true);
-  });
-  it("does not promote unproven scripts", () => {
-    expect(shouldPromote({ stability_score: 0.9, success_count: 2 })).toBe(false); // too few successes
-    expect(shouldPromote({ stability_score: 0.6, success_count: 20 })).toBe(false); // not stable enough
   });
 });

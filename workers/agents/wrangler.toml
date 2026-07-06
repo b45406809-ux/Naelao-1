@@ -16,14 +16,6 @@ name = "TASK_DO"
 class_name = "TaskDO"
 
 [[durable_objects.bindings]]
-name = "PRODUCT_DO"
-class_name = "ProductDO"
-
-[[durable_objects.bindings]]
-name = "BUSINESS_DO"
-class_name = "BusinessDO"
-
-[[durable_objects.bindings]]
 name = "TOOL_SANDBOX"
 class_name = "ToolSandboxDO"
 
@@ -68,9 +60,13 @@ new_classes = ["ConcurrencyDO"]
 tag = "v7"
 new_classes = ["LocalTunnelDO"]
 
-[[r2_buckets]]
-binding = "BUSINESS_R2"
-bucket_name = "naelao-business-scripts"
+# BusinessDO/ProductDO retired (legacy Whop-niche runtime, superseded by SpaceDO +
+# NaelaoAgentDO + the script engine) — deleted_classes tells Cloudflare to decommission the
+# underlying DO storage rather than leaving it orphaned. v4's new_classes entry above is left
+# untouched (migration history is append-only, never rewritten).
+[[migrations]]
+tag = "v8"
+deleted_classes = ["ProductDO", "BusinessDO"]
 
 # Tier-5 micro-tool build/test compute (WG-01). A Cloudflare Container attached to
 # ToolSandboxDO — the agent spins it up on demand to build + test the micro-tool's
@@ -147,9 +143,10 @@ max_concurrency = 50
 dead_letter_queue = "naelao-agent-ticks-dlq"
 
 [triggers]
-# 02:00 daily → nightly business cycle; hourly → poll webhook-less connectors (e.g. Gumroad)
-# + drain each space's channel heartbeat (unanswered messages) + Memory OS maintenance.
-crons = ["0 2 * * *", "0 * * * *"]
+# Hourly → poll webhook-less connectors (e.g. Gumroad) + drain each space's channel heartbeat
+# (unanswered messages) + Memory OS maintenance. (The old "0 2 * * *" daily trigger drove the
+# retired BusinessDO/ProductDO nightly Whop cycle — removed alongside those DOs.)
+crons = ["0 * * * *"]
 
 [[services]]
 binding = "KNOWLEDGE_WORKER"

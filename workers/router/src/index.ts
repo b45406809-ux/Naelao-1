@@ -739,11 +739,10 @@ api.all("/spaces", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.
 api.all("/reseller/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 api.all("/reseller", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
-// Launchpad / Whop Businesses (the one live niche) → agents worker.
-// Catalog (roadmap), product config, and per-user business endpoints.
+// Founder roadmap catalog (space types + templates, dev-only) → agents worker.
+// (/product/* and /business/* used to proxy here too, for the retired BusinessDO/ProductDO
+// Whop-niche runtime — removed alongside those DOs.)
 api.all("/catalog/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
-api.all("/product/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
-api.all("/business/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
 // External-platform connectors (catalogue + connect flow) → agents worker.
 api.all("/connectors/*", async (c) => proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
