@@ -227,10 +227,26 @@ export class ProductUserDO extends DurableObject {
 
     // POST /credits/deduct — debit already-converted credits (caller ran tokensToCredits). Fails
     // CLOSED: an over-draw is rejected, not silently allowed to go negative.
+    // S0.6: `idempotency_key` is optional (mirrors /credits/grant above) but should be supplied
+    // by any caller that might retry the same debit — NaelaoAgentDO.debitEndUserCredits passes
+    // its runId, so a retried post-run debit (e.g. after a transient network error on the first
+    // attempt got a response back late) is a no-op reusing the original ledger entry, not a
+    // second charge for the same run. Shares the one credit_ledger.idempotency_key unique index
+    // with /credits/grant — callers must use a distinctly-namespaced key (grant keys are already
+    // prefixed e.g. "credit_pack:...."; deduct keys are prefixed "run:") so the two can never
+    // collide with each other.
     if (method === "POST" && url.pathname === "/credits/deduct") {
-      const body = await request.json<{ credits: number; reason?: string; model?: string }>();
+      const body = await request.json<{ credits: number; reason?: string; model?: string; idempotency_key?: string }>();
       if (!Number.isFinite(body.credits) || body.credits <= 0) {
         return Response.json({ error: "credits must be a positive number" }, { status: 400 });
+      }
+      if (body.idempotency_key) {
+        const existing = this.ctx.storage.sql
+          .exec("SELECT balance_after FROM credit_ledger WHERE idempotency_key = ?", body.idempotency_key)
+          .toArray() as unknown as { balance_after: number }[];
+        if (existing[0]) {
+          return Response.json({ balance_credits: existing[0].balance_after, deduplicated: true }, { status: 200 });
+        }
       }
       const debit = Math.ceil(body.credits);
       const balance = this.currentBalance();
@@ -239,8 +255,8 @@ export class ProductUserDO extends DurableObject {
       }
       const balanceAfter = balance - debit;
       this.ctx.storage.sql.exec(
-        `INSERT INTO credit_ledger (id, delta_credits, reason, model, balance_after) VALUES (?, ?, ?, ?, ?)`,
-        crypto.randomUUID(), -debit, body.reason ?? "agent_run", body.model ?? null, balanceAfter
+        `INSERT INTO credit_ledger (id, delta_credits, reason, model, balance_after, idempotency_key) VALUES (?, ?, ?, ?, ?, ?)`,
+        crypto.randomUUID(), -debit, body.reason ?? "agent_run", body.model ?? null, balanceAfter, body.idempotency_key ?? null
       );
       return Response.json({ balance_credits: balanceAfter }, { status: 201 });
     }

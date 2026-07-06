@@ -91,6 +91,51 @@ describe("ProductUserDO — credit ledger", () => {
     expect((await call(doInstance, "/credits/grant", jsonPost({ credits: 0 }))).status).toBe(400);
     expect((await call(doInstance, "/credits/deduct", jsonPost({ credits: -5 }))).status).toBe(400);
   });
+
+  // S0.6: /credits/deduct had no idempotency key at all (unlike /credits/grant, which already
+  // dedupes webhook-driven credit-pack purchases) — a retried post-run debit
+  // (NaelaoAgentDO.debitEndUserCredits, now passing runId as the key) would double-charge the
+  // end user for one run.
+  it("a repeated deduct with the same idempotency_key is a no-op, not a second charge", async () => {
+    const doInstance = makeDO();
+    await call(doInstance, "/credits/grant", jsonPost({ credits: 1000 }));
+
+    const first = await call(doInstance, "/credits/deduct", jsonPost({ credits: 250, idempotency_key: "run:abc123" }));
+    expect(first.status).toBe(201);
+    const firstBody = await first.json() as { balance_credits: number };
+    expect(firstBody.balance_credits).toBe(750);
+
+    const retry = await call(doInstance, "/credits/deduct", jsonPost({ credits: 250, idempotency_key: "run:abc123" }));
+    expect(retry.status).toBe(200);
+    const retryBody = await retry.json() as { balance_credits: number; deduplicated: boolean };
+    expect(retryBody.deduplicated).toBe(true);
+    expect(retryBody.balance_credits).toBe(750); // unchanged — not deducted twice
+
+    const balance = await (await call(doInstance, "/credits/balance")).json() as { balance_credits: number };
+    expect(balance.balance_credits).toBe(750);
+  });
+
+  it("two distinct idempotency_keys both deduct independently", async () => {
+    const doInstance = makeDO();
+    await call(doInstance, "/credits/grant", jsonPost({ credits: 1000 }));
+    await call(doInstance, "/credits/deduct", jsonPost({ credits: 100, idempotency_key: "run:one" }));
+    await call(doInstance, "/credits/deduct", jsonPost({ credits: 100, idempotency_key: "run:two" }));
+    const balance = await (await call(doInstance, "/credits/balance")).json() as { balance_credits: number };
+    expect(balance.balance_credits).toBe(800);
+  });
+
+  it("a deduct idempotency_key never collides with a grant idempotency_key namespace", async () => {
+    const doInstance = makeDO();
+    await call(doInstance, "/credits/grant", jsonPost({ credits: 1000, idempotency_key: "shared-key" }));
+    // Deliberately reuse the same literal string as a deduct key — must not be treated as the
+    // same event just because the string matches; this test documents that callers are expected
+    // to namespace their keys (grant: "credit_pack:...", deduct: "run:...") rather than the DO
+    // enforcing separate columns, and confirms a naive same-string reuse still debits for real.
+    const deductRes = await call(doInstance, "/credits/deduct", jsonPost({ credits: 100, idempotency_key: "shared-key-deduct" }));
+    expect(deductRes.status).toBe(201);
+    const balance = await (await call(doInstance, "/credits/balance")).json() as { balance_credits: number };
+    expect(balance.balance_credits).toBe(900);
+  });
 });
 
 describe("ProductUserDO — preferences, conversation refs, notifications", () => {

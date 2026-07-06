@@ -1,6 +1,6 @@
 // Portal Router — subdomain + custom-domain routing for Space end-user portals
 import { Hono, type Context } from "hono";
-import { errorResponse, requestId } from "@naelao/http";
+import { errorResponse, requestId, mintInternalToken } from "@naelao/http";
 
 interface Env {
   ENVIRONMENT: string;
@@ -300,10 +300,15 @@ app.post("/storefront/checkout", async (c) => {
 
   // The portal is a trusted server-side caller; money-in still flows through the billing
   // worker's reserved commerce checkout so the platform fee is applied.
+  // S0.6: /internal/commerce/checkout now requires requireInternalHmac (A1.16.25) — this call
+  // still sent the old static, forgeable "x-naelao-internal: commerce-script" string, which
+  // would 403 unconditionally, silently breaking the storefront checkout path entirely. Mint a
+  // real internal token like every other direct-service-binding caller does.
+  const commerceToken = await mintInternalToken(c.env.PLATFORM_SECRET, sf.tenantId);
   const resp = await c.env.BILLING_WORKER.fetch(
     new Request("http://billing-worker/internal/commerce/checkout", {
       method: "POST",
-      headers: { "content-type": "application/json", "x-naelao-internal": "commerce-script", "x-naelao-tenant-id": sf.tenantId },
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": sf.tenantId, "x-naelao-internal-token": commerceToken },
       body: JSON.stringify({ space_id: sf.spaceId, product_id: productId, ...(email ? { customer_email: email } : {}) }),
     })
   );

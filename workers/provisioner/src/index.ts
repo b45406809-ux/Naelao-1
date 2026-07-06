@@ -249,13 +249,16 @@ async function registerAgentIndex(
       template_id: templateId,
     },
   };
+  // S0.6: /agent-definitions* is now gated inline with requireInternalHmac (A1.16.9/.10) — the
+  // old static "x-naelao-internal: provisioner" string would 403 unconditionally, silently
+  // breaking agent registration for every newly provisioned space.
   const resp = await env.SPACES_WORKER.fetch(
     new Request(`http://spaces-worker/spaces/${spaceId}/agent-definitions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-naelao-tenant-id": tenantId,
-        "x-naelao-internal": "provisioner",
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
       },
       body: JSON.stringify(payload),
     })
@@ -400,13 +403,17 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     // Step 5: SpaceDO init hook (space-type-specific initialization, e.g. default KB categories)
     // We call the spaces worker which proxies to SpaceDO.initSpaceType()
     if (manifest.backend.spaceDoInitHook) {
+      // S0.6: this call target has no matching route registered anywhere in the spaces worker
+      // (a separate, pre-existing gap — best-effort/non-fatal, so it doesn't block provisioning,
+      // but flagging rather than silently leaving it). Fixed the forgeable static header to a
+      // real minted token regardless, for consistency with every other provisioner→spaces call.
       const initResp = await env.SPACES_WORKER.fetch(
         new Request(`http://spaces-worker/spaces/${spaceId}/init-spacetype`, {
           method: "POST",
           headers: {
             "content-type": "application/json",
             "x-naelao-tenant-id": tenantId,
-            "x-naelao-internal": "provisioner",
+            "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
           },
           body: JSON.stringify({ spaceTypeId, hook: manifest.backend.spaceDoInitHook }),
         })

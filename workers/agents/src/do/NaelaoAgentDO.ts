@@ -2041,7 +2041,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           result.result.input_tokens || result.result.output_tokens
             ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, body.model ?? "claude-haiku-4-5-20251001")
             : result.result.tokens_used;
-        await this.debitEndUserCredits(spaceId, tenantId, userId, credits, body.model, result.notes);
+        await this.debitEndUserCredits(spaceId, tenantId, userId, credits, body.model, result.notes, runId);
       }
 
       // Layer 4 (Fabric) auto-consolidation (spec: "runs LLM-driven session extraction
@@ -2292,15 +2292,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    *  already-completed run, but is surfaced in `notes` so it isn't silently swallowed (same
    *  "fail closed on the money, fail open on the response" posture as project-spend above). */
   private async debitEndUserCredits(
-    spaceId: string, tenantId: string, endUserId: string, credits: number, model: string | undefined, notes: string[]
+    spaceId: string, tenantId: string, endUserId: string, credits: number, model: string | undefined, notes: string[], runId?: string
   ): Promise<void> {
     try {
+      // S0.6: idempotency_key namespaced "run:" so a retried debit for the same run is a no-op
+      // (reuses the original ledger entry) rather than double-charging; never collides with
+      // grantCreditPackPurchase's "credit_pack:..." keys on the same shared unique index.
       const resp = await this.env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/internal/product-users/${spaceId}/${endUserId}/credits/deduct`,
         {
           method: "POST",
           headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-          body: JSON.stringify({ credits, reason: "agent_run", ...(model ? { model } : {}) }),
+          body: JSON.stringify({ credits, reason: "agent_run", ...(model ? { model } : {}), ...(runId ? { idempotency_key: `run:${runId}` } : {}) }),
         }
       ));
       if (resp.status === 402) {
