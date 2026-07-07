@@ -95,6 +95,9 @@ export default function OnboardingPage() {
       <div className="mx-auto max-w-2xl px-4 py-8">
         <h1 className="text-2xl font-bold text-gray-900">Setup</h1>
         <p className="mt-2 text-sm text-gray-500">This space has no guided setup. You&apos;re all set.</p>
+        <button onClick={() => router.push(`/dashboard/products/${spaceId}`)} className="mt-4 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white">
+          Go to product
+        </button>
       </div>
     );
   }
@@ -106,8 +109,13 @@ export default function OnboardingPage() {
         <p className="mt-2 text-sm text-gray-600">
           {template.name} is configured. Your assistant will set up these projects: {(onboarding?.projects ?? []).join(", ") || "—"}.
         </p>
-        <button onClick={() => router.push(`/dashboard/spaces/${spaceId}`)} className="mt-4 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white">
-          Go to space
+        {/* Tier 2/3 follow-up: this button previously linked to /dashboard/spaces/:spaceId, which
+            has no page.tsx at all (a dormant 404 — this page was orphaned, nothing ever reached
+            it, so the broken link was never exercised). /dashboard/products/:productId is the
+            actively-maintained product detail page; a product IS a deployed Space, so spaceId is
+            exactly the id it expects. */}
+        <button onClick={() => router.push(`/dashboard/products/${spaceId}`)} className="mt-4 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white">
+          Go to product
         </button>
       </div>
     );

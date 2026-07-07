@@ -102,7 +102,15 @@ export default function NewProductWizardPage() {
         }
       }
 
-      router.push("/dashboard/products");
+      // Tier 2/3 follow-up: a fully-built first-run onboarding wizard
+      // (/dashboard/spaces/[spaceId]/onboarding — credential prompts, preference prompts, the
+      // projects the assistant will bootstrap) already existed but was completely orphaned —
+      // nothing after product creation ever linked to it, so a new builder landed on the flat
+      // products list with zero guidance. A product IS a deployed Space (CLAUDE.md #30), so
+      // created.id is exactly the spaceId that page expects. The page itself already degrades
+      // gracefully ("This space has no guided setup") for a template with no bootstrap prompts,
+      // so redirecting here unconditionally is safe regardless of which template was chosen.
+      router.push(`/dashboard/spaces/${created.id}/onboarding`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to launch product");
     } finally {
