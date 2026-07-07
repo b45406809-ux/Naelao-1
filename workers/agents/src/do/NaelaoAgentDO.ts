@@ -1974,33 +1974,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // outage, or no wallet ever provisioned e.g. a space created before this fix shipped),
       // matching the end-user credit gate's posture. A CONFIRMED zero/negative wallet balance
       // always blocks the run.
-      try {
-        const wpRes = await this.env.SPACES_WORKER.fetch(new Request(
-          `http://spaces-worker/spaces/${spaceId}/wallet-project`,
-          { headers: await this.internalHeaders(tenantId) }
-        ));
-        if (wpRes.ok) {
-          const { project_id } = await wpRes.json<{ project_id: string | null }>();
-          if (project_id) {
-            walletProjectId = project_id;
-            const balRes = await this.env.SPACES_WORKER.fetch(new Request(
-              `http://spaces-worker/spaces/${spaceId}/projects/${project_id}/wallet/balance`,
-              { headers: await this.internalHeaders(tenantId) }
-            ));
-            if (balRes.ok) {
-              const { balance_cents } = await balRes.json<{ balance_cents: number }>();
-              if (balance_cents <= 0) {
-                return Response.json(
-                  { error: "this business's wallet is empty — top up to keep this agent running", error_code: "insufficient_credits", balance_cents },
-                  { status: 402 }
-                );
-              }
-            }
-          }
-        }
-      } catch {
-        // Wallet service unreachable — do not block the run over a transient outage.
+      const walletCheck = await this.checkProjectWallet(spaceId, tenantId);
+      if (!walletCheck.ok) {
+        return Response.json(
+          { error: "this business's wallet is empty — top up to keep this agent running", error_code: "insufficient_credits", balance_cents: walletCheck.balance_cents },
+          { status: 402 }
+        );
       }
+      walletProjectId = walletCheck.walletProjectId;
     } else if (callerRole === "product_end_user" && userId) {
       // Metering enforcement pass: a non-project (Space Assistant / Home chat) run by a signed-in
       // product end user used to debit their ProductUserDO balance ONLY after the run completed
@@ -2385,6 +2366,44 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
+  /**
+   * P0-2: the space's own auto-provisioned wallet (see the provisioner's seedWallet step) is the
+   * payer of last resort for a project-scoped run, independent of whether daily_spend_cap_credits
+   * is configured — shared by handleScriptRun (a direct /script/run call against a project) and
+   * handleChannelHeartbeat (the actual customer-bot workload: WhatsApp/Slack/Discord/email
+   * messages). Extracted here so both call sites resolve one wallet balance per space rather than
+   * duplicating the fetch/parse logic. Fails OPEN only when the lookup/balance check itself errors
+   * (network/worker outage, or no wallet ever provisioned — e.g. a space created before this fix
+   * shipped) — a CONFIRMED zero/negative balance always blocks.
+   */
+  private async checkProjectWallet(
+    spaceId: string, tenantId: string
+  ): Promise<{ ok: true; walletProjectId: string | null } | { ok: false; balance_cents: number }> {
+    try {
+      const wpRes = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${spaceId}/wallet-project`,
+        { headers: await this.internalHeaders(tenantId) }
+      ));
+      if (wpRes.ok) {
+        const { project_id } = await wpRes.json<{ project_id: string | null }>();
+        if (project_id) {
+          const balRes = await this.env.SPACES_WORKER.fetch(new Request(
+            `http://spaces-worker/spaces/${spaceId}/projects/${project_id}/wallet/balance`,
+            { headers: await this.internalHeaders(tenantId) }
+          ));
+          if (balRes.ok) {
+            const { balance_cents } = await balRes.json<{ balance_cents: number }>();
+            if (balance_cents <= 0) return { ok: false, balance_cents };
+          }
+          return { ok: true, walletProjectId: project_id };
+        }
+      }
+    } catch {
+      // Wallet service unreachable — do not block the run over a transient outage.
+    }
+    return { ok: true, walletProjectId: null };
+  }
+
   /** §A1.17 Phase I: debit a signed-in product end user's OWN ProductUserDO balance for a
    *  non-project run's real LLM usage. Best-effort — a billing-side failure never crashes an
    *  already-completed run, but is surfaced in `notes` so it isn't silently swallowed (same
@@ -2628,6 +2647,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       projectRules.set(pid, rules);
     }
 
+    // P0-2: the wallet is space-scoped (one wallet per space, shared by every project in it), so
+    // resolve it once for the whole batch rather than per project — only when at least one
+    // pending message is project-scoped, since a customer-bot project is the only thing this gate
+    // applies to (same scoping handleScriptRun's own wallet gate uses). Before this, the ONLY
+    // metering on this drain was the OPTIONAL daily_spend_cap_credits — a customer-bot project
+    // with no cap configured (the common case) ran its actual workload completely unmetered.
+    const walletCheck = projectIds.length > 0 ? await this.checkProjectWallet(spaceId, tenantId) : null;
+
     let answered = 0;
     let escalated = 0;
     let ruleHandled = 0;
@@ -2717,6 +2744,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         projectCfg.daily_spend_cap_credits > 0 &&
         (await this.checkAndDebitProjectSpend(spaceId, tenantId, msg.project_id!, 0)).capped
       ) {
+        spendCapped++;
+        continue;
+      }
+
+      // 2b. Wallet gate (P0-2) — applies to every project-scoped message REGARDLESS of whether
+      // a spend cap is configured, closing the gap where a customer-bot project with no cap set
+      // (the common case) ran this drain's actual reasoning-loop LLM cost completely unmetered.
+      // Deliberately placed after no-code rules (step 1) so STOP/opt-out replies and
+      // human_takeover routing never depend on the business having money — only the paid
+      // reasoning-loop path below is gated. Bucketed into the same spend_capped counter as the
+      // spend cap above: "can't afford to run the paid loop right now," same externally-visible
+      // outcome (left for a human/retry, not silently dropped).
+      if (msg.project_id && walletCheck && !walletCheck.ok) {
         spendCapped++;
         continue;
       }
