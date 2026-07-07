@@ -1930,6 +1930,23 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return Response.json({ error: "goal and spaceId are required" }, { status: 400 });
     }
 
+    // Go-live monetization pass: a business that opted into revenue-cut billing (productConfig.
+    // pricingConfig.externalRevenueCut.enabled) but has stopped reporting its tracked revenue
+    // (Whop credential revoked/broken) could otherwise keep running its agent indefinitely with
+    // no technical consequence — a ToS-only "must keep it connected" clause nobody enforces.
+    // Space-wide (applies to both project-scoped and Space Assistant runs) since this is an
+    // access restriction, not a per-project billing concern. Fails OPEN on any lookup error or
+    // when the business has NEVER successfully tracked (a business just turning this feature on
+    // hasn't had a chance to connect Whop yet — only a PREVIOUSLY-connected-then-lapsed business
+    // is gated, never a newly-enabled one with zero history).
+    const reportingLapsed = await this.checkRevenueReportingLapsed(spaceId, tenantId);
+    if (reportingLapsed) {
+      return Response.json(
+        { error: "Whop revenue reporting has lapsed for this business — reconnect it to resume", error_code: "revenue_reporting_lapsed" },
+        { status: 403 }
+      );
+    }
+
     const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId, projectId);
     if (!engineEnv) {
       return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
@@ -2421,6 +2438,43 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return data;
     } catch {
       return { capped: true, spent_today: Number.POSITIVE_INFINITY };
+    }
+  }
+
+  /** Days of no new tracked-revenue snapshot before a previously-reporting business is gated. */
+  private static readonly REVENUE_REPORTING_LAPSE_DAYS = 45;
+
+  /**
+   * Go-live monetization pass: real technical enforcement (not just a ToS clause) that a business
+   * on revenue-cut billing keeps its Whop revenue reporting connected. Two round trips (pricing
+   * config, then tracked-revenue history) only when the product has this feature enabled at all —
+   * the common case (not enabled) short-circuits after the first. Fails OPEN on any lookup error,
+   * when the feature isn't enabled for this product, or when the business has NEVER successfully
+   * tracked (only a PREVIOUSLY-connected-then-lapsed business is gated).
+   */
+  private async checkRevenueReportingLapsed(spaceId: string, tenantId: string): Promise<boolean> {
+    if (!this.env.SPACES_WORKER) return false;
+    try {
+      const catalogRes = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(spaceId)}`,
+        { headers: await this.internalHeaders(tenantId) }
+      ));
+      if (!catalogRes.ok) return false;
+      const catalog = await catalogRes.json<{ external_revenue_cut: { enabled: boolean } | null }>();
+      if (!catalog.external_revenue_cut?.enabled) return false;
+
+      const revenueRes = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${spaceId}/revenue-tracking`,
+        { headers: await this.internalHeaders(tenantId) }
+      ));
+      if (!revenueRes.ok) return false;
+      const revenue = await revenueRes.json<{ last_tracked_at: string | null }>();
+      if (!revenue.last_tracked_at) return false; // never tracked yet — not lapsed, just new
+
+      const daysSinceTracked = (Date.now() - new Date(revenue.last_tracked_at).getTime()) / 86_400_000;
+      return daysSinceTracked > NaelaoAgentDO.REVENUE_REPORTING_LAPSE_DAYS;
+    } catch {
+      return false;
     }
   }
 
