@@ -2140,6 +2140,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       },
       ctx: { spaceId, agentId, model: body.model ?? "claude-haiku-4-5-20251001" },
       ...(body.model ? { model: body.model } : {}),
+      ...(this.env.AI ? { fallback: { ai: this.env.AI } } : {}),
     });
 
     try {
@@ -2851,6 +2852,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway" },
       ctx: { spaceId, agentId, model },
       model,
+      ...(this.env.AI ? { fallback: { ai: this.env.AI } } : {}),
     });
 
     // Resolve config + rules once per distinct project among this batch (not per message).

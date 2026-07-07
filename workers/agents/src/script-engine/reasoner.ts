@@ -21,7 +21,17 @@ export interface ReasonerDeps {
   gateway: GatewayOpts;
   ctx: AIClientContext;
   model?: string;
+  /** Tier 2/3 follow-up (spec §15 gap: "a real LLM-provider failover chain beyond CF AI
+   *  Gateway's own dashboard-configurable retries" — the code only ever called the Anthropic-
+   *  compatible endpoint, no cross-PROVIDER failover existed). CF Workers AI is used here rather
+   *  than a true third-party second provider (OpenAI/etc.) because it needs no new API key or
+   *  account — the `Ai` binding is already wired platform-wide for embeddings/free-tier agents —
+   *  so this is deployable and testable today, not gated on credentials this pass can't supply.
+   *  Optional; when unset, a primary failure gives_up exactly as before (unchanged behavior). */
+  fallback?: { ai: Ai; model?: string };
 }
+
+const FALLBACK_MODEL = "@cf/meta/llama-3.1-8b-instruct";
 
 const DECISION_INSTRUCTIONS = `You are the reasoning core of a script-first agent. Your entire action space is choosing ONE next action, returned as STRICT JSON (no prose, no markdown fences). Schema:
 {"action":"run","name":"<operation_or_script>","params":{...}}            // run a prebuilt op or library script
@@ -68,19 +78,45 @@ export class GatewayReasoner implements Reasoner {
       repair_target: input.repairTarget ?? null,
     });
 
-    const resp = await fetch(cfg.url, {
-      method: "POST",
-      headers: cfg.headers,
-      body: JSON.stringify({
-        model: this.deps.model ?? this.deps.ctx.model ?? "claude-haiku-4-5-20251001",
-        max_tokens: 1500,
-        system: DECISION_INSTRUCTIONS,
-        messages: [{ role: "user", content: userContent }],
-      }),
-    });
+    let resp: Response | null = null;
+    let networkError: string | null = null;
+    try {
+      resp = await fetch(cfg.url, {
+        method: "POST",
+        headers: cfg.headers,
+        body: JSON.stringify({
+          model: this.deps.model ?? this.deps.ctx.model ?? "claude-haiku-4-5-20251001",
+          max_tokens: 1500,
+          system: DECISION_INSTRUCTIONS,
+          messages: [{ role: "user", content: userContent }],
+        }),
+      });
+    } catch (err) {
+      networkError = err instanceof Error ? err.message : String(err);
+    }
 
-    if (!resp.ok) {
-      return { action: "give_up", reason: `reasoner LLM error ${resp.status}` };
+    if (!resp || !resp.ok) {
+      // Cross-provider failover: only reached when the primary Anthropic-via-Gateway call
+      // itself failed (network error or non-2xx) — CF AI Gateway's own dashboard-configurable
+      // retries already cover transient same-provider hiccups before this point. lastUsage is
+      // deliberately left unset for a fallback response — CF Workers AI isn't billed against the
+      // tenant's own token budget the way the platform Anthropic key is, so this turn is
+      // effectively free rather than mis-accounted.
+      if (this.deps.fallback) {
+        try {
+          const text = await callWorkersAI(
+            this.deps.fallback.ai,
+            this.deps.fallback.model ?? FALLBACK_MODEL,
+            `${DECISION_INSTRUCTIONS}\n\n${userContent}`,
+            1500
+          );
+          return extractJson(text) as ReasonDecision;
+        } catch (fallbackErr) {
+          const fallbackMsg = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+          return { action: "give_up", reason: `primary and fallback LLM providers both failed: ${networkError ?? `HTTP ${resp?.status}`}; fallback: ${fallbackMsg}` };
+        }
+      }
+      return { action: "give_up", reason: networkError ? `reasoner LLM network error: ${networkError}` : `reasoner LLM error ${resp?.status}` };
     }
     const data = (await resp.json()) as {
       content?: Array<{ type: string; text?: string }>;
