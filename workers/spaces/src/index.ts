@@ -880,6 +880,16 @@ app.get("/spaces/:spaceId/revenue-tracking", async (c) => {
   const res = await forwardToSpaceDO(stub, `/revenue-tracking?${qs.toString()}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
+app.use("/spaces/:spaceId/revenue-tracking/mark-billed", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/spaces/:spaceId/revenue-tracking/mark-billed", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json().catch(() => ({}));
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/revenue-tracking/mark-billed", "POST", JSON.stringify({ ...body, space_id: spaceId }));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
 
 // Container Marketplace slots (§A1.17 Phase L) — builder/operator-only for now (like rules/
 // spend above): no catalogue image is live yet, so there is nothing for an end user's day-to-day
@@ -1986,6 +1996,7 @@ app.patch("/spaces/:spaceId/member-billing", async (c) => {
 type PlanDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["plans"]>[number];
 type CreditPackDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["creditPacks"]>[number];
 type WalletTopupDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingConfig"]>["walletTopups"]>[number];
+type ExternalRevenueCutDef = NonNullable<SpaceTypeProductConfig["pricingConfig"]>["externalRevenueCut"];
 
 /** Resolve the effective plan/credit-pack/wallet-topup catalog for `spaceId` — walks to the
  *  product root if `spaceId` is a business (has a parent_space_id), since the catalog is
@@ -1993,7 +2004,7 @@ type WalletTopupDef = NonNullable<NonNullable<SpaceTypeProductConfig["pricingCon
 async function loadPricingCatalog(
   env: Env,
   spaceId: string
-): Promise<{ productSpaceId: string; productTenantId: string; plans: PlanDef[]; creditPacks: CreditPackDef[]; walletTopups: WalletTopupDef[] } | null> {
+): Promise<{ productSpaceId: string; productTenantId: string; plans: PlanDef[]; creditPacks: CreditPackDef[]; walletTopups: WalletTopupDef[]; externalRevenueCut: ExternalRevenueCutDef } | null> {
   const space = await env.PLATFORM_DB.prepare(
     "SELECT tenant_id, spacetype_id, config_json, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
   ).bind(spaceId).first<{ tenant_id: string; spacetype_id: string; config_json: string | null; parent_space_id: string | null }>();
@@ -2021,6 +2032,7 @@ async function loadPricingCatalog(
     plans: pc?.pricingConfig?.plans ?? [],
     creditPacks: pc?.pricingConfig?.creditPacks ?? [],
     walletTopups: pc?.pricingConfig?.walletTopups ?? [],
+    externalRevenueCut: pc?.pricingConfig?.externalRevenueCut,
   };
 }
 
@@ -2108,6 +2120,7 @@ app.get("/internal/pricing-catalog", async (c) => {
     plans: catalog.plans,
     credit_packs: catalog.creditPacks,
     wallet_topups: catalog.walletTopups,
+    external_revenue_cut: catalog.externalRevenueCut ?? null,
   });
 });
 

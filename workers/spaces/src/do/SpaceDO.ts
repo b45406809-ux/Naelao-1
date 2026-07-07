@@ -1096,6 +1096,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && url.pathname === "/revenue-tracking") {
         return this.getExternalRevenue(url.searchParams);
       }
+      if (method === "POST" && url.pathname === "/revenue-tracking/mark-billed") {
+        return this.markRevenueBilled(request);
+      }
       // ── project-scoped Memory OS Layers 3/4/6 (§A1.17 Phase U) ─────────────────
       const projFactsMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/facts$/);
       if (method === "POST" && projFactsMatch?.[1]) return this.rememberProjectFact(projFactsMatch[1], request);
@@ -2573,6 +2576,30 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       snapshots: rows.map((r) => ({ period: r.period, revenue_cents: r.revenue_cents, billed: r.billed === 1, tracked_at: r.tracked_at })),
       last_tracked_at: rows[0]?.tracked_at ?? null,
     });
+  }
+
+  // Marks specific periods billed after a successful revenue-cut surcharge payment (the billing
+  // worker's webhook handler calls this, never the tracker) — distinct from recordExternalRevenue
+  // (which upserts a REVENUE OBSERVATION) since this only ever flips the billed flag, never
+  // touches revenue_cents. Idempotent: an already-billed period is a no-op.
+  private async markRevenueBilled(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; periods?: string[]; provider?: string }>()
+      .catch(() => ({}) as Record<string, never>);
+    const spaceId = body.space_id ?? "";
+    const provider = body.provider ?? "whop";
+    const periods = Array.isArray(body.periods) ? body.periods.filter((p) => /^\d{4}-\d{2}$/.test(p)) : [];
+    if (!spaceId || periods.length === 0) {
+      return Response.json({ error_code: "bad_request", message: "space_id and at least one valid period are required" }, { status: 400 });
+    }
+
+    for (const period of periods) {
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE external_revenue_snapshots SET billed = 1 WHERE space_id = ? AND period = ? AND provider = ?",
+        spaceId, period, provider
+      );
+    }
+    return Response.json({ space_id: spaceId, provider, billed_periods: periods });
   }
 
   private getWalletBalance(projectId: string): Response {

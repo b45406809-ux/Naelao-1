@@ -786,6 +786,88 @@ app.post("/internal/wallet-topups/checkout", async (c) => {
   });
 });
 
+// ── POST /internal/revenue-cut-surcharge/checkout ─────────────────────────────
+// Go-live monetization pass: bills a builder-configured cut % of a business's TRACKED external
+// revenue (external_revenue_snapshots, SpaceDO — see the revenue-tracker prebuilt) as a periodic
+// surcharge, since that revenue never flows through Naelao's own Lemon Squeezy custody the way a
+// storefront sale does. Sums every UNBILLED period's tracked revenue (a business that hasn't paid
+// in N periods gets billed for all of them at once, not just the latest) and creates a checkout
+// with a CUSTOM PRICE override — the variant provisioned by PATCH /builder/products/:id/pricing is
+// a $1 placeholder; this is what actually sets the real amount. Once paid, the SAME reseller_ledger
+// attribution every other payment.success event already gets (recordResellerAttribution,
+// unconditional in handleLemonSqueezyWebhook) computes the builder's cut of it automatically — no
+// new attribution code needed. The webhook side (recordRevenueCutSurchargePayment, lemon-squeezy.ts)
+// marks the billed periods so they're never charged twice.
+app.use("/internal/revenue-cut-surcharge/checkout", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.post("/internal/revenue-cut-surcharge/checkout", async (c) => {
+  const body = await c.req.json<{ business_space_id: string; customer_email?: string }>();
+  if (!body.business_space_id) {
+    return c.json({ error_code: "bad_request", message: "business_space_id is required" }, 400);
+  }
+  if (!c.env.SPACES_WORKER) return c.json({ error_code: "unavailable", message: "spaces worker not bound" }, 503);
+
+  const spaceRow = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+    .bind(body.business_space_id).first<{ tenant_id: string }>();
+  if (!spaceRow) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const internalHeaders = {
+    "x-naelao-tenant-id": spaceRow.tenant_id,
+    "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, spaceRow.tenant_id),
+  };
+
+  const catalogResp = await c.env.SPACES_WORKER.fetch(
+    new Request(`http://spaces-worker/internal/pricing-catalog?space_id=${encodeURIComponent(body.business_space_id)}`, { headers: internalHeaders })
+  );
+  if (!catalogResp.ok) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  const catalog = await catalogResp.json<{ product_space_id: string; external_revenue_cut: { enabled: boolean; cutBps: number; lsVariantId?: string } | null }>();
+  const cut = catalog.external_revenue_cut;
+  if (!cut || !cut.enabled) {
+    return c.json({ error_code: "not_found", message: "Revenue-cut billing is not enabled for this product" }, 404);
+  }
+
+  const revenueResp = await c.env.SPACES_WORKER.fetch(
+    new Request(`http://spaces-worker/spaces/${body.business_space_id}/revenue-tracking`, { headers: internalHeaders })
+  );
+  if (!revenueResp.ok) return c.json({ error_code: "unavailable", message: "Could not read tracked revenue" }, 502);
+  const revenue = await revenueResp.json<{ snapshots: Array<{ period: string; revenue_cents: number; billed: boolean }> }>();
+  const unbilled = revenue.snapshots.filter((s) => !s.billed && s.revenue_cents > 0);
+  if (unbilled.length === 0) {
+    return c.json({ error_code: "nothing_to_bill", message: "No unbilled tracked revenue for this business" }, 404);
+  }
+
+  const totalRevenueCents = unbilled.reduce((sum, s) => sum + s.revenue_cents, 0);
+  const surchargeCents = Math.round((totalRevenueCents * cut.cutBps) / 10_000);
+  if (surchargeCents <= 0) {
+    return c.json({ error_code: "nothing_to_bill", message: "Computed surcharge is zero" }, 404);
+  }
+
+  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !cut.lsVariantId) {
+    return c.json({
+      checkout_url: `https://checkout.naelao.com/dev/revenue-cut-surcharge/${body.business_space_id}`,
+      surcharge_cents: surchargeCents,
+      periods: unbilled.map((s) => s.period),
+      dev: true,
+    });
+  }
+
+  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
+  const provider = new LemonSqueezyProvider({
+    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
+    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
+  });
+  const { url } = await provider.createCheckout({
+    spaceId: body.business_space_id,
+    variantOrPriceId: cut.lsVariantId,
+    customPriceCents: surchargeCents,
+    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+    metadata: {
+      kind: "revenue_cut_surcharge",
+      periods: unbilled.map((s) => s.period).join(","),
+      product_space_id: catalog.product_space_id,
+    },
+  });
+  return c.json({ checkout_url: url, surcharge_cents: surchargeCents, periods: unbilled.map((s) => s.period) });
+});
+
 // ── POST /webhooks/lemon-squeezy ─────────────────────────────────────────────
 // Primary billing provider (spec Appendix H). Unauthenticated — LS calls this directly.
 // On payment/subscription events, wakes the Space Assistant agent via NaelaoAgentDO.

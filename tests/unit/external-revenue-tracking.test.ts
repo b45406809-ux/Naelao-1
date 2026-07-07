@@ -100,3 +100,50 @@ describe("POST/GET /spaces/:spaceId/revenue-tracking", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("POST /spaces/:spaceId/revenue-tracking/mark-billed", () => {
+  it("requires a verified internal token", async () => {
+    const env = makeEnv();
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/space-1/revenue-tracking/mark-billed", {
+        method: "POST", headers: { "x-naelao-tenant-id": "tenant-1" }, body: JSON.stringify({ periods: ["2026-07"] }),
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("marks specific periods billed without touching their revenue_cents", async () => {
+    const env = makeEnv();
+    const h = await headers("tenant-1");
+    await spacesWorker.fetch(req("/spaces/space-1/revenue-tracking", h, { method: "POST", body: JSON.stringify({ period: "2026-07", revenue_cents: 5000 }) }), env as never, execCtx);
+    await spacesWorker.fetch(req("/spaces/space-1/revenue-tracking", h, { method: "POST", body: JSON.stringify({ period: "2026-06", revenue_cents: 3000 }) }), env as never, execCtx);
+
+    const markRes = await spacesWorker.fetch(
+      req("/spaces/space-1/revenue-tracking/mark-billed", h, { method: "POST", body: JSON.stringify({ periods: ["2026-07", "2026-06"] }) }),
+      env as never, execCtx
+    );
+    expect(markRes.status).toBe(200);
+
+    const getRes = await spacesWorker.fetch(req("/spaces/space-1/revenue-tracking?period=2026-07", h), env as never, execCtx);
+    expect(await getRes.json()).toMatchObject({ revenue_cents: 5000, billed: true });
+  });
+
+  it("only marks the periods listed, leaving others untouched", async () => {
+    const env = makeEnv();
+    const h = await headers("tenant-1");
+    await spacesWorker.fetch(req("/spaces/space-1/revenue-tracking", h, { method: "POST", body: JSON.stringify({ period: "2026-07", revenue_cents: 1000 }) }), env as never, execCtx);
+    await spacesWorker.fetch(req("/spaces/space-1/revenue-tracking", h, { method: "POST", body: JSON.stringify({ period: "2026-06", revenue_cents: 2000 }) }), env as never, execCtx);
+    await spacesWorker.fetch(req("/spaces/space-1/revenue-tracking/mark-billed", h, { method: "POST", body: JSON.stringify({ periods: ["2026-07"] }) }), env as never, execCtx);
+
+    const juneRes = await spacesWorker.fetch(req("/spaces/space-1/revenue-tracking?period=2026-06", h), env as never, execCtx);
+    expect(await juneRes.json()).toMatchObject({ billed: false });
+  });
+
+  it("rejects an empty periods list", async () => {
+    const env = makeEnv();
+    const h = await headers("tenant-1");
+    const res = await spacesWorker.fetch(req("/spaces/space-1/revenue-tracking/mark-billed", h, { method: "POST", body: JSON.stringify({ periods: [] }) }), env as never, execCtx);
+    expect(res.status).toBe(400);
+  });
+});

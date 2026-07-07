@@ -386,6 +386,51 @@ async function grantWalletTopupPurchase(
   }
 }
 
+/**
+ * Go-live monetization pass: once a POST /internal/revenue-cut-surcharge/checkout is paid, mark
+ * the periods it covered as billed (SpaceDO's external_revenue_snapshots) so the next checkout
+ * only bills genuinely-new tracked revenue, never the same period twice. Naelao's/the builder's
+ * cut of the payment itself is ALREADY captured — recordResellerAttribution (unconditional, step
+ * 4 of handleLemonSqueezyWebhook) treats every payment.success as a revenue event and computes
+ * the wholesale/referral split the same way it does for every other payer class; this function's
+ * only job is closing the loop on which periods were paid for.
+ */
+async function recordRevenueCutSurchargePayment(
+  event: NormalizedBillingEvent,
+  env: LemonSqueezyEnv
+): Promise<boolean> {
+  if (event.type !== "payment.success") return false;
+  const custom = (event.metadata ?? {}) as Record<string, unknown>;
+  if (custom["kind"] !== "revenue_cut_surcharge" || !event.spaceId) return false;
+  const periods = custom["periods"] ? String(custom["periods"]).split(",").filter(Boolean) : [];
+  if (periods.length === 0 || !env.SPACES_WORKER) return false;
+
+  const space = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+    .bind(event.spaceId).first<{ tenant_id: string }>();
+  if (!space) return false;
+
+  try {
+    const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${event.spaceId}/revenue-tracking/mark-billed`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": space.tenant_id,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, space.tenant_id),
+      },
+      body: JSON.stringify({ periods }),
+    }));
+    if (!resp.ok) {
+      console.error(`[billing/ls] revenue-cut mark-billed failed for space=${event.spaceId}: ${await resp.text()}`);
+      return false;
+    }
+    console.log(`[billing/ls] Marked revenue-cut periods billed for space=${event.spaceId}: ${periods.join(",")}`);
+    return true;
+  } catch (err) {
+    console.error("[billing/ls] revenue-cut mark-billed error:", (err as Error).message);
+    return false;
+  }
+}
+
 const GOAL_MAP: Record<NormalizedBillingEvent["type"], string> = {
   "payment.success": "A new payment was completed. Fulfil the order, send confirmation, and provision access.",
   "payment.failed": "A payment has failed. Trigger the dunning flow and notify the customer.",
@@ -769,6 +814,11 @@ export async function handleLemonSqueezyWebhook(
     await recordOrderRefund(event, env);
   } catch (err) {
     console.error("[billing/ls] Order refund clawback failed:", (err as Error).message);
+  }
+  try {
+    await recordRevenueCutSurchargePayment(event, env);
+  } catch (err) {
+    console.error("[billing/ls] Revenue-cut surcharge mark-billed failed:", (err as Error).message);
   }
 
   // 6. Wake an agent asynchronously (ctx.waitUntil equivalent: fire-and-forget). Pass the order

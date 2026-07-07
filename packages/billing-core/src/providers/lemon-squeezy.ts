@@ -133,6 +133,11 @@ export class LemonSqueezyProvider implements BillingProvider {
             checkout_data: {
               email: params.customerEmail,
               custom: { spaceId: params.spaceId, ...(params.metadata ?? {}) },
+              // LS's documented "pay what you want" override — only takes effect when the
+              // variant itself is configured for custom pricing in the store dashboard; a normal
+              // fixed-price variant ignores this field rather than erroring, so this is safe to
+              // always include when set.
+              ...(params.customPriceCents !== undefined ? { custom_price: params.customPriceCents } : {}),
             },
             ...(params.successUrl ? { product_options: { redirect_url: params.successUrl } } : {}),
           },

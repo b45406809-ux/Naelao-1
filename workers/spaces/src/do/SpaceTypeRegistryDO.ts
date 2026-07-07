@@ -327,6 +327,21 @@ export interface SpaceTypeProductConfig {
       priceCents: number;
       lsVariantId?: string;
     }>;
+
+    /** Go-live monetization pass: a business's real sales often happen on a platform Naelao never
+     *  custodies money through (Whop, most commonly) — the P0-5 wallet-settlement mechanism can
+     *  only apply to sales that flow through Naelao's own Lemon Squeezy store. This is the builder's
+     *  cut of that EXTERNAL revenue, billed as a periodic surcharge against the tracked figure
+     *  (external_revenue_snapshots, SpaceDO) rather than skimmed from a transaction Naelao never
+     *  sees. `lsVariantId` must reference an LS variant configured for "pay what you want"/custom
+     *  pricing in the builder's store — the surcharge amount varies by tracked revenue, so a fixed-
+     *  price variant (like plans/creditPacks/walletTopups above) can't represent it. */
+    externalRevenueCut?: {
+      enabled: boolean;
+      /** Basis points of tracked external revenue billed as a surcharge (e.g. 500 = 5%). */
+      cutBps: number;
+      lsVariantId?: string;
+    };
   };
 
   /** Sub-space terminology + depth cap the end-user-facing shell renders (spec Scenario C

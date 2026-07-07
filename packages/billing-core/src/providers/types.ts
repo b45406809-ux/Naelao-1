@@ -46,6 +46,10 @@ export interface CheckoutParams {
   customerEmail?: string;
   successUrl?: string;
   metadata?: Record<string, string>;
+  /** Override the variant's configured price for this ONE checkout (cents). Requires the variant
+   *  to be set up for "pay what you want"/custom pricing in the provider's own dashboard — see
+   *  the revenue-cut surcharge checkout (workers/billing) for the one caller that needs this. */
+  customPriceCents?: number;
 }
 
 /** The single interface every billing provider implements. */

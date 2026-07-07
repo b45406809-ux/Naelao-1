@@ -287,6 +287,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
       plans?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["plans"];
       creditPacks?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["creditPacks"];
       walletTopups?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["walletTopups"];
+      externalRevenueCut?: NonNullable<SpaceTypeProductConfig["pricingConfig"]>["externalRevenueCut"];
     }>();
 
     const tenantId = auth.tenantId;
@@ -359,6 +360,22 @@ export function registerBuilderRoutes(app: Hono<any>): void {
       );
     }
 
+    // Go-live monetization pass: the revenue-cut surcharge amount VARIES by tracked external
+    // revenue, unlike plans/creditPacks/walletTopups' fixed prices — the provisioned variant here
+    // is a nominal $1 placeholder; the actual charge is set per-checkout via a custom-price
+    // override (POST /internal/revenue-cut-surcharge/checkout, billing worker). This requires the
+    // builder's own LS store to have this variant configured for "pay what you want"/custom
+    // pricing — verify against live Lemon Squeezy behavior before relying on this for real billing,
+    // same "verify before production" precedent as connector-whop's own header comment.
+    let externalRevenueCut = currentPricing.externalRevenueCut;
+    if (body.externalRevenueCut) {
+      externalRevenueCut = body.externalRevenueCut;
+      if (!externalRevenueCut.lsVariantId) {
+        const lsVariantId = await provisionVariant(`${productName} — Revenue Cut Surcharge`, 100, "one_time");
+        if (lsVariantId) externalRevenueCut = { ...externalRevenueCut, lsVariantId };
+      }
+    }
+
     config.productConfig = {
       ...(config.productConfig ?? {}),
       pricingConfig: {
@@ -366,6 +383,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
         ...(plans ? { plans } : {}),
         ...(creditPacks ? { creditPacks } : {}),
         ...(walletTopups ? { walletTopups } : {}),
+        ...(externalRevenueCut ? { externalRevenueCut } : {}),
       },
     };
     const now = new Date().toISOString();
@@ -373,7 +391,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
       "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
     ).bind(JSON.stringify(config), now, productId, tenantId).run();
 
-    return c.json({ pricing_config: config.productConfig.pricingConfig });
+    return c.json({ pricing_config: config.productConfig!.pricingConfig });
   });
 
   // PATCH /builder/products/:id/reseller — WS-3: the missing write path for the
