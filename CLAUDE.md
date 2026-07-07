@@ -1048,6 +1048,81 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     work mechanically, just wasn't the actual fix needed) remains a legitimate future
     maintainability improvement, not an active bug.
 
+41. **A full end-to-end "can a builder launch and win against Polsia today" audit found four
+    launch blockers; all four are now BUILT.** The audit (not code changes, a fresh read against
+    the live code) found: the CF AI Gateway integration existed and was used by the real
+    production reasoning loop but had never actually activated in any deployment; the front-door
+    chat message was never content-moderated, only injection-*detected* (silently
+    tracked/rate-limited, never blocked); a legitimate signed-up user had no visible way to
+    complete the email verification a prior pass now requires before granting free credits; and
+    builders had zero account-recovery path.
+    - **Cloudflare AI Gateway activation.** `shared/ai-client.ts` (spec §15) was fully built and
+      wired into `GatewayReasoner`, the actual production reasoner — but wrangler does NOT merge
+      a named environment's `vars` table with the top-level `[vars]` block, it REPLACES it
+      entirely, so `[env.staging]`/`[env.production]` silently dropped
+      `NAELAO_ACCOUNT_ID`/`NAELAO_GATEWAY_ID` and every LLM call fell back to the direct
+      Anthropic API in every real deployment. Fixed by carrying those vars forward explicitly.
+      The SAME bug class (top-level vars silently dropped in staging/production) turned out to
+      be systemic — found and fixed in `workers/analytics`, `billing`, `eval`, and
+      `security-gateway` too (checked all ~30 workers; most only had `ENVIRONMENT` at the top
+      level, so had nothing to lose). New `wrangler-vars-parity.test.ts` parses every
+      `workers/*/wrangler.toml` and asserts this going forward — the wrangler.toml-shaped
+      equivalent of a schema-migration test. Also added first-ever test coverage for
+      `ai-client.ts`'s own URL/header resolution logic.
+    - **Real content-policy blocking.** `detectPolicyViolations`/`moderateText` were imported
+      into the agents worker's `/agent/run` route but never actually called — the ONLY
+      input-side check on `body.goal` was prompt-injection *detection*, deliberately silent (an
+      attacker must never learn their jailbreak was caught, so it tracks/rate-limits rather than
+      blocking). That reasoning doesn't extend to hard policy violations (CSAM text,
+      weapons/bioweapon synthesis, violence) — there's no "attacker iterating on a jailbreak"
+      harm model to protect by staying silent; the harm is the content itself. Those now block
+      outright (400) before any downstream D1/SPACES_WORKER call, left the injection detector's
+      existing silent-tracking behavior untouched.
+    - **Email-verification UX.** Deferring the signup credit grant to email verification (a
+      prior pass) closed a real farming hole but broke the legitimate happy path: the
+      verification email carried a raw token with no link, `GET /product-users/me` never
+      reported verification status, and there was no page to redeem a token — a new signup
+      landed in chat with 0 credits and no visible way out. Fixed: verification emails now
+      include a clickable link when a new `PRODUCT_SHELL_URL` var is configured (falls back to
+      token-only text — never a broken link — when it isn't, and the shell's new
+      `/p/[slug]/verify-email` page accepts a manually pasted token either way);
+      `product-users/me` now reports `email_verified`; a persistent "Verify your email" banner
+      in the shell layout links to that page.
+    - **Builder password reset**, and three real bugs it surfaced. `workers/auth` (login/
+      register — the builder's OWN account) had zero test coverage of any kind before this pass.
+      Writing real coverage against the ACTUAL migration schema (not a hand-rolled one) caught
+      three genuine, previously-undetected bugs in `/register` that would fail against a real D1
+      instance on every single call: the `orgs` INSERT referenced a nonexistent `updated_at`
+      column and omitted the required NOT NULL `owner_id`; the `users` INSERT also referenced a
+      nonexistent `updated_at`; the `org_members` INSERT referenced a nonexistent `created_at`
+      (real columns: `invited_at`/`joined_at`). None of this was catchable before because the
+      shared fake-D1 test stub didn't implement `.batch()` at all (which `/register` uses via
+      `db.batch([...])`) — no test in the whole suite exercised batch()-based code. Extended the
+      stub to run a real transaction (matching D1's own atomicity), fixed all three column-name
+      bugs, then built the actual feature: same hashed/single-use/expiring token shape as the
+      end-user reset flow, a dashboard "Forgot password?" link + `/reset-password` page, and
+      router-level rate limiting on the new routes — which also caught that `/v1/auth/login` and
+      `/register` had ZERO pre-auth throttling of any kind before this pass; folded into the
+      same fix.
+    - A costly false lead worth recording: `apps/dashboard`'s API client calls paths like
+      `/auth/login` and `/spaces` with no `/v1` prefix, which looked like the exact same bug
+      class as the wrangler.toml sweep above — until checking confirmed EVERY dashboard API call
+      omits `/v1` the same way, meaning `NEXT_PUBLIC_API_URL` itself must carry the `/v1` prefix
+      in a real deployment. Not a bug; verify a suspected pattern against ALL call sites before
+      trusting a single alarming grep hit.
+    1462/1462 tests pass (98 new across this pass, up from 1364), `pnpm turbo run typecheck` clean (75 tasks),
+    `apps/dashboard` and `apps/shell` both verified via `next build`. **Not built in this
+    pass (real, still-open gaps, not silently dropped):** the audit's Tier 2/3 findings —
+    gating agent runs on an active `business_subscriptions` row (that table is currently
+    write-only, nothing reads it to gate access), a monthly credit-refresh cron for
+    `creditsIncludedPerMonth` (grants once, ever, despite the field name), a builder-facing UI
+    for the `agent_activity_log` data a prior pass already built and populates, a proactive daily
+    digest email, first-run/onboarding for a new product, GDPR erasure for end users (export
+    exists, deletion doesn't), and a real LLM-provider failover chain beyond what CF AI Gateway's
+    own dashboard-configurable retries provide (the code only calls the Anthropic-compatible
+    endpoint, not the Universal multi-provider endpoint, so cross-PROVIDER failover — not just
+    cross-request retry — would need a second provider integration this pass didn't add).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
