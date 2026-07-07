@@ -2158,6 +2158,61 @@ app.get("/internal/pricing-catalog", async (c) => {
   });
 });
 
+// Tier 2 metering follow-up: business_subscriptions (Phase E) was write-only — the Lemon Squeezy
+// webhook upserted a row on every subscription_created/updated/cancelled event, but nothing ever
+// READ it to actually gate access. A business on a pricingConfig.model === "subscription" product
+// could run its agent indefinitely for free, subscribed or not, exactly the "ToS-only enforcement"
+// gap checkRevenueReportingLapsed (NaelaoAgentDO) already closed for the revenue-cut case. This is
+// the same shape of gate for the subscription case.
+interface BusinessSubscriptionGateResult {
+  gated: boolean;
+  active: boolean;
+  reason: "not_a_business" | "not_subscription_model" | "in_trial" | "no_subscription" | "subscription_" | string;
+}
+
+async function resolveBusinessSubscriptionGate(env: Env, spaceId: string): Promise<BusinessSubscriptionGateResult> {
+  const space = await env.PLATFORM_DB.prepare(
+    "SELECT parent_space_id, created_at FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(spaceId).first<{ parent_space_id: string | null; created_at: string }>();
+  // Only a BUSINESS (a sub-space of a product) subscribes — the product root itself is the
+  // builder's own space, never gated on its own pricing catalog.
+  if (!space || !space.parent_space_id) return { gated: false, active: true, reason: "not_a_business" };
+
+  const catalog = await loadPricingCatalog(env, spaceId);
+  if (!catalog) return { gated: false, active: true, reason: "not_a_business" };
+  const root = await env.PLATFORM_DB.prepare(
+    "SELECT spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(catalog.productSpaceId).first<{ spacetype_id: string; config_json: string | null }>();
+  const pc = root ? await loadEffectiveProductConfig(env, root.spacetype_id, root.config_json) : null;
+  if (pc?.pricingConfig?.model !== "subscription") return { gated: false, active: true, reason: "not_subscription_model" };
+
+  // Respect a configured trial window — a business just created hasn't had a chance to subscribe.
+  const trialDays = pc.pricingConfig.trialDays ?? 0;
+  if (trialDays > 0) {
+    const ageMs = Date.now() - new Date(space.created_at).getTime();
+    if (ageMs < trialDays * 86_400_000) return { gated: true, active: true, reason: "in_trial" };
+  }
+
+  const sub = await env.PLATFORM_DB.prepare(
+    "SELECT status FROM business_subscriptions WHERE business_space_id = ?"
+  ).bind(spaceId).first<{ status: string }>();
+  if (!sub) return { gated: true, active: false, reason: "no_subscription" };
+  // 'past_due' gets a grace period (payment failed but Lemon Squeezy is still retrying/dunning) —
+  // only a definitively non-paying status (paused/cancelled/expired) blocks the run.
+  const active = sub.status === "active" || sub.status === "past_due";
+  return { gated: true, active, reason: active ? "" : `subscription_${sub.status}` };
+}
+
+// GET /internal/business-subscription-status?space_id= — NaelaoAgentDO's pre-run gate for
+// subscription-model products (mirrors /internal/pricing-catalog's auth/shape conventions).
+app.use("/internal/business-subscription-status", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/internal/business-subscription-status", async (c) => {
+  const spaceId = c.req.query("space_id") ?? "";
+  if (!spaceId) return c.json({ error_code: "bad_request", message: "space_id is required" }, 400);
+  const result = await resolveBusinessSubscriptionGate(c.env, spaceId);
+  return c.json(result);
+});
+
 // POST /internal/credit-packs/grant — the billing worker's webhook handler calls this after a
 // credit-pack payment.success to credit the buyer's OWN ProductUserDO (never the business's
 // balance — credit packs are a per-end-user purchase, spec-distinct from business subscriptions

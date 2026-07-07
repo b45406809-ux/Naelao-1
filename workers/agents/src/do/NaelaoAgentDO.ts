@@ -1947,6 +1947,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       );
     }
 
+    // Tier 2 metering follow-up: business_subscriptions (Phase E) was write-only — the Lemon
+    // Squeezy webhook upserted a row on every subscription event but nothing ever read it to gate
+    // access, so a business on a pricingConfig.model === "subscription" product could run its
+    // agent indefinitely whether or not it ever actually subscribed. Same space-wide access-
+    // restriction shape and fail-open posture as the revenue-reporting-lapse check above — a
+    // lookup error must never silently unblock a customer-bot loop, but it also must never brick
+    // a legitimate business over a transient SPACES_WORKER hiccup, so this specifically fails
+    // OPEN (unlike the wallet/credit checks below, which fail CLOSED on a confirmed zero balance).
+    const subGate = await this.checkBusinessSubscriptionGate(spaceId, tenantId);
+    if (subGate.gated && !subGate.active) {
+      return Response.json(
+        { error: "this business's subscription is not active — resubscribe to resume", error_code: subGate.reason || "subscription_inactive" },
+        { status: 402 }
+      );
+    }
+
     const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId, userId, projectId);
     if (!engineEnv) {
       return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
@@ -2536,6 +2552,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return daysSinceTracked > NaelaoAgentDO.REVENUE_REPORTING_LAPSE_DAYS;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * Tier 2 metering follow-up: business_subscriptions was write-only (a Lemon Squeezy webhook
+   * upserted it, nothing read it). One round trip to SPACES_WORKER, which resolves whether this
+   * space is even a subscription-gated business at all (not the product root, product's
+   * pricingConfig.model === "subscription") before checking for an active row — the common case
+   * (not a subscription-model business) short-circuits there. Fails OPEN (gated: false) on any
+   * lookup error, matching checkRevenueReportingLapsed's posture — a transient SPACES_WORKER
+   * outage must never brick a legitimate business's agent.
+   */
+  private async checkBusinessSubscriptionGate(spaceId: string, tenantId: string): Promise<{ gated: boolean; active: boolean; reason: string }> {
+    if (!this.env.SPACES_WORKER) return { gated: false, active: true, reason: "" };
+    try {
+      const res = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/internal/business-subscription-status?space_id=${encodeURIComponent(spaceId)}`,
+        { headers: await this.internalHeaders(tenantId) }
+      ));
+      if (!res.ok) return { gated: false, active: true, reason: "" };
+      return await res.json<{ gated: boolean; active: boolean; reason: string }>();
+    } catch {
+      return { gated: false, active: true, reason: "" };
     }
   }
 
