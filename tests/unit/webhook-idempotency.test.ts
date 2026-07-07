@@ -25,6 +25,10 @@ const SPACES_SQL = `
 const RESELLER_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0033_reseller_accounts.sql"), "utf8");
 const COMMERCE_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0035_commerce.sql"), "utf8");
 const WEBHOOK_IDEMPOTENCY_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0050_webhook_idempotency.sql"), "utf8");
+// P0-5 follow-on: the (provider, event_id) uniqueness alone let a later, genuinely different
+// event for the same LS resource (e.g. order_refunded sharing an order_created's data.id) get
+// silently treated as a duplicate of the first. See 0052's own header comment for the full story.
+const WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0052_webhook_idempotency_event_type.sql"), "utf8");
 
 async function signBody(body: string): Promise<string> {
   const key = await crypto.subtle.importKey(
@@ -70,7 +74,7 @@ async function post(raw: string, env: LemonSqueezyEnv): Promise<Response> {
 
 describe("Lemon Squeezy webhook — exactly-once (S0.3)", () => {
   it("replaying the same event twice wakes the agent only once", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
 
     const agentsFetch = vi.fn(async () => new Response("{}"));
@@ -87,7 +91,7 @@ describe("Lemon Squeezy webhook — exactly-once (S0.3)", () => {
   });
 
   it("replaying the same event twice records exactly one launchpad_orders row", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
 
     const env = makeEnv(fakeDb as unknown as D1Database, async () => new Response("{}"));
@@ -101,7 +105,7 @@ describe("Lemon Squeezy webhook — exactly-once (S0.3)", () => {
   });
 
   it("two genuinely distinct same-price purchases of the same product both record (no key collision)", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
 
     const env = makeEnv(fakeDb as unknown as D1Database, async () => new Response("{}"));
@@ -114,7 +118,7 @@ describe("Lemon Squeezy webhook — exactly-once (S0.3)", () => {
   });
 
   it("replaying a non-order event (subscription.updated, no order/ledger side effect) still only wakes the agent once", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION]);
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space1", "tenant1").run();
 
     const agentsFetch = vi.fn(async () => new Response("{}"));
@@ -128,7 +132,7 @@ describe("Lemon Squeezy webhook — exactly-once (S0.3)", () => {
   });
 
   it("replaying a reseller-attributed event twice yields exactly one reseller_ledger row", async () => {
-    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION]);
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION]);
     // Child tenant under a reseller parent — set up the hierarchy + reseller_accounts config.
     await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("child-space", "child-tenant").run();
     await fakeDb.prepare(

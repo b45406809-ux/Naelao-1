@@ -122,7 +122,7 @@ async function recordProductOrder(
   const providerEventId = event.providerEventId ?? event.subscriptionId ?? `${event.type}:${event.customerId ?? ""}:${gross}:${productId}`;
 
   // INSERT OR IGNORE on the unique provider_event_id index → idempotent.
-  await env.PLATFORM_DB.prepare(
+  const insertResult = await env.PLATFORM_DB.prepare(
     `INSERT OR IGNORE INTO launchpad_orders
        (id, space_id, tenant_id, product_id, customer_email, gross_cents, fee_cents, net_cents,
         currency, ls_subscription_id, status, provider_event_id)
@@ -132,7 +132,99 @@ async function recordProductOrder(
     gross, fee, net, event.currency ?? "USD", event.subscriptionId ?? null, providerEventId
   ).run();
   console.log(`[billing/ls] Recorded order space=${event.spaceId} product=${productId} gross=${gross}c fee=${fee}c`);
+
+  // P0-5: net_cents used to sit in this row and go nowhere — Naelao's own Lemon Squeezy account
+  // kept 100% of every storefront sale, and the seller got a database row. Settle it into the
+  // SAME space's auto-provisioned wallet (seedWallet, P0-4) — the wallet is already the payer of
+  // last resort for that space's own project-scoped agent runs (P0-2), so this closes the loop:
+  // a business's own sales now fund its own agent's compute. Only on a genuinely new insert
+  // (insertResult.meta.changes === 0 means the top-level webhook dedup somehow let a duplicate
+  // through — defense in depth, never double-settle the same order).
+  if (insertResult.meta.changes > 0) {
+    await settleOrderToWallet(event.spaceId, space.tenant_id, net, `settle:${providerEventId}`, "sale_settlement", env);
+  }
   return id;
+}
+
+/**
+ * P0-5: credit or debit the SELLING space's own wallet for a storefront sale/refund. The wallet's
+ * identity is never named in checkout metadata (unlike grantWalletTopupPurchase, an explicit
+ * buyer-initiated top-up of a project the buyer chose) — it's the space's own auto-provisioned
+ * kind='wallet' project, resolved the same way NaelaoAgentDO's wallet gate resolves it.
+ * Best-effort: a missing wallet (a space provisioned before P0-4 shipped) or a transient outage
+ * logs and returns false rather than throwing — never fails the webhook's 200 response over a
+ * billing-side hiccup, matching every other grant/settle function in this file.
+ */
+async function settleOrderToWallet(
+  spaceId: string,
+  tenantId: string,
+  cents: number,
+  idempotencyKey: string,
+  reason: "sale_settlement" | "refund_clawback",
+  env: LemonSqueezyEnv
+): Promise<boolean> {
+  if (cents <= 0 || !env.SPACES_WORKER) return false;
+  try {
+    const headers = {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": tenantId,
+      "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+    };
+    const wpRes = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/wallet-project`, { headers }));
+    if (!wpRes.ok) return false;
+    const { project_id } = await wpRes.json<{ project_id: string | null }>();
+    if (!project_id) return false; // no wallet ever provisioned for this space — nothing to settle to
+
+    const op = reason === "sale_settlement" ? "credit" : "debit";
+    const resp = await env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${spaceId}/projects/${project_id}/wallet/${op}`,
+      { method: "POST", headers, body: JSON.stringify({ cents, reason, idempotency_key: idempotencyKey }) }
+    ));
+    if (!resp.ok) {
+      // A refund clawback that 402s (insufficient balance — the seller already spent the
+      // proceeds running their agent) is a real, documented limitation: this debits AT MOST what
+      // the wallet currently holds' worth of protection, never a negative balance (the underlying
+      // wallet_ledger never goes negative, same as every other debit in the platform). Building
+      // real seller-debt tracking/invoicing for the shortfall is a separate, later feature.
+      console.warn(`[billing/ls] wallet ${op} failed for space=${spaceId} project=${project_id}: ${await resp.text()}`);
+      return false;
+    }
+    console.log(`[billing/ls] wallet ${op} ${cents}c for space=${spaceId} project=${project_id} (${reason})`);
+    return true;
+  } catch (err) {
+    console.error(`[billing/ls] wallet settlement error for space=${spaceId}:`, (err as Error).message);
+    return false;
+  }
+}
+
+/**
+ * P0-5: claw back a storefront sale's settled proceeds when Lemon Squeezy reports a refund.
+ * order_refunded is a status transition on the SAME underlying LS order resource as the original
+ * order_created event, so it carries the identical resource id — providerEventId here matches
+ * the ORIGINAL order's own provider_event_id in launchpad_orders, letting this look the order up
+ * directly rather than recomputing anything from the refund event's own (less reliable for
+ * partial refunds) amount field. Deliberately claws back the FULL originally-settled net_cents
+ * even for a partial refund — a known simplification (documented, not silently wrong): this
+ * repo's LS integration doesn't yet distinguish a partial refund amount from the order's original
+ * total, so it treats every refund as a full one for wallet-settlement purposes.
+ */
+async function recordOrderRefund(
+  event: NormalizedBillingEvent,
+  env: LemonSqueezyEnv
+): Promise<void> {
+  if (event.type !== "refund.issued" || !event.providerEventId) return;
+
+  const order = await env.PLATFORM_DB.prepare(
+    "SELECT space_id, tenant_id, net_cents, status FROM launchpad_orders WHERE provider_event_id = ?"
+  ).bind(event.providerEventId).first<{ space_id: string; tenant_id: string; net_cents: number; status: string }>();
+  if (!order || order.status === "refunded") return; // unknown order, or already clawed back (idempotent)
+
+  const updateResult = await env.PLATFORM_DB.prepare(
+    "UPDATE launchpad_orders SET status = 'refunded' WHERE provider_event_id = ? AND status != 'refunded'"
+  ).bind(event.providerEventId).run();
+  if (updateResult.meta.changes === 0) return; // lost a race with a concurrent delivery — already handled
+
+  await settleOrderToWallet(order.space_id, order.tenant_id, order.net_cents, `refund:${event.providerEventId}`, "refund_clawback", env);
 }
 
 /** Map Lemon Squeezy's own subscription status vocabulary onto business_subscriptions' narrower
@@ -672,6 +764,11 @@ export async function handleLemonSqueezyWebhook(
     await grantWalletTopupPurchase(event, env);
   } catch (err) {
     console.error("[billing/ls] Wallet top-up grant failed:", (err as Error).message);
+  }
+  try {
+    await recordOrderRefund(event, env);
+  } catch (err) {
+    console.error("[billing/ls] Order refund clawback failed:", (err as Error).message);
   }
 
   // 6. Wake an agent asynchronously (ctx.waitUntil equivalent: fire-and-forget). Pass the order
