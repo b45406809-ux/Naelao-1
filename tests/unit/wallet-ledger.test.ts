@@ -181,3 +181,42 @@ describe("Launchpad Wallet ledger (SpaceDO, real migration chain)", () => {
     expect((await balB.json() as { balance_cents: number }).balance_cents).toBe(0);
   });
 });
+
+// Metering enforcement follow-up: NaelaoAgentDO looks up a space's wallet project via this route
+// before gating/debiting a project-scoped run's real LLM cost against it.
+describe("GET /spaces/:spaceId/wallet-project", () => {
+  it("requires a verified internal token", async () => {
+    const env = makeEnv();
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/space-1/wallet-project", { headers: { "x-naelao-tenant-id": "tenant-1" } }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("finds the space's wallet project by kind", async () => {
+    const env = makeEnv();
+    const walletProjectId = await makeWalletProject(env, "space-1", "tenant-1", "Wallet G");
+    const h = await headers("tenant-1");
+    const res = await spacesWorker.fetch(req("/spaces/space-1/wallet-project", h), env as never, execCtx);
+    expect(res.status).toBe(200);
+    expect((await res.json() as { project_id: string | null }).project_id).toBe(walletProjectId);
+  });
+
+  it("returns project_id: null for a space with no wallet project", async () => {
+    const env = makeEnv();
+    await createProject(env, "space-1", "tenant-1", "Just a regular project");
+    const h = await headers("tenant-1");
+    const res = await spacesWorker.fetch(req("/spaces/space-1/wallet-project", h), env as never, execCtx);
+    expect(res.status).toBe(200);
+    expect((await res.json() as { project_id: string | null }).project_id).toBeNull();
+  });
+
+  it("never confuses a wallet in a DIFFERENT space", async () => {
+    const env = makeEnv();
+    await makeWalletProject(env, "space-1", "tenant-1", "Wallet H");
+    const h = await headers("tenant-1");
+    const res = await spacesWorker.fetch(req("/spaces/space-2/wallet-project", h), env as never, execCtx);
+    expect((await res.json() as { project_id: string | null }).project_id).toBeNull();
+  });
+});

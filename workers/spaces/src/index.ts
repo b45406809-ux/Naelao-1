@@ -841,6 +841,21 @@ app.post("/spaces/:spaceId/projects/:projectId/wallet/debit", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// GET /spaces/:spaceId/wallet-project — metering enforcement follow-up: internal-only (the agents
+// worker is the only caller, before/after a project-scoped run), never end-user or builder
+// dashboard reachable, matching /rules and /spend's existing internal-only posture. Finds the
+// space's auto-provisioned wallet project (see the provisioner's seedWallet step) so
+// NaelaoAgentDO can gate/debit a project-scoped run's real cost against it.
+app.use("/spaces/:spaceId/wallet-project", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/spaces/:spaceId/wallet-project", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/wallet-project?space_id=${encodeURIComponent(spaceId)}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // Container Marketplace slots (§A1.17 Phase L) — builder/operator-only for now (like rules/
 // spend above): no catalogue image is live yet, so there is nothing for an end user's day-to-day
 // chat to reach here. requireInternalHmac (came-through-the-router gate) stays the only floor;

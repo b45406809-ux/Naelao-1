@@ -1933,6 +1933,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // F9: the gate itself now checks through SpaceDO (single writer for the whole project),
     // not this DO's own local tally — see checkAndDebitProjectSpend.
     let hasSpendCap = false;
+    // Metering enforcement follow-up: daily_spend_cap_credits (below) is an OPTIONAL rate-limit
+    // ceiling a builder may or may not configure — a project with none set previously ran with NO
+    // payer of any kind. walletProjectId (resolved below) is the space's own auto-provisioned
+    // wallet (see the provisioner's seedWallet step) — this check ALWAYS applies to a
+    // project-scoped run, independent of whether a spend cap is configured, so "no cap" and "free
+    // forever" stop meaning the same thing. The two gates are complementary: the cap (when set)
+    // bounds daily burn even when the wallet is flush; the wallet check (always on) requires the
+    // business to actually have money at all.
+    let walletProjectId: string | null = null;
     if (projectId) {
       const projectCfg = await this.fetchProjectConfig(spaceId, tenantId, projectId);
       if (projectCfg.status === "error") {
@@ -1960,6 +1969,38 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
       }
       // status === "not_found": no project config row — permissive by design, unchanged.
+
+      // Wallet gate — fails OPEN only when the lookup/balance check itself errors (network/worker
+      // outage, or no wallet ever provisioned e.g. a space created before this fix shipped),
+      // matching the end-user credit gate's posture. A CONFIRMED zero/negative wallet balance
+      // always blocks the run.
+      try {
+        const wpRes = await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/spaces/${spaceId}/wallet-project`,
+          { headers: await this.internalHeaders(tenantId) }
+        ));
+        if (wpRes.ok) {
+          const { project_id } = await wpRes.json<{ project_id: string | null }>();
+          if (project_id) {
+            walletProjectId = project_id;
+            const balRes = await this.env.SPACES_WORKER.fetch(new Request(
+              `http://spaces-worker/spaces/${spaceId}/projects/${project_id}/wallet/balance`,
+              { headers: await this.internalHeaders(tenantId) }
+            ));
+            if (balRes.ok) {
+              const { balance_cents } = await balRes.json<{ balance_cents: number }>();
+              if (balance_cents <= 0) {
+                return Response.json(
+                  { error: "this business's wallet is empty — top up to keep this agent running", error_code: "insufficient_credits", balance_cents },
+                  { status: 402 }
+                );
+              }
+            }
+          }
+        }
+      } catch {
+        // Wallet service unreachable — do not block the run over a transient outage.
+      }
     } else if (callerRole === "product_end_user" && userId) {
       // Metering enforcement pass: a non-project (Space Assistant / Home chat) run by a signed-in
       // product end user used to debit their ProductUserDO balance ONLY after the run completed
@@ -2062,6 +2103,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // this project); the local table is kept only as this DO's own telemetry/cache.
         this.addProjectSpend(projectId, credits);
         if (hasSpendCap) await this.checkAndDebitProjectSpend(spaceId, tenantId, projectId, credits);
+        // Metering enforcement follow-up: debit the space's own wallet for this run's real cost.
+        // credits and wallet cents are the SAME unit by construction (packages/billing-core's
+        // CREDITS_PER_USD = 100, i.e. 1 credit == 1 cent) — no conversion needed. Best-effort,
+        // same "never fail an already-completed run over a billing-side hiccup" posture as the
+        // end-user debit below.
+        if (walletProjectId) await this.debitProjectWallet(spaceId, tenantId, walletProjectId, credits, result.notes, runId);
       } else if (!projectId && callerRole === "product_end_user" && userId && result.result?.tokens_used) {
         // §A1.17 Phase I: a non-project run (Space Assistant / Home chat) by a signed-in product
         // end user debits THEIR OWN ProductUserDO balance, not a project cap — mutually exclusive
@@ -2345,6 +2392,33 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
     } catch (err) {
       notes.push(`Billing: failed to debit ${credits} credit(s) for this run (${(err as Error).message}).`);
+    }
+  }
+
+  /** Metering enforcement follow-up: debit a project-scoped run's real LLM usage from the space's
+   *  own wallet (kind='wallet' project, auto-provisioned by the provisioner's seedWallet step).
+   *  Best-effort, same posture as debitEndUserCredits above — a billing-side failure never
+   *  crashes an already-completed run. idempotency_key namespaced "run:" mirrors that method's
+   *  own convention (never collides with wallet-topup/starter-grant keys on the same index). */
+  private async debitProjectWallet(
+    spaceId: string, tenantId: string, walletProjectId: string, credits: number, notes: string[], runId?: string
+  ): Promise<void> {
+    try {
+      const resp = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${spaceId}/projects/${walletProjectId}/wallet/debit`,
+        {
+          method: "POST",
+          headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+          body: JSON.stringify({ cents: credits, reason: "agent_run", ...(runId ? { idempotency_key: `run:${runId}` } : {}) }),
+        }
+      ));
+      if (resp.status === 402) {
+        notes.push(`Billing: this business's wallet had insufficient balance to cover this run's ${credits} credit(s) — balance was not debited.`);
+      } else if (!resp.ok) {
+        notes.push(`Billing: failed to debit ${credits} credit(s) from the wallet for this run (${resp.status}) — see logs.`);
+      }
+    } catch (err) {
+      notes.push(`Billing: failed to debit ${credits} credit(s) from the wallet for this run (${(err as Error).message}).`);
     }
   }
 

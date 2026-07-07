@@ -358,6 +358,59 @@ export async function seedOwnerMember(
   return true;
 }
 
+// Metering enforcement follow-up: a project-scoped run (customer-bot type projects — the actual
+// common case for a Launchpad business) with no builder-configured daily_spend_cap_credits used
+// to run completely unmetered, with no payer of any kind. wallet_ledger (Launchpad Wallet) already
+// existed and was ALWAYS meant to double as this sink (its own migration comment: "drawn down for
+// Naelao's own metered platform costs... beyond a project's normal daily_spend_cap_credits") — but
+// nothing auto-provisioned one, so a business had to explicitly build a wallet project of its own
+// accord for that to ever apply. This seeds one automatically, bounded (not zero-forever, not
+// unlimited) — same free-tier-signup-credits philosophy as the end-user side of this fix. Gated by
+// `scriptAgentsEnabled`, the SAME manifest flag that already gates agent installation (WS-6's
+// de-niching — general to any SpaceType with script-agent projects, not hardcoded to Launchpad).
+const WALLET_STARTER_BALANCE_CENTS = 1000; // $10 — a placeholder starter allowance, easy to tune.
+
+export async function seedWallet(env: Env, spaceId: string, tenantId: string): Promise<boolean> {
+  try {
+    const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
+    const headers = { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token };
+
+    const createResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
+      method: "POST", headers,
+      body: JSON.stringify({ space_id: spaceId, name: "Wallet", visibility: "private" }),
+    }));
+    if (!createResp.ok) {
+      console.warn(`[provisioner] wallet project creation failed for ${spaceId}: ${await createResp.text()}`);
+      return false;
+    }
+    const { id: projectId } = await createResp.json<{ id: string }>();
+
+    const kindResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}`, {
+      method: "PATCH", headers, body: JSON.stringify({ kind: "wallet" }),
+    }));
+    if (!kindResp.ok) {
+      console.warn(`[provisioner] wallet project kind=wallet PATCH failed for ${spaceId}/${projectId}: ${await kindResp.text()}`);
+      return false;
+    }
+
+    const creditResp = await env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${spaceId}/projects/${projectId}/wallet/credit`,
+      { method: "POST", headers, body: JSON.stringify({ cents: WALLET_STARTER_BALANCE_CENTS, reason: "starter_grant", idempotency_key: `starter:${spaceId}` }) }
+    ));
+    if (!creditResp.ok) {
+      console.warn(`[provisioner] wallet starter grant failed for ${spaceId}/${projectId}: ${await creditResp.text()}`);
+      // The wallet project itself was created successfully — don't report the whole step as
+      // failed over the starter grant alone; a $0 wallet still gives project runs a real payer
+      // to gate against (just an immediate 402 until topped up), which is still strictly better
+      // than no payer existing at all.
+    }
+    return true;
+  } catch (err) {
+    console.warn(`[provisioner] wallet seed failed for ${spaceId}:`, (err as Error).message);
+    return false;
+  }
+}
+
 // ── 10-step transactional provisioner ───────────────────────────────────────
 
 export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<void> {
@@ -511,6 +564,15 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
       await installLaunchpadAgents(spaceId, tenantId, effectiveTemplateIds, manifest, env);
     }
     provisioned.push("agents");
+
+    // Step 9a: Seed a wallet project + starter balance — the payer for this space's own
+    // project-scoped agent runs (metering enforcement follow-up). Same manifest gate as agent
+    // installation: any SpaceType with script-agent projects gets one, not just Launchpad.
+    if (manifest.backend.scriptAgentsEnabled) {
+      if (await seedWallet(env, spaceId, tenantId)) {
+        provisioned.push("wallet");
+      }
+    }
 
     // Step 9b: Template bootstrap — inherit the shared template skill library (federated
     // learning) so the space starts with what the fleet has learned, then record the first-run

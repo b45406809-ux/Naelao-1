@@ -1052,6 +1052,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && walletHistoryMatch?.[1]) {
         return this.listWalletHistory(walletHistoryMatch[1], url.searchParams);
       }
+      // GET /wallet-project?space_id=... — metering enforcement follow-up: NaelaoAgentDO looks
+      // this up to find the space's own wallet project (auto-provisioned at space-creation time,
+      // see the provisioner's seedWallet step) before gating/debiting a project-scoped run's
+      // real LLM cost against it.
+      if (method === "GET" && url.pathname === "/wallet-project") {
+        return this.findWalletProject(url.searchParams.get("space_id") ?? "");
+      }
       // ── project-scoped Memory OS Layers 3/4/6 (§A1.17 Phase U) ─────────────────
       const projFactsMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/facts$/);
       if (method === "POST" && projFactsMatch?.[1]) return this.rememberProjectFact(projFactsMatch[1], request);
@@ -2455,6 +2462,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.ctx.storage.sql as never, "SELECT SUM(delta_cents) AS bal FROM wallet_ledger WHERE project_id = ?", projectId
     );
     return row?.bal ?? 0;
+  }
+
+  private findWalletProject(spaceId: string): Response {
+    if (!spaceId) return Response.json({ project_id: null });
+    const row = queryOne<{ id: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT id FROM projects WHERE space_id = ? AND kind = 'wallet' AND status != 'archived' ORDER BY created_at ASC LIMIT 1",
+      spaceId
+    );
+    return Response.json({ project_id: row?.id ?? null });
   }
 
   private getWalletBalance(projectId: string): Response {
