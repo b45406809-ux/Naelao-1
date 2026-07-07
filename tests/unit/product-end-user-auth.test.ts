@@ -129,9 +129,43 @@ describe("POST /spaces/:spaceId/end-users/signup", () => {
     expect((await balRes.json() as { balance_credits: number }).balance_credits).toBe(500);
   });
 
-  it("grants zero credits at signup when creditsIncludedPerMonth is unset (unchanged default)", async () => {
+  it("grants the platform free-tier default when pricing is unconfigured (a product with no pricingConfig at all)", async () => {
     const env = makeEnv();
     await seedProduct(env, "prod-1", "tenant-1");
+    const signup = await (await spacesWorker.fetch(
+      req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx
+    )).json() as { end_user_id: string };
+
+    const token = await mintInternalToken("test-platform-secret", "tenant-1");
+    const balRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/internal/product-users/prod-1/${signup.end_user_id}/credits/balance`, {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    expect((await balRes.json() as { balance_credits: number }).balance_credits).toBe(100);
+  });
+
+  it("grants the platform free-tier default for pricingConfig.model === 'free' too", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1", { pricingConfig: { model: "free" } });
+    const signup = await (await spacesWorker.fetch(
+      req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx
+    )).json() as { end_user_id: string };
+
+    const token = await mintInternalToken("test-platform-secret", "tenant-1");
+    const balRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/internal/product-users/prod-1/${signup.end_user_id}/credits/balance`, {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    expect((await balRes.json() as { balance_credits: number }).balance_credits).toBe(100);
+  });
+
+  it("does NOT apply the free-tier default for an explicit paid model (credits) with no allowance configured", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1", { pricingConfig: { model: "credits" } });
     const signup = await (await spacesWorker.fetch(
       req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx
     )).json() as { end_user_id: string };

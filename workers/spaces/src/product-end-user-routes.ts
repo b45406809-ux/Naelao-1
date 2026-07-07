@@ -31,6 +31,19 @@ interface ProductRow {
   config_json: string | null;
 }
 
+// Metering enforcement pass, follow-up: a product with pricingConfig.model === "free" (or no
+// pricingConfig at all — a product that never configured pricing is closer to "free" than to any
+// paid model) is an explicit builder signal that end users shouldn't need to pay to use it. Before
+// the pre-run credit gate existed, that "just worked" by accident (every run was unmetered). Now
+// that runs are actually gated on a positive balance, "free" and "0 credits granted" would mean
+// the same thing — instant lockout on message one — unless a builder happens to also fill in
+// creditsIncludedPerMonth (a field the wizard only shows for the "credits" pricing model in the
+// first place). This platform default keeps a "Free" product usable out of the box without
+// reintroducing unmetered/unlimited runs. Deliberately NOT applied to "credits"/"subscription"/
+// "seats" models with an unset or explicit 0 allowance — those models are the builder's own
+// explicit monetization choice ("pay first"), which this default must not override.
+const FREE_TIER_DEFAULT_SIGNUP_CREDITS = 100;
+
 async function loadProductAuthConfig(
   env: ProductEndUserRoutesEnv,
   productId: string
@@ -53,8 +66,14 @@ async function loadProductAuthConfig(
       // message one. Granted ONCE at signup, not actually monthly-recurring — a real recurring
       // top-up would need its own scheduled sweep per end user, which is a separate, larger
       // feature this fix does not attempt to build.
-      signupCredits = parsed.productConfig?.pricingConfig?.creditsIncludedPerMonth ?? 0;
+      const pricingConfig = parsed.productConfig?.pricingConfig;
+      const isFreeOrUnconfigured = !pricingConfig || pricingConfig.model === "free";
+      signupCredits = pricingConfig?.creditsIncludedPerMonth
+        ?? (isFreeOrUnconfigured ? FREE_TIER_DEFAULT_SIGNUP_CREDITS : 0);
     } catch { /* malformed config_json — treat as unset, fall through to default below */ }
+  } else {
+    // No config_json at all — same "hasn't configured pricing yet" case as above.
+    signupCredits = FREE_TIER_DEFAULT_SIGNUP_CREDITS;
   }
   // Default to naelao-native when unset — a product that never configured an auth provider is
   // not "no auth allowed," it's "hasn't picked one yet," and naelao-native is the fastest-to-ship

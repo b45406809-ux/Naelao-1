@@ -273,7 +273,10 @@ describe("GET/PATCH /spaces/:spaceId/product-users/me", () => {
     const body = await res.json() as { email: string; credits_balance: number; end_user_id: string };
     expect(body.email).toBe("jane@acme.com");
     expect(body.end_user_id).toBe(signup.end_user_id);
-    expect(body.credits_balance).toBe(0);
+    // Metering enforcement follow-up: a product with no pricingConfig at all now grants the
+    // platform free-tier default (100) at signup rather than leaving every end user at a
+    // permanent 0 balance that the pre-run credit gate would otherwise lock out immediately.
+    expect(body.credits_balance).toBe(100);
   });
 
   it("404s for a non-end-user (builder) caller", async () => {
