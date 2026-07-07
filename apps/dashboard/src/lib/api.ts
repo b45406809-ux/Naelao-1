@@ -740,6 +740,32 @@ export async function updateAssistantPolicy(spaceId: string, input: Partial<Assi
   });
 }
 
+// Tier 2/3 follow-up: agent_activity_log (SpaceDO migration v27) has been built and populated by
+// NaelaoAgentDO since the security-audit pass that added it, but had zero consuming UI — a
+// builder had no way to see what their agent has actually been doing, why it escalated, or what
+// it cost. GET /spaces/:spaceId/agent-activity is the existing builder-only read (same
+// requireInternalHmac-via-router pattern as assistant-policy above).
+export interface AgentActivityEntry {
+  id: string;
+  space_id: string;
+  project_id: string | null;
+  thread_id: string | null;
+  agent_id: string;
+  event_type: "run_completed" | "run_failed" | "approval_requested" | "approval_resolved" | "moderation_blocked";
+  summary: string;
+  tokens_used: number | null;
+  cost_credits: number | null;
+  created_at: string;
+}
+
+export async function getAgentActivity(spaceId: string, opts: { projectId?: string; limit?: number } = {}): Promise<{ data: AgentActivityEntry[]; count: number }> {
+  const params = new URLSearchParams();
+  if (opts.projectId) params.set("project_id", opts.projectId);
+  if (opts.limit) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  return apiFetch(`/spaces/${encodeURIComponent(spaceId)}/agent-activity${qs ? `?${qs}` : ""}`);
+}
+
 // §A1.17 Phase S: local-machine-as-container grants + the connect-token flow. These routes
 // (workers/spaces/src/index.ts) are gated by requireInternalHmac, the SAME mechanism every other
 // builder-only route in this dashboard already goes through (naelao-router's proxyTo mints that
