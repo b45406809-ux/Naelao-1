@@ -370,7 +370,26 @@ export async function seedOwnerMember(
 // de-niching — general to any SpaceType with script-agent projects, not hardcoded to Launchpad).
 const WALLET_STARTER_BALANCE_CENTS = 1000; // $10 — a placeholder starter allowance, easy to tune.
 
-export async function seedWallet(env: Env, spaceId: string, tenantId: string): Promise<boolean> {
+// P0-4: the starter grant above had no per-user limit — nothing stopped one person from creating
+// unlimited businesses to farm $10 of free compute each. A user's very first space of ANY type
+// (not just Launchpad-shaped ones — the abuse doesn't care what SpaceType it wears) already spent
+// their one starter grant; every subsequent space they create gets a wallet project (still a real
+// payer to gate against) but starts at $0. Best-effort like the rest of this function: a lookup
+// failure is treated as "not their first" (the conservative, anti-farming direction) rather than
+// silently granting on every error.
+async function isUsersFirstSpace(env: Env, tenantId: string, userId: string, spaceId: string): Promise<boolean> {
+  try {
+    const row = await env.PLATFORM_DB.prepare(
+      "SELECT COUNT(*) as cnt FROM spaces WHERE tenant_id = ? AND created_by = ? AND id != ?"
+    ).bind(tenantId, userId, spaceId).first<{ cnt: number }>();
+    return (row?.cnt ?? 0) === 0;
+  } catch (err) {
+    console.warn(`[provisioner] first-space lookup failed for user ${userId}:`, (err as Error).message);
+    return false;
+  }
+}
+
+export async function seedWallet(env: Env, spaceId: string, tenantId: string, userId?: string): Promise<boolean> {
   try {
     const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
     const headers = { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token };
@@ -393,16 +412,22 @@ export async function seedWallet(env: Env, spaceId: string, tenantId: string): P
       return false;
     }
 
-    const creditResp = await env.SPACES_WORKER.fetch(new Request(
-      `http://spaces-worker/spaces/${spaceId}/projects/${projectId}/wallet/credit`,
-      { method: "POST", headers, body: JSON.stringify({ cents: WALLET_STARTER_BALANCE_CENTS, reason: "starter_grant", idempotency_key: `starter:${spaceId}` }) }
-    ));
-    if (!creditResp.ok) {
-      console.warn(`[provisioner] wallet starter grant failed for ${spaceId}/${projectId}: ${await creditResp.text()}`);
-      // The wallet project itself was created successfully — don't report the whole step as
-      // failed over the starter grant alone; a $0 wallet still gives project runs a real payer
-      // to gate against (just an immediate 402 until topped up), which is still strictly better
-      // than no payer existing at all.
+    // P0-4: skip the credit grant (not the wallet project itself) unless this is verifiably the
+    // user's first space — a missing userId (a message queued before this fix, or a system-
+    // initiated provision with no human creator) is treated the same conservative way: no grant.
+    const eligibleForStarterGrant = !!userId && (await isUsersFirstSpace(env, tenantId, userId, spaceId));
+    if (eligibleForStarterGrant) {
+      const creditResp = await env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${spaceId}/projects/${projectId}/wallet/credit`,
+        { method: "POST", headers, body: JSON.stringify({ cents: WALLET_STARTER_BALANCE_CENTS, reason: "starter_grant", idempotency_key: `starter:${spaceId}` }) }
+      ));
+      if (!creditResp.ok) {
+        console.warn(`[provisioner] wallet starter grant failed for ${spaceId}/${projectId}: ${await creditResp.text()}`);
+        // The wallet project itself was created successfully — don't report the whole step as
+        // failed over the starter grant alone; a $0 wallet still gives project runs a real payer
+        // to gate against (just an immediate 402 until topped up), which is still strictly better
+        // than no payer existing at all.
+      }
     }
     return true;
   } catch (err) {
@@ -569,7 +594,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     // project-scoped agent runs (metering enforcement follow-up). Same manifest gate as agent
     // installation: any SpaceType with script-agent projects gets one, not just Launchpad.
     if (manifest.backend.scriptAgentsEnabled) {
-      if (await seedWallet(env, spaceId, tenantId)) {
+      if (await seedWallet(env, spaceId, tenantId, userId)) {
         provisioned.push("wallet");
       }
     }

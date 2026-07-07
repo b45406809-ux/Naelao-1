@@ -7,13 +7,18 @@ import { verifyInternalToken } from "@naelao/http";
 // builder-configured daily_spend_cap_credits used to run completely unmetered — no payer of any
 // kind. seedWallet (provisioner step 9a) auto-creates a kind='wallet' project + a bounded starter
 // balance so the space always has a real payer for NaelaoAgentDO's wallet gate to check.
+//
+// P0-4: the starter credit grant itself had no per-user limit — one person could create
+// unlimited spaces to farm $10 of free compute each. Now it's granted only on verifiably the
+// user's FIRST space (tenant_id + created_by, excluding the space being provisioned) — every
+// subsequent space still gets a real wallet project (a real payer to gate against), just at $0.
 
 const SECRET = "test-platform-secret";
 
 interface Call { url: string; method: string; body: unknown; headers: Record<string, string> }
 
-function makeEnv(opts: { createOk?: boolean; patchOk?: boolean; creditOk?: boolean } = {}): { env: Env; calls: Call[] } {
-  const { createOk = true, patchOk = true, creditOk = true } = opts;
+function makeEnv(opts: { createOk?: boolean; patchOk?: boolean; creditOk?: boolean; priorSpaceCount?: number; dbThrows?: boolean } = {}): { env: Env; calls: Call[] } {
+  const { createOk = true, patchOk = true, creditOk = true, priorSpaceCount = 0, dbThrows = false } = opts;
   const calls: Call[] = [];
   const spacesWorker = {
     async fetch(reqInput: Request | string, init?: RequestInit): Promise<Response> {
@@ -41,14 +46,26 @@ function makeEnv(opts: { createOk?: boolean; patchOk?: boolean; creditOk?: boole
       return new Response("not found", { status: 404 });
     },
   };
-  const env = { ENVIRONMENT: "test", PLATFORM_SECRET: SECRET, SPACES_WORKER: spacesWorker } as unknown as Env;
+  const db = {
+    prepare() {
+      const stmt = {
+        bind() { return stmt; },
+        async first() {
+          if (dbThrows) throw new Error("D1 unreachable");
+          return { cnt: priorSpaceCount };
+        },
+      };
+      return stmt;
+    },
+  };
+  const env = { ENVIRONMENT: "test", PLATFORM_SECRET: SECRET, SPACES_WORKER: spacesWorker, PLATFORM_DB: db } as unknown as Env;
   return { env, calls };
 }
 
 describe("seedWallet (provisioner step 9a)", () => {
-  it("creates a wallet project and grants the starter balance via verified internal tokens", async () => {
-    const { env, calls } = makeEnv();
-    const seeded = await seedWallet(env, "space-1", "tenant-1");
+  it("creates a wallet project and grants the starter balance on the user's first space", async () => {
+    const { env, calls } = makeEnv({ priorSpaceCount: 0 });
+    const seeded = await seedWallet(env, "space-1", "tenant-1", "user-1");
     expect(seeded).toBe(true);
     expect(calls).toHaveLength(3);
 
@@ -64,21 +81,43 @@ describe("seedWallet (provisioner step 9a)", () => {
     expect(credit!.body).toMatchObject({ cents: 1000, reason: "starter_grant", idempotency_key: "starter:space-1" });
   });
 
+  it("P0-4: creates the wallet project but skips the starter grant on a user's SECOND+ space", async () => {
+    const { env, calls } = makeEnv({ priorSpaceCount: 1 });
+    const seeded = await seedWallet(env, "space-2", "tenant-1", "user-1");
+    expect(seeded).toBe(true);
+    expect(calls).toHaveLength(2); // create + kind=wallet PATCH only, no /wallet/credit call
+    expect(calls.some((c) => /\/wallet\/credit$/.test(c.url))).toBe(false);
+  });
+
+  it("P0-4: skips the starter grant when userId is missing (a message queued before this fix, or a system-initiated provision)", async () => {
+    const { env, calls } = makeEnv({ priorSpaceCount: 0 });
+    const seeded = await seedWallet(env, "space-1", "tenant-1", undefined);
+    expect(seeded).toBe(true);
+    expect(calls.some((c) => /\/wallet\/credit$/.test(c.url))).toBe(false);
+  });
+
+  it("P0-4: treats a first-space lookup failure as 'not eligible' rather than granting on every error", async () => {
+    const { env, calls } = makeEnv({ dbThrows: true });
+    const seeded = await seedWallet(env, "space-1", "tenant-1", "user-1");
+    expect(seeded).toBe(true);
+    expect(calls.some((c) => /\/wallet\/credit$/.test(c.url))).toBe(false);
+  });
+
   it("returns false (not a throw) when project creation fails — must not fail the whole provision", async () => {
     const { env } = makeEnv({ createOk: false });
-    const seeded = await seedWallet(env, "space-1", "tenant-1");
+    const seeded = await seedWallet(env, "space-1", "tenant-1", "user-1");
     expect(seeded).toBe(false);
   });
 
   it("returns false when the kind=wallet PATCH fails", async () => {
     const { env } = makeEnv({ patchOk: false });
-    const seeded = await seedWallet(env, "space-1", "tenant-1");
+    const seeded = await seedWallet(env, "space-1", "tenant-1", "user-1");
     expect(seeded).toBe(false);
   });
 
   it("still returns true when only the starter-grant credit call fails (the wallet project itself exists, which is the real payer gate)", async () => {
     const { env } = makeEnv({ creditOk: false });
-    const seeded = await seedWallet(env, "space-1", "tenant-1");
+    const seeded = await seedWallet(env, "space-1", "tenant-1", "user-1");
     expect(seeded).toBe(true);
   });
 
@@ -87,12 +126,12 @@ describe("seedWallet (provisioner step 9a)", () => {
       ENVIRONMENT: "test", PLATFORM_SECRET: SECRET,
       SPACES_WORKER: { async fetch() { throw new Error("network down"); } },
     } as unknown as Env;
-    await expect(seedWallet(env, "space-1", "tenant-1")).resolves.toBe(false);
+    await expect(seedWallet(env, "space-1", "tenant-1", "user-1")).resolves.toBe(false);
   });
 
   it("mints a token scoped to the space's own tenant (the reseller child-tenant shape)", async () => {
     const { env, calls } = makeEnv();
-    await seedWallet(env, "child-space-1", "ten_customerchild");
+    await seedWallet(env, "child-space-1", "ten_customerchild", "user-1");
     expect(calls[0]!.body).toMatchObject({ space_id: "child-space-1" });
     expect(await verifyInternalToken(calls[0]!.headers["x-naelao-internal-token"], "ten_customerchild", SECRET)).toBe(true);
     expect(await verifyInternalToken(calls[0]!.headers["x-naelao-internal-token"], "some-other-tenant", SECRET)).toBe(false);
