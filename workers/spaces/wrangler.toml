@@ -115,6 +115,11 @@ service = "naelao-agents"
 binding = "WS_GATEWAY"
 service = "naelao-ws-gateway"
 
+# Security audit follow-up — password-reset emails (product-end-user-routes.ts).
+[[services]]
+binding = "NOTIFICATIONS_WORKER"
+service = "naelao-notifications"
+
 [env.staging]
 vars = { ENVIRONMENT = "staging" }
 
@@ -126,6 +131,10 @@ service = "naelao-billing"
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
 
+[[env.staging.services]]
+binding = "NOTIFICATIONS_WORKER"
+service = "naelao-notifications"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
 
@@ -136,3 +145,7 @@ service = "naelao-billing"
 [[env.production.services]]
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
+
+[[env.production.services]]
+binding = "NOTIFICATIONS_WORKER"
+service = "naelao-notifications"

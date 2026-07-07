@@ -203,6 +203,60 @@ async function loadEmailTemplate(
   return row ?? null;
 }
 
+// ── Shared email send (used by both the async queue consumer and the synchronous
+// /internal/notify HTTP route — same Resend call + same D1 audit row, one implementation). ──
+async function sendEmailNow(
+  env: NotificationsEnv,
+  msg: Pick<NotificationMessage, "tenantId" | "userId" | "email" | "subject" | "html" | "templateId">
+): Promise<{ ok: boolean; status?: number }> {
+  let subject = msg.subject ?? "(no subject)";
+  let html = msg.html ?? "";
+
+  if (msg.templateId) {
+    const tmpl = await loadEmailTemplate(env.PLATFORM_DB, msg.templateId, msg.tenantId);
+    if (tmpl) {
+      subject = tmpl.subject;
+      html = tmpl.html;
+    }
+  }
+
+  if (!msg.email) return { ok: false };
+
+  const res = await fetch(`${env.RESEND_API_URL}/emails`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${env.RESEND_API_KEY}`,
+    },
+    body: JSON.stringify({
+      from: "noreply@naelao.com",
+      to: msg.email,
+      subject,
+      html,
+    }),
+  });
+
+  if (!res.ok) return { ok: false, status: res.status };
+
+  // Audit row in the `notifications` table (migration 0010: id, tenant_id, user_id NOT NULL,
+  // type, title, body, ...) — this previously used columns (`status`, `subject`) that don't
+  // exist on that schema and would have failed on every real insert, silently caught by this
+  // function's own callers' try/catch. Only recorded when there's a platform user_id to
+  // attribute it to (in-app notification list is per-user) — most email sends here go to an
+  // external address with no platform user (e.g. a product end user's password reset), which
+  // has nothing to attribute an in-app row to.
+  if (msg.userId) {
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO notifications (id, tenant_id, user_id, type, title, body, created_at)
+       VALUES (?, ?, ?, 'email', ?, ?, datetime('now'))`
+    )
+      .bind(crypto.randomUUID(), msg.tenantId, msg.userId, subject, html)
+      .run();
+  }
+
+  return { ok: true };
+}
+
 // ── Queue consumer ────────────────────────────────────────────────────────────
 
 export async function queue(
@@ -214,73 +268,41 @@ export async function queue(
     try {
       switch (msg.type) {
         case "email": {
-          let subject = msg.subject ?? "(no subject)";
-          let html = msg.html ?? "";
-
-          // Load template from D1 if templateId is provided
-          if (msg.templateId) {
-            const tmpl = await loadEmailTemplate(env.PLATFORM_DB, msg.templateId, msg.tenantId);
-            if (tmpl) {
-              subject = tmpl.subject;
-              html = tmpl.html;
-            }
-          }
-
           if (!msg.email) {
             console.warn("[notifications/queue] email message missing email address, acking");
             message.ack();
             break;
           }
 
-          const res = await fetch(`${env.RESEND_API_URL}/emails`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${env.RESEND_API_KEY}`,
-            },
-            body: JSON.stringify({
-              from: "noreply@naelao.com",
-              to: msg.email,
-              subject,
-              html,
-            }),
-          });
-
-          if (!res.ok) {
+          const result = await sendEmailNow(env, msg);
+          if (!result.ok) {
             console.error(
-              `[notifications/queue] Resend API error ${res.status} for email=${msg.email}`
+              `[notifications/queue] Resend API error ${result.status ?? "unknown"} for email=${msg.email}`
             );
             message.retry();
             break;
           }
-
-          // Record sent notification in D1
-          await env.PLATFORM_DB.prepare(
-            `INSERT INTO notifications (id, tenant_id, user_id, type, status, subject, created_at)
-             VALUES (?, ?, ?, 'email', 'sent', ?, datetime('now'))`
-          )
-            .bind(
-              crypto.randomUUID(),
-              msg.tenantId,
-              msg.userId ?? null,
-              subject
-            )
-            .run();
 
           message.ack();
           break;
         }
 
         case "in_app": {
+          if (!msg.userId) {
+            console.warn("[notifications/queue] in_app message missing userId, acking");
+            message.ack();
+            break;
+          }
           await env.PLATFORM_DB.prepare(
-            `INSERT INTO notifications (id, tenant_id, user_id, type, status, subject, created_at)
-             VALUES (?, ?, ?, 'in_app', 'unread', ?, datetime('now'))`
+            `INSERT INTO notifications (id, tenant_id, user_id, type, title, body, created_at)
+             VALUES (?, ?, ?, 'in_app', ?, ?, datetime('now'))`
           )
             .bind(
               crypto.randomUUID(),
               msg.tenantId,
-              msg.userId ?? null,
-              msg.subject ?? null
+              msg.userId,
+              msg.subject ?? "(no subject)",
+              msg.data ? JSON.stringify(msg.data) : ""
             )
             .run();
 
@@ -380,6 +402,45 @@ app.use("*", requestId);
 app.use("*", async (c, next) => {
   validateEnv(c.env);
   await next();
+});
+
+// POST /internal/notify — synchronous notification dispatch. Reachable only via service binding
+// (workers_dev=false, same trust model as every other internal-only worker on this platform —
+// see wrangler.toml). Every caller (NaelaoAgentDO's approval-request email, the `notifications`
+// and `business-email` prebuilt scripts) already posts here; this route never existed, so those
+// calls have always 404'd and been silently swallowed by the caller's own best-effort try/catch.
+// Only "email" is wired synchronously for now (it's the one every caller actually needs today —
+// approval notices and password reset both need this); slack/discord/whatsapp/apns/fcm still
+// report `delivered: false` rather than pretending to work, matching the "unwired binding
+// degrades honestly" precedent used everywhere else in this codebase.
+app.post("/internal/notify", async (c) => {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const body = await c.req.json<{
+    channel?: string;
+    space_id?: string;
+    to?: string;
+    subject?: string;
+    body?: string;
+    html?: string;
+  }>();
+
+  if (body.channel === "email") {
+    if (!body.to) throw badRequest("email notification requires 'to'");
+    const result = await sendEmailNow(c.env, {
+      tenantId,
+      email: body.to,
+      subject: body.subject ?? "(no subject)",
+      html: body.html ?? body.body ?? "",
+    });
+    if (!result.ok) {
+      return c.json({ delivered: false, channel: "email", status: result.status ?? null }, 502);
+    }
+    return c.json({ delivered: true, channel: "email" });
+  }
+
+  // Non-email channels: not yet wired for synchronous delivery. Honest failure, not a silent
+  // no-op — callers already treat delivered:false as a real signal.
+  return c.json({ delivered: false, channel: body.channel ?? "unknown", reason: "channel not wired for synchronous delivery" });
 });
 
 // GET /notifications — in-app notifications for user

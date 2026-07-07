@@ -27,9 +27,11 @@ const SPACES_TABLE_SQL = `
 `;
 const CREDENTIALS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0046_product_end_user_credentials.sql"), "utf8");
 const BUILDER_DASHBOARD_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0045_builder_dashboard_api.sql"), "utf8");
+const PASSWORD_RESET_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0054_password_reset_tokens.sql"), "utf8");
 
 function makeEnv() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION]);
+  const notifyCalls: Array<{ to: string; subject: string; body: string }> = [];
   return {
     PLATFORM_SECRET: "test-platform-secret",
     ENVIRONMENT: "test",
@@ -38,6 +40,16 @@ function makeEnv() {
     PRODUCT_USER_DO: makeStatefulDoNamespace(ProductUserDO),
     SPACE_TYPE_REGISTRY_DO: makeStatefulDoNamespace(SpaceTypeRegistryDO),
     NAELAO_CONFIG_KV: { get: async () => null, put: async () => {} },
+    // Fake service binding standing in for the notifications worker — captures the reset email
+    // instead of actually sending it, so the test can pull the token out.
+    NOTIFICATIONS_WORKER: {
+      fetch: async (req: Request) => {
+        const body = await req.json() as { to: string; subject: string; body: string };
+        notifyCalls.push(body);
+        return new Response(JSON.stringify({ delivered: true }), { status: 200 });
+      },
+    },
+    __notifyCalls: notifyCalls,
   };
 }
 
@@ -230,5 +242,75 @@ describe("POST /spaces/:spaceId/end-users/login", () => {
     const verified = await verifyRes.json() as { valid: boolean; tenant_id: string };
     expect(verified.valid).toBe(true);
     expect(verified.tenant_id).toBe("tenant-1");
+  });
+});
+
+describe("password reset (security audit follow-up: end users had no recovery path at all)", () => {
+  function extractToken(body: string): string {
+    const match = /Reset token: (\S+)/.exec(body);
+    if (!match) throw new Error("no token found in notify body");
+    return match[1]!;
+  }
+
+  it("issues a token by email and the token resets the password", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+
+    const reqRes = await spacesWorker.fetch(req("/spaces/prod-1/end-users/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+    expect(reqRes.status).toBe(200);
+    expect(env.__notifyCalls).toHaveLength(1);
+    const token = extractToken(env.__notifyCalls[0]!.body);
+
+    const resetRes = await spacesWorker.fetch(req("/spaces/prod-1/end-users/reset-password", { token, new_password: "newhunter99" }), env as never, execCtx);
+    expect(resetRes.status).toBe(200);
+
+    const oldLogin = await spacesWorker.fetch(req("/spaces/prod-1/end-users/login", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+    expect(oldLogin.status).toBe(401);
+    const newLogin = await spacesWorker.fetch(req("/spaces/prod-1/end-users/login", { email: "jane@acme.com", password: "newhunter99" }), env as never, execCtx);
+    expect(newLogin.status).toBe(200);
+  });
+
+  it("never reveals whether the email exists — same response either way", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+
+    const exists = await spacesWorker.fetch(req("/spaces/prod-1/end-users/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+    const doesNotExist = await spacesWorker.fetch(req("/spaces/prod-1/end-users/request-password-reset", { email: "nobody@acme.com" }), env as never, execCtx);
+    expect(exists.status).toBe(doesNotExist.status);
+    expect(await exists.json()).toEqual(await doesNotExist.json());
+    // Only the real account actually got a notify call.
+    expect(env.__notifyCalls).toHaveLength(1);
+  });
+
+  it("a token can only be used once", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+    const token = extractToken(env.__notifyCalls[0]!.body);
+
+    const first = await spacesWorker.fetch(req("/spaces/prod-1/end-users/reset-password", { token, new_password: "newhunter99" }), env as never, execCtx);
+    expect(first.status).toBe(200);
+    const second = await spacesWorker.fetch(req("/spaces/prod-1/end-users/reset-password", { token, new_password: "anotherpass1" }), env as never, execCtx);
+    expect(second.status).toBe(400);
+  });
+
+  it("rejects a garbage token", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    const res = await spacesWorker.fetch(req("/spaces/prod-1/end-users/reset-password", { token: "not-a-real-token", new_password: "newhunter99" }), env as never, execCtx);
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects a short new password", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
+    const token = extractToken(env.__notifyCalls[0]!.body);
+    const res = await spacesWorker.fetch(req("/spaces/prod-1/end-users/reset-password", { token, new_password: "short" }), env as never, execCtx);
+    expect(res.status).toBe(400);
   });
 });

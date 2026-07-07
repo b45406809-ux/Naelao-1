@@ -22,7 +22,15 @@ export interface ProductEndUserRoutesEnv {
   PRODUCT_USER_DO: DurableObjectNamespace;
   SPACE_TYPE_REGISTRY_DO: DurableObjectNamespace;
   NAELAO_CONFIG_KV: KVNamespace;
+  NOTIFICATIONS_WORKER?: Fetcher;
 }
+
+async function sha256Hex(input: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour, same order of magnitude as business_invites' 7-day cap but shorter since this grants a live credential change
 
 interface ProductRow {
   id: string;
@@ -183,5 +191,85 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     const session = await sessionRes.json<{ session_token: string; expires_at: string }>();
 
     return c.json({ end_user_id: row.end_user_id, session_token: session.session_token, expires_at: session.expires_at });
+  });
+
+  // Security audit follow-up: naelao-native end users had a login with no recovery path at all —
+  // a lost password meant a lost account. Same shape as business_invites (business-routes.ts):
+  // hashed, single-use, expiring token; never reveal whether the email exists (constant response
+  // either way — mirrors the login route's own "don't reveal which part was wrong" precedent).
+  app.post("/spaces/:spaceId/end-users/request-password-reset", async (c) => {
+    const env = c.env as ProductEndUserRoutesEnv;
+    const productId = c.req.param("spaceId");
+    const resolved = await loadProductAuthConfig(env, productId);
+    if (!resolved) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+    if (resolved.authConfig?.provider !== "naelao-native") {
+      return c.json({ error_code: "unsupported_provider", message: `This product uses ${resolved.authConfig?.provider ?? "an external"} sign-in, not email/password` }, 400);
+    }
+
+    const body = await c.req.json<{ email: string }>();
+    const email = (body.email ?? "").trim().toLowerCase();
+    const ALWAYS_OK = c.json({ ok: true, message: "If an account with that email exists, a reset link has been sent." });
+    if (!email) return ALWAYS_OK;
+
+    const row = await env.PLATFORM_DB.prepare(
+      "SELECT end_user_id FROM product_end_users WHERE product_space_id = ? AND email = ? AND password_hash IS NOT NULL"
+    ).bind(productId, email).first<{ end_user_id: string }>();
+    if (!row) return ALWAYS_OK; // never reveal whether the email exists
+
+    const token = crypto.randomUUID() + crypto.randomUUID();
+    const tokenHash = await sha256Hex(token);
+    const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS).toISOString();
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO password_reset_tokens (id, product_space_id, end_user_id, token_hash, expires_at)
+       VALUES (?, ?, ?, ?, ?)`
+    ).bind(crypto.randomUUID(), productId, row.end_user_id, tokenHash, expiresAt).run();
+
+    // Best-effort — same precedent as the signup credit grant and every other notify() call in
+    // this codebase: a delivery failure must never leak whether the account exists via a
+    // different response shape, so this can't be allowed to change ALWAYS_OK's response.
+    if (env.NOTIFICATIONS_WORKER) {
+      try {
+        await env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-naelao-tenant-id": resolved.product.tenant_id },
+          body: JSON.stringify({
+            channel: "email", space_id: productId, to: email,
+            subject: "Reset your password",
+            body: `Reset token: ${token}\n\nThis token expires in 1 hour. If you didn't request this, ignore this email.`,
+          }),
+        }));
+      } catch { /* best-effort */ }
+    }
+
+    return ALWAYS_OK;
+  });
+
+  app.post("/spaces/:spaceId/end-users/reset-password", async (c) => {
+    const env = c.env as ProductEndUserRoutesEnv;
+    const productId = c.req.param("spaceId");
+    const body = await c.req.json<{ token: string; new_password: string }>();
+    if (!body.token || !body.new_password || body.new_password.length < 8) {
+      return c.json({ error_code: "bad_request", message: "token and a new_password (min 8 chars) are required" }, 400);
+    }
+
+    const tokenHash = await sha256Hex(body.token);
+    const row = await env.PLATFORM_DB.prepare(
+      `SELECT id, end_user_id, expires_at, used_at FROM password_reset_tokens
+       WHERE product_space_id = ? AND token_hash = ?`
+    ).bind(productId, tokenHash).first<{ id: string; end_user_id: string; expires_at: string; used_at: string | null }>();
+    if (!row || row.used_at || new Date(row.expires_at) < new Date()) {
+      return c.json({ error_code: "invalid_token", message: "This reset link is invalid or has expired" }, 400);
+    }
+
+    const hashed = await hashPassword(body.new_password);
+    await env.PLATFORM_DB.prepare(
+      "UPDATE product_end_users SET password_hash = ? WHERE product_space_id = ? AND end_user_id = ?"
+    ).bind(JSON.stringify(hashed), productId, row.end_user_id).run();
+    // Single-use: mark consumed so this exact token can never be replayed.
+    await env.PLATFORM_DB.prepare(
+      "UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ?"
+    ).bind(row.id).run();
+
+    return c.json({ ok: true, message: "Password updated. Sign in with your new password." });
   });
 }

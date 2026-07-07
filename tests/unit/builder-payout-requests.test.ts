@@ -51,14 +51,25 @@ describe("GET /builder/payouts/balance", () => {
     await earn(env, "tenant-1", 5000);
     await earn(env, "tenant-1", 3000);
     const res = await spacesWorker.fetch(req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
-    expect(await res.json()).toMatchObject({ available_cents: 8000, currency: "USD" });
+    expect(await res.json()).toMatchObject({ balances: [{ cents: 8000, currency: "USD" }] });
   });
 
   it("is scoped per-tenant — another builder's earnings never leak in", async () => {
     const env = makeEnv();
     await earn(env, "tenant-1", 5000);
     const res = await spacesWorker.fetch(req("/builder/payouts/balance", { tenant: "tenant-2" }), env as never, execCtx);
-    expect(await res.json()).toMatchObject({ available_cents: 0 });
+    expect(await res.json()).toMatchObject({ balances: [] });
+  });
+
+  it("returns a separate balance per currency — a builder earning in more than one currency never has one silently hidden", async () => {
+    const env = makeEnv();
+    await earn(env, "tenant-1", 5000, "USD");
+    await earn(env, "tenant-1", 3000, "EUR");
+    const res = await spacesWorker.fetch(req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
+    const body = await res.json() as { balances: Array<{ cents: number; currency: string }> };
+    expect(body.balances).toHaveLength(2);
+    expect(body.balances).toContainEqual({ cents: 5000, currency: "USD" });
+    expect(body.balances).toContainEqual({ cents: 3000, currency: "EUR" });
   });
 });
 
@@ -78,7 +89,7 @@ describe("POST /builder/payouts/request", () => {
     expect(await first.json()).toMatchObject({ amount_cents: 10_000, status: "pending" });
 
     const balance = await spacesWorker.fetch(req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
-    expect(await balance.json()).toMatchObject({ available_cents: 0 });
+    expect(await balance.json()).toMatchObject({ balances: [{ cents: 0, currency: "USD" }] });
   });
 
   it("rejects a request when there is nothing to withdraw", async () => {
@@ -94,7 +105,27 @@ describe("POST /builder/payouts/request", () => {
     await earn(env, "tenant-1", 2000);
 
     const balance = await spacesWorker.fetch(req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
-    expect(await balance.json()).toMatchObject({ available_cents: 2000 });
+    expect(await balance.json()).toMatchObject({ balances: [{ cents: 2000, currency: "USD" }] });
+  });
+
+  it("requires an explicit currency when more than one has a balance, and never silently drops the others", async () => {
+    const env = makeEnv();
+    await earn(env, "tenant-1", 5000, "USD");
+    await earn(env, "tenant-1", 3000, "EUR");
+
+    const ambiguous = await spacesWorker.fetch(req("/builder/payouts/request", { method: "POST", tenant: "tenant-1" }), env as never, execCtx);
+    expect(ambiguous.status).toBe(400);
+    expect(await ambiguous.json()).toMatchObject({ error_code: "currency_required" });
+
+    const eur = await spacesWorker.fetch(req("/builder/payouts/request", { method: "POST", tenant: "tenant-1", body: { currency: "EUR" } }), env as never, execCtx);
+    expect(eur.status).toBe(201);
+    expect(await eur.json()).toMatchObject({ amount_cents: 3000, currency: "EUR" });
+
+    // The USD balance is untouched by the EUR request.
+    const balance = await spacesWorker.fetch(req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
+    const body = await balance.json() as { balances: Array<{ cents: number; currency: string }> };
+    expect(body.balances).toContainEqual({ cents: 5000, currency: "USD" });
+    expect(body.balances).toContainEqual({ cents: 0, currency: "EUR" });
   });
 });
 
@@ -173,6 +204,6 @@ describe("POST /internal/payout-requests/:id/fulfill", () => {
     );
 
     const balance = await spacesWorker.fetch(req("/builder/payouts/balance", { tenant: "tenant-1" }), env as never, execCtx);
-    expect(await balance.json()).toMatchObject({ available_cents: 5000 });
+    expect(await balance.json()).toMatchObject({ balances: [{ cents: 5000, currency: "USD" }] });
   });
 });

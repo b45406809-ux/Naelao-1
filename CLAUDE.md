@@ -968,6 +968,56 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     - **Remaining: P (Composio/Pipedream connector providers — needs real API keys the user must
       supply before it can run against live providers; the routing logic itself can be built and
       tested with mocked provider APIs regardless).** Full phase detail in appendix §A1.18.
+39. **A full end-to-end audit (security + logic + go-live gaps) found and fixed 5 real issues on
+    the public end-user surface — the exact edge a live Launchpad product exposes on day one.**
+    Traced by hand against the code, not from memory: (1) the authenticated `api` group's rate
+    limiter (G-AX12/F7) only covers routes registered AFTER it in the router's middleware chain —
+    every unauthenticated route (`end-users/signup`, `end-users/login`, `by-slug`,
+    `shell/manifest`) runs BEFORE that group and had ZERO throttling: unlimited password-guessing
+    against login, unlimited free-credit-farming against signup (each new email mints a fresh
+    `ProductUserDO` with its own `FREE_TIER_DEFAULT_SIGNUP_CREDITS` grant). Fixed with a new
+    `checkPreAuthRateLimit` (`workers/router/src/index.ts`) — same DO-sharding pattern as the
+    authenticated limiter, keyed on `cf-connecting-ip` since there's no `claims.sub` yet, but
+    fails CLOSED (unlike the authenticated limiter's fail-open) since a limiter outage on this
+    surface must not hand out an unthrottled credential-guessing oracle. (2) Neither end users nor
+    builders had ANY account-recovery path — confirmed zero password-reset code anywhere in the
+    repo. Built `POST /spaces/:spaceId/end-users/{request-password-reset,reset-password}`
+    (`product-end-user-routes.ts`, migration `0054_password_reset_tokens.sql`) — same
+    hashed/single-use/expiring token shape as `business_invites`, constant response whether or not
+    the email exists (mirrors the login route's own precedent). (3) While wiring the reset email,
+    found that **the notifications worker has no `/internal/notify` HTTP route at all** — only a
+    queue consumer — so every caller platform-wide (`NaelaoAgentDO`'s approval-request email, the
+    `notifications` and `business-email` prebuilt scripts) has always POSTed to a 404 silently
+    swallowed by its own best-effort `try/catch`. Agent email/Slack/Discord notifications and
+    approval-request emails were therefore completely non-functional in practice. Added the route
+    (`workers/notifications/src/index.ts`), extracting the queue consumer's email-send logic into
+    a shared `sendEmailNow` reused by both paths; non-email channels honestly report
+    `delivered:false` rather than pretending to work. While there, also fixed a second latent bug
+    the same code path exposed: the `notifications` D1 audit-row INSERT used columns
+    (`status`/`subject`) that don't exist on the real schema (migration `0010`: `title`/`body`,
+    `user_id NOT NULL`) — every real insert would have failed silently; corrected to the real
+    column names and skip the audit row when there's no platform `user_id` to attribute it to
+    (most calls here are to an external end-user address, not a platform user). (4) The builder
+    payout balance (`GET/POST /builder/payouts*`, item 30's Phase-E-adjacent addition) computed a
+    builder's withdrawable balance with `GROUP BY currency ORDER BY cents DESC LIMIT 1` — a
+    builder earning in more than one Lemon-Squeezy-buyer currency could only ever see and
+    withdraw the single largest one; every other currency's earnings were invisible and
+    permanently stuck. Fixed to return a balance array, one row per currency, and require an
+    explicit `currency` in the request when more than one has a balance. (5) In the course of
+    fixing #1, found and fixed a pre-existing `duplex: "half"` gap on the end-users proxy (same
+    defect class Phase 6 already fixed once for the session proxy and `forwardToSpaceDO` — a
+    spec-compliant fetch implementation throws on a streaming body without it). All fixes have
+    test coverage (`router-preauth-rate-limit.test.ts`,
+    `notifications-internal-notify.test.ts`, password-reset cases added to
+    `product-end-user-auth.test.ts`, currency cases added to `builder-payout-requests.test.ts`).
+    1338/1338 tests pass (18 new), `pnpm turbo run typecheck` clean (75 tasks). **Not fixed in
+    this pass (documented, not dropped):** no email-verification step at signup (the rate limiter
+    substantially closes the farming vector but doesn't eliminate it — a real verification flow
+    is a larger, separate feature); `CORS_ALLOWLIST` is still one static platform-wide env var,
+    which can't scale to arbitrary per-builder custom domains — needs to become data-driven
+    (resolve against `business_services`/product slug) in its own pass; builder-facing run/audit
+    observability (a builder needs to see what their agent did and why it escalated — the data
+    exists, there's no consolidated view) remains a real product gap, not a bug.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
@@ -1026,9 +1076,9 @@ DO hibernation kills ALL in-memory state — always persist to SQLite.
 - `tests/` — integration, e2e, contract, isolation, load tests
 
 ## Git
-**Active branch: `claude/naelao-missing-gaps-pass-6kb300`** — work here; do NOT push to any
-other branch without explicit permission. Commit after every working subsystem; push after
-every commit. (Older branches `...-8vkakf` and `...-713ruz` are superseded.)
+**Active branch: `claude/audit-roadmap-eu1uic`** — work here; do NOT push to any other branch
+without explicit permission. Commit after every working subsystem; push after every commit.
+(Older branches `...-8vkakf`, `...-713ruz`, `...-6kb300` are superseded.)
 
 ## Build Progress
 - [x] Phase 0: Scaffold (root workspace, packages, workers structure)

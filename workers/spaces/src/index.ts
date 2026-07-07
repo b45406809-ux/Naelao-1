@@ -43,6 +43,8 @@ export interface Env {
   BILLING_WORKER?: Fetcher;
   /** Agents worker — SpaceDO fires event_triggers by calling its internal script.run route. */
   AGENTS_WORKER?: Fetcher;
+  /** Notifications worker — password-reset emails (product-end-user-routes.ts). */
+  NOTIFICATIONS_WORKER?: Fetcher;
 }
 
 /** Message enqueued on space creation; consumed by the provisioner (installs agents etc.). */

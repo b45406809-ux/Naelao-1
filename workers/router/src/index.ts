@@ -177,6 +177,42 @@ app.all("/v1/channels/:channel/inbound/:spaceId", async (c) => {
   );
 });
 
+// Security audit follow-up: the authenticated `api` group's rate limiter (G-AX12, below) only
+// covers routes registered AFTER it — every route in this unauthenticated block runs before
+// that middleware exists in the chain, so none of it was ever rate limited. That's the exact
+// surface an attacker reaches with no credential at all: unlimited password-guessing against
+// end-users/login, and unlimited free-credit-grant signups against end-users/signup (each new
+// email mints a fresh ProductUserDO with its own signup allowance — see
+// product-end-user-routes.ts). Shards the same way the authenticated limiter does
+// (idFromName(bucketKey), keyed on the edge-set cf-connecting-ip since there's no claims.sub
+// yet) but fails CLOSED here — an attacker able to make the rate limiter itself unavailable
+// must not get an unthrottled credential-guessing or free-credit oracle out of it.
+async function checkPreAuthRateLimit(
+  c: { env: Env; req: { header: (name: string) => string | undefined } },
+  routeKey: string,
+  limit: number
+): Promise<{ allowed: boolean; retryAfterMs: number }> {
+  if (!c.env.RATE_LIMIT_DO) return { allowed: true, retryAfterMs: 0 };
+  const ip = c.req.header("cf-connecting-ip") ?? "unknown";
+  const bucketKey = `preauth:${routeKey}:${ip}`;
+  const doId = c.env.RATE_LIMIT_DO.idFromName(bucketKey);
+  const stub = c.env.RATE_LIMIT_DO.get(doId);
+  try {
+    const rl = await stub.fetch("http://do/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: bucketKey, limit }),
+    });
+    const result = await rl.json<{ allowed: boolean; retry_after_ms: number }>();
+    return { allowed: result.allowed, retryAfterMs: result.retry_after_ms };
+  } catch {
+    // Fail CLOSED for pre-auth surfaces (unlike the authenticated limiter below, which fails
+    // open) — this is exactly the credential-guessing / signup-farming oracle a rate limiter
+    // outage must not hand an attacker.
+    return { allowed: false, retryAfterMs: 30_000 };
+  }
+}
+
 // ── Three-Tier Platform Model, Phase 6: product end-user signup/login (unauthenticated — a
 // visitor has no token at all before this) ── Journey 1B: "End user signs up... via the
 // builder's configured auth provider." Registered before the JWT-gated api group, same
@@ -184,8 +220,25 @@ app.all("/v1/channels/:channel/inbound/:spaceId", async (c) => {
 app.all("/v1/spaces/:spaceId/end-users/*", async (c) => {
   const u = new URL(c.req.url);
   u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  // Signup and login get their own, tighter buckets — login is a brute-force target, signup is a
+  // free-credit-farming target — deliberately tighter than a generic pre-auth read like by-slug.
+  const isLogin = u.pathname.endsWith("/end-users/login");
+  const isSignup = u.pathname.endsWith("/end-users/signup");
+  const isResetRequest = u.pathname.endsWith("/end-users/request-password-reset");
+  const isResetConfirm = u.pathname.endsWith("/end-users/reset-password");
+  if (isLogin || isSignup || isResetRequest || isResetConfirm) {
+    const routeKey = isLogin ? "end-user-login" : isSignup ? "end-user-signup" : isResetRequest ? "end-user-reset-request" : "end-user-reset-confirm";
+    const limit = isLogin ? 10 : isSignup ? 5 : isResetRequest ? 5 : 10;
+    const rl = await checkPreAuthRateLimit(c, routeKey, limit);
+    if (!rl.allowed) {
+      return c.json({ error_code: "rate_limited", message: "Too many requests", retry_after_ms: rl.retryAfterMs }, 429);
+    }
+  }
+  // duplex: "half" is required by spec-compliant fetch implementations (Node's undici, used by
+  // this repo's own tests) whenever a streaming body is attached — same fix already applied to
+  // the session proxy and forwardToSpaceDO for the same reason (§A1.17 Phase 6).
   return c.env.SPACES_WORKER.fetch(
-    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body, duplex: "half" } as RequestInit)
   );
 });
 
@@ -194,6 +247,10 @@ app.all("/v1/spaces/:spaceId/end-users/*", async (c) => {
 // "strip client-supplied identity headers" precaution as shell/manifest below (the spaces
 // worker's handler already returns a fully public-safe projection regardless of caller identity).
 app.get("/v1/products/by-slug/:slug", async (c) => {
+  const rl = await checkPreAuthRateLimit(c, "by-slug", 60);
+  if (!rl.allowed) {
+    return c.json({ error_code: "rate_limited", message: "Too many requests", retry_after_ms: rl.retryAfterMs }, 429);
+  }
   const u = new URL(c.req.url);
   u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
   const headers = new Headers(c.req.raw.headers);
@@ -214,6 +271,10 @@ app.get("/v1/products/by-slug/:slug", async (c) => {
 // precedent as proxyTo below) — otherwise a caller could set x-naelao-tenant-id themselves and
 // have the spaces worker's getCallerIdentity trust it as if it had been verified.
 app.get("/v1/spaces/:spaceId/shell/manifest", async (c) => {
+  const rl = await checkPreAuthRateLimit(c, "shell-manifest", 60);
+  if (!rl.allowed) {
+    return c.json({ error_code: "rate_limited", message: "Too many requests", retry_after_ms: rl.retryAfterMs }, 429);
+  }
   const u = new URL(c.req.url);
   u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
   const headers = new Headers(c.req.raw.headers);
