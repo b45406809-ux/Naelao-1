@@ -344,6 +344,15 @@ export interface SpaceTypeProductConfig {
     };
   };
 
+  /** Tier 2/3 follow-up: a proactive daily digest email (agent activity summary — runs,
+   *  escalations, failures over the last 24h) to the builder's own owner-contact email. Opt-in
+   *  and off by default — enqueueAgentTicks (workers/agents) only enrolls a product root whose
+   *  OWN config_json sets this explicitly; the SpaceType manifest's own default is never trusted
+   *  for something that sends an email. */
+  notificationsConfig?: {
+    dailyDigestEnabled?: boolean;
+  };
+
   /** Sub-space terminology + depth cap the end-user-facing shell renders (spec Scenario C
    *  subSpaceTerminology). Depth enforcement itself lives in SpaceDO.createSubSpace — this is
    *  display/config only. */

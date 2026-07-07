@@ -237,6 +237,23 @@ export default function ProductConfigurationPage() {
       </div>
 
       <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Notifications</h2>
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input
+            type="checkbox"
+            checked={form.notificationsConfig?.dailyDigestEnabled ?? false}
+            onChange={(e) => setForm((f) => ({ ...f, notificationsConfig: { ...f.notificationsConfig, dailyDigestEnabled: e.target.checked } }))}
+            className="rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+          />
+          Email me a daily digest of agent activity
+        </label>
+        <p className="text-xs text-gray-400 mt-1">
+          Runs completed, failures, and approvals from the last 24 hours — sent once a day, only
+          when there was activity to report.
+        </p>
+      </div>
+
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
         <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Pricing</h2>
         <p className="text-sm text-gray-700 capitalize">
           Model: <span className="font-medium">{form.pricingConfig?.model ?? "free"}</span>

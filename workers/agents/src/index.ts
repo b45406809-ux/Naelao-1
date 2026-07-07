@@ -69,6 +69,10 @@ export interface AgentsEnv {
   MCP_HUB?: Fetcher;
   /** Credentials vault — stores a connector's API key (only the name is referenced elsewhere). */
   CREDENTIALS_WORKER?: Fetcher;
+  /** Tier 2/3 follow-up — the daily digest email. The service binding already exists in
+   *  wrangler.toml (NaelaoAgentDO's own env type declares it for approval-request emails) but was
+   *  never surfaced on the top-level Worker's env type until this pass needed it directly. */
+  NOTIFICATIONS_WORKER?: Fetcher;
   /** Skill library R2 — space + shared-template skill libraries (federated learning). */
   SCRIPTS_R2?: R2Bucket;
   AGENT_CACHE: KVNamespace;
@@ -84,7 +88,7 @@ export interface AgentsEnv {
 // runChannelHeartbeats + runScheduledJobs) that broke the Workers 1000-subrequest limit at a
 // few hundred active spaces. jobId/connectorName are only meaningful for their own kind.
 interface AgentTickMessage {
-  kind: "heartbeat" | "scheduled_job" | "connector_poll";
+  kind: "heartbeat" | "scheduled_job" | "connector_poll" | "daily_digest";
   spaceId: string;
   tenantId: string;
   jobId?: string;
@@ -2210,6 +2214,41 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
     }
   }
 
+  // Tier 2/3 follow-up: a proactive daily digest email — opt-in via productConfig.
+  // notificationsConfig.dailyDigestEnabled, off by default. Only PRODUCT ROOTS are eligible (a
+  // business or sub-space doesn't have its own digest — a builder manages the whole product from
+  // one place), and the config check happens in-memory per page rather than as a SQL predicate
+  // (config_json is a JSON blob — a LIKE '%...%' filter can't use an index and would be no safer
+  // than scanning every row anyway), same bounded-pagination discipline as the other rosters.
+  {
+    let cursor = "";
+    const now = Date.now();
+    for (;;) {
+      const { results: rootRows } = await env.PLATFORM_DB.prepare(
+        `SELECT id, tenant_id, config_json, last_digest_sent_at
+           FROM spaces
+          WHERE parent_space_id IS NULL AND status = 'active' AND id > ?
+          ORDER BY id
+          LIMIT ?`
+      ).bind(cursor, AGENT_TICKS_PAGE_SIZE).all<{ id: string; tenant_id: string; config_json: string | null; last_digest_sent_at: string | null }>();
+      if (rootRows.length === 0) break;
+      for (const row of rootRows) {
+        let enabled = false;
+        try {
+          const cfg = row.config_json ? JSON.parse(row.config_json) as { productConfig?: { notificationsConfig?: { dailyDigestEnabled?: boolean } } } : null;
+          enabled = cfg?.productConfig?.notificationsConfig?.dailyDigestEnabled === true;
+        } catch { /* malformed config_json — treat as opted out */ }
+        if (!enabled) continue;
+        const lastSentMs = row.last_digest_sent_at ? Date.parse(row.last_digest_sent_at) : 0;
+        if (now - lastSentMs < 24 * 60 * 60 * 1000) continue; // not due yet
+        messages.push({ body: { kind: "daily_digest", spaceId: row.id, tenantId: row.tenant_id } });
+      }
+      totalEnumerated += rootRows.length;
+      if (rootRows.length < AGENT_TICKS_PAGE_SIZE) break;
+      cursor = rootRows[rootRows.length - 1]!.id;
+    }
+  }
+
   try {
     env.ANALYTICS.writeDataPoint({
       blobs: ["agent-ticks.enumerated"],
@@ -2277,6 +2316,75 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
         }),
       }));
       await env.AGENT_CACHE.put(kvKey, new Date().toISOString(), { expirationTtl: 60 * 60 * 24 * 30 });
+      return;
+    }
+
+    case "daily_digest": {
+      // Tier 2/3 follow-up: a proactive daily digest email. Advances last_digest_sent_at FIRST
+      // (before the email even sends) — at-least-once delivery means this message could be
+      // redelivered, and it's much better to occasionally SKIP a digest on a redelivery race than
+      // to double-send one; the next day's tick will always catch up regardless.
+      await env.PLATFORM_DB.prepare("UPDATE spaces SET last_digest_sent_at = ? WHERE id = ?")
+        .bind(new Date().toISOString(), msg.spaceId).run();
+
+      const internalHeaders = {
+        "x-naelao-tenant-id": msg.tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, msg.tenantId),
+      };
+
+      if (!env.NOTIFICATIONS_WORKER) return; // unwired — degrade honestly, no crash
+      const contactRes = await env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/internal/spaces/${msg.spaceId}/owner-contact`,
+        { headers: internalHeaders }
+      ));
+      if (!contactRes.ok) return; // no owner on record — nothing to send to
+      const { email } = await contactRes.json<{ found: boolean; email?: string }>();
+      if (!email) return;
+
+      const activityRes = await env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${msg.spaceId}/agent-activity?limit=200`,
+        { headers: internalHeaders }
+      ));
+      if (!activityRes.ok) return;
+      const { data } = await activityRes.json<{ data: Array<{ event_type: string; tokens_used: number | null; cost_credits: number | null; created_at: string }> }>();
+
+      const cutoffMs = Date.now() - 24 * 60 * 60 * 1000;
+      const last24h = data.filter((e) => Date.parse(`${e.created_at}Z`) >= cutoffMs);
+      if (last24h.length === 0) return; // nothing happened — don't send an empty digest
+
+      const counts: Record<string, number> = {};
+      let totalTokens = 0;
+      let totalCredits = 0;
+      for (const e of last24h) {
+        counts[e.event_type] = (counts[e.event_type] ?? 0) + 1;
+        totalTokens += e.tokens_used ?? 0;
+        totalCredits += e.cost_credits ?? 0;
+      }
+      const lines = [
+        `Your agent's activity over the last 24 hours:`,
+        ``,
+        `Runs completed: ${counts["run_completed"] ?? 0}`,
+        `Runs failed: ${counts["run_failed"] ?? 0}`,
+        `Approvals requested: ${counts["approval_requested"] ?? 0}`,
+        `Approvals resolved: ${counts["approval_resolved"] ?? 0}`,
+        ``,
+        `Tokens used: ${totalTokens.toLocaleString()}`,
+        `Credits spent: ${totalCredits.toLocaleString()}`,
+      ];
+
+      try {
+        await env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
+          method: "POST",
+          headers: { "content-type": "application/json", ...internalHeaders },
+          body: JSON.stringify({
+            channel: "email",
+            space_id: msg.spaceId,
+            to: email,
+            subject: "Your daily agent activity digest",
+            body: lines.join("\n"),
+          }),
+        }));
+      } catch { /* best-effort — a failed send just means no digest today, not a crash */ }
       return;
     }
 

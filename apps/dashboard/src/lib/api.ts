@@ -629,6 +629,11 @@ export interface BuilderProductConfig {
     businessTemplates?: string[];
     projectTemplates?: string[];
   };
+  // Tier 2/3 follow-up: a proactive daily digest email (agent activity summary) — opt-in, off by
+  // default.
+  notificationsConfig?: {
+    dailyDigestEnabled?: boolean;
+  };
 }
 
 export interface BuilderProductDetail extends BuilderProductSummary {
