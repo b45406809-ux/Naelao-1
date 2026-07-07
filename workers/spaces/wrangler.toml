@@ -10,6 +10,11 @@ workers_dev = false
 
 [vars]
 ENVIRONMENT = "development"
+# Public base URL of apps/shell, used to build a clickable email-verification link
+# ("${base}/p/{slug}/verify-email?token=..."). Left empty rather than guessing a production
+# domain — when unset, the verification email still carries a raw token, and the shell's
+# verify-email page accepts a manually pasted one, so verification works either way.
+PRODUCT_SHELL_URL = ""
 
 # Cloudflare for SaaS custom-hostname provisioning (storefront custom domains).
 # Set the real values at deploy time as secrets:
@@ -121,7 +126,10 @@ binding = "NOTIFICATIONS_WORKER"
 service = "naelao-notifications"
 
 [env.staging]
-vars = { ENVIRONMENT = "staging" }
+# wrangler does NOT merge [env.X].vars with the top-level [vars] block — it replaces it
+# entirely, so PRODUCT_SHELL_URL must be repeated here or it's undefined in staging. Override
+# with the real staging shell URL once one is deployed.
+vars = { ENVIRONMENT = "staging", PRODUCT_SHELL_URL = "" }
 
 [[env.staging.services]]
 binding = "BILLING_WORKER"
@@ -136,7 +144,8 @@ binding = "NOTIFICATIONS_WORKER"
 service = "naelao-notifications"
 
 [env.production]
-vars = { ENVIRONMENT = "production" }
+# See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
+vars = { ENVIRONMENT = "production", PRODUCT_SHELL_URL = "" }
 
 [[env.production.services]]
 binding = "BILLING_WORKER"

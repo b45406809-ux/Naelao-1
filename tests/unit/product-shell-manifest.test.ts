@@ -34,6 +34,7 @@ const SPACES_TABLE_SQL = `
 `;
 const BUILDER_DASHBOARD_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0045_builder_dashboard_api.sql"), "utf8");
 const CREDENTIALS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0046_product_end_user_credentials.sql"), "utf8");
+const EMAIL_VERIFICATION_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0055_email_verification.sql"), "utf8");
 
 const FAKE_MANIFEST = {
   id: "launchpad",
@@ -76,7 +77,7 @@ const FAKE_TEMPLATES = [
 ];
 
 function makeEnv(opts: { withAgentsWorker?: boolean; templateFetchCalls?: number[] } = {}) {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, EMAIL_VERIFICATION_MIGRATION]);
   const kvStore = new Map<string, string>();
   kvStore.set("space-type-manifest:launchpad", JSON.stringify(FAKE_MANIFEST));
   const agentsWorker = opts.withAgentsWorker
@@ -270,16 +271,15 @@ describe("GET/PATCH /spaces/:spaceId/product-users/me", () => {
       env as never, execCtx
     );
     expect(res.status).toBe(200);
-    const body = await res.json() as { email: string; credits_balance: number; end_user_id: string };
+    const body = await res.json() as { email: string; credits_balance: number; end_user_id: string; email_verified: boolean };
     expect(body.email).toBe("jane@acme.com");
     expect(body.end_user_id).toBe(signup.end_user_id);
     // Security audit follow-up: the platform free-tier default (100 credits) no longer grants
     // immediately at signup — it's deferred until the signup verification email is redeemed
-    // (closes the free-credit-farming hole; see product-end-user-routes.ts). This env's D1
-    // schema doesn't include the email_verification_tokens migration, so the grant never even
-    // gets attempted (best-effort, signup still succeeds regardless — see the try/catch around
-    // issueVerificationToken) — 0 is the correct, expected balance immediately after signup.
+    // (closes the free-credit-farming hole; see product-end-user-routes.ts). 0/unverified is the
+    // correct, expected state immediately after signup, before that redemption happens.
     expect(body.credits_balance).toBe(0);
+    expect(body.email_verified).toBe(false);
   });
 
   it("404s for a non-end-user (builder) caller", async () => {

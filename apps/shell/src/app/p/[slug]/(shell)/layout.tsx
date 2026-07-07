@@ -165,7 +165,43 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
           canCreate: manifest?.membership_model !== "team",
         }}
       />
-      <div id="main">{children}</div>
+      <div id="main">
+        {me && !me.email_verified && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              padding: "8px 16px",
+              background: "var(--accent-soft, #fef3c7)",
+              borderBottom: "1px solid var(--border)",
+              fontSize: 12.5,
+            }}
+          >
+            <span>
+              Verify your email to unlock your free starting credits
+              {me.credits_balance === 0 ? " — your account has 0 credits until then." : "."}
+            </span>
+            <button
+              type="button"
+              onClick={() => router.push(`/p/${product.slug}/verify-email`)}
+              style={{
+                background: "none",
+                border: "none",
+                color: "var(--accent)",
+                fontWeight: 600,
+                fontSize: 12.5,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              Verify now
+            </button>
+          </div>
+        )}
+        {children}
+      </div>
       <Toast toast={toast} />
     </div>
   );

@@ -9,6 +9,10 @@ export interface ProductEndUser {
   end_user_id: string;
   session_token: string;
   expires_at: string;
+  /** Security audit follow-up: signup's free-credit grant is deferred until email verification
+   *  closes (prevents farming free compute with throwaway addresses) — true whenever the product
+   *  has a signup allowance to protect, so the caller knows to show the "check your email" state. */
+  email_verification_required?: boolean;
 }
 
 function storageKey(spaceId: string): string {
@@ -89,4 +93,16 @@ export async function logIn(spaceId: string, email: string, password: string): P
 
 export function logOut(spaceId: string): void {
   clearProductSession(spaceId);
+}
+
+/** Redeems a verification token — either from the emailed link's ?token= or pasted in by hand
+ *  (the fallback path when the email couldn't carry a clickable link, or a link goes stale). */
+export async function verifyEmail(spaceId: string, token: string): Promise<{ ok: boolean; message: string }> {
+  return call(`/v1/spaces/${spaceId}/end-users/verify-email`, { token });
+}
+
+/** Always resolves with the same generic response whether or not the account exists/is already
+ *  verified — mirrors the backend's own "never reveal account existence" contract. */
+export async function resendVerification(spaceId: string, email: string): Promise<{ ok: boolean; message: string }> {
+  return call(`/v1/spaces/${spaceId}/end-users/resend-verification`, { email });
 }

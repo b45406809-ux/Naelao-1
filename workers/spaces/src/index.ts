@@ -2589,8 +2589,8 @@ app.get("/spaces/:spaceId/product-users/me", async (c) => {
     return c.json({ error_code: "not_an_end_user", message: "This route is for product end users only" }, 404);
   }
   const row = await c.env.PLATFORM_DB.prepare(
-    "SELECT email, display_name, first_seen_at, last_seen_at, suspended_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
-  ).bind(spaceId, userId).first<{ email: string | null; display_name: string | null; first_seen_at: string; last_seen_at: string | null; suspended_at: string | null }>();
+    "SELECT email, display_name, first_seen_at, last_seen_at, suspended_at, email_verified_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
+  ).bind(spaceId, userId).first<{ email: string | null; display_name: string | null; first_seen_at: string; last_seen_at: string | null; suspended_at: string | null; email_verified_at: string | null }>();
   if (!row) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
 
   const stub = await productUserDoStub(c.env, spaceId, userId, tenantId);
@@ -2605,6 +2605,10 @@ app.get("/spaces/:spaceId/product-users/me", async (c) => {
     last_seen_at: row.last_seen_at,
     suspended: row.suspended_at !== null,
     credits_balance: balance.balance_credits,
+    // Shell follow-up: a signed-up-but-unverified end user previously had no visible signal at
+    // all that a free-credit grant was waiting on email verification — this is what the shell's
+    // persistent banner (and the verify-email page) key off.
+    email_verified: row.email_verified_at !== null,
   });
 });
 

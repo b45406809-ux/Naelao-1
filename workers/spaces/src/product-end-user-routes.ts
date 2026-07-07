@@ -23,6 +23,12 @@ export interface ProductEndUserRoutesEnv {
   SPACE_TYPE_REGISTRY_DO: DurableObjectNamespace;
   NAELAO_CONFIG_KV: KVNamespace;
   NOTIFICATIONS_WORKER?: Fetcher;
+  /** Public base URL of apps/shell (e.g. "https://app.naelao.com"), used to build a clickable
+   *  verification link ("${base}/p/{slug}/verify-email?token=..."). Deliberately left unset by
+   *  default rather than guessing a production domain — when unset, the email still carries the
+   *  raw token, and the shell's verify-email page accepts a manually pasted token, so signup
+   *  verification works either way, not just when this happens to be configured correctly. */
+  PRODUCT_SHELL_URL?: string;
 }
 
 async function sha256Hex(input: string): Promise<string> {
@@ -44,7 +50,7 @@ async function sendEmail(env: ProductEndUserRoutesEnv, tenantId: string, spaceId
   } catch { /* best-effort — never blocks the caller's own response */ }
 }
 
-async function issueVerificationToken(env: ProductEndUserRoutesEnv, productId: string, endUserId: string, tenantId: string, email: string): Promise<void> {
+async function issueVerificationToken(env: ProductEndUserRoutesEnv, productId: string, endUserId: string, tenantId: string, email: string, slug: string | null): Promise<void> {
   const token = crypto.randomUUID() + crypto.randomUUID();
   const tokenHash = await sha256Hex(token);
   const expiresAt = new Date(Date.now() + VERIFY_TOKEN_TTL_MS).toISOString();
@@ -52,8 +58,11 @@ async function issueVerificationToken(env: ProductEndUserRoutesEnv, productId: s
     `INSERT INTO email_verification_tokens (id, product_space_id, end_user_id, token_hash, expires_at)
      VALUES (?, ?, ?, ?, ?)`
   ).bind(crypto.randomUUID(), productId, endUserId, tokenHash, expiresAt).run();
+  const link = env.PRODUCT_SHELL_URL && slug
+    ? `\n\nOr click this link: ${env.PRODUCT_SHELL_URL}/p/${slug}/verify-email?token=${token}`
+    : "";
   await sendEmail(env, tenantId, productId, email, "Verify your email",
-    `Verification token: ${token}\n\nThis token expires in 24 hours. Verifying unlocks your free starting credits.`);
+    `Verification token: ${token}${link}\n\nThis token expires in 24 hours. Verifying unlocks your free starting credits.`);
 }
 
 interface ProductRow {
@@ -61,6 +70,7 @@ interface ProductRow {
   tenant_id: string;
   spacetype_id: string;
   config_json: string | null;
+  product_slug: string | null;
 }
 
 // Metering enforcement pass, follow-up: a product with pricingConfig.model === "free" (or no
@@ -81,7 +91,7 @@ async function loadProductAuthConfig(
   productId: string
 ): Promise<{ product: ProductRow; authConfig: SpaceTypeProductConfig["authProvider"]; signupCredits: number } | null> {
   const product = await env.PLATFORM_DB.prepare(
-    "SELECT id, tenant_id, spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
+    "SELECT id, tenant_id, spacetype_id, config_json, product_slug FROM spaces WHERE id = ? AND status != 'deleted'"
   ).bind(productId).first<ProductRow>();
   if (!product) return null;
 
@@ -177,7 +187,7 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     // valid. Worst case, the end user starts unverified and can retry via resend-verification.
     if (resolved.signupCredits > 0) {
       try {
-        await issueVerificationToken(env, productId, endUserId, resolved.product.tenant_id, email);
+        await issueVerificationToken(env, productId, endUserId, resolved.product.tenant_id, email, resolved.product.product_slug);
       } catch { /* best-effort */ }
     }
 
@@ -353,7 +363,7 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     // Never reveal whether the account exists or is already verified — constant response.
     if (!row || row.email_verified_at) return ALWAYS_OK;
 
-    await issueVerificationToken(env, productId, row.end_user_id, resolved.product.tenant_id, email);
+    await issueVerificationToken(env, productId, row.end_user_id, resolved.product.tenant_id, email, resolved.product.product_slug);
     return ALWAYS_OK;
   });
 }

@@ -20,7 +20,7 @@ const SPACES_TABLE_SQL = `
   CREATE TABLE spaces (
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
     name TEXT NOT NULL DEFAULT '', spacetype_id TEXT NOT NULL DEFAULT 'launchpad',
-    config_json TEXT NOT NULL DEFAULT '{}', parent_space_id TEXT,
+    config_json TEXT NOT NULL DEFAULT '{}', parent_space_id TEXT, product_slug TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now')), created_by TEXT
   );
@@ -54,11 +54,11 @@ function makeEnv() {
   };
 }
 
-async function seedProduct(env: ReturnType<typeof makeEnv>, id: string, tenantId: string, productConfig?: Record<string, unknown>) {
+async function seedProduct(env: ReturnType<typeof makeEnv>, id: string, tenantId: string, productConfig?: Record<string, unknown>, slug?: string) {
   const configJson = productConfig ? JSON.stringify({ productConfig }) : "{}";
   await env.PLATFORM_DB.prepare(
-    "INSERT INTO spaces (id, tenant_id, status, name, config_json) VALUES (?, ?, 'active', 'Acme Store', ?)"
-  ).bind(id, tenantId, configJson).run();
+    "INSERT INTO spaces (id, tenant_id, status, name, config_json, product_slug) VALUES (?, ?, 'active', 'Acme Store', ?, ?)"
+  ).bind(id, tenantId, configJson, slug ?? null).run();
 }
 
 /** Extracts the verification token from the most recent notify() call and redeems it. */
@@ -364,6 +364,24 @@ describe("email verification (security audit follow-up: closes the free-credit-f
     await seedProduct(env, "prod-1", "tenant-1", { pricingConfig: { model: "credits" } });
     await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
     expect(env.__notifyCalls).toHaveLength(0);
+  });
+
+  it("shell UX follow-up: includes a clickable verify-email link when PRODUCT_SHELL_URL and the product's slug are both known", async () => {
+    const env = { ...makeEnv(), PRODUCT_SHELL_URL: "https://app.naelao.com" };
+    await seedProduct(env, "prod-1", "tenant-1", undefined, "acme-store");
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+    expect(env.__notifyCalls[0]!.body).toContain("https://app.naelao.com/p/acme-store/verify-email?token=");
+    // Raw token is still present too — the shell's verify-email page accepts manual entry as a
+    // fallback, so a broken/misconfigured link never fully strands a legitimate user.
+    expect(env.__notifyCalls[0]!.body).toContain("Verification token:");
+  });
+
+  it("falls back to token-only text (no broken link) when PRODUCT_SHELL_URL isn't configured", async () => {
+    const env = makeEnv(); // no PRODUCT_SHELL_URL set
+    await seedProduct(env, "prod-1", "tenant-1", undefined, "acme-store");
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+    expect(env.__notifyCalls[0]!.body).not.toContain("http");
+    expect(env.__notifyCalls[0]!.body).toContain("Verification token:");
   });
 
   it("a verification token can only be used once", async () => {

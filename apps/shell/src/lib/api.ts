@@ -107,6 +107,9 @@ export interface ProductUserMe {
   last_seen_at: string | null;
   suspended: boolean;
   credits_balance: number;
+  /** Security audit follow-up: a signup credit grant is now deferred until this is true —
+   *  the "Verify your email" banner keys off it, alongside a 0 balance. */
+  email_verified: boolean;
 }
 
 export async function getMe(spaceId: string, session: SessionCredentials): Promise<ProductUserMe> {
