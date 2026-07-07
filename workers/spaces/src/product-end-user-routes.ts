@@ -84,7 +84,10 @@ interface ProductRow {
 // reintroducing unmetered/unlimited runs. Deliberately NOT applied to "credits"/"subscription"/
 // "seats" models with an unset or explicit 0 allowance — those models are the builder's own
 // explicit monetization choice ("pay first"), which this default must not override.
-const FREE_TIER_DEFAULT_SIGNUP_CREDITS = 100;
+// Exported so index.ts's monthly-refresh route (Tier 2 metering follow-up) resolves the SAME
+// free-tier default this signup grant uses — a free/unconfigured product refreshes 100 credits
+// every month, not just once, without two constants drifting apart.
+export const FREE_TIER_DEFAULT_SIGNUP_CREDITS = 100;
 
 async function loadProductAuthConfig(
   env: ProductEndUserRoutesEnv,

@@ -138,6 +138,15 @@ describe("NaelaoAgentDO /script/run — pre-run credit gate (product_end_user, n
     expect(calls.some((p) => p.includes("/credits/balance"))).toBe(false);
   });
 
+  it("Tier 2 metering follow-up: calls the monthly-refresh endpoint before checking the balance", async () => {
+    const { spaceDO, calls } = await makeDO(500);
+    await scriptRunAsEndUser(spaceDO, "alice");
+    const refreshIdx = calls.findIndex((p) => p.includes("/credits/refresh-monthly"));
+    const balanceIdx = calls.findIndex((p) => p.includes("/credits/balance"));
+    expect(refreshIdx).toBeGreaterThanOrEqual(0);
+    expect(balanceIdx).toBeGreaterThan(refreshIdx);
+  });
+
   it("does not apply to a caller who isn't a product_end_user (e.g. the builder/owner)", async () => {
     const { spaceDO, calls } = await makeDO(0);
     const res = await spaceDO.fetch(new Request("http://agent-do/script/run", {

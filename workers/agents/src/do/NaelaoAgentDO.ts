@@ -2032,7 +2032,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // (network/worker outage) — matching this run's own overall "never crash on a billing-side
       // hiccup" posture elsewhere in this method — but a *confirmed* zero/negative balance always
       // blocks the run.
+      // Tier 2 metering follow-up: creditsIncludedPerMonth used to grant once, ever, at signup —
+      // lazily refresh it here (idempotent, month-scoped — see that route's own comment) so the
+      // FIRST run of a new calendar month tops up before the balance below is even read. This is
+      // deliberately NOT in its own try/catch — a failure here must not silently skip straight to
+      // reading a stale (pre-refresh) balance without at least attempting the top-up; the shared
+      // catch below already covers both calls with the same fail-open posture.
       try {
+        await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/internal/product-users/${spaceId}/${userId}/credits/refresh-monthly`,
+          { method: "POST", headers: await this.internalHeaders(tenantId) }
+        ));
         const balRes = await this.env.SPACES_WORKER.fetch(new Request(
           `http://spaces-worker/internal/product-users/${spaceId}/${userId}/credits/balance`,
           { headers: await this.internalHeaders(tenantId) }

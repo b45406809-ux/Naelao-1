@@ -7,7 +7,7 @@ import { LAUNCHPAD_MANIFEST } from "./launchpad-manifest.js";
 import { cfSaasConfig, createCustomHostname, getCustomHostname } from "./cf-saas.js";
 import { validateCronExpression } from "@naelao/events";
 import { registerBuilderRoutes } from "./builder-routes.js";
-import { registerProductEndUserRoutes } from "./product-end-user-routes.js";
+import { registerProductEndUserRoutes, FREE_TIER_DEFAULT_SIGNUP_CREDITS } from "./product-end-user-routes.js";
 import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
 import type { ProvisionMessage } from "./create-space.js";
 import { requireBusinessMembership, resolveEndUserBusinessRole } from "./business-auth.js";
@@ -2308,6 +2308,45 @@ app.post("/internal/product-users/:spaceId/:endUserId/credits/deduct", async (c)
   }));
   const result = await deductRes.json<{ balance_credits: number; error?: string }>();
   return c.json(result, deductRes.status as 201 | 402 | 400);
+});
+
+// POST /internal/product-users/:spaceId/:endUserId/credits/refresh-monthly — Tier 2 metering
+// follow-up: creditsIncludedPerMonth was builder-configurable but only ever granted ONCE, at
+// signup, despite the field name implying a recurring monthly allowance. Deliberately NOT a new
+// platform-wide cron/sweep (a per-END-USER rather than per-space roster would be a much larger
+// enumeration surface than agents' enqueueAgentTicks rosters, at a platform aiming for millions
+// of end users) — instead lazy, piggybacking on a request that's already happening: NaelaoAgentDO
+// calls this right before every Space-Assistant-scope run by a signed-in end user, so the FIRST
+// run of a new calendar month grants the allowance then. Idempotent via a month-scoped key
+// (credit_ledger's existing idempotency_key uniqueness does the dedup) — concurrent requests on
+// day 1 of the month grant exactly once. Resolves the SAME free-tier default as signup
+// (FREE_TIER_DEFAULT_SIGNUP_CREDITS) so a free/unconfigured product keeps refreshing 100/month
+// rather than lapsing to 0 after the first grant.
+app.use("/internal/product-users/:spaceId/:endUserId/credits/refresh-monthly", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/product-users/:spaceId/:endUserId/credits/refresh-monthly", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const endUserId = c.req.param("endUserId");
+  const product = await c.env.PLATFORM_DB.prepare(
+    "SELECT tenant_id, spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(spaceId).first<{ tenant_id: string; spacetype_id: string; config_json: string | null }>();
+  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+
+  const pc = await loadEffectiveProductConfig(c.env, product.spacetype_id, product.config_json);
+  const pricingConfig = pc?.pricingConfig;
+  const isFreeOrUnconfigured = !pricingConfig || pricingConfig.model === "free";
+  const monthlyCredits = pricingConfig?.creditsIncludedPerMonth
+    ?? (isFreeOrUnconfigured ? FREE_TIER_DEFAULT_SIGNUP_CREDITS : 0);
+  if (monthlyCredits <= 0) return c.json({ granted: false, reason: "no_monthly_allowance" });
+
+  const monthKey = new Date().toISOString().slice(0, 7); // "2026-07" — one grant per calendar month
+  const stub = await productUserDoStub(c.env, spaceId, endUserId, product.tenant_id);
+  const grantRes = await stub.fetch(new Request("http://do/credits/grant", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ credits: monthlyCredits, reason: "monthly_refresh", idempotency_key: `monthly-refresh:${monthKey}` }),
+  }));
+  const result = await grantRes.json<{ balance_credits: number; deduplicated?: boolean }>();
+  return c.json({ granted: !result.deduplicated, balance_credits: result.balance_credits });
 });
 
 // ── Internal: SpaceType manifest registry (spec §62) ────────────────────────
