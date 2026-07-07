@@ -2121,6 +2121,25 @@ app.post("/internal/wallet-topups/grant", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// GET /internal/product-users/:spaceId/:endUserId/credits/balance — metering-enforcement pass:
+// the agents worker calls this BEFORE running the reasoning loop for a non-project (Space
+// Assistant) run by a signed-in product end user, so a zero/negative balance refuses the run
+// instead of the LLM cost already being paid and only THEN discovering the debit 402s (the
+// prior state — /credits/deduct itself was always correct, but it only ran post-hoc).
+app.use("/internal/product-users/:spaceId/:endUserId/credits/balance", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/internal/product-users/:spaceId/:endUserId/credits/balance", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const endUserId = c.req.param("endUserId");
+  const product = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'")
+    .bind(spaceId).first<{ tenant_id: string }>();
+  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+
+  const stub = await productUserDoStub(c.env, spaceId, endUserId, product.tenant_id);
+  const balRes = await stub.fetch(new Request("http://do/credits/balance"));
+  const result = await balRes.json<{ balance_credits: number }>();
+  return c.json(result);
+});
+
 // POST /internal/product-users/:spaceId/:endUserId/credits/deduct — §A1.17 Phase I. The agents
 // worker calls this after a script/reasoning-loop run that consumed real LLM tokens, so a signed-
 // in product end user's OWN credit balance (not the business's) is what pays for their own chat

@@ -7,6 +7,7 @@ import { BuilderAccountDO } from "../../workers/spaces/src/do/BuilderAccountDO.j
 import { SpaceTypeRegistryDO } from "../../workers/spaces/src/do/SpaceTypeRegistryDO.js";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 import { makeStatefulDoNamespace } from "./helpers/fake-do-namespace.js";
+import { mintInternalToken } from "@naelao/http";
 
 // Three-Tier Platform Model, Phase 6 (Journey 1B: "End user signs up or is invited via the
 // builder's configured auth provider"). ProductUserDO (Phase 2) mints and verifies sessions but
@@ -109,6 +110,40 @@ describe("POST /spaces/:spaceId/end-users/signup", () => {
     const env = makeEnv();
     const res = await spacesWorker.fetch(req("/spaces/no-such-product/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
     expect(res.status).toBe(404);
+  });
+
+  it("grants creditsIncludedPerMonth once at signup (metering enforcement pass)", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1", { pricingConfig: { model: "credits", creditsIncludedPerMonth: 500 } });
+    const signup = await (await spacesWorker.fetch(
+      req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx
+    )).json() as { end_user_id: string };
+
+    const token = await mintInternalToken("test-platform-secret", "tenant-1");
+    const balRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/internal/product-users/prod-1/${signup.end_user_id}/credits/balance`, {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    expect((await balRes.json() as { balance_credits: number }).balance_credits).toBe(500);
+  });
+
+  it("grants zero credits at signup when creditsIncludedPerMonth is unset (unchanged default)", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    const signup = await (await spacesWorker.fetch(
+      req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx
+    )).json() as { end_user_id: string };
+
+    const token = await mintInternalToken("test-platform-secret", "tenant-1");
+    const balRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/internal/product-users/prod-1/${signup.end_user_id}/credits/balance`, {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    expect((await balRes.json() as { balance_credits: number }).balance_credits).toBe(0);
   });
 });
 

@@ -134,3 +134,65 @@ describe("POST /internal/product-users/:spaceId/:endUserId/credits/deduct", () =
     expect(res.status).toBe(400);
   });
 });
+
+// Metering enforcement pass: NaelaoAgentDO's pre-run credit gate calls this route BEFORE running
+// the reasoning loop, so a zero/negative balance is caught before the LLM cost is paid — not just
+// after, the way /credits/deduct alone (above) could only ever report it post-hoc.
+describe("GET /internal/product-users/:spaceId/:endUserId/credits/balance", () => {
+  it("requires a verified internal token", async () => {
+    const env = makeEnv();
+    const res = await spacesWorker.fetch(req("/internal/product-users/prod-1/alice/credits/balance"), env as never, execCtx);
+    expect(res.status).toBe(403);
+  });
+
+  it("reports the current balance without mutating it", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    await grantCredits(env, "prod-1", "alice", 100);
+
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
+    const res = await spacesWorker.fetch(
+      req("/internal/product-users/prod-1/alice/credits/balance", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json() as { balance_credits: number }).balance_credits).toBe(100);
+
+    // Reading again returns the same number — a GET must never itself debit.
+    const again = await spacesWorker.fetch(
+      req("/internal/product-users/prod-1/alice/credits/balance", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    expect((await again.json() as { balance_credits: number }).balance_credits).toBe(100);
+  });
+
+  it("reports 0 for an end user who has never been granted credits", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
+    const res = await spacesWorker.fetch(
+      req("/internal/product-users/prod-1/nobody/credits/balance", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+    expect((await res.json() as { balance_credits: number }).balance_credits).toBe(0);
+  });
+
+  it("404s for a nonexistent product space", async () => {
+    const env = makeEnv();
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
+    const res = await spacesWorker.fetch(
+      req("/internal/product-users/no-such-product/alice/credits/balance", {
+        headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(404);
+  });
+});

@@ -34,23 +34,32 @@ interface ProductRow {
 async function loadProductAuthConfig(
   env: ProductEndUserRoutesEnv,
   productId: string
-): Promise<{ product: ProductRow; authConfig: SpaceTypeProductConfig["authProvider"] } | null> {
+): Promise<{ product: ProductRow; authConfig: SpaceTypeProductConfig["authProvider"]; signupCredits: number } | null> {
   const product = await env.PLATFORM_DB.prepare(
     "SELECT id, tenant_id, spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
   ).bind(productId).first<ProductRow>();
   if (!product) return null;
 
   let authConfig: SpaceTypeProductConfig["authProvider"] | undefined;
+  let signupCredits = 0;
   if (product.config_json) {
     try {
       const parsed = JSON.parse(product.config_json) as { productConfig?: SpaceTypeProductConfig };
       authConfig = parsed.productConfig?.authProvider;
+      // Metering enforcement pass: `creditsIncludedPerMonth` was builder-configurable through the
+      // product creation wizard but nothing ever read it — every new end user started at a
+      // permanent 0 balance, which (now that agent runs are gated on a positive balance — see
+      // NaelaoAgentDO's pre-run credit check) would otherwise make the free tier unusable from
+      // message one. Granted ONCE at signup, not actually monthly-recurring — a real recurring
+      // top-up would need its own scheduled sweep per end user, which is a separate, larger
+      // feature this fix does not attempt to build.
+      signupCredits = parsed.productConfig?.pricingConfig?.creditsIncludedPerMonth ?? 0;
     } catch { /* malformed config_json — treat as unset, fall through to default below */ }
   }
   // Default to naelao-native when unset — a product that never configured an auth provider is
   // not "no auth allowed," it's "hasn't picked one yet," and naelao-native is the fastest-to-ship
   // default the spec itself names.
-  return { product, authConfig: authConfig ?? { provider: "naelao-native" } };
+  return { product, authConfig: authConfig ?? { provider: "naelao-native" }, signupCredits };
 }
 
 async function productUserDoStub(env: ProductEndUserRoutesEnv, productId: string, endUserId: string, tenantId: string) {
@@ -101,6 +110,19 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
       body: JSON.stringify({ auth_provider: "naelao-native" }),
     }));
     const session = await sessionRes.json<{ session_token: string; expires_at: string }>();
+
+    // Best-effort: a grant failure must never block signup itself (the account and session
+    // already exist) — it just means this end user starts at 0 credits, same as before this
+    // fix, and can still top up. idempotency_key is deterministic per end user so a retried
+    // signup request (network retry, double-click) can never double-grant.
+    if (resolved.signupCredits > 0) {
+      try {
+        await stub.fetch(new Request("http://do/credits/grant", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ credits: resolved.signupCredits, reason: "signup_allowance", idempotency_key: `signup:${endUserId}` }),
+        }));
+      } catch { /* best-effort */ }
+    }
 
     return c.json({ end_user_id: endUserId, session_token: session.session_token, expires_at: session.expires_at }, 201);
   });

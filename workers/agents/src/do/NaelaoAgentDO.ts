@@ -1960,6 +1960,34 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
       }
       // status === "not_found": no project config row — permissive by design, unchanged.
+    } else if (callerRole === "product_end_user" && userId) {
+      // Metering enforcement pass: a non-project (Space Assistant / Home chat) run by a signed-in
+      // product end user used to debit their ProductUserDO balance ONLY after the run completed
+      // (debitEndUserCredits below) — so an empty balance was discovered by a 402 on the debit
+      // call, by which point the real Anthropic tokens for the run were already spent on Naelao's
+      // own platform key. Check the balance BEFORE running the loop instead; refuse the run itself
+      // when it's already at or below zero. Fails OPEN only when the balance check itself errors
+      // (network/worker outage) — matching this run's own overall "never crash on a billing-side
+      // hiccup" posture elsewhere in this method — but a *confirmed* zero/negative balance always
+      // blocks the run.
+      try {
+        const balRes = await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/internal/product-users/${spaceId}/${userId}/credits/balance`,
+          { headers: await this.internalHeaders(tenantId) }
+        ));
+        if (balRes.ok) {
+          const { balance_credits } = await balRes.json<{ balance_credits: number }>();
+          if (balance_credits <= 0) {
+            return Response.json(
+              { error: "insufficient credits — top up or subscribe to keep chatting", error_code: "insufficient_credits", balance_credits },
+              { status: 402 }
+            );
+          }
+        }
+      } catch {
+        // Balance service unreachable — do not block the run over a transient outage; the
+        // post-run debit below still enforces the real ledger and will 402 on genuine overdraw.
+      }
     }
 
     // Load the agent's 4-file config; without it the agent is not provisioned.
