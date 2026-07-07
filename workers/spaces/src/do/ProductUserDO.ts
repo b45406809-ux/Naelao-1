@@ -345,6 +345,27 @@ export class ProductUserDO extends DurableObject {
       });
     }
 
+    // ── GDPR Art. 17 — right to erasure. The direct inverse of /export above: wipes exactly the
+    // personal/behavioral data /export reports (sessions, conversation links, preferences).
+    // credit_ledger is deliberately KEPT — it holds no PII (just delta_credits/reason/model/
+    // balance_after/timestamps), and a financial/audit trail has its own legitimate-interest
+    // retention basis distinct from "personal data" under Art. 17(3). This DO has no knowledge of
+    // the caller's real email/display_name — those live in product_end_users (D1), anonymized by
+    // the spaces-worker route that calls this. Idempotent: erasing twice is a no-op the second
+    // time, never an error.
+    if (method === "DELETE" && url.pathname === "/erase") {
+      const sessionsDeleted = this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM session_state").toArray()[0] as unknown as { n: number };
+      const conversationsDeleted = this.ctx.storage.sql.exec("SELECT COUNT(*) AS n FROM conversation_refs").toArray()[0] as unknown as { n: number };
+      this.ctx.storage.sql.exec("DELETE FROM session_state");
+      this.ctx.storage.sql.exec("DELETE FROM conversation_refs");
+      this.ctx.storage.sql.exec("DELETE FROM preferences");
+      return Response.json({
+        erased_at: new Date().toISOString(),
+        sessions_deleted: sessionsDeleted?.n ?? 0,
+        conversations_deleted: conversationsDeleted?.n ?? 0,
+      });
+    }
+
     return Response.json({ error: "not_found" }, { status: 404 });
   }
 }

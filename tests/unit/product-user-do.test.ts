@@ -187,3 +187,36 @@ describe("ProductUserDO — GDPR Art. 20 export", () => {
     expect(exp.sessions[0]).not.toHaveProperty("token_hash");
   });
 });
+
+describe("ProductUserDO — GDPR Art. 17 erasure (Tier 2/3 follow-up: export existed, deletion didn't)", () => {
+  it("wipes sessions, conversation refs, and preferences — the exact inverse of /export", async () => {
+    const doInstance = makeDO();
+    await call(doInstance, "/sessions", jsonPost({ auth_provider: "naelao-native" }));
+    await call(doInstance, "/credits/grant", jsonPost({ credits: 500 }));
+    await call(doInstance, "/conversation-refs", jsonPost({ thread_id: "t1", space_id: "s1", title: "Hi" }));
+    await call(doInstance, "/preferences", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: "lang", value: "en" }) });
+
+    const eraseRes = await call(doInstance, "/erase", { method: "DELETE" });
+    expect(eraseRes.status).toBe(200);
+    const erased = await eraseRes.json() as { sessions_deleted: number; conversations_deleted: number };
+    expect(erased.sessions_deleted).toBe(1);
+    expect(erased.conversations_deleted).toBe(1);
+
+    const exp = await (await call(doInstance, "/export")).json() as {
+      sessions: unknown[]; conversations: unknown[]; preferences: Record<string, unknown>; credit_balance: number;
+    };
+    expect(exp.sessions).toHaveLength(0);
+    expect(exp.conversations).toHaveLength(0);
+    expect(Object.keys(exp.preferences)).toHaveLength(0);
+    // credit_ledger is deliberately KEPT — it holds no PII, just transaction amounts.
+    expect(exp.credit_balance).toBe(500);
+  });
+
+  it("is idempotent — erasing an already-empty DO does not error", async () => {
+    const doInstance = makeDO();
+    const first = await call(doInstance, "/erase", { method: "DELETE" });
+    expect(first.status).toBe(200);
+    const body = await first.json() as { sessions_deleted: number };
+    expect(body.sessions_deleted).toBe(0);
+  });
+});

@@ -2723,6 +2723,40 @@ app.patch("/spaces/:spaceId/product-users/me", async (c) => {
   return c.json({ ok: true, display_name: body.display_name });
 });
 
+// DELETE /spaces/:spaceId/product-users/me — GDPR Art. 17, the direct inverse of GET (export)
+// above: erasing exactly what /export reports. Tier 2/3 follow-up — export existed, deletion
+// didn't. Self-service only: end_user_id is derived from the caller's OWN verified claims, never
+// a client-supplied field (same precedent as GET/PATCH above) — there is no builder-initiated
+// erasure path here, matching the fact this route lives under /product-users/me, not an
+// admin-facing /product-users/:endUserId. Erases ProductUserDO's session/conversation/preference
+// state, then anonymizes (never hard-deletes — see migration 0058's own comment on why) the D1
+// roster row's PII. Deliberately does NOT cascade into business_memberships or SpaceDO's own
+// thread/message history (a separate, older GDPR erasure mechanism — see G-AO31 above) — a real,
+// documented boundary for a future pass, not silently dropped.
+app.delete("/spaces/:spaceId/product-users/me", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { role, userId, tenantId } = getCallerIdentity(c);
+  if (role !== "product_end_user" || !userId) {
+    return c.json({ error_code: "not_an_end_user", message: "This route is for product end users only" }, 404);
+  }
+  const row = await c.env.PLATFORM_DB.prepare(
+    "SELECT deleted_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
+  ).bind(spaceId, userId).first<{ deleted_at: string | null }>();
+  if (!row) return c.json({ error_code: "not_found", message: "End user not found" }, 404);
+
+  const stub = await productUserDoStub(c.env, spaceId, userId, tenantId);
+  const eraseRes = await stub.fetch(new Request("http://do/erase", { method: "DELETE" }));
+  const erased = await eraseRes.json<{ erased_at: string; sessions_deleted: number; conversations_deleted: number }>();
+
+  if (!row.deleted_at) {
+    await c.env.PLATFORM_DB.prepare(
+      "UPDATE product_end_users SET email = NULL, display_name = NULL, password_hash = NULL, deleted_at = datetime('now') WHERE product_space_id = ? AND end_user_id = ?"
+    ).bind(spaceId, userId).run();
+  }
+
+  return c.json({ erased: true, erased_at: erased.erased_at, sessions_deleted: erased.sessions_deleted, conversations_deleted: erased.conversations_deleted });
+});
+
 // GET /spaces/:spaceId/sessions (list) is handled by the generic SpaceDO session proxy above
 // (app.all("/spaces/:spaceId/sessions*", ...)) — see that handler's own comment for why the
 // end_user_id filter is derived from verified caller claims there, never a client-supplied

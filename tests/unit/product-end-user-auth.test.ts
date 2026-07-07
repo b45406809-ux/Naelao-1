@@ -29,9 +29,10 @@ const CREDENTIALS_MIGRATION = readFileSync(join(__dirname, "../../infra/migratio
 const BUILDER_DASHBOARD_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0045_builder_dashboard_api.sql"), "utf8");
 const PASSWORD_RESET_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0054_password_reset_tokens.sql"), "utf8");
 const EMAIL_VERIFICATION_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0055_email_verification.sql"), "utf8");
+const DELETED_AT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0058_product_end_users_deleted_at.sql"), "utf8");
 
 function makeEnv() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION, EMAIL_VERIFICATION_MIGRATION]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION, EMAIL_VERIFICATION_MIGRATION, DELETED_AT_MIGRATION]);
   const notifyCalls: Array<{ to: string; subject: string; body: string }> = [];
   return {
     PLATFORM_SECRET: "test-platform-secret",
@@ -437,5 +438,97 @@ describe("email verification (security audit follow-up: closes the free-credit-f
     expect(res.status).toBe(201);
     const body = await res.json() as { session_token: string };
     expect(body.session_token).toMatch(/^nps_/);
+  });
+});
+
+describe("DELETE /spaces/:spaceId/product-users/me (Tier 2/3 follow-up: GDPR erasure — export existed, deletion didn't)", () => {
+  async function signup(env: ReturnType<typeof makeEnv>, productId: string, email = "jane@acme.com") {
+    const res = await spacesWorker.fetch(req(`/spaces/${productId}/end-users/signup`, { email, password: "hunter22" }), env as never, execCtx);
+    return res.json() as Promise<{ end_user_id: string; session_token: string }>;
+  }
+
+  function eraseReq(productId: string, endUserId: string, tenantId: string): Request {
+    return new Request(`https://spaces.naelao.com/spaces/${productId}/product-users/me`, {
+      method: "DELETE",
+      headers: { "x-naelao-role": "product_end_user", "x-naelao-user-id": endUserId, "x-naelao-tenant-id": tenantId },
+    });
+  }
+
+  it("anonymizes the D1 roster row's PII (email/display_name/password_hash) and marks deleted_at", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    const { end_user_id } = await signup(env, "prod-1");
+    const res = await spacesWorker.fetch(eraseReq("prod-1", end_user_id, "tenant-1"), env as never, execCtx);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { erased: boolean };
+    expect(body.erased).toBe(true);
+
+    const row = await env.PLATFORM_DB.prepare(
+      "SELECT email, display_name, password_hash, deleted_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
+    ).bind("prod-1", end_user_id).first<{ email: string | null; display_name: string | null; password_hash: string | null; deleted_at: string | null }>();
+    expect(row?.email).toBeNull();
+    expect(row?.password_hash).toBeNull();
+    expect(row?.deleted_at).toBeTruthy();
+  });
+
+  it("GET /product-users/me reflects the anonymized state after erasure (row kept, not gone)", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    const { end_user_id } = await signup(env, "prod-1");
+    await spacesWorker.fetch(eraseReq("prod-1", end_user_id, "tenant-1"), env as never, execCtx);
+
+    const meRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/product-users/me`, {
+        headers: { "x-naelao-role": "product_end_user", "x-naelao-user-id": end_user_id, "x-naelao-tenant-id": "tenant-1" },
+      }),
+      env as never, execCtx
+    );
+    expect(meRes.status).toBe(200);
+    const meBody = await meRes.json() as { email: string | null };
+    expect(meBody.email).toBeNull();
+  });
+
+  it("is idempotent — erasing twice does not error", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    const { end_user_id } = await signup(env, "prod-1");
+    const first = await spacesWorker.fetch(eraseReq("prod-1", end_user_id, "tenant-1"), env as never, execCtx);
+    const second = await spacesWorker.fetch(eraseReq("prod-1", end_user_id, "tenant-1"), env as never, execCtx);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+  });
+
+  it("404s for a caller who isn't a product_end_user", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    const res = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/product-users/me`, {
+        method: "DELETE",
+        headers: { "x-naelao-role": "owner", "x-naelao-user-id": "builder-1", "x-naelao-tenant-id": "tenant-1" },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("404s for a nonexistent end user", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    const res = await spacesWorker.fetch(eraseReq("prod-1", "no-such-user", "tenant-1"), env as never, execCtx);
+    expect(res.status).toBe(404);
+  });
+
+  it("erasing one end user does not affect a different end user on the same product", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    const alice = await signup(env, "prod-1", "alice@acme.com");
+    const bob = await signup(env, "prod-1", "bob@acme.com");
+    await spacesWorker.fetch(eraseReq("prod-1", alice.end_user_id, "tenant-1"), env as never, execCtx);
+
+    const bobRow = await env.PLATFORM_DB.prepare(
+      "SELECT email, deleted_at FROM product_end_users WHERE product_space_id = ? AND end_user_id = ?"
+    ).bind("prod-1", bob.end_user_id).first<{ email: string | null; deleted_at: string | null }>();
+    expect(bobRow?.email).toBe("bob@acme.com");
+    expect(bobRow?.deleted_at).toBeNull();
   });
 });

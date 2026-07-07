@@ -128,6 +128,19 @@ export async function updateMe(
   });
 }
 
+// Tier 2/3 follow-up: GDPR Art. 17 erasure — export existed, deletion didn't. Self-service only;
+// the session used to call this becomes invalid immediately after (erase wipes session_state),
+// so the caller should sign out and redirect right after a successful response.
+export async function deleteMe(
+  spaceId: string,
+  session: SessionCredentials
+): Promise<{ erased: boolean; erased_at: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/product-users/me`, {
+    method: "DELETE",
+    session,
+  });
+}
+
 // ── Chat (sessions + streaming) — ported from apps/portal's proven SSE client ────────────────
 
 export interface Message {
