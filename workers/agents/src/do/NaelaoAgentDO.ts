@@ -118,6 +118,13 @@ const MAX_TOOL_CALLS_PER_RUN = 100;
 // G-N44: Max messages kept in context window (keeps first + most recent N-1)
 const MAX_CONTEXT_MESSAGES = 40;
 
+// P0-3: caller roles treated as "a builder using their own Space Assistant" for monthly LLM-usage
+// metering — deliberately excludes "product_end_user" (its own separate credit-balance gate) and
+// "agent" (Phase O API-key identity, a different pricing situation), and requires an EXPLICIT
+// role match so an internal/system-initiated run (billing webhooks, scheduled jobs, triggers —
+// none of which ever set x-naelao-role) is never accidentally gated.
+const BUILDER_CALLER_ROLES = new Set(["owner", "admin", "editor", "viewer"]);
+
 // G-BB03: Context window budget constants
 // claude-sonnet-4-6 supports 200K tokens; we reserve 10K headroom for completion
 const MODEL_CONTEXT_LIMIT_TOKENS = 190_000;
@@ -2010,6 +2017,39 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // Balance service unreachable — do not block the run over a transient outage; the
         // post-run debit below still enforces the real ledger and will 402 on genuine overdraw.
       }
+    } else if (!projectId && BUILDER_CALLER_ROLES.has(callerRole ?? "")) {
+      // P0-3: a builder (owner/admin/editor/viewer — a Team collaborator, not a signed-in
+      // product end user) chatting with their OWN Space Assistant had NO metering at all — the
+      // end-user credit gate above only fires for callerRole === "product_end_user". A free-tier
+      // builder could burn the platform's Anthropic key all day at zero cost. Reuses the
+      // existing per-org plan-tier/usage-quota infrastructure (@naelao/entitlements's numbers,
+      // enforced via the billing worker's usage_events + KV-cached quota check) rather than
+      // building a parallel ledger — this is a MONTHLY QUOTA (resets naturally each calendar
+      // month via the underlying SQL window), not a wallet/credit balance. Deliberately scoped
+      // to only these four caller roles: internal/system-initiated runs (billing webhooks,
+      // scheduled jobs, triggers) never set x-naelao-role at all and must not be swept in here,
+      // and an "agent" API-key caller (Phase O) is a different identity/pricing situation left
+      // for a separate pass. Fails OPEN when BILLING_WORKER is unbound or the check itself
+      // errors — matching every other billing gate's posture in this method.
+      if (this.env.BILLING_WORKER) {
+        try {
+          const quotaRes = await this.env.BILLING_WORKER.fetch(new Request(
+            "http://billing-worker/internal/usage/llm-tokens/check",
+            { headers: await this.internalHeaders(tenantId) }
+          ));
+          if (quotaRes.ok) {
+            const { allowed, current, limit } = await quotaRes.json<{ allowed: boolean; current: number; limit: number }>();
+            if (!allowed) {
+              return Response.json(
+                { error: "monthly usage limit reached for your plan — upgrade to keep chatting", error_code: "quota_exceeded", current, limit },
+                { status: 402 }
+              );
+            }
+          }
+        } catch {
+          // Billing service unreachable — do not block the run over a transient outage.
+        }
+      }
     }
 
     // Load the agent's 4-file config; without it the agent is not provisioned.
@@ -2102,6 +2142,24 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, body.model ?? "claude-haiku-4-5-20251001")
             : result.result.tokens_used;
         await this.debitEndUserCredits(spaceId, tenantId, userId, credits, body.model, result.notes, runId);
+      } else if (!projectId && BUILDER_CALLER_ROLES.has(callerRole ?? "") && result.result?.tokens_used) {
+        // P0-3: record this builder's own real token usage against their org's monthly quota —
+        // mutually exclusive with both branches above (a project-scoped run and a product-end-user
+        // run never reach here). Raw token count, not credits — this feeds a MONTHLY QUOTA
+        // (@naelao/entitlements' monthly_tokens limits), a different unit/purpose from the
+        // wallet/credit ledgers above. Best-effort: never fails an already-completed run's
+        // response over a billing-side hiccup.
+        if (this.env.BILLING_WORKER) {
+          try {
+            await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/billing/usage", {
+              method: "POST",
+              headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+              body: JSON.stringify({ event_type: "llm_tokens", quantity: result.result.tokens_used, idempotency_key: `run:${runId}` }),
+            }));
+          } catch {
+            // Billing service unreachable — best-effort usage recording, never fails the run.
+          }
+        }
       }
 
       // Layer 4 (Fabric) auto-consolidation (spec: "runs LLM-driven session extraction

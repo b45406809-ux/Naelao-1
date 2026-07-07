@@ -4,24 +4,31 @@ export interface QuotaLimits {
   maxSpaces: number;
   maxKbDocs: number;
   maxApiCallsPerMonth: number;
+  // P0-3: a builder's own monthly LLM token usage chatting with their Space Assistant (not
+  // project-scoped, not a signed-in product end user — those have their own separate wallet/
+  // credit gates). Numbers match @naelao/entitlements' PLAN_LIMITS.monthly_tokens exactly so the
+  // two systems agree on what each tier is entitled to.
+  maxMonthlyTokens: number;
 }
 
 export const PLAN_LIMITS: Record<string, QuotaLimits> = {
-  free: { maxSpaces: 0, maxKbDocs: 0, maxApiCallsPerMonth: 0 },
-  growth: { maxSpaces: 10, maxKbDocs: 1_000, maxApiCallsPerMonth: 100_000 },
+  free: { maxSpaces: 0, maxKbDocs: 0, maxApiCallsPerMonth: 0, maxMonthlyTokens: 100_000 },
+  growth: { maxSpaces: 10, maxKbDocs: 1_000, maxApiCallsPerMonth: 100_000, maxMonthlyTokens: 2_000_000 },
   business: {
     maxSpaces: 50,
     maxKbDocs: 10_000,
     maxApiCallsPerMonth: 1_000_000,
+    maxMonthlyTokens: 20_000_000,
   },
   enterprise: {
     maxSpaces: 999_999,
     maxKbDocs: 999_999,
     maxApiCallsPerMonth: 999_999_999,
+    maxMonthlyTokens: 200_000_000,
   },
 };
 
-type QuotaMetric = "spaces" | "kb_docs" | "api_calls";
+type QuotaMetric = "spaces" | "kb_docs" | "api_calls" | "llm_tokens";
 
 /** KV key format: quota:{orgId}:{metric} */
 function kvKey(orgId: string, metric: QuotaMetric): string {
@@ -89,6 +96,20 @@ async function getCurrentUsage(
       count = row?.cnt ?? 0;
       break;
     }
+    case "llm_tokens": {
+      const row = await db
+        .prepare(
+          `SELECT COALESCE(SUM(quantity), 0) as cnt
+           FROM usage_events
+           WHERE org_id = ?
+             AND event_type = 'llm_tokens'
+             AND recorded_at >= datetime('now', 'start of month')`
+        )
+        .bind(orgId)
+        .first<{ cnt: number }>();
+      count = row?.cnt ?? 0;
+      break;
+    }
   }
 
   // Populate cache with the fresh value
@@ -111,6 +132,7 @@ export async function checkQuota(
     maxSpaces: 0,
     maxKbDocs: 0,
     maxApiCallsPerMonth: 0,
+    maxMonthlyTokens: 0,
   };
 
   let limit: number;
@@ -123,6 +145,9 @@ export async function checkQuota(
       break;
     case "api_calls":
       limit = limits.maxApiCallsPerMonth;
+      break;
+    case "llm_tokens":
+      limit = limits.maxMonthlyTokens;
       break;
   }
 
@@ -162,6 +187,6 @@ export async function invalidateQuotaCache(
   kv: KVNamespace,
   orgId: string
 ): Promise<void> {
-  const metrics: QuotaMetric[] = ["spaces", "kb_docs", "api_calls"];
+  const metrics: QuotaMetric[] = ["spaces", "kb_docs", "api_calls", "llm_tokens"];
   await Promise.all(metrics.map((m) => kv.delete(kvKey(orgId, m))));
 }

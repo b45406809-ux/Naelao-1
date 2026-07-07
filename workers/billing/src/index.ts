@@ -318,10 +318,23 @@ app.post("/billing/portal", async (c) => {
 });
 
 // ── POST /billing/usage ───────────────────────────────────────────────────────
-// Internal route — called by other workers via service binding
+// Internal route — called by other workers via service binding. P0-3: this had NO auth gate at
+// all despite its own "internal route" comment, AND trusted a client-supplied body.org_id for
+// the actual write — so a legitimately-authenticated caller for tenant A could post
+// {org_id: "tenant-B", quantity: 999999999} and pollute tenant B's usage_events, potentially
+// tripping tenant B's quota AND triggering a fake Stripe metering event against their
+// subscription (see the BILLING_EVENTS enqueue below). Confirmed zero production callers exist
+// today (grepped the whole repo) — not actively exploited, but the first real caller
+// (NaelaoAgentDO's llm_tokens recording, P0-3) must not inherit this. Gated with the same
+// requireInternalHmac every other internal-only route in this file uses, and the org to record
+// against is now the VERIFIED x-naelao-tenant-id header (the only field the HMAC signature
+// actually covers), never the request body.
+app.use("/billing/usage", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
 app.post("/billing/usage", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+
   const body = await c.req.json<{
-    org_id: string;
     space_id?: string;
     user_id?: string;
     event_type: string;
@@ -330,8 +343,8 @@ app.post("/billing/usage", async (c) => {
     idempotency_key?: string;
   }>();
 
-  if (!body.org_id || !body.event_type) {
-    throw badRequest("org_id and event_type are required");
+  if (!body.event_type) {
+    throw badRequest("event_type is required");
   }
 
   const quantity = body.quantity ?? 1;
@@ -348,7 +361,7 @@ app.post("/billing/usage", async (c) => {
     eventHash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
   } else {
     const minuteBucket = now.slice(0, 16); // "YYYY-MM-DDTHH:MM"
-    const hashInput = `${body.org_id}:${body.space_id ?? ""}:${body.user_id ?? ""}:${body.event_type}:${minuteBucket}`;
+    const hashInput = `${orgId}:${body.space_id ?? ""}:${body.user_id ?? ""}:${body.event_type}:${minuteBucket}`;
     const hashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(hashInput));
     eventHash = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, "0")).join("");
   }
@@ -360,7 +373,7 @@ app.post("/billing/usage", async (c) => {
   )
     .bind(
       id,
-      body.org_id,
+      orgId,
       body.space_id ?? null,
       body.event_type,
       quantity,
@@ -378,15 +391,17 @@ app.post("/billing/usage", async (c) => {
   // recomputes fresh from D1's atomic COUNT/SUM aggregate rather than trusting a number a
   // concurrent writer could have raced.
   if (body.event_type === "api_call") {
-    await recordUsageEvent(c.env.QUOTA_CACHE, body.org_id, "api_calls");
+    await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "api_calls");
   } else if (body.event_type === "kb_doc") {
-    await recordUsageEvent(c.env.QUOTA_CACHE, body.org_id, "kb_docs");
+    await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "kb_docs");
+  } else if (body.event_type === "llm_tokens") {
+    await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "llm_tokens");
   }
 
   // Enqueue to BILLING_EVENTS for async Stripe metering
   await c.env.BILLING_EVENTS.send({
     type: "meter",
-    org_id: body.org_id,
+    org_id: orgId,
     space_id: body.space_id,
     event_type: body.event_type,
     quantity,
@@ -396,6 +411,26 @@ app.post("/billing/usage", async (c) => {
   });
 
   return c.json({ recorded: true, id }, 201);
+});
+
+// ── GET /internal/usage/llm-tokens/check ─────────────────────────────────────
+// P0-3: NaelaoAgentDO's pre-run gate for a builder (owner/admin/editor/viewer) chatting with
+// their own Space Assistant (never a project-scoped run, never a signed-in product end user —
+// those have their own separate wallet/credit gates). Internal-only, HMAC-gated like every
+// sibling /internal/* route in this file; the org to check is the verified x-naelao-tenant-id
+// header, same posture as /billing/usage above.
+app.use("/internal/usage/llm-tokens/check", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.get("/internal/usage/llm-tokens/check", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+
+  const sub = await c.env.PLATFORM_DB.prepare(
+    "SELECT plan_tier FROM subscriptions WHERE org_id = ?"
+  ).bind(orgId).first<{ plan_tier: string }>();
+  const planTier = sub?.plan_tier ?? "free";
+
+  const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "llm_tokens", planTier);
+  return c.json({ ...quota, plan_tier: planTier });
 });
 
 // ── POST /internal/commerce/checkout ─────────────────────────────────────────
