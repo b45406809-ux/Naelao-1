@@ -41,6 +41,7 @@ function makeEnv(rateLimitDo?: DurableObjectNamespace) {
     KNOWLEDGE_WORKER: namedFetcher("KNOWLEDGE"),
     AGENTS_WORKER: namedFetcher("AGENTS"),
     CREDENTIALS_WORKER: namedFetcher("CREDENTIALS"),
+    AUTH_WORKER: namedFetcher("AUTH"),
     ...(rateLimitDo ? { RATE_LIMIT_DO: rateLimitDo } : {}),
   };
 }
@@ -134,5 +135,87 @@ describe("router — pre-auth rate limiting on unauthenticated end-user routes",
       makeEnv(namespace) as never, execCtx
     );
     expect(res.status).toBe(429);
+  });
+});
+
+describe("router — pre-auth rate limiting on /v1/auth/* (builder login/register/password-reset)", () => {
+  it("blocks builder login with 429 when the limiter says not allowed (this used to be completely unthrottled)", async () => {
+    const { namespace } = makeRateLimitDoNamespace(false);
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/auth/login", {
+        method: "POST", headers: { "cf-connecting-ip": "203.0.113.9", "content-type": "application/json" },
+        body: JSON.stringify({ email: "a@x.com", password: "wrong" }),
+      }),
+      makeEnv(namespace) as never, execCtx
+    );
+    expect(res.status).toBe(429);
+  });
+
+  it("blocks builder register with 429 when the limiter says not allowed (this used to be completely unthrottled)", async () => {
+    const { namespace } = makeRateLimitDoNamespace(false);
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/auth/register", {
+        method: "POST", headers: { "cf-connecting-ip": "203.0.113.9", "content-type": "application/json" },
+        body: JSON.stringify({ email: "a@x.com", password: "hunter22" }),
+      }),
+      makeEnv(namespace) as never, execCtx
+    );
+    expect(res.status).toBe(429);
+  });
+
+  it("blocks builder request-password-reset with 429 when the limiter says not allowed", async () => {
+    const { namespace } = makeRateLimitDoNamespace(false);
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/auth/request-password-reset", {
+        method: "POST", headers: { "cf-connecting-ip": "203.0.113.9", "content-type": "application/json" },
+        body: JSON.stringify({ email: "a@x.com" }),
+      }),
+      makeEnv(namespace) as never, execCtx
+    );
+    expect(res.status).toBe(429);
+  });
+
+  it("blocks builder reset-password with 429 when the limiter says not allowed", async () => {
+    const { namespace } = makeRateLimitDoNamespace(false);
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/auth/reset-password", {
+        method: "POST", headers: { "cf-connecting-ip": "203.0.113.9", "content-type": "application/json" },
+        body: JSON.stringify({ token: "t", new_password: "hunter222" }),
+      }),
+      makeEnv(namespace) as never, execCtx
+    );
+    expect(res.status).toBe(429);
+  });
+
+  it("keys builder-login and builder-register in distinct buckets", async () => {
+    const { namespace, idFromNameCalls } = makeRateLimitDoNamespace(true);
+    await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/auth/login", {
+        method: "POST", headers: { "cf-connecting-ip": "203.0.113.9", "content-type": "application/json" },
+        body: JSON.stringify({ email: "a@x.com", password: "x" }),
+      }),
+      makeEnv(namespace) as never, execCtx
+    );
+    await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/auth/register", {
+        method: "POST", headers: { "cf-connecting-ip": "203.0.113.9", "content-type": "application/json" },
+        body: JSON.stringify({ email: "a@x.com", password: "hunter22" }),
+      }),
+      makeEnv(namespace) as never, execCtx
+    );
+    expect(idFromNameCalls).toEqual(["preauth:builder-login:203.0.113.9", "preauth:builder-register:203.0.113.9"]);
+  });
+
+  it("still forwards to the auth worker when the limiter allows it through", async () => {
+    const { namespace } = makeRateLimitDoNamespace(true);
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/auth/login", {
+        method: "POST", headers: { "cf-connecting-ip": "203.0.113.9", "content-type": "application/json" },
+        body: JSON.stringify({ email: "a@x.com", password: "x" }),
+      }),
+      makeEnv(namespace) as never, execCtx
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ worker: "AUTH" });
   });
 });

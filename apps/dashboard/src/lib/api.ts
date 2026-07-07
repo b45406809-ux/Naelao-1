@@ -160,6 +160,23 @@ export async function register(
   });
 }
 
+// Launch-readiness audit follow-up: builders had no account-recovery path at all — a forgotten
+// password permanently locked a builder out of their own business. Same shape as the product
+// end-user reset flow (apps/shell's productAccount.ts).
+export async function requestPasswordReset(email: string): Promise<{ ok: boolean; message: string }> {
+  return apiFetch("/auth/request-password-reset", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+export async function resetPassword(token: string, newPassword: string): Promise<{ ok: boolean; message: string }> {
+  return apiFetch("/auth/reset-password", {
+    method: "POST",
+    body: JSON.stringify({ token, new_password: newPassword }),
+  });
+}
+
 // ── SpaceTypes ───────────────────────────────────────────────────────────────
 
 export async function listSpaceTypes(): Promise<SpaceType[]> {

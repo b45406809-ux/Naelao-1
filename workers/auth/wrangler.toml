@@ -11,8 +11,18 @@ workers_dev = false
 [vars]
 ENVIRONMENT = "development"
 JWT_EXPIRY_SECONDS = "3600"
+# Launch-readiness audit follow-up — builder password reset. Public base URL of apps/dashboard,
+# used to build a clickable reset link. Left empty rather than guessing a production domain —
+# when unset, the reset email still carries a raw token the dashboard's reset page accepts
+# pasted in by hand.
+BUILDER_DASHBOARD_URL = ""
 
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "PLACEHOLDER_D1_ID"
+
+# Launch-readiness audit follow-up — password-reset emails.
+[[services]]
+binding = "NOTIFICATIONS_WORKER"
+service = "naelao-notifications"

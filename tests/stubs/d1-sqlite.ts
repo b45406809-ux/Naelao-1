@@ -17,6 +17,7 @@ interface FakeD1Statement {
 export interface FakeD1 {
   db: DatabaseSync;
   prepare(sql: string): FakeD1Statement;
+  batch(statements: FakeD1Statement[]): Promise<{ meta: { changes: number } }[]>;
 }
 
 /** Create an in-memory SQLite database and a D1-shaped facade over it. */
@@ -46,6 +47,27 @@ export function createFakeD1(schemaSql: string[]): FakeD1 {
         },
       });
       return makeStatement([]);
+    },
+    // Real D1's batch() runs an array of prepared statements sequentially, atomically (all
+    // committed together or none at all) — mirror that with an explicit transaction rather than
+    // just looping .run() calls, so a test exercising partial-failure rollback behavior would
+    // see the same semantics as production. Added because NO existing test in this codebase
+    // exercised `.batch()` at all, which is exactly how workers/auth's /register route shipped
+    // with three real column-name bugs (see that file's own comment) undetected — schema
+    // mismatches inside a batch() call were structurally untestable until now.
+    async batch(statements: FakeD1Statement[]): Promise<{ meta: { changes: number } }[]> {
+      db.exec("BEGIN");
+      try {
+        const results: { meta: { changes: number } }[] = [];
+        for (const stmt of statements) {
+          results.push(await stmt.run());
+        }
+        db.exec("COMMIT");
+        return results;
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      }
     },
   };
 }

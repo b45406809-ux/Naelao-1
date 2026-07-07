@@ -201,17 +201,40 @@ app.get("/health", (c) =>
   c.json({ status: "ok", env: c.env.ENVIRONMENT, ts: Date.now() })
 );
 
+// Launch-readiness audit follow-up: /v1/auth/* had ZERO pre-auth rate limiting at all — login
+// (brute-force) and register (account-farming) were both completely unthrottled, and the new
+// password-reset routes below are an equally real brute-force/spam target. Same per-route-suffix
+// budget pattern as END_USER_ROUTE_LIMITS further down.
+const AUTH_ROUTE_LIMITS: Record<string, [routeKey: string, limit: number]> = {
+  login: ["builder-login", 10],
+  register: ["builder-register", 5],
+  "request-password-reset": ["builder-reset-request", 5],
+  "reset-password": ["builder-reset-confirm", 10],
+};
+
 // ── Auth routes (forwarded to auth worker) ───────────────────────────────────
 app.all("/v1/auth/*", async (c) => {
   const url = new URL(c.req.url);
+  const suffix = Object.keys(AUTH_ROUTE_LIMITS).find((s) => url.pathname.endsWith(`/${s}`));
+  if (suffix) {
+    const [routeKey, limit] = AUTH_ROUTE_LIMITS[suffix]!;
+    const rl = await checkPreAuthRateLimit(c, routeKey, limit);
+    if (!rl.allowed) {
+      return c.json({ error_code: "rate_limited", message: "Too many requests", retry_after_ms: rl.retryAfterMs }, 429);
+    }
+  }
   const downstream = new URL(url.pathname.replace("/v1/auth", ""), "http://auth");
   downstream.search = url.search;
   return c.env.AUTH_WORKER.fetch(
     new Request(downstream.toString(), {
       method: c.req.method,
+      // duplex: "half" is required by spec-compliant fetch implementations (Node's undici, used
+      // by this repo's own tests) whenever a streaming body is attached — same fix already
+      // applied to the session proxy and the end-users proxy.
       headers: c.req.raw.headers,
       body: c.req.raw.body,
-    })
+      duplex: "half",
+    } as RequestInit)
   );
 });
 
