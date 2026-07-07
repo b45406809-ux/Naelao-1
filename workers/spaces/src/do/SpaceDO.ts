@@ -746,6 +746,34 @@ const MIGRATIONS: Migration[] = [
         ON wallet_ledger(project_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
     `,
   },
+  {
+    // External revenue tracker: a business whose real sales happen on a platform Naelao never
+    // custodies money through (Whop, most commonly) has no natural point for Naelao/the builder
+    // to take a cut the way the wallet-settlement path (P0-5) does for LS-native storefront
+    // sales. This tracks that business's own reported gross revenue per period (read-only, via
+    // the existing mcp-connector prebuilt's `list_payments` call against the business's OWN
+    // Whop credential) so a builder-configured revenue-cut % can be billed as an additional
+    // charge — the actual cut/billing logic lives in the billing worker; this table is purely
+    // the observed-revenue ledger. One row per (space, period, provider): re-tracking the SAME
+    // period overwrites it (a snapshot of "revenue observed as of the last check", not an
+    // accumulating ledger — a period's revenue can only grow as more of it completes, so the
+    // latest observation is what matters for billing).
+    version: 26,
+    description: "external_revenue_snapshots (Whop-native business revenue tracker)",
+    up: `
+      CREATE TABLE IF NOT EXISTS external_revenue_snapshots (
+        id             TEXT PRIMARY KEY,
+        space_id       TEXT NOT NULL,
+        period         TEXT NOT NULL, -- 'YYYY-MM'
+        provider       TEXT NOT NULL DEFAULT 'whop',
+        revenue_cents  INTEGER NOT NULL DEFAULT 0,
+        billed         INTEGER NOT NULL DEFAULT 0, -- 1 once a revenue-cut surcharge has been charged for this period
+        tracked_at     TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_ext_revenue_period ON external_revenue_snapshots(space_id, period, provider);
+      CREATE INDEX IF NOT EXISTS idx_ext_revenue_tracked ON external_revenue_snapshots(space_id, tracked_at DESC);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1058,6 +1086,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // real LLM cost against it.
       if (method === "GET" && url.pathname === "/wallet-project") {
         return this.findWalletProject(url.searchParams.get("space_id") ?? "");
+      }
+      // External revenue tracker (Whop-native business cut) — the revenue-tracker prebuilt
+      // POSTs a period's observed gross revenue here; the billing worker reads it back to
+      // compute a builder-configured cut surcharge.
+      if (method === "POST" && url.pathname === "/revenue-tracking") {
+        return this.recordExternalRevenue(request);
+      }
+      if (method === "GET" && url.pathname === "/revenue-tracking") {
+        return this.getExternalRevenue(url.searchParams);
       }
       // ── project-scoped Memory OS Layers 3/4/6 (§A1.17 Phase U) ─────────────────
       const projFactsMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/facts$/);
@@ -2472,6 +2509,70 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       spaceId
     );
     return Response.json({ project_id: row?.id ?? null });
+  }
+
+  // External revenue tracker (Whop-native business cut): the revenue-tracker prebuilt reports
+  // a period's observed gross revenue here (upsert — re-tracking the same period overwrites the
+  // prior observation, since more of a period's payments can complete between checks). `billed`
+  // defaults to 0 on every upsert of an UNBILLED period; an already-billed period is left alone
+  // (billed=1 preserved) unless the revenue figure itself changed, in which case it reverts to
+  // unbilled — a corrected/updated revenue figure for an already-charged period should be
+  // re-billable, not silently stuck at a stale charged amount forever.
+  private async recordExternalRevenue(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; period?: string; provider?: string; revenue_cents?: number }>()
+      .catch(() => ({}) as Record<string, never>);
+    const spaceId = body.space_id ?? "";
+    const period = body.period ?? "";
+    const provider = body.provider ?? "whop";
+    const revenueCents = Number.isFinite(body.revenue_cents) ? Math.max(0, Math.round(body.revenue_cents!)) : NaN;
+    if (!spaceId || !/^\d{4}-\d{2}$/.test(period) || !Number.isFinite(revenueCents)) {
+      return Response.json({ error_code: "bad_request", message: "space_id, period ('YYYY-MM'), and revenue_cents are required" }, { status: 400 });
+    }
+
+    const existing = queryOne<{ revenue_cents: number; billed: number }>(
+      this.ctx.storage.sql as never,
+      "SELECT revenue_cents, billed FROM external_revenue_snapshots WHERE space_id = ? AND period = ? AND provider = ?",
+      spaceId, period, provider
+    );
+    const billed = existing && existing.billed === 1 && existing.revenue_cents === revenueCents ? 1 : 0;
+
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO external_revenue_snapshots (id, space_id, period, provider, revenue_cents, billed, tracked_at)
+       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(space_id, period, provider) DO UPDATE SET
+         revenue_cents = excluded.revenue_cents, billed = excluded.billed, tracked_at = excluded.tracked_at`,
+      crypto.randomUUID(), spaceId, period, provider, revenueCents, billed
+    );
+    return Response.json({ space_id: spaceId, period, provider, revenue_cents: revenueCents, billed: billed === 1 }, { status: 201 });
+  }
+
+  private getExternalRevenue(params: URLSearchParams): Response {
+    const spaceId = params.get("space_id") ?? "";
+    if (!spaceId) return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
+    const provider = params.get("provider") ?? "whop";
+    const period = params.get("period");
+
+    if (period) {
+      const row = queryOne<{ revenue_cents: number; billed: number; tracked_at: string }>(
+        this.ctx.storage.sql as never,
+        "SELECT revenue_cents, billed, tracked_at FROM external_revenue_snapshots WHERE space_id = ? AND period = ? AND provider = ?",
+        spaceId, period, provider
+      );
+      if (!row) return Response.json({ space_id: spaceId, period, provider, revenue_cents: 0, billed: false, tracked_at: null });
+      return Response.json({ space_id: spaceId, period, provider, revenue_cents: row.revenue_cents, billed: row.billed === 1, tracked_at: row.tracked_at });
+    }
+
+    const rows = queryAll<{ period: string; revenue_cents: number; billed: number; tracked_at: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT period, revenue_cents, billed, tracked_at FROM external_revenue_snapshots WHERE space_id = ? AND provider = ? ORDER BY period DESC LIMIT 24",
+      spaceId, provider
+    );
+    return Response.json({
+      space_id: spaceId, provider,
+      snapshots: rows.map((r) => ({ period: r.period, revenue_cents: r.revenue_cents, billed: r.billed === 1, tracked_at: r.tracked_at })),
+      last_tracked_at: rows[0]?.tracked_at ?? null,
+    });
   }
 
   private getWalletBalance(projectId: string): Response {

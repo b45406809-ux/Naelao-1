@@ -44,8 +44,10 @@ function hub(ctx: PrebuiltOpContext): Fetcher {
 /** Common headers for hub calls — tenant scopes the registry; agent id is for credential audit.
  *  §A1.17 Phase I: mcp-hub now gates its routes with requireInternalHmac (defense-in-depth on
  *  top of workers_dev=false, matching every other internal-only worker) — mints a real,
- *  60s-scoped token rather than trusting a static identity header. */
-async function hubHeaders(ctx: PrebuiltOpContext): Promise<Record<string, string>> {
+ *  60s-scoped token rather than trusting a static identity header.
+ *  Exported so other prebuilts (e.g. revenue-tracker) can call an already-registered MCP server's
+ *  tool without re-implementing the hub request-shaping/credential-resolution logic. */
+export async function hubHeaders(ctx: PrebuiltOpContext): Promise<Record<string, string>> {
   return {
     "content-type": "application/json",
     "x-naelao-tenant-id": ctx.env.tenantId,
@@ -55,7 +57,7 @@ async function hubHeaders(ctx: PrebuiltOpContext): Promise<Record<string, string
   };
 }
 
-async function hubFetch(
+export async function hubFetch(
   ctx: PrebuiltOpContext,
   path: string,
   init: { method: string; body?: unknown }
@@ -76,7 +78,7 @@ async function hubFetch(
 }
 
 /** Resolve a server reference (name OR id) to its registry id. */
-async function resolveServerId(ctx: PrebuiltOpContext, ref: string): Promise<string> {
+export async function resolveServerId(ctx: PrebuiltOpContext, ref: string): Promise<string> {
   const listed = (await hubFetch(ctx, "/mcp-servers", { method: "GET" })) as { data?: HubServer[] };
   const servers = listed.data ?? [];
   const match = servers.find((s) => s.id === ref) ?? servers.find((s) => s.name === ref);

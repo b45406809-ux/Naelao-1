@@ -35,6 +35,7 @@ import { workspaceAdmin } from "./workspace-admin.js";
 import { localMachine } from "./local-machine.js";
 import { workspace } from "./workspace.js";
 import { wallet } from "./wallet.js";
+import { revenueTracker } from "./revenue-tracker.js";
 
 /** Context handed to every prebuilt operation. */
 export interface PrebuiltOpContext {
@@ -95,6 +96,10 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // Launchpad Wallet (user-directed feature) — a business's own Naelao-held stored-value
   // balance; see wallet.ts's header for the money-transmission scope boundary this keeps to.
   [wallet.name]: wallet,
+  // External revenue tracker (go-live monetization pass) — tracks a business's own reported
+  // revenue on platforms Naelao never custodies money through (Whop), so a builder-configured
+  // revenue-cut % can be billed as a surcharge; see revenue-tracker.ts's header.
+  [revenueTracker.name]: revenueTracker,
 };
 
 /**
