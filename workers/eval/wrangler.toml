@@ -18,7 +18,10 @@ ENVIRONMENT = "development"
 EVAL_LLM_URL = "https://api.anthropic.com/v1"
 
 [env.staging]
-vars = { ENVIRONMENT = "staging" }
+# wrangler does NOT merge [env.X].vars with the top-level [vars] block — it replaces it
+# entirely, so EVAL_LLM_URL must be repeated here or it's undefined in staging.
+vars = { ENVIRONMENT = "staging", EVAL_LLM_URL = "https://api.anthropic.com/v1" }
 
 [env.production]
-vars = { ENVIRONMENT = "production" }
+# See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
+vars = { ENVIRONMENT = "production", EVAL_LLM_URL = "https://api.anthropic.com/v1" }

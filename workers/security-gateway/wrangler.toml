@@ -29,7 +29,11 @@ RATE_LIMIT_AUTH = "10"
 RATE_LIMIT_TENANT = "500"
 
 [env.staging]
-vars = { ENVIRONMENT = "staging" }
+# wrangler does NOT merge [env.X].vars with the top-level [vars] block — it replaces it
+# entirely, so the RATE_LIMIT_* vars must be repeated here or they're undefined (and every
+# limit check falls back to whatever the code defaults to) in staging.
+vars = { ENVIRONMENT = "staging", RATE_LIMIT_GLOBAL = "1000", RATE_LIMIT_AUTH = "10", RATE_LIMIT_TENANT = "500" }
 
 [env.production]
-vars = { ENVIRONMENT = "production" }
+# See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
+vars = { ENVIRONMENT = "production", RATE_LIMIT_GLOBAL = "1000", RATE_LIMIT_AUTH = "10", RATE_LIMIT_TENANT = "500" }

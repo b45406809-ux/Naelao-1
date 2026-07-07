@@ -27,7 +27,11 @@ CF_ACCOUNT_ID = ""
 CF_ANALYTICS_API_TOKEN = ""
 
 [env.staging]
-vars = { ENVIRONMENT = "staging" }
+# wrangler does NOT merge [env.X].vars with the top-level [vars] block — it replaces it
+# entirely, so CF_ACCOUNT_ID/CF_ANALYTICS_API_TOKEN must be repeated here or they're undefined
+# in staging. Override CF_ANALYTICS_API_TOKEN via `wrangler secret put ... --env staging`.
+vars = { ENVIRONMENT = "staging", CF_ACCOUNT_ID = "", CF_ANALYTICS_API_TOKEN = "" }
 
 [env.production]
-vars = { ENVIRONMENT = "production" }
+# See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
+vars = { ENVIRONMENT = "production", CF_ACCOUNT_ID = "", CF_ANALYTICS_API_TOKEN = "" }

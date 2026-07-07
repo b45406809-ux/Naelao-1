@@ -203,7 +203,13 @@ NAELAO_GATEWAY_ID = "naelao-gateway"
 binding = "AI"
 
 [env.staging]
-vars = { ENVIRONMENT = "staging" }
+# wrangler does NOT merge [env.X].vars with the top-level [vars] block — it replaces it
+# entirely. NAELAO_ACCOUNT_ID/NAELAO_GATEWAY_ID must be repeated here or every LLM call in
+# staging silently falls back to the direct Anthropic API (resolveAnthropicUrl treats a missing
+# accountId the same as "placeholder") — the CF AI Gateway wiring in shared/ai-client.ts would
+# never actually activate. Override NAELAO_ACCOUNT_ID with the real Cloudflare account id via
+# `wrangler secret put NAELAO_ACCOUNT_ID --env staging` once a real gateway exists.
+vars = { ENVIRONMENT = "staging", NAELAO_ACCOUNT_ID = "placeholder", NAELAO_GATEWAY_ID = "naelao-gateway" }
 
 [[env.staging.services]]
 binding = "KNOWLEDGE_WORKER"
@@ -230,7 +236,10 @@ binding = "BROWSER_WORKER"
 service = "naelao-browser"
 
 [env.production]
-vars = { ENVIRONMENT = "production" }
+# See [env.staging]'s comment above — same wrangler vars-replacement gotcha. Override
+# NAELAO_ACCOUNT_ID with the real Cloudflare account id via
+# `wrangler secret put NAELAO_ACCOUNT_ID --env production` once a real gateway exists.
+vars = { ENVIRONMENT = "production", NAELAO_ACCOUNT_ID = "placeholder", NAELAO_GATEWAY_ID = "naelao-gateway" }
 
 [[env.production.services]]
 binding = "KNOWLEDGE_WORKER"

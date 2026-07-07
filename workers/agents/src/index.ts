@@ -10,7 +10,7 @@ import { Hono } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { getDOName } from "@naelao/crypto";
-import { detectPromptInjection, moderateText } from "@naelao/moderation";
+import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
 import { parseMentions, type MentionableAgent } from "@naelao/events";
 import { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
@@ -256,6 +256,19 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     throw badRequest("goal must not exceed 10,000 characters");
   }
   const body = { ...rawBody, goal: resolvedGoal };
+
+  // Security audit follow-up: `moderateText`/content-policy blocking was imported but never
+  // actually called anywhere on this path — the ONLY input-side check on a chat message was
+  // the injection detector below, which is deliberately silent (no oracle) so a jailbreak
+  // attempt gets tracked/rate-limited rather than told it was caught. That reasoning does not
+  // apply to hard policy violations (CSAM text, weapons/bioweapon synthesis, violence) — there's
+  // no "attacker iterating on a jailbreak" harm model to protect against revealing detection for;
+  // the harm is the content itself, so these block outright, distinct from the injection
+  // detector's silent-tracking behavior which stays as-is below.
+  const policyFlags = detectPolicyViolations(body.goal);
+  if (policyFlags.length > 0) {
+    return c.json({ error_code: "content_blocked", message: "This message violates content policy" }, 400);
+  }
 
   // G-AO17: Runtime prompt injection detection — silent detection, no oracle
   const { userId } = getCallerIdentity(c);
