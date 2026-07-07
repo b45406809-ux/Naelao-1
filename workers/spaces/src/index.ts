@@ -2706,6 +2706,28 @@ app.get("/reseller/statement", async (c) => {
   });
 });
 
+// POST /internal/payout-requests/:id/fulfill — v1 manual fulfillment: an ops action (real bank
+// transfer done outside this system) marks a pending payout_requests row paid or rejected.
+// Deliberately NOT a builder-facing route — see migration 0053's header for why this is manual by
+// design rather than an automated payout API. Internal-HMAC-gated like every other ops-only route
+// in this file; no admin dashboard UI yet (same "backend built, UI is next" precedent as every
+// other manual-fulfillment step in this build).
+app.use("/internal/payout-requests/:id/fulfill", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/payout-requests/:id/fulfill", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<{ status?: "paid" | "rejected"; fulfilled_by?: string; notes?: string }>().catch(() => ({}) as Record<string, never>);
+  if (body.status !== "paid" && body.status !== "rejected") {
+    return c.json({ error_code: "bad_request", message: "status must be 'paid' or 'rejected'" }, 400);
+  }
+  const result = await c.env.PLATFORM_DB.prepare(
+    "UPDATE payout_requests SET status = ?, fulfilled_at = datetime('now'), fulfilled_by = ?, notes = ? WHERE id = ? AND status = 'pending'"
+  ).bind(body.status, body.fulfilled_by ?? null, body.notes ?? null, id).run();
+  if (result.meta.changes === 0) {
+    return c.json({ error_code: "not_found", message: "No pending payout request with that id" }, 404);
+  }
+  return c.json({ id, status: body.status });
+});
+
 /** Assert the caller's tenant is the parent reseller of childTenantId; returns the row or null. */
 async function assertResellerParent(
   env: Env,

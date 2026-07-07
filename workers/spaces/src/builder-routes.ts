@@ -795,4 +795,61 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     ).bind(auth.tenantId).all();
     return c.json({ data: results });
   });
+
+  // ── /builder/payouts — draw a builder's accumulated reseller_ledger cut (business
+  // subscriptions, product orders, seat activations, revenue-cut surcharges — every payer class
+  // already attributed there) out as a real payout request. v1 is manual-fulfillment BY DESIGN:
+  // Lemon Squeezy is a merchant-of-record with single-account custody and no Stripe-Connect-style
+  // split-payment primitive, so there is no automated payout API to wire yet — see migration
+  // 0053's own header for the full reasoning. reseller_ledger itself stays a pure append-only
+  // revenue record; payout_requests is a separate withdrawal-request ledger drawn against it.
+  async function computeAvailableBalance(env: BuilderRoutesEnv, tenantId: string): Promise<{ cents: number; currency: string }> {
+    const earned = await env.PLATFORM_DB.prepare(
+      "SELECT COALESCE(SUM(margin_cents), 0) AS cents, currency FROM reseller_ledger WHERE parent_tenant_id = ? GROUP BY currency ORDER BY cents DESC LIMIT 1"
+    ).bind(tenantId).first<{ cents: number; currency: string }>();
+    if (!earned) return { cents: 0, currency: "USD" };
+    // Every non-rejected request (pending OR already paid) reduces what's still available to
+    // request again — a rejected request frees its amount back up.
+    const requested = await env.PLATFORM_DB.prepare(
+      "SELECT COALESCE(SUM(amount_cents), 0) AS cents FROM payout_requests WHERE tenant_id = ? AND currency = ? AND status != 'rejected'"
+    ).bind(tenantId, earned.currency).first<{ cents: number }>();
+    return { cents: Math.max(0, earned.cents - (requested?.cents ?? 0)), currency: earned.currency };
+  }
+
+  app.get("/builder/payouts/balance", async (c) => {
+    const env = c.env as BuilderRoutesEnv;
+    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
+    const balance = await computeAvailableBalance(env, auth.tenantId);
+    return c.json({ available_cents: balance.cents, currency: balance.currency });
+  });
+
+  app.post("/builder/payouts/request", async (c) => {
+    const env = c.env as BuilderRoutesEnv;
+    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
+
+    const balance = await computeAvailableBalance(env, auth.tenantId);
+    if (balance.cents <= 0) {
+      return c.json({ error_code: "nothing_to_withdraw", message: "No available balance to request a payout for" }, 400);
+    }
+
+    const id = crypto.randomUUID();
+    const requestedBy = c.req.header("x-naelao-user-id") ?? null;
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO payout_requests (id, tenant_id, requested_by, amount_cents, currency, status) VALUES (?, ?, ?, ?, ?, 'pending')"
+    ).bind(id, auth.tenantId, requestedBy, balance.cents, balance.currency).run();
+
+    return c.json({ id, tenant_id: auth.tenantId, amount_cents: balance.cents, currency: balance.currency, status: "pending" }, 201);
+  });
+
+  app.get("/builder/payouts", async (c) => {
+    const env = c.env as BuilderRoutesEnv;
+    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
+    const { results } = await env.PLATFORM_DB.prepare(
+      "SELECT id, amount_cents, currency, status, requested_at, fulfilled_at, notes FROM payout_requests WHERE tenant_id = ? ORDER BY requested_at DESC LIMIT 100"
+    ).bind(auth.tenantId).all();
+    return c.json({ data: results });
+  });
 }
