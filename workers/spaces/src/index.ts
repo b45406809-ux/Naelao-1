@@ -1281,6 +1281,38 @@ app.patch("/spaces/:spaceId/assistant-policy", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// ── Builder observability surface (security audit follow-up) ────────────────
+// A builder had no consolidated view of what their agent has actually been doing — run
+// history, cost, why it escalated. NaelaoAgentDO posts one row per run completion/failure and
+// per approval request/resolution to POST /internal/spaces/:spaceId/agent-activity (internal
+// only — see NaelaoAgentDO.logAgentActivity); GET /spaces/:spaceId/agent-activity is the
+// builder-facing read, deliberately builder-only (not requireBusinessMembership like
+// assistant-policy's GET) — this can surface other end users' escalation summaries, which is a
+// builder's own internal audit view, not something to expose to an end user reading their own
+// business.
+app.use("/internal/spaces/:spaceId/agent-activity", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/spaces/:spaceId/agent-activity", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/agent-activity", "POST", c.req.raw.body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.use("/spaces/:spaceId/agent-activity", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/spaces/:spaceId/agent-activity", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (getCallerIdentity(c).role === "product_end_user") {
+    return c.json({ error_code: "forbidden", message: "This is a builder-only view" }, 403);
+  }
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const qs = new URL(c.req.url).search;
+  const res = await forwardToSpaceDO(stub, `/agent-activity${qs}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // ── Agent API keys (§A1.17 Phase O) ──────────────────────────────────────────
 // "The same API a human can use, but attributed to the agent itself." Builder-only (owner/admin,
 // tenant-match via x-naelao-tenant-id — same authorization depth as member-billing/scheduled-jobs

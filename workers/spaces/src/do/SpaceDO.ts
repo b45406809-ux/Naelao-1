@@ -774,6 +774,37 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_ext_revenue_tracked ON external_revenue_snapshots(space_id, tracked_at DESC);
     `,
   },
+  {
+    // Security audit follow-up (observability gap): a builder had no way to see what their
+    // agent has actually been doing — no run history, no cost, no visibility into why it
+    // escalated. agent_runs lives inside NaelaoAgentDO, one DO per (space, project, thread) —
+    // querying it for a whole product would mean opening every single agent DO, the same
+    // "doesn't scale" problem business_memberships/threads-mirroring already solved elsewhere
+    // on this platform. Mirrors that precedent: NaelaoAgentDO posts one row here per run
+    // completion/failure and per approval request/resolution, via a new internal HMAC-gated
+    // endpoint — SpaceDO becomes the single, product-wide, paginated read surface a builder
+    // dashboard can query directly.
+    version: 27,
+    description: "agent_activity_log — cross-DO builder observability surface",
+    up: `
+      CREATE TABLE IF NOT EXISTS agent_activity_log (
+        id           TEXT PRIMARY KEY,
+        space_id     TEXT NOT NULL,
+        project_id   TEXT,
+        thread_id    TEXT,
+        agent_id     TEXT NOT NULL,
+        event_type   TEXT NOT NULL CHECK (event_type IN (
+          'run_completed', 'run_failed', 'approval_requested', 'approval_resolved', 'moderation_blocked'
+        )),
+        summary      TEXT NOT NULL DEFAULT '',
+        tokens_used  INTEGER,
+        cost_credits INTEGER,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_activity_space ON agent_activity_log(space_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_agent_activity_project ON agent_activity_log(project_id, created_at DESC);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1138,6 +1169,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (method === "POST" && projectSpendMatch?.[1]) {
         return this.debitProjectSpend(projectSpendMatch[1], request);
+      }
+      // ── Builder observability surface (security audit follow-up) ──────────────
+      // `await` here (not bare `return this.recordAgentActivity(...)`) deliberately, unlike most
+      // handlers in this dispatcher: an async handler invoked via a bare `return` returns its
+      // promise BEFORE this function's own try/catch scope has anything left to catch, so a
+      // rejection from it becomes an unhandled rejection instead of the intended 500 — a
+      // pre-existing bug in this dispatcher's general pattern, out of scope to fix everywhere
+      // here, but easy to just not introduce in this new code.
+      if (method === "POST" && url.pathname === "/agent-activity") {
+        return await this.recordAgentActivity(request);
+      }
+      if (method === "GET" && url.pathname === "/agent-activity") {
+        return this.listAgentActivity(url.searchParams);
       }
       // ── Container Marketplace slots (§A1.17 Phase L) ───────────────────────────
       const containerSlotsMatch = url.pathname.match(/^\/projects\/([^/]+)\/container-slots$/);
@@ -2479,6 +2523,55 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const spentToday = row?.credits ?? 0;
     const cap = project.daily_spend_cap_credits;
     return Response.json({ project_id: projectId, day, spent_today: spentToday, cap, capped: cap > 0 && spentToday >= cap });
+  }
+
+  // ── Builder observability surface (security audit follow-up) ───────────────
+  // POST /agent-activity — internal only (NaelaoAgentDO posts one row per run completion/
+  // failure and per approval request/resolution). Never blocks the caller's own response on a
+  // write failure — see NaelaoAgentDO's logAgentActivity, which wraps every call in its own
+  // best-effort try/catch, same posture as notifyApprovalRequested.
+  private async recordAgentActivity(request: Request): Promise<Response> {
+    const body = await request.json<{
+      space_id: string;
+      project_id?: string | null;
+      thread_id?: string | null;
+      agent_id: string;
+      event_type: "run_completed" | "run_failed" | "approval_requested" | "approval_resolved" | "moderation_blocked";
+      summary?: string;
+      tokens_used?: number | null;
+      cost_credits?: number | null;
+    }>().catch(() => null);
+    if (!body?.space_id || !body.agent_id || !body.event_type) {
+      return Response.json({ error_code: "bad_request", message: "space_id, agent_id, event_type are required" }, { status: 400 });
+    }
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO agent_activity_log (id, space_id, project_id, thread_id, agent_id, event_type, summary, tokens_used, cost_credits)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      crypto.randomUUID(), body.space_id, body.project_id ?? null, body.thread_id ?? null,
+      body.agent_id, body.event_type, (body.summary ?? "").slice(0, 2000),
+      body.tokens_used ?? null, body.cost_credits ?? null
+    );
+    return Response.json({ ok: true }, { status: 201 });
+  }
+
+  // GET /agent-activity?project_id=&limit= — builder-facing paginated read (newest first), gated
+  // builder-only at the spaces-worker route (product_end_user callers never reach this).
+  private listAgentActivity(params: URLSearchParams): Response {
+    const projectId = params.get("project_id");
+    const limit = Math.min(Math.max(parseInt(params.get("limit") ?? "50", 10) || 50, 1), 200);
+    const rows = projectId
+      ? queryAll(
+          this.ctx.storage.sql as never,
+          "SELECT * FROM agent_activity_log WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
+          projectId, limit
+        )
+      : queryAll(
+          this.ctx.storage.sql as never,
+          "SELECT * FROM agent_activity_log ORDER BY created_at DESC LIMIT ?",
+          limit
+        );
+    return Response.json({ data: rows, count: rows.length });
   }
 
   // ── Launchpad Wallet (user-directed feature) ────────────────────────────────

@@ -1010,14 +1010,43 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     test coverage (`router-preauth-rate-limit.test.ts`,
     `notifications-internal-notify.test.ts`, password-reset cases added to
     `product-end-user-auth.test.ts`, currency cases added to `builder-payout-requests.test.ts`).
-    1338/1338 tests pass (18 new), `pnpm turbo run typecheck` clean (75 tasks). **Not fixed in
-    this pass (documented, not dropped):** no email-verification step at signup (the rate limiter
-    substantially closes the farming vector but doesn't eliminate it — a real verification flow
-    is a larger, separate feature); `CORS_ALLOWLIST` is still one static platform-wide env var,
-    which can't scale to arbitrary per-builder custom domains — needs to become data-driven
-    (resolve against `business_services`/product slug) in its own pass; builder-facing run/audit
-    observability (a builder needs to see what their agent did and why it escalated — the data
-    exists, there's no consolidated view) remains a real product gap, not a bug.
+    1338/1338 tests pass (18 new), `pnpm turbo run typecheck` clean (75 tasks).
+40. **The three items item 39 deferred are now BUILT: email verification (closing the free-credit-
+    farming hole for real), data-driven CORS, and a builder-facing agent activity log.** Signup's
+    free-credit grant no longer fires immediately — it's deferred until a real inbox redeems a
+    verification token (`POST /spaces/:spaceId/end-users/verify-email`, plus
+    `resend-verification`; migration `0055_email_verification.sql`). CORS is now resolved
+    dynamically in the router (`isDynamicOriginAllowed`) against `spaces.product_slug` (any
+    active product's `{slug}.naelao.com`) and `business_services.custom_domain` (any active
+    custom domain), KV-cached 60s, falling back to the static `CORS_ALLOWLIST` — closes the gap
+    where `apps/shell`, the Product Shell every end user uses, was never actually in the
+    allowlist. Builder observability: a new SpaceDO table `agent_activity_log` (migration v27)
+    is the cross-thread, product-wide mirror `NaelaoAgentDO` posts to (one row per run
+    completion/failure and per approval request) via `POST /internal/spaces/:spaceId/
+    agent-activity`, readable by the builder via `GET /spaces/:spaceId/agent-activity`
+    (deliberately builder-only, unlike `assistant-policy`'s end-user-readable GET, since this can
+    surface other end users' escalation summaries) — same "mirror into SpaceDO because opening
+    every agent DO doesn't scale" precedent as thread/sub-agent mirroring.
+    **A costly false trail worth recording:** while adding these routes, `product-shell-manifest.
+    test.ts` started failing in a way that looked exactly like the pre-documented Hono
+    RegExpRouter route-table-scale bug (record-install's own comment) — reproduced repeatedly
+    against route count, shape, file position, a mounted sub-app, and even a full TrieRouter
+    swap (which fixed nothing and broke 9 MORE tests, immediately reverted). The real cause was
+    mundane: `issueVerificationToken`'s `INSERT INTO email_verification_tokens` had no try/catch
+    unlike the credit-grant code it replaced, and that test file's own D1 fixture doesn't load
+    migration 0055 — so `signupEndUser`, called by unrelated PATCH/list tests as setup, threw
+    and corrupted THEIR state, not the router. Fixed with one try/catch (matching the codebase's
+    own "never fail an already-successful mutation over a side effect" convention everywhere
+    else) and one stale test assertion updated for the new deferred-grant behavior. Lesson: when
+    a failure looks exactly like a documented prior bug, verify against the actual failing
+    assertion before re-deriving the same diagnosis — a five-minute read of the stack trace would
+    have found this in one pass instead of many. 1364/1364 tests pass (26 new),
+    `pnpm turbo run typecheck` clean (75 tasks). **Not built in this pass:** the router bug
+    detour did surface one real, still-open finding worth keeping — `workers/spaces/src/index.ts`
+    is 170+ routes in one file with zero test coverage of the router's own compilation at that
+    scale; splitting it into mounted sub-apps (the technique tried and reverted here, which DID
+    work mechanically, just wasn't the actual fix needed) remains a legitimate future
+    maintainability improvement, not an active bug.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

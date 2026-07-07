@@ -2196,10 +2196,30 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
       }
 
+      // Security audit follow-up (observability gap): one row per completed run, independent of
+      // and in addition to the billing debit branches above (this is a separate concern — a
+      // builder-readable log, not a payer's balance). Computed the same way the debit branches
+      // already compute credits, just not tied to any one payer.
+      void this.logAgentActivity(spaceId, tenantId, agentId, result.result?.ok ? "run_completed" : "run_failed", {
+        projectId: projectId ?? null,
+        threadId: sessionId,
+        summary: result.result?.ok
+          ? (typeof result.result.output === "string" ? result.result.output.slice(0, 500) : `Goal: ${body.goal.slice(0, 200)}`)
+          : (result.result?.error ? String(result.result.error).slice(0, 500) : "Run did not complete successfully"),
+        tokensUsed: result.result?.tokens_used ?? null,
+        costCredits: result.result?.input_tokens || result.result?.output_tokens
+          ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, body.model ?? "claude-haiku-4-5-20251001")
+          : (result.result?.tokens_used ?? null),
+      });
+
       return Response.json(result);
     } catch (err) {
+      const errMessage = err instanceof Error ? err.message : String(err);
+      void this.logAgentActivity(spaceId, tenantId, agentId, "run_failed", {
+        projectId: projectId ?? null, threadId: sessionId, summary: errMessage.slice(0, 500),
+      });
       return Response.json(
-        { error: err instanceof Error ? err.message : String(err) },
+        { error: errMessage },
         { status: 500 }
       );
     }
@@ -2355,6 +2375,46 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * SQLite is whichever agent's memory it was constructed for, and notify.email touches no
    * memory anyway, so there is nothing to gain from routing through the script engine here.
    */
+  /**
+   * Security audit follow-up (observability gap): posts one row to SpaceDO's agent_activity_log
+   * — the single, product-wide, builder-readable surface for "what has my agent been doing"
+   * (SpaceDO's own DO instance is shared across the whole space, unlike this DO which is
+   * per-thread/per-agent — same "mirror into SpaceDO because it doesn't scale to open every
+   * agent DO" precedent as thread/sub-agent mirroring). Best-effort and never awaited by
+   * meaningfully blocking the caller — a logging failure must never fail an already-completed
+   * run or a pending approval.
+   */
+  private async logAgentActivity(
+    spaceId: string,
+    tenantId: string,
+    agentId: string,
+    eventType: "run_completed" | "run_failed" | "approval_requested" | "moderation_blocked",
+    opts: { projectId?: string | null; threadId?: string | null; summary?: string; tokensUsed?: number | null; costCredits?: number | null } = {}
+  ): Promise<void> {
+    if (!this.env.SPACES_WORKER || !tenantId) return;
+    try {
+      await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/internal/spaces/${spaceId}/agent-activity`,
+        {
+          method: "POST",
+          headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+          body: JSON.stringify({
+            space_id: spaceId,
+            project_id: opts.projectId ?? null,
+            thread_id: opts.threadId ?? null,
+            agent_id: agentId,
+            event_type: eventType,
+            summary: opts.summary ?? "",
+            tokens_used: opts.tokensUsed ?? null,
+            cost_credits: opts.costCredits ?? null,
+          }),
+        }
+      ));
+    } catch {
+      /* best-effort — never fails the caller's own run/approval flow */
+    }
+  }
+
   private async notifyApprovalRequested(
     spaceId: string,
     tenantId: string,
@@ -2367,6 +2427,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // notification is configured below — a connected dashboard/shell client sees the pending
     // approval immediately rather than only via the owner's inbox.
     await broadcastSpaceEvent(this.env, tenantId, spaceId, "approval.requested", { approval_id: approvalId, agent_id: agentId, action: actionName });
+    void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", { summary: `${actionName}: ${description}`.slice(0, 500) });
 
     if (!this.env.NOTIFICATIONS_WORKER || !this.env.SPACES_WORKER || !tenantId) return;
     try {

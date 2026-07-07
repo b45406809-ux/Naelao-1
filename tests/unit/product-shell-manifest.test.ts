@@ -273,10 +273,13 @@ describe("GET/PATCH /spaces/:spaceId/product-users/me", () => {
     const body = await res.json() as { email: string; credits_balance: number; end_user_id: string };
     expect(body.email).toBe("jane@acme.com");
     expect(body.end_user_id).toBe(signup.end_user_id);
-    // Metering enforcement follow-up: a product with no pricingConfig at all now grants the
-    // platform free-tier default (100) at signup rather than leaving every end user at a
-    // permanent 0 balance that the pre-run credit gate would otherwise lock out immediately.
-    expect(body.credits_balance).toBe(100);
+    // Security audit follow-up: the platform free-tier default (100 credits) no longer grants
+    // immediately at signup — it's deferred until the signup verification email is redeemed
+    // (closes the free-credit-farming hole; see product-end-user-routes.ts). This env's D1
+    // schema doesn't include the email_verification_tokens migration, so the grant never even
+    // gets attempted (best-effort, signup still succeeds regardless — see the try/catch around
+    // issueVerificationToken) — 0 is the correct, expected balance immediately after signup.
+    expect(body.credits_balance).toBe(0);
   });
 
   it("404s for a non-end-user (builder) caller", async () => {

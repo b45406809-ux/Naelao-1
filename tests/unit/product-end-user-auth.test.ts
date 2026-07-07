@@ -28,9 +28,10 @@ const SPACES_TABLE_SQL = `
 const CREDENTIALS_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0046_product_end_user_credentials.sql"), "utf8");
 const BUILDER_DASHBOARD_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0045_builder_dashboard_api.sql"), "utf8");
 const PASSWORD_RESET_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0054_password_reset_tokens.sql"), "utf8");
+const EMAIL_VERIFICATION_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0055_email_verification.sql"), "utf8");
 
 function makeEnv() {
-  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION]);
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, PASSWORD_RESET_MIGRATION, EMAIL_VERIFICATION_MIGRATION]);
   const notifyCalls: Array<{ to: string; subject: string; body: string }> = [];
   return {
     PLATFORM_SECRET: "test-platform-secret",
@@ -58,6 +59,14 @@ async function seedProduct(env: ReturnType<typeof makeEnv>, id: string, tenantId
   await env.PLATFORM_DB.prepare(
     "INSERT INTO spaces (id, tenant_id, status, name, config_json) VALUES (?, ?, 'active', 'Acme Store', ?)"
   ).bind(id, tenantId, configJson).run();
+}
+
+/** Extracts the verification token from the most recent notify() call and redeems it. */
+async function verifyEmail(env: ReturnType<typeof makeEnv>, productId: string): Promise<Response> {
+  const call = env.__notifyCalls[env.__notifyCalls.length - 1]!;
+  const match = /Verification token: (\S+)/.exec(call.body);
+  if (!match) throw new Error("no verification token found in notify body");
+  return spacesWorker.fetch(req(`/spaces/${productId}/end-users/verify-email`, { token: match[1] }), env as never, execCtx);
 }
 
 function req(path: string, body: unknown): Request {
@@ -124,29 +133,38 @@ describe("POST /spaces/:spaceId/end-users/signup", () => {
     expect(res.status).toBe(404);
   });
 
-  it("grants creditsIncludedPerMonth once at signup (metering enforcement pass)", async () => {
+  it("defers creditsIncludedPerMonth until email verification (security audit: closes the free-credit-farming hole)", async () => {
     const env = makeEnv();
     await seedProduct(env, "prod-1", "tenant-1", { pricingConfig: { model: "credits", creditsIncludedPerMonth: 500 } });
-    const signup = await (await spacesWorker.fetch(
+    const signupRes = await spacesWorker.fetch(
       req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx
-    )).json() as { end_user_id: string };
+    );
+    const signup = await signupRes.json() as { end_user_id: string; email_verification_required: boolean };
+    expect(signup.email_verification_required).toBe(true);
 
     const token = await mintInternalToken("test-platform-secret", "tenant-1");
-    const balRes = await spacesWorker.fetch(
+    const balanceOf = () => spacesWorker.fetch(
       new Request(`https://spaces.naelao.com/internal/product-users/prod-1/${signup.end_user_id}/credits/balance`, {
         headers: { "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token },
       }),
       env as never, execCtx
-    );
-    expect((await balRes.json() as { balance_credits: number }).balance_credits).toBe(500);
+    ).then((r) => r.json() as Promise<{ balance_credits: number }>);
+
+    // Not granted yet — the signup credit sat behind an unverified email.
+    expect((await balanceOf()).balance_credits).toBe(0);
+
+    const verifyRes = await verifyEmail(env, "prod-1");
+    expect(verifyRes.status).toBe(200);
+    expect((await balanceOf()).balance_credits).toBe(500);
   });
 
-  it("grants the platform free-tier default when pricing is unconfigured (a product with no pricingConfig at all)", async () => {
+  it("grants the platform free-tier default when pricing is unconfigured (a product with no pricingConfig at all), after verification", async () => {
     const env = makeEnv();
     await seedProduct(env, "prod-1", "tenant-1");
     const signup = await (await spacesWorker.fetch(
       req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx
     )).json() as { end_user_id: string };
+    await verifyEmail(env, "prod-1");
 
     const token = await mintInternalToken("test-platform-secret", "tenant-1");
     const balRes = await spacesWorker.fetch(
@@ -158,12 +176,13 @@ describe("POST /spaces/:spaceId/end-users/signup", () => {
     expect((await balRes.json() as { balance_credits: number }).balance_credits).toBe(100);
   });
 
-  it("grants the platform free-tier default for pricingConfig.model === 'free' too", async () => {
+  it("grants the platform free-tier default for pricingConfig.model === 'free' too, after verification", async () => {
     const env = makeEnv();
     await seedProduct(env, "prod-1", "tenant-1", { pricingConfig: { model: "free" } });
     const signup = await (await spacesWorker.fetch(
       req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx
     )).json() as { end_user_id: string };
+    await verifyEmail(env, "prod-1");
 
     const token = await mintInternalToken("test-platform-secret", "tenant-1");
     const balRes = await spacesWorker.fetch(
@@ -246,10 +265,16 @@ describe("POST /spaces/:spaceId/end-users/login", () => {
 });
 
 describe("password reset (security audit follow-up: end users had no recovery path at all)", () => {
-  function extractToken(body: string): string {
-    const match = /Reset token: (\S+)/.exec(body);
-    if (!match) throw new Error("no token found in notify body");
-    return match[1]!;
+  // Signup itself now also sends a verification-token email (email verification pass, below) for
+  // any product with a signup credit allowance — prod-1's default unconfigured pricing means
+  // signup produces ONE notify call before request-password-reset produces a second. Pull the
+  // reset token specifically by matching "Reset token:", not by call index/count.
+  function extractResetToken(calls: Array<{ body: string }>): string {
+    for (const call of calls) {
+      const match = /Reset token: (\S+)/.exec(call.body);
+      if (match) return match[1]!;
+    }
+    throw new Error("no reset token found in any notify body");
   }
 
   it("issues a token by email and the token resets the password", async () => {
@@ -259,8 +284,9 @@ describe("password reset (security audit follow-up: end users had no recovery pa
 
     const reqRes = await spacesWorker.fetch(req("/spaces/prod-1/end-users/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
     expect(reqRes.status).toBe(200);
-    expect(env.__notifyCalls).toHaveLength(1);
-    const token = extractToken(env.__notifyCalls[0]!.body);
+    // One verification email (signup) + one reset email (this request).
+    expect(env.__notifyCalls).toHaveLength(2);
+    const token = extractResetToken(env.__notifyCalls);
 
     const resetRes = await spacesWorker.fetch(req("/spaces/prod-1/end-users/reset-password", { token, new_password: "newhunter99" }), env as never, execCtx);
     expect(resetRes.status).toBe(200);
@@ -276,12 +302,13 @@ describe("password reset (security audit follow-up: end users had no recovery pa
     await seedProduct(env, "prod-1", "tenant-1");
     await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
 
+    const notifyCountBefore = env.__notifyCalls.length; // 1 (the verification email from signup)
     const exists = await spacesWorker.fetch(req("/spaces/prod-1/end-users/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
     const doesNotExist = await spacesWorker.fetch(req("/spaces/prod-1/end-users/request-password-reset", { email: "nobody@acme.com" }), env as never, execCtx);
     expect(exists.status).toBe(doesNotExist.status);
     expect(await exists.json()).toEqual(await doesNotExist.json());
-    // Only the real account actually got a notify call.
-    expect(env.__notifyCalls).toHaveLength(1);
+    // Only the real account's reset request actually sent a notify call.
+    expect(env.__notifyCalls).toHaveLength(notifyCountBefore + 1);
   });
 
   it("a token can only be used once", async () => {
@@ -289,7 +316,7 @@ describe("password reset (security audit follow-up: end users had no recovery pa
     await seedProduct(env, "prod-1", "tenant-1");
     await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
     await spacesWorker.fetch(req("/spaces/prod-1/end-users/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
-    const token = extractToken(env.__notifyCalls[0]!.body);
+    const token = extractResetToken(env.__notifyCalls);
 
     const first = await spacesWorker.fetch(req("/spaces/prod-1/end-users/reset-password", { token, new_password: "newhunter99" }), env as never, execCtx);
     expect(first.status).toBe(200);
@@ -309,8 +336,88 @@ describe("password reset (security audit follow-up: end users had no recovery pa
     await seedProduct(env, "prod-1", "tenant-1");
     await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
     await spacesWorker.fetch(req("/spaces/prod-1/end-users/request-password-reset", { email: "jane@acme.com" }), env as never, execCtx);
-    const token = extractToken(env.__notifyCalls[0]!.body);
+    const token = extractResetToken(env.__notifyCalls);
     const res = await spacesWorker.fetch(req("/spaces/prod-1/end-users/reset-password", { token, new_password: "short" }), env as never, execCtx);
     expect(res.status).toBe(400);
+  });
+});
+
+describe("email verification (security audit follow-up: closes the free-credit-farming hole)", () => {
+  function extractVerifyToken(calls: Array<{ body: string }>): string {
+    for (const call of calls) {
+      const match = /Verification token: (\S+)/.exec(call.body);
+      if (match) return match[1]!;
+    }
+    throw new Error("no verification token found in any notify body");
+  }
+
+  it("signup sends a verification email when there's a signup credit allowance", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+    expect(env.__notifyCalls).toHaveLength(1);
+    expect(env.__notifyCalls[0]!.subject).toBe("Verify your email");
+  });
+
+  it("does NOT send a verification email when the product has no signup allowance to protect (paid model, no allowance)", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1", { pricingConfig: { model: "credits" } });
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+    expect(env.__notifyCalls).toHaveLength(0);
+  });
+
+  it("a verification token can only be used once", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+    const token = extractVerifyToken(env.__notifyCalls);
+
+    const first = await spacesWorker.fetch(req("/spaces/prod-1/end-users/verify-email", { token }), env as never, execCtx);
+    expect(first.status).toBe(200);
+    const second = await spacesWorker.fetch(req("/spaces/prod-1/end-users/verify-email", { token }), env as never, execCtx);
+    expect(second.status).toBe(400);
+  });
+
+  it("rejects a garbage verification token", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    const res = await spacesWorker.fetch(req("/spaces/prod-1/end-users/verify-email", { token: "not-a-real-token" }), env as never, execCtx);
+    expect(res.status).toBe(400);
+  });
+
+  it("resend-verification issues a fresh token and never reveals account existence", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+
+    const realAccount = await spacesWorker.fetch(req("/spaces/prod-1/end-users/resend-verification", { email: "jane@acme.com" }), env as never, execCtx);
+    const noSuchAccount = await spacesWorker.fetch(req("/spaces/prod-1/end-users/resend-verification", { email: "nobody@acme.com" }), env as never, execCtx);
+    expect(realAccount.status).toBe(noSuchAccount.status);
+    expect(await realAccount.json()).toEqual(await noSuchAccount.json());
+    // signup's verification email + this resend's fresh one = 2; the nonexistent account sent none.
+    expect(env.__notifyCalls).toHaveLength(2);
+  });
+
+  it("resend-verification is a no-op (but still returns the same response) for an already-verified account", async () => {
+    const env = makeEnv();
+    await seedProduct(env, "prod-1", "tenant-1");
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+    const token = extractVerifyToken(env.__notifyCalls);
+    await spacesWorker.fetch(req("/spaces/prod-1/end-users/verify-email", { token }), env as never, execCtx);
+
+    const callsBefore = env.__notifyCalls.length;
+    const res = await spacesWorker.fetch(req("/spaces/prod-1/end-users/resend-verification", { email: "jane@acme.com" }), env as never, execCtx);
+    expect(res.status).toBe(200);
+    expect(env.__notifyCalls).toHaveLength(callsBefore); // no new email sent
+  });
+
+  it("signup still succeeds even if the verification email step fails (e.g. a transient notify failure)", async () => {
+    const env = makeEnv();
+    env.NOTIFICATIONS_WORKER.fetch = async () => { throw new Error("network down"); };
+    await seedProduct(env, "prod-1", "tenant-1");
+    const res = await spacesWorker.fetch(req("/spaces/prod-1/end-users/signup", { email: "jane@acme.com", password: "hunter22" }), env as never, execCtx);
+    expect(res.status).toBe(201);
+    const body = await res.json() as { session_token: string };
+    expect(body.session_token).toMatch(/^nps_/);
   });
 });

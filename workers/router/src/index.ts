@@ -9,6 +9,9 @@ export interface Env {
   JWT_SECRET: string;
   PLATFORM_SECRET: string;
   CORS_ALLOWLIST?: string;
+  /** Apex domain product subdomains hang off, e.g. "naelao.com" → {slug}.naelao.com. Used only
+   *  by the dynamic CORS origin resolver (isDynamicOriginAllowed); defaults to "naelao.com". */
+  PRODUCT_SUBDOMAIN_APEX?: string;
   SESSION_REVOCATION: KVNamespace;
   CONFIG: KVNamespace;
   NONCE_STORE: KVNamespace;
@@ -105,17 +108,75 @@ function validateEnv(env: Env): void {
 
 const app = new Hono<{ Bindings: Env }>();
 
+// Security audit follow-up: CORS_ALLOWLIST was one static platform-wide env var — fine for the
+// two fixed platform frontends (dashboard, portal) but can't scale to arbitrary per-builder
+// custom domains or even the platform's own {slug}.naelao.com product subdomains (which were
+// never added to it at all — apps/shell, the Product Shell every end user uses, would have been
+// CORS-blocked in a real deployment). Resolves dynamically against spaces.product_slug and
+// business_services.custom_domain, cached in KV (60s TTL — this platform's own stated KV
+// eventual-consistency window) so this doesn't cost a D1 round trip on every single request once
+// warm. Degrades to the static allowlist only when PLATFORM_DB/CONFIG aren't wired (tests, or a
+// deploy that hasn't set them) rather than erroring — CORS denial is already the safe default.
+const CORS_CACHE_TTL_S = 60;
+
+function productSubdomainSlug(hostname: string, apex: string): string | null {
+  if (!hostname.endsWith(`.${apex}`)) return null;
+  const label = hostname.slice(0, -(apex.length + 1));
+  // A leaf label only — "acme.shell.naelao.com" must not match as slug "acme.shell".
+  if (!label || label.includes(".")) return null;
+  return label;
+}
+
+async function isDynamicOriginAllowed(env: Env, origin: string): Promise<boolean> {
+  if (!env.PLATFORM_DB) return false;
+  let hostname: string;
+  try {
+    hostname = new URL(origin).hostname;
+  } catch {
+    return false;
+  }
+
+  const cacheKey = `cors:origin:${hostname}`;
+  if (env.CONFIG) {
+    const cached = await env.CONFIG.get(cacheKey).catch(() => null);
+    if (cached === "1") return true;
+    if (cached === "0") return false;
+  }
+
+  let allowed = false;
+  const apex = env.PRODUCT_SUBDOMAIN_APEX ?? "naelao.com";
+  const slug = productSubdomainSlug(hostname, apex);
+  if (slug) {
+    const row = await env.PLATFORM_DB.prepare(
+      "SELECT id FROM spaces WHERE product_slug = ? AND status = 'active'"
+    ).bind(slug).first<{ id: string }>().catch(() => null);
+    allowed = !!row;
+  }
+  if (!allowed) {
+    const row = await env.PLATFORM_DB.prepare(
+      "SELECT id FROM business_services WHERE custom_domain = ? AND kind = 'custom_domain' AND status = 'active'"
+    ).bind(hostname).first<{ id: string }>().catch(() => null);
+    allowed = !!row;
+  }
+
+  if (env.CONFIG) {
+    await env.CONFIG.put(cacheKey, allowed ? "1" : "0", { expirationTtl: CORS_CACHE_TTL_S }).catch(() => {});
+  }
+  return allowed;
+}
+
 // F11: cors(["*"]) allowed any origin to drive cross-origin requests carrying a Bearer JWT.
-// The allowlist is env-driven (CORS_ALLOWLIST, comma-separated) because it must be read per
-// request from c.env — a static cors(...) factory bakes its list in at module-load time,
-// before env is available. Never echo "*" — only an exact allowlisted origin, or nothing.
+// The static allowlist is env-driven (CORS_ALLOWLIST, comma-separated) because it must be read
+// per request from c.env — a static cors(...) factory bakes its list in at module-load time,
+// before env is available. Never echo "*" — only an exact allowlisted (or dynamically resolved)
+// origin, or nothing.
 app.use("*", async (c, next) => {
   const origin = c.req.header("origin") ?? "";
   const allowlist = (c.env.CORS_ALLOWLIST ?? "")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
-  const allowed = allowlist.includes(origin) ? origin : "";
+  const allowed = origin && (allowlist.includes(origin) || await isDynamicOriginAllowed(c.env, origin)) ? origin : "";
 
   if (c.req.method === "OPTIONS") {
     return new Response(null, {
@@ -217,18 +278,25 @@ async function checkPreAuthRateLimit(
 // visitor has no token at all before this) ── Journey 1B: "End user signs up... via the
 // builder's configured auth provider." Registered before the JWT-gated api group, same
 // reasoning as /v1/auth/* above.
+// Per-route pre-auth rate limit budgets (requests/min per cf-connecting-ip), keyed by URL suffix
+// → [bucket name, limit]. Login/signup/reset-request/verification-resend are all farming or
+// brute-force targets — deliberately tighter than a generic pre-auth read like by-slug (see
+// checkPreAuthRateLimit below for by-slug/manifest).
+const END_USER_ROUTE_LIMITS: Record<string, [routeKey: string, limit: number]> = {
+  "end-users/login": ["end-user-login", 10],
+  "end-users/signup": ["end-user-signup", 5],
+  "end-users/request-password-reset": ["end-user-reset-request", 5],
+  "end-users/reset-password": ["end-user-reset-confirm", 10],
+  "end-users/verify-email": ["end-user-verify-email", 10],
+  "end-users/resend-verification": ["end-user-resend-verification", 5],
+};
+
 app.all("/v1/spaces/:spaceId/end-users/*", async (c) => {
   const u = new URL(c.req.url);
   u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
-  // Signup and login get their own, tighter buckets — login is a brute-force target, signup is a
-  // free-credit-farming target — deliberately tighter than a generic pre-auth read like by-slug.
-  const isLogin = u.pathname.endsWith("/end-users/login");
-  const isSignup = u.pathname.endsWith("/end-users/signup");
-  const isResetRequest = u.pathname.endsWith("/end-users/request-password-reset");
-  const isResetConfirm = u.pathname.endsWith("/end-users/reset-password");
-  if (isLogin || isSignup || isResetRequest || isResetConfirm) {
-    const routeKey = isLogin ? "end-user-login" : isSignup ? "end-user-signup" : isResetRequest ? "end-user-reset-request" : "end-user-reset-confirm";
-    const limit = isLogin ? 10 : isSignup ? 5 : isResetRequest ? 5 : 10;
+  const suffix = Object.keys(END_USER_ROUTE_LIMITS).find((s) => u.pathname.endsWith(`/${s}`));
+  if (suffix) {
+    const [routeKey, limit] = END_USER_ROUTE_LIMITS[suffix]!;
     const rl = await checkPreAuthRateLimit(c, routeKey, limit);
     if (!rl.allowed) {
       return c.json({ error_code: "rate_limited", message: "Too many requests", retry_after_ms: rl.retryAfterMs }, 429);

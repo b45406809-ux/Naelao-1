@@ -31,6 +31,30 @@ async function sha256Hex(input: string): Promise<string> {
 }
 
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour, same order of magnitude as business_invites' 7-day cap but shorter since this grants a live credential change
+const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours — long enough that a slow inbox doesn't lock a legitimate signup out of its free credits
+
+async function sendEmail(env: ProductEndUserRoutesEnv, tenantId: string, spaceId: string, to: string, subject: string, body: string): Promise<void> {
+  if (!env.NOTIFICATIONS_WORKER) return;
+  try {
+    await env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+      body: JSON.stringify({ channel: "email", space_id: spaceId, to, subject, body }),
+    }));
+  } catch { /* best-effort — never blocks the caller's own response */ }
+}
+
+async function issueVerificationToken(env: ProductEndUserRoutesEnv, productId: string, endUserId: string, tenantId: string, email: string): Promise<void> {
+  const token = crypto.randomUUID() + crypto.randomUUID();
+  const tokenHash = await sha256Hex(token);
+  const expiresAt = new Date(Date.now() + VERIFY_TOKEN_TTL_MS).toISOString();
+  await env.PLATFORM_DB.prepare(
+    `INSERT INTO email_verification_tokens (id, product_space_id, end_user_id, token_hash, expires_at)
+     VALUES (?, ?, ?, ?, ?)`
+  ).bind(crypto.randomUUID(), productId, endUserId, tokenHash, expiresAt).run();
+  await sendEmail(env, tenantId, productId, email, "Verify your email",
+    `Verification token: ${token}\n\nThis token expires in 24 hours. Verifying unlocks your free starting credits.`);
+}
 
 interface ProductRow {
   id: string;
@@ -138,20 +162,26 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     }));
     const session = await sessionRes.json<{ session_token: string; expires_at: string }>();
 
-    // Best-effort: a grant failure must never block signup itself (the account and session
-    // already exist) — it just means this end user starts at 0 credits, same as before this
-    // fix, and can still top up. idempotency_key is deterministic per end user so a retried
-    // signup request (network retry, double-click) can never double-grant.
+    // Security audit follow-up: the free-credit grant used to fire immediately at signup, which
+    // is exactly what makes farming free compute as cheap as generating throwaway email
+    // addresses — the pre-auth IP rate limiter (router) bounds that but doesn't eliminate a
+    // slow/distributed farmer. The account and session are usable immediately either way (a
+    // legitimate user isn't blocked from signing in), but the credit grant itself now only
+    // fires from verify-email below — see issueVerificationToken. A product with nothing to
+    // grant (paid pricing model, no allowance) skips sending a verification email entirely,
+    // since there's no farming incentive to close for it.
+    //
+    // Best-effort, same posture as every other post-account-creation side effect in this file
+    // (the credit grant itself, the notify() call): a failure here (e.g. transient D1 issue)
+    // must never fail the signup response — the account and session already exist and are
+    // valid. Worst case, the end user starts unverified and can retry via resend-verification.
     if (resolved.signupCredits > 0) {
       try {
-        await stub.fetch(new Request("http://do/credits/grant", {
-          method: "POST", headers: { "content-type": "application/json" },
-          body: JSON.stringify({ credits: resolved.signupCredits, reason: "signup_allowance", idempotency_key: `signup:${endUserId}` }),
-        }));
+        await issueVerificationToken(env, productId, endUserId, resolved.product.tenant_id, email);
       } catch { /* best-effort */ }
     }
 
-    return c.json({ end_user_id: endUserId, session_token: session.session_token, expires_at: session.expires_at }, 201);
+    return c.json({ end_user_id: endUserId, session_token: session.session_token, expires_at: session.expires_at, email_verification_required: resolved.signupCredits > 0 }, 201);
   });
 
   app.post("/spaces/:spaceId/end-users/login", async (c) => {
@@ -224,22 +254,11 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
        VALUES (?, ?, ?, ?, ?)`
     ).bind(crypto.randomUUID(), productId, row.end_user_id, tokenHash, expiresAt).run();
 
-    // Best-effort — same precedent as the signup credit grant and every other notify() call in
-    // this codebase: a delivery failure must never leak whether the account exists via a
-    // different response shape, so this can't be allowed to change ALWAYS_OK's response.
-    if (env.NOTIFICATIONS_WORKER) {
-      try {
-        await env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-naelao-tenant-id": resolved.product.tenant_id },
-          body: JSON.stringify({
-            channel: "email", space_id: productId, to: email,
-            subject: "Reset your password",
-            body: `Reset token: ${token}\n\nThis token expires in 1 hour. If you didn't request this, ignore this email.`,
-          }),
-        }));
-      } catch { /* best-effort */ }
-    }
+    // Best-effort — same precedent as every other notify() call in this codebase: a delivery
+    // failure must never leak whether the account exists via a different response shape, so
+    // this can't be allowed to change ALWAYS_OK's response.
+    await sendEmail(env, resolved.product.tenant_id, productId, email, "Reset your password",
+      `Reset token: ${token}\n\nThis token expires in 1 hour. If you didn't request this, ignore this email.`);
 
     return ALWAYS_OK;
   });
@@ -271,5 +290,70 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     ).bind(row.id).run();
 
     return c.json({ ok: true, message: "Password updated. Sign in with your new password." });
+  });
+
+  // Security audit follow-up: closes the free-credit-farming hole at its source — the signup
+  // allowance now only grants once a real inbox is proven reachable. Idempotency_key is the SAME
+  // deterministic `signup:${endUserId}` key the old immediate-grant used, so this can never
+  // double-grant even if verify-email is called twice (e.g. a double-clicked email link).
+  app.post("/spaces/:spaceId/end-users/verify-email", async (c) => {
+    const env = c.env as ProductEndUserRoutesEnv;
+    const productId = c.req.param("spaceId");
+    const body = await c.req.json<{ token: string }>();
+    if (!body.token) return c.json({ error_code: "bad_request", message: "token is required" }, 400);
+
+    const tokenHash = await sha256Hex(body.token);
+    const row = await env.PLATFORM_DB.prepare(
+      `SELECT id, end_user_id, expires_at, used_at FROM email_verification_tokens
+       WHERE product_space_id = ? AND token_hash = ?`
+    ).bind(productId, tokenHash).first<{ id: string; end_user_id: string; expires_at: string; used_at: string | null }>();
+    if (!row || row.used_at || new Date(row.expires_at) < new Date()) {
+      return c.json({ error_code: "invalid_token", message: "This verification link is invalid or has expired" }, 400);
+    }
+
+    await env.PLATFORM_DB.prepare(
+      "UPDATE product_end_users SET email_verified_at = COALESCE(email_verified_at, datetime('now')) WHERE product_space_id = ? AND end_user_id = ?"
+    ).bind(productId, row.end_user_id).run();
+    await env.PLATFORM_DB.prepare(
+      "UPDATE email_verification_tokens SET used_at = datetime('now') WHERE id = ?"
+    ).bind(row.id).run();
+
+    // Grant whatever the product's CURRENT pricing config says a signup should receive — reads
+    // fresh rather than storing the amount at signup time, same "current config wins" posture
+    // loadProductAuthConfig already uses everywhere else. Best-effort: a grant failure must
+    // never fail email verification itself.
+    const resolved = await loadProductAuthConfig(env, productId);
+    if (resolved && resolved.signupCredits > 0) {
+      try {
+        const stub = await productUserDoStub(env, productId, row.end_user_id, resolved.product.tenant_id);
+        await stub.fetch(new Request("http://do/credits/grant", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ credits: resolved.signupCredits, reason: "signup_allowance", idempotency_key: `signup:${row.end_user_id}` }),
+        }));
+      } catch { /* best-effort */ }
+    }
+
+    return c.json({ ok: true, message: "Email verified." });
+  });
+
+  app.post("/spaces/:spaceId/end-users/resend-verification", async (c) => {
+    const env = c.env as ProductEndUserRoutesEnv;
+    const productId = c.req.param("spaceId");
+    const resolved = await loadProductAuthConfig(env, productId);
+    if (!resolved) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+
+    const body = await c.req.json<{ email: string }>();
+    const email = (body.email ?? "").trim().toLowerCase();
+    const ALWAYS_OK = c.json({ ok: true, message: "If that account exists and isn't yet verified, a new verification link has been sent." });
+    if (!email) return ALWAYS_OK;
+
+    const row = await env.PLATFORM_DB.prepare(
+      "SELECT end_user_id, email_verified_at FROM product_end_users WHERE product_space_id = ? AND email = ?"
+    ).bind(productId, email).first<{ end_user_id: string; email_verified_at: string | null }>();
+    // Never reveal whether the account exists or is already verified — constant response.
+    if (!row || row.email_verified_at) return ALWAYS_OK;
+
+    await issueVerificationToken(env, productId, row.end_user_id, resolved.product.tenant_id, email);
+    return ALWAYS_OK;
   });
 }
