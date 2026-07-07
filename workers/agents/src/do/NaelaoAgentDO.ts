@@ -2177,7 +2177,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const adapter = getAdapter(type);
     if (!adapter) return Response.json({ error: "unknown_channel" }, { status: 400 });
 
-    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; spaceId?: string; tenantId?: string };
+    type InboundBody = { raw?: Record<string, unknown>; projectId?: string; spaceId?: string; tenantId?: string; apiKey?: string };
     const body = await request.json<InboundBody>().catch(() => ({}) as InboundBody);
     const norm: NormalizedInbound | null = adapter.normalizeInbound(body.raw ?? {});
     if (!norm) return Response.json({ ignored: true }); // bot echo / not actionable
@@ -2222,6 +2222,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
        VALUES (?, ?, 'inbound', ?, ?, 0, ?)`,
       crypto.randomUUID(), sessionId, norm.text, norm.external_id, norm.timestamp
     );
+
+    // Kick a drain immediately rather than leaving this message for the next hourly cron
+    // heartbeat — the difference between a customer getting a WhatsApp reply in seconds vs. up
+    // to 60 minutes later. Best-effort: handleChannelHeartbeat has its own per-message error
+    // handling and the claim/revert step above makes it safe to overlap with a concurrent cron
+    // sweep or another inbound message's own immediate drain on this same DO.
+    if (body.spaceId && body.tenantId) {
+      const spaceId = body.spaceId, tenantId = body.tenantId, apiKey = body.apiKey ?? "";
+      this.ctx.waitUntil(
+        this.handleChannelHeartbeat(new Request("http://agent-do/channels/heartbeat", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ spaceId, agentId: "naelao-agent", tenantId, apiKey }),
+        })).catch((err) => {
+          console.error(`[channels] immediate drain failed space=${spaceId}:`, (err as Error).message);
+        })
+      );
+    }
+
     return Response.json({ session_id: sessionId, queued: true });
   }
 
@@ -2564,6 +2583,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     if (pending.length === 0) return Response.json({ drained: 0, answered: 0, escalated: 0, rule_handled: 0, spend_capped: 0 });
 
+    // Claim these rows (answered: 0 -> 2) synchronously, before any async work below. Kicking a
+    // heartbeat immediately on every inbound message (rather than only from the hourly cron)
+    // means two invocations of this method can now genuinely overlap on the same DO — one
+    // suspended mid-await on a tool call yields the isolate to a second invocation's own SELECT.
+    // Without a claim step, that second SELECT (still `answered = 0`) would pick up the same
+    // message and double-process it (double reply, double LLM spend). The claim is reverted to 0
+    // in the per-message `finally` below unless the message reaches a real terminal state
+    // (markOutbound -> 1, or human_takeover -> excluded from the WHERE clause entirely) — so an
+    // exception or an intentional retry-later `continue` still leaves it retryable, never lost.
+    this.ctx.storage.sql.exec(
+      `UPDATE channel_messages SET answered = 2 WHERE id IN (${pending.map(() => "?").join(",")})`,
+      ...pending.map((m) => m.id)
+    );
+
     const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId);
     if (!engineEnv) return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     const config = await loadAgentConfig(engineEnv.scriptsBucket, spaceId, agentId);
@@ -2601,6 +2634,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     let spendCapped = 0;
 
     for (const msg of pending) {
+      try {
       // Untrusted inbound text — moderate before it ever reaches the reasoning prompt or a rule match.
       if (moderateInput(msg.text).blocked) { escalated++; continue; }
 
@@ -2747,6 +2781,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       if (!deliver.ok) { escalated++; continue; }
       this.markOutbound(msg.session_id, msg.id, text);
       answered++;
+      } finally {
+        // Release the claim for any message that didn't reach a real terminal state this
+        // iteration (markOutbound already moved it to 1; human_takeover moved the SESSION out of
+        // the WHERE clause entirely) — safe no-op via the `answered = 2` guard otherwise.
+        this.ctx.storage.sql.exec(`UPDATE channel_messages SET answered = 0 WHERE id = ? AND answered = 2`, msg.id);
+      }
     }
     return Response.json({ drained: pending.length, answered, escalated, rule_handled: ruleHandled, spend_capped: spendCapped });
   }
