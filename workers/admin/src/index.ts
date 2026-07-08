@@ -305,6 +305,61 @@ app.get("/admin/audit", async (c) => {
   }
 });
 
+// ── Product kill-switch — abuse response runbook ─────────────────────────────────────────────
+// POST /admin/products/:spaceId/suspend — immediately set space status='suspended', preventing
+// any further end-user logins (ProductUserDO session verification fails against a suspended
+// space) and agent runs (subscription gate, credit gate, and run dispatcher all read the
+// current space row). Use this when a product is hosting phishing, illegal content, or
+// violating platform ToS. Irreversible by this route alone — an operator must explicitly
+// restore via /admin/products/:spaceId/restore.
+// Runbook: (1) receive abuse report or automated alert; (2) verify the space_id from the
+// product_slug (GET /admin/products/search?slug=...); (3) POST /admin/products/:id/suspend
+// with reason — the audit log records who, when, and why; (4) if also a GDPR/law-enforcement
+// hold is needed, also call POST /admin/tenants/:tenantId (status=suspended) to freeze the
+// whole org; (5) notify the builder via email with the specific ToS clause violated; (6) if
+// legitimate, restore with /admin/products/:id/restore, else schedule deletion after 30 days.
+app.get("/admin/products/search", async (c) => {
+  const slug = c.req.query("slug") ?? "";
+  if (!slug) return c.json({ error_code: "bad_request", message: "slug is required" }, 400);
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT id, tenant_id, name, status, product_slug, created_at FROM spaces WHERE product_slug = ? LIMIT 1"
+  ).bind(slug).first();
+  if (!space) return c.json({ error_code: "not_found", message: "No product with that slug" }, 404);
+  return c.json(space);
+});
+
+app.post("/admin/products/:spaceId/suspend", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const { reason } = await c.req.json<{ reason: string }>();
+  if (!reason?.trim()) return c.json({ error_code: "bad_request", message: "reason is required for audit trail" }, 400);
+  const space = await c.env.PLATFORM_DB.prepare("SELECT id, status FROM spaces WHERE id = ?").bind(spaceId).first<{ id: string; status: string }>();
+  if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  if (space.status === "suspended") return c.json({ ok: true, already_suspended: true });
+  await c.env.PLATFORM_DB.prepare(
+    "UPDATE spaces SET status = 'suspended', updated_at = datetime('now') WHERE id = ?"
+  ).bind(spaceId).run();
+  // Audit trail — same table pattern as /admin/failures.
+  await c.env.PLATFORM_DB.prepare(
+    "INSERT INTO platform_failures (id, message_type, payload_json, failure_reason, failed_at, retry_count, reviewed) VALUES (?, ?, ?, ?, datetime('now'), 0, 0)"
+  ).bind(crypto.randomUUID(), "admin_product_suspend", JSON.stringify({ space_id: spaceId }), `Admin suspend: ${reason}`).run().catch(() => {});
+  console.warn(`[admin] PRODUCT SUSPENDED space=${spaceId} reason=${reason}`);
+  return c.json({ ok: true, suspended: true });
+});
+
+app.post("/admin/products/:spaceId/restore", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const space = await c.env.PLATFORM_DB.prepare("SELECT id, status FROM spaces WHERE id = ?").bind(spaceId).first<{ id: string; status: string }>();
+  if (!space) return c.json({ error_code: "not_found", message: "Space not found" }, 404);
+  await c.env.PLATFORM_DB.prepare(
+    "UPDATE spaces SET status = 'active', updated_at = datetime('now') WHERE id = ? AND status = 'suspended'"
+  ).bind(spaceId).run();
+  await c.env.PLATFORM_DB.prepare(
+    "INSERT INTO platform_failures (id, message_type, payload_json, failure_reason, failed_at, retry_count, reviewed) VALUES (?, ?, ?, ?, datetime('now'), 0, 0)"
+  ).bind(crypto.randomUUID(), "admin_product_restore", JSON.stringify({ space_id: spaceId }), "Admin restore").run().catch(() => {});
+  console.warn(`[admin] PRODUCT RESTORED space=${spaceId}`);
+  return c.json({ ok: true, restored: true });
+});
+
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));
 export default {
   fetch: app.fetch,

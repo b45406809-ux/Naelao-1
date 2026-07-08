@@ -634,6 +634,13 @@ export interface BuilderProductConfig {
   notificationsConfig?: {
     dailyDigestEnabled?: boolean;
   };
+  legal?: {
+    tosUrl?: string;
+    privacyPolicyUrl?: string;
+    dpaUrl?: string;
+    cookiePolicy?: "none" | "analytics" | "third_party";
+    supportContact?: string;
+  };
 }
 
 export interface BuilderProductDetail extends BuilderProductSummary {
@@ -669,7 +676,7 @@ export async function createBuilderProduct(input: CreateBuilderProductInput): Pr
 
 export async function updateBuilderProduct(
   id: string,
-  input: { name?: string; status?: string; product_config?: BuilderProductConfig }
+  input: { name?: string; status?: string; product_config?: BuilderProductConfig; legal?: BuilderProductConfig["legal"] }
 ): Promise<{ ok: true }> {
   return apiFetch(`/builder/products/${encodeURIComponent(id)}`, {
     method: "PATCH",

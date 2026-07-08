@@ -1955,11 +1955,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // Tier 2 metering follow-up: business_subscriptions (Phase E) was write-only — the Lemon
     // Squeezy webhook upserted a row on every subscription event but nothing ever read it to gate
     // access, so a business on a pricingConfig.model === "subscription" product could run its
-    // agent indefinitely whether or not it ever actually subscribed. Same space-wide access-
-    // restriction shape and fail-open posture as the revenue-reporting-lapse check above — a
-    // lookup error must never silently unblock a customer-bot loop, but it also must never brick
-    // a legitimate business over a transient SPACES_WORKER hiccup, so this specifically fails
-    // OPEN (unlike the wallet/credit checks below, which fail CLOSED on a confirmed zero balance).
+    // agent indefinitely whether or not it ever actually subscribed. Fails CLOSED (deny) on any
+    // lookup error — a network hiccup must not silently unblock a gated subscription run.
     const subGate = await this.checkBusinessSubscriptionGate(spaceId, tenantId);
     if (subGate.gated && !subGate.active) {
       return Response.json(
@@ -2582,15 +2579,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    */
   private async checkBusinessSubscriptionGate(spaceId: string, tenantId: string): Promise<{ gated: boolean; active: boolean; reason: string }> {
     if (!this.env.SPACES_WORKER) return { gated: false, active: true, reason: "" };
+    // Fail CLOSED on lookup errors when the product uses the subscription model — consistent with
+    // fetchAssistantPolicy, checkReplayPrevention, and the pre-auth rate limiter's own posture.
+    // "not a subscription-gated space" (gated: false) is the only safe short-circuit from the
+    // spaces worker itself; a network/5xx error is not a signal of non-gatedness, so treat it the
+    // same as "gated but not active" rather than silently allowing the run through.
+    const FAIL_CLOSED: { gated: boolean; active: boolean; reason: string } = { gated: true, active: false, reason: "subscription check unavailable — please retry" };
     try {
       const res = await this.env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/internal/business-subscription-status?space_id=${encodeURIComponent(spaceId)}`,
         { headers: await this.internalHeaders(tenantId) }
       ));
-      if (!res.ok) return { gated: false, active: true, reason: "" };
+      if (!res.ok) return FAIL_CLOSED;
       return await res.json<{ gated: boolean; active: boolean; reason: string }>();
     } catch {
-      return { gated: false, active: true, reason: "" };
+      return FAIL_CLOSED;
     }
   }
 

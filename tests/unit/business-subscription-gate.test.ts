@@ -139,10 +139,12 @@ describe("NaelaoAgentDO /script/run — business subscription gate", () => {
     expect(res.status).not.toBe(402);
   });
 
-  it("fails OPEN on a transient lookup error (never blocks on a network hiccup)", async () => {
+  it("fails CLOSED on a transient lookup error (subscription check unavailable = deny, not allow)", async () => {
     const spaceDO = await makeDO(makeSpacesWorker({ unreachable: true }));
     const res = await scriptRun(spaceDO);
-    expect(res.status).not.toBe(402);
+    expect(res.status).toBe(402);
+    const body = await res.json() as { error_code?: string };
+    expect(body.error_code).toBe("subscription check unavailable — please retry");
   });
 
   it("degrades honestly (never blocks) when SPACES_WORKER is unbound", async () => {

@@ -2488,6 +2488,81 @@ app.post("/internal/product-sessions/verify", async (c) => {
   return c.json({ valid: true, tenant_id: urlSpace.tenant_id, end_user_id: body.endUserId });
 });
 
+// POST /internal/stream-tickets/issue — mint a short-lived (60s), single-use stream ticket
+// so an EventSource client can authenticate the SSE stream without putting the long-lived
+// nps_ session token in the URL (where it lands in CF logs, proxy logs, and browser history).
+// Called by apps/shell after it has the session token (via Bearer header POST), exchanged for
+// a stream_ticket that it then passes as ?stream_ticket= on the SSE GET request.
+// POST /internal/stream-tickets/consume — verify and single-use-burn a stream ticket; called
+// by the router's SSE auth path instead of verifying the raw session token.
+// Tickets are stored in KV (NAELAO_CONFIG_KV) with a 60s TTL so they self-expire and cannot
+// be replayed even if the consumer crashes before consuming.
+app.post("/internal/stream-tickets/issue", async (c) => {
+  if (c.req.header("x-naelao-platform-secret") !== c.env.PLATFORM_SECRET) {
+    return c.json({ error: "forbidden" }, 403);
+  }
+  const { productId, endUserId, sessionToken } = await c.req.json<{ productId: string; endUserId: string; sessionToken: string }>();
+  if (!productId || !endUserId || !sessionToken) return c.json({ error: "bad_request" }, 400);
+  // Verify the session first — only valid sessions may obtain a ticket.
+  const verifyRes = await c.env.SPACES_WORKER?.fetch(new Request("http://spaces/internal/product-sessions/verify", {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-naelao-platform-secret": c.env.PLATFORM_SECRET },
+    body: JSON.stringify({ productId, endUserId, sessionToken }),
+  })).catch(() => null);
+  // If SPACES_WORKER binding isn't available, verify inline.
+  let tenantId: string | undefined;
+  if (verifyRes?.ok) {
+    const v = await verifyRes.json<{ valid: boolean; tenant_id?: string }>();
+    if (!v.valid) return c.json({ error: "invalid_session" }, 401);
+    tenantId = v.tenant_id;
+  } else {
+    // Inline verification path (same logic as /internal/product-sessions/verify above).
+    const urlSpace = await c.env.PLATFORM_DB.prepare(
+      "SELECT tenant_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
+    ).bind(productId).first<{ tenant_id: string; parent_space_id: string | null }>();
+    if (!urlSpace) return c.json({ error: "invalid_session" }, 401);
+    let rootId = productId;
+    let rootTenantId = urlSpace.tenant_id;
+    if (urlSpace.parent_space_id) {
+      const root = await c.env.PLATFORM_DB.prepare(
+        "SELECT id, tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
+      ).bind(urlSpace.parent_space_id).first<{ id: string; tenant_id: string }>();
+      if (!root) return c.json({ error: "invalid_session" }, 401);
+      rootId = root.id; rootTenantId = root.tenant_id;
+    }
+    const stub = await productUserDoStub(c.env, rootId, endUserId, rootTenantId);
+    const sv = await stub.fetch(new Request("http://do/sessions/verify", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_token: sessionToken }),
+    }));
+    const verified = await sv.json<{ valid: boolean }>();
+    if (!verified.valid) return c.json({ error: "invalid_session" }, 401);
+    tenantId = urlSpace.tenant_id;
+  }
+  const ticket = crypto.randomUUID();
+  const key = `stream-ticket:${productId}:${endUserId}:${ticket}`;
+  await c.env.NAELAO_CONFIG_KV.put(key, tenantId ?? "", { expirationTtl: 60 });
+  return c.json({ ticket, expires_in: 60 });
+});
+
+app.post("/internal/stream-tickets/consume", async (c) => {
+  if (c.req.header("x-naelao-platform-secret") !== c.env.PLATFORM_SECRET) {
+    return c.json({ valid: false }, 403);
+  }
+  const { productId, endUserId, ticket } = await c.req.json<{ productId: string; endUserId: string; ticket: string }>();
+  if (!productId || !endUserId || !ticket) return c.json({ valid: false }, 400);
+  const key = `stream-ticket:${productId}:${endUserId}:${ticket}`;
+  const tenantId = await c.env.NAELAO_CONFIG_KV.get(key);
+  if (tenantId === null) return c.json({ valid: false }); // expired or already consumed
+  // Single-use: delete immediately after reading.
+  await c.env.NAELAO_CONFIG_KV.delete(key);
+  // Resolve true tenant for this space (may be parent if spaceId is a business).
+  const urlSpace = await c.env.PLATFORM_DB.prepare(
+    "SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(productId).first<{ tenant_id: string }>();
+  return c.json({ valid: true, tenant_id: urlSpace?.tenant_id ?? tenantId });
+});
+
 // ── Reseller / tenant membership (spec G-AS34/G-AS35; productConfig.membershipModel) ──
 // When a builder's product has membershipModel "tenant"|"hybrid", a customer who signs up
 // through that product creates their OWN business (a space under their own child tenant,
@@ -2668,6 +2743,16 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
     // Phase F (§A1.17): the real, coming_soon-aware template catalog (id/name only) — the shell's
     // create-business dialog renders straight from this instead of a hardcoded duplicate list.
     template_catalog: templateCatalog,
+    // Legal & support — safe to surface pre-login (ToS/Privacy must be readable before signup).
+    // cookiePolicy drives the consent banner; supportContact gives stuck users a path to a human.
+    // Unset fields: shell falls back to Naelao's own platform links (naelao.com/legal/*).
+    legal: {
+      tos_url: pc?.legal?.tosUrl ?? null,
+      privacy_policy_url: pc?.legal?.privacyPolicyUrl ?? null,
+      dpa_url: pc?.legal?.dpaUrl ?? null,
+      cookie_policy: pc?.legal?.cookiePolicy ?? "none",
+      support_contact: pc?.legal?.supportContact ?? null,
+    },
   });
 });
 

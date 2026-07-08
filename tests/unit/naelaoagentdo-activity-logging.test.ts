@@ -51,6 +51,8 @@ function makeSpacesWorker() {
       if (/^\/spaces\/[^/]+\/projects\/[^/]+$/.test(url.pathname)) {
         return Response.json({ execution_ceiling: 2, daily_spend_cap_credits: 0 });
       }
+      if (url.pathname === "/internal/pricing-catalog") return Response.json({ external_revenue_cut: { enabled: false } });
+      if (url.pathname === "/internal/business-subscription-status") return Response.json({ gated: false, active: true, reason: "" });
       return new Response("not found", { status: 404 });
     },
   } as unknown as Fetcher;

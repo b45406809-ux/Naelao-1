@@ -22,6 +22,10 @@ export interface ActiveSpaceContextValue {
   /** True when browsing a business other than the product root. */
   isBusinessSpace: boolean;
   setActiveSpace: (id: string, name?: string | null) => void;
+  /** Builder-configured support contact (mailto: or https:) from manifest.legal.support_contact.
+   *  Populated by the shell layout once the manifest loads; null until then or if unset. */
+  supportContact: string | null;
+  setSupportContact: (contact: string | null) => void;
 }
 
 const ActiveSpaceContext = React.createContext<ActiveSpaceContextValue | null>(null);
@@ -39,6 +43,7 @@ export function ActiveSpaceProvider({
 }) {
   const [activeSpaceId, setActiveSpaceId] = React.useState(productSpaceId);
   const [activeSpaceName, setActiveSpaceName] = React.useState<string | null>(null);
+  const [supportContact, setSupportContact] = React.useState<string | null>(null);
 
   // Hydrate from sessionStorage once, client-side only — avoids an SSR/first-paint mismatch.
   React.useEffect(() => {
@@ -80,8 +85,10 @@ export function ActiveSpaceProvider({
       activeSpaceName,
       isBusinessSpace: activeSpaceId !== productSpaceId,
       setActiveSpace,
+      supportContact,
+      setSupportContact,
     }),
-    [activeSpaceId, activeSpaceName, productSpaceId, setActiveSpace]
+    [activeSpaceId, activeSpaceName, productSpaceId, setActiveSpace, supportContact]
   );
 
   return <ActiveSpaceContext.Provider value={value}>{children}</ActiveSpaceContext.Provider>;

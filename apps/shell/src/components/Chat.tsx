@@ -28,11 +28,14 @@ export function Chat({
   session,
   sessionKey = "home",
   title = "New thread",
+  supportContact,
 }: {
   spaceId: string;
   session: SessionCredentials;
   sessionKey?: string;
   title?: string;
+  /** Support URL/mailto shown when an error indicates a credits/billing problem. */
+  supportContact?: string | null;
 }) {
   const [chatSessionId, setChatSessionId] = React.useState<string | null>(null);
   const [messages, setMessages] = React.useState<Message[]>([]);
@@ -296,6 +299,16 @@ export function Chat({
             <div className="msg-row">
               <div className="bubble" style={{ color: "#dc2626" }}>
                 {error}
+                {/* Show support contact for billing/credit errors so a stuck user always has
+                    a path to a human — driven by manifest.legal.support_contact. */}
+                {supportContact && (error.includes("credit") || error.includes("subscri") || error.includes("quota") || error.includes("402")) && (
+                  <span style={{ display: "block", marginTop: 6, fontSize: "0.85em" }}>
+                    Need help?{" "}
+                    <a href={supportContact} style={{ color: "#dc2626", textDecoration: "underline" }}>
+                      Contact support
+                    </a>
+                  </span>
+                )}
               </div>
             </div>
           )}

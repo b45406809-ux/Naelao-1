@@ -88,6 +88,15 @@ export interface ShellManifest {
   /** Phase F: the real, coming_soon-aware template catalog — render the create-business dialog
    *  from this instead of a hardcoded copy of LAUNCHPAD_TEMPLATES. */
   template_catalog: Array<{ id: string; name: string; coming_soon: boolean }>;
+  /** Legal & support config — builder-defined; drives the cookie consent banner and the
+   *  support contact link on error screens. Absent fields: shell falls back to Naelao defaults. */
+  legal: {
+    tos_url: string | null;
+    privacy_policy_url: string | null;
+    dpa_url: string | null;
+    cookie_policy: "none" | "analytics" | "third_party";
+    support_contact: string | null;
+  };
 }
 
 /** GET /v1/spaces/:spaceId/shell/manifest — safe projection, works pre- and post-login. */

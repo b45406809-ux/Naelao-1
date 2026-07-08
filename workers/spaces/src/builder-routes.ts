@@ -252,15 +252,32 @@ export function registerBuilderRoutes(app: Hono<any>): void {
       name?: string;
       status?: string;
       product_config?: Partial<SpaceTypeProductConfig>;
+      legal?: SpaceTypeProductConfig["legal"];
     }>();
 
     if (body.status && !ALLOWED_STATUSES.includes(body.status as (typeof ALLOWED_STATUSES)[number])) {
       return c.json({ error_code: "bad_request", message: `status must be one of ${ALLOWED_STATUSES.join(", ")}` }, 400);
     }
+    // Validate legal URLs are HTTPS (required — never allow http: ToS/Privacy links).
+    if (body.legal) {
+      for (const field of ["tosUrl", "privacyPolicyUrl", "dpaUrl", "supportContact"] as const) {
+        const val = body.legal[field];
+        if (val && !val.startsWith("https://") && !val.startsWith("mailto:")) {
+          return c.json({ error_code: "bad_request", message: `legal.${field} must start with https:// or mailto:` }, 400);
+        }
+      }
+      const validCookiePolicies = ["none", "analytics", "third_party"] as const;
+      if (body.legal.cookiePolicy && !validCookiePolicies.includes(body.legal.cookiePolicy)) {
+        return c.json({ error_code: "bad_request", message: `legal.cookiePolicy must be one of ${validCookiePolicies.join(", ")}` }, 400);
+      }
+    }
 
     const config = parseProductConfig(product.config_json);
     if (body.product_config) {
       config.productConfig = { ...(config.productConfig ?? {}), ...body.product_config };
+    }
+    if (body.legal !== undefined) {
+      config.productConfig = { ...(config.productConfig ?? {}), legal: body.legal };
     }
     const now = new Date().toISOString();
     await env.PLATFORM_DB.prepare(

@@ -15,6 +15,7 @@ const TABS = [
   { label: "Activity", segment: "activity" },
   { label: "Local Machine", segment: "local-machine" },
   { label: "Feature Flags", segment: "feature-flags" },
+  { label: "Legal", segment: "legal" },
   { label: "Billing", segment: "billing" },
   { label: "Danger Zone", segment: "danger-zone" },
 ] as const;

@@ -44,6 +44,8 @@ function makeSpacesWorker(balanceCredits: number | "unreachable") {
       const req = input as Request;
       const url = new URL(typeof input === "string" ? input : req.url);
       calls.push(url.pathname);
+      if (url.pathname === "/internal/pricing-catalog") return Response.json({ external_revenue_cut: { enabled: false } });
+      if (url.pathname === "/internal/business-subscription-status") return Response.json({ gated: false, active: true, reason: "" });
       if (/\/credits\/balance$/.test(url.pathname)) {
         if (balanceCredits === "unreachable") throw new Error("network down");
         return Response.json({ balance_credits: balanceCredits });

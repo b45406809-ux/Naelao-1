@@ -59,10 +59,13 @@ async function checkReplayPrevention(
   return { ok: true };
 }
 
-// G-AD02: In-memory per-user token version cache (5s TTL)
+// G-AD02: In-memory per-user token version cache (5s TTL, 2000-entry LRU cap).
 // Map key: userId, value: { version, expiresAt }
+// The cap prevents unbounded growth in long-lived isolates with many distinct users — evicts
+// the oldest entry (insertion order, Map iteration guarantees) when the limit is reached.
 const tokenVersionCache = new Map<string, { version: number; expiresAt: number }>();
 const TOKEN_VERSION_CACHE_TTL_MS = 5_000;
+const TOKEN_VERSION_CACHE_MAX = 2000;
 
 async function checkTokenVersion(
   db: D1Database,
@@ -80,6 +83,10 @@ async function checkTokenVersion(
       .bind(userId)
       .first<{ token_version: number }>();
     currentVersion = row?.token_version ?? 0;
+    if (tokenVersionCache.size >= TOKEN_VERSION_CACHE_MAX) {
+      // Evict the oldest entry (Map iterates in insertion order).
+      tokenVersionCache.delete(tokenVersionCache.keys().next().value!);
+    }
     tokenVersionCache.set(userId, { version: currentVersion, expiresAt: Date.now() + TOKEN_VERSION_CACHE_TTL_MS });
   }
 
@@ -277,8 +284,12 @@ async function checkPreAuthRateLimit(
   limit: number
 ): Promise<{ allowed: boolean; retryAfterMs: number }> {
   if (!c.env.RATE_LIMIT_DO) return { allowed: true, retryAfterMs: 0 };
-  const ip = c.req.header("cf-connecting-ip") ?? "unknown";
-  const bucketKey = `preauth:${routeKey}:${ip}`;
+  const ip = c.req.header("cf-connecting-ip");
+  // If the edge-set IP header is absent (e.g. misconfigured routing), fall back to a random
+  // per-request UUID so the request always passes through without creating a shared "unknown"
+  // bucket that would lock out ALL anonymous traffic on limiter error. The IP is not trusted
+  // anyway when absent — the caller still has to pass subsequent credential checks.
+  const bucketKey = `preauth:${routeKey}:${ip ?? crypto.randomUUID()}`;
   const doId = c.env.RATE_LIMIT_DO.idFromName(bucketKey);
   const stub = c.env.RATE_LIMIT_DO.get(doId);
   try {
@@ -511,15 +522,25 @@ async function resolveProductEndUserClaims(
 // §A1.17 Phase O: "make an API for the whole platform — what a builder/user can do manually, an
 // agent can do the same way, through the same routes." An agent authenticates with its own
 // Bearer nak_... key (minted per agents/:agentId/api-keys, workers/spaces) against ANY
-// /spaces/:spaceId/... route — deliberately broad (not a narrow allowlist like
-// PRODUCT_END_USER_PATH_PATTERNS above) because the whole point is the agent gets the same
-// surface a human builder has, just attributed to itself. What's actually money/identity-
-// sensitive is protected by the mutating-action approval gate below, not by narrowing which
-// routes an agent key can reach.
+// /spaces/:spaceId/... route EXCEPT the credential store (credentials/* exposes OAuth tokens,
+// API keys, and secrets that an agent must never be able to read even via a GET — a leaked or
+// prompt-injection-steered agent key is a read-everything key otherwise). Mutating access is
+// still gated by the approval gate below; this is an additional, unconditional READ block on
+// the credentials surface alone.
+const AGENT_KEY_BLOCKED_PATH_PREFIXES = ["/credentials"];
+
 function matchAgentSpacePath(path: string): string | null {
   const stripped = path.replace(/^\/v1(?=\/|$)/, "") || "/";
-  const m = /^\/spaces\/([^/]+)(?:\/|$)/.exec(stripped);
-  return m ? m[1]! : null;
+  const m = /^\/spaces\/([^/]+)(\/|$)/.exec(stripped);
+  if (!m) return null;
+  const spaceId = m[1]!;
+  // Block agent keys from the credential store regardless of method — credentials/* carries
+  // raw secrets (OAuth tokens, API keys) that an agent must never read directly.
+  const afterSpace = stripped.slice(`/spaces/${spaceId}`.length);
+  if (AGENT_KEY_BLOCKED_PATH_PREFIXES.some((p) => afterSpace === p || afterSpace.startsWith(`${p}/`))) {
+    return null; // treat as "no agent space match" → falls through to JWT auth → 401
+  }
+  return spaceId;
 }
 
 /** Verify a Bearer nak_... agent key against the space's SpaceDO (via the spaces worker's
@@ -570,13 +591,41 @@ api.use("*", async (c, next) => {
   const authHeader = c.req.header("authorization") ?? "";
   const headerMatch = /^Bearer\s+(nps_\S+)$/.exec(authHeader);
   // The browser's native EventSource API cannot set custom headers, so the SSE stream endpoint
-  // (.../agent/runs/:runId/stream) has no way to carry a Bearer header — accept the same
-  // credentials as query params for GET requests as the standard, accepted workaround. Header
-  // form still wins when both are present.
-  const queryToken = c.req.query("session_token");
-  const queryEndUserId = c.req.query("end_user_id");
-  const sessionToken = headerMatch?.[1] ?? (c.req.method === "GET" && queryToken?.startsWith("nps_") ? queryToken : undefined);
-  const endUserId = c.req.header("x-naelao-end-user-id") ?? (c.req.method === "GET" ? queryEndUserId : undefined);
+  // (.../agent/runs/:runId/stream) has no way to carry a Bearer header. Previously we accepted
+  // the full nps_ session token as a query param — but that puts a long-lived credential into
+  // CF access logs, proxy logs, and browser history. Fixed: the client POSTs to
+  // /spaces/:spaceId/sessions/stream-ticket first (authenticated with the Bearer header), gets
+  // a short-lived (60s), single-use stream_ticket, and passes that in ?stream_ticket= instead.
+  // The spaces worker's stream-ticket endpoint verifies the ticket and replies with the real
+  // identity, so the stream endpoint never needs the raw session token at all.
+  // Legacy ?session_token= fallback kept ONLY for the GET stream path while clients migrate;
+  // scope-limited to SSE paths matching agent/runs/:id/stream to prevent it being a general
+  // auth bypass for any GET endpoint.
+  const isStreamPath = /\/agent\/runs\/[^/]+\/stream$/.test(c.req.path);
+  const queryStreamTicket = c.req.method === "GET" && isStreamPath ? c.req.query("stream_ticket") : undefined;
+  const queryToken = c.req.method === "GET" && isStreamPath ? c.req.query("session_token") : undefined;
+  const queryEndUserId = c.req.method === "GET" ? c.req.query("end_user_id") : undefined;
+
+  // Stream ticket path — short-lived, single-use, no long-lived secret in logs.
+  if (queryStreamTicket && queryEndUserId) {
+    const productId = matchProductEndUserPath(c.req.path);
+    if (productId) {
+      const ticketRes = await c.env.SPACES_WORKER.fetch(new Request("http://spaces/internal/stream-tickets/consume", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-platform-secret": c.env.PLATFORM_SECRET },
+        body: JSON.stringify({ productId, endUserId: queryEndUserId, ticket: queryStreamTicket }),
+      }));
+      if (!ticketRes.ok) throw unauthorized("Invalid or expired stream ticket");
+      const { valid, tenant_id } = await ticketRes.json<{ valid: boolean; tenant_id?: string }>();
+      if (!valid || !tenant_id) throw unauthorized("Invalid or expired stream ticket");
+      const now = Math.floor(Date.now() / 1000);
+      c.set("claims", { sub: queryEndUserId, tid: tenant_id, email: "", role: "product_end_user" as const, scopes: [], iat: now, exp: now + 3600, jti: "" });
+      return next();
+    }
+  }
+
+  const sessionToken = headerMatch?.[1] ?? (queryToken?.startsWith("nps_") ? queryToken : undefined);
+  const endUserId = c.req.header("x-naelao-end-user-id") ?? queryEndUserId;
   const productId = matchProductEndUserPath(c.req.path);
 
   if (sessionToken && endUserId && productId) {

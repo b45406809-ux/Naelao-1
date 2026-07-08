@@ -54,7 +54,7 @@ export default function ShellLayout({ children }: { children: React.ReactNode })
 
 function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   const product = useProduct();
-  const { activeSpaceId, setActiveSpace } = useActiveSpace();
+  const { activeSpaceId, setActiveSpace, setSupportContact } = useActiveSpace();
   const { session, isHydrated, isAuthenticated } = useProductAuth();
   const router = useRouter();
   const pathname = usePathname();
@@ -67,6 +67,20 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   const [threads, setThreads] = React.useState<ThreadSummary[]>([]);
   const [businesses, setBusinesses] = React.useState<Business[]>([]);
   const [switcherOpen, setSwitcherOpen] = React.useState(false);
+  // Cookie consent: shown only when the product's cookiePolicy is "third_party" and the user
+  // hasn't already accepted in this browser. localStorage key is per-product-slug so accepting
+  // on one product doesn't silently grant consent for another.
+  const CONSENT_KEY = `naelao-cookie-consent:${product.slug}`;
+  const [cookieConsentPending, setCookieConsentPending] = React.useState(false);
+  React.useEffect(() => {
+    if (manifest?.legal.cookie_policy === "third_party") {
+      setCookieConsentPending(typeof localStorage !== "undefined" && !localStorage.getItem(CONSENT_KEY));
+    }
+  }, [manifest?.legal.cookie_policy, CONSENT_KEY]);
+  function acceptCookies() {
+    if (typeof localStorage !== "undefined") localStorage.setItem(CONSENT_KEY, "1");
+    setCookieConsentPending(false);
+  }
 
   React.useEffect(() => {
     if (isHydrated && !isAuthenticated) {
@@ -82,7 +96,10 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   // *administer* it (via /spaces/:id) but never actually *work inside* it.
   React.useEffect(() => {
     if (!creds) return;
-    getShellManifest(activeSpaceId, creds).then(setManifest).catch(() => show("Couldn't load workspace"));
+    getShellManifest(activeSpaceId, creds).then((m) => {
+      setManifest(m);
+      setSupportContact(m.legal?.support_contact ?? null);
+    }).catch(() => show("Couldn't load workspace"));
     getMe(activeSpaceId, creds).then(setMe).catch(() => {});
     listProjects(activeSpaceId, creds).then(setProjects).catch(() => {});
     listThreads(activeSpaceId, creds).then((all) => setThreads(all.slice(0, 3))).catch(() => {});
@@ -203,6 +220,57 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
         {children}
       </div>
       <Toast toast={toast} />
+      {/* Cookie consent banner — only shown when product's cookiePolicy is "third_party" and
+          the visitor hasn't accepted yet. ePrivacy Directive requires explicit consent before
+          non-essential cookies can be set. */}
+      {cookieConsentPending && (
+        <div
+          style={{
+            position: "fixed",
+            bottom: 0,
+            left: 0,
+            right: 0,
+            zIndex: 9999,
+            background: "var(--surface2, #1e1e2e)",
+            color: "var(--text1, #fff)",
+            borderTop: "1px solid var(--border)",
+            padding: "12px 20px",
+            display: "flex",
+            alignItems: "center",
+            gap: 16,
+            flexWrap: "wrap",
+            fontSize: 13,
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            This product uses cookies to improve your experience. By continuing, you agree to our{" "}
+            {manifest?.legal.privacy_policy_url
+              ? <a href={manifest.legal.privacy_policy_url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)" }}>Privacy Policy</a>
+              : "privacy policy"}
+            {manifest?.legal.tos_url && (
+              <> and{" "}<a href={manifest.legal.tos_url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)" }}>Terms of Service</a></>
+            )}
+            .
+          </span>
+          <button
+            type="button"
+            onClick={acceptCookies}
+            style={{
+              background: "var(--accent)",
+              color: "#fff",
+              border: "none",
+              borderRadius: 6,
+              padding: "6px 16px",
+              cursor: "pointer",
+              fontWeight: 600,
+              fontSize: 13,
+              whiteSpace: "nowrap",
+            }}
+          >
+            Accept
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -92,6 +92,8 @@ describe("F17: fetchProjectConfig fails CLOSED on error, stays permissive on a c
       const spacesWorker = {
         async fetch(input: RequestInfo) {
           const url = new URL(typeof input === "string" ? input : (input as Request).url);
+          if (url.pathname === "/internal/pricing-catalog") return Response.json({ external_revenue_cut: { enabled: false } });
+          if (url.pathname === "/internal/business-subscription-status") return Response.json({ gated: false, active: true, reason: "" });
           if (/^\/spaces\/[^/]+\/projects\/[^/]+$/.test(url.pathname)) throw new Error("network down");
           return new Response("not found", { status: 404 });
         },
@@ -108,6 +110,8 @@ describe("F17: fetchProjectConfig fails CLOSED on error, stays permissive on a c
       const spacesWorker = {
         async fetch(input: RequestInfo) {
           const url = new URL(typeof input === "string" ? input : (input as Request).url);
+          if (url.pathname === "/internal/pricing-catalog") return Response.json({ external_revenue_cut: { enabled: false } });
+          if (url.pathname === "/internal/business-subscription-status") return Response.json({ gated: false, active: true, reason: "" });
           if (/^\/spaces\/[^/]+\/projects\/[^/]+$/.test(url.pathname)) return new Response("boom", { status: 500 });
           return new Response("not found", { status: 404 });
         },

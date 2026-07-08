@@ -394,6 +394,28 @@ export interface SpaceTypeProductConfig {
   containerMarketplace?: {
     maxSlotsPerProject?: number;
   };
+
+  /** Legal & support config — builder-defined, surfaced in the product shell so end users know
+   *  how to get help, and so a builder can point to their own ToS/privacy policy instead of (or
+   *  in addition to) Naelao's platform defaults. All fields are optional (reasonable fallbacks
+   *  apply in the shell: Naelao's own ToS/Privacy for un-customized products), but a builder
+   *  SHOULD fill these in before going public — they're what makes a DPA possible. */
+  legal?: {
+    /** URL to this product's Terms of Service (must be HTTPS). Shown in signup flow + footer. */
+    tosUrl?: string;
+    /** URL to this product's Privacy Policy (must be HTTPS). Shown in signup flow + footer. */
+    privacyPolicyUrl?: string;
+    /** URL to the builder's Data Processing Agreement (sent to enterprise customers on request). */
+    dpaUrl?: string;
+    /** Cookie policy — "none" = product uses no tracking cookies (only first-party session cookies),
+     *  "analytics" = builder also uses a first-party analytics cookie, "third_party" = the shell
+     *  will show a consent banner before setting anything beyond the mandatory session cookie. */
+    cookiePolicy?: "none" | "analytics" | "third_party";
+    /** Support contact for end users (mailto: or https:). Shown on error pages and the 402 credit
+     *  exhaustion screen so a stuck user always has a path to a human. If unset, the shell links
+     *  to the generic Naelao support page instead. */
+    supportContact?: string;
+  };
 }
 
 // resolveTenancy lives in the pure ./tenancy module (no cloudflare:workers import) so it

@@ -69,6 +69,7 @@ export async function resolveEndUserBusinessRole(
 // existing tests asserting on membership changes taking effect immediately after a DB mutation;
 // caching belongs to the request-serving path, not the primitive.
 const BUSINESS_ROLE_CACHE_TTL_MS = 5_000;
+const BUSINESS_ROLE_CACHE_MAX = 2000;
 const businessRoleCache = new Map<string, { role: BusinessRole | null; expiresAt: number }>();
 
 async function resolveEndUserBusinessRoleCached(
@@ -80,6 +81,9 @@ async function resolveEndUserBusinessRoleCached(
   const cached = businessRoleCache.get(cacheKey);
   if (cached && Date.now() < cached.expiresAt) return cached.role;
   const role = await resolveEndUserBusinessRole(db, spaceId, endUserId);
+  if (businessRoleCache.size >= BUSINESS_ROLE_CACHE_MAX) {
+    businessRoleCache.delete(businessRoleCache.keys().next().value!);
+  }
   businessRoleCache.set(cacheKey, { role, expiresAt: Date.now() + BUSINESS_ROLE_CACHE_TTL_MS });
   return role;
 }
