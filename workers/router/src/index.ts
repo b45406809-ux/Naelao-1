@@ -191,7 +191,7 @@ app.use("*", async (c, next) => {
       headers: {
         "Access-Control-Allow-Origin": allowed,
         "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Request-Id",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Request-Id, X-Naelao-End-User-Id",
         "Access-Control-Max-Age": "86400",
       },
     });
@@ -841,7 +841,8 @@ async function proxyTo(
     method: req.method,
     headers,
     body: req.body,
-  }));
+    duplex: "half",
+  } as RequestInit));
 }
 
 // Knowledge (KB) → knowledge worker

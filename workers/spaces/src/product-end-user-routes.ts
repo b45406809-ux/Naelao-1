@@ -302,6 +302,16 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
       "UPDATE password_reset_tokens SET used_at = datetime('now') WHERE id = ?"
     ).bind(row.id).run();
 
+    // Revoke ALL existing sessions — a stolen session must not survive a password reset.
+    // Best-effort: failure must not block the reset itself (the password is already changed).
+    try {
+      const space = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?").bind(productId).first<{ tenant_id: string }>();
+      if (space) {
+        const stub = await productUserDoStub(env, productId, row.end_user_id, space.tenant_id);
+        await stub.fetch("http://do/sessions/revoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({}) });
+      }
+    } catch { /* ignore — password is already updated */ }
+
     return c.json({ ok: true, message: "Password updated. Sign in with your new password." });
   });
 

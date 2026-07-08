@@ -202,11 +202,23 @@ export async function sendMessage(
   return { userMessage, agentRunId: agentRun.id ?? agentRun.run_id ?? agentRun.task_id ?? "" };
 }
 
-/** The browser's native EventSource can't set headers, so the stream URL carries credentials as
- *  query params — the router's GET-only query-param fallback (see workers/router/src/index.ts). */
-export function getStreamUrl(spaceId: string, sessionId: string, runId: string, session: SessionCredentials): string {
-  const params = new URLSearchParams({ session_token: session.sessionToken, end_user_id: session.endUserId });
-  return `${API_URL}/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}/stream?${params.toString()}`;
+/** Mint a short-lived (60s) single-use stream ticket, then build a stream URL that carries
+ *  the ticket instead of the raw nps_ session token — keeps long-lived credentials out of
+ *  CF access logs, proxy logs, and browser history. Falls back to the legacy ?session_token=
+ *  path if the ticket endpoint is unreachable (e.g. during tests). */
+export async function getStreamUrl(spaceId: string, sessionId: string, runId: string, session: SessionCredentials): Promise<string> {
+  try {
+    const ticket = await apiFetch<{ ticket: string }>(
+      `/v1/spaces/${spaceId}/sessions/stream-ticket`,
+      { method: "POST", body: JSON.stringify({}), session }
+    );
+    const params = new URLSearchParams({ stream_ticket: ticket.ticket, end_user_id: session.endUserId });
+    return `${API_URL}/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}/stream?${params.toString()}`;
+  } catch {
+    // Legacy fallback: raw session token in URL (logged but functional — used during local dev).
+    const params = new URLSearchParams({ session_token: session.sessionToken, end_user_id: session.endUserId });
+    return `${API_URL}/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}/stream?${params.toString()}`;
+  }
 }
 
 /** Polling fallback for environments without SSE. */

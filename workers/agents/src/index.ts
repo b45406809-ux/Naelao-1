@@ -1942,6 +1942,54 @@ app.get("/templates", async (c) => {
   });
 });
 
+// GET /catalog/product — public SpaceType niche catalog, visible to any authenticated user.
+// Returns a summary of what's live vs. coming-soon so the builder dashboard and the
+// launchpad wizard can show accurate availability without exposing internal config.
+// The "Custom" option (template_ids: []) is always live — it lets a builder scaffold
+// from scratch with the Space Assistant (Phase G, LAUNCHPAD_ASSISTANT_PROFILE) rather
+// than picking a niche template. That's the second "live" entry the catalog always has.
+app.get("/catalog/product", (c) => {
+  const live = LAUNCHPAD_TEMPLATES.filter((t) => !t.coming_soon);
+  const comingSoon = LAUNCHPAD_TEMPLATES.filter((t) => t.coming_soon);
+  const CUSTOM_NICHE = { id: "custom", name: "Custom", description: "Build from scratch with the Space Assistant", coming_soon: false };
+  return c.json({
+    live_count: live.length + 1, // +1 for the always-live Custom option
+    coming_soon_count: comingSoon.length,
+    niches: [
+      ...LAUNCHPAD_TEMPLATES.map((t) => ({
+        id: t.id,
+        name: t.name,
+        description: t.description,
+        coming_soon: t.coming_soon ?? false,
+      })),
+      CUSTOM_NICHE,
+    ],
+  });
+});
+
+// GET /catalog/dev — founder/admin-only: full internal view (space types + all templates).
+// Regular users get 403 so they can't enumerate internal config or coming-soon ordering.
+app.get("/catalog/dev", (c) => {
+  const role = c.req.header("x-naelao-role");
+  if (role !== "admin" && role !== "owner") {
+    return c.json({ error_code: "forbidden", message: "Admin only" }, 403);
+  }
+  return c.json({
+    space_types: [
+      { id: "launchpad", name: "Launchpad", description: "Creator/commerce platform", status: "live" },
+      { id: "codeassist", name: "CodeAssist", description: "AI coding workspace", status: "coming_soon" },
+      { id: "legalspace", name: "LegalSpace", description: "AI legal research workspace", status: "coming_soon" },
+    ],
+    templates: LAUNCHPAD_TEMPLATES.map((t) => ({
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      coming_soon: t.coming_soon ?? false,
+      connectors: t.connectors ?? [],
+    })),
+  });
+});
+
 // GET /container-images — the Container Marketplace catalogue (§A1.17 Phase L). Mirrors
 // GET /templates: the spaces worker KV-caches this and is the single source of truth for
 // slot-creation validation — never a hand-maintained duplicate.

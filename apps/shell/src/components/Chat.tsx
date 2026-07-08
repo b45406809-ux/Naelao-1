@@ -165,7 +165,7 @@ export function Chat({
         pollUntilDone(sid, runId);
         return;
       }
-      const url = getStreamUrl(spaceId, sid, runId, session);
+      const url = await getStreamUrl(spaceId, sid, runId, session);
       const es = new EventSource(url);
       sseRef.current = es;
       let accumulated = "";

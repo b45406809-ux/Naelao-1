@@ -5,7 +5,8 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "development"
-CORS_ALLOWLIST = "http://localhost:3000,http://localhost:3001"
+CORS_ALLOWLIST = "http://localhost:3000,http://localhost:3001,http://localhost:3100"
+PRODUCT_SHELL_URL = "http://localhost:3100"
 
 [[d1_databases]]
 binding = "PLATFORM_DB"
@@ -62,8 +63,8 @@ service = "naelao-credentials"
 
 [env.staging]
 name = "naelao-router-staging"
-vars = { ENVIRONMENT = "staging", CORS_ALLOWLIST = "https://staging-dashboard.naelao.com,https://staging-portal.naelao.com" }
+vars = { ENVIRONMENT = "staging", CORS_ALLOWLIST = "https://staging-dashboard.naelao.com,https://staging-portal.naelao.com,https://staging-app.naelao.com", PRODUCT_SHELL_URL = "https://staging-app.naelao.com" }
 
 [env.production]
 name = "naelao-router-production"
-vars = { ENVIRONMENT = "production", CORS_ALLOWLIST = "https://dashboard.naelao.com,https://portal.naelao.com" }
+vars = { ENVIRONMENT = "production", CORS_ALLOWLIST = "https://dashboard.naelao.com,https://portal.naelao.com,https://app.naelao.com", PRODUCT_SHELL_URL = "https://app.naelao.com" }
