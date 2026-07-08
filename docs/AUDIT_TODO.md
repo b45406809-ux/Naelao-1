@@ -7,6 +7,15 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
 
 ## Tier 1 — Launch blockers
 
+- [ ] **F-17: `apps/shell` fails typecheck → `next build` fails → the Product Shell cannot
+  deploy at all.** Evidence: `apps/shell/src/components/Chat.tsx:168` — `const url = await
+  getStreamUrl(...)` inside a NON-async `React.useCallback` (TS1308). Introduced by commit
+  `a6eab1c` (the stream-ticket wiring was added to `streamRun` without making the callback
+  async; shell typecheck wasn't re-run). `pnpm turbo run typecheck` currently FAILS on
+  `@naelao/shell` at HEAD. Failure: CF Pages deploy of the shell breaks → every end user of
+  every product has no UI. Fix: make the callback async + re-verify the stream path it was
+  wiring; fix FIRST since it gates verifying everything else end-to-end.
+
 - [ ] **F-1: `/v1/builder/*` is not routed — the entire Builder Dashboard API 404s.**
   Evidence: `workers/spaces/src/builder-routes.ts:141+` implements `/builder/api-keys`,
   `/builder/products` (CRUD/pricing/domain/analytics/payouts), `/builder/space-types`;
@@ -131,6 +140,18 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   (registered before the sessions catch-all), authenticated by verified caller identity,
   calling the issue logic; one end-to-end test through the router.
 
+- [ ] **F-18 (money/legal): Deleting a product strands live paying subscribers.**
+  Evidence: `workers/spaces/src/builder-routes.ts:481-490` — `DELETE /builder/products/:id`
+  only sets `status='deleted'`; nothing enumerates the product's businesses'
+  `business_subscriptions` or calls Lemon Squeezy to cancel them; nothing notifies end
+  users. Access genuinely dies (`by-slug` requires `status='active'` at index.ts:2660;
+  product-session verify excludes deleted at :2043) — so end users are locked out WHILE LS
+  keeps invoicing them monthly. Chargeback/legal exposure day one. Same gap on
+  `paused`/`suspended` transitions. Distinct from F-7 (F-7 = churned business keeps access;
+  F-18 = deleted product keeps charging). Fix: on delete/suspend, enumerate child
+  businesses' LS subscription ids and call the LS cancel API (best-effort + retry), and
+  block deletion (or typed-confirm with subscriber count) when active subscriptions exist.
+
 - [ ] **F-5: `/billing/*` also unrouted (dead code today, loaded footgun).**
   Evidence: dashboard `api.ts:461/473` define `/billing/checkout` + `/billing/subscription`;
   billing worker implements them (`workers/billing/src/index.ts:141/203/285`); no page
@@ -215,6 +236,17 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   first path segment) — deliberate, but untested against deep mutating routes.
 
 ## Disproven during audit (do NOT re-report)
+
+- Webhook idempotency/replay: top-level `processed_webhook_events` gate ((provider,
+  event_id) PK, checked BEFORE any side effect) + per-table `INSERT OR IGNORE` — solid.
+- Provisioner failure recovery: real `rollbackSpace` path deprovisions the partial list.
+- Verification/reset token entropy: double `crypto.randomUUID()`, stored hashed, expiring.
+- Full test suite: 1532/1532 with `--config tests/vitest.config.ts` (a bare root
+  `pnpm vitest run` fails to collect 76 files — missing `cloudflare:workers` stub alias —
+  wrong invocation, not a bug).
+- F-WALLET note: a `wallet_topup` checkout flow ALREADY exists
+  (`billing/lemon-squeezy.ts:345-375`, posts to a business project wallet with idempotency
+  keys) — F-WALLET-3 should extend it, not duplicate it.
 
 - Bare `GET /templates` through the router: Hono's `app.all("/templates/*")` DOES match
   bare `/templates` (verified empirically against this repo's hono version) — the
