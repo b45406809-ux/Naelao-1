@@ -98,7 +98,29 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
 ## Tier 2b — Revenue Model & Trust (depends on F-2 webhooks)
 
 - [ ] **ARCH-REVENUE: Three-tier revenue sharing architecture — Naelao, Builder, End User.**
-  
+
+  **✅ DECIDED MODEL (user, 2026-07-08) — supersedes the open options below:**
+  On the Launchpad SpaceType, who earns depends on WHOSE revenue the money is:
+  1. **End user's BUSINESS revenue** (storefront sales, seat sales — money the business
+     earns from ITS customers): **split three ways** — the business keeps the net,
+     **Naelao takes a cut AND the builder takes a cut**. Today's code takes only the
+     Naelao 5% (`LAUNCHPAD_FEE_BPS`) and settles the rest to the business wallet — a
+     BUILDER share must be added: e.g. gross → naelao_fee_bps + builder_fee_bps
+     (builder-configurable per product, within a Naelao-set ceiling) → remainder to the
+     business's wallet. The builder's share lands in the builder's payout balance
+     (`reseller_ledger` row with `kind='builder_revenue_share'`).
+  2. **End user's SUBSCRIPTION to the builder's product** (plans/credit packs — the end
+     user paying to USE the product): **Naelao keeps 100%.** No settlement to the business
+     wallet, no builder share. This resolves ARCH-REVENUE-1/2's open options: do NOT add
+     wallet settlement for `business_subscription` payments; do NOT split credit packs.
+     (Rationale: subscription revenue funds the platform compute the product consumes.)
+  3. **Builder's own platform subscription** (builder paying for Naelao plan tiers —
+     growth/business): **Naelao keeps 100%** (already true — Stripe/LS plan billing).
+  Implementation surface: `recordProductOrder`/`recordSeatActivation` in
+  `billing/lemon-squeezy.ts` gain a builder-share deduction; `builder_fee_bps` lives in
+  `productConfig.commerce` (config_json override, like memberBilling — never a manifest
+  fork); payout read side per ARCH-REVENUE-5.
+
   **CURRENT STATE (product sales only):**
   - **Product storefront sales** (launchpad_orders): Naelao takes `LAUNCHPAD_FEE_BPS` (default 500 bps = 5%), the SELLING space gets the net. Example: $100 order → $5 platform fee → $95 to seller's wallet.
   - **Business subscriptions**: Zero revenue split — entire plan price goes to Naelao LS account, seller sees only a database row in `business_subscriptions`.
@@ -108,7 +130,10 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   
   **GAPS TO CLOSE (for Launchpad go-live):**
   
-  **ARCH-REVENUE-1: Business subscription revenue split** — when an end user subscribes to a plan on behalf of a business:
+  **ARCH-REVENUE-1: ~~Business subscription revenue split~~ RESOLVED by decided model:
+  NO split — Naelao keeps 100% of plan subscriptions. The analysis below is kept for
+  context only; do not implement its "Required" section.**
+  Original framing — when an end user subscribes to a plan on behalf of a business:
   - Event: `subscription.created` / `subscription.payment_success` with metadata `kind="business_subscription"`
   - Current code: `recordBusinessSubscription` (lemon-squeezy.ts:262-292) upserts into `business_subscriptions` table but does NOT settle any revenue to the business's wallet
   - Required: Apply the same fee split as product sales:
@@ -120,7 +145,10 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   - Idempotency: Use the LS subscription_id + period hash as the key (a subscription has multiple payments over its lifetime; each should settle once)
   - Open question: Should Naelao's own cut be recorded somewhere? (Currently not visible anywhere; product sales just leave it implicit in the math.)
   
-  **ARCH-REVENUE-2: Credit pack revenue split** — when an end user buys credits:
+  **ARCH-REVENUE-2: ~~Credit pack revenue split~~ RESOLVED by decided model: NO split —
+  Naelao keeps 100% (subscription-class revenue). Options below kept for context; the
+  earlier "Option A recommended" is overridden.**
+  Original framing — when an end user buys credits:
   - Event: `payment.success` with metadata `kind="credit_pack"`
   - Current code: `grantCreditPackPurchase` (lemon-squeezy.ts:301-339) grants the full purchase amount to the end user's credit_ledger, no split
   - Required model decision: WHO gets the revenue cut?
@@ -131,7 +159,9 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   - Recommendation: **Option A (builder gets a cut)** — reason: consistency with product sales (all money-in splits the same way), and a builder who owns a product naturally wants to monetize credit upsells too. This also incentivizes builders to guide end users toward paid credits rather than letting them run out.
   - Implementation: Same as subscription split — settle net to the **product space's wallet** (not the end user's, since this is revenue the product/builder earned, not a user account balance).
   
-  **ARCH-REVENUE-3: Wallet top-up revenue split** — when a business tops up its own wallet (pre-funding):
+  **ARCH-REVENUE-3: Wallet top-up — CONFIRMED passthrough (no split), consistent with the
+  decided model (a top-up is the business's own capital, not new revenue).**
+  Original framing — when a business tops up its own wallet (pre-funding):
   - Event: `payment.success` with metadata `kind="wallet_topup"`
   - Current code: `grantWalletTopupPurchase` (lemon-squeezy.ts:350-387) grants the full amount to the wallet project
   - Context: This is a business (the seller) funding its own agent's compute costs. Naelao is providing the execution platform (container, LLM, etc.), so Naelao should take a cut of this too, UNLESS the wallet top-up is meant to be a pure passthrough (builder pre-funds agent runs, Naelao just stores it).
@@ -150,6 +180,52 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
     - Revenue-sharing %s can be tweaked per product/niche (store current `LAUNCHPAD_FEE_BPS` in a column, not just hardcode it)
   - Migration: `0058_naelao_revenue_tracking.sql` with a summary table and daily/monthly rollup logic.
   
+  **ARCH-REVENUE-6 (NEW BUILD ITEM — the one real code change the decided model needs):
+  Builder share of end-user business revenue.**
+  - `recordProductOrder` / `recordSeatActivation` (`billing/lemon-squeezy.ts`) currently
+    compute only `fee = gross * LAUNCHPAD_FEE_BPS` (Naelao) and settle `net` to the selling
+    business's wallet. Add a second deduction: `builder_fee = gross * builder_fee_bps`,
+    where `builder_fee_bps` comes from the checkout metadata (stamped at checkout time from
+    `productConfig.commerce.builderFeeBps`, same way `fee_bps` is stamped today — never
+    resolved at webhook time, so a config change can't retroactively re-price an in-flight
+    order). Business wallet gets `gross - naelao_fee - builder_fee`.
+  - Builder's share recorded as a `reseller_ledger` row (`kind='builder_revenue_share'`)
+    so the existing payout-balance sum picks it up; per ARCH-REVENUE-5, payout read side
+    must break out by kind.
+  - Guardrails: `builderFeeBps` capped by a platform ceiling (e.g. 3000 bps) validated at
+    PATCH time in builder-routes; combined fees must never exceed gross (clamp, and never
+    let net go negative). Refund clawback must claw back BOTH shares, not just the wallet
+    net (extend `recordOrderRefund`).
+  - Same split applies to the Whop external-revenue surcharge path (`revenue-cut-surcharge`):
+    today the surcharge payment lands entirely in Naelao's LS account; the decided model
+    says the builder gets their configured slice — attribute it in `reseller_ledger` when
+    the surcharge payment.success arrives.
+  - Shell/dashboard transparency: business wallet ledger rows should show the two
+    deductions (Naelao cut, builder cut) explicitly, not one opaque fee.
+
+  **ARCH-REVENUE-7 / F-21 (money leak, verified): `recordResellerAttribution` is
+  UNCONDITIONAL — it attributes a builder margin on payer classes the decided model says
+  are 100% Naelao's, and on money that isn't revenue at all.**
+  Evidence: `billing/lemon-squeezy.ts:781` runs `recordResellerAttribution` on EVERY
+  ledger event (`isLedgerEvent` = every payment.success + subscription.* ) for any space
+  whose tenant is a child under a reseller — with no filter on the checkout `kind`. So a
+  referral-mode builder (referral_share_pct) accrues withdrawable `margin_cents`
+  (`computeAvailableBalances` sums the whole ledger, builder-routes.ts:831) on:
+  - `kind="business_subscription"` payments → decided model says Naelao keeps 100%;
+  - `kind="credit_pack"` → same;
+  - `kind="wallet_topup"` → WORST case: the business tops up its own wallet with $100,
+    the full $100 is credited to the wallet (passthrough by design), AND the builder
+    accrues a share of it — total obligations exceed money in. A builder colluding with
+    (or owning) a child business can loop top-ups to farm payout balance from Naelao.
+  - `kind="revenue_cut_surcharge"` → the surcharge test's own comment (revenue-cut-
+    surcharge.test.ts:9) even celebrates this as "no new code needed" — correct for the
+    surcharge (the builder SHOULD get a slice of that one) but only by accident.
+  Fix: pass the event's checkout `kind` into the attribution step and allowlist which
+  kinds accrue builder margin per the decided model (product sales, seats, surcharges —
+  NOT business_subscription / credit_pack / wallet_topup). Add a `kind` column to
+  `reseller_ledger` rows so ARCH-REVENUE-5's by-source breakdown is possible, and a test
+  proving a wallet_topup on a child business accrues zero margin.
+
   **ARCH-REVENUE-5: Builder payout calculation** — the inverse of Naelao's cut:
   - Current code: `GET /builder/payouts*` exists (`builder-routes.ts:680+`) and calculates builder balance via `reseller_ledger`
   - Issue: `reseller_ledger` is a dual-purpose table (attribution for ALL transactions, including seats + credit packs where the builder doesn't earn anything). The payout code sums it all, which is imprecise.
@@ -241,6 +317,17 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   calls them yet and the router can't reach billing anyway. Fix rides with F-2's binding.
 
 ## Tier 3 — Revenue integrity
+
+- [ ] **F-22 (race): `POST /builder/payouts/request` is read-then-insert — two concurrent
+  requests can each create a pending payout for the FULL balance.**
+  Evidence: `builder-routes.ts:853-884` — `computeAvailableBalances` (a SELECT) then a
+  plain INSERT with no uniqueness or atomic decrement; nothing stops the second request
+  reading the balance before the first's row lands. Manual fulfillment (v1 is
+  human-reviewed by design, migration 0053) is the only backstop — an admin who fulfils
+  both pays out double. Fix: a partial unique index on
+  `payout_requests(tenant_id, currency) WHERE status='pending'` (one open request per
+  currency, matching the UX anyway) — cheapest honest fix given D1 has no SELECT FOR
+  UPDATE; 409 on conflict.
 
 - [x] **F-7: FIXED at HEAD (verified, do not re-report)** — `NaelaoAgentDO.
   checkBusinessSubscriptionGate` (agents/do/NaelaoAgentDO.ts:1960) now reads
