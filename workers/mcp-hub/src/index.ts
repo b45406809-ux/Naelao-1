@@ -59,6 +59,8 @@ async function generateCredentialToken(platformSecret: string, spaceId: string, 
   return `t=${timestamp},aid=${agentId},v1=${hex}`;
 }
 
+type ConnectorProvider = "direct" | "composio" | "pipedream";
+
 interface McpServer {
   id: string;
   space_id: string;
@@ -68,8 +70,108 @@ interface McpServer {
   auth_type: "bearer" | "api_key" | "none";
   auth_secret_name: string | null; // references space_credentials table
   enabled: number; // 0 or 1 (D1 stores booleans as integers)
+  connector_provider: ConnectorProvider;
+  /** Provider's opaque connection reference (Composio connected_account_id / Pipedream user_id). Never the underlying OAuth token. */
+  provider_connection_id: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// ── Phase P: Composio / Pipedream provider routing ────────────────────────────────────────────
+// When connector_provider is 'composio' or 'pipedream', we route the tool call through the
+// provider's execute-action API instead of calling the server URL directly. The script-native
+// "6 ops only" surface is unchanged — more connector inventory, same surface.
+// Both providers need an API key stored as a space-level credential; the connection_id stored in
+// provider_connection_id scopes the call to the correct end-user OAuth connection on the provider side.
+
+interface ProviderToolCallResult {
+  result?: unknown;
+  error?: string;
+}
+
+async function composioToolCall(
+  connectionId: string,
+  toolName: string,
+  input: Record<string, unknown>,
+  apiKey: string
+): Promise<ProviderToolCallResult> {
+  const resp = await fetch(
+    `https://backend.composio.dev/api/v2/actions/${encodeURIComponent(toolName)}/execute`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+      body: JSON.stringify({ connectedAccountId: connectionId, input }),
+      signal: AbortSignal.timeout(30_000),
+    }
+  );
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    return { error: `Composio returned ${resp.status}: ${text.slice(0, 200)}` };
+  }
+  const data = await resp.json<{ data?: unknown; error?: string }>();
+  if (data.error) return { error: data.error };
+  return { result: data.data };
+}
+
+async function composioListTools(
+  connectionId: string,
+  apiKey: string
+): Promise<{ tools: unknown[] }> {
+  const resp = await fetch(
+    `https://backend.composio.dev/api/v2/actions?connectedAccountId=${encodeURIComponent(connectionId)}&limit=100`,
+    {
+      headers: { "x-api-key": apiKey },
+      signal: AbortSignal.timeout(15_000),
+    }
+  );
+  if (!resp.ok) return { tools: [] };
+  const data = await resp.json<{ items?: unknown[] }>();
+  return { tools: data.items ?? [] };
+}
+
+async function pipedreamToolCall(
+  connectionId: string,
+  actionName: string,
+  input: Record<string, unknown>,
+  apiKey: string
+): Promise<ProviderToolCallResult> {
+  // Pipedream Connect execute-action endpoint. `apiKey` here is a Pipedream project OAuth token.
+  const resp = await fetch(
+    `https://api.pipedream.com/v1/connect/actions/${encodeURIComponent(actionName)}/run`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${apiKey}`,
+        "x-pd-end-user-id": connectionId,
+      },
+      body: JSON.stringify({ inputs: input }),
+      signal: AbortSignal.timeout(30_000),
+    }
+  );
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    return { error: `Pipedream returned ${resp.status}: ${text.slice(0, 200)}` };
+  }
+  const data = await resp.json<{ data?: unknown; error?: string }>();
+  if (data.error) return { error: data.error };
+  return { result: data.data };
+}
+
+async function pipedreamListTools(
+  connectionId: string,
+  apiKey: string
+): Promise<{ tools: unknown[] }> {
+  const resp = await fetch(
+    `https://api.pipedream.com/v1/connect/components/actions?end_user_id=${encodeURIComponent(connectionId)}`,
+    {
+      headers: { "Authorization": `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(15_000),
+    }
+  );
+  if (!resp.ok) return { tools: [] };
+  const data = await resp.json<{ data?: unknown[] }>();
+  return { tools: data.data ?? [] };
 }
 
 function validateEnv(env: Env): void {
@@ -174,44 +276,65 @@ app.post("/v1/spaces/:spaceId/mcp-servers", async (c) => {
 
   const body = await c.req.json<{
     name: string;
-    url: string;
+    url?: string;
     auth_type?: "bearer" | "api_key" | "none";
     auth_secret_name?: string;
+    connector_provider?: ConnectorProvider;
+    provider_connection_id?: string;
   }>();
 
-  if (!body.name || !body.url) {
-    return c.json({ error_code: "bad_request", message: "name and url are required" }, 400);
+  const connectorProvider: ConnectorProvider = body.connector_provider ?? "direct";
+  if (!["direct", "composio", "pipedream"].includes(connectorProvider)) {
+    return c.json({ error_code: "bad_request", message: "connector_provider must be 'direct', 'composio', or 'pipedream'" }, 400);
   }
 
-  const urlValidation = await validateMcpUrl(body.url);
-  if (!urlValidation.ok) {
-    return c.json({ error_code: "bad_request", message: urlValidation.message }, 400);
+  // For provider-routed connectors a url is optional (the provider resolves the endpoint);
+  // for direct connections a url is required.
+  const url = body.url ?? "";
+  if (connectorProvider === "direct" && !body.name) {
+    return c.json({ error_code: "bad_request", message: "name is required" }, 400);
+  }
+  if (connectorProvider === "direct" && !url) {
+    return c.json({ error_code: "bad_request", message: "url is required for direct connectors" }, 400);
+  }
+  if (!body.name) {
+    return c.json({ error_code: "bad_request", message: "name is required" }, 400);
   }
 
-  // Reserved-capability guard (defense-in-depth — the mcp-connector prebuilt also checks):
-  // a payment processor may not be registered as a connector. Money-in is reserved to the
-  // prebuilt commerce script so the platform fee is always captured.
-  if (isReservedPaymentHost(urlValidation.url.hostname)) {
-    return c.json({
-      error_code: "reserved_capability",
-      message: "Payment processors cannot be registered as MCP connectors; money-in is reserved to Naelao commerce.",
-    }, 403);
+  // SSRF + reserved-payment checks apply only to direct connectors (the provider handles
+  // routing for Composio/Pipedream — we validate the provider API host at deploy time, not here).
+  if (connectorProvider === "direct") {
+    const urlValidation = await validateMcpUrl(url);
+    if (!urlValidation.ok) {
+      return c.json({ error_code: "bad_request", message: urlValidation.message }, 400);
+    }
+    if (isReservedPaymentHost(urlValidation.url.hostname)) {
+      return c.json({
+        error_code: "reserved_capability",
+        message: "Payment processors cannot be registered as MCP connectors; money-in is reserved to Naelao commerce.",
+      }, 403);
+    }
+  }
+
+  if ((connectorProvider === "composio" || connectorProvider === "pipedream") && !body.provider_connection_id) {
+    return c.json({ error_code: "bad_request", message: "provider_connection_id is required for Composio/Pipedream connectors" }, 400);
   }
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const authType = body.auth_type ?? "none";
   const authSecretName = body.auth_secret_name ?? null;
+  const providerConnectionId = body.provider_connection_id ?? null;
 
   await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO mcp_servers (id, space_id, tenant_id, name, url, auth_type, auth_secret_name, enabled, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+    `INSERT INTO mcp_servers (id, space_id, tenant_id, name, url, auth_type, auth_secret_name, enabled, connector_provider, provider_connection_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`
   )
-    .bind(id, spaceId, tenantId, body.name, body.url, authType, authSecretName, now, now)
+    .bind(id, spaceId, tenantId, body.name, url, authType, authSecretName, connectorProvider, providerConnectionId, now, now)
     .run();
 
   return c.json(
-    { id, name: body.name, url: body.url, auth_type: authType, enabled: true, created_at: now },
+    { id, name: body.name, url, auth_type: authType, connector_provider: connectorProvider, enabled: true, created_at: now },
     201
   );
 });
@@ -275,6 +398,24 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
 
   if (!server) {
     return c.json({ error_code: "not_found", message: "MCP server not found or disabled" }, 404);
+  }
+
+  // Provider-routed connectors skip direct SSRF/credential checks and go through the provider API.
+  if (server.connector_provider === "composio" || server.connector_provider === "pipedream") {
+    let apiKey: string;
+    try {
+      const authHeaders = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
+      apiKey = authHeaders["Authorization"]?.replace("Bearer ", "") ?? authHeaders["X-API-Key"] ?? "";
+    } catch (err) {
+      return c.json({ error_code: "credential_error", message: (err as Error).message }, 502);
+    }
+    if (!apiKey || !server.provider_connection_id) {
+      return c.json({ error_code: "bad_request", message: "Provider API key or connection_id missing" }, 400);
+    }
+    if (server.connector_provider === "composio") {
+      return c.json(await composioListTools(server.provider_connection_id, apiKey));
+    }
+    return c.json(await pipedreamListTools(server.provider_connection_id, apiKey));
   }
 
   // S0.5: re-validate at CALL TIME, not just registration — a hostname that resolved to a
@@ -360,6 +501,30 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
       error_code: "reserved_capability",
       message: `Tool '${body.tool_name}' looks like a money-in capability, which is reserved to the prebuilt commerce script.`,
     }, 403);
+  }
+
+  // Provider-routed connectors skip SSRF/credential checks — route through provider API.
+  if (server.connector_provider === "composio" || server.connector_provider === "pipedream") {
+    let apiKey: string;
+    try {
+      const authHeaders = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
+      apiKey = authHeaders["Authorization"]?.replace("Bearer ", "") ?? authHeaders["X-API-Key"] ?? "";
+    } catch (err) {
+      return c.json({ error_code: "credential_error", message: (err as Error).message }, 502);
+    }
+    if (!apiKey || !server.provider_connection_id) {
+      return c.json({ error_code: "bad_request", message: "Provider API key or connection_id missing" }, 400);
+    }
+    let providerResult: ProviderToolCallResult;
+    if (server.connector_provider === "composio") {
+      providerResult = await composioToolCall(server.provider_connection_id, body.tool_name, body.input, apiKey);
+    } else {
+      providerResult = await pipedreamToolCall(server.provider_connection_id, body.tool_name, body.input, apiKey);
+    }
+    if (providerResult.error) {
+      return c.json({ error_code: "upstream_error", message: providerResult.error }, 502);
+    }
+    return c.json({ result: providerResult.result });
   }
 
   // S0.5: re-validate at CALL TIME, not just registration — see the tools/list handler above.

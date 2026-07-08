@@ -17,6 +17,7 @@ const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as Ex
 const MIGRATIONS = [
   readFileSync(join(__dirname, "../../infra/migrations/0012_mcp_servers.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0037_mcp_servers_auth.sql"), "utf8"),
+  readFileSync(join(__dirname, "../../infra/migrations/0060_mcp_server_connector_provider.sql"), "utf8"),
 ];
 
 function makeEnv(overrides: Record<string, unknown> = {}) {
@@ -150,5 +151,125 @@ describe("mcp-hub SSRF — DoH-backed checkSsrf replaces the literal-only blockl
       env as never, execCtx
     );
     expect(listRes.status).toBe(400);
+  });
+});
+
+// ── Phase P: Composio/Pipedream connector provider routing ───────────────────────────────────
+
+describe("mcp-hub Phase P — Composio/Pipedream provider routing", () => {
+  let originalFetch: typeof fetch;
+  beforeEach(() => { originalFetch = globalThis.fetch; });
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  function makeEnvP(overrides: Record<string, unknown> = {}) {
+    return { ENVIRONMENT: "test", PLATFORM_SECRET, PLATFORM_DB: createFakeD1(MIGRATIONS), ...overrides };
+  }
+
+  it("registers a Composio connector and stores connector_provider + provider_connection_id", async () => {
+    const env = makeEnvP();
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-p");
+    const res = await mcpHubWorker.fetch(
+      req("/v1/spaces/space-p/mcp-servers", {
+        method: "POST",
+        headers: { "x-naelao-tenant-id": "tenant-p", "x-naelao-internal-token": token },
+        body: JSON.stringify({
+          name: "composio-gmail",
+          auth_type: "bearer",
+          auth_secret_name: "COMPOSIO_API_KEY",
+          connector_provider: "composio",
+          provider_connection_id: "connected-account-abc123",
+        }),
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(201);
+    const body = await res.json<{ connector_provider: string }>();
+    expect(body.connector_provider).toBe("composio");
+  });
+
+  it("rejects Composio registration without provider_connection_id", async () => {
+    const env = makeEnvP();
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-p");
+    const res = await mcpHubWorker.fetch(
+      req("/v1/spaces/space-p/mcp-servers", {
+        method: "POST",
+        headers: { "x-naelao-tenant-id": "tenant-p", "x-naelao-internal-token": token },
+        body: JSON.stringify({ name: "composio-gmail", connector_provider: "composio", auth_secret_name: "COMPOSIO_API_KEY" }),
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json<{ message: string }>();
+    expect(body.message).toMatch(/provider_connection_id/);
+  });
+
+  it("rejects an invalid connector_provider value", async () => {
+    const env = makeEnvP();
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-p");
+    const res = await mcpHubWorker.fetch(
+      req("/v1/spaces/space-p/mcp-servers", {
+        method: "POST",
+        headers: { "x-naelao-tenant-id": "tenant-p", "x-naelao-internal-token": token },
+        body: JSON.stringify({ name: "x", url: "https://x.example.com", connector_provider: "zapier" }),
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("routes tools/call through Composio when connector_provider='composio'", async () => {
+    // Seed a composio server directly into D1 (bypassing registration to avoid credential resolution).
+    const env = makeEnvP();
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO mcp_servers (id, space_id, tenant_id, name, url, auth_type, auth_secret_name, enabled, connector_provider, provider_connection_id, created_at, updated_at)
+       VALUES ('srv-composio', 'space-p', 'tenant-p', 'composio-gmail', '', 'bearer', 'COMPOSIO_API_KEY', 1, 'composio', 'conn-abc', ?, ?)`
+    ).bind(new Date().toISOString(), new Date().toISOString()).run();
+
+    // Stub credentials worker to return a test API key.
+    const mockCreds: Fetcher = { fetch: async () => new Response(JSON.stringify({ value: "test-composio-key" })) } as unknown as Fetcher;
+    const envWithCreds = { ...env, CREDENTIALS_WORKER: mockCreds };
+
+    // Stub fetch: intercept the Composio API call.
+    let composioCallUrl = "";
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      composioCallUrl = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
+      return new Response(JSON.stringify({ data: { result: "email sent" } }), { status: 200 });
+    }) as typeof fetch;
+
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-p");
+    const res = await mcpHubWorker.fetch(
+      req("/v1/spaces/space-p/mcp-servers/srv-composio/tools/call", {
+        method: "POST",
+        headers: { "x-naelao-tenant-id": "tenant-p", "x-naelao-internal-token": token },
+        body: JSON.stringify({ tool_name: "send_email", input: { to: "a@b.com" } }),
+      }),
+      envWithCreds as never, execCtx
+    );
+    expect(res.status).toBe(200);
+    expect(composioCallUrl).toMatch(/composio\.dev/);
+    expect(composioCallUrl).toMatch(/send_email/);
+    const body = await res.json<{ result: unknown }>();
+    expect(body.result).toEqual({ result: "email sent" });
+  });
+
+  it("reserved money-in guard still applies on Composio connector calls", async () => {
+    const env = makeEnvP();
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO mcp_servers (id, space_id, tenant_id, name, url, auth_type, auth_secret_name, enabled, connector_provider, provider_connection_id, created_at, updated_at)
+       VALUES ('srv-c2', 'space-p', 'tenant-p', 'composio-stripe', '', 'bearer', 'COMPOSIO_API_KEY', 1, 'composio', 'conn-abc', ?, ?)`
+    ).bind(new Date().toISOString(), new Date().toISOString()).run();
+
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-p");
+    const res = await mcpHubWorker.fetch(
+      req("/v1/spaces/space-p/mcp-servers/srv-c2/tools/call", {
+        method: "POST",
+        headers: { "x-naelao-tenant-id": "tenant-p", "x-naelao-internal-token": token },
+        body: JSON.stringify({ tool_name: "create_payment", input: {} }),
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(403);
+    const body = await res.json<{ error_code: string }>();
+    expect(body.error_code).toBe("reserved_capability");
   });
 });

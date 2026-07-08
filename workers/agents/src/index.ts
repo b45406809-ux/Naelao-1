@@ -17,8 +17,6 @@ import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
 import { ToolSandboxDO } from "./do/ToolSandboxDO.js";
 import { LocalTunnelDO } from "./do/LocalTunnelDO.js";
-import { devCatalog, productCatalog } from "./catalog.js";
-import { listManifests } from "./launchpad/manifest.js";
 import { LAUNCHPAD_TEMPLATES } from "./launchpad/spacetype.js";
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
 import { CONTAINER_IMAGE_CATALOGUE } from "./script-engine/container-catalogue.js";
@@ -1271,32 +1269,6 @@ app.post("/internal/agent-approvals/consume", async (c) => {
 
 // ── Catalog (roadmap / coming-soon) ───────────────────────────────────────────
 // Dev/builder view (founder-only): platform space types + templates, others shown
-// as "coming soon". Product view (any authed user): the one live Whop-business
-// niche + others as "coming soon". Read-only — not a configuration system.
-app.get("/catalog/dev", async (c) => {
-  const { role } = getCallerIdentity(c);
-  if (role !== "admin" && role !== "owner") {
-    return c.json({ error: "forbidden", message: "Builder/dev catalog is founder-only" }, 403);
-  }
-  return c.json(devCatalog());
-});
-
-app.get("/catalog/product", async (c) => c.json(productCatalog()));
-
-// GET /catalog/manifests — the agent bundles (niche/assistant definitions as data).
-// Founder-only: this is the de-hardcoded "agent definitions" layer.
-app.get("/catalog/manifests", async (c) => {
-  const { role } = getCallerIdentity(c);
-  if (role !== "admin" && role !== "owner") return c.json({ error: "forbidden" }, 403);
-  return c.json({
-    manifests: listManifests().map(m => ({
-      id: m.id, kind: m.kind, name: m.name, description: m.description,
-      skills: m.skills, capabilities: m.capabilities, channels: m.channels ?? [],
-      seed_script_count: m.seed_scripts.length, cost_multiplier: m.cost_multiplier,
-    })),
-  });
-});
-
 // ── Connectors — the external-platform connector layer (catalogue + connect flow) ──
 // "Whop first, everything else coming soon." The catalogue is Naelao-authored data; a
 // connector is reached purely through mcp-connector / mcp-hub (not hardcoded). Routed here

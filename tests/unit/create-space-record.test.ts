@@ -74,6 +74,22 @@ describe("createSpaceRecord — product_slug", () => {
       createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t2", name: "B", spacetypeId: "launchpad", productSlug: "my-shop" })
     ).rejects.toMatchObject({ error_code: "conflict", status: 409 });
   });
+
+  it.each([
+    "www", "api", "admin", "login", "billing", "status", "dashboard",
+    "support", "staging", "prod", "webhooks", "cdn", "naelao",
+  ])("rejects reserved slug '%s' to prevent subdomain phishing", async (slug) => {
+    const fakeDb = makeDb();
+    await expect(
+      createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: slug })
+    ).rejects.toMatchObject({ error_code: "bad_request", status: 400, message: expect.stringContaining("reserved") });
+  });
+
+  it("accepts a legitimate non-reserved slug", async () => {
+    const fakeDb = makeDb();
+    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: "my-awesome-shop" });
+    expect(result.id).toBeTruthy();
+  });
 });
 
 describe("createSpaceRecord — provisioning", () => {

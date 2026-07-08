@@ -153,8 +153,28 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
 
   await enforceSpaceQuota(env.PLATFORM_DB, params.tenantId);
 
-  if (params.productSlug && !/^[a-z0-9-]{2,40}$/.test(params.productSlug)) {
-    throw new SpaceCreationError(400, "bad_request", "product_slug must match ^[a-z0-9-]{2,40}$");
+  if (params.productSlug) {
+    if (!/^[a-z0-9-]{2,40}$/.test(params.productSlug)) {
+      throw new SpaceCreationError(400, "bad_request", "product_slug must match ^[a-z0-9-]{2,40}$");
+    }
+    // Block subdomains that collide with Naelao infrastructure or enable phishing.
+    const RESERVED_SLUGS = new Set([
+      "www", "api", "api2", "app", "mail", "email", "smtp", "imap", "pop",
+      "admin", "superadmin", "root", "naelao", "naelao-admin", "dashboard",
+      "login", "signin", "signup", "register", "auth", "oauth", "sso",
+      "billing", "payments", "pay", "checkout", "subscribe", "pricing",
+      "status", "uptime", "health", "monitor", "metrics", "telemetry",
+      "support", "help", "docs", "documentation", "legal", "terms", "privacy",
+      "blog", "news", "press", "media", "marketing", "careers", "jobs",
+      "cdn", "static", "assets", "media", "files", "upload", "downloads",
+      "dev", "staging", "preview", "prod", "production", "sandbox", "test",
+      "internal", "intranet", "corp", "enterprise", "security",
+      "webhooks", "webhook", "events", "queue", "pubsub",
+      "socket", "ws", "wss", "stream", "sse",
+    ]);
+    if (RESERVED_SLUGS.has(params.productSlug)) {
+      throw new SpaceCreationError(400, "bad_request", `product_slug '${params.productSlug}' is reserved`);
+    }
   }
 
   const id = crypto.randomUUID();
