@@ -1,30 +1,25 @@
 /**
  * Canonical AI client factory — spec §15.
  *
- * Every LLM call in Naelao routes through Cloudflare AI Gateway (spec §15).
- * Two endpoint modes:
+ * Every LLM call in Naelao routes through Cloudflare AI Gateway (spec §15) using the
+ * Universal Endpoint. The provider is inferred from the model name — callers pick a model
+ * and the gateway handles routing. No hardcoded provider preference.
  *
- *  1. Provider-specific (single provider, used for direct Anthropic calls without fallback):
- *     https://gateway.ai.cloudflare.com/v1/{ACCOUNT_ID}/{GATEWAY_ID}/anthropic/v1/messages
+ * Universal Endpoint:
+ *   POST https://gateway.ai.cloudflare.com/v1/{ACCOUNT_ID}/{GATEWAY_ID}
+ *   Body: { "providers": [ { "provider": "<inferred>", ... } ] }
  *
- *  2. Universal Endpoint (multi-provider failover — CF AI Gateway routes to the first
- *     available provider in the `providers` array; the gateway itself handles failover, no
- *     application-level retry needed):
- *     POST https://gateway.ai.cloudflare.com/v1/{ACCOUNT_ID}/{GATEWAY_ID}
- *     Body: { "providers": [ { "provider": "anthropic", ... }, { "provider": "workers-ai", ... } ] }
- *
- * The universal endpoint is what implements cross-PROVIDER failover beyond CF AI Gateway's own
- * dashboard-configurable same-provider retries. This is the ONLY place in the codebase that
- * constructs Anthropic or CF AI Gateway URLs.
+ * Provider inference (inferProvider):
+ *   "@cf/*"       → workers-ai   (CF Workers AI models)
+ *   "claude*"     → anthropic    (Anthropic Claude models)
+ *   "gpt-*" / "o1*" / "o3*" → openai
+ *   anything else → anthropic    (safe default; gateway will reject unknown models)
  *
  * For CF Workers AI (embeddings, free-tier sub-agent vision), use callWorkersAI() directly.
  */
 
 const ANTHROPIC_VERSION = "2023-06-01";
 const ANTHROPIC_BETA    = "prompt-caching-2024-07-31";
-const DIRECT_ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-
-export const FALLBACK_MODEL = "@cf/meta/llama-3.1-8b-instruct";
 
 export interface AIClientContext {
   spaceId: string;
@@ -39,91 +34,14 @@ export interface AIClientContext {
 export interface GatewayOpts {
   accountId: string;
   gatewayId: string;
-  /** CF API token — required to use the Workers AI provider in the Universal Endpoint.
-   *  Without it, the universal body falls back to Anthropic-only (same as the provider-specific
-   *  URL). Supplied via `CF_API_TOKEN` worker secret. */
+  /** CF API token — required when the selected model routes to the workers-ai provider.
+   *  Supplied via `CF_API_TOKEN` worker secret. Not needed for Anthropic or OpenAI models. */
   cfApiToken?: string;
 }
 
-export type LLMProvider = "platform" | "cf-workers-ai" | "byok-anthropic";
+// ── CF AI Gateway Universal Endpoint ─────────────────────────────────────────
 
-export interface LLMConfig {
-  provider: LLMProvider;
-  url: string;
-  apiKey: string;
-  headers: Record<string, string>;
-}
-
-// ── Provider-specific Anthropic endpoint ─────────────────────────────────────
-
-export function gatewayUrl(opts: GatewayOpts): string {
-  return `https://gateway.ai.cloudflare.com/v1/${opts.accountId}/${opts.gatewayId}/anthropic/v1/messages`;
-}
-
-/** Per-call headers including `cf-aig-metadata` for tenant tracking (spec §15). */
-export function gatewayHeaders(
-  apiKey: string,
-  ctx: AIClientContext,
-): Record<string, string> {
-  const metadata = JSON.stringify({
-    spaceId:  ctx.spaceId,
-    userId:   ctx.userId   ?? "system",
-    agentId:  ctx.agentId  ?? "unknown",
-    threadId: ctx.threadId ?? "unknown",
-    model:    ctx.model    ?? "claude-haiku-4-5-20251001",
-    platform: "naelao",
-    version:  "1.0",
-  });
-  return {
-    "x-api-key":         apiKey,
-    "anthropic-version": ANTHROPIC_VERSION,
-    "anthropic-beta":    ANTHROPIC_BETA,
-    "content-type":      "application/json",
-    "cf-aig-metadata":   metadata,
-    "cf-aig-cache-ttl":  ctx.skipCache ? "0" : "3600",
-  };
-}
-
-function directHeaders(apiKey: string): Record<string, string> {
-  return {
-    "x-api-key":         apiKey,
-    "anthropic-version": ANTHROPIC_VERSION,
-    "anthropic-beta":    ANTHROPIC_BETA,
-    "content-type":      "application/json",
-  };
-}
-
-/** Resolve Anthropic URL: gateway when NAELAO_ACCOUNT_ID is real, direct otherwise. */
-export function resolveAnthropicUrl(opts: GatewayOpts): string {
-  if (!opts.accountId || opts.accountId === "placeholder") return DIRECT_ANTHROPIC_URL;
-  return gatewayUrl(opts);
-}
-
-export function resolveAnthropicHeaders(
-  apiKey: string,
-  opts: GatewayOpts,
-  ctx: AIClientContext,
-): Record<string, string> {
-  if (!opts.accountId || opts.accountId === "placeholder") return directHeaders(apiKey);
-  return gatewayHeaders(apiKey, ctx);
-}
-
-export function buildPlatformLLMConfig(
-  apiKey: string,
-  opts: GatewayOpts,
-  ctx: AIClientContext,
-): LLMConfig {
-  return {
-    provider: "platform",
-    url:      resolveAnthropicUrl(opts),
-    apiKey,
-    headers:  resolveAnthropicHeaders(apiKey, opts, ctx),
-  };
-}
-
-// ── CF AI Gateway Universal Endpoint (multi-provider failover) ────────────────
-
-/** The Universal Endpoint URL — providers are specified in the request BODY, not the URL path. */
+/** The Universal Endpoint URL — provider and model are specified in the request BODY. */
 export function universalGatewayUrl(opts: GatewayOpts): string {
   return `https://gateway.ai.cloudflare.com/v1/${opts.accountId}/${opts.gatewayId}`;
 }
@@ -135,15 +53,20 @@ export interface UniversalProvider {
   query: Record<string, unknown>;
 }
 
+/** Infer the CF AI Gateway provider string from a model name. */
+export function inferProvider(model: string): string {
+  if (model.startsWith("@cf/")) return "workers-ai";
+  if (model.startsWith("gpt-") || model.startsWith("o1-") || model.startsWith("o3-")) return "openai";
+  return "anthropic";
+}
+
 /**
- * Build a Universal Endpoint request body with Anthropic as primary + Workers AI as fallback.
- * CF AI Gateway tries providers in order and returns the first success in the provider's native
- * response format. When cfApiToken is absent, returns Anthropic-only (no fallback configured at
- * the gateway level — degrades cleanly).
+ * Build a Universal Endpoint request body with a single provider entry inferred from the
+ * model name. The gateway handles routing — callers just pick a model.
  */
 export function buildUniversalBody(opts: {
   apiKey: string;
-  cfApiToken: string | undefined;
+  cfApiToken?: string;
   gatewayOpts: GatewayOpts;
   ctx: AIClientContext;
   query: {
@@ -161,31 +84,17 @@ export function buildUniversalBody(opts: {
     platform: "naelao",
     version:  "1.0",
   });
+  const skipCache = ctx.skipCache ?? false;
+  const provider  = inferProvider(query.model);
 
-  const anthropicProvider: UniversalProvider = {
-    provider: "anthropic",
-    endpoint: "messages",
-    headers: {
-      "x-api-key":         apiKey,
-      "anthropic-version": ANTHROPIC_VERSION,
-      "anthropic-beta":    ANTHROPIC_BETA,
-      "cf-aig-metadata":   metadata,
-      "cf-aig-cache-ttl":  ctx.skipCache ? "0" : "0", // always no-cache for reasoner calls
-    },
-    query: { ...query },
-  };
+  let entry: UniversalProvider;
 
-  const providers: UniversalProvider[] = [anthropicProvider];
-
-  // Workers AI fallback — only wired when a CF API token is available (required by the Universal
-  // Endpoint's workers-ai provider; the AI binding is a different access path). The model is the
-  // same Llama 3.1 8B used for the existing embeddings path so no new model bootstrapping needed.
-  if (cfApiToken) {
-    providers.push({
+  if (provider === "workers-ai") {
+    entry = {
       provider: "workers-ai",
-      endpoint: FALLBACK_MODEL,
+      endpoint: query.model,
       headers: {
-        "Authorization": `Bearer ${cfApiToken}`,
+        "Authorization":   `Bearer ${cfApiToken ?? ""}`,
         "cf-aig-metadata": metadata,
       },
       query: {
@@ -195,17 +104,50 @@ export function buildUniversalBody(opts: {
         ],
         max_tokens: query.max_tokens,
       },
-    });
+    };
+  } else if (provider === "anthropic") {
+    entry = {
+      provider: "anthropic",
+      endpoint: "messages",
+      headers: {
+        "x-api-key":         apiKey,
+        "anthropic-version": ANTHROPIC_VERSION,
+        "anthropic-beta":    ANTHROPIC_BETA,
+        "cf-aig-metadata":   metadata,
+        "cf-aig-cache-ttl":  skipCache ? "0" : "0",
+      },
+      query: { ...query },
+    };
+  } else {
+    // OpenAI and OpenAI-compatible providers
+    entry = {
+      provider,
+      endpoint: "chat/completions",
+      headers: {
+        "Authorization":   `Bearer ${apiKey}`,
+        "cf-aig-metadata": metadata,
+        "cf-aig-cache-ttl": skipCache ? "0" : "0",
+      },
+      query: {
+        model:      query.model,
+        max_tokens: query.max_tokens,
+        messages: [
+          { role: "system", content: query.system },
+          ...query.messages,
+        ],
+      },
+    };
   }
 
-  return JSON.stringify({ providers });
+  return JSON.stringify({ providers: [entry] });
 }
 
 /**
  * Normalize the response body from the CF AI Gateway Universal Endpoint.
  * Anthropic format: { content: [{ type: "text", text: "..." }], usage: { ... } }
  * Workers AI format: { result: { response: "..." }, success: true }
- * Returns a stable { text, usage } so the reasoner doesn't need to know which provider fired.
+ * OpenAI format: { choices: [{ message: { content: "..." } }], usage: { ... } }
+ * Returns a stable { text, usage } so callers don't need to know which provider fired.
  */
 export function normalizeUniversalResponse(data: unknown): {
   text: string;
@@ -213,6 +155,7 @@ export function normalizeUniversalResponse(data: unknown): {
 } {
   if (data && typeof data === "object") {
     const d = data as Record<string, unknown>;
+
     // Anthropic native format
     if (Array.isArray(d["content"])) {
       const text = (d["content"] as Array<{ type?: string; text?: string }>)
@@ -225,12 +168,26 @@ export function normalizeUniversalResponse(data: unknown): {
         usage: u ? { input_tokens: u.input_tokens ?? 0, output_tokens: u.output_tokens ?? 0 } : undefined,
       };
     }
+
     // Workers AI native format (via Universal Endpoint)
     const result = d["result"] as Record<string, unknown> | undefined;
     if (result && typeof result["response"] === "string") {
       const u = result["usage"] as { prompt_tokens?: number; completion_tokens?: number } | undefined;
       return {
         text: result["response"],
+        usage: u
+          ? { input_tokens: u.prompt_tokens ?? 0, output_tokens: u.completion_tokens ?? 0 }
+          : undefined,
+      };
+    }
+
+    // OpenAI native format
+    const choices = d["choices"] as Array<{ message?: { content?: string } }> | undefined;
+    if (Array.isArray(choices) && choices.length > 0) {
+      const text = choices[0]?.message?.content ?? "";
+      const u = d["usage"] as { prompt_tokens?: number; completion_tokens?: number } | undefined;
+      return {
+        text,
         usage: u
           ? { input_tokens: u.prompt_tokens ?? 0, output_tokens: u.completion_tokens ?? 0 }
           : undefined,
