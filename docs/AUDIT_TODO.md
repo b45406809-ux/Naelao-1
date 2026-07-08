@@ -318,6 +318,47 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
 
 ## Tier 3 — Revenue integrity
 
+- [ ] **F-23 (revenue): Subscription gate never reads `current_period_end` — a missed
+  webhook grants access forever, and `past_due` grace is unbounded.**
+  Evidence: `resolveBusinessSubscriptionGate` (spaces/index.ts:2196-2203) checks only
+  `business_subscriptions.status`; the `current_period_end` column the webhook faithfully
+  stores (lemon-squeezy.ts:283) is never read anywhere. Two failure modes: (a) if LS
+  webhooks stop arriving (endpoint outage, rotated secret — or F-2's current unrouted
+  state), a cancelled/expired subscription's row stays `status='active'` forever with no
+  self-healing; (b) `past_due` is treated as active indefinitely — the comment says "grace
+  period" but nothing bounds it, so a business whose card permanently fails runs free for
+  as long as LS keeps the status (or forever if the terminal webhook is missed).
+  Fix: the gate should also require `current_period_end` (+ a fixed grace window, e.g.
+  3 days) to be in the future when the column is set; treat a long-expired period as
+  inactive regardless of stored status.
+
+- [ ] **F-24 (correctness): Out-of-order LS webhooks can brick a resubscribed business.**
+  Evidence: `recordBusinessSubscription` upserts `ON CONFLICT(business_space_id)`
+  unconditionally (lemon-squeezy.ts:273-289) — the row is keyed by business, not by
+  subscription. Real sequence: business's subscription A is set to cancel at period end;
+  business resubscribes (subscription B, `subscription.created` → row now B/active); LS
+  later delivers A's terminal `subscription_cancelled` (fires at period end, AFTER B was
+  created) → the upsert overwrites the row to `cancelled` with A's ids → the gate 402s a
+  business that is actually paying, until B's next monthly payment event flips it back.
+  Fix: on status-downgrade events (cancelled/expired/paused), only apply when the event's
+  `subscriptionId` matches the stored `ls_subscription_id`; creations/upgrades keep the
+  unconditional upsert. One test with the A-cancel-after-B-create ordering.
+
+- [ ] **F-25 (double billing): No guard against subscribing an already-subscribed
+  business — plan switching double-charges.**
+  Evidence: `POST /internal/business-subscriptions/checkout` (billing/index.ts:604-656)
+  never reads `business_subscriptions` for an existing active row, and nothing anywhere
+  calls the LS subscription-cancel API when a new subscription supersedes an old one
+  (grep: zero cancel calls in the repo outside the F-18 fix's TODO). The DB upsert keys on
+  business_space_id so Naelao's row shows ONE plan — but in Lemon Squeezy BOTH
+  subscriptions keep invoicing the customer monthly. The shell's "Subscribe" button
+  (business detail page) has no already-subscribed state either. Compounded by F-24: the
+  two live subscriptions' events overwrite the same row in whatever order they arrive.
+  Fix: checkout route 409s (`already_subscribed`, with the current plan) when an
+  active/past_due row exists; plan switching becomes explicit — cancel old sub via LS API
+  then checkout new (or use LS's own update-subscription variant-change endpoint, which
+  prorates and avoids the two-subscriptions window entirely).
+
 - [ ] **F-22 (race): `POST /builder/payouts/request` is read-then-insert — two concurrent
   requests can each create a pending payout for the FULL balance.**
   Evidence: `builder-routes.ts:853-884` — `computeAvailableBalances` (a SELECT) then a
