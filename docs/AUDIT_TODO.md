@@ -75,6 +75,50 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   file; every non-signature-gated, non-catalog route gets `verifyInternalToken` (same
   fix as :245). Add a test asserting each `/spaces/:id/*` route 403s without the token.
 
+## Tier 2b — Revenue Model & Trust (depends on F-2 webhooks)
+
+- [ ] **F-WALLET: Business wallet system — automatic store provisioning + revenue ledger + agent spend gating.**
+  
+  Evidence: Currently, if an agent can access payment credentials, it could spend the builder's PERSONAL money (Stripe/LS API keys are not scoped to business revenue). There's zero ledger tracking per-business earnings. Failure: builder creates Business A, agent gets LS API key, agent spends builder's personal account balance on scaling experiments → liability + broken incentive alignment.
+  
+  **The Model:** Naelao is the merchant (LS parent account owner, Whop Connect partner); each business gets its own auto-provisioned store. Agent can only spend money that business actually earned. Core differentiator: "Your AI only spends what the business earned — transparent, auditable, no risk to your personal account."
+  
+  **Subparts (all required for launch):**
+  
+  **F-WALLET-1: Auto LS Store provisioning** — provisioner step 10c (after seedOwnerMember): call LS API `POST /v1/stores` with business name + slug, store returned `store_id` + auto-generated API key in that business's `space_credentials` (scope='space'). Best-effort; if LS call fails, business still creates with `wallet_status: 'pending_setup'` flag so builder can retry manually.
+  
+  **F-WALLET-2: Auto Whop sub-merchant provisioning** (required for `whop-seller` niche) — provisioner checks niche type; if Whop: call Whop Connect API to create managed account under Naelao's Connect partner account. Store returned account ID + webhook signing key in that business's `space_credentials`. Same best-effort pattern. (LS is primary for other niches; Whop is specific to whop-seller template.)
+  
+  **F-WALLET-3: Business wallet ledger** — new migration 0050_business_wallet.sql:
+  ```sql
+  CREATE TABLE business_wallet (
+    business_id TEXT PRIMARY KEY,
+    currency TEXT DEFAULT 'USD',
+    total_earned_cents INTEGER DEFAULT 0,
+    naelao_cut_cents INTEGER DEFAULT 0,       -- Naelao's revenue share (configurable %, e.g., 15%)
+    available_balance_cents INTEGER DEFAULT 0, -- what agent can spend
+    last_transaction_at TIMESTAMP,
+    updated_at TIMESTAMP
+  );
+  ```
+  Wired into billing worker: when LS `payment.success` or Whop order webhook arrives → upsert this table (total_earned += amount; naelao_cut += amount * NAELAO_SHARE; available_balance += remainder).
+  
+  **F-WALLET-4: Wallet project type** — special system project auto-created in each business at provisioning (project.kind = 'wallet'). Read-only to agent. Renders: cumulative_earned | naelao_cut | available_balance | recent_transactions. Visible to builder + Space Assistant. Agent sees "Available to spend: $XXX" in system context for autonomy gating.
+  
+  **F-WALLET-5: Agent spend gating** — rewire existing Phase E gate: before any costly script execution, check `business_wallet.available_balance >= cost_estimate`. Fail CLOSED with message "Business doesn't have enough balance earned yet to fund this." Debit on completion (already done, just needs wallet reference).
+  
+  **F-WALLET-6: Dashboard Wallet tab** (builder-facing, business admin only):
+  ```
+  GET /builder/products/:id/wallet       -- aggregated across all businesses
+  GET /spaces/:spaceId/wallet            -- per-business detailed ledger (read + write protected for non-admin)
+  ```
+  Renders: lifetime earned | Naelao's cut | available for scaling | transaction history. Admin can view and export, payout routes deferred to Tier 4.
+  
+  **F-WALLET-7: Shell Wallet section** (business detail page) — read-only transparency:
+  Display: "Total earned: $X | Available to grow the business: $Y | Naelao's share: $Z". Message: "Your AI only spends money this business has earned."
+  
+  Routes needed: `GET /spaces/:spaceId/wallet`, `GET /builder/products/:id/wallet`, plus migrations + provisioner steps.
+
 ## Tier 2 — Serious
 
 - [ ] **F-4: Stream-ticket security fix is dead code; raw `nps_` tokens still land in URLs/logs.**
@@ -108,6 +152,16 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
 - [ ] **F-12: No cross-provider LLM failover** (only the Anthropic-compatible AI Gateway
   endpoint is called, not the Universal multi-provider one).
 
+- [ ] **F-3d: Prebuilt business-scaling skills library.** "Builders should be able to tell their AI assistant 'scale the business from $0 to $10k MRR' or 'optimize pricing' or 'build a brand identity' and the AI executes it." Currently there are zero pre-built skills — every builder starts from scratch. Fix: ship 4-6 prebuilt agent-authored skills in the skill library (accessible via `script.find` and auto-loaded into Launchpad's Space Assistant profile):
+  - `scaling-zero-to-ten-k` — incremental steps: product-market fit → repeat sales → scaling channels → team handoff
+  - `storefront-setup` — configure product catalog, pricing tiers, upsell bundles using LS/Whop APIs
+  - `pricing-optimization` — analyze revenue + competitor research (via MCP), recommend price changes
+  - `brand-identity` — discover current brand gaps, recommend logo/copy/positioning, source freelancers
+  - `sales-outreach` — cold email campaigns via MCP email service, A/B testing harness
+  - `customer-retention` — churn analysis, win-back campaigns, loyalty program setup
+  
+  Each skill: documented in Markdown, versioned in R2 (`spaces/{spaceId}/scripts/{name}/SCRIPT.md`), embeddings in Vectorize for discovery. Agent wires them into its business methodology based on business model (whop-seller, SaaS, agency, etc.). These are not hardcoded — they're ordinary scripts that showcase the platform's capability. Can be forked by builders and customized.
+
 - [ ] **F-15: Business invites never email the invitee.** `workers/spaces/src/
   business-routes.ts:147-165` stores the invitee's email + hashed token but sends nothing
   (no NOTIFICATIONS_WORKER call). The shell surfaces a copyable link
@@ -126,18 +180,24 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
 
 ## Deploy checklist (config-time, unverifiable in-repo — do before go-live)
 
-- [ ] Secrets per worker: `JWT_SECRET`, `PLATFORM_SECRET` (identical everywhere),
-  `ANTHROPIC_API_KEY`, `LEMON_SQUEEZY_API_KEY` + `LEMON_SQUEEZY_STORE_ID` +
-  `LEMON_SQUEEZY_WEBHOOK_SECRET`, `RESEND_API_KEY` (verification/reset/invite emails are
-  real Resend calls — without it, signup credits are unreachable).
-- [ ] LS store webhook must point at the (post-F-2) public webhook URL.
-- [ ] CF Pages env: `NEXT_PUBLIC_API_URL` set for dashboard AND shell. NOTE the two apps
-  disagree: dashboard `api.ts` omits `/v1` from every path (base URL must INCLUDE `/v1`,
-  per item 41), while shell `api.ts` includes `/v1` in every path (base URL must EXCLUDE
-  it). Same var name, different value shape — a copy-paste between the two Pages projects
-  breaks one of them. Consider normalizing in code instead.
+- [ ] **Payment processor merchant accounts + credentials** (required for F-WALLET provisioning):
+  - **Lemon Squeezy:** `LEMON_SQUEEZY_API_KEY` (personal API key, not store-specific), `LEMON_SQUEEZY_WEBHOOK_SECRET` (signed by LS). Note: `LEMON_SQUEEZY_STORE_ID` is now per-business (auto-provisioned), not a global secret.
+  - **Whop:** `WHOP_CONNECT_CLIENT_ID` + `WHOP_CONNECT_CLIENT_SECRET` (partner account credentials for creating managed sub-merchant accounts), `WHOP_WEBHOOK_SIGNING_KEY` (if using webhook signature verification).
+
+- [ ] Secrets per worker (baseline):
+  `JWT_SECRET`, `PLATFORM_SECRET` (identical everywhere), `ANTHROPIC_API_KEY`, `RESEND_API_KEY` (verification/reset/invite emails — without it, signup credits are unreachable).
+
+- [ ] Webhook ingress (post-F-2):
+  - LS store webhook → points to `https://your-domain.com/v1/webhooks/lemon-squeezy` (with LS `LEMON_SQUEEZY_WEBHOOK_SECRET` for signature verification).
+  - Whop order webhooks → same, or separate endpoint if different signature scheme.
+
+- [ ] CF Pages environment variables:
+  - **Dashboard** `NEXT_PUBLIC_API_URL=https://your-domain.com/v1` (includes `/v1` prefix; dashboard's `api.ts` omits it from paths).
+  - **Shell** `NEXT_PUBLIC_API_URL=https://your-domain.com` (omits `/v1`; shell's `api.ts` includes it in paths). Different values for same var name; copy-paste between projects breaks one. Consider fixing in code later.
+
 - [ ] Replace every `REPLACE_WITH_*_ID` placeholder in wrangler.tomls (D1/KV ids).
-- [ ] `PRODUCT_SUBDOMAIN_APEX` matches the real apex.
+- [ ] `PRODUCT_SUBDOMAIN_APEX` matches the real production apex (e.g., `naelao.com` → `*.naelao.com` subdomains).
+- [ ] Verify `NAELAO_REVENUE_SHARE` is set in agents/spaces workers (the percentage cut F-WALLET deducts; e.g., 0.15 for 15%).
 
 ## Structural
 
