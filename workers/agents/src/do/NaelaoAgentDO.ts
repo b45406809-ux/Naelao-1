@@ -834,6 +834,11 @@ export interface AgentDOEnv {
   /** AI Gateway identity (spec §15). */
   NAELAO_ACCOUNT_ID?: string;
   NAELAO_GATEWAY_ID?: string;
+  /** CF API token — enables the Universal Endpoint's Workers AI fallback provider (spec §15
+   *  cross-provider failover). Required for Workers AI via the universal endpoint (distinct from
+   *  the AI binding, which is for direct binding calls). Set via `wrangler secret put
+   *  CF_API_TOKEN`. When absent, the reasoner uses the Anthropic-specific endpoint only. */
+  CF_API_TOKEN?: string;
   // ── Execution ladder Tiers 2-5 (spec bottom appendix §8 / code-runner.ts) ──
   /** CF Worker Loader (beta) — backs Tiers 2-4 (V8 isolate, npm-best-effort, browser). */
   LOADER?: WorkerLoaderBinding;
@@ -2137,10 +2142,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       gateway: {
         accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder",
         gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
+        ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}),
       },
       ctx: { spaceId, agentId, model: body.model ?? "claude-haiku-4-5-20251001" },
       ...(body.model ? { model: body.model } : {}),
-      ...(this.env.AI ? { fallback: { ai: this.env.AI } } : {}),
     });
 
     try {
@@ -2849,10 +2854,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const model = body.model ?? "claude-haiku-4-5-20251001";
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
-      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway" },
+      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}) },
       ctx: { spaceId, agentId, model },
       model,
-      ...(this.env.AI ? { fallback: { ai: this.env.AI } } : {}),
     });
 
     // Resolve config + rules once per distinct project among this batch (not per message).

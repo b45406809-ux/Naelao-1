@@ -197,6 +197,11 @@ ENVIRONMENT = "development"
 # Override with real values via `wrangler secret put` in production.
 NAELAO_ACCOUNT_ID = "placeholder"
 NAELAO_GATEWAY_ID = "naelao-gateway"
+# CF API token for the Universal Endpoint's Workers AI fallback provider (cross-provider failover,
+# spec §15). Required to use Workers AI through the Universal Endpoint (distinct from the AI
+# binding used for direct calls — the Universal Endpoint needs a real API token).
+# Set via `wrangler secret put CF_API_TOKEN`. When absent, Anthropic-only (no fallback).
+# CF_API_TOKEN = ""  # set as a secret, not a plain var
 
 # CF Workers AI — used by free-tier agents and sub-agent vision tasks.
 [[ai]]
@@ -210,6 +215,7 @@ binding = "AI"
 # never actually activate. Override NAELAO_ACCOUNT_ID with the real Cloudflare account id via
 # `wrangler secret put NAELAO_ACCOUNT_ID --env staging` once a real gateway exists.
 vars = { ENVIRONMENT = "staging", NAELAO_ACCOUNT_ID = "placeholder", NAELAO_GATEWAY_ID = "naelao-gateway" }
+# CF_API_TOKEN is a secret (not a var) — set via `wrangler secret put CF_API_TOKEN --env staging`
 
 [[env.staging.services]]
 binding = "KNOWLEDGE_WORKER"
@@ -240,6 +246,7 @@ service = "naelao-browser"
 # NAELAO_ACCOUNT_ID with the real Cloudflare account id via
 # `wrangler secret put NAELAO_ACCOUNT_ID --env production` once a real gateway exists.
 vars = { ENVIRONMENT = "production", NAELAO_ACCOUNT_ID = "placeholder", NAELAO_GATEWAY_ID = "naelao-gateway" }
+# CF_API_TOKEN is a secret (not a var) — set via `wrangler secret put CF_API_TOKEN --env production`
 
 [[env.production.services]]
 binding = "KNOWLEDGE_WORKER"
