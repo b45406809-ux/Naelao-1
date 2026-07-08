@@ -37,6 +37,17 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   unauthenticated `app.all("/v1/webhooks/lemon-squeezy")` pass-through registered before
   the JWT group (LS signature is the auth — same precedent as connectors/channels ingress
   at router lines 251-269).
+  
+  **Payment processor rollout note:** Only `whop-seller` template is live at launch
+  (spacetype.ts:191-324). The six coming-soon templates (creator-store, newsletter-business,
+  micro-saas, service-agency, coaching-community, customer-service) all depend on Lemon
+  Squeezy (`commerce` skill, LS webhooks). Once F-2 is fixed, these templates become
+  immediately launchable — no code changes needed beyond the webhook route. `whop-seller`
+  has its own Whop-side webhook already wired (revenue-tracker prebuilt polls Whop API;
+  no webhook dependency). Cross-niche compatibility: LS is the platform standard (all
+  niches use it for subscriptions/credit-packs once they launch); Whop is read-only via
+  MCP-connector (the whop-seller niche) or managed sub-merchant sub-accounts (future).
+  Stripe is currently unimplemented but would follow the same Lemon Squeezy webhook pattern.
 
 - [ ] **F-3: Builder's post-login landing page fails to load entirely.**
   Evidence: `apps/dashboard/src/app/dashboard/page.tsx:53` does
@@ -85,6 +96,65 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   fix as :245). Add a test asserting each `/spaces/:id/*` route 403s without the token.
 
 ## Tier 2b — Revenue Model & Trust (depends on F-2 webhooks)
+
+- [ ] **ARCH-REVENUE: Three-tier revenue sharing architecture — Naelao, Builder, End User.**
+  
+  **CURRENT STATE (product sales only):**
+  - **Product storefront sales** (launchpad_orders): Naelao takes `LAUNCHPAD_FEE_BPS` (default 500 bps = 5%), the SELLING space gets the net. Example: $100 order → $5 platform fee → $95 to seller's wallet.
+  - **Business subscriptions**: Zero revenue split — entire plan price goes to Naelao LS account, seller sees only a database row in `business_subscriptions`.
+  - **Credit pack purchases** (individual end user): Zero revenue split — entire purchase amount granted as credits to the end user's balance (ProductUserDO.credit_ledger).
+  - **Wallet top-ups** (business funding its own wallet): Zero revenue split — entire amount credited to the business's wallet project.
+  - **Member/seat billing**: Takes `LAUNCHPAD_FEE_BPS`, rest to seller's wallet (same pattern as product sales).
+  
+  **GAPS TO CLOSE (for Launchpad go-live):**
+  
+  **ARCH-REVENUE-1: Business subscription revenue split** — when an end user subscribes to a plan on behalf of a business:
+  - Event: `subscription.created` / `subscription.payment_success` with metadata `kind="business_subscription"`
+  - Current code: `recordBusinessSubscription` (lemon-squeezy.ts:262-292) upserts into `business_subscriptions` table but does NOT settle any revenue to the business's wallet
+  - Required: Apply the same fee split as product sales:
+    - `gross = event.amountCents` (e.g., 2900 for a $29/mo plan)
+    - `fee = round(gross * LAUNCHPAD_FEE_BPS / 10000)` (e.g., 145 cents at 500 bps)
+    - `net = gross - fee` (e.g., 2755 cents)
+    - `settleOrderToWallet(business_space_id, net, idempotency_key, "subscription_payment")` — credit the business's own wallet
+  - Migration: Add a `business_subscription_orders` table (like launchpad_orders) to audit trail subscription revenue, OR reuse launchpad_orders with a `kind='subscription'` field to keep one ledger
+  - Idempotency: Use the LS subscription_id + period hash as the key (a subscription has multiple payments over its lifetime; each should settle once)
+  - Open question: Should Naelao's own cut be recorded somewhere? (Currently not visible anywhere; product sales just leave it implicit in the math.)
+  
+  **ARCH-REVENUE-2: Credit pack revenue split** — when an end user buys credits:
+  - Event: `payment.success` with metadata `kind="credit_pack"`
+  - Current code: `grantCreditPackPurchase` (lemon-squeezy.ts:301-339) grants the full purchase amount to the end user's credit_ledger, no split
+  - Required model decision: WHO gets the revenue cut?
+    - **Option A (Builder gets cut):** Credit packs are add-ons sold under the builder's product, so the builder earns revenue. Apply the same fee split: end user charged $5 → Naelao takes $0.25 → builder's wallet gets $4.75, end user gets the credit pack worth $5 worth of credits.
+    - **Option B (Naelao gets 100%, credits are free):** Credit packs are a separate revenue stream Naelao owns. End user pays → Naelao keeps it all → end user's balance is debited/topped-up without any wallet settlement.
+    - **Option C (Hybrid — builder gets a cut of the plan, credit packs are Naelao's):** Subscriptions split revenue with builder, but credit packs are pure Naelao revenue, used to fund the free tier and upsell.
+  - Current spec/CLAUDE.md direction: Not explicitly stated; needs user clarification before building.
+  - Recommendation: **Option A (builder gets a cut)** — reason: consistency with product sales (all money-in splits the same way), and a builder who owns a product naturally wants to monetize credit upsells too. This also incentivizes builders to guide end users toward paid credits rather than letting them run out.
+  - Implementation: Same as subscription split — settle net to the **product space's wallet** (not the end user's, since this is revenue the product/builder earned, not a user account balance).
+  
+  **ARCH-REVENUE-3: Wallet top-up revenue split** — when a business tops up its own wallet (pre-funding):
+  - Event: `payment.success` with metadata `kind="wallet_topup"`
+  - Current code: `grantWalletTopupPurchase` (lemon-squeezy.ts:350-387) grants the full amount to the wallet project
+  - Context: This is a business (the seller) funding its own agent's compute costs. Naelao is providing the execution platform (container, LLM, etc.), so Naelao should take a cut of this too, UNLESS the wallet top-up is meant to be a pure passthrough (builder pre-funds agent runs, Naelao just stores it).
+  - Model decision: Is a wallet top-up a "product sale" (builder buying from Naelao), or a "settlement of earned revenue" (business moving money into the operational wallet)?
+    - **If product sale:** Apply fee split (Naelao takes cut, rest goes to wallet)
+    - **If passthrough:** No fee split (100% goes to wallet; Naelao's revenue is charged at execution time, via project spend gating)
+  - Current spec framing (AUDIT_TODO F-WALLET context): "Your AI only spends money this business earned" — implies wallet_topup is the business's own money moving into operational custody, NOT a sale. Naelao's revenue comes from the spend-gating per-agent-run, not the top-up.
+  - Recommendation: **No fee split on wallet top-up** — reason: this is the business's own capital, not a new revenue transaction. If Naelao later charges for execution (hourly API calls, container compute, etc.), that's where the cut comes. For now, wallet top-ups are 100% to the wallet (business has earned it via storefront sales, or is funding its own compute). Update billing-worker comment to reflect this distinction.
+  
+  **ARCH-REVENUE-4: Tracking Naelao's own revenue** — currently invisible:
+  - Every product sale: `launchpad_orders.fee_cents` is calculated but just left in the Naelao LS account. No SpaceDO ledger, no internal tracking.
+  - Every subscription: No fee recorded anywhere.
+  - Recommended: Add a `naelao_revenue` table (or a view over launchpad_orders summed by period) so:
+    - Financial reporting is auditable (sum all fees per month)
+    - Builder payouts can be calculated precisely (total_revenue - naelao_revenue = builder_payout)
+    - Revenue-sharing %s can be tweaked per product/niche (store current `LAUNCHPAD_FEE_BPS` in a column, not just hardcode it)
+  - Migration: `0058_naelao_revenue_tracking.sql` with a summary table and daily/monthly rollup logic.
+  
+  **ARCH-REVENUE-5: Builder payout calculation** — the inverse of Naelao's cut:
+  - Current code: `GET /builder/payouts*` exists (`builder-routes.ts:680+`) and calculates builder balance via `reseller_ledger`
+  - Issue: `reseller_ledger` is a dual-purpose table (attribution for ALL transactions, including seats + credit packs where the builder doesn't earn anything). The payout code sums it all, which is imprecise.
+  - Recommendation: When calculating builder payouts (the amount they can withdraw), sum only rows where `kind='product_sale'` or `kind='business_subscription'` (explicitly exclude `kind='credit_pack'` if Option C, or include it if Option A). Add test coverage verifying a builder's withdrawable balance is exactly (sum(launchpad_orders.net_cents) + sum(subscription_orders.net_cents)) where order.product_id = builder_product.
+  - Current state: `builder-routes.ts:695` returns `{total: reseller_ledger sum, currency}` — should be `{by_source: {product_sales: X, subscriptions: Y, ...}, total: X+Y}` for transparency.
 
 - [ ] **F-WALLET: Business wallet system — automatic store provisioning + revenue ledger + agent spend gating.**
 
