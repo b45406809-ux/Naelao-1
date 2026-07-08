@@ -389,6 +389,95 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   Fix: call `enforceSpaceQuota(childTenantId)` (free-tier cap applies naturally) and/or add
   `productConfig.maxBusinessesPerEndUser` checked in `createBusinessForEndUser`.
 
+- [ ] **F-26 (severe overbilling): the revenue-tracker's Whop pull ignores the `period` it
+  claims to snapshot — every monthly snapshot is ALL-TIME revenue.**
+  Evidence: `fetchWhopRevenueThisPeriod(ctx, period)`
+  (workers/agents/src/script-engine/prebuilt/revenue-tracker.ts:55-82) never uses its
+  `period` parameter — `list_payments` is called with only `{page, per, status:"paid"}`,
+  no date filter, so the sum is the business's completed payments across all time (capped
+  at 5 pages × 100). The SpaceDO upsert then stores that all-time total AS the month's
+  revenue, and the surcharge checkout sums every unbilled period — so a business tracked
+  monthly is re-billed the cut on its entire historical revenue EVERY month (month 2's
+  "revenue" includes all of month 1's, already billed). The SpaceDO comment's premise
+  ("a period's revenue can only grow") only holds because it's all-time. The opposite
+  error also exists: MAX_PAGES=5 silently caps at 500 payments (the header calls this the
+  "conservative direction," but combined with the missing date filter the net effect is
+  wildly wrong in both directions). Fix: pass a created-at date range for the period into
+  the Whop `list_payments` call (verify Whop's actual filter param name per the file's own
+  header caveat) and only sum payments inside it; add a test asserting a payment outside
+  the period is excluded.
+
+- [ ] **F-27 (double billing + trust): re-tracking an already-billed period reverts it to
+  unbilled and re-bills the FULL corrected figure, not the delta — and the billed party
+  controls the number.**
+  Evidence: `recordExternalRevenue` (spaces/do/SpaceDO.ts:2628-2642) sets `billed=0`
+  whenever the re-tracked figure differs from the stored one (the comment says a corrected
+  figure "should be re-billable") — but the surcharge checkout bills
+  `cutBps × revenue_cents` of every unbilled period with no memory of what was already
+  collected. Correct 2026-06 from 100k (5k cut already paid) to 120k → next checkout bills
+  5% of 120k = 6k → 11k collected on 6k owed. With F-26 unfixed this fires constantly (the
+  all-time figure changes on every track). Trust half: `revenue_cents` originates from a
+  prebuilt running inside the business's own agent — the billed party can decline to run
+  the tracker (no snapshot → no bill), register a doctored "whop" MCP server, or post a
+  lower figure that both zeroes the basis AND resets billed. Fix: store `billed_cents`
+  (what was actually charged) per period and bill only
+  `max(0, cut(new_revenue) − billed_cents)` on correction; make snapshot history
+  builder-visible so gaming is at least auditable, and flag businesses holding a whop
+  credential with no recent snapshot.
+
+- [ ] **F-28 (double-dip, F-21 instance worth its own line): the revenue-cut surcharge
+  payment itself flows through reseller attribution.**
+  Evidence: tests/unit/revenue-cut-surcharge.test.ts:9-11's own comment —
+  "recordResellerAttribution is unconditional for every payment.success — no new code
+  needed there." The surcharge IS the mechanism collecting Naelao's/the builder's cut of
+  external revenue; running it through `recordResellerAttribution` too means a
+  referral-mode builder accrues `referralSharePct` margin ON the cut collection — paid
+  twice for the same revenue (and in reseller mode Naelao books wholesale against its own
+  fee). Fix: same allowlist as F-21 — exclude `kind='revenue_cut_surcharge'` from reseller
+  attribution.
+
+- [ ] **F-29 (monetary loss): refund clawback only exists for storefront product orders —
+  a refunded wallet top-up leaves the full spendable credit in the wallet.**
+  Evidence: the `refund.issued` handler (lemon-squeezy.ts:215-227) only matches
+  `launchpad_orders` rows and returns silently for anything else. A business tops up its
+  wallet, spends nothing, requests an LS refund (or chargeback) → money returned by LS,
+  wallet balance unchanged → free Naelao platform spend; repeatable. Same gap for credit
+  packs (refunded end user keeps credits) and surcharges (refund never un-marks periods
+  `billed` — the cut is silently forgiven, loss in Naelao's direction). Note the reseller
+  ledger DOES reverse on refund (`REVERSAL_EVENTS`), so today a refunded top-up reverses
+  builder attribution (itself wrong per F-21) while leaving the actual wallet credit
+  untouched — exactly backwards. Fix: extend the refund handler to route by the original
+  checkout `kind` (custom_data survives on the refund event, same as the mark-billed
+  path): wallet_topup → wallet debit `refund_clawback` (the 402-tolerant path already
+  exists), credit_pack → negative credit_ledger entry, revenue_cut_surcharge → un-mark
+  periods. Related: a refunded SEAT purchase (recordSeatActivation writes into
+  launchpad_orders, so the clawback path does fire) claws back the wallet settlement but
+  never deactivates the seat member — the refunded member keeps access.
+
+- [ ] **F-30 (paying customer gets nothing): credit-pack / wallet-top-up idempotency keys
+  are derived from purchase ATTRIBUTES, so two identical legitimate purchases collide and
+  the second grant is silently dropped.**
+  Evidence: lemon-squeezy.ts:318 and :366 — `event.subscriptionId ?? "credit_pack:
+  {customerId}:{amountCents}:{endUserId}:{credits}"`. One-time LS orders have no
+  subscriptionId, so the synthetic fallback is what actually runs — and it's identical for
+  every purchase of the same pack by the same customer. Buy the same $10 pack twice
+  (running low again next week): the second webhook's grant hits ProductUserDO's /
+  wallet_ledger's unique idempotency index and is swallowed as a "duplicate" — the
+  customer paid and received nothing, with no error anywhere (idempotent replay is
+  treated as success). The per-webhook `(provider, event_id)` gate upstream already
+  handles genuine retries, so the synthetic key adds no protection — only this failure
+  mode. Fix: key on the LS order id (`event.providerEventId`, already used by the refund
+  path) — unique per real purchase, stable across webhook retries.
+
+- [ ] **F-31 (minor race): two surcharge checkouts issued before either is paid both bill
+  the same periods.**
+  Evidence: `POST /internal/revenue-cut-surcharge/checkout` computes from `billed=0`
+  periods; `billed` only flips on the payment webhook. Two checkout URLs minted for the
+  same periods (retry, double-click, assistant re-run) are BOTH payable — the business
+  pays the cut twice. Low likelihood (assistant-driven flow), but the fix is one column:
+  `pending_checkout_at` on the snapshot row, skipped for ~24h (or the F-25 fix's 409
+  shape while one is outstanding).
+
 ## Tier 4 — Operate & retain (known-open, re-confirmed)
 
 - [ ] **F-9: No builder UI for `agent_activity_log`** (data is populated; `GET
