@@ -222,6 +222,15 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
 - [ ] **F-6: CORS responses lack `Vary: Origin`** (`workers/router/src/index.ts:200`) —
   a shared cache could serve one origin's ACAO to another. One-liner.
 
+- [ ] **F-20 (polish): No global uniqueness on `business_services.custom_domain`.**
+  Evidence: migration `0056` creates a plain (non-UNIQUE) `INDEX` on `custom_domain`; both
+  domain-set paths (`spaces/index.ts:1799`, `builder-routes.ts:538`) only
+  `ON CONFLICT(space_id, kind)` — per-space, not global. Two different spaces can each hold
+  a `pending_dns` row for the same domain. NOT a takeover (CORS only trusts `status='active'`,
+  which requires CF-for-SaaS DCV = proof of ownership; the loser's row sits pending forever),
+  so this is squatting/confusion only. Fix: pre-insert check for an existing active row on
+  the domain under another space → 409, and/or a partial UNIQUE index where status='active'.
+
 - [ ] **F-16: Deploy workflows swallow failures.** `deploy-staging.yml:43` has `|| true`
   and `:90` marks per-worker deploy failures non-fatal — a half-deployed platform reports
   green. Make core-worker failures fatal; at minimum surface a summary.
