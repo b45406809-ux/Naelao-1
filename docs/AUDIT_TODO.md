@@ -87,12 +87,25 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
 ## Tier 2b — Revenue Model & Trust (depends on F-2 webhooks)
 
 - [ ] **F-WALLET: Business wallet system — automatic store provisioning + revenue ledger + agent spend gating.**
+
+  **⚠ RE-SCOPED after verifying HEAD (much already exists — do not rebuild):**
+  - ALREADY BUILT: `seedWallet` provisioner step auto-creates a `kind='wallet'` project per
+    space; LS storefront sales CREDIT the selling space's wallet and refunds DEBIT it
+    (`billing/lemon-squeezy.ts:138-195`, ledger never goes negative); agent runs are gated
+    on wallet balance (`NaelaoAgentDO.checkProjectWallet`, always-on for project runs, 402
+    when empty); `wallet_topup` checkout exists with idempotency keys; Whop revenue
+    reporting exists with a `revenue_reporting_lapsed` fail-closed gate.
+  - STILL MISSING: (a) the two UI surfaces (F-WALLET-6 dashboard tab, F-WALLET-7 shell
+    display); (b) explicit Naelao revenue-share accounting surfaced in the ledger (verify
+    whether commerce `fee_bps` already covers the cut before adding anything); (c) the
+    per-business LS Store / Whop sub-merchant auto-provisioning (F-WALLET-1/2) — note the
+    CURRENT design settles everything through Naelao's own LS account + per-business ledger,
+    which may be strictly better (no per-store onboarding); treat 1/2 as a design decision
+    to confirm, not a mandatory build.
   
-  Evidence: Currently, if an agent can access payment credentials, it could spend the builder's PERSONAL money (Stripe/LS API keys are not scoped to business revenue). There's zero ledger tracking per-business earnings. Failure: builder creates Business A, agent gets LS API key, agent spends builder's personal account balance on scaling experiments → liability + broken incentive alignment.
+  Original evidence/model (kept for context): if an agent could access payment credentials, it could spend the builder's PERSONAL money. The Model: Naelao is the merchant; each business's agent can only spend money that business actually earned. Core differentiator: "Your AI only spends what the business earned — transparent, auditable, no risk to your personal account."
   
-  **The Model:** Naelao is the merchant (LS parent account owner, Whop Connect partner); each business gets its own auto-provisioned store. Agent can only spend money that business actually earned. Core differentiator: "Your AI only spends what the business earned — transparent, auditable, no risk to your personal account."
-  
-  **Subparts (all required for launch):**
+  **Subparts (re-check each against HEAD before building):**
   
   **F-WALLET-1: Auto LS Store provisioning** — provisioner step 10c (after seedOwnerMember): call LS API `POST /v1/stores` with business name + slug, store returned `store_id` + auto-generated API key in that business's `space_credentials` (scope='space'). Best-effort; if LS call fails, business still creates with `wallet_status: 'pending_setup'` flag so builder can retry manually.
   
@@ -157,12 +170,26 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   billing worker implements them (`workers/billing/src/index.ts:141/203/285`); no page
   calls them yet and the router can't reach billing anyway. Fix rides with F-2's binding.
 
-## Tier 3 — Revenue integrity (known-open from item 41, re-confirmed)
+## Tier 3 — Revenue integrity
 
-- [ ] **F-7: `business_subscriptions` is write-only** — nothing reads it to gate agent runs,
-  so a churned/cancelled business keeps full access forever.
-- [ ] **F-8: No monthly credit refresh** — `creditsIncludedPerMonth` grants once, ever,
-  despite the name.
+- [x] **F-7: FIXED at HEAD (verified, do not re-report)** — `NaelaoAgentDO.
+  checkBusinessSubscriptionGate` (agents/do/NaelaoAgentDO.ts:1960) now reads
+  `business_subscriptions` before every run and fails CLOSED.
+- [x] **F-8: FIXED at HEAD (verified, do not re-report)** — `POST /internal/product-users/
+  :spaceId/:endUserId/credits/refresh-monthly` (spaces index.ts:2326) exists and the agents
+  worker calls it in the pre-run gate before reading the balance.
+
+- [ ] **F-19 (abuse/DoS): Unbounded business creation per end user.**
+  Evidence: `workers/spaces/src/business-create.ts` (`createBusinessForEndUser`) does a
+  direct `INSERT INTO spaces` and NEVER calls `enforceSpaceQuota` (which only guards
+  `createSpaceRecord`); no per-end-user cap exists anywhere on
+  `POST /spaces/:productSpaceId/businesses`. All of one user's businesses share one child
+  tenant (`tenant_hierarchy` reuses `child_tenant_id`), so the fix is cheap: one verified
+  end user (one free email) can loop the endpoint and create unbounded child spaces, each
+  queueing FULL provisioning (SpaceDO init, agent installs, seedWallet, R2 writes) — a
+  resource-abuse vector the authenticated rate limiter only slows, never bounds.
+  Fix: call `enforceSpaceQuota(childTenantId)` (free-tier cap applies naturally) and/or add
+  `productConfig.maxBusinessesPerEndUser` checked in `createBusinessForEndUser`.
 
 ## Tier 4 — Operate & retain (known-open, re-confirmed)
 
