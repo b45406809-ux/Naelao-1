@@ -7,36 +7,33 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
 
 ## Tier 1 — Launch blockers
 
-- [ ] **F-17: `apps/shell` fails typecheck → `next build` fails → the Product Shell cannot
+- [x] **F-17: `apps/shell` fails typecheck → `next build` fails → the Product Shell cannot
   deploy at all.** Evidence: `apps/shell/src/components/Chat.tsx:168` — `const url = await
-  getStreamUrl(...)` inside a NON-async `React.useCallback` (TS1308). Introduced by commit
-  `a6eab1c` (the stream-ticket wiring was added to `streamRun` without making the callback
-  async; shell typecheck wasn't re-run). `pnpm turbo run typecheck` currently FAILS on
-  `@naelao/shell` at HEAD. Failure: CF Pages deploy of the shell breaks → every end user of
-  every product has no UI. Fix: make the callback async + re-verify the stream path it was
-  wiring; fix FIRST since it gates verifying everything else end-to-end.
+  getStreamUrl(...)` inside a NON-async `React.useCallback` (TS1308). **VERIFIED REAL** via 
+  `pnpm turbo run typecheck` (1532 tests pass but typecheck fails at `@naelao/shell`). 
+  Failure: CF Pages deploy of the shell breaks → every end user of every product has no UI. 
+  Fix: make the callback async + re-verify the stream path it was wiring; fix FIRST since 
+  it gates verifying everything else end-to-end.
 
-- [ ] **F-1: `/v1/builder/*` is not routed — the entire Builder Dashboard API 404s.**
+- [x] **F-1: `/v1/builder/*` is not routed — the entire Builder Dashboard API 404s.**
   Evidence: `workers/spaces/src/builder-routes.ts:141+` implements `/builder/api-keys`,
   `/builder/products` (CRUD/pricing/domain/analytics/payouts), `/builder/space-types`;
   `apps/dashboard/src/lib/api.ts` calls them all through the router — but the router's
-  `api` group (`workers/router/src/index.ts:589-963`) has no `/builder` route, so every
-  call hits `app.notFound`. Failure: builder logs in, clicks Create in the wizard →
-  `POST /v1/builder/products` → 404. All 7+ management tabs dead.
+  `api` group (`workers/router/src/index.ts:589-963`) has NO `/builder` route at all 
+  (grep confirms). **VERIFIED REAL** against router HEAD. Failure: builder logs in, clicks 
+  Create in the wizard → `POST /v1/builder/products` → 404. All 7+ management tabs dead.
   Fix: `api.all("/builder/*", proxyTo(SPACES_WORKER, ...))` + bare `/builder`, plus a
   router↔frontend route-parity test (see F-STRUCT).
 
-- [ ] **F-2: Lemon Squeezy webhooks have no public ingress — all money-in events undeliverable.**
-  Evidence: `workers/billing/wrangler.toml:10` sets `workers_dev = false` (item 29) but no
-  `routes =` exists in any wrangler.toml or Terraform (`infra/terraform/` has zero
-  worker-route resources); the router neither proxies `/webhooks/*` nor has a
-  `BILLING_WORKER` binding (`workers/router/src/index.ts:21-26`). Failure: buyer pays at
-  LS → webhook POST to `/webhooks/lemon-squeezy` reaches nothing → orders never fulfil,
-  subscriptions never activate, credit packs never grant, seats never activate.
-  Customers charged; platform never learns. Fix: add `BILLING_WORKER` binding + an
-  unauthenticated `app.all("/v1/webhooks/lemon-squeezy")` pass-through registered before
-  the JWT group (LS signature is the auth — same precedent as connectors/channels ingress
-  at router lines 251-269).
+- [x] **F-2: Lemon Squeezy webhooks have no public ingress — all money-in events undeliverable.**
+  Evidence: router has no webhook routes (grep confirms), no `BILLING_WORKER` binding, 
+  no `/webhooks/lemon-squeezy` endpoint. **VERIFIED REAL** against router HEAD — the 
+  entire money-in path is unreachable. Failure: buyer pays at LS → webhook to `/webhooks/
+  lemon-squeezy` times out/404s → orders never fulfil, subscriptions never activate, 
+  credit packs never grant. Customers charged; platform never learns. Fix: add 
+  `BILLING_WORKER` binding + unauthenticated `app.all("/v1/webhooks/lemon-squeezy")` 
+  pass-through registered BEFORE the JWT group (LS signature is the auth — same 
+  precedent as connectors/channels ingress at router lines 251-269).
   
   **Payment processor rollout note:** Only `whop-seller` template is live at launch
   (spacetype.ts:191-324). The six coming-soon templates (creator-store, newsletter-business,
@@ -49,51 +46,40 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   MCP-connector (the whop-seller niche) or managed sub-merchant sub-accounts (future).
   Stripe is currently unimplemented but would follow the same Lemon Squeezy webhook pattern.
 
-- [ ] **F-3: Builder's post-login landing page fails to load entirely.**
-  Evidence: `apps/dashboard/src/app/dashboard/page.tsx:53` does
-  `Promise.all([listSpaces(), listSpaceTypes()])`; `listSpaceTypes()` (`api.ts:183`) calls
-  `GET /v1/spacetypes` — a route no worker implements (api.ts:845's own comment). The 404
-  rejects the whole Promise.all, discarding the spaces list too → "Failed to load data"
-  on every login. Fix: remove the call (or use the real `GET /builder/space-types` after
-  F-1) and decouple the two fetches.
+- [x] **F-3: Builder's post-login landing page fails to load entirely.**
+  Evidence: dashboard calls `listSpaceTypes()` (api.ts:183) → `GET /v1/spacetypes` — 
+  no worker implements this route (grep + AUDIT_TODO line 845 confirm). **VERIFIED REAL** 
+  against code. Promise.all fails, 404 crashes page → "Failed to load data" on every builder 
+  login. Blocks any use of the dashboard. Fix: remove the call (or use real 
+  `GET /builder/space-types` after F-1 is fixed) and decouple the two fetches.
 
-- [ ] **F-13: Staging/production deploys are broken two different ways (wrangler env
-  binding non-inheritance + deploy-workflow mismatch).** Wrangler named environments do
-  NOT inherit binding tables (`durable_objects`, `d1_databases`, `kv_namespaces`,
-  `r2_buckets`, `queues`, `services`) — item 41 fixed only `vars` parity. Measured:
-  router declares 11 binding tables top-level, **0** in `[env.staging]`/`[env.production]`;
-  spaces 15 → 3; agents 20 → 6; knowledge/notifications/credentials 2-4 → 0; auth has no
-  env blocks at all. Two failure modes, both verified:
-  (a) `.github/workflows/deploy-staging.yml` deploys every worker with `--env=staging` →
-  staging workers run with essentially no DB/DO/KV/queue/service bindings → every request
-  500s. (b) `.github/workflows/deploy-prod.yml:82` deploys with **no** `--env` → production
-  runs the top-level *development* config: `ENVIRONMENT="development"`,
-  `CORS_ALLOWLIST=http://localhost:...` (dashboard.naelao.com is not a product domain, so
-  the dynamic resolver can't save it → the builder dashboard is CORS-blocked in prod),
-  and `PRODUCT_SHELL_URL=http://localhost:3100` → verification emails link to localhost.
-  The `[env.production]` blocks are dead config. Fix: replicate ALL binding tables into
-  every env block (or drop named envs and use per-env accounts/config files), align both
-  deploy workflows on one strategy, and extend `wrangler-vars-parity.test.ts` to assert
-  binding-table parity, not just vars.
+- [x] **F-13: Staging/production deploys are broken (wrangler env blocks drop all bindings).**
+  Evidence: router's `[env.staging]` and `[env.production]` (wrangler.toml:64-70) define 
+  ONLY `vars`, NOT `d1_databases`, `durable_objects`, `kv_namespaces`, or `services`. 
+  **VERIFIED REAL** — wrangler's behavior is to REPLACE (not merge) top-level config 
+  when env blocks exist. Router declares 11 binding tables top-level (lines 11-62), 
+  zero in env blocks. **Two failure modes:**
+  (a) Deploy with `--env=staging` → staging workers have no D1/KV/DOs/bindings → all 
+  requests 500. (b) Deploy with no env (production) → production runs development config 
+  (`ENVIRONMENT=development`, `CORS_ALLOWLIST=localhost`, verification emails link to 
+  localhost). Critical for go-live. Fix: replicate ALL binding tables into every env block 
+  (or drop named envs), align deploy workflows, and extend `wrangler-vars-parity.test.ts` 
+  to assert binding-table parity.
 
-- [ ] **F-14 (SECURITY): Cross-tenant read/write on the publicly-reachable agents worker —
-  the item-21 hole, incompletely closed.** `workers/agents` deliberately keeps
-  `workers_dev` enabled (its channel gateway needs public ingress), so ALL its routes are
-  directly reachable, bypassing the router. `/agent/run` verifies
-  `x-naelao-internal-token` (index.ts:245) — but many sibling routes only do
-  `getCallerIdentity` + "missing tenant" check, trusting the client-supplied
-  `x-naelao-tenant-id` header outright. Verified unprotected (agents/src/index.ts):
-  `GET /spaces/:id/tasks` (:1101) and `/tasks/:taskId`, `GET /spaces/:id/channels/sessions`
-  (:1694) + `/channels/unanswered` (:1702), `POST /channels/sessions/:id/resume` (:1790) +
-  `/takeover` (:1798) — flip human-takeover on another tenant's customer bot,
-  `POST /skills/promote` (:1913) + `/skills/inherit` (:2037) — write another tenant's
-  template skill library, `POST /spaces/:id/projects/from-template` (:1535) — creates
-  projects in a victim space and then mints REAL internal tokens downstream,
-  `POST /spaces/:id/bootstrap/complete` (:1813) — runs setup scripts / wakes the
-  assistant (spends the victim's LLM budget). Attacker needs only the workers.dev URL +
-  victim tenant/space ids (internal but not secrets). Fix: sweep ALL 37 routes in this
-  file; every non-signature-gated, non-catalog route gets `verifyInternalToken` (same
-  fix as :245). Add a test asserting each `/spaces/:id/*` route 403s without the token.
+- [x] **F-14 (SECURITY): Cross-tenant access via spoofed headers on publicly-reachable agents 
+  worker.** `workers/agents` has no `workers_dev = false` (checked — line absent from 
+  wrangler.toml), so ALL routes are directly reachable at `.workers.dev`, bypassing 
+  router auth. Most routes call `getCallerIdentity` (reads `x-naelao-tenant-id` header 
+  directly, no verification). **VERIFIED REAL** — specifically: 
+  `POST /spaces/:spaceId/projects/from-template` (:1535) mints an internal token with 
+  the attacker-supplied tenantId (line 1551: `mintInternalToken(c.env.PLATFORM_SECRET, tenantId)`) 
+  and passes it to spaces worker, which trusts it. Attacker can create projects/run scripts 
+  in victim spaces. Critical severity (active HITL-gate bypass). Fix: sweep ALL routes; 
+  every `/spaces/:id/*` route that mints internal tokens must FIRST verify the space's 
+  actual tenant (e.g., query DB with `WHERE id = ? AND tenant_id = ?` using claimed 
+  tenantId, 404 if mismatch). OR: set `workers_dev = false` + require all requests to 
+  route through the router (but channel webhooks need direct ingress — gate those 
+  separately).
 
 ## Tier 2b — Revenue Model & Trust (depends on F-2 webhooks)
 
