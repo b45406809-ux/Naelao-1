@@ -286,17 +286,15 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   catch-all), authenticated by verified caller identity, calling issue logic (only takes 
   60s token + single-use burn, never logs it).
 
-- [ ] **F-18 (money/legal): Deleting a product strands live paying subscribers.**
-  Evidence: `workers/spaces/src/builder-routes.ts:481-490` — `DELETE /builder/products/:id`
-  only sets `status='deleted'`; nothing enumerates the product's businesses'
-  `business_subscriptions` or calls Lemon Squeezy to cancel them; nothing notifies end
-  users. Access genuinely dies (`by-slug` requires `status='active'` at index.ts:2660;
-  product-session verify excludes deleted at :2043) — so end users are locked out WHILE LS
-  keeps invoicing them monthly. Chargeback/legal exposure day one. Same gap on
-  `paused`/`suspended` transitions. Distinct from F-7 (F-7 = churned business keeps access;
-  F-18 = deleted product keeps charging). Fix: on delete/suspend, enumerate child
-  businesses' LS subscription ids and call the LS cancel API (best-effort + retry), and
-  block deletion (or typed-confirm with subscriber count) when active subscriptions exist.
+- [x] **F-18 (money/legal): Deleting a product strands live paying subscribers.** Evidence: 
+  `DELETE /builder/products/:id` (builder-routes.ts:481-490) only sets `status='deleted'` 
+  (verified: line 487). **VERIFIED REAL**. Scenario: 5 customers subscribed to a plan on 
+  the product; builder deletes it → end users locked out (by-slug requires active, product-
+  session verify excludes deleted) WHILE LS keeps charging them monthly. End users cannot 
+  cancel, builder can't see the subscriptions to refund, chargeback/legal exposure day one. 
+  Fix: on delete/suspend, enum child businesses' `business_subscriptions`, call LS cancel 
+  API for each (best-effort + retry), notify end users (if notification flow exists), 
+  block deletion OR typed-confirm when active subscriptions exist (show count).
 
 - [ ] **F-5: `/billing/*` also unrouted (dead code today, loaded footgun).**
   Evidence: dashboard `api.ts:461/473` define `/billing/checkout` + `/billing/subscription`;
