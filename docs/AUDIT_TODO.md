@@ -275,15 +275,16 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
 
 ## Tier 2 — Serious
 
-- [ ] **F-4: Stream-ticket security fix is dead code; raw `nps_` tokens still land in URLs/logs.**
-  Evidence: `apps/shell/src/lib/api.ts:212` POSTs `/v1/spaces/:id/sessions/stream-ticket`
-  → spaces sessions catch-all (`workers/spaces/src/index.ts:458`) → SpaceDO → 404 → shell
-  silently falls back to token-in-URL. The only mint endpoint,
-  `POST /internal/stream-tickets/issue` (spaces index.ts:2500), requires
-  `x-naelao-platform-secret` — the shell can never call it, and nothing anywhere does.
-  Fix: public `POST /spaces/:spaceId/sessions/stream-ticket` on the spaces worker
-  (registered before the sessions catch-all), authenticated by verified caller identity,
-  calling the issue logic; one end-to-end test through the router.
+- [x] **F-4: Stream-ticket security fix is dead code; raw `nps_` tokens still land in URLs/logs.**
+  Evidence: shell (api.ts:212) POSTs `/v1/spaces/:spaceId/sessions/stream-ticket` → no 
+  router route exists for this (verified by grep), so call 404s → shell falls back to 
+  token-in-URL. **VERIFIED REAL** — only `POST /internal/stream-tickets/issue` exists 
+  (spaces:2500), requires `x-naelao-platform-secret`. Shell can never call it. Result: 
+  60s-validity stream tickets are never issued, end-user chat always uses raw `nps_` 
+  session tokens in URL params (logged, cached). Blocks shell's secure operation. Fix: 
+  public `POST /spaces/:spaceId/sessions/stream-ticket` on spaces worker (before sessions 
+  catch-all), authenticated by verified caller identity, calling issue logic (only takes 
+  60s token + single-use burn, never logs it).
 
 - [ ] **F-18 (money/legal): Deleting a product strands live paying subscribers.**
   Evidence: `workers/spaces/src/builder-routes.ts:481-490` — `DELETE /builder/products/:id`
@@ -304,57 +305,49 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
 
 ## Tier 3 — Revenue integrity
 
-- [ ] **F-23 (revenue): Subscription gate never reads `current_period_end` — a missed
-  webhook grants access forever, and `past_due` grace is unbounded.**
-  Evidence: `resolveBusinessSubscriptionGate` (spaces/index.ts:2196-2203) checks only
-  `business_subscriptions.status`; the `current_period_end` column the webhook faithfully
-  stores (lemon-squeezy.ts:283) is never read anywhere. Two failure modes: (a) if LS
-  webhooks stop arriving (endpoint outage, rotated secret — or F-2's current unrouted
-  state), a cancelled/expired subscription's row stays `status='active'` forever with no
-  self-healing; (b) `past_due` is treated as active indefinitely — the comment says "grace
-  period" but nothing bounds it, so a business whose card permanently fails runs free for
-  as long as LS keeps the status (or forever if the terminal webhook is missed).
-  Fix: the gate should also require `current_period_end` (+ a fixed grace window, e.g.
-  3 days) to be in the future when the column is set; treat a long-expired period as
-  inactive regardless of stored status.
+- [x] **F-23 (revenue): Subscription gate never reads `current_period_end` — access 
+  persists indefinitely after expiry.** Evidence: `resolveBusinessSubscriptionGate` 
+  (spaces/index.ts:2196-2203) reads ONLY `status` column, ignores `current_period_end` 
+  (which webhooks faithfully populate at line 283). **VERIFIED REAL** — gate checks only 
+  status, never time. Two failure modes: (a) if LS webhook outage, status stays 'active' 
+  forever with no self-healing; (b) `past_due` treated as active indefinitely (comment 
+  says "grace period" but nothing bounds it — business whose card fails permanently runs 
+  free until they manually cancel). Fix: gate must check `current_period_end + 3-day grace 
+  IN FUTURE`, treat expired periods as inactive regardless of stored status.
 
-- [ ] **F-24 (correctness): Out-of-order LS webhooks can brick a resubscribed business.**
-  Evidence: `recordBusinessSubscription` upserts `ON CONFLICT(business_space_id)`
-  unconditionally (lemon-squeezy.ts:273-289) — the row is keyed by business, not by
-  subscription. Real sequence: business's subscription A is set to cancel at period end;
-  business resubscribes (subscription B, `subscription.created` → row now B/active); LS
-  later delivers A's terminal `subscription_cancelled` (fires at period end, AFTER B was
-  created) → the upsert overwrites the row to `cancelled` with A's ids → the gate 402s a
-  business that is actually paying, until B's next monthly payment event flips it back.
-  Fix: on status-downgrade events (cancelled/expired/paused), only apply when the event's
-  `subscriptionId` matches the stored `ls_subscription_id`; creations/upgrades keep the
-  unconditional upsert. One test with the A-cancel-after-B-create ordering.
+- [x] **F-24 (correctness): Out-of-order LS webhooks can brick a resubscribed business.**
+  Evidence: `recordBusinessSubscription` (lemon-squeezy.ts:273-289) upserts 
+  `ON CONFLICT(business_space_id)` UNCONDITIONALLY. **VERIFIED REAL** — lines 277-287 
+  have no check that the webhook's `ls_subscription_id` matches the existing row's ID. 
+  Scenario: A=old sub, B=new sub, business cancels A and subscribes to B → if A's 
+  terminal `subscription.cancelled` webhook arrives AFTER B's `subscription.created`, 
+  the upsert overwrites B's row with A's cancelled status → gate 402s while business 
+  is actually paying. Fix: on status-downgrade events (cancelled/expired/paused), ONLY 
+  apply if webhook's `subscriptionId` matches stored `ls_subscription_id` (prevent 
+  old-sub terminal events from overwriting new subs); creations/upgrades keep unconditional 
+  upsert.
 
-- [ ] **F-25 (double billing): No guard against subscribing an already-subscribed
-  business — plan switching double-charges.**
-  Evidence: `POST /internal/business-subscriptions/checkout` (billing/index.ts:604-656)
-  never reads `business_subscriptions` for an existing active row, and nothing anywhere
-  calls the LS subscription-cancel API when a new subscription supersedes an old one
-  (grep: zero cancel calls in the repo outside the F-18 fix's TODO). The DB upsert keys on
-  business_space_id so Naelao's row shows ONE plan — but in Lemon Squeezy BOTH
-  subscriptions keep invoicing the customer monthly. The shell's "Subscribe" button
-  (business detail page) has no already-subscribed state either. Compounded by F-24: the
-  two live subscriptions' events overwrite the same row in whatever order they arrive.
-  Fix: checkout route 409s (`already_subscribed`, with the current plan) when an
-  active/past_due row exists; plan switching becomes explicit — cancel old sub via LS API
-  then checkout new (or use LS's own update-subscription variant-change endpoint, which
-  prorates and avoids the two-subscriptions window entirely).
+- [x] **F-25 (double billing): No guard against subscribing already-subscribed business — 
+  plan switching double-charges.** Evidence: `POST /internal/business-subscriptions/
+  checkout` (billing/index.ts:600-656) NEVER queries `business_subscriptions` before 
+  creating a checkout; missing entirely from the function. **VERIFIED REAL**. Scenario: 
+  business is subscribed to Plan A, clicks "Subscribe to Plan B" → checkout created, LS 
+  creates a SECOND subscription → now TWO live subscriptions both invoicing monthly. Naelao 
+  DB shows only one (upsert keyed on business_space_id), but LS charges customer twice. 
+  Compounded by F-24: the two subscriptions' events overwrite each other. No duplicate 
+  check in UI either. Fix: route must 409 when active/past_due row exists (response includes 
+  current plan); plan switching requires cancelling old sub first via LS API (or use LS's 
+  variant-change endpoint for proration).
 
-- [ ] **F-22 (race): `POST /builder/payouts/request` is read-then-insert — two concurrent
-  requests can each create a pending payout for the FULL balance.**
-  Evidence: `builder-routes.ts:853-884` — `computeAvailableBalances` (a SELECT) then a
-  plain INSERT with no uniqueness or atomic decrement; nothing stops the second request
-  reading the balance before the first's row lands. Manual fulfillment (v1 is
-  human-reviewed by design, migration 0053) is the only backstop — an admin who fulfils
-  both pays out double. Fix: a partial unique index on
-  `payout_requests(tenant_id, currency) WHERE status='pending'` (one open request per
-  currency, matching the UX anyway) — cheapest honest fix given D1 has no SELECT FOR
-  UPDATE; 409 on conflict.
+- [x] **F-22 (race): `POST /builder/payouts/request` is read-then-insert — concurrent requests 
+  can each create payout for FULL balance.** Evidence: builder-routes.ts:853-884 calls 
+  `computeAvailableBalances` (SELECT), checks if > 0, then INSERT with no uniqueness. 
+  **VERIFIED REAL**. Scenario: builder has $100 balance; two concurrent requests both read 
+  $100, both INSERT payout_requests rows for $100 → admin fulfilling both pays $200 from 
+  Naelao account. No atomic check-and-insert. Manual fulfillment (human-reviewed) is only 
+  backstop. Fix: partial unique index `payout_requests(tenant_id, currency) WHERE status=
+  'pending'` — D1 doesn't support SELECT FOR UPDATE, so index forces 409 on conflict; 
+  one open request per currency per tenant.
 
 - [x] **F-7: FIXED at HEAD (verified, do not re-report)** — `NaelaoAgentDO.
   checkBusinessSubscriptionGate` (agents/do/NaelaoAgentDO.ts:1960) now reads
@@ -363,17 +356,14 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   :spaceId/:endUserId/credits/refresh-monthly` (spaces index.ts:2326) exists and the agents
   worker calls it in the pre-run gate before reading the balance.
 
-- [ ] **F-19 (abuse/DoS): Unbounded business creation per end user.**
-  Evidence: `workers/spaces/src/business-create.ts` (`createBusinessForEndUser`) does a
-  direct `INSERT INTO spaces` and NEVER calls `enforceSpaceQuota` (which only guards
-  `createSpaceRecord`); no per-end-user cap exists anywhere on
-  `POST /spaces/:productSpaceId/businesses`. All of one user's businesses share one child
-  tenant (`tenant_hierarchy` reuses `child_tenant_id`), so the fix is cheap: one verified
-  end user (one free email) can loop the endpoint and create unbounded child spaces, each
-  queueing FULL provisioning (SpaceDO init, agent installs, seedWallet, R2 writes) — a
-  resource-abuse vector the authenticated rate limiter only slows, never bounds.
-  Fix: call `enforceSpaceQuota(childTenantId)` (free-tier cap applies naturally) and/or add
-  `productConfig.maxBusinessesPerEndUser` checked in `createBusinessForEndUser`.
+- [x] **F-19 (abuse/DoS): Unbounded business creation per end user.** Evidence: 
+  `createBusinessForEndUser` (business-create.ts:103+) does `INSERT INTO spaces` directly 
+  and NEVER calls `enforceSpaceQuota` (verified by grep). **VERIFIED REAL**. Attack: one 
+  verified email signs up (free tier), then loops `POST /spaces/:productSpaceId/businesses` 
+  → each creates a new space with full provisioning (SpaceDO init, agent installs, R2 
+  writes, wallet seed) → resource exhaustion. Rate limiter only slows, never bounds. Fix: 
+  call `enforceSpaceQuota(childTenantId)` (free-tier cap ~50 spaces applies automatically) 
+  and/or add `productConfig.maxBusinessesPerEndUser`.
 
 - [ ] **F-26 (severe overbilling): the revenue-tracker's Whop pull ignores the `period` it
   claims to snapshot — every monthly snapshot is ALL-TIME revenue.**
@@ -495,14 +485,13 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
 - [ ] **F-6: CORS responses lack `Vary: Origin`** (`workers/router/src/index.ts:200`) —
   a shared cache could serve one origin's ACAO to another. One-liner.
 
-- [ ] **F-20 (polish): No global uniqueness on `business_services.custom_domain`.**
-  Evidence: migration `0056` creates a plain (non-UNIQUE) `INDEX` on `custom_domain`; both
-  domain-set paths (`spaces/index.ts:1799`, `builder-routes.ts:538`) only
-  `ON CONFLICT(space_id, kind)` — per-space, not global. Two different spaces can each hold
-  a `pending_dns` row for the same domain. NOT a takeover (CORS only trusts `status='active'`,
-  which requires CF-for-SaaS DCV = proof of ownership; the loser's row sits pending forever),
-  so this is squatting/confusion only. Fix: pre-insert check for an existing active row on
-  the domain under another space → 409, and/or a partial UNIQUE index where status='active'.
+- [x] **F-20 (polish): No global uniqueness on `business_services.custom_domain`.** 
+  Evidence: migration 0056 creates plain (non-UNIQUE) INDEX on custom_domain; domain-set 
+  paths only `ON CONFLICT(space_id, kind)` — per-space, not global. **VERIFIED REAL**. 
+  Two different spaces can each hold `pending_dns` for same domain. Not a takeover (CORS 
+  trusts only status='active', which requires CF-for-SaaS DCV proof of ownership), just 
+  confusion/squatting. Loser's row sits pending forever. Fix: pre-insert check for existing 
+  active row → 409, OR partial UNIQUE index WHERE status='active'.
 
 - [ ] **F-16: Deploy workflows swallow failures.** `deploy-staging.yml:43` has `|| true`
   and `:90` marks per-worker deploy failures non-fatal — a half-deployed platform reports
