@@ -845,7 +845,17 @@ the expected incremental-build path, not a fallback state to design around.
   header caveat) and only sum payments inside it; add a test asserting a payment outside
   the period is excluded.
 
-- [ ] **F-27 (double billing + trust): re-tracking an already-billed period reverts it to
+- [x] **F-27 (double billing) — FIXED (delta billing).** SpaceDO migration v30 adds
+  `external_revenue_snapshots.billed_cents` (cumulative cut actually charged per period).
+  `recordExternalRevenue` NO LONGER reverts billed→0 on a correction — billed_cents persists, and
+  the surcharge checkout now bills only `max(0, cut(revenue) − billed_cents)` per period (correcting
+  100k→120k bills the 20k×cut delta, not 120k×cut on top of the 5k already collected).
+  `mark-billed` accumulates billed_cents from the per-period `charges` (carried in LS metadata as
+  `period_charges`); a refund (`unmark-billed`) reverses exactly that charge. Snapshot history is
+  already builder-visible via `GET /revenue-tracking` (the audit's auditability half). Tests:
+  external-revenue-tracking.test.ts + revenue-cut-surcharge.test.ts. **Not built (smaller
+  follow-up):** proactively flagging a business holding a whop credential with no recent snapshot
+  — a monitoring feature, not part of the double-billing correctness fix. ORIGINAL: re-tracking an already-billed period reverts it to
   unbilled and re-bills the FULL corrected figure, not the delta — and the billed party
   controls the number.**
   Evidence: `recordExternalRevenue` (spaces/do/SpaceDO.ts:2628-2642) sets `billed=0`
@@ -922,7 +932,13 @@ the expected incremental-build path, not a fallback state to design around.
   mode. Fix: key on the LS order id (`event.providerEventId`, already used by the refund
   path) — unique per real purchase, stable across webhook retries.
 
-- [ ] **F-31 (minor race): two surcharge checkouts issued before either is paid both bill
+- [x] **F-31 (race) — FIXED.** SpaceDO migration v30 adds
+  `external_revenue_snapshots.pending_checkout_at`. The checkout stamps it (via the new
+  `POST /revenue-tracking/mark-pending`) right after minting a URL, and its own billable filter
+  skips any period with a pending_checkout_at within 24h — so two checkouts minted before either is
+  paid don't both bill the same periods. Cleared on pay (`mark-billed`) or refund; a stale pending
+  (>24h) is treated as abandoned and re-billable. Tests: revenue-cut-surcharge.test.ts (F-31 skip)
+  + external-revenue-tracking.test.ts (stamp/clear). ORIGINAL: two surcharge checkouts issued before either is paid both bill
   the same periods.**
   Evidence: `POST /internal/revenue-cut-surcharge/checkout` computes from `billed=0`
   periods; `billed` only flips on the payment webhook. Two checkout URLs minted for the

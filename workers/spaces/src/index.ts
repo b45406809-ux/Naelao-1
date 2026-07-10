@@ -1044,6 +1044,18 @@ app.post("/spaces/:spaceId/revenue-tracking/unmark-billed", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// F-31: the billing worker marks periods as having an in-flight checkout right after minting a URL.
+app.use("/spaces/:spaceId/revenue-tracking/mark-pending", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/spaces/:spaceId/revenue-tracking/mark-pending", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json().catch(() => ({}));
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/revenue-tracking/mark-pending", "POST", JSON.stringify({ ...body, space_id: spaceId }));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // Container Marketplace slots (§A1.17 Phase L) — builder/operator-only for now (like rules/
 // spend above): no catalogue image is live yet, so there is nothing for an end user's day-to-day
 // chat to reach here. requireInternalHmac (came-through-the-router gate) stays the only floor;

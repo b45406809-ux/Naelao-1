@@ -17,7 +17,7 @@ interface Call { url: string; method: string; body: unknown }
 
 function makeEnv(opts: {
   cut?: { enabled: boolean; cutBps: number; lsVariantId?: string } | null;
-  snapshots?: Array<{ period: string; revenue_cents: number; billed: boolean }>;
+  snapshots?: Array<{ period: string; revenue_cents: number; billed: boolean; billed_cents?: number; pending_checkout_at?: string | null }>;
   hasLsCreds?: boolean;
 } = {}) {
   const { cut = { enabled: true, cutBps: 500, lsVariantId: "variant-surcharge" }, snapshots = [], hasLsCreds = false } = opts;
@@ -103,17 +103,38 @@ describe("POST /internal/revenue-cut-surcharge/checkout", () => {
     expect(body.dev).toBe(true); // no LS creds in this test env -> dev fallback
   });
 
-  it("ignores already-billed periods", async () => {
+  it("ignores already-billed periods (F-27: delta is zero when billed_cents == cut(revenue))", async () => {
     const { env } = makeEnv({
       snapshots: [
-        { period: "2026-06", revenue_cents: 100_000, billed: true },
-        { period: "2026-07", revenue_cents: 20_000, billed: false },
+        // Already fully billed: cut = 100000*5% = 5000, billed_cents = 5000 → delta 0.
+        { period: "2026-06", revenue_cents: 100_000, billed: true, billed_cents: 5000 },
+        { period: "2026-07", revenue_cents: 20_000, billed: false, billed_cents: 0 },
       ],
     });
     const res = await post(env, { business_space_id: "space-1" });
     const body = await res.json() as { surcharge_cents: number; periods: string[] };
     expect(body.surcharge_cents).toBe(1000); // only the unbilled 20000 * 5%
     expect(body.periods).toEqual(["2026-07"]);
+  });
+
+  it("F-27: a corrected-UP already-billed period bills only the delta, not the full figure", async () => {
+    const { env } = makeEnv({
+      // Period was billed at 100k (cut 5000 collected). Revenue corrected up to 120k.
+      // Owed now 6000; already 5000 → delta 1000, NOT 6000.
+      snapshots: [{ period: "2026-06", revenue_cents: 120_000, billed: true, billed_cents: 5000 }],
+    });
+    const res = await post(env, { business_space_id: "space-1" });
+    const body = await res.json() as { surcharge_cents: number; periods: string[] };
+    expect(body.surcharge_cents).toBe(1000);
+    expect(body.periods).toEqual(["2026-06"]);
+  });
+
+  it("F-31: skips a period with an in-flight (recent) checkout", async () => {
+    const { env } = makeEnv({
+      snapshots: [{ period: "2026-06", revenue_cents: 100_000, billed: false, billed_cents: 0, pending_checkout_at: new Date().toISOString().replace("T", " ").slice(0, 19) }],
+    });
+    const res = await post(env, { business_space_id: "space-1" });
+    expect(res.status).toBe(404); // the only billable period is pending → nothing to bill
   });
 
   it("404s when revenue-cut billing is not enabled for this product", async () => {
@@ -123,7 +144,7 @@ describe("POST /internal/revenue-cut-surcharge/checkout", () => {
   });
 
   it("404s when there is nothing unbilled to charge", async () => {
-    const { env } = makeEnv({ snapshots: [{ period: "2026-06", revenue_cents: 5000, billed: true }] });
+    const { env } = makeEnv({ snapshots: [{ period: "2026-06", revenue_cents: 5000, billed: true, billed_cents: 250 }] });
     const res = await post(env, { business_space_id: "space-1" });
     expect(res.status).toBe(404);
   });

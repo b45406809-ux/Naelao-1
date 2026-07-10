@@ -857,6 +857,22 @@ const MIGRATIONS: Migration[] = [
         CHECK (assistant_mode IN ('inherit','read_only','none'));
     `,
   },
+  {
+    version: 30,
+    description: "external_revenue_snapshots: billed_cents (F-27 delta billing) + pending_checkout_at (F-31 in-flight-checkout guard)",
+    up: `
+      -- F-27: how much of this period's cut has ACTUALLY been charged. A correction re-bills only
+      -- max(0, cut(new_revenue) - billed_cents), never the full corrected figure.
+      ALTER TABLE external_revenue_snapshots ADD COLUMN billed_cents INTEGER NOT NULL DEFAULT 0;
+      -- F-31: when a surcharge checkout covering this period was minted (skipped for ~24h so two
+      -- checkouts issued before either is paid don't both bill it). Cleared on pay/refund.
+      ALTER TABLE external_revenue_snapshots ADD COLUMN pending_checkout_at TEXT;
+      -- Backfill: an already-billed period gets billed_cents = revenue_cents (a ceiling that's
+      -- always >= any cut, so it's never re-billed) — the exact historical cut wasn't stored, and
+      -- erring toward "already billed" is the conservative direction (never double-bill).
+      UPDATE external_revenue_snapshots SET billed_cents = revenue_cents WHERE billed = 1;
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1193,6 +1209,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (method === "POST" && url.pathname === "/revenue-tracking/unmark-billed") {
         return this.markRevenueUnbilled(request);
+      }
+      if (method === "POST" && url.pathname === "/revenue-tracking/mark-pending") {
+        return this.markRevenuePending(request);
       }
       // ── project-scoped Memory OS Layers 3/4/6 (§A1.17 Phase U) ─────────────────
       const projFactsMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/facts$/);
@@ -2786,11 +2805,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   // External revenue tracker (Whop-native business cut): the revenue-tracker prebuilt reports
   // a period's observed gross revenue here (upsert — re-tracking the same period overwrites the
-  // prior observation, since more of a period's payments can complete between checks). `billed`
-  // defaults to 0 on every upsert of an UNBILLED period; an already-billed period is left alone
-  // (billed=1 preserved) unless the revenue figure itself changed, in which case it reverts to
-  // unbilled — a corrected/updated revenue figure for an already-charged period should be
-  // re-billable, not silently stuck at a stale charged amount forever.
+  // prior observation, since more of a period's payments can complete between checks).
+  // F-27: a correction NO LONGER reverts billed→0 and re-bills the full figure. `billed_cents`
+  // (what was actually charged) persists across corrections; the checkout bills only
+  // max(0, cut(new_revenue) − billed_cents), so correcting 100k→120k bills the 20k×cut delta, not
+  // the full 120k×cut on top of what was already collected. We only update revenue_cents/tracked_at
+  // here — billed/billed_cents are owned by the mark-billed/unmark-billed payment webhooks.
   private async recordExternalRevenue(request: Request): Promise<Response> {
     const body = await request.json<{ space_id?: string; period?: string; provider?: string; revenue_cents?: number }>()
       .catch(() => ({}) as Record<string, never>);
@@ -2802,22 +2822,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       return Response.json({ error_code: "bad_request", message: "space_id, period ('YYYY-MM'), and revenue_cents are required" }, { status: 400 });
     }
 
-    const existing = queryOne<{ revenue_cents: number; billed: number }>(
-      this.ctx.storage.sql as never,
-      "SELECT revenue_cents, billed FROM external_revenue_snapshots WHERE space_id = ? AND period = ? AND provider = ?",
-      spaceId, period, provider
-    );
-    const billed = existing && existing.billed === 1 && existing.revenue_cents === revenueCents ? 1 : 0;
-
     execute(
       this.ctx.storage.sql as never,
+      // On a first observation, billed/billed_cents default to 0/0 (fully billable). On a re-track
+      // (correction), ONLY revenue_cents + tracked_at change — the accumulated billed_cents stays,
+      // which is exactly what makes the checkout's delta computation correct.
       `INSERT INTO external_revenue_snapshots (id, space_id, period, provider, revenue_cents, billed, tracked_at)
-       VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+       VALUES (?, ?, ?, ?, ?, 0, datetime('now'))
        ON CONFLICT(space_id, period, provider) DO UPDATE SET
-         revenue_cents = excluded.revenue_cents, billed = excluded.billed, tracked_at = excluded.tracked_at`,
-      crypto.randomUUID(), spaceId, period, provider, revenueCents, billed
+         revenue_cents = excluded.revenue_cents, tracked_at = excluded.tracked_at`,
+      crypto.randomUUID(), spaceId, period, provider, revenueCents
     );
-    return Response.json({ space_id: spaceId, period, provider, revenue_cents: revenueCents, billed: billed === 1 }, { status: 201 });
+    const row = queryOne<{ billed: number; billed_cents: number }>(
+      this.ctx.storage.sql as never,
+      "SELECT billed, billed_cents FROM external_revenue_snapshots WHERE space_id = ? AND period = ? AND provider = ?",
+      spaceId, period, provider
+    );
+    return Response.json({ space_id: spaceId, period, provider, revenue_cents: revenueCents, billed: row?.billed === 1, billed_cents: row?.billed_cents ?? 0 }, { status: 201 });
   }
 
   private getExternalRevenue(params: URLSearchParams): Response {
@@ -2827,23 +2848,23 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const period = params.get("period");
 
     if (period) {
-      const row = queryOne<{ revenue_cents: number; billed: number; tracked_at: string }>(
+      const row = queryOne<{ revenue_cents: number; billed: number; billed_cents: number; pending_checkout_at: string | null; tracked_at: string }>(
         this.ctx.storage.sql as never,
-        "SELECT revenue_cents, billed, tracked_at FROM external_revenue_snapshots WHERE space_id = ? AND period = ? AND provider = ?",
+        "SELECT revenue_cents, billed, billed_cents, pending_checkout_at, tracked_at FROM external_revenue_snapshots WHERE space_id = ? AND period = ? AND provider = ?",
         spaceId, period, provider
       );
-      if (!row) return Response.json({ space_id: spaceId, period, provider, revenue_cents: 0, billed: false, tracked_at: null });
-      return Response.json({ space_id: spaceId, period, provider, revenue_cents: row.revenue_cents, billed: row.billed === 1, tracked_at: row.tracked_at });
+      if (!row) return Response.json({ space_id: spaceId, period, provider, revenue_cents: 0, billed: false, billed_cents: 0, pending_checkout_at: null, tracked_at: null });
+      return Response.json({ space_id: spaceId, period, provider, revenue_cents: row.revenue_cents, billed: row.billed === 1, billed_cents: row.billed_cents, pending_checkout_at: row.pending_checkout_at, tracked_at: row.tracked_at });
     }
 
-    const rows = queryAll<{ period: string; revenue_cents: number; billed: number; tracked_at: string }>(
+    const rows = queryAll<{ period: string; revenue_cents: number; billed: number; billed_cents: number; pending_checkout_at: string | null; tracked_at: string }>(
       this.ctx.storage.sql as never,
-      "SELECT period, revenue_cents, billed, tracked_at FROM external_revenue_snapshots WHERE space_id = ? AND provider = ? ORDER BY period DESC LIMIT 24",
+      "SELECT period, revenue_cents, billed, billed_cents, pending_checkout_at, tracked_at FROM external_revenue_snapshots WHERE space_id = ? AND provider = ? ORDER BY period DESC LIMIT 24",
       spaceId, provider
     );
     return Response.json({
       space_id: spaceId, provider,
-      snapshots: rows.map((r) => ({ period: r.period, revenue_cents: r.revenue_cents, billed: r.billed === 1, tracked_at: r.tracked_at })),
+      snapshots: rows.map((r) => ({ period: r.period, revenue_cents: r.revenue_cents, billed: r.billed === 1, billed_cents: r.billed_cents, pending_checkout_at: r.pending_checkout_at, tracked_at: r.tracked_at })),
       last_tracked_at: rows[0]?.tracked_at ?? null,
     });
   }
@@ -2853,7 +2874,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // (which upserts a REVENUE OBSERVATION) since this only ever flips the billed flag, never
   // touches revenue_cents. Idempotent: an already-billed period is a no-op.
   private async markRevenueBilled(request: Request): Promise<Response> {
-    const body = await request.json<{ space_id?: string; periods?: string[]; provider?: string }>()
+    const body = await request.json<{ space_id?: string; periods?: string[]; charges?: number[]; provider?: string }>()
       .catch(() => ({}) as Record<string, never>);
     const spaceId = body.space_id ?? "";
     const provider = body.provider ?? "whop";
@@ -2861,14 +2882,27 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (!spaceId || periods.length === 0) {
       return Response.json({ error_code: "bad_request", message: "space_id and at least one valid period are required" }, { status: 400 });
     }
-
-    for (const period of periods) {
-      execute(
-        this.ctx.storage.sql as never,
-        "UPDATE external_revenue_snapshots SET billed = 1 WHERE space_id = ? AND period = ? AND provider = ?",
-        spaceId, period, provider
-      );
-    }
+    // F-27: `charges` (parallel to periods) is the delta actually charged for each period — ADDED
+    // to billed_cents so a later correction bills only the new delta. A caller that omits charges
+    // (legacy) falls back to marking the period fully billed (billed_cents = revenue_cents, a
+    // ceiling that's never re-billed). F-31: clear pending_checkout_at now that it's paid.
+    const charges = Array.isArray(body.charges) ? body.charges : [];
+    periods.forEach((period, i) => {
+      const charge = Number.isFinite(charges[i]) ? Math.max(0, Math.round(charges[i]!)) : null;
+      if (charge !== null) {
+        execute(
+          this.ctx.storage.sql as never,
+          "UPDATE external_revenue_snapshots SET billed = 1, billed_cents = billed_cents + ?, pending_checkout_at = NULL WHERE space_id = ? AND period = ? AND provider = ?",
+          charge, spaceId, period, provider
+        );
+      } else {
+        execute(
+          this.ctx.storage.sql as never,
+          "UPDATE external_revenue_snapshots SET billed = 1, billed_cents = revenue_cents, pending_checkout_at = NULL WHERE space_id = ? AND period = ? AND provider = ?",
+          spaceId, period, provider
+        );
+      }
+    });
     return Response.json({ space_id: spaceId, provider, billed_periods: periods });
   }
 
@@ -2876,6 +2910,47 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // surcharge payment is refunded, so the periods it covered revert to unbilled and become
   // re-billable on the next checkout. Idempotent: an already-unbilled period is a no-op.
   private async markRevenueUnbilled(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; periods?: string[]; charges?: number[]; provider?: string }>()
+      .catch(() => ({}) as Record<string, never>);
+    const spaceId = body.space_id ?? "";
+    const provider = body.provider ?? "whop";
+    const periods = Array.isArray(body.periods) ? body.periods.filter((p) => /^\d{4}-\d{2}$/.test(p)) : [];
+    if (!spaceId || periods.length === 0) {
+      return Response.json({ error_code: "bad_request", message: "space_id and at least one valid period are required" }, { status: 400 });
+    }
+    // F-27: reverse exactly the charge that was collected (billed_cents -= charge), so a refunded
+    // surcharge re-opens only that much for re-billing — not the whole period from scratch. Legacy
+    // callers (no charges) zero billed_cents. billed flips to 0 once nothing is left charged.
+    const charges = Array.isArray(body.charges) ? body.charges : [];
+    periods.forEach((period, i) => {
+      const charge = Number.isFinite(charges[i]) ? Math.max(0, Math.round(charges[i]!)) : null;
+      if (charge !== null) {
+        execute(
+          this.ctx.storage.sql as never,
+          "UPDATE external_revenue_snapshots SET billed_cents = MAX(0, billed_cents - ?) WHERE space_id = ? AND period = ? AND provider = ?",
+          charge, spaceId, period, provider
+        );
+      } else {
+        execute(
+          this.ctx.storage.sql as never,
+          "UPDATE external_revenue_snapshots SET billed_cents = 0 WHERE space_id = ? AND period = ? AND provider = ?",
+          spaceId, period, provider
+        );
+      }
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE external_revenue_snapshots SET billed = CASE WHEN billed_cents > 0 THEN 1 ELSE 0 END WHERE space_id = ? AND period = ? AND provider = ?",
+        spaceId, period, provider
+      );
+    });
+    return Response.json({ space_id: spaceId, provider, unbilled_periods: periods });
+  }
+
+  // F-31: mark periods as having an in-flight surcharge checkout (skipped for ~24h so two checkouts
+  // minted before either is paid don't both bill the same periods). The billing worker calls this
+  // right after minting a checkout URL. Cleared on pay (mark-billed) or refund. A stale pending
+  // (>24h) is treated as abandoned and re-billable by the checkout's own filter.
+  private async markRevenuePending(request: Request): Promise<Response> {
     const body = await request.json<{ space_id?: string; periods?: string[]; provider?: string }>()
       .catch(() => ({}) as Record<string, never>);
     const spaceId = body.space_id ?? "";
@@ -2887,11 +2962,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     for (const period of periods) {
       execute(
         this.ctx.storage.sql as never,
-        "UPDATE external_revenue_snapshots SET billed = 0 WHERE space_id = ? AND period = ? AND provider = ?",
+        "UPDATE external_revenue_snapshots SET pending_checkout_at = datetime('now') WHERE space_id = ? AND period = ? AND provider = ?",
         spaceId, period, provider
       );
     }
-    return Response.json({ space_id: spaceId, provider, unbilled_periods: periods });
+    return Response.json({ space_id: spaceId, provider, pending_periods: periods });
   }
 
   private getWalletBalance(projectId: string): Response {

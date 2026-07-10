@@ -858,23 +858,51 @@ app.post("/internal/revenue-cut-surcharge/checkout", async (c) => {
     new Request(`http://spaces-worker/spaces/${body.business_space_id}/revenue-tracking`, { headers: internalHeaders })
   );
   if (!revenueResp.ok) return c.json({ error_code: "unavailable", message: "Could not read tracked revenue" }, 502);
-  const revenue = await revenueResp.json<{ snapshots: Array<{ period: string; revenue_cents: number; billed: boolean }> }>();
-  const unbilled = revenue.snapshots.filter((s) => !s.billed && s.revenue_cents > 0);
-  if (unbilled.length === 0) {
+  const revenue = await revenueResp.json<{ snapshots: Array<{ period: string; revenue_cents: number; billed: boolean; billed_cents?: number; pending_checkout_at?: string | null }> }>();
+
+  // F-27: bill only the DELTA — max(0, cut(revenue) − already-charged) per period — never the full
+  // corrected figure on top of what was already collected. F-31: skip a period whose checkout was
+  // minted in the last 24h (an in-flight checkout not yet paid), so two checkouts don't both bill it.
+  const PENDING_WINDOW_MS = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const billable = revenue.snapshots
+    .map((s) => {
+      const owed = Math.round((s.revenue_cents * cut.cutBps) / 10_000);
+      const delta = Math.max(0, owed - (s.billed_cents ?? 0));
+      // SQLite datetime('now') is "YYYY-MM-DD HH:MM:SS" (space, UTC) — normalize to an ISO instant.
+      const pendingMs = s.pending_checkout_at ? Date.parse(`${s.pending_checkout_at.replace(" ", "T")}Z`) : NaN;
+      const isPending = Number.isFinite(pendingMs) && now - pendingMs < PENDING_WINDOW_MS;
+      return { period: s.period, delta, isPending };
+    })
+    .filter((s) => s.delta > 0 && !s.isPending);
+
+  if (billable.length === 0) {
     return c.json({ error_code: "nothing_to_bill", message: "No unbilled tracked revenue for this business" }, 404);
   }
 
-  const totalRevenueCents = unbilled.reduce((sum, s) => sum + s.revenue_cents, 0);
-  const surchargeCents = Math.round((totalRevenueCents * cut.cutBps) / 10_000);
+  const surchargeCents = billable.reduce((sum, s) => sum + s.delta, 0);
   if (surchargeCents <= 0) {
     return c.json({ error_code: "nothing_to_bill", message: "Computed surcharge is zero" }, 404);
   }
+  const periods = billable.map((s) => s.period);
+  const charges = billable.map((s) => s.delta);
+
+  // F-31: reserve these periods so a concurrent/retry checkout skips them. Best-effort — a failure
+  // here doesn't block the checkout (the delta guard still prevents true double-charge on payment).
+  const markPending = async () => {
+    try {
+      await c.env.SPACES_WORKER!.fetch(new Request(`http://spaces-worker/spaces/${body.business_space_id}/revenue-tracking/mark-pending`, {
+        method: "POST", headers: { "content-type": "application/json", ...internalHeaders }, body: JSON.stringify({ periods }),
+      }));
+    } catch { /* best-effort */ }
+  };
 
   if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !cut.lsVariantId) {
+    await markPending();
     return c.json({
       checkout_url: `https://checkout.naelao.com/dev/revenue-cut-surcharge/${body.business_space_id}`,
       surcharge_cents: surchargeCents,
-      periods: unbilled.map((s) => s.period),
+      periods,
       dev: true,
     });
   }
@@ -891,11 +919,15 @@ app.post("/internal/revenue-cut-surcharge/checkout", async (c) => {
     ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
     metadata: {
       kind: "revenue_cut_surcharge",
-      periods: unbilled.map((s) => s.period).join(","),
+      periods: periods.join(","),
+      // F-27: the exact delta charged per period (parallel to `periods`), so mark-billed can add
+      // it to billed_cents and a refund can reverse exactly it.
+      period_charges: charges.join(","),
       product_space_id: catalog.product_space_id,
     },
   });
-  return c.json({ checkout_url: url, surcharge_cents: surchargeCents, periods: unbilled.map((s) => s.period) });
+  await markPending();
+  return c.json({ checkout_url: url, surcharge_cents: surchargeCents, periods });
 });
 
 // ── POST /webhooks/lemon-squeezy ─────────────────────────────────────────────

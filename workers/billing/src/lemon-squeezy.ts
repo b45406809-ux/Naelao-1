@@ -395,8 +395,13 @@ async function recordNonOrderRefundClawback(
   if (kind === "revenue_cut_surcharge") {
     const periods = custom["periods"] ? String(custom["periods"]).split(",").filter(Boolean) : [];
     if (periods.length === 0) return;
+    // F-27: reverse exactly the delta that was charged per period (LS preserves the order's
+    // custom_data on the refund event), so a refund re-opens only that much for re-billing.
+    const charges = custom["period_charges"]
+      ? String(custom["period_charges"]).split(",").map((n) => parseInt(n, 10)).filter((n) => Number.isFinite(n))
+      : undefined;
     const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${event.spaceId}/revenue-tracking/unmark-billed`, {
-      method: "POST", headers, body: JSON.stringify({ periods }),
+      method: "POST", headers, body: JSON.stringify({ periods, ...(charges ? { charges } : {}) }),
     }));
     if (!resp.ok) console.warn(`[billing/ls] surcharge refund unmark failed space=${event.spaceId}: ${await resp.text()}`);
     return;
@@ -587,6 +592,12 @@ async function recordRevenueCutSurchargePayment(
   if (custom["kind"] !== "revenue_cut_surcharge" || !event.spaceId) return false;
   const periods = custom["periods"] ? String(custom["periods"]).split(",").filter(Boolean) : [];
   if (periods.length === 0 || !env.SPACES_WORKER) return false;
+  // F-27: the per-period delta actually charged (parallel to periods) — added to billed_cents so a
+  // later correction bills only the new delta. Absent (a checkout minted before this fix) → the
+  // SpaceDO handler falls back to marking the period fully billed.
+  const charges = custom["period_charges"]
+    ? String(custom["period_charges"]).split(",").map((n) => parseInt(n, 10)).filter((n) => Number.isFinite(n))
+    : undefined;
 
   const space = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
     .bind(event.spaceId).first<{ tenant_id: string }>();
@@ -600,7 +611,7 @@ async function recordRevenueCutSurchargePayment(
         "x-naelao-tenant-id": space.tenant_id,
         "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, space.tenant_id),
       },
-      body: JSON.stringify({ periods }),
+      body: JSON.stringify({ periods, ...(charges ? { charges } : {}) }),
     }));
     if (!resp.ok) {
       console.error(`[billing/ls] revenue-cut mark-billed failed for space=${event.spaceId}: ${await resp.text()}`);

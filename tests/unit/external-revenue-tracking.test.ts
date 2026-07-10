@@ -147,3 +147,61 @@ describe("POST /spaces/:spaceId/revenue-tracking/mark-billed", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("F-27/F-31: billed_cents delta accounting + pending guard (SpaceDO)", () => {
+  async function track(env: ReturnType<typeof makeEnv>, period: string, revenue: number) {
+    const h = await headers("t1");
+    return spacesWorker.fetch(req("/spaces/s1/revenue-tracking", h, { method: "POST", body: JSON.stringify({ period, revenue_cents: revenue }) }), env as never, execCtx);
+  }
+  async function markBilled(env: ReturnType<typeof makeEnv>, periods: string[], charges?: number[]) {
+    const h = await headers("t1");
+    return spacesWorker.fetch(req("/spaces/s1/revenue-tracking/mark-billed", h, { method: "POST", body: JSON.stringify({ periods, charges }) }), env as never, execCtx);
+  }
+  async function read(env: ReturnType<typeof makeEnv>, period: string) {
+    const h = await headers("t1");
+    const res = await spacesWorker.fetch(req(`/spaces/s1/revenue-tracking?period=${period}`, h), env as never, execCtx);
+    return res.json() as Promise<{ revenue_cents: number; billed: boolean; billed_cents: number; pending_checkout_at: string | null }>;
+  }
+
+  it("F-27: mark-billed with charges ACCUMULATES billed_cents; a correction does NOT reset it", async () => {
+    const env = makeEnv();
+    await track(env, "2026-06", 100_000);
+    await markBilled(env, ["2026-06"], [5000]); // 5% of 100k charged
+    let row = await read(env, "2026-06");
+    expect(row).toMatchObject({ billed: true, billed_cents: 5000 });
+
+    // Correct revenue up to 120k — billed_cents must persist (not revert to 0).
+    await track(env, "2026-06", 120_000);
+    row = await read(env, "2026-06");
+    expect(row.revenue_cents).toBe(120_000);
+    expect(row.billed_cents).toBe(5000); // F-27: NOT reset — only the 1000 delta is billable next
+
+    // Bill the 1000 delta → billed_cents accumulates to the full 6000.
+    await markBilled(env, ["2026-06"], [1000]);
+    row = await read(env, "2026-06");
+    expect(row.billed_cents).toBe(6000);
+  });
+
+  it("F-27: a refund (unmark with charge) reverses exactly that charge", async () => {
+    const env = makeEnv();
+    await track(env, "2026-06", 100_000);
+    await markBilled(env, ["2026-06"], [5000]);
+    const h = await headers("t1");
+    await spacesWorker.fetch(req("/spaces/s1/revenue-tracking/unmark-billed", h, { method: "POST", body: JSON.stringify({ periods: ["2026-06"], charges: [5000] }) }), env as never, execCtx);
+    const row = await read(env, "2026-06");
+    expect(row.billed_cents).toBe(0);
+    expect(row.billed).toBe(false);
+  });
+
+  it("F-31: mark-pending stamps pending_checkout_at; mark-billed clears it", async () => {
+    const env = makeEnv();
+    await track(env, "2026-06", 100_000);
+    const h = await headers("t1");
+    await spacesWorker.fetch(req("/spaces/s1/revenue-tracking/mark-pending", h, { method: "POST", body: JSON.stringify({ periods: ["2026-06"] }) }), env as never, execCtx);
+    let row = await read(env, "2026-06");
+    expect(row.pending_checkout_at).toBeTruthy();
+    await markBilled(env, ["2026-06"], [5000]);
+    row = await read(env, "2026-06");
+    expect(row.pending_checkout_at).toBeNull();
+  });
+});
