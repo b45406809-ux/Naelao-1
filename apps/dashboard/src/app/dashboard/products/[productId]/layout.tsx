@@ -17,6 +17,7 @@ const TABS = [
   { label: "Feature Flags", segment: "feature-flags" },
   { label: "Legal", segment: "legal" },
   { label: "Billing", segment: "billing" },
+  { label: "Wallet", segment: "wallet" },
   { label: "Danger Zone", segment: "danger-zone" },
 ] as const;
 

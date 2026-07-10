@@ -670,6 +670,23 @@ export async function getBuilderProduct(id: string): Promise<BuilderProductDetai
   return apiFetch<BuilderProductDetail>(`/builder/products/${encodeURIComponent(id)}`);
 }
 
+// F-WALLET-6: the builder-facing wallet aggregate across a product + all its child businesses.
+export interface BuilderProductWallet {
+  product_id: string;
+  businesses: {
+    gross_cents: number;
+    naelao_cut_cents: number;
+    builder_cut_cents: number;
+    net_settled_cents: number;
+    order_count: number;
+  };
+  builder_revenue_share: Array<{ currency: string; earned_cents: number }>;
+}
+
+export async function getBuilderProductWallet(id: string): Promise<BuilderProductWallet> {
+  return apiFetch<BuilderProductWallet>(`/builder/products/${encodeURIComponent(id)}/wallet`);
+}
+
 export async function createBuilderProduct(input: CreateBuilderProductInput): Promise<BuilderProductSummary> {
   return apiFetch<BuilderProductSummary>("/builder/products", {
     method: "POST",

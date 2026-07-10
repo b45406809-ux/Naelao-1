@@ -187,8 +187,13 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
     - Revenue-sharing %s can be tweaked per product/niche (store current `LAUNCHPAD_FEE_BPS` in a column, not just hardcode it)
   - Migration: `0058_naelao_revenue_tracking.sql` with a summary table and daily/monthly rollup logic.
   
-  **ARCH-REVENUE-6 (NEW BUILD ITEM — the one real code change the decided model needs):
-  Builder share of end-user business revenue.**
+  **ARCH-REVENUE-6 — ✅ BUILT.** productConfig.commerce.builderFeeBps (capped at 3000bps),
+  stamped at checkout (GET /internal/builder-fee-bps resolves from the parent reseller product),
+  deducted in recordProductOrder/recordSeatActivation, settled net to the business wallet, builder
+  slice attributed to reseller_ledger kind='builder_revenue_share' (migration 0061 adds the column
+  + launchpad_orders.builder_fee_cents). Refund reverses both. recordResellerAttribution skips a
+  sale carrying builder_fee_bps (never double-paid). Tests: builder-revenue-share.test.ts.
+  ORIGINAL: Builder share of end-user business revenue.**
   - `recordProductOrder` / `recordSeatActivation` (`billing/lemon-squeezy.ts`) currently
     compute only `fee = gross * LAUNCHPAD_FEE_BPS` (Naelao) and settle `net` to the selling
     business's wallet. Add a second deduction: `builder_fee = gross * builder_fee_bps`,
@@ -247,7 +252,13 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   - Recommendation: When calculating builder payouts (the amount they can withdraw), sum only rows where `kind='product_sale'` or `kind='business_subscription'` (explicitly exclude `kind='credit_pack'` if Option C, or include it if Option A). Add test coverage verifying a builder's withdrawable balance is exactly (sum(launchpad_orders.net_cents) + sum(subscription_orders.net_cents)) where order.product_id = builder_product.
   - Current state: `builder-routes.ts:695` returns `{total: reseller_ledger sum, currency}` — should be `{by_source: {product_sales: X, subscriptions: Y, ...}, total: X+Y}` for transparency.
 
-- [ ] **F-WALLET: Business wallet system — automatic store provisioning + revenue ledger + agent spend gating.**
+- [~] **F-WALLET: Business wallet system.** ✅ F-WALLET-6 (dashboard Wallet tab) + F-WALLET-7
+  (shell Wallet section) BUILT, backed by new GET /spaces/:spaceId/wallet (consolidated per-business
+  view: available balance + recent transactions + lifetime gross/naelao-cut/builder-cut/net summary,
+  router-allowlisted for the shell) and GET /builder/products/:id/wallet (builder aggregate across
+  the product + child businesses + earned builder revenue share by currency). Still open: F-WALLET-1/2
+  (auto LS store / Whop sub-merchant provisioning — a design decision, current single-account model
+  may be strictly better). ORIGINAL:
 
   **⚠ RE-SCOPED after verifying HEAD (much already exists — do not rebuild):**
   - ALREADY BUILT: `seedWallet` provisioner step auto-creates a `kind='wallet'` project per

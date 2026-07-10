@@ -577,6 +577,35 @@ export interface RevenueSummary {
   orders: number;
 }
 
+// F-WALLET-7: the consolidated per-business wallet view (available balance + lifetime cut summary
+// + recent transactions).
+export interface WalletTransaction {
+  id: string;
+  delta_cents: number;
+  currency: string;
+  reason: string;
+  balance_after_cents: number;
+  created_at: string;
+}
+export interface BusinessWallet {
+  space_id: string;
+  project_id: string | null;
+  available_balance_cents: number;
+  currency: string;
+  lifetime: {
+    gross_cents: number;
+    naelao_cut_cents: number;
+    builder_cut_cents: number;
+    net_settled_cents: number;
+    order_count: number;
+  };
+  transactions: WalletTransaction[];
+}
+
+export async function getBusinessWallet(spaceId: string, session: SessionCredentials): Promise<BusinessWallet> {
+  return apiFetch(`/v1/spaces/${spaceId}/wallet`, { session });
+}
+
 export async function listBusinessProducts(spaceId: string, session: SessionCredentials): Promise<LaunchpadProduct[]> {
   const res = await apiFetch<{ data: LaunchpadProduct[] }>(`/v1/spaces/${spaceId}/products`, { session });
   return res.data;

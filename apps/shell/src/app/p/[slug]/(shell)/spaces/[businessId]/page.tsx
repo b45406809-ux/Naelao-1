@@ -19,6 +19,7 @@ import {
   updateBusinessProduct,
   listBusinessOrders,
   getBusinessRevenue,
+  getBusinessWallet,
   listLocalGrants,
   createLocalGrant,
   deleteLocalGrant,
@@ -30,6 +31,7 @@ import {
   type LaunchpadProduct,
   type LaunchpadOrder,
   type RevenueSummary,
+  type BusinessWallet,
   type LocalGrant,
 } from "@/lib/api";
 
@@ -60,6 +62,7 @@ export default function BusinessDetailPage() {
   // non-Launchpad (future) SpaceType's business doesn't show an irrelevant, empty section.
   const [hasCommerce, setHasCommerce] = React.useState(false);
   const [revenue, setRevenue] = React.useState<RevenueSummary | null>(null);
+  const [wallet, setWallet] = React.useState<BusinessWallet | null>(null);
   const [orders, setOrders] = React.useState<LaunchpadOrder[]>([]);
   const [products, setProducts] = React.useState<LaunchpadProduct[]>([]);
   const [newProductName, setNewProductName] = React.useState("");
@@ -79,18 +82,20 @@ export default function BusinessDetailPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      const [mine, mem, pricing, manifest, grants] = await Promise.all([
+      const [mine, mem, pricing, manifest, grants, wal] = await Promise.all([
         listMyBusinesses(product.space_id, creds),
         listBusinessMembers(params.businessId, creds),
         getPricing(params.businessId, creds).catch(() => ({ plans: [], credit_packs: [] })),
         getShellManifest(params.businessId, creds).catch(() => null),
         listLocalGrants(params.businessId, creds).catch(() => []),
+        getBusinessWallet(params.businessId, creds).catch(() => null),
       ]);
       setBusiness(mine.find((b) => b.id === params.businessId) ?? null);
       setMembers(mem);
       setPlans(pricing.plans);
       setCreditPacks(pricing.credit_packs);
       setLocalGrants(grants);
+      setWallet(wal);
       const commerce = manifest?.ui.sidebar_items.some((item) => item.id === "revenue") ?? false;
       setHasCommerce(commerce);
       if (commerce) {
@@ -336,6 +341,52 @@ export default function BusinessDetailPage() {
             {creatingGrant ? "Adding…" : "Add grant"}
           </Button>
         </form>
+      )}
+
+      {/* F-WALLET-7: the transparency section — "your AI only spends money this business earned". */}
+      {wallet && (wallet.project_id || wallet.lifetime.order_count > 0) && (
+        <>
+          <div className="section-label">Wallet</div>
+          <div className="settings-block">
+            <div className="settings-row">
+              <div>
+                <div className="settings-row-label">Available to grow the business</div>
+                <div className="settings-row-sub">Your AI only spends money this business has earned.</div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div className="settings-row-label">{centsToDisplay(wallet.available_balance_cents)}</div>
+                <div className="settings-row-sub">{wallet.currency}</div>
+              </div>
+            </div>
+            <div className="settings-row">
+              <div>
+                <div className="settings-row-label">Total earned</div>
+                <div className="settings-row-sub">{wallet.lifetime.order_count} settled order(s)</div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div className="settings-row-label">{centsToDisplay(wallet.lifetime.gross_cents)} gross</div>
+                <div className="settings-row-sub">
+                  {centsToDisplay(wallet.lifetime.naelao_cut_cents)} Naelao cut
+                  {wallet.lifetime.builder_cut_cents > 0 ? ` · ${centsToDisplay(wallet.lifetime.builder_cut_cents)} builder cut` : ""}
+                </div>
+              </div>
+            </div>
+            {wallet.transactions.slice(0, 8).map((t) => (
+              <div className="settings-row" key={t.id}>
+                <div>
+                  <div className="settings-row-label">{t.reason.replace(/_/g, " ")}</div>
+                  <div className="settings-row-sub">{new Date(t.created_at).toLocaleString()}</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div className="settings-row-label" style={{ color: t.delta_cents >= 0 ? "var(--green, #16a34a)" : "inherit" }}>
+                    {t.delta_cents >= 0 ? "+" : ""}{centsToDisplay(t.delta_cents)}
+                  </div>
+                  <div className="settings-row-sub">bal {centsToDisplay(t.balance_after_cents)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
       )}
 
       {hasCommerce && (
