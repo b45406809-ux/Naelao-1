@@ -227,3 +227,31 @@ describe("GET /spaces/:spaceId/wallet-project", () => {
     expect((await res.json() as { project_id: string | null }).project_id).toBeNull();
   });
 });
+
+// F-WALLET-6/7: the consolidated per-business wallet view (dashboard tab + shell section).
+describe("GET /spaces/:spaceId/wallet (consolidated)", () => {
+  it("requires a verified internal token — a spoofed tenant header alone is rejected (403)", async () => {
+    const env = makeEnv();
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/space-1/wallet", { headers: { "x-naelao-tenant-id": "tenant-1" } }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("returns the consolidated shape (balance + lifetime + transactions) with a valid token", async () => {
+    const env = makeEnv();
+    await makeWalletProject(env, "space-1", "tenant-1", "Wallet");
+    // The consolidated route reads a launchpad_orders lifetime summary from PLATFORM_DB (always
+    // bound in production); provide a minimal stub returning a zero summary.
+    const zeroSummary = { gross_cents: 0, naelao_cut_cents: 0, builder_cut_cents: 0, net_settled_cents: 0, order_count: 0 };
+    (env as unknown as { PLATFORM_DB: unknown }).PLATFORM_DB = { prepare: () => ({ bind: () => ({ first: async () => zeroSummary }) }) };
+    const h = await headers("tenant-1");
+    const res = await spacesWorker.fetch(req("/spaces/space-1/wallet", h), env as never, execCtx);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { available_balance_cents: number; lifetime: { gross_cents: number }; transactions: unknown[] };
+    expect(body).toHaveProperty("available_balance_cents");
+    expect(body).toHaveProperty("lifetime");
+    expect(Array.isArray(body.transactions)).toBe(true);
+  });
+});

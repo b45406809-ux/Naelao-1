@@ -905,8 +905,12 @@ app.get("/spaces/:spaceId/projects/:projectId/wallet/history", async (c) => {
 // space's own wallet project (available spendable balance + recent transactions from SpaceDO's
 // wallet_ledger) with a lifetime money-in summary from launchpad_orders (gross, Naelao cut,
 // builder cut, net settled) so the "two deductions shown explicitly" transparency requirement is
-// met. Gated by requireBusinessMembership (member GET) — additive-only for a product_end_user
-// business admin; a builder acting via the router (tenant match) passes through unchanged.
+// met. Gated by requireInternalHmac (the request must arrive through naelao-router, which mints
+// the token from verified claims — the same direct-worker-ingress backstop every other
+// /spaces/:spaceId/* data route carries; without it a direct caller could spoof identity headers)
+// PLUS requireBusinessMembership (member GET — additive-only for a product_end_user business admin;
+// a builder acting via the router passes through unchanged).
+app.use("/spaces/:spaceId/wallet", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/wallet", requireBusinessMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/wallet", async (c) => {
   const spaceId = c.req.param("spaceId");
