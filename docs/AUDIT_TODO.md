@@ -273,6 +273,166 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   
   Routes needed: `GET /spaces/:spaceId/wallet`, `GET /builder/products/:id/wallet`, plus migrations + provisioner steps.
 
+## Tier 2b-2 — "Business Feature Projects" (new architecture, user-directed 2026-07-10)
+
+**Concept:** wallet, storefront, business email, and every other "auto-provisioned business
+infrastructure" idea (CRM, brand kit, bookkeeping, affiliate program, support inbox, legal vault,
+analytics dashboards, business phone/social — see the full registry below) are all modeled as
+ONE mechanism: a `projects.kind` value drawn from a data-driven registry (mirroring
+`LAUNCHPAD_TEMPLATES`'s own pattern — NOT a new DB table per feature, consistent with
+CLAUDE.md ground rule #4 "SpaceType differences live in config... never DB tables"). Each kind
+gets its own R2 workspace, its own thread, an optional kind-specific prebuilt script surface
+(mirroring `wallet.ts`), and an optional dashboard/shell UI panel. Naelao ships every kind
+preconfigured; a business template (e.g. `whop-seller`) pre-selects which kinds it bootstraps;
+a builder can add/remove kinds later like any other project.
+
+**Two real bugs this investigation surfaced (log as findings, not just forward design):**
+
+- [ ] **F-32 (gap, confirmed against HEAD): the wallet project has NO database-level singleton
+  enforcement.** Evidence: `projects` table (SpaceDO.ts:702-709) has no unique constraint on
+  `(space_id, kind)`; `createProject` (SpaceDO.ts:1981-2029) doesn't even accept `kind` in its
+  request body — `kind` is only set via a follow-up `PATCH` (confirmed: `seedWallet`,
+  provisioner/index.ts:392-411, creates the project then PATCHes `kind: "wallet"` separately).
+  Nothing stops a second `PATCH .../projects/:id { kind: "wallet" }` on a different project in
+  the same space — two wallet projects, ambiguous spend-gating source of truth. Fix: this is
+  F-33's precondition; the singleton index below closes it for wallet immediately once built.
+
+- [ ] **F-33 (build item): `createProject` has no `kind` parameter or registry validation at
+  all** — it's a pure name/description/agent-binding creator today. Any future kind-aware
+  creation flow needs `kind` accepted at creation time (not just via PATCH after the fact), so
+  the singleton check can run BEFORE a row exists rather than racing a PATCH against a
+  freshly-created default-kind project.
+
+**F-34 (build): Registry + schema.**
+- New `packages/events` (or a new small package) export: `BUSINESS_FEATURE_KIND_REGISTRY`, a
+  typed array of:
+  ```ts
+  type BusinessFeatureKind = {
+    kind: string;                    // 'wallet' | 'storefront' | 'business_email' | ...
+    label: string;
+    description: string;
+    singleton: boolean;              // DB-enforced, see below
+    minCreationRole: 'owner' | 'admin' | 'editor'; // who even SEES this as a creatable template
+    prebuiltScripts?: string[];      // e.g. ['wallet'] — script-engine prebuilt names gated to this kind
+    uiPanel?: string;                // dashboard/shell component key, e.g. 'wallet-ledger'
+  };
+  ```
+- Widen `projects.kind`'s CHECK constraint (currently `CHECK (kind IN ('workspace',
+  'customer_bot','wallet'))`, SpaceDO.ts:709) to include the new kinds, OR (recommended,
+  matches ground rule #4) drop the hardcoded CHECK and validate `kind` against the registry
+  in application code only — a new kind then ships as a data change, no migration.
+- New column: `projects.is_singleton_kind INTEGER NOT NULL DEFAULT 0` — stamped from the
+  registry's `singleton` flag AT CREATION TIME (not re-derived on every read).
+- New partial unique index (the real guarantee — D1/DO-SQLite has no `SELECT FOR UPDATE`, so
+  app-level "check then insert" races exactly like F-22's payout bug):
+  `CREATE UNIQUE INDEX idx_projects_singleton_kind ON projects(space_id, kind)
+   WHERE is_singleton_kind = 1 AND status = 'active';`
+  A second creation attempt gets a real constraint violation → translate to `409
+  duplicate_singleton_project` with the existing project's id in the response body.
+
+**F-35 (build): `createProject` + template-listing changes.**
+- `createProject` accepts `kind` (default `'workspace'`, unchanged behavior for existing
+  callers). Validates against the registry: unknown kind → 400; caller's space-level role
+  below `minCreationRole` → 403 (checked BEFORE the singleton check, so a non-admin gets
+  "not allowed" rather than leaking whether a wallet project already exists); singleton
+  violation → 409 (backed by the unique index above, not just an app-level SELECT).
+- Wherever project templates are surfaced for the "create project" picker (agents worker's
+  `GET /project-templates`, proxied at router `api.all("/project-templates"...)` — currently
+  only the customer-bot templates) — extend to also list `BUSINESS_FEATURE_KIND_REGISTRY`
+  entries, FILTERED by the caller's role server-side (not just hidden in UI) so a non-admin
+  member never sees "Create Wallet" as an option at all, matching the "identity vs
+  authorization" split this codebase already uses everywhere else.
+- Dashboard/shell "create project" UI: grey out / hide singleton kinds that already exist for
+  the space (a UI nicety on top of the real 409 — never the security boundary).
+
+**F-36 (build): Per-user project access, extended to that user's assistant interactions.**
+- `project_members` already has `role IN ('owner','editor','viewer')` (SpaceDO.ts:623-630) —
+  this is the granular per-user read/edit/admin control already asked for; it likely just
+  needs a management UI panel if one doesn't exist yet (verify before building new backend).
+- NEW: `ALTER TABLE project_members ADD COLUMN assistant_mode TEXT NOT NULL DEFAULT 'inherit'
+  CHECK (assistant_mode IN ('inherit','read_only','none'));` — per (project, user) row.
+- **Invariant (write this down before implementing, it's the whole security model):** an
+  assistant acting ON BEHALF OF user U in project P can never have MORE access than U's own
+  `project_members` role for P. `'inherit'` (default) = assistant's effective role equals U's
+  role. `'read_only'` clamps to viewer even if U is owner/editor. `'none'` = zero access when
+  acting for U, full stop — U must use the project directly, the assistant won't touch it.
+- Enforcement point: wherever a run resolves "which projects can this touch" needs a concept
+  of "acting-on-behalf-of user" threaded through — when the Space Assistant is invoked from
+  inside a specific user's thread/message (a resolvable acting user id exists), the effective
+  permission = `min(assistant's own base grant, assistant_mode-clamped U role)`. When there's
+  NO acting user (scheduled job / cron / event trigger / autonomous heartbeat — no human in
+  the loop for this specific run), fall back to the assistant's own base grant only (today's
+  Space Assistant already has broad access by default; document this explicitly rather than
+  assume it, and confirm `handleTriggerFire`/`runScheduledJobs` dispatch don't accidentally
+  pick up a stale acting-user id from a prior run).
+
+**F-37 (verify, likely partial gap): assistant identity in threads — no user/assistant
+collision.** `messages.author_type`/`author_id` (Phase O) and per-agent mention-run
+attribution (Phase T2, "Agent1" vs "Agent2" render distinctly) are already built. NOT yet
+confirmed: does the bare Space Assistant's OWN replies (not a project-agent's) also stamp
+`author_type='assistant', author_id='naelao-agent'` distinctly from a human `author_type=
+'user'` bubble, even when the assistant is "acting on behalf of" that human? Verify against
+`NaelaoAgentDO`'s message-write path before assuming built; if it currently reuses the human's
+own identity when posting on their behalf, that's the collision to fix.
+
+**F-38 (verify, likely already correct — confirm before building anything new): locking is
+actor-agnostic.** The `lock` prebuilt and `projects.exclusive_mode`/`active_thread_id`
+(Phase T3) are keyed by resource (project/thread), not by who's acting — so an
+assistant-driven script run should already respect the same `activate-thread` exclusive lock
+as a human-initiated one, PROVIDED every dispatch path (normal `/agent/run`, `mention-run`,
+`handleTriggerFire`, `runScheduledJobs`) actually calls through the same check. CLAUDE.md
+items #15/#20 note trigger/cron dispatch deliberately BYPASSES the full reasoning loop for
+efficiency — confirm that bypass didn't also skip the exclusive-mode lock check (a real
+collision risk if a cron-fired script writes the same file a human has the thread locked for).
+
+**F-39 (build): R2 workspace file viewer.**
+- New routes on the spaces worker: `GET /spaces/:spaceId/projects/:projectId/workspace/files`
+  (list — reuse the existing bounds from Phase K/R: 300 files/2MB per file/25MB per call) and
+  `GET /spaces/:spaceId/projects/:projectId/workspace/files/*path` (read one file). Gate:
+  caller needs at least `viewer` via `project_members` (or space owner/admin) — same ACL
+  check as every other project-scoped end-user route (`requireBusinessMembership`-style).
+  Reuse `ContainerWorkspaceGateway`/the `workspace` prebuilt's read/list logic (Phase R,
+  `script-engine/types.ts`) rather than writing new R2 access code — this is an HTTP-facing
+  wrapper around what the agent side already has.
+- UI: new "Files" tab per project (dashboard product-detail view; shell business-detail
+  project view). A file tree/list; clicking an `.html` file opens it in a sandboxed iframe
+  preview (this is literally the "AI writes `wallet-transactions-dashboard.html`, builder
+  views it" case); other types show as text or a download link.
+- Router allowlist: add the new path pattern to `PRODUCT_END_USER_PATH_PATTERNS`
+  (router/src/index.ts:422+) so end users (not just builders) can reach it for projects
+  they're a member of — identity-only at the router, real ACL check on the spaces worker,
+  same split as every other entry in that list.
+
+**Registry — proposed initial kinds (Naelao ships all; templates pre-select a subset):**
+
+| kind | singleton? | notes |
+|---|---|---|
+| `wallet` | yes | ALREADY BUILT feature-wise; needs F-32/F-34's DB enforcement |
+| `storefront` | yes | proposed remodel of `business_services`/`launchpad_products`/
+  `launchpad_orders` (today NOT project-scoped at all — see answer below) — add a
+  `project_id` column to those three tables rather than migrating the data model |
+| `business_email` | yes | already partial (business_services kind='business_email');
+  extend with an AI-triaged shared inbox as the project's thread surface |
+| `business_phone` | yes | new — Twilio-style number wired into the existing channel
+  gateway (`workers/agents` channel ingress pattern already established for WhatsApp/Discord) |
+| `brand_kit` | yes | logo/palette/theme, generated once, referenced by storefront |
+| `bookkeeping` | yes | read-only rollup over the wallet ledger + CSV/QuickBooks export |
+| `affiliate_program` | yes | referral links + payout via existing wallet/reseller_ledger |
+| `crm` | yes | contacts/notes/deal pipeline — distinct from support tickets |
+| `support_inbox` | yes | ticket queue with SLAs — distinct from `business_email` |
+| `social_media` | yes | one project holding all connected platform OAuth grants (not
+  one project per platform) |
+| `legal_compliance` | yes | auto-generated ToS/Privacy/Refund + e-sign vault |
+| `analytics_dashboard` | yes | AI-generated BI/html reports pulling from other kinds |
+| `hiring_freelance` | **no** | a business may run several hiring efforts concurrently |
+| `market_research` | **no** | ad hoc, no reason to cap |
+| `workspace` | **no** | today's default, unchanged |
+| `customer_bot` | **no** | already exists, unchanged |
+
+Spend card / revenue-based financing / KYB-gated payouts are NOT separate kinds — they're
+features WITHIN the `wallet` project's own tool surface (extend `wallet.ts`), since they
+operate on the same balance and ledger, not a separate workspace/thread context.
+
 ## Tier 2 — Serious
 
 - [x] **F-4: Stream-ticket security fix is dead code; raw `nps_` tokens still land in URLs/logs.**
