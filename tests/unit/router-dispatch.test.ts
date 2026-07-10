@@ -111,4 +111,63 @@ describe("router — /spaces dispatch order (F15)", () => {
     );
     expect(await res.json()).toEqual({ worker: "SPACES" });
   });
+
+  // F-1: the Builder Dashboard API — every management tab 404'd because the router had no /builder
+  // route at all.
+  it("POST /v1/builder/products → SPACES_WORKER (F-1)", async () => {
+    const res = await authedFetch("POST", "/v1/builder/products", makeEnv());
+    expect(await res.json()).toEqual({ worker: "SPACES" });
+  });
+
+  it("GET /v1/builder/api-keys → SPACES_WORKER (F-1)", async () => {
+    const res = await authedFetch("GET", "/v1/builder/api-keys", makeEnv());
+    expect(await res.json()).toEqual({ worker: "SPACES" });
+  });
+});
+
+// F-2: the Lemon Squeezy webhook — the entire money-in path 404'd because the router never routed
+// it. Unauthenticated (LS signature is the auth), proxied to BILLING_WORKER.
+describe("router — Lemon Squeezy webhook ingress (F-2)", () => {
+  it("POST /v1/webhooks/lemon-squeezy → BILLING_WORKER, with NO JWT", async () => {
+    const env = { ...makeEnv(), BILLING_WORKER: namedFetcher("BILLING") };
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/webhooks/lemon-squeezy", { method: "POST", body: "{}" }),
+      env as never, execCtx
+    );
+    expect(await res.json()).toEqual({ worker: "BILLING" });
+  });
+
+  it("returns 503 when the billing worker is not bound", async () => {
+    const res = await routerWorker.fetch(
+      new Request("https://router.naelao.com/v1/webhooks/lemon-squeezy", { method: "POST", body: "{}" }),
+      makeEnv() as never, execCtx
+    );
+    expect(res.status).toBe(503);
+  });
+});
+
+// F-STRUCT: route-parity guard — assert the router SOURCE registers a handler for every top-level
+// API prefix the dashboard and shell frontends depend on. This is the cheap structural equivalent
+// of wrangler-vars-parity.test.ts: it catches the "an entire route group is unrouted" class of bug
+// (F-1/F-2/F-3/F-5 were all this) without needing per-endpoint matching. If a frontend starts
+// calling a new top-level prefix, add it here AND wire the router — the test forces the pairing.
+describe("router — frontend route-parity (F-STRUCT)", () => {
+  it("registers a proxy for every top-level API prefix the frontends call", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const routerSrc = readFileSync(join(__dirname, "../../workers/router/src/index.ts"), "utf8");
+    // Prefixes the dashboard (builder) and shell (end-user) clients depend on, each with the
+    // registration substring that must exist in the router source.
+    const REQUIRED_PREFIXES: Array<[label: string, needle: RegExp]> = [
+      ["/builder (dashboard)", /["'`]\/builder\/\*["'`]/],
+      ["/spaces (both)", /["'`]\/spaces\/\*["'`]/],
+      ["/reseller (dashboard)", /["'`]\/reseller\/\*["'`]/],
+      ["/connectors (dashboard)", /["'`]\/connectors\/\*["'`]/],
+      ["/templates (wizard)", /["'`]\/templates\/\*["'`]/],
+      ["/products/by-slug (shell)", /\/v1\/products\/by-slug/],
+      ["/webhooks/lemon-squeezy (money-in)", /\/v1\/webhooks\/lemon-squeezy/],
+    ];
+    const missing = REQUIRED_PREFIXES.filter(([, needle]) => !needle.test(routerSrc)).map(([label]) => label);
+    expect(missing, `router is missing a route for: ${missing.join(", ")}`).toEqual([]);
+  });
 });

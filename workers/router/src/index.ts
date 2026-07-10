@@ -23,6 +23,8 @@ export interface Env {
   AGENTS_WORKER: Fetcher;
   AUTH_WORKER: Fetcher;
   CREDENTIALS_WORKER: Fetcher;
+  /** F-2: billing worker — the public Lemon Squeezy webhook ingress proxies here. */
+  BILLING_WORKER?: Fetcher;
 }
 
 // G-AX27: Replay attack prevention — max clock skew in seconds
@@ -270,6 +272,22 @@ app.all("/v1/channels/:channel/inbound/:spaceId", async (c) => {
   u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
   return c.env.AGENTS_WORKER.fetch(
     new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+  );
+});
+
+// ── F-2: Public Lemon Squeezy webhook ingress (unauthenticated; the LS HMAC signature is the auth) ──
+// The entire money-in path (orders, subscriptions, credit packs, wallet top-ups, refunds) depends
+// on this: a buyer pays at Lemon Squeezy → LS POSTs the event here → the billing worker verifies
+// the LEMON_SQUEEZY_WEBHOOK_SECRET signature and settles. Without this route the webhook 404'd and
+// every purchase silently never fulfilled. Registered BEFORE the JWT-gated api group, same pattern
+// as the connector/channel webhooks above. The `/v1` mount prefix is stripped so the billing worker
+// sees its own `/webhooks/lemon-squeezy` path.
+app.all("/v1/webhooks/lemon-squeezy", async (c) => {
+  if (!c.env.BILLING_WORKER) return c.json({ error_code: "billing_unavailable", message: "Billing worker not configured" }, 503);
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.BILLING_WORKER.fetch(
+    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body, duplex: "half" } as RequestInit)
   );
 });
 
@@ -945,6 +963,14 @@ api.all("/spaces", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.
 // Reseller / partner endpoints → spaces worker (G-AS34/G-AS35)
 api.all("/reseller/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 api.all("/reseller", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+
+// F-1: Builder Dashboard API (/builder/products*, /builder/api-keys*, /builder/space-types,
+// /builder/billing, /builder/payouts, …) → spaces worker (registerBuilderRoutes). Authenticated
+// with the builder JWT (this is inside the `api` group), so proxyTo mints the internal token from
+// verified claims. Without this route the ENTIRE builder dashboard 404'd — every management tab
+// (create product, users, analytics, pricing, domain, payouts) was dead.
+api.all("/builder/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/builder", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
 // Founder roadmap catalog (space types + templates, dev-only) → agents worker.
 // (/product/* and /business/* used to proxy here too, for the retired BusinessDO/ProductDO

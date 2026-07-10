@@ -61,6 +61,13 @@ service = "naelao-auth"
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
 
+# F-2: billing worker — the public Lemon Squeezy webhook ingress (/v1/webhooks/lemon-squeezy)
+# proxies here. Inherited by the staging/production named environments (only vars are replaced
+# per-env, not binding tables — see wrangler-vars-parity.test.ts).
+[[services]]
+binding = "BILLING_WORKER"
+service = "naelao-billing"
+
 [env.staging]
 name = "naelao-router-staging"
 vars = { ENVIRONMENT = "staging", CORS_ALLOWLIST = "https://staging-dashboard.naelao.com,https://staging-portal.naelao.com,https://staging-app.naelao.com", PRODUCT_SHELL_URL = "https://staging-app.naelao.com" }

@@ -16,6 +16,10 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   it gates verifying everything else end-to-end.
 
 - [x] **F-1: `/v1/builder/*` is not routed — the entire Builder Dashboard API 404s.**
+  **⚠ WAS CHECKED BUT NOT ACTUALLY IN CODE — NOW GENUINELY FIXED:** router had no `/builder`
+  route at all (re-verified against HEAD). Added `api.all("/builder/*")` + `api.all("/builder")`
+  → SPACES_WORKER in the authenticated group, plus router-dispatch tests and the F-STRUCT parity
+  guard so this can never silently regress again.
   Evidence: `workers/spaces/src/builder-routes.ts:141+` implements `/builder/api-keys`,
   `/builder/products` (CRUD/pricing/domain/analytics/payouts), `/builder/space-types`;
   `apps/dashboard/src/lib/api.ts` calls them all through the router — but the router's
@@ -26,6 +30,10 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   router↔frontend route-parity test (see F-STRUCT).
 
 - [x] **F-2: Lemon Squeezy webhooks have no public ingress — all money-in events undeliverable.**
+  **⚠ WAS CHECKED BUT NOT ACTUALLY IN CODE — NOW GENUINELY FIXED:** router had no BILLING_WORKER
+  binding and no webhook route (re-verified against HEAD). Added the `BILLING_WORKER` service
+  binding (router wrangler.toml) + unauthenticated `app.all("/v1/webhooks/lemon-squeezy")` →
+  BILLING_WORKER, registered before the JWT group (LS signature is the auth). Tests added.
   Evidence: router has no webhook routes (grep confirms), no `BILLING_WORKER` binding, 
   no `/webhooks/lemon-squeezy` endpoint. **VERIFIED REAL** against router HEAD — the 
   entire money-in path is unreachable. Failure: buyer pays at LS → webhook to `/webhooks/
@@ -702,7 +710,7 @@ the expected incremental-build path, not a fallback state to design around.
   API for each (best-effort + retry), notify end users (if notification flow exists), 
   block deletion OR typed-confirm when active subscriptions exist (show count).
 
-- [ ] **F-5: `/billing/*` also unrouted (dead code today, loaded footgun).**
+- [x] **F-5: `/billing/*` also unrouted (dead code today, loaded footgun).** RESOLVED WITH F-2: the BILLING_WORKER binding now exists; the `/webhooks/lemon-squeezy` route is the money-in path. The dashboard `/billing/checkout`/`/billing/subscription` calls are still not wired to a router route (no page uses them yet), left as a documented follow-up rather than adding an unused proxy. ORIGINAL:
   Evidence: dashboard `api.ts:461/473` define `/billing/checkout` + `/billing/subscription`;
   billing worker implements them (`workers/billing/src/index.ts:141/203/285`); no page
   calls them yet and the router can't reach billing anyway. Fix rides with F-2's binding.
@@ -878,7 +886,7 @@ the expected incremental-build path, not a fallback state to design around.
 - [ ] **F-9: No builder UI for `agent_activity_log`** (data is populated; `GET
   /spaces/:spaceId/agent-activity` exists; nothing renders it).
 - [ ] **F-10: No first-run/onboarding flow for a new product.**
-- [ ] **F-11: No GDPR erasure for end users** (export exists, deletion doesn't).
+- [x] **F-11: GDPR erasure for end users** — VERIFIED ALREADY BUILT: DELETE /spaces/:spaceId/product-users/me erases ProductUserDO session/conversation/preference state and anonymizes the D1 roster PII; router allowlist pattern makes it end-user-reachable. (export exists, deletion now does too).
 - [ ] **F-12: No cross-provider LLM failover** (only the Anthropic-compatible AI Gateway
   endpoint is called, not the Universal multi-provider one).
 
@@ -1079,7 +1087,7 @@ thread erasure design, debit idempotency TOCTOU)
 
 ## Structural
 
-- [ ] **F-STRUCT: Route-parity test.** Extract every path prefix `apps/dashboard` and
+- [x] **F-STRUCT: Route-parity test.** BUILT: router-dispatch.test.ts now asserts the router SOURCE registers a handler for every top-level API prefix the frontends depend on (/builder, /spaces, /reseller, /connectors, /templates, /products/by-slug, /webhooks/lemon-squeezy) — the structural guard that caught F-1/F-2 being un-routed. ORIGINAL: Extract every path prefix `apps/dashboard` and
   `apps/shell` call and assert the router dispatches each to a real worker route — F-1,
   F-3, and F-5 are one bug class; this is the `wrangler-vars-parity.test.ts` equivalent.
 - [x] **F-HYGIENE: `.turbo/` directories are git-tracked** — every typecheck run dirties
