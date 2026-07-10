@@ -8,6 +8,7 @@
 import { Hono } from "hono";
 import { requestId, errorResponse, notFound, badRequest, unauthorized, internalError, safeKvPut, requireInternalHmac } from "@naelao/http";
 import { chunkText, embedText, embedBatch, bm25Score, reciprocalRankFusion } from "@naelao/rag";
+import { checkSsrf } from "@naelao/security";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { moderateInput } from "@naelao/llm-gateway";
 
@@ -23,6 +24,11 @@ interface KnowledgeEnv {
   SEMANTIC_CACHE_VECTORS: VectorizeIndex;
   SEMANTIC_CACHE_KV: KVNamespace;
   AI: Ai;
+  // UNIVERSAL / PLATFORM-PROVIDED web search (CLAUDE.md "universal tools" principle): Naelao
+  // holds ONE search-provider key here as a Workers Secret so every agent gets web search for
+  // free — never the BYO-key `space_credentials` model. Optional: when unset, `search`/`extract`
+  // report `configured:false` and `fetch` (a keyless SSRF-guarded GET) still works.
+  TAVILY_API_KEY?: string;
 }
 
 // ── R2 chunk record shape ─────────────────────────────────────────────────────
@@ -820,6 +826,132 @@ app.delete("/internal/semantic-cache", async (c) => {
   } catch (err) {
     console.warn(`[SemanticCache] Invalidation error: ${err}`);
     return c.json({ invalidated: false, error: String(err) });
+  }
+});
+
+// ── UNIVERSAL / PLATFORM-PROVIDED web search (CLAUDE.md "universal tools") ──────
+//
+// Web search is bundled by Naelao exactly like Claude/ChatGPT bundle it: the platform holds ONE
+// provider key (TAVILY_API_KEY, a Workers Secret) and every agent gets search for free. This is
+// the `commerce`/`together-ai` platform-key precedent, NOT the BYO-key `space_credentials` model
+// (which is only for a builder's OWN external accounts). The key never leaves this worker — the
+// calling isolate only ever sees normalized results.
+//
+//   POST /internal/web-search/search   { query, max_results? }  → { configured, results[], answer? }
+//   POST /internal/web-search/fetch    { url }                  → { url, status, content }
+//   POST /internal/web-search/extract  { url, schema? }         → { configured, url, content }
+//
+// `search`/`extract` need the provider key and report `configured:false` when it is unset rather
+// than faking empty results. `fetch` is a keyless SSRF-guarded GET and works out of the box.
+
+const TAVILY_SEARCH_URL = "https://api.tavily.com/search";
+const TAVILY_EXTRACT_URL = "https://api.tavily.com/extract";
+// Cap fetched/extracted page text so one call can't blow the isolate's memory or the sub-request
+// response budget — matches the platform's general "bounded text" convention.
+const WEB_SEARCH_CONTENT_CAP = 100_000;
+
+app.use("/internal/web-search/*", requireInternalHmac((c) => (c as unknown as { env: KnowledgeEnv }).env.PLATFORM_SECRET));
+
+interface TavilyResult {
+  title?: string;
+  url?: string;
+  content?: string;
+  score?: number;
+}
+
+app.post("/internal/web-search/search", async (c) => {
+  const body = await c.req.json<{ query?: string; max_results?: number }>().catch(() => ({} as { query?: string; max_results?: number }));
+  const query = (body.query ?? "").trim();
+  if (!query) return c.json({ error_code: "bad_request", message: "query required" }, 400);
+
+  // Honest degradation: no platform key → report unconfigured, don't fake empty results.
+  if (!c.env.TAVILY_API_KEY) {
+    return c.json({ configured: false, results: [], message: "platform web search is not configured" });
+  }
+
+  const maxResults = Math.min(Math.max(typeof body.max_results === "number" ? body.max_results : 10, 1), 20);
+  try {
+    const resp = await fetch(TAVILY_SEARCH_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        api_key: c.env.TAVILY_API_KEY,
+        query,
+        max_results: maxResults,
+        search_depth: "basic",
+        include_answer: true,
+      }),
+    });
+    if (!resp.ok) {
+      return c.json({ configured: true, results: [], error: `search provider error (${resp.status})` }, 502);
+    }
+    const data = await resp.json<{ answer?: string; results?: TavilyResult[] }>();
+    const results = (data.results ?? []).map((r) => ({
+      title: r.title ?? "",
+      url: r.url ?? "",
+      content: (r.content ?? "").slice(0, WEB_SEARCH_CONTENT_CAP),
+      score: r.score ?? 0,
+    }));
+    return c.json({ configured: true, query, results, answer: data.answer ?? null });
+  } catch (err) {
+    return c.json({ configured: true, results: [], error: String(err) }, 502);
+  }
+});
+
+app.post("/internal/web-search/fetch", async (c) => {
+  const body = await c.req.json<{ url?: string }>().catch(() => ({} as { url?: string }));
+  const rawUrl = (body.url ?? "").trim();
+  if (!rawUrl) return c.json({ error_code: "bad_request", message: "url required" }, 400);
+
+  // SSRF guard (DoH resolution) — the agent can pass any URL, so re-check at fetch time, exactly
+  // like mcp-hub/browser do. Keyless: page fetch is a universal capability regardless of provider.
+  const ssrf = await checkSsrf(rawUrl);
+  if (ssrf.blocked) return c.json({ error_code: "forbidden", message: ssrf.reason ?? "url failed SSRF validation" }, 403);
+
+  try {
+    const resp = await fetch(rawUrl, { headers: { "user-agent": "naelao-agent/1.0" }, redirect: "follow" });
+    const text = (await resp.text()).slice(0, WEB_SEARCH_CONTENT_CAP);
+    return c.json({ url: rawUrl, status: resp.status, content: text });
+  } catch (err) {
+    return c.json({ url: rawUrl, status: 0, content: "", error: String(err) }, 502);
+  }
+});
+
+app.post("/internal/web-search/extract", async (c) => {
+  const body = await c.req.json<{ url?: string; schema?: unknown }>().catch(() => ({} as { url?: string }));
+  const rawUrl = (body.url ?? "").trim();
+  if (!rawUrl) return c.json({ error_code: "bad_request", message: "url required" }, 400);
+
+  const ssrf = await checkSsrf(rawUrl);
+  if (ssrf.blocked) return c.json({ error_code: "forbidden", message: ssrf.reason ?? "url failed SSRF validation" }, 403);
+
+  // Prefer the provider's clean extraction; without a platform key fall back to a keyless
+  // SSRF-guarded raw fetch so extract still returns *something* usable rather than nothing.
+  if (c.env.TAVILY_API_KEY) {
+    try {
+      const resp = await fetch(TAVILY_EXTRACT_URL, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ api_key: c.env.TAVILY_API_KEY, urls: [rawUrl] }),
+      });
+      if (resp.ok) {
+        const data = await resp.json<{ results?: Array<{ url?: string; raw_content?: string }> }>();
+        const first = data.results?.[0];
+        if (first) {
+          return c.json({ configured: true, url: rawUrl, content: (first.raw_content ?? "").slice(0, WEB_SEARCH_CONTENT_CAP) });
+        }
+      }
+    } catch {
+      // fall through to the keyless raw-fetch fallback
+    }
+  }
+
+  try {
+    const resp = await fetch(rawUrl, { headers: { "user-agent": "naelao-agent/1.0" }, redirect: "follow" });
+    const text = (await resp.text()).slice(0, WEB_SEARCH_CONTENT_CAP);
+    return c.json({ configured: Boolean(c.env.TAVILY_API_KEY), url: rawUrl, content: text });
+  } catch (err) {
+    return c.json({ configured: Boolean(c.env.TAVILY_API_KEY), url: rawUrl, content: "", error: String(err) }, 502);
   }
 });
 

@@ -8,6 +8,13 @@ compatibility_flags = ["nodejs_compat"]
 # downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
 workers_dev = false
 
+# Secrets (set via `wrangler secret put`, never committed):
+#   PLATFORM_SECRET  — internal HMAC + tenant auth
+#   TAVILY_API_KEY   — UNIVERSAL platform-provided web search. Naelao holds ONE provider key
+#                      here so every agent gets web search for free (like Claude/ChatGPT bundle
+#                      it) — never the BYO-key space_credentials model. Optional: when unset,
+#                      web-search `search`/`extract` report configured:false; `fetch` still works.
+
 [ai]
 binding = "AI"
 

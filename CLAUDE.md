@@ -1122,6 +1122,28 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     own dashboard-configurable retries provide (the code only calls the Anthropic-compatible
     endpoint, not the Universal multi-provider endpoint, so cross-PROVIDER failover — not just
     cross-request retry — would need a second provider integration this pass didn't add).
+42. **UNIVERSAL-TOOLS PRINCIPLE encoded + web search made real: a "universal" capability is
+    PLATFORM-PROVIDED (Naelao holds ONE key), never BYO — like Claude/ChatGPT bundling web
+    search.** Audit finding (traced every `prebuilt/` script against where its key comes from):
+    the platform already gets this right for `browser-use` (CF Browser Rendering), `code-exec`
+    (CF isolate/container, no key), `knowledge-base` (CF Vectorize/AI), `commerce` (Naelao's LS
+    key + fee), and LLM inference (Anthropic + `together-ai`'s `TOGETHER_API_KEY`). BYO-key is
+    correctly reserved for the builder's OWN external accounts (`mcp-connector`,
+    `revenue-tracker` → their Whop/Gumroad). The ONE mis-modeled/broken universal tool was
+    **`web-search`**: its design comment intended platform-provided ("the API key never reaches
+    the agent"), but its proxy target `/internal/web-search/*` on the knowledge worker was
+    **never implemented** (dead route) and **no platform search key was wired anywhere** — so
+    search was advertised in agent profiles yet completely non-functional. Fixed: implemented the
+    three routes on the knowledge worker (Tavily via a new `TAVILY_API_KEY` Workers Secret,
+    HMAC-gated like every other `/internal/*` route, SSRF-guarded `fetch`/`extract` via
+    `@naelao/security`'s `checkSsrf`), following the `commerce`/`together-ai` platform-key
+    precedent — NOT the BYO `space_credentials` model. `search`/`extract` degrade honestly
+    (`configured:false`) when the platform key is unset; `fetch` is a keyless SSRF-guarded GET
+    that works out of the box. The `web-search` prebuilt now mints a verifiable tenant-scoped
+    internal token (the gate requires it) and the provider key never reaches the agent isolate.
+    1625/1625 tests pass (4 new), `pnpm turbo run typecheck` clean (75 tasks). **Not done:** an
+    operational `TAVILY_API_KEY` must be set via `wrangler secret put` per environment before
+    search returns live results — the code degrades honestly until then.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

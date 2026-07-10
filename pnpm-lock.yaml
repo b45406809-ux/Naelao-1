@@ -874,6 +874,9 @@ importers:
       '@naelao/rag':
         specifier: workspace:*
         version: link:../../packages/rag
+      '@naelao/security':
+        specifier: workspace:*
+        version: link:../../packages/security
       '@naelao/types':
         specifier: workspace:*
         version: link:../../packages/types
