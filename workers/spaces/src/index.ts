@@ -3098,9 +3098,12 @@ app.get("/reseller/clients", async (c) => {
 
   const period = new Date().toISOString().slice(0, 7); // YYYY-MM
   const rollup = await c.env.PLATFORM_DB.prepare(
+    // kind='attribution' only — the WHOLESALE/referral relationship. builder_revenue_share rows
+    // (ARCH-REVENUE-6, a builder's cut of child storefront sales) live in the same table but are a
+    // different revenue stream shown in the product wallet/payout views, not the wholesale statement.
     `SELECT COALESCE(SUM(retail_cents),0) AS retail, COALESCE(SUM(wholesale_cents),0) AS wholesale,
             COALESCE(SUM(margin_cents),0) AS margin, COUNT(*) AS events
-       FROM reseller_ledger WHERE parent_tenant_id = ? AND period = ?`
+       FROM reseller_ledger WHERE parent_tenant_id = ? AND period = ? AND kind = 'attribution'`
   ).bind(tenantId, period).first<{ retail: number; wholesale: number; margin: number; events: number }>();
 
   return c.json({
@@ -3132,7 +3135,7 @@ app.get("/reseller/statement", async (c) => {
             COALESCE(SUM(margin_cents),0)    AS margin_cents,
             COUNT(*)                         AS events
        FROM reseller_ledger
-      WHERE parent_tenant_id = ? AND period = ?
+      WHERE parent_tenant_id = ? AND period = ? AND kind = 'attribution'
       GROUP BY currency
       ORDER BY wholesale_cents DESC`
   ).bind(tenantId, period).all();
@@ -3144,7 +3147,7 @@ app.get("/reseller/statement", async (c) => {
             COALESCE(SUM(margin_cents),0)    AS margin_cents,
             COUNT(*)                         AS events
        FROM reseller_ledger
-      WHERE parent_tenant_id = ? AND period = ?
+      WHERE parent_tenant_id = ? AND period = ? AND kind = 'attribution'
       GROUP BY child_tenant_id, currency
       ORDER BY wholesale_cents DESC
       LIMIT 500`

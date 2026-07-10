@@ -839,9 +839,11 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     const period = c.req.query("period") ?? new Date().toISOString().slice(0, 7);
     if (!/^\d{4}-\d{2}$/.test(period)) return c.json({ error_code: "bad_request", message: "period must be YYYY-MM" }, 400);
     const row = await env.PLATFORM_DB.prepare(
+      // kind='attribution' only — the wholesale/referral statement. builder_revenue_share (a
+      // builder's cut of child storefront sales) is a different stream shown in the product wallet.
       `SELECT COALESCE(SUM(retail_cents),0) AS retail, COALESCE(SUM(wholesale_cents),0) AS wholesale,
               COALESCE(SUM(margin_cents),0) AS margin, COUNT(*) AS events
-         FROM reseller_ledger WHERE parent_tenant_id = ? AND period = ?`
+         FROM reseller_ledger WHERE parent_tenant_id = ? AND period = ? AND kind = 'attribution'`
     ).bind(auth.tenantId, period).first<{ retail: number; wholesale: number; margin: number; events: number }>();
     return c.json({ period, ...(row ?? { retail: 0, wholesale: 0, margin: 0, events: 0 }) });
   });
@@ -853,7 +855,7 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     const { results } = await env.PLATFORM_DB.prepare(
       `SELECT period, COALESCE(SUM(retail_cents),0) AS retail, COALESCE(SUM(wholesale_cents),0) AS wholesale,
               COALESCE(SUM(margin_cents),0) AS margin, COUNT(*) AS events
-         FROM reseller_ledger WHERE parent_tenant_id = ? GROUP BY period ORDER BY period DESC LIMIT 24`
+         FROM reseller_ledger WHERE parent_tenant_id = ? AND kind = 'attribution' GROUP BY period ORDER BY period DESC LIMIT 24`
     ).bind(auth.tenantId).all();
     return c.json({ data: results });
   });

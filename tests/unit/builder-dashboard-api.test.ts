@@ -269,6 +269,29 @@ describe("Builder Dashboard API — analytics", () => {
     expect(revenue.net_revenue_cents).toBe(9500);
     expect(revenue.naelao_wholesale_cost_cents).toBe(8000);
   });
+
+  it("/builder/billing statement counts ONLY kind='attribution', not builder_revenue_share (audit)", async () => {
+    const env = makeEnv();
+    const period = new Date().toISOString().slice(0, 7);
+    // A wholesale attribution row (the reseller relationship) …
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO reseller_ledger (id, parent_tenant_id, child_tenant_id, child_space_id, event_type, period, currency, retail_cents, wholesale_cents, margin_cents, kind)
+       VALUES ('attr1', 'tenant-1', 'child-t', 'child-s', 'payment.success', ?, 'USD', 10000, 8000, 2000, 'attribution')`
+    ).bind(period).run();
+    // … and a builder_revenue_share row (a different stream — must NOT pollute the wholesale statement).
+    await env.PLATFORM_DB.prepare(
+      `INSERT INTO reseller_ledger (id, parent_tenant_id, child_tenant_id, child_space_id, event_type, period, currency, retail_cents, wholesale_cents, margin_cents, kind)
+       VALUES ('brs1', 'tenant-1', 'child-t', 'child-s', 'payment.success', ?, 'USD', 50000, 0, 5000, 'builder_revenue_share')`
+    ).bind(period).run();
+
+    const billing = await (await spacesWorker.fetch(req(`/builder/billing?period=${period}`, { tenant: "tenant-1" }), env as never, execCtx)).json() as {
+      retail: number; wholesale: number; margin: number; events: number;
+    };
+    // Only the attribution row is counted — the builder_revenue_share row is excluded entirely.
+    expect(billing.retail).toBe(10000);
+    expect(billing.margin).toBe(2000);
+    expect(billing.events).toBe(1);
+  });
 });
 
 describe("Builder Dashboard API — feature flags and webhooks", () => {
