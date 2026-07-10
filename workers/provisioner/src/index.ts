@@ -32,6 +32,7 @@ import {
   LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED,
 } from "../../agents/src/script-engine/index.js";
 import { SkillLibrary } from "../../agents/src/script-engine/skill-library.js";
+import { seedScalingSkills } from "../../agents/src/launchpad/scaling-skills.js";
 import { inheritTemplateSkills } from "../../agents/src/script-engine/federation.js";
 import type { AgentConfig } from "../../agents/src/script-engine/index.js";
 import type { NaelaoSpaceTypeManifestV2 } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
@@ -136,6 +137,18 @@ export async function installLaunchpadAgents(
       primaryTemplateId, manifest.id, env
     );
     await installAgentTrigger(spaceId, tenantId, agentDef, env);
+  }
+
+  // F-3d: seed the prebuilt business-scaling skills into this space's own skill library so a
+  // builder never starts from scratch — the assistant can discover them via script.find (they're
+  // well-tagged so find works even before embeddings are computed) and wire them into its
+  // methodology. Best-effort/idempotent — never fails a provision.
+  try {
+    const spaceLib = new SkillLibrary(env.SCRIPTS_R2, spaceId);
+    const seeded = await seedScalingSkills(spaceLib);
+    if (seeded.length > 0) console.log(`[provisioner] seeded ${seeded.length} scaling skill(s) into ${spaceId}`);
+  } catch (err) {
+    console.warn(`[provisioner] scaling-skill seed failed for ${spaceId}:`, (err as Error).message);
   }
 }
 
