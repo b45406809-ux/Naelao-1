@@ -1,6 +1,6 @@
 # Original Spec — Header Index (auto-generated)
 
-Source: naelao_expanded_gaps_resolved.html · 2714 headers.
+Source: naelao_expanded_gaps_resolved.html · 2720 headers.
 Regenerate: `python3 infra/gen-spec-index.py`.
 Read THIS file instead of grepping the 68k-line spec. Numbers are byte offsets.
 
@@ -2718,3 +2718,9 @@ Read THIS file instead of grepping the 68k-line spec. Numbers are byte offsets.
     - [6730237] 14. MCP Integration Without Hardcoded Tools
     - [6732781] 15. The Default Naelao Agent
     - [6735077] 16. Implementation Notes
+  - [6739555] Appendix BF — Growth Layer: Universal Connectors, Business Idea Discovery, Free-Tier Business Program & the Business Network (20 items)
+    - [6740204] BF.1 — Universal Connector Doctrine & Naelao-Provided Composio Inventory
+    - [6747800] BF.2 — Business Idea Discovery
+    - [6752078] BF.3 — Free Plan Simple-Business Program
+    - [6762837] BF.4 — The Business Network
+    - [6770613] BF.5 — Future Direction (Deferred)

@@ -68609,5 +68609,227 @@ const tools = await script.run('mcp.list_tools', { server: 'github-app' });
 
 </section>
 
+
+<section id="appendix-bf">
+<h2>Appendix BF — Growth Layer: Universal Connectors, Business Idea Discovery, Free-Tier Business Program &amp; the Business Network (20 items)</h2>
+
+<p><em>This appendix is a later addition and, per this document's running-log convention, overrides any earlier framing it conflicts with. It generalizes the platform's "universal tools" doctrine (first applied to web search) to the connector layer, defines the free-plan business program, and specifies the cross-business network. Implementation status per item is tracked in the repo's <span class="ic">CLAUDE.md</span> CURRENT DIRECTION and <span class="ic">docs/spec-appendix/</span>.</em></p>
+
+<h3>BF.1 — Universal Connector Doctrine &amp; Naelao-Provided Composio Inventory</h3>
+
+<div id="G-BF01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF01 [HIGH] — Universal Capabilities Doctrine: Platform-Keyed, Never BYO</strong><br>
+    <em>The Gap:</em> The platform has no stated rule for WHICH capabilities Naelao provides with its own provider keys versus which require the builder to bring their own. Web search was advertised but unkeyed; Composio/Pipedream connector routing exists but resolves its provider API key as a builder-supplied space credential. Users of Claude or ChatGPT never enter a search or connector API key — those capabilities ship configured. Without the doctrine, each new capability re-litigates the question and tends to fall into BYO-key by default, which is a dead end for a general autonomous Space Assistant.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Codify the doctrine: a UNIVERSAL capability (web search, page fetch, LLM inference, browser rendering, code execution, embeddings, and the connector transport itself) is PLATFORM-PROVIDED — Naelao holds exactly ONE provider key as a CF Workers Secret on the worker that fronts the capability, and every agent gets the capability with zero configuration. The key never reaches an agent isolate; agents reach the capability through an internal HMAC-gated proxy route. BYO credentials are reserved exclusively for a builder's OWN external accounts (their Whop, their Gumroad, their Gmail — reached via OAuth consent, see G-BF03). Degradation is honest: an unset platform key returns <span class="ic">configured:false</span>, never silent empty results. Precedents: <span class="ic">TAVILY_API_KEY</span> (knowledge worker), <span class="ic">TOGETHER_API_KEY</span> (together-ai worker), the Lemon Squeezy key (billing worker).
+  </div>
+</div>
+
+<div id="G-BF02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF02 [HIGH] — Naelao-Provided Composio/Pipedream Provider Keys in mcp-hub</strong><br>
+    <em>The Gap:</em> <span class="ic">naelao-mcp-hub</span> already routes <span class="ic">connector_provider: 'composio' | 'pipedream'</span> tool calls through the provider's execute-action API, but the provider API key is resolved from the space credential vault (<span class="ic">auth_secret_name</span>) — meaning every builder must sign up for Composio and paste an API key before any provider-backed connector works. That is the BYO anti-pattern G-BF01 forbids for a universal transport, and it makes "auto-provided tools for the Space Assistant" impossible.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Add optional <span class="ic">COMPOSIO_API_KEY</span> and <span class="ic">PIPEDREAM_API_KEY</span> Workers Secrets to mcp-hub. Key resolution per provider-routed server: (1) if the server row carries <span class="ic">auth_secret_name</span>, the builder's own vault credential wins (a builder running their own Composio project keeps full control and their own billing); (2) otherwise the PLATFORM key for that provider is injected server-side — the builder and end user never see it, never enter it; (3) if neither exists, fail with a clear "provider not configured on this platform" error. The platform key lives only inside mcp-hub (already the case for vault credentials — isolates receive only 60-second internal tokens). The reserved money-in tool-name guard is unchanged and applies to platform-keyed calls identically. Naelao's Composio spend becomes a platform cost recovered through credits, exactly like LLM tokens.
+  </div>
+</div>
+
+<div id="G-BF03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF03 [HIGH] — Per-User OAuth Consent Flow (Connected Accounts, Never Keys)</strong><br>
+    <em>The Gap:</em> A platform Composio key alone does not connect a user's Gmail or Notion — providers model that as a per-end-user "connected account" created through an OAuth consent redirect. There is no flow for a builder or end user to authorize their own account against Naelao's provider project; today the <span class="ic">provider_connection_id</span> must be created out-of-band and pasted, which is the same BYO friction in different clothes.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> mcp-hub gains a connect flow: <span class="ic">POST /v1/spaces/:spaceId/connectors/:app/connect</span> asks the provider (under the platform key) for an OAuth redirect URL scoped to a new connected account, returns it for the UI to open; the provider's callback (or a status poll) yields the opaque <span class="ic">connected_account_id</span>, which is stored on the mcp_servers row as <span class="ic">provider_connection_id</span>. Naelao stores ONLY that opaque reference — never OAuth tokens, never refresh tokens (those stay inside the provider). Disconnect deletes the connected account at the provider and clears the row. The experience matches Claude/ChatGPT connectors exactly: click Connect, approve on the provider's own consent screen, done — no API key ever displayed or requested. Keyless/no-auth provider tools (public-data tools) skip this flow entirely and work immediately.
+  </div>
+</div>
+
+<div id="G-BF04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF04 [MEDIUM] — Universal Connector Catalogue + Space Assistant Advertisement</strong><br>
+    <em>The Gap:</em> The Naelao-authored connector catalogue (<span class="ic">CONNECTOR_CATALOGUE</span>) only models vault-credentialed direct connectors (Whop, Gumroad). There is no curated inventory of platform-keyed, provider-backed connectors, and the Space Assistant's profile does not advertise any — so even with G-BF02/03 built, an assistant would not know these capabilities exist.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Extend <span class="ic">ConnectorDefinition</span> with <span class="ic">provider: 'direct' | 'composio' | 'pipedream'</span> and <span class="ic">key_source: 'platform' | 'byo'</span>. Curate an initial platform-keyed inventory chosen for the general autonomous Space Assistant and the free-tier business program: Google Maps/Places (prospect research), Gmail, Google Calendar, Google Sheets, Notion, Slack, LinkedIn, X, YouTube, GitHub. Catalogue stays exclusively Naelao-authored (same rule as SpaceTypes). <span class="ic">mcp.register</span> for a platform-keyed entry requires no <span class="ic">credential_name</span> — only the G-BF03 consent flow where the app needs a user account. The Space Assistant profile's system prompt names the inventory and the connect flow so the assistant can propose "connect your calendar and I'll handle scheduling" unprompted. Money-in tool names remain reserved to the commerce prebuilt regardless of provider.
+  </div>
+</div>
+
+<h3>BF.2 — Business Idea Discovery</h3>
+
+<div id="G-BF05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF05 [MEDIUM] — App Store Trend Scout Skill (idea-discovery-appstore)</strong><br>
+    <em>The Gap:</em> The Launchpad assistant's business methodology starts at "discover what business to build," but a builder with no idea gets generic brainstorming. Trending small apps on public app-store charts are a proven, continuously refreshed signal of what people currently pay for — and the platform has a working web-search prebuilt but no skill that turns that signal into business proposals.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Seed an <span class="ic">idea-discovery-appstore</span> skill (ordinary Tier-2 stored script, seeded at provision like the scaling-skills library) that uses <span class="ic">web-search</span> ops to fetch and extract PUBLIC app-store top-charts and rising-category pages, shortlists small/indie trending apps (filtering out big-publisher titles), and for each produces a "build a similar business" analysis: what the app does, who pays and why now, what a Naelao-native version looks like (agent-served instead of app-served where possible), estimated effort, and which Launchpad template to start from. Framing requirement in the skill prompt: INSPIRATION AND VALIDATION, never cloning — output is an original business plan; no copied names, assets, or content. Results feed the assistant's discover step (G-BF07).
+  </div>
+</div>
+
+<div id="G-BF06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF06 [MEDIUM] — Proven-Playbook Scout Skill (idea-discovery-starterstory)</strong><br>
+    <em>The Gap:</em> Case-study libraries such as Starter Story publish thousands of interviews with revenue figures, startup costs, and acquisition channels — the exact evidence a "should I build this" decision needs — but no skill mines them, so the assistant proposes ideas without cost/revenue precedents.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Seed an <span class="ic">idea-discovery-starterstory</span> skill that searches public case-study content (the Starter Story site and video metadata via the web-search prebuilt — search/fetch/extract of public pages, not platform scraping) filtered by the builder's stated constraints (budget, skills, hours/week), and extracts per candidate: business model, startup cost, time to first revenue, current revenue, main acquisition channel, and the closest Launchpad template. Output ranks candidates by fit to the builder's constraints. Same non-cloning framing as G-BF05. Both discovery skills are forkable/customizable like any stored script.
+  </div>
+</div>
+
+<div id="G-BF07" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF07 [MEDIUM] — Assistant Methodology Wiring for Discovery</strong><br>
+    <em>The Gap:</em> The Launchpad assistant profile's Business-Building Methodology ("discover → propose → scaffold → launch → review") assumes the builder arrives with an idea; when they do not, the discover step has no data source and the assistant free-associates.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Update <span class="ic">LAUNCHPAD_ASSISTANT_PROFILE</span>'s methodology: when the builder has no concrete idea, the discover step runs BOTH discovery skills (G-BF05/06), merges results with the free-tier simple-business catalogue (G-BF14) when the org is on the free plan, and presents 3–5 ranked options with evidence (trend signal or case-study economics) before proposing a template. The assistant states sources honestly and never presents scraped numbers as guarantees.
+  </div>
+</div>
+
+<h3>BF.3 — Free Plan Simple-Business Program</h3>
+
+<div id="G-BF08" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF08 [HIGH] — free_tier_eligible Is Never Enforced</strong><br>
+    <em>The Gap:</em> <span class="ic">LaunchpadTemplate.free_tier_eligible</span> exists and is displayed in the dashboard, but NO creation path checks it — a free-plan org can instantiate any template. The flag is decorative, so the free plan cannot safely be opened up as a real acquisition funnel.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Enforce at every path where template ids enter provisioning: business creation for end users (<span class="ic">createBusinessForEndUser</span>, covering both the product-scoped route and reseller spaces) and builder product creation. Resolve the OWNING org's plan tier (<span class="ic">EntitlementsChecker.getTenantTier</span> — end-user claims already carry the owning tenant); on the free tier, any requested template with <span class="ic">free_tier_eligible !== true</span> is rejected 403 <span class="ic">plan_upgrade_required</span> naming the offending templates. Empty template list ("Custom, build with the assistant") stays allowed — usage caps bound it. Unknown/missing tier resolves to free (fail closed). The shell's template catalogue projection carries <span class="ic">free_tier_eligible</span> so the create dialog greys ineligible templates instead of letting the request fail.
+  </div>
+</div>
+
+<div id="G-BF09" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF09 [HIGH] — Free-Tier Usage Envelope for Autonomous Business Agents</strong><br>
+    <em>The Gap:</em> Free-plan limits exist for storage/sessions/tokens, but an autonomous business (agents doing outreach, building sites, running scheduled jobs) can burn spend in ways those static quotas do not shape — and the free program's economics depend on a hard ceiling.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Free-tier businesses run inside the existing envelope, composed rather than reinvented: monthly credit refresh (<span class="ic">FREE_TIER_DEFAULT_SIGNUP_CREDITS</span>-class grants), the customer-bot-style per-project daily spend cap (fails closed, tallied in SpaceDO), approval mode defaulting to <span class="ic">always_ask</span> (free-tier assistants never get yolo by default), and the outreach-specific caps of G-BF11. Upgrade prompts appear when a cap is the binding constraint, stating exactly which cap and what the next tier changes.
+  </div>
+</div>
+
+<div id="G-BF10" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF10 [HIGH] — Flagship Free Template: freelance-web-studio</strong><br>
+    <em>The Gap:</em> The free plan needs at least one complete, genuinely income-generating business a new user can run at zero cost. Freelance website building for small businesses is the flagship: universal demand, fulfillable entirely with existing agent capabilities (code execution, workspace, web search, email), and a natural $50 entry price.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Ship a <span class="ic">freelance-web-studio</span> Launchpad template, <span class="ic">free_tier_eligible: true</span>, with four agent roles: (1) Prospect Research — web-search for small businesses with no website or a visibly poor one (nearby first, worldwide optional), collecting ONLY publicly listed contact info into a prospects project, deduplicated against a per-space do-not-contact list; (2) Sample Builder — generates a personalized static HTML sample site into the project workspace, published at a public sample URL (G-BF12); (3) Outreach — G-BF11's compliant multi-channel flow, pitching the sample link; (4) Fulfillment — on agreement, builds the real site in the workspace, takes payment via reserved commerce (G-BF13), and delivers (hosted on the platform or exported). Bootstrap seeds the projects, the do-not-contact list, STOP rules, and the outreach caps as defaults.
+  </div>
+</div>
+
+<div id="G-BF11" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF11 [HIGH] — Compliant Multi-Channel Cold Outreach (Policy-Safe by Construction)</strong><br>
+    <em>The Gap:</em> Cold outreach is how the flagship business gets customers, but the naive design — scrape WhatsApp numbers, blast template messages — violates the WhatsApp Business Platform's opt-in requirement, gets numbers banned quickly, and would put the platform's Meta relationship at risk for every user at once. Unshaped cold email is similarly risky (spam complaints, domain reputation).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Outreach is compliant BY CONSTRUCTION, not by asking nicely: (1) Cold FIRST-TOUCH goes only over channels where unsolicited business contact is permitted with opt-out — email with a mandatory unsubscribe/opt-out footer, the business's own public contact form, or Google Business messaging; the pitch carries the sample-site link and a click-to-WhatsApp link so the PROSPECT initiates any WhatsApp conversation (that inbound click IS the opt-in under Meta policy). (2) WhatsApp is used only for replies and opted-in conversations — never for cold sends; the platform refuses to send a business-initiated WhatsApp message to a number with no prior inbound contact or recorded opt-in. (3) Every outreach batch is HITL-approved (free tier is <span class="ic">always_ask</span> — the user sees and approves each batch before it sends). (4) Hard caps enforced server-side: default 20 first-touch sends/day on free, per-prospect contact limit (max 1 follow-up), mandatory 100% suppression of the do-not-contact list and STOP responders (existing STOP rules). (5) Every first-touch identifies the sender honestly (name + business + why contacted). These rules live in the template's seeded project rules and the notifications path, not in prompt text alone.
+  </div>
+</div>
+
+<div id="G-BF12" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF12 [MEDIUM] — Public Sample-Site Hosting</strong><br>
+    <em>The Gap:</em> The pitch depends on a clickable link to a personalized sample site, but agent-generated HTML lives in the private R2 workspace with no public URL — there is nowhere to send a prospect.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> The portal Worker (already the multitenant storefront origin) gains a samples route: <span class="ic">GET /samples/:spaceId/:sampleId</span> serving a single sanitized HTML document from a dedicated R2 prefix (<span class="ic">spaces/{spaceId}/samples/{sampleId}.html</span>) that a <span class="ic">samples.publish</span> op writes after size/content checks (HTML only, no scripts by default, bounded size, moderation pass). Unguessable sampleId, view-count analytics event per hit (the outreach agent reports "your pitch was viewed"), TTL-based expiry, and per-space sample count caps on free. This is presentation hosting, not general web hosting — one document, no custom domains, watermarked "Built with Naelao" footer (which is itself acquisition).
+  </div>
+</div>
+
+<div id="G-BF13" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF13 [MEDIUM] — Fulfillment Checkout Through Reserved Commerce</strong><br>
+    <em>The Gap:</em> The $50 site sale must settle through the platform's money-in path (platform fee, wallet, payout) — but nothing specifies how a service business (as opposed to a digital-product store) invoices a one-off client.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> The fulfillment agent creates a one-time product ("Website build — {client}", default $50, builder-adjustable) via the reserved <span class="ic">commerce</span> prebuilt and sends the checkout link in the agreed channel. Delivery is gated on payment confirmation (the existing order webhook wakes fulfillment). Revenue lands in the existing wallet/ledger with the standard platform fee — the same guarantee as every other money-in path: connectors and outreach channels can never be used to take payment around the fee.
+  </div>
+</div>
+
+<div id="G-BF14" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF14 [MEDIUM] — Simple-Business Catalogue for the Free Tier</strong><br>
+    <em>The Gap:</em> One flagship template is not a program. The free tier needs a menu of low-capital service businesses that existing agent capabilities can genuinely fulfil, so discovery (G-BF07) can match a builder's skills to a viable start.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Curate the catalogue (each later ships as a <span class="ic">free_tier_eligible</span> template or a preset of a general "Freelance Services Studio" template; all reuse G-BF11 outreach and G-BF13 checkout): landing pages &amp; link-in-bio setups for creators; Google Business Profile setup/optimization; local SEO audit reports; social-media content calendars; product descriptions for e-commerce sellers; digital printables/templates store; resume/CV and cover-letter writing; newsletter ghostwriting; review-response management; menu/flyer digitization for restaurants; customer-support chatbot setup (reselling Naelao customer-bot setups). Selection criteria for any future addition: fulfillable with text/code/web artifacts, first sale possible within days, price point $20–$200, no regulated advice.
+  </div>
+</div>
+
+<h3>BF.4 — The Business Network</h3>
+
+<div id="G-BF15" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF15 [HIGH] — Per-Business-Type Network Feed</strong><br>
+    <em>The Gap:</em> Templates make businesses structurally similar — hundreds of freelance web studios face the same pricing questions, outreach patterns, and client objections — but each space is an island: no builder or assistant can see what is working for peers, so every business relearns everything from zero.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A network feed keyed by business type (template id), stored platform-wide in D1 (<span class="ic">network_posts</span>: pseudonymous space handle, tenant, template id, kind ∈ learning | skill_share | metric_snapshot | question, title, body, coarse metric band, timestamps). Builders read it in a shell Network view; assistants read it programmatically (G-BF19) to answer "how are similar businesses doing, what's working for them." Contribution sources: post-DISTILL learnings an assistant chooses to share, shared skills (G-BF18), and periodic coarse metric snapshots (revenue BAND and order-volume BAND — e.g. "$100–500/mo", never exact figures). Spaces appear under stable pseudonymous handles, never their real name or domain, unless the builder explicitly opts into attribution.
+  </div>
+</div>
+
+<div id="G-BF16" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF16 [HIGH] — Network Sharing Policy: Default-On Free/Growth, Private Is Paid</strong><br>
+    <em>The Gap:</em> Without an explicit policy object, sharing is either ad hoc (nobody shares, network is empty) or unbounded (moat-conscious builders leave). The business model decision — free usage is partly paid for by contributing anonymized learnings; full privacy is a paid feature — has no enforcement point.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Per-space <span class="ic">network_sharing_policy</span> row: <span class="ic">mode ∈ share (default) | private</span> plus per-category toggles (learnings / skills / metric bands). Free and growth tiers default to <span class="ic">share</span>; setting <span class="ic">private</span> requires business or enterprise tier and the write FAILS CLOSED to a live plan check (downgrading a plan flips the space back to share on next policy read, with notice). HARD FLOOR REGARDLESS OF PLAN OR MODE: customer PII, credentials, message contents, raw customer data, and exact revenue figures are NEVER shared — the plan gates only the distilled learnings/skills/band layer. The policy is disclosed plainly at signup and in the dashboard ("what your business shares with the network"), with the full list of what is never shared.
+  </div>
+</div>
+
+<div id="G-BF17" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF17 [HIGH] — Anonymization &amp; Moderation Gate on Every Outbound Post</strong><br>
+    <em>The Gap:</em> Default-on sharing is only defensible if the pipeline structurally cannot leak — an assistant distilling "customer John Smith at +1-555… complained about pricing" into a shared learning would be a privacy incident, and prompt-injected content could try to exfiltrate through the feed.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Every candidate post passes a server-side gate BEFORE insert (not in the agent): PII detection/stripping (emails, phone numbers, person names, addresses, payment identifiers), credential/secret patterns (reject outright, never redact-and-post), exact-figure detection (currency amounts collapse to the defined bands), content moderation (existing moderation package), and length bounds. Rejections are reported to the contributing assistant with the reason so it can rewrite. The gate runs identically for every plan and mode — it is the floor under G-BF16, not part of the paid feature.
+  </div>
+</div>
+
+<div id="G-BF18" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF18 [MEDIUM] — Cross-Space Skill Sharing</strong><br>
+    <em>The Gap:</em> Skills (stored scripts) are the platform's compounding asset, but each space's library is isolated in its own R2 prefix and Vectorize namespace — a great outreach-sequencing skill written in one web studio helps no one else, even though the Voyager-style library was designed to grow.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> <span class="ic">network.share_skill</span> copies a skill (code + SCRIPT.md + metadata, minus any space-specific values) to a network R2 prefix and embeds it in a SHARED Vectorize namespace tagged by business type; a <span class="ic">network_skill_shares</span> row links it to the feed. Other assistants discover shared skills via <span class="ic">network.search_skills</span> (and optionally a merged <span class="ic">script.find</span> view flagged <span class="ic">source: network</span>); <span class="ic">network.install_skill</span> copies it into the local library as an ordinary versioned script — installed copies are forks, never live references (a later edit by the author cannot change code already running in someone else's business). Shared skill code passes the G-BF17 gate plus a secret-pattern scan; skills that reference credentials by name share the STRUCTURE with placeholder names only. Install counts and a simple worked/didn't signal rank search results.
+  </div>
+</div>
+
+<div id="G-BF19" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF19 [MEDIUM] — network Prebuilt + Assistant Feed Awareness</strong><br>
+    <em>The Gap:</em> Per the script-native ground rule, agents get no hardcoded feed integration — without a prebuilt, the network is UI-only and assistants stay blind to it.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A <span class="ic">network</span> prebuilt script (Tier 2, proxied through an internal HMAC-gated route like every other prebuilt): <span class="ic">network.feed</span> (read, filtered by own business type), <span class="ic">network.search_skills</span>, <span class="ic">network.install_skill</span>, <span class="ic">network.post_learning</span>, <span class="ic">network.share_skill</span>, <span class="ic">network.post_metrics</span> (bands computed server-side from real figures — the exact number never leaves the space). Writes respect the G-BF16 policy and G-BF17 gate server-side. Space Assistant profiles add feed awareness: check the network when starting a new business type, when stuck, and in the recurring revenue review ("peers in your band who grew this month shared these three learnings"). Reads are always allowed regardless of sharing mode — private spaces can still learn from the network they don't contribute to; that asymmetry is exactly what the paid tier buys.
+  </div>
+</div>
+
+<h3>BF.5 — Future Direction (Deferred)</h3>
+
+<div id="G-BF20" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BF20 [LOW / DEFERRED] — Private Playbook &amp; Data Exchange (Bidding Marketplace)</strong><br>
+    <em>The Gap:</em> Builders on the private tier accumulate proven, moat-grade playbooks (skills + configs + learnings) with real market value to newcomers in the same business type — but there is no sanctioned way to sell them, and the alternative is off-platform leakage with no quality signal and no platform fee.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix (DEFERRED — build only after the network has liquidity):</em> Paid-tier builders may package a private playbook as a sellable full template (skills, agent configs, project rules, distilled learnings — same G-BF17 floor: no PII, no credentials, no customer data ever) and list it at a set price or open it to bidding. Settlement runs through reserved commerce with the standard platform fee; delivered copies are forks (G-BF18 semantics). Marketplace listing/review/fork infrastructure already exists to extend. Nothing in G-BF15–19 may preclude this: the sharing-policy and skill-packaging formats are designed so a "private playbook" is just a network share with a price gate in front of it.
+  </div>
+</div>
+
+<hr style="border:none;border-top:1px solid #ddd;margin:40px 0;">
+
+<p><em>Implementation sequencing note: G-BF02 (platform provider keys) and G-BF08 (free_tier_eligible enforcement) are the first code phase — both are small, high-leverage, and unblock everything else. The connect flow (G-BF03), catalogue (G-BF04), discovery skills (BF.2), the flagship template and its hosting/outreach mechanics (BF.3), and the network (BF.4) follow in that order. G-BF20 is explicitly deferred.</em></p>
+
+</section>
+
 </body>
 </html>
