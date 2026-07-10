@@ -26,3 +26,16 @@ database_id = "PLACEHOLDER_D1_ID"
 [[services]]
 binding = "NOTIFICATIONS_WORKER"
 service = "naelao-notifications"
+
+# F-13: auth was the ONE worker with no named-environment blocks. The prod/staging deploys
+# select an env with --env=<name>; without these blocks the worker deployed with the top-level
+# ENVIRONMENT="development" config (localhost links) even in production. wrangler REPLACES (not
+# merges) top-level [vars] for a named env, so every var must be repeated here. Binding tables
+# ([[d1_databases]], [[services]]) DO inherit from the top level, so they don't.
+[env.staging]
+name = "naelao-auth-staging"
+vars = { ENVIRONMENT = "staging", JWT_EXPIRY_SECONDS = "3600", BUILDER_DASHBOARD_URL = "https://staging-dashboard.naelao.com" }
+
+[env.production]
+name = "naelao-auth-production"
+vars = { ENVIRONMENT = "production", JWT_EXPIRY_SECONDS = "3600", BUILDER_DASHBOARD_URL = "https://dashboard.naelao.com" }

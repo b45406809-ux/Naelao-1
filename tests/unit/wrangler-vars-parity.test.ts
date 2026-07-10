@@ -66,6 +66,20 @@ describe("wrangler.toml — [env.X].vars must carry forward every top-level [var
     expect(workerNames.length).toBeGreaterThan(5);
   });
 
+  // F-13: the prod/staging deploy workflows select an environment with --env=<name>. A worker
+  // that declares a top-level ENVIRONMENT var but NO [env.production] block deploys the top-level
+  // config (ENVIRONMENT="development") to production. (workers/auth was exactly this gap.) Assert
+  // every worker that sets ENVIRONMENT at the top level also defines both named-env blocks.
+  for (const name of workerNames) {
+    const path = join(workersDir, name, "wrangler.toml");
+    const content = readFileSync(path, "utf8");
+    if (!extractTopLevelVarsKeys(content).includes("ENVIRONMENT")) continue;
+    it(`workers/${name}: declares [env.staging] and [env.production] (F-13)`, () => {
+      expect(content).toContain("[env.staging]");
+      expect(content).toContain("[env.production]");
+    });
+  }
+
   for (const name of workerNames) {
     const path = join(workersDir, name, "wrangler.toml");
     const content = readFileSync(path, "utf8");

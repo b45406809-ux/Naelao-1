@@ -62,6 +62,13 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   `GET /builder/space-types` after F-1 is fixed) and decouple the two fetches.
 
 - [x] **F-13: Staging/production deploys are broken (wrangler env blocks drop all bindings).**
+  **⚠ PARTIALLY FALSE-CHECKED — NOW FIXED:** two real remaining gaps found: (1) deploy-prod.yml
+  ran `wrangler deploy` with NO `--env=production`, so production deployed the top-level
+  ENVIRONMENT="development"/localhost config — added `--env=production`; (2) workers/auth was the
+  one worker with no `[env.staging]`/`[env.production]` blocks at all — added them. Extended
+  wrangler-vars-parity.test.ts to assert every worker declaring a top-level ENVIRONMENT var also
+  defines both named-env blocks. (Binding tables inherit at top level in modern wrangler, so the
+  original "drop all bindings" framing was the pre-fix state.)
   Evidence: router's `[env.staging]` and `[env.production]` (wrangler.toml:64-70) define 
   ONLY `vars`, NOT `d1_databases`, `durable_objects`, `kv_namespaces`, or `services`. 
   **VERIFIED REAL** — wrangler's behavior is to REPLACE (not merge) top-level config 
@@ -88,6 +95,12 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   tenantId, 404 if mismatch). OR: set `workers_dev = false` + require all requests to 
   route through the router (but channel webhooks need direct ingress — gate those 
   separately).
+
+  **VERIFIED GENUINELY FIXED:** the agents worker's mutating routes now require a
+  `verifyInternalToken` (HMAC with PLATFORM_SECRET — unforgeable from a direct .workers.dev
+  caller) AND check `WHERE id = ? AND tenant_id = ?` ownership before minting any downstream
+  token. workers_dev stays enabled by design (the channel gateway needs public ingress), with
+  per-route token verification as the documented mitigation (CLAUDE.md item 21).
 
 ## Tier 2b — Revenue Model & Trust (depends on F-2 webhooks)
 

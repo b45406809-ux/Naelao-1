@@ -83,7 +83,10 @@ jobs:
           for w in "${WORKERS[@]}"; do
             if [ -f "workers/$w/wrangler.toml" ]; then
               echo "Deploying $w to production..."
-              if ! npx wrangler deploy --config="workers/$w/wrangler.toml"; then
+              # F-13: MUST pass --env=production, or wrangler deploys the top-level config
+              # (ENVIRONMENT="development", localhost CORS) to production. Every worker defines an
+              # [env.production] block (parity enforced by wrangler-vars-parity.test.ts).
+              if ! npx wrangler deploy --env=production --config="workers/$w/wrangler.toml"; then
                 echo "❌ $w deploy failed"
                 failed+=("$w")
               fi
