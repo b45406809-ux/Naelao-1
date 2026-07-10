@@ -92,6 +92,13 @@ database_id = "PLACEHOLDER_D1_ID"
 binding = "EXPORTS_BUCKET"
 bucket_name = "naelao-exports"
 
+# F-39: read-only access to the agent workspace bucket so the builder/end-user file viewer can
+# list + read a project's R2 workspace files (spaces/{id}/projects/{id}/workspace/...). Same
+# bucket the agents worker writes to via SCRIPTS_R2.
+[[r2_buckets]]
+binding = "SCRIPTS_R2"
+bucket_name = "naelao-agent-scripts"
+
 # KV for caching SpaceType manifests (TTL 1h — provisioner reads this before hitting the DO)
 [[kv_namespaces]]
 binding = "NAELAO_CONFIG_KV"

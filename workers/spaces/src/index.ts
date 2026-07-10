@@ -34,6 +34,8 @@ export interface Env {
   PRODUCT_USER_DO: DurableObjectNamespace;
   NAELAO_CONFIG_KV: KVNamespace;
   EXPORTS_BUCKET: R2Bucket;
+  /** F-39: agent workspace bucket (read-only file viewer). Optional so tests/dev without R2 degrade. */
+  SCRIPTS_R2?: R2Bucket;
   /** Producer to the provisioning queue — consumed by naelao-provisioner. */
   PROVISION_QUEUE?: Queue<ProvisionMessage>;
   /** Cloudflare for SaaS custom-hostname provisioning (deploy-time secrets; optional). */
@@ -707,6 +709,56 @@ app.delete("/spaces/:spaceId/projects/:projectId/members/:userId", async (c) => 
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/members/${encodeURIComponent(userId)}`, "DELETE");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// ── F-39: R2 workspace file viewer ─────────────────────────────────────────────
+// A project's agent writes artifacts (generated dashboards, reports, exports) into its R2
+// workspace at spaces/{spaceId}/projects/{projectId}/workspace/. These read-only routes let a
+// builder or a project member browse and view them — the "AI writes wallet-dashboard.html,
+// builder views it" case. Bounds mirror Phase K/R: 300 files listed, 2MB per file read.
+const WORKSPACE_MAX_FILES = 300;
+const WORKSPACE_MAX_FILE_BYTES = 2 * 1024 * 1024;
+function workspaceKeyPrefix(spaceId: string, projectId: string): string {
+  return `spaces/${spaceId}/projects/${projectId}/workspace/`;
+}
+app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/workspace/files", requireBusinessMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/projects/:projectId/workspace/files", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  if (!c.env.SCRIPTS_R2) return c.json({ data: [], count: 0, unavailable: true });
+  const prefix = workspaceKeyPrefix(spaceId, projectId);
+  const files: Array<{ path: string; size: number; uploaded: string }> = [];
+  let cursor: string | undefined;
+  do {
+    const list = await c.env.SCRIPTS_R2.list({ prefix, ...(cursor ? { cursor } : {}), limit: 1000 });
+    for (const obj of list.objects) {
+      if (obj.key.endsWith("/.keep")) continue;
+      files.push({ path: obj.key.slice(prefix.length), size: obj.size, uploaded: obj.uploaded.toISOString() });
+      if (files.length >= WORKSPACE_MAX_FILES) break;
+    }
+    cursor = list.truncated && files.length < WORKSPACE_MAX_FILES ? list.cursor : undefined;
+  } while (cursor);
+  return c.json({ data: files, count: files.length, truncated: files.length >= WORKSPACE_MAX_FILES });
+});
+// GET one file — path is the rest after /workspace/files/. Text is returned inline; anything over
+// the byte cap or non-text is reported as too-large/binary (the UI offers a note, not the bytes).
+app.use("/spaces/:spaceId/projects/:projectId/workspace/files/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/workspace/files/*", requireBusinessMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/projects/:projectId/workspace/files/*", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not configured" }, 503);
+  const prefix = workspaceKeyPrefix(spaceId, projectId);
+  const rest = c.req.path.split("/workspace/files/")[1] ?? "";
+  // Collapse any .. traversal server-side; the key must stay inside the project's own prefix.
+  const relative = decodeURIComponent(rest).split("/").filter((seg) => seg && seg !== "." && seg !== "..").join("/");
+  if (!relative) return c.json({ error_code: "bad_request", message: "file path required" }, 400);
+  const obj = await c.env.SCRIPTS_R2.get(prefix + relative);
+  if (!obj) return c.json({ error_code: "not_found", message: "File not found" }, 404);
+  if (obj.size > WORKSPACE_MAX_FILE_BYTES) {
+    return c.json({ path: relative, size: obj.size, too_large: true, message: "File exceeds the 2MB inline view limit" });
+  }
+  const content = await obj.text();
+  return c.json({ path: relative, size: obj.size, content });
 });
 
 // F-36: the effective role an assistant has in a project when acting for a given user (member GET
