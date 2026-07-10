@@ -2035,9 +2035,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       id: string; space_id: string; name: string; description: string; status: string;
       default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null;
       visibility: string; created_by: string | null; created_at: string;
+      kind: string; is_singleton_kind: number;
     }>(
       this.ctx.storage.sql as never,
-      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at",
+      // F-40: `kind` is surfaced so the frontend project-page shell can mount the natively-built
+      // panel for that kind (WalletLedgerPanel etc.) via a switch at the mount point.
+      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, kind, is_singleton_kind FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at",
       spaceId
     );
     const visible = viewerId

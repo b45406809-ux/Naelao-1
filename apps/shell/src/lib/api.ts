@@ -246,9 +246,9 @@ export interface Project {
   max_threads: number;
   allowed_agent_ids: string[] | null;
   created_at: string;
-  // WS-4.2: the rich, already-built customer-bot/execution config — present on getProject's full
-  // row but not on the lighter listProjects projection.
-  kind?: "workspace" | "customer_bot";
+  // WS-4.2 / F-40: a project's kind — 'workspace'/'customer_bot' plus any Business Feature kind
+  // (wallet, storefront, crm, ...). The project-page shell mounts the natively-built panel for it.
+  kind?: string;
   execution_ceiling?: number;
   daily_spend_cap_credits?: number;
   channel_config?: Record<string, unknown>;
@@ -604,6 +604,16 @@ export interface BusinessWallet {
 
 export async function getBusinessWallet(spaceId: string, session: SessionCredentials): Promise<BusinessWallet> {
   return apiFetch(`/v1/spaces/${spaceId}/wallet`, { session });
+}
+
+// F-39: read-only workspace file viewer for a project.
+export interface WorkspaceFile { path: string; size: number; uploaded: string }
+export async function listWorkspaceFiles(spaceId: string, projectId: string, session: SessionCredentials): Promise<WorkspaceFile[]> {
+  const res = await apiFetch<{ data: WorkspaceFile[] }>(`/v1/spaces/${spaceId}/projects/${projectId}/workspace/files`, { session });
+  return res.data ?? [];
+}
+export async function readWorkspaceFile(spaceId: string, projectId: string, path: string, session: SessionCredentials): Promise<{ path: string; size: number; content?: string; too_large?: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}/workspace/files/${path.split("/").map(encodeURIComponent).join("/")}`, { session });
 }
 
 export async function listBusinessProducts(spaceId: string, session: SessionCredentials): Promise<LaunchpadProduct[]> {

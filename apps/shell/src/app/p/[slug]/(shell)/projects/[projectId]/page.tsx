@@ -21,6 +21,7 @@ import {
   type AgentDefinitionSummary,
   type KbDocument,
 } from "@/lib/api";
+import { ProjectKindPanel } from "@/components/ProjectKindPanel";
 
 export default function ProjectDetailPage() {
   const params = useParams<{ projectId: string }>();
@@ -65,7 +66,7 @@ export default function ProjectDetailPage() {
       setProject(p);
       setThreads(t);
       setAgents(a);
-      setDraftKind(p.kind ?? "workspace");
+      setDraftKind(p.kind === "customer_bot" ? "customer_bot" : "workspace");
       setDraftMaxThreads(String(p.max_threads ?? 0));
       setDraftExecutionCeiling(String(p.execution_ceiling ?? 5));
       setDraftSpendCap(String(p.daily_spend_cap_credits ?? 0));
@@ -169,7 +170,11 @@ export default function ProjectDetailPage() {
         {project.description && <div className="page-subtitle">{project.description}</div>}
       </div>
 
-      <div className="section-label">Settings</div>
+      {/* F-40: the kind-specific panel (wallet ledger, etc.) + F-39 files viewer, above the shared
+          shell's generic Settings/Threads/KB scaffolding. */}
+      {creds && <ProjectKindPanel project={project} spaceId={activeSpaceId} creds={creds} />}
+
+      <div className="section-label" style={{ marginTop: 24 }}>Settings</div>
       <div className="settings-block">
         <div className="settings-row">
           <div>

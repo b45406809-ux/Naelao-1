@@ -454,7 +454,7 @@ collision risk if a cron-fired script writes the same file a human has the threa
   Reuse `ContainerWorkspaceGateway`/the `workspace` prebuilt's read/list logic (Phase R,
   `script-engine/types.ts`) rather than writing new R2 access code — this is an HTTP-facing
   wrapper around what the agent side already has.
-- UI: new "Files" tab per project (dashboard product-detail view; shell business-detail
+- UI: ✅ BUILT — WorkspaceFilesPanel in the shell project detail page (via ProjectKindPanel): lists workspace files, .html opens in a sandboxed iframe, other text shows inline. ORIGINAL: new "Files" tab per project (dashboard product-detail view; shell business-detail
   project view). A file tree/list; clicking an `.html` file opens it in a sandboxed iframe
   preview (this is literally the "AI writes `wallet-transactions-dashboard.html`, builder
   views it" case); other types show as text or a download link.
@@ -711,7 +711,7 @@ Spend card / revenue-based financing / KYB-gated payouts are NOT separate kinds 
 features WITHIN the `wallet` project's own tool surface (extend `wallet.ts`), since they
 operate on the same balance and ledger, not a separate workspace/thread context.
 
-**F-40 (build, UI): every kind's UI is the general workspace project SHELL (identical for
+**F-40 — ✅ PATTERN BUILT + first panels shipped.** listProjects now surfaces `kind`; new apps/shell ProjectKindPanel is the mount-point SWITCH the finding calls for (`{project.kind === "wallet" && <WalletLedgerPanel/>}` — purpose-built, not a data-driven interchangeable lookup), wired into the shell project detail page above the shared shell. Shipped panels: WalletLedgerPanel (bank-ledger look, reuses getBusinessWallet) and the F-39 WorkspaceFilesPanel (lists R2 artifacts; .html previews in a sandboxed iframe). Additional kind panels (storefront/crm/...) mount at the documented switch point one at a time — the expected incremental path. ORIGINAL: every kind's UI is the general workspace project SHELL (identical for
 every kind) plus a NATIVELY hand-built kind-specific panel — not a generic registry-driven
 component lookup.** Correction from the user (2026-07-10): do NOT resolve `uiPanel` through a
 generic `kind -> component` map treated as interchangeable/data-driven. The shared shell
