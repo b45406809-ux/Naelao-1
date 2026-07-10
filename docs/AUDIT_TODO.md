@@ -410,7 +410,13 @@ collision risk if a cron-fired script writes the same file a human has the threa
 | `wallet` | yes | ALREADY BUILT feature-wise; needs F-32/F-34's DB enforcement |
 | `storefront` | yes | proposed remodel of `business_services`/`launchpad_products`/
   `launchpad_orders` (today NOT project-scoped at all — see answer below) — add a
-  `project_id` column to those three tables rather than migrating the data model |
+  `project_id` column to those three tables rather than migrating the data model. **Naming
+  disambiguation (do not confuse the two):** spec §48's "NaelaoProduct" (CLAUDE.md item 30)
+  = a Tier-1 builder's deployed SPACE (LexSpace/CodePilot/FirmAI) — the `spaces` table row
+  with `product_slug`, resolved by `GET /v1/products/by-slug/:slug`. `launchpad_products`
+  here = a Tier-2 end-user BUSINESS's own storefront catalog item (a course/ebook/template
+  it sells to ITS customers) — a completely different, lower layer that happens to share
+  the English word "product." This registry entry only ever touches the second one. |
 | `business_email` | yes | already partial (business_services kind='business_email');
   extend with an AI-triaged shared inbox as the project's thread surface |
 | `business_phone` | yes | new — Twilio-style number wired into the existing channel
@@ -423,7 +429,15 @@ collision risk if a cron-fired script writes the same file a human has the threa
 | `social_media` | yes | one project holding all connected platform OAuth grants (not
   one project per platform) |
 | `legal_compliance` | yes | auto-generated ToS/Privacy/Refund + e-sign vault |
-| `analytics_dashboard` | yes | AI-generated BI/html reports pulling from other kinds |
+| `analytics_dashboard` | yes | **deliberately cross-cutting**, not a peer of the other kinds
+  — its own workspace/thread, but its prebuilt script surface reads ACROSS `wallet` (ledger),
+  `storefront` (orders/products), and `crm` (contacts/deals) rather than owning its own data.
+  Access model: creating/viewing a dashboard project requires at least `viewer` on EACH
+  source kind it reads from (checked per-widget at generation/refresh time, not just once at
+  creation — a widget pulling wallet data must re-verify wallet access on every refresh, since
+  a user's `project_members` role on wallet can change after the dashboard project exists).
+  If a source kind doesn't exist yet in the space (e.g. no `crm` project), that panel is
+  omitted, not errored. |
 | `hiring_freelance` | **no** | a business may run several hiring efforts concurrently |
 | `market_research` | **no** | ad hoc, no reason to cap |
 | `workspace` | **no** | today's default, unchanged |
@@ -432,6 +446,16 @@ collision risk if a cron-fired script writes the same file a human has the threa
 Spend card / revenue-based financing / KYB-gated payouts are NOT separate kinds — they're
 features WITHIN the `wallet` project's own tool surface (extend `wallet.ts`), since they
 operate on the same balance and ledger, not a separate workspace/thread context.
+
+**F-40 (build, UI): every kind's UI is the general workspace project view PLUS a kind-specific
+panel — never a fork.** A `storefront` or `wallet` project's page in the dashboard/shell is the
+SAME chat/thread/file-viewer (F-39) shell every other project already gets, with one additional
+tab/panel injected from the registry's `uiPanel` key (e.g. `wallet-ledger`, `storefront-catalog`,
+`crm-pipeline`). This is why the registry's `uiPanel` field is optional — a kind with no special
+UI (e.g. `market_research`) just renders as a plain workspace project, no fork of the project
+shell component needed. Concretely: the existing per-project page component gains one
+conditionally-rendered slot keyed by `project.kind`, resolved against a small
+`kind -> React component` map on the frontend — not a kind-by-kind route/page split.
 
 ## Tier 2 — Serious
 
