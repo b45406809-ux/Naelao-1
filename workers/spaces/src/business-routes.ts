@@ -12,6 +12,37 @@ import { resolveEndUserBusinessRole } from "./business-auth.js";
 
 export interface BusinessRoutesEnv extends BusinessCreateEnv {
   SPACE_DO: DurableObjectNamespace;
+  /** F-15: best-effort invite emails (same binding the product-end-user routes use). */
+  NOTIFICATIONS_WORKER?: Fetcher;
+  /** F-15: base URL for building a clickable accept link in the invite email. */
+  PRODUCT_SHELL_URL?: string;
+}
+
+/**
+ * F-15: email the invitee a best-effort invite with the accept link. Previously the invite route
+ * stored the email + hashed token but sent nothing — "invite by email" collected an address it
+ * never used, working only by manual link paste. Never blocks the caller's own response (a
+ * notifications outage must not fail the invite creation), matching the product-end-user email
+ * helper's posture exactly.
+ */
+async function sendInviteEmail(
+  env: BusinessRoutesEnv, tenantId: string, spaceId: string, to: string,
+  businessSpaceId: string, token: string, slug: string | null
+): Promise<void> {
+  if (!env.NOTIFICATIONS_WORKER) return;
+  const link = env.PRODUCT_SHELL_URL && slug
+    ? `${env.PRODUCT_SHELL_URL}/p/${slug}/invites/${businessSpaceId}/accept?token=${token}`
+    : null;
+  const body = link
+    ? `You've been invited to join a business on Naelao. Sign in and open this link to accept:\n\n${link}`
+    : `You've been invited to join a business on Naelao. Ask the person who invited you for the accept link, or use this invite token after signing in: ${token}`;
+  try {
+    await env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+      body: JSON.stringify({ channel: "email", space_id: spaceId, to, subject: "You've been invited to a business on Naelao", body }),
+    }));
+  } catch { /* best-effort — never blocks the caller's own response */ }
 }
 
 async function sha256Hex(input: string): Promise<string> {
@@ -148,8 +179,8 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
     if (!body?.email) return c.json({ error_code: "bad_request", message: "email is required" }, 400);
 
     const business = await env.PLATFORM_DB.prepare(
-      "SELECT parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
-    ).bind(businessSpaceId).first<{ parent_space_id: string | null }>();
+      "SELECT parent_space_id, tenant_id FROM spaces WHERE id = ? AND status != 'deleted'"
+    ).bind(businessSpaceId).first<{ parent_space_id: string | null; tenant_id: string }>();
     if (!business?.parent_space_id) {
       return c.json({ error_code: "not_found", message: "Business not found" }, 404);
     }
@@ -157,12 +188,19 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
     const id = crypto.randomUUID();
     const token = randomToken();
     const tokenHash = await sha256Hex(token);
+    const email = body.email.trim().toLowerCase();
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
     await env.PLATFORM_DB.prepare(
       `INSERT INTO business_invites (id, business_space_id, product_space_id, email, role, token_hash, invited_by, expires_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).bind(id, businessSpaceId, business.parent_space_id, body.email.trim().toLowerCase(), body.role ?? "member", tokenHash, userId, expiresAt).run();
+    ).bind(id, businessSpaceId, business.parent_space_id, email, body.role ?? "member", tokenHash, userId, expiresAt).run();
+
+    // F-15: email the invitee (best-effort). Resolve the product's slug for a clickable link.
+    const product = await env.PLATFORM_DB.prepare(
+      "SELECT product_slug FROM spaces WHERE id = ?"
+    ).bind(business.parent_space_id).first<{ product_slug: string | null }>();
+    await sendInviteEmail(env, business.tenant_id, businessSpaceId, email, businessSpaceId, token, product?.product_slug ?? null);
 
     return c.json({ id, token, expires_at: expiresAt }, 201);
   });

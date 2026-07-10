@@ -18,7 +18,7 @@ const SCHEMA = [
     id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
     name TEXT NOT NULL DEFAULT '', spacetype_id TEXT NOT NULL DEFAULT 'launchpad',
     config_json TEXT NOT NULL DEFAULT '{}', parent_space_id TEXT, depth INTEGER NOT NULL DEFAULT 0,
-    tenancy_mode TEXT, scenario_type TEXT,
+    tenancy_mode TEXT, scenario_type TEXT, product_slug TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')),
     created_by TEXT
   );`,

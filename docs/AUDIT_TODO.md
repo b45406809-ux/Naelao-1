@@ -892,7 +892,7 @@ the expected incremental-build path, not a fallback state to design around.
   
   Each skill: documented in Markdown, versioned in R2 (`spaces/{spaceId}/scripts/{name}/SCRIPT.md`), embeddings in Vectorize for discovery. Agent wires them into its business methodology based on business model (whop-seller, SaaS, agency, etc.). These are not hardcoded — they're ordinary scripts that showcase the platform's capability. Can be forked by builders and customized.
 
-- [ ] **F-15: Business invites never email the invitee.** `workers/spaces/src/
+- [x] **F-15: Business invites never email the invitee.** FIXED: the invite route now sends a best-effort `/internal/notify` email (via NOTIFICATIONS_WORKER) with a clickable accept link when PRODUCT_SHELL_URL + product slug are available (falls back to token-only text otherwise), mirroring the product-end-user email helper. ORIGINAL: `workers/spaces/src/
   business-routes.ts:147-165` stores the invitee's email + hashed token but sends nothing
   (no NOTIFICATIONS_WORKER call). The shell surfaces a copyable link
   (`spaces/[businessId]/page.tsx:496`), so invites work by manual paste — "invite by
