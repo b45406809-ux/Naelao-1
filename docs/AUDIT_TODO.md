@@ -933,9 +933,8 @@ the expected incremental-build path, not a fallback state to design around.
 
 ## Tier 4 — Operate & retain (known-open, re-confirmed)
 
-- [ ] **F-9: No builder UI for `agent_activity_log`** (data is populated; `GET
-  /spaces/:spaceId/agent-activity` exists; nothing renders it).
-- [ ] **F-10: No first-run/onboarding flow for a new product.**
+- [x] **F-9: builder UI for `agent_activity_log`** — VERIFIED BUILT: a complete 111-line ProductActivityPage (dashboard Activity tab) renders GET /spaces/:spaceId/agent-activity with per-event-type styling (run completed/failed, approval requested/resolved, moderation blocked), timestamps, and cost. Wired in the product tabs nav.
+- [x] **F-10: first-run onboarding flow** — BUILT: OnboardingChecklist component on the product overview page derives setup steps from the product's own config (name, custom domain, pricing, legal links, launch/active), shows a progress bar + deep-linked next actions, and self-dismisses once every step is complete. Verified via next build.
 - [x] **F-11: GDPR erasure for end users** — VERIFIED ALREADY BUILT: DELETE /spaces/:spaceId/product-users/me erases ProductUserDO session/conversation/preference state and anonymizes the D1 roster PII; router allowlist pattern makes it end-user-reachable. (export exists, deletion now does too).
 - [x] **F-12: cross-provider LLM failover** — BUILT: ai-client.ts now emits an ORDERED
   multi-entry providers array (buildProviderEntry extracted; buildUniversalBody takes a fallbacks

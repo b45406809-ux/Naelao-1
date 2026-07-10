@@ -6,6 +6,7 @@ import Link from "next/link";
 import { getBuilderProductAnalytics } from "@/lib/api";
 import type { BuilderProductAnalytics } from "@/lib/api";
 import { useProduct } from "./productContext";
+import { OnboardingChecklist } from "./OnboardingChecklist";
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
@@ -30,6 +31,9 @@ export default function ProductOverviewPage() {
 
   return (
     <div className="space-y-6">
+      {/* F-10: first-run onboarding — self-dismisses once every setup step is complete. */}
+      <OnboardingChecklist product={product} />
+
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
         <StatCard label="Daily active users" value={String(analytics?.dau ?? "—")} />
         <StatCard label="Monthly active users" value={String(analytics?.mau ?? "—")} />
