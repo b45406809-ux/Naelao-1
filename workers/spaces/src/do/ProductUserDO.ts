@@ -153,6 +153,12 @@ export class ProductUserDO extends DurableObject {
          VALUES (?, ?, ?, ?, ?)`,
         sessionId, tokenHash, body.auth_provider ?? "naelao-native", now.toISOString(), expiresAt
       );
+      // F-48: opportunistically prune long-expired sessions (14+ days past expiry) on the mint
+      // path — far rarer than verify, so this bounds the session_state table without adding a
+      // cron/alarm. An expired session is already unreachable (verify rejects it); this just keeps
+      // the DO's own storage from accumulating dead rows indefinitely.
+      const pruneBefore = new Date(now.getTime() - 14 * 86_400_000).toISOString();
+      this.ctx.storage.sql.exec("DELETE FROM session_state WHERE expires_at < ?", pruneBefore);
       return Response.json({ session_id: sessionId, session_token: rawToken, expires_at: expiresAt }, { status: 201 });
     }
 

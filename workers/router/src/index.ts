@@ -193,10 +193,15 @@ app.use("*", async (c, next) => {
         "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Request-Id, X-Naelao-End-User-Id",
         "Access-Control-Max-Age": "86400",
+        // F-6: the allowed origin is computed per-request (dynamic allowlist), so a shared cache
+        // MUST vary on Origin or it could serve one origin's ACAO header to a different origin.
+        "Vary": "Origin",
       },
     });
   }
   await next();
+  // F-6: same reason — the response's ACAO reflects the request Origin, so mark it Vary: Origin.
+  c.res.headers.append("Vary", "Origin");
   if (allowed) c.res.headers.set("Access-Control-Allow-Origin", allowed);
   return;
 });

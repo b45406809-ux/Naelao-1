@@ -1775,6 +1775,13 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       userId
     );
 
+    // F-49 (intentional — do NOT "complete" this by deleting threads): erasure removes an
+    // end-user's ACCOUNT data (their sessions, messages, agent_state, injection records), NOT the
+    // structural `threads` table. Threads are the builder's own space structure (linked to
+    // projects, sub-agents, channels), not per-end-user account data — deleting them here would
+    // corrupt the builder's workspace, not honor a user's erasure. A future refactor must not add
+    // a `DELETE FROM threads` here on the assumption the erasure is "incomplete".
+
     const erasedAt = new Date().toISOString();
     console.log(`[gdpr][erasure] user=${userId} sessions=${sessionsDeleted} messages=${messagesDeleted} at=${erasedAt}`);
 

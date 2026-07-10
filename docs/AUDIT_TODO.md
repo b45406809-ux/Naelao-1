@@ -901,7 +901,7 @@ the expected incremental-build path, not a fallback state to design around.
 
 ## Polish
 
-- [ ] **F-6: CORS responses lack `Vary: Origin`** (`workers/router/src/index.ts:200`) —
+- [x] **F-6: CORS responses lack `Vary: Origin`** (`workers/router/src/index.ts:200`) —
   a shared cache could serve one origin's ACAO to another. One-liner.
 
 - [x] **F-20 (polish): No global uniqueness on `business_services.custom_domain`.** 
@@ -912,7 +912,7 @@ the expected incremental-build path, not a fallback state to design around.
   confusion/squatting. Loser's row sits pending forever. Fix: pre-insert check for existing 
   active row → 409, OR partial UNIQUE index WHERE status='active'.
 
-- [ ] **F-16: Deploy workflows swallow failures.** `deploy-staging.yml:43` has `|| true`
+- [x] **F-16: Deploy workflows swallow failures.** `deploy-staging.yml:43` has `|| true`
   and `:90` marks per-worker deploy failures non-fatal — a half-deployed platform reports
   green. Make core-worker failures fatal; at minimum surface a summary.
 
@@ -1002,7 +1002,7 @@ the expected incremental-build path, not a fallback state to design around.
   created with `kind: "wallet"` in the initial POST, not set via PATCH, so the singleton 
   check can prevent a second "Wallet" project ever existing.
 
-- [ ] **F-45 (authorization): `seedOwnerMember` uses unauthenticated internal token.** 
+- [x] **F-45 (authorization): `seedOwnerMember` uses unauthenticated internal token.** 
   Evidence: lines 343-352, the provisioner creates an `x-naelao-internal-token` and POSTs 
   to `/spaces/:spaceId/members` with `{ role: "owner" }` — no identity is passed in the 
   body, and the spaces worker trusts the internal token alone. **RISK**: the provisioner 
@@ -1082,7 +1082,7 @@ thread erasure design, debit idempotency TOCTOU)
 - [ ] **F-STRUCT: Route-parity test.** Extract every path prefix `apps/dashboard` and
   `apps/shell` call and assert the router dispatches each to a real worker route — F-1,
   F-3, and F-5 are one bug class; this is the `wrangler-vars-parity.test.ts` equivalent.
-- [ ] **F-HYGIENE: `.turbo/` directories are git-tracked** — every typecheck run dirties
+- [x] **F-HYGIENE: `.turbo/` directories are git-tracked** — every typecheck run dirties
   the tree. Add to `.gitignore` and `git rm -r --cached`.
 
 ## Plausible-but-unconfirmed (verify before fixing)
@@ -1092,7 +1092,7 @@ thread erasure design, debit idempotency TOCTOU)
 - [ ] `nak_` agent-key approval gate's coarse action keys (`agentActionKey` collapses to
   first path segment) — deliberate, but untested against deep mutating routes.
 
-- [ ] **F-48 (LOW): Expired ProductUserDO sessions are never cleaned up from `session_state` 
+- [x] **F-48 (LOW): Expired ProductUserDO sessions are never cleaned up from `session_state` 
   table.** Evidence: `ProductUserDO` routes mint sessions with a 30-day TTL 
   (`SESSION_TTL_MS = 30 * 86_400_000`) and expire them on verification (`expires_at` checked 
   at line 172), but no job ever runs `DELETE FROM session_state WHERE expires_at < now()`. 
@@ -1102,7 +1102,7 @@ thread erasure design, debit idempotency TOCTOU)
   anyway. **Verdict**: low priority but should eventually add to a background cleanup job 
   (either a Workflow or a quarterly batch-delete of 30+ days old rows).
 
-- [ ] **F-49 (LOW): GDPR erasure in SpaceDO only deletes sessions/messages, not threads.** 
+- [x] **F-49 (LOW): GDPR erasure in SpaceDO only deletes sessions/messages, not threads.** 
   Evidence: lines 1745-1776, the `DELETE /me/data` route deletes sessions, messages, 
   agent_state, and injection_attempts, but does NOT delete rows from the `threads` table 
   where `user_id = ?`. **Context**: this is intentional by design — threads are structural 

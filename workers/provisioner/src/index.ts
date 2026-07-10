@@ -63,7 +63,14 @@ interface ProvisionMessage {
   requestedAt: string;
   /** The user who created this space — registered as space_members owner in step 5c.
    *  Optional only for backward compatibility with any already-queued messages; every new
-   *  enqueue (POST /spaces, POST /reseller/spaces) sets it. */
+   *  enqueue (POST /spaces, POST /reseller/spaces) sets it.
+   *
+   *  F-45 (trust boundary — do not weaken): `userId` is TRUSTED. It is sourced from verified
+   *  auth in createSpaceRecord (getCallerIdentity), never from client-supplied input, and
+   *  seedOwnerMember (step 5c) registers it as `owner` of the space using a platform-secret
+   *  internal token. ProvisionMessages arrive only from the internal provisioning queue, which
+   *  is enqueued exclusively by that verified path. Never accept `userId` from an untrusted
+   *  source — doing so would let an attacker register themselves as owner of any space. */
   userId?: string;
 }
 

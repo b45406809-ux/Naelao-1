@@ -84,12 +84,24 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
+          # F-16: previously each failure was swallowed with `|| echo "non-fatal"`, so a
+          # half-deployed platform still reported the job green. Now: track every failure, surface
+          # a summary to the GitHub Actions run, and fail the step if ANY worker failed to deploy.
+          failed=()
           for w in analytics marketplace threads assistant browser mini-agi channels security-gateway workflows ws-gateway; do
             if [ -f "workers/$w/wrangler.toml" ]; then
               echo "Deploying $w..."
-              npx wrangler deploy --env=staging --config="workers/$w/wrangler.toml" || echo "⚠️ $w deploy failed (non-fatal)"
+              if ! npx wrangler deploy --env=staging --config="workers/$w/wrangler.toml"; then
+                echo "❌ $w deploy failed"
+                failed+=("$w")
+              fi
             fi
           done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "### ❌ Staging deploy: ${#failed[@]} worker(s) failed: ${failed[*]}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "### ✅ Staging deploy: all secondary workers deployed" >> "$GITHUB_STEP_SUMMARY"
 
   deploy-dashboard-staging:
     name: Deploy dashboard to staging (CF Pages)
