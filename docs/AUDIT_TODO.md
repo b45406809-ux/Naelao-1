@@ -440,6 +440,43 @@ collision risk if a cron-fired script writes the same file a human has the threa
   omitted, not errored. |
 | `hiring_freelance` | **no** | a business may run several hiring efforts concurrently |
 | `market_research` | **no** | ad hoc, no reason to cap |
+| `membership_access` | yes | **the biggest gap, verified against HEAD:** `whop-seller`
+  (spacetype.ts:298-324) today is READ-ONLY automation over an EXISTING Whop business —
+  Whop itself still does all tier/access-gating; Naelao has no native membership/access-
+  control layer of its own anywhere in the platform. This kind owns: who's paid for which
+  tier, auto-sync to Discord roles / Telegram groups / private channel invites, auto-revoke
+  on churn or refund. Distinct from `crm` (sales-relationship tracking, not a live gate) —
+  this is the thing actually deciding who's let into the Discord server right now. |
+| `courses` | yes | drip-scheduled lessons, video/file hosting via the R2 workspace,
+  quiz/completion tracking, certificates. Reads `membership_access` to gate which module a
+  given member can see (same cross-kind read pattern as `analytics_dashboard`, not a data
+  fork). |
+| `license_delivery` | yes | license-key generation/rotation, per-purchase download links
+  with expiry, basic anti-sharing (device/IP binding) for software/template sellers.
+  `launchpad_products.fulfillment_r2_key` (migration 0035) is today a flat file drop with
+  no key-gen or expiry logic at all — this is a real, currently-missing capability, not a
+  UI wrapper over something that exists. |
+| `churn_retention` | yes | PROACTIVE dunning (card expiring soon, not yet failed — distinct
+  from F-23's reactive expiry gate), win-back sequences for cancelled members, churn-risk
+  flags surfaced to the assistant. Reads `wallet`/subscription status, doesn't own new data. |
+| `waitlist_launch` | yes | pre-launch lead capture, hype/drip sequence, invite-code or
+  early-access gating before public sale opens — feeds into `membership_access` once the
+  business goes live. |
+| `coupons_promotions` | yes | discount codes, flash sales, time-limited bundles — wraps
+  Lemon Squeezy's own coupon API rather than reinventing discount math. |
+| `content_calendar` | yes | PLANNING layer (drafts, scheduling, approval queue, campaign
+  grouping) distinct from `social_media` (which only holds the connected-account OAuth
+  grants) — this kind decides what/when, `social_media` is what it publishes through. |
+| `ad_campaigns` | yes | cross-platform (Meta/TikTok/Google) spend + ROAS via MCP-connector.
+  Owns campaign/spend data; `analytics_dashboard` reads it, doesn't duplicate it. |
+| `live_events` | yes | scheduled calls/webinars/office-hours, attendance tracking, recording
+  archive in the project's own R2 workspace — relevant to `coaching-community` and
+  `micro-saas` templates specifically. |
+| `disputes_chargebacks` | yes | chargeback response drafting/evidence assembly, refund
+  triage queue with an audit trail and time-boxed responses — distinct from `support_inbox`
+  (casual back-and-forth, no SLA/audit requirement) and ties directly to F-18's exposure
+  (deleted product's live subscribers) as a place that exposure gets handled operationally
+  once F-18 itself is fixed. |
 | `workspace` | **no** | today's default, unchanged |
 | `customer_bot` | **no** | already exists, unchanged |
 
