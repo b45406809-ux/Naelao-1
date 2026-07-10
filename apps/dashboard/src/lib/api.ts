@@ -180,10 +180,13 @@ export async function resetPassword(token: string, newPassword: string): Promise
 // ── SpaceTypes ───────────────────────────────────────────────────────────────
 
 export async function listSpaceTypes(): Promise<SpaceType[]> {
-  const res = await apiFetch<{ data: SpaceType[] } | SpaceType[]>("/spacetypes");
-  // Handle both wrapped and unwrapped responses
+  // F-3: the legacy `/spacetypes` REST route was never implemented by any worker, so the
+  // post-login landing page's Promise.all([listSpaces(), listSpaceTypes()]) 404'd and crashed the
+  // whole dashboard on every login. Point at the REAL registry wrapper (GET /builder/space-types,
+  // which fronts SpaceTypeRegistryDO) — now reachable since F-1 routes /builder/* through the router.
+  const res = await apiFetch<{ data: SpaceType[] } | { types: SpaceType[] } | SpaceType[]>("/builder/space-types");
   if (Array.isArray(res)) return res;
-  return (res as { data: SpaceType[] }).data ?? [];
+  return (res as { data?: SpaceType[]; types?: SpaceType[] }).data ?? (res as { types?: SpaceType[] }).types ?? [];
 }
 
 export async function createSpaceType(

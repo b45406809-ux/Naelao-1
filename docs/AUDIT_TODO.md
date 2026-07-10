@@ -690,6 +690,12 @@ the expected incremental-build path, not a fallback state to design around.
 ## Tier 2 — Serious
 
 - [x] **F-4: Stream-ticket security fix is dead code; raw `nps_` tokens still land in URLs/logs.**
+  **⚠ WAS CHECKED BUT ISSUE ENDPOINT WAS MISSING — NOW GENUINELY FIXED:** the shell POSTs
+  `/spaces/:spaceId/sessions/stream-ticket` but no route existed (only `/internal/stream-tickets/
+  issue`, platform-secret-gated). Added a public branch in the sessions handler that, after the
+  router-verified identity + business-membership checks, mints a 60s single-use ticket into KV
+  (same key format `/internal/stream-tickets/consume` already reads). The router's consume side
+  and the allowlist pattern already existed. ORIGINAL:
   Evidence: shell (api.ts:212) POSTs `/v1/spaces/:spaceId/sessions/stream-ticket` → no 
   router route exists for this (verified by grep), so call 404s → shell falls back to 
   token-in-URL. **VERIFIED REAL** — only `POST /internal/stream-tickets/issue` exists 

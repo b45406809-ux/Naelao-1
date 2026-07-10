@@ -472,6 +472,23 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
     }
   }
 
+  // F-4: POST /spaces/:spaceId/sessions/stream-ticket — mint a short-lived (60s) single-use
+  // stream ticket so the shell's EventSource carries the ticket instead of the raw nps_ session
+  // token in the URL (which lands in CF/proxy access logs + browser history). The caller was
+  // already fully verified above (router-minted internal token + business membership), and
+  // browser EventSource can't set Authorization headers — this is exactly why the ticket exists.
+  // The stream endpoint consumes it via /internal/stream-tickets/consume. Handled here, before the
+  // SpaceDO forward, since SpaceDO has no session sub-resource for it.
+  {
+    const stripped = new URL(c.req.url).pathname.replace(`/spaces/${spaceId}`, "");
+    if (c.req.method === "POST" && stripped === "/sessions/stream-ticket") {
+      const ticket = crypto.randomUUID();
+      const key = `stream-ticket:${spaceId}:${userId}:${ticket}`;
+      await c.env.NAELAO_CONFIG_KV.put(key, tenantId, { expirationTtl: 60 });
+      return c.json({ ticket, expires_in: 60 });
+    }
+  }
+
   // G-BA01: HMAC-derived DO name prevents enumeration by compromised workers
   const doId = c.env.SPACE_DO.idFromName(
     await getDOName("space", spaceId, tenantId, c.env.PLATFORM_SECRET)
