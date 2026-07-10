@@ -43,6 +43,31 @@ export interface BillingEnv {
   SPACES_WORKER?: Fetcher;
 }
 
+/**
+ * ARCH-REVENUE-6: resolve the builder's revenue-share bps for a selling space at CHECKOUT time,
+ * by asking the spaces worker (which resolves it from the builder's parent reseller product's
+ * effective productConfig.commerce.builderFeeBps). Best-effort: any failure (unbound worker, no
+ * parent, lookup error) returns 0 — a builder share is never silently applied on an error, only
+ * when explicitly configured. Never throws — a checkout must not fail over the builder-share lookup.
+ */
+async function resolveBuilderFeeBps(env: BillingEnv, spaceId: string): Promise<number> {
+  if (!env.SPACES_WORKER) return 0;
+  try {
+    const spaceRow = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+      .bind(spaceId).first<{ tenant_id: string }>();
+    if (!spaceRow) return 0;
+    const resp = await env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/internal/builder-fee-bps?space_id=${encodeURIComponent(spaceId)}`,
+      { headers: { "x-naelao-tenant-id": spaceRow.tenant_id, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, spaceRow.tenant_id) } }
+    ));
+    if (!resp.ok) return 0;
+    const { builder_fee_bps } = await resp.json<{ builder_fee_bps: number }>();
+    return Number.isFinite(builder_fee_bps) && builder_fee_bps > 0 ? Math.floor(builder_fee_bps) : 0;
+  } catch {
+    return 0;
+  }
+}
+
 // ── Stripe event type stubs ───────────────────────────────────────────────────
 interface StripeSubscription {
   id: string;
@@ -461,6 +486,10 @@ app.post("/internal/commerce/checkout", async (c) => {
   }
 
   const feeBps = parseInt(c.env.LAUNCHPAD_FEE_BPS ?? "500", 10);
+  // ARCH-REVENUE-6: stamp the builder's revenue-share bps AT CHECKOUT (resolved from the builder's
+  // reseller product's config via the spaces worker) so a later config change can't re-price this
+  // order. Zero for a top-level space with no parent builder.
+  const builderFeeBps = await resolveBuilderFeeBps(c.env, body.space_id);
 
   // Without LS credentials (local/dev) return a deterministic placeholder so the flow is
   // testable end-to-end; production carries real store creds in Workers Secrets.
@@ -468,7 +497,7 @@ app.post("/internal/commerce/checkout", async (c) => {
     return c.json({
       checkout_url: `https://checkout.${"naelao.com"}/dev/${product.id}`,
       product: { id: product.id, name: product.name, price_cents: product.price_cents, currency: product.currency },
-      fee_bps: feeBps,
+      fee_bps: feeBps, builder_fee_bps: builderFeeBps,
       dev: true,
     });
   }
@@ -482,7 +511,7 @@ app.post("/internal/commerce/checkout", async (c) => {
     spaceId: body.space_id,
     variantOrPriceId: product.ls_variant_id,
     ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
-    metadata: { product_id: product.id, fee_bps: String(feeBps) },
+    metadata: { product_id: product.id, fee_bps: String(feeBps), ...(builderFeeBps > 0 ? { builder_fee_bps: String(builderFeeBps) } : {}) },
   });
   return c.json({
     checkout_url: url,
@@ -523,11 +552,12 @@ app.post("/internal/seats/checkout", async (c) => {
   const cfg = await cfgResp.json<{ seatPriceCents: number; currency: string; lsVariantId?: string }>();
 
   const feeBps = parseInt(c.env.LAUNCHPAD_FEE_BPS ?? "500", 10);
+  const builderFeeBps = await resolveBuilderFeeBps(c.env, body.space_id); // ARCH-REVENUE-6
 
   if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !cfg.lsVariantId) {
     return c.json({
       checkout_url: `https://checkout.naelao.com/dev/seat/${body.space_id}`,
-      seat_price_cents: cfg.seatPriceCents, currency: cfg.currency, fee_bps: feeBps, dev: true,
+      seat_price_cents: cfg.seatPriceCents, currency: cfg.currency, fee_bps: feeBps, builder_fee_bps: builderFeeBps, dev: true,
     });
   }
 
@@ -540,9 +570,9 @@ app.post("/internal/seats/checkout", async (c) => {
     spaceId: body.space_id,
     variantOrPriceId: cfg.lsVariantId,
     ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
-    metadata: { kind: "seat", fee_bps: String(feeBps), ...(body.user_id ? { user_id: body.user_id } : {}) },
+    metadata: { kind: "seat", fee_bps: String(feeBps), ...(builderFeeBps > 0 ? { builder_fee_bps: String(builderFeeBps) } : {}), ...(body.user_id ? { user_id: body.user_id } : {}) },
   });
-  return c.json({ checkout_url: url, seat_price_cents: cfg.seatPriceCents, currency: cfg.currency, fee_bps: feeBps });
+  return c.json({ checkout_url: url, seat_price_cents: cfg.seatPriceCents, currency: cfg.currency, fee_bps: feeBps, builder_fee_bps: builderFeeBps });
 });
 
 // ── POST /internal/products/ls-variant ───────────────────────────────────────

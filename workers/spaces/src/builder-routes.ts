@@ -507,6 +507,51 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
   });
 
+  // ── /builder/products/:id/wallet — F-WALLET-6: the builder-facing wallet aggregate across the
+  // product AND all its child businesses. Sums launchpad_orders (gross / Naelao cut / builder cut /
+  // net settled to the businesses' wallets) plus the builder's OWN earned revenue share from
+  // reseller_ledger (kind='builder_revenue_share', this builder's tenant). Read-only; payout
+  // routes stay on /builder/payouts. ──────────────────────────────────────────────────────────────
+  app.get("/builder/products/:id/wallet", async (c) => {
+    const env = c.env as BuilderRoutesEnv;
+    const auth = await resolveBuilderAuth(env, c.req.raw.headers);
+    if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
+    const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
+    if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+
+    // Orders across the product space itself + every child business under it (parent_space_id).
+    const orders = await env.PLATFORM_DB.prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN status != 'refunded' THEN gross_cents ELSE 0 END), 0)       AS gross_cents,
+         COALESCE(SUM(CASE WHEN status != 'refunded' THEN fee_cents ELSE 0 END), 0)         AS naelao_cut_cents,
+         COALESCE(SUM(CASE WHEN status != 'refunded' THEN builder_fee_cents ELSE 0 END), 0) AS builder_cut_cents,
+         COALESCE(SUM(CASE WHEN status != 'refunded' THEN net_cents ELSE 0 END), 0)         AS net_settled_cents,
+         COUNT(CASE WHEN status != 'refunded' THEN 1 END)                                   AS order_count
+       FROM launchpad_orders
+       WHERE space_id = ? OR space_id IN (SELECT id FROM spaces WHERE parent_space_id = ?)`
+    ).bind(product.id, product.id).first<{ gross_cents: number; naelao_cut_cents: number; builder_cut_cents: number; net_settled_cents: number; order_count: number }>();
+
+    // The builder's OWN earned revenue share (net of refund reversals), by currency.
+    const shareRows = await env.PLATFORM_DB.prepare(
+      `SELECT currency, COALESCE(SUM(margin_cents), 0) AS earned_cents
+         FROM reseller_ledger
+        WHERE parent_tenant_id = ? AND kind = 'builder_revenue_share'
+        GROUP BY currency`
+    ).bind(auth.tenantId).all<{ currency: string; earned_cents: number }>();
+
+    return c.json({
+      product_id: product.id,
+      businesses: {
+        gross_cents: orders?.gross_cents ?? 0,
+        naelao_cut_cents: orders?.naelao_cut_cents ?? 0,
+        builder_cut_cents: orders?.builder_cut_cents ?? 0,
+        net_settled_cents: orders?.net_settled_cents ?? 0,
+        order_count: orders?.order_count ?? 0,
+      },
+      builder_revenue_share: (shareRows.results ?? []).map((r) => ({ currency: r.currency, earned_cents: r.earned_cents })),
+    });
+  });
+
   // ── /builder/products/:id/domain — the missing builder-facing wrapper the CF-for-SaaS custom
   // domain flow never had (only reachable via /internal/business-services, HMAC-gated) ──────────
   app.post("/builder/products/:id/domain", async (c) => {

@@ -834,6 +834,64 @@ app.get("/spaces/:spaceId/projects/:projectId/wallet/history", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// GET /spaces/:spaceId/wallet — F-WALLET-6/7: the consolidated wallet view for a space, serving
+// BOTH the builder dashboard's Wallet tab and the shell's business Wallet section. Combines the
+// space's own wallet project (available spendable balance + recent transactions from SpaceDO's
+// wallet_ledger) with a lifetime money-in summary from launchpad_orders (gross, Naelao cut,
+// builder cut, net settled) so the "two deductions shown explicitly" transparency requirement is
+// met. Gated by requireBusinessMembership (member GET) — additive-only for a product_end_user
+// business admin; a builder acting via the router (tenant match) passes through unchanged.
+app.use("/spaces/:spaceId/wallet", requireBusinessMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/wallet", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+
+  // Resolve the wallet project + its balance + recent transactions.
+  const wpRes = await forwardToSpaceDO(stub, `/wallet-project?space_id=${encodeURIComponent(spaceId)}`, "GET");
+  const { project_id } = await wpRes.json<{ project_id: string | null }>();
+  let availableBalanceCents = 0;
+  let currency = "USD";
+  let transactions: unknown[] = [];
+  if (project_id) {
+    const balRes = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(project_id)}/wallet/balance`, "GET");
+    if (balRes.ok) {
+      const bal = await balRes.json<{ balance_cents: number; currency?: string }>();
+      availableBalanceCents = bal.balance_cents ?? 0;
+      currency = bal.currency ?? "USD";
+    }
+    const histRes = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(project_id)}/wallet/history?limit=20`, "GET");
+    if (histRes.ok) transactions = (await histRes.json<{ data: unknown[] }>()).data ?? [];
+  }
+
+  // Lifetime money-in summary from launchpad_orders (refunded orders excluded from earned totals).
+  const summary = await c.env.PLATFORM_DB.prepare(
+    `SELECT
+       COALESCE(SUM(CASE WHEN status != 'refunded' THEN gross_cents ELSE 0 END), 0)        AS gross_cents,
+       COALESCE(SUM(CASE WHEN status != 'refunded' THEN fee_cents ELSE 0 END), 0)          AS naelao_cut_cents,
+       COALESCE(SUM(CASE WHEN status != 'refunded' THEN builder_fee_cents ELSE 0 END), 0)  AS builder_cut_cents,
+       COALESCE(SUM(CASE WHEN status != 'refunded' THEN net_cents ELSE 0 END), 0)          AS net_settled_cents,
+       COUNT(CASE WHEN status != 'refunded' THEN 1 END)                                    AS order_count
+     FROM launchpad_orders WHERE space_id = ?`
+  ).bind(spaceId).first<{ gross_cents: number; naelao_cut_cents: number; builder_cut_cents: number; net_settled_cents: number; order_count: number }>();
+
+  return c.json({
+    space_id: spaceId,
+    project_id,
+    available_balance_cents: availableBalanceCents,
+    currency,
+    lifetime: {
+      gross_cents: summary?.gross_cents ?? 0,
+      naelao_cut_cents: summary?.naelao_cut_cents ?? 0,
+      builder_cut_cents: summary?.builder_cut_cents ?? 0,
+      net_settled_cents: summary?.net_settled_cents ?? 0,
+      order_count: summary?.order_count ?? 0,
+    },
+    transactions,
+  });
+});
+
 // tenant_id rides the query string (not a header — forwardToSpaceDO doesn't forward client
 // headers, and the body is streamed through unparsed), same shape as PATCH /projects/:id, so
 // creditWallet/debitWallet can fire broadcastSpaceEvent/fireMatchingTriggers against the
@@ -1594,6 +1652,30 @@ async function loadCommerceContext(
   }
   return { ok: true, tenantId, commerce: pc.commerce };
 }
+
+// GET /internal/builder-fee-bps?space_id=X — ARCH-REVENUE-6: resolve the builder's configured
+// revenue-share (basis points) for a SELLING space, so the billing worker can stamp it into the
+// checkout metadata at checkout time (never resolved at webhook time — a config change must not
+// retroactively re-price an in-flight order). The fee is configured on the BUILDER's reseller
+// product (productConfig.commerce.builderFeeBps), so this walks the space's parent_space_id to
+// that product's effective config. Returns 0 for a top-level space (no parent) — a builder selling
+// directly has no separate builder to pay.
+app.use("/internal/builder-fee-bps", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/internal/builder-fee-bps", async (c) => {
+  const spaceId = c.req.query("space_id") ?? "";
+  if (!spaceId) return c.json({ error_code: "bad_request", message: "space_id is required" }, 400);
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(spaceId).first<{ parent_space_id: string | null }>();
+  if (!space?.parent_space_id) return c.json({ builder_fee_bps: 0 });
+  const parent = await c.env.PLATFORM_DB.prepare(
+    "SELECT spacetype_id, config_json FROM spaces WHERE id = ? AND status != 'deleted'"
+  ).bind(space.parent_space_id).first<{ spacetype_id: string; config_json: string | null }>();
+  if (!parent) return c.json({ builder_fee_bps: 0 });
+  const pc = await loadEffectiveProductConfig(c.env, parent.spacetype_id, parent.config_json);
+  const bps = pc?.commerce?.builderFeeBps ?? 0;
+  return c.json({ builder_fee_bps: Number.isFinite(bps) && bps > 0 ? Math.floor(bps) : 0 });
+});
 
 // Phase N (§A1.17): a business owner (product_end_user) operating their OWN Launchpad business
 // can view/manage its commerce data through the manifest-driven operator-shell view — any active

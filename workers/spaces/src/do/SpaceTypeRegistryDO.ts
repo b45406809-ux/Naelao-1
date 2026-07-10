@@ -223,6 +223,16 @@ export interface SpaceTypeProductConfig {
     defaultCurrency?: string;          // ISO 4217, default "USD"
     /** Platform fee in basis points captured per customer order (e.g. 500 = 5%). */
     naelaoFeeBps?: number;
+    /**
+     * ARCH-REVENUE-6: builder's revenue share in basis points, taken on a CHILD business's
+     * storefront/seat sales (the reseller model — a builder's end-user businesses earn money from
+     * THEIR customers, and the builder takes a configured slice). Only applies when the selling
+     * space is a child business under this builder's reseller product; a top-level builder selling
+     * directly has no separate "builder" to pay, so it's ignored there. Capped by BUILDER_FEE_BPS_CEILING
+     * and combined with naelaoFeeBps can never exceed the gross (both clamped at settlement).
+     * The builder's slice is recorded as a reseller_ledger row (kind='builder_revenue_share').
+     */
+    builderFeeBps?: number;
     /** Allow the owner to attach their own custom domain to the storefront (opt-in). */
     allowCustomDomain?: boolean;
   };

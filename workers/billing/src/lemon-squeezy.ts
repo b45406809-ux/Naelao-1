@@ -20,6 +20,85 @@ import { LemonSqueezyProvider, computeResellerAttribution, isLedgerEvent, billin
 import type { NormalizedBillingEvent, BillingRelationship } from "@naelao/billing-core";
 import { mintInternalToken } from "@naelao/http";
 
+/**
+ * ARCH-REVENUE-6: the maximum builder revenue share, in basis points. A builder configures their
+ * slice of a child business's sales (productConfig.commerce.builderFeeBps); this ceiling stops a
+ * builder from setting a confiscatory rate, and combined with the Naelao fee is additionally
+ * clamped so a settlement can never exceed the gross or drive the business wallet negative.
+ */
+const BUILDER_FEE_BPS_CEILING = 3000; // 30%
+
+interface BuilderShare {
+  builderFeeCents: number;
+  parentTenantId: string;
+  childTenantId: string;
+  childSpaceId: string;
+}
+
+/**
+ * ARCH-REVENUE-6: resolve the builder's revenue share for a child business's sale. Returns null
+ * (no share) when: the checkout carried no positive builder_fee_bps; the selling space is not a
+ * child under a reseller builder (a top-level builder selling directly has no separate builder to
+ * pay — it IS the space owner); or the computed share would be zero. builder_fee_bps is read from
+ * the checkout metadata (stamped at checkout time, so a later config change can't retroactively
+ * re-price an in-flight order), capped at the ceiling, and clamped so naelao_fee + builder_fee
+ * never exceeds gross.
+ */
+async function resolveBuilderShare(
+  event: NormalizedBillingEvent,
+  gross: number,
+  naelaoFee: number,
+  env: LemonSqueezyEnv
+): Promise<BuilderShare | null> {
+  if (!event.spaceId) return null;
+  const custom = (event.metadata ?? {}) as Record<string, unknown>;
+  const rawBps = custom["builder_fee_bps"] ? parseInt(String(custom["builder_fee_bps"]), 10) : 0;
+  if (!Number.isFinite(rawBps) || rawBps <= 0) return null;
+  const bps = Math.min(rawBps, BUILDER_FEE_BPS_CEILING);
+
+  const space = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+    .bind(event.spaceId).first<{ tenant_id: string }>();
+  if (!space) return null;
+
+  const hierarchy = await env.PLATFORM_DB.prepare(
+    "SELECT parent_tenant_id FROM tenant_hierarchy WHERE child_tenant_id = ? AND status = 'active'"
+  ).bind(space.tenant_id).first<{ parent_tenant_id: string }>();
+  if (!hierarchy) return null; // not a child business under a reseller builder — no separate builder
+
+  // Clamp: the two fees together can never exceed the gross (never settle the wallet negative).
+  const builderFeeCents = Math.min(Math.round((gross * bps) / 10_000), Math.max(0, gross - naelaoFee));
+  if (builderFeeCents <= 0) return null;
+  return { builderFeeCents, parentTenantId: hierarchy.parent_tenant_id, childTenantId: space.tenant_id, childSpaceId: event.spaceId };
+}
+
+/**
+ * ARCH-REVENUE-6: attribute the builder's slice to their payout balance as a reseller_ledger row
+ * with kind='builder_revenue_share'. `reverse` writes a negative-margin row of the same kind on a
+ * refund so the payout balance nets to zero (never deletes the original — audit trail). Idempotent
+ * via a per-order provider_event_id (suffixed for the reversal so it never collides with the grant).
+ */
+async function recordBuilderRevenueShare(
+  db: D1Database,
+  share: BuilderShare,
+  event: NormalizedBillingEvent,
+  builderFeeCents: number,
+  providerEventId: string,
+  reverse: boolean
+): Promise<void> {
+  const margin = reverse ? -builderFeeCents : builderFeeCents;
+  await db.prepare(
+    `INSERT OR IGNORE INTO reseller_ledger
+       (id, parent_tenant_id, child_tenant_id, child_space_id, event_type,
+        retail_cents, wholesale_cents, margin_cents, currency, period, provider_event_id, kind)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'builder_revenue_share')`
+  ).bind(
+    crypto.randomUUID(), share.parentTenantId, share.childTenantId, share.childSpaceId,
+    reverse ? "refund.issued" : event.type, event.amountCents ?? 0, 0, margin,
+    event.currency ?? "USD", billingPeriod(), `${reverse ? "refund" : "builder"}:${providerEventId}`
+  ).run();
+  console.log(`[billing/ls] Builder revenue share ${reverse ? "reversed" : "recorded"}: parent=${share.parentTenantId} margin=${margin}c`);
+}
+
 export interface LemonSqueezyEnv {
   LEMON_SQUEEZY_WEBHOOK_SECRET?: string;
   LEMON_SQUEEZY_API_KEY?: string;
@@ -54,22 +133,28 @@ async function recordSeatActivation(
   const gross = event.amountCents ?? 0;
   const feeBps = custom["fee_bps"] ? parseInt(String(custom["fee_bps"]), 10) : parseInt(env.LAUNCHPAD_FEE_BPS ?? "500", 10);
   const fee = Math.round((gross * feeBps) / 10_000);
-  const net = Math.max(0, gross - fee);
+  // ARCH-REVENUE-6: builder's slice on a child business's seat sale (same as product sales).
+  const builderShare = await resolveBuilderShare(event, gross, fee, env);
+  const builderFee = builderShare?.builderFeeCents ?? 0;
+  const net = Math.max(0, gross - fee - builderFee);
   const id = crypto.randomUUID();
   // S0.3: prefer the real provider event id (LS's data.id) over a synthetic key — a synthetic
   // key built from type+customer+amount+space collides across two genuinely distinct purchases
   // at the same price.
   const providerEventId = event.providerEventId ?? event.subscriptionId ?? `seat:${event.customerId ?? ""}:${gross}:${event.spaceId}`;
 
-  await env.PLATFORM_DB.prepare(
+  const insertResult = await env.PLATFORM_DB.prepare(
     `INSERT OR IGNORE INTO launchpad_orders
-       (id, space_id, tenant_id, product_id, customer_email, gross_cents, fee_cents, net_cents,
+       (id, space_id, tenant_id, product_id, customer_email, gross_cents, fee_cents, builder_fee_cents, net_cents,
         currency, ls_subscription_id, status, provider_event_id)
-     VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 'paid', ?)`
+     VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'paid', ?)`
   ).bind(
     id, event.spaceId, space.tenant_id, event.customerId ?? null,
-    gross, fee, net, event.currency ?? "USD", event.subscriptionId ?? null, providerEventId
+    gross, fee, builderFee, net, event.currency ?? "USD", event.subscriptionId ?? null, providerEventId
   ).run();
+  if (insertResult.meta.changes > 0 && builderShare && builderFee > 0) {
+    await recordBuilderRevenueShare(env.PLATFORM_DB, builderShare, event, builderFee, providerEventId, false);
+  }
 
   // Activate the member in SpaceDO (idempotent — addMember upserts).
   const userId = custom["user_id"] ? String(custom["user_id"]) : (event.customerId ?? "");
@@ -115,7 +200,12 @@ async function recordProductOrder(
   const gross = event.amountCents ?? 0;
   const feeBps = custom["fee_bps"] ? parseInt(String(custom["fee_bps"]), 10) : parseInt(env.LAUNCHPAD_FEE_BPS ?? "500", 10);
   const fee = Math.round((gross * feeBps) / 10_000);
-  const net = Math.max(0, gross - fee);
+  // ARCH-REVENUE-6: a second deduction — the builder's configured slice of this child business's
+  // sale. Zero for a top-level builder's direct sale (no parent reseller). The business wallet
+  // receives gross - naelao_fee - builder_fee.
+  const builderShare = await resolveBuilderShare(event, gross, fee, env);
+  const builderFee = builderShare?.builderFeeCents ?? 0;
+  const net = Math.max(0, gross - fee - builderFee);
   const id = crypto.randomUUID();
   // S0.3: prefer the real provider event id — the synthetic fallback collided across two
   // genuinely distinct same-price purchases of the same product by the same customer.
@@ -124,14 +214,14 @@ async function recordProductOrder(
   // INSERT OR IGNORE on the unique provider_event_id index → idempotent.
   const insertResult = await env.PLATFORM_DB.prepare(
     `INSERT OR IGNORE INTO launchpad_orders
-       (id, space_id, tenant_id, product_id, customer_email, gross_cents, fee_cents, net_cents,
+       (id, space_id, tenant_id, product_id, customer_email, gross_cents, fee_cents, builder_fee_cents, net_cents,
         currency, ls_subscription_id, status, provider_event_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paid', ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'paid', ?)`
   ).bind(
     id, event.spaceId, space.tenant_id, productId, event.customerId ?? null,
-    gross, fee, net, event.currency ?? "USD", event.subscriptionId ?? null, providerEventId
+    gross, fee, builderFee, net, event.currency ?? "USD", event.subscriptionId ?? null, providerEventId
   ).run();
-  console.log(`[billing/ls] Recorded order space=${event.spaceId} product=${productId} gross=${gross}c fee=${fee}c`);
+  console.log(`[billing/ls] Recorded order space=${event.spaceId} product=${productId} gross=${gross}c fee=${fee}c builderFee=${builderFee}c`);
 
   // P0-5: net_cents used to sit in this row and go nowhere — Naelao's own Lemon Squeezy account
   // kept 100% of every storefront sale, and the seller got a database row. Settle it into the
@@ -142,6 +232,9 @@ async function recordProductOrder(
   // through — defense in depth, never double-settle the same order).
   if (insertResult.meta.changes > 0) {
     await settleOrderToWallet(event.spaceId, space.tenant_id, net, `settle:${providerEventId}`, "sale_settlement", env);
+    if (builderShare && builderFee > 0) {
+      await recordBuilderRevenueShare(env.PLATFORM_DB, builderShare, event, builderFee, providerEventId, false);
+    }
   }
   return id;
 }
@@ -215,8 +308,8 @@ async function recordOrderRefund(
   if (event.type !== "refund.issued" || !event.providerEventId) return;
 
   const order = await env.PLATFORM_DB.prepare(
-    "SELECT space_id, tenant_id, net_cents, status FROM launchpad_orders WHERE provider_event_id = ?"
-  ).bind(event.providerEventId).first<{ space_id: string; tenant_id: string; net_cents: number; status: string }>();
+    "SELECT space_id, tenant_id, net_cents, builder_fee_cents, status FROM launchpad_orders WHERE provider_event_id = ?"
+  ).bind(event.providerEventId).first<{ space_id: string; tenant_id: string; net_cents: number; builder_fee_cents: number; status: string }>();
   if (!order || order.status === "refunded") return; // unknown order, or already clawed back (idempotent)
 
   const updateResult = await env.PLATFORM_DB.prepare(
@@ -225,6 +318,22 @@ async function recordOrderRefund(
   if (updateResult.meta.changes === 0) return; // lost a race with a concurrent delivery — already handled
 
   await settleOrderToWallet(order.space_id, order.tenant_id, order.net_cents, `refund:${event.providerEventId}`, "refund_clawback", env);
+
+  // ARCH-REVENUE-6: claw back the builder's share too — a refund reverses BOTH deductions, not
+  // just the wallet net. Reverse the reseller_ledger builder_revenue_share row with a matching
+  // negative-margin entry so the builder's payout balance nets to zero for this order.
+  if (order.builder_fee_cents > 0) {
+    const hierarchy = await env.PLATFORM_DB.prepare(
+      "SELECT parent_tenant_id FROM tenant_hierarchy WHERE child_tenant_id = ? AND status = 'active'"
+    ).bind(order.tenant_id).first<{ parent_tenant_id: string }>();
+    if (hierarchy) {
+      await recordBuilderRevenueShare(
+        env.PLATFORM_DB,
+        { builderFeeCents: order.builder_fee_cents, parentTenantId: hierarchy.parent_tenant_id, childTenantId: order.tenant_id, childSpaceId: order.space_id },
+        event, order.builder_fee_cents, event.providerEventId, true
+      );
+    }
+  }
 }
 
 /**
@@ -761,8 +870,15 @@ async function recordResellerAttribution(
   if (!isLedgerEvent(event.type)) return;
 
   // F-21 / F-28: filter by the checkout kind BEFORE any attribution work.
-  const kind = (event.metadata ?? {})["kind"];
+  const meta = (event.metadata ?? {}) as Record<string, unknown>;
+  const kind = meta["kind"];
   if (typeof kind === "string" && RESELLER_ATTRIBUTION_BLOCKED_KINDS.has(kind)) return;
+
+  // ARCH-REVENUE-6: if this sale carries an explicit builder_fee_bps, the builder's cut is handled
+  // by the dedicated builder_revenue_share mechanism (recordBuilderRevenueShare) — do NOT also
+  // accrue referral/wholesale margin on the same sale, or the builder gets paid twice for it.
+  const builderBps = meta["builder_fee_bps"] ? parseInt(String(meta["builder_fee_bps"]), 10) : 0;
+  if (Number.isFinite(builderBps) && builderBps > 0) return;
 
   // Resolve the space's tenant, then its parent reseller (if any).
   const space = await db.prepare(

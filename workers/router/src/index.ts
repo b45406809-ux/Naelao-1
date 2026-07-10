@@ -460,6 +460,10 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // /wallet/debit — money-moving, internal-only (billing worker webhook + the wallet prebuilt) —
   // never match this allowlist, matching /rules and /spend's existing precedent.
   /^\/spaces\/([^/]+)\/projects\/([^/]+)\/wallet\/(balance|history)$/,
+  // F-WALLET-7: the consolidated per-business wallet view (balance + lifetime cut summary +
+  // recent transactions) the shell's business Wallet section reads. Gated by
+  // requireBusinessMembership (member GET) on the spaces worker — identity here, authorization there.
+  /^\/spaces\/([^/]+)\/wallet$/,
   /^\/spaces\/([^/]+)\/threads(\/[^/]+)?$/,
   /^\/spaces\/([^/]+)\/agent-definitions(\/|$)/,
   /^\/spaces\/([^/]+)\/presence$/,
