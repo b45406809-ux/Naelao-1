@@ -403,6 +403,75 @@ collision risk if a cron-fired script writes the same file a human has the threa
   they're a member of — identity-only at the router, real ACL check on the spaces worker,
   same split as every other entry in that list.
 
+**F-41 (design correction, user question 2026-07-10): not every kind on this list actually
+needs to BE a project — applying a real test instead of defaulting everything to project-
+shaped.** A kind belongs in the registry (own R2 workspace, own thread, own `project_members`
+ACL, singleton enforcement) only if it passes at least one of:
+1. **Bulky persistent content** — real files (video, evidence documents, generated dashboards)
+   or a genuinely ongoing thread of discussion a human returns to, not a single request/response.
+2. **Independent access control** — a business plausibly wants to grant one teammate access to
+   THIS without granting the others (e.g. a bookkeeper shouldn't need storefront-edit access;
+   legal docs plausibly want tighter access than general operating notes).
+3. **Standing "place" semantics** — something a builder navigates TO as a destination, not a
+   verb the assistant performs and reports the result of elsewhere.
+
+If a kind is really just an action (generate a report, call an API, run a periodic check) whose
+output has no independent bulk/ACL need, it's a **skill** in the assistant's script library —
+invoked from whichever project/thread asked for it, writing its output into THAT project's
+workspace (or into `operating_plan`'s decision log) rather than owning a workspace of its own.
+Re-classifying the full list against this test:
+
+**Downgraded from project to skill** (no bulky content of their own, no ACL need distinct from
+the project that would invoke them):
+- `brand_kit` → skill (`brand.generate`/`brand.update`). Output (logo/palette files) is written
+  into `storefront`'s own workspace, since that's the only place it's actually rendered/used —
+  no independent standing "place" a builder navigates to on its own.
+- `bookkeeping` → skill (`bookkeeping.export`). Entirely derived from `wallet`'s ledger, zero
+  independent state; writes an export artifact into `wallet`'s own workspace. Whoever can see
+  the wallet can see the bookkeeping export — no separate ACL to enforce.
+- `churn_retention` → skill (`retention.check_and_draft`), periodic/event-triggered. No bulky
+  content of its own (no files, no standing discussion thread) — logs its actions into
+  `operating_plan`'s decision log rather than owning a project.
+- `coupons_promotions` → skill (`coupons.create`/`coupons.list`). A direct API call to the
+  connected commerce platform — there's no persistent Naelao-side state to scope a project to.
+- `compliance_risk_monitor` → skill, scheduled via the existing `scheduled_jobs` mechanism
+  (CLAUDE.md item 20) — a periodic aggregate check, not a place. Alerts write into
+  `operating_plan` when a threshold is crossed.
+
+**Folded into an existing kind** (would have been a redundant second home for the same data):
+- `social_media` → folded into `integrations_hub`. It was already spec'd as holding ONLY OAuth
+  connection grants — that's exactly what `integrations_hub` is for; a second "connections"
+  project was never justified once `integrations_hub` existed. Actual publishing stays a skill
+  the assistant runs when `content_calendar` decides to publish.
+- `customer_voice` → folded into `analytics_dashboard` as a qualitative panel alongside its
+  quantitative ones, rather than a sibling cross-cutting project. Same read-across-kinds
+  mechanism, same access-recheck-per-widget discipline — no reason for it to be a second
+  standing "place" next to a kind that already exists for exactly this cross-cutting role.
+- `incident_postmortems` → folded into `operating_plan` as a distinct, tagged ENTRY TYPE
+  ("incident" vs "decision") in the same running log — a postmortem IS a decision-log entry
+  with different urgency, not a functionally separate place.
+
+**Removed from the registry entirely — not a project, not even a skill, just a UI view:**
+- `handoff_escalations` — already spec'd as "no new backend," a live feed over
+  `HITLApprovalDO`/`agent_activity_log` data that already exists. That means it has NEITHER an
+  R2 workspace NOR its own thread NOR project-level ACL beyond "can this user see approvals,"
+  which is a space-level role check, not a project membership check. It's a dashboard/shell
+  page querying existing APIs directly — putting it in the project registry would have created
+  fake project semantics (a workspace with nothing in it, a thread nobody writes to) around
+  what is honestly just a page.
+
+**Kept as projects, but flagged as genuinely borderline** (real judgment calls, not obvious
+either way — revisit once there's actual usage data): `affiliate_program` and
+`legal_compliance` (ACL argument is plausible but unconfirmed by any real usage pattern yet),
+`waitlist_launch` (naturally temporary/archivable, borderline whether that's enough content to
+justify standing infra vs. a skill that manages an email list), `competitor_watch` (could
+arguably just be data `operating_plan` reads rather than its own ACL boundary — kept separate
+because competitive intel plausibly wants narrower access than general strategy notes, but this
+is a guess, not a confirmed requirement). `market_research`/`hiring_freelance` stay
+non-singleton and explicitly NOT auto-provisioned/pre-selected by any template — created on
+demand only when a specific effort is bulky enough (real documents, real ongoing thread) to
+justify it; a quick one-off question stays a skill invocation with output posted wherever asked.
+
 **Registry — proposed initial kinds (Naelao ships all; templates pre-select a subset):**
 
 | kind | singleton? | notes |
@@ -442,16 +511,14 @@ surface for that domain, same role `integrations_hub` plays platform-wide.
   extend with an AI-triaged shared inbox as the project's thread surface |
 | `business_phone` | yes | new — Twilio-style number wired into the existing channel
   gateway (`workers/agents` channel ingress pattern already established for WhatsApp/Discord) |
-| `brand_kit` | yes | logo/palette/theme, generated once, referenced by storefront |
-| `bookkeeping` | yes | read-only rollup over the wallet ledger + CSV/QuickBooks export |
+| ~~`brand_kit`~~ | **downgraded to skill, see F-41** | not a project — see F-41 |
+| ~~`bookkeeping`~~ | **downgraded to skill, see F-41** | not a project — see F-41 |
 | `affiliate_program` | yes | referral links + payout via existing wallet/reseller_ledger |
 | `crm` | yes | contacts/notes/deal pipeline — native default; if the business already runs an
   external CRM, this SHOULD become connector-operated instead (config choice, not hardcoded) |
 | `support_inbox` | yes | ticket queue with SLAs — same caveat as `crm`: native default,
   connector-operated if the business already runs Zendesk/Intercom/etc |
-| `social_media` | yes | holds ONLY connected-platform OAuth grants, never publishes directly
-  — the connector-operated pattern's credential surface for this domain (one project, not one
-  per platform) |
+| ~~`social_media`~~ | **folded into `integrations_hub`, see F-41** | not a separate project — see F-41 |
 | `legal_compliance` | yes | auto-generated ToS/Privacy/Refund + e-sign vault |
 | `analytics_dashboard` | yes | **deliberately cross-cutting**, not a peer of the other kinds
   — its own workspace/thread, but its prebuilt script surface reads ACROSS `wallet` (ledger),
@@ -494,13 +561,8 @@ native reimplementation.
 | `courses` | yes, connector-operated | the assistant manages content on whatever LMS the
   business already runs (Whop Courses, Teachable, Kajabi, Skool) via that platform's API —
   publishing drip schedules, reading completion data — not a Naelao-hosted LMS. |
-| `churn_retention` | yes, connector-operated | PROACTIVE dunning/win-back is genuinely an
-  autonomous-operations task (decide WHEN to reach out, draft WHAT to say) even though the
-  underlying subscription state lives on the connected payment processor (LS/Whop) — the kind
-  is the assistant's decision/action log for this function, not a parallel subscription DB. |
-| `coupons_promotions` | yes, connector-operated | the assistant calls the connected commerce
-  platform's OWN coupon/discount API (Lemon Squeezy's, Whop's, Shopify's) — Naelao never
-  reimplements discount math or owns a competing coupon table. |
+| ~~`churn_retention`~~ | **downgraded to skill, see F-41** | not a project — see F-41 |
+| ~~`coupons_promotions`~~ | **downgraded to skill, see F-41** | not a project — see F-41 |
 | `ad_campaigns` | yes, connector-operated | the assistant operates the business's OWN Meta/
   TikTok/Google Ads accounts via their APIs — campaign creation, budget decisions, pausing
   underperformers. Naelao is not an ad platform; `analytics_dashboard` may read spend data back
@@ -574,35 +636,13 @@ flagged as backend-only/no-surface — cited explicitly, not duplicated.**
   the evidence behind a future `operating_plan` entry. An experiment's actual execution usually
   routes through a connector-operated kind (e.g. a pricing test touches `storefront` or
   `membership_access`); this kind owns only the experiment's design/tracking/conclusion. |
-| `customer_voice` | yes, **native, cross-cutting** (same pattern as `analytics_dashboard`) |
-  synthesizes qualitative signal — support ticket sentiment, social mentions, churn-survey
-  responses, review text — into one place the assistant reads before making decisions.
-  `analytics_dashboard` is the quantitative twin (revenue/orders numbers); this is the
-  qualitative one. Reads from `support_inbox`/`membership_access`(churn events)/`social_media`,
-  owns none of their underlying data — same per-source access re-check discipline as
-  `analytics_dashboard`. |
-| `incident_postmortems` | yes, **native** | "what broke, what I did about it, what's still
-  open" — a payment-processor outage, a spike in failed webhooks, a pricing bug the assistant
-  caught. This is the observability differentiator made concrete: a Polsia-style black box has
-  no equivalent surface; a builder using Naelao can always answer "did the assistant notice X
-  going wrong, and what did it do." Distinct from `disputes_chargebacks` (connector-operated,
-  handles ONE customer's dispute) — this is the assistant's own internal incident log. |
-| `handoff_escalations` | yes, **native, UI-only — no new backend** | the CONSOLIDATED,
-  builder-facing inbox specifically for "the assistant hit its autonomy ceiling and needs you"
-  moments — separate from `support_inbox` (customer-facing) and `business_email` (general
-  correspondence). The backend already exists and should NOT be rebuilt: `HITLApprovalDO`,
-  `assistant_policy`/`agent_policy_overrides` (Phase O), and `notifyApprovalRequested` already
-  generate exactly this signal — but per **F-9** (already flagged: "No builder UI for
-  `agent_activity_log`... nothing renders it"), there's no dedicated surface a builder actually
-  looks at. This kind is that surface: a project whose panel is a live feed of open approval
-  requests + past resolutions, nothing more — nothing net-new to build on the backend, purely
-  the missing UI these existing mechanisms need. |
-| `compliance_risk_monitor` | yes, **native** | PROACTIVE cross-metric risk detection —
-  chargeback-rate creep, refund-rate spike, unusual wallet spend velocity, subscription churn
-  spike — flagged BEFORE it's a crisis. Distinct from `disputes_chargebacks` (reactive,
-  connector-operated, handles one dispute at a time) and from `churn_retention` (customer-level
-  win-back) — this kind watches the aggregate trend across all of them and is what lets the
-  assistant say "something's off, here's what" without the builder having to notice first. |
+| ~~`customer_voice`~~ | **folded into `analytics_dashboard`, see F-41** | qualitative panel,
+  not a separate project — see F-41 |
+| ~~`incident_postmortems`~~ | **folded into `operating_plan`, see F-41** | tagged entry type,
+  not a separate project — see F-41 |
+| ~~`handoff_escalations`~~ | **removed — it's a UI page, not a project, see F-41** | see F-41 |
+| ~~`compliance_risk_monitor`~~ | **downgraded to scheduled skill, see F-41** | not a project —
+  see F-41 |
 
 | `workspace` | **no** | today's default, unchanged |
 | `customer_bot` | **no** | already exists, unchanged |
