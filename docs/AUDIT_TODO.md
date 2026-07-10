@@ -769,7 +769,7 @@ the expected incremental-build path, not a fallback state to design around.
   call `enforceSpaceQuota(childTenantId)` (free-tier cap ~50 spaces applies automatically) 
   and/or add `productConfig.maxBusinessesPerEndUser`.
 
-- [ ] **F-26 (severe overbilling): the revenue-tracker's Whop pull ignores the `period` it
+- [x] **F-26 (severe overbilling): FIXED — fetchWhopRevenueThisPeriod now computes the period's [start,end) bounds, requests a server-side created-at range, and (authoritatively) filters each payment client-side by its parsed paid/created timestamp, so a monthly snapshot is that month's revenue, not all-time. Payments with no parseable timestamp are skipped (conservative). Tests added in revenue-tracker-prebuilt.test.ts. ORIGINAL: the revenue-tracker's Whop pull ignores the `period` it
   claims to snapshot — every monthly snapshot is ALL-TIME revenue.**
   Evidence: `fetchWhopRevenueThisPeriod(ctx, period)`
   (workers/agents/src/script-engine/prebuilt/revenue-tracker.ts:55-82) never uses its

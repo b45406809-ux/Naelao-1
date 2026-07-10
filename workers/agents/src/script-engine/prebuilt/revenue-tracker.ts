@@ -37,6 +37,11 @@ interface WhopPayment {
   final_amount?: number;
   amount?: number;
   subtotal?: number;
+  // F-26: plausible created/paid timestamp field names — used to keep only payments inside the
+  // period being snapshotted. Whop returns either an ISO string or a unix-seconds integer.
+  created_at?: string | number;
+  paid_at?: string | number;
+  settled_at?: string | number;
 }
 
 /** Sum only payments that look genuinely completed — skip anything pending/failed/refunded so a
@@ -52,8 +57,28 @@ function extractAmountCents(p: WhopPayment): number | null {
   return Math.round(raw);
 }
 
+/** F-26: parse a Whop timestamp (ISO string or unix seconds) to epoch millis, or null if absent. */
+function extractPaidAtMs(p: WhopPayment): number | null {
+  const raw = p.paid_at ?? p.settled_at ?? p.created_at;
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw > 1e12 ? raw : raw * 1000; // secs vs ms
+  if (typeof raw === "string") {
+    const t = Date.parse(raw);
+    return Number.isNaN(t) ? null : t;
+  }
+  return null;
+}
+
+/** F-26: the [start, end) epoch-ms bounds of a "YYYY-MM" period (UTC). */
+function periodBounds(period: string): { startMs: number; endMs: number } {
+  const [y, m] = period.split("-").map((n) => parseInt(n, 10));
+  const startMs = Date.UTC(y!, m! - 1, 1);
+  const endMs = Date.UTC(m! === 12 ? y! + 1 : y!, m! === 12 ? 0 : m!, 1);
+  return { startMs, endMs };
+}
+
 async function fetchWhopRevenueThisPeriod(ctx: PrebuiltOpContext, period: string): Promise<number> {
   const serverId = await resolveServerId(ctx, "whop");
+  const { startMs, endMs } = periodBounds(period);
   let totalCents = 0;
   // Bounded pagination — a v1 cap, not a promise of exhaustive historical accuracy. A business
   // with more than this many payments in one month needs a more scalable tracking mechanism than
@@ -66,13 +91,30 @@ async function fetchWhopRevenueThisPeriod(ctx: PrebuiltOpContext, period: string
       method: "POST",
       // Matches mcp-connector's mcp.call contract exactly (tool_name/input) — this bypasses that
       // op only to avoid a second script.run hop, not to invent a different hub request shape.
-      body: { tool_name: "list_payments", input: { page, per: 100, status: "paid" } },
+      // F-26: also request a server-side created-at range so the API returns only this period's
+      // payments where it supports it (field names per Whop docs may vary — this is best-effort;
+      // the client-side window filter below is the AUTHORITATIVE guarantee regardless).
+      body: {
+        tool_name: "list_payments",
+        input: {
+          page, per: 100, status: "paid",
+          "created_at[gte]": Math.floor(startMs / 1000),
+          "created_at[lt]": Math.floor(endMs / 1000),
+        },
+      },
     })) as { data?: WhopPayment[] } | WhopPayment[];
     const payments = Array.isArray(result) ? result : (result.data ?? []);
     if (payments.length === 0) break;
 
     for (const p of payments) {
       if (!isCompletedPayment(p)) continue;
+      // F-26 (root cause): the previous version summed EVERY completed payment across all time,
+      // so each monthly snapshot was the business's all-time revenue — re-billed the cut every
+      // month. Only count a payment whose paid/created timestamp falls INSIDE the snapshot period.
+      // A payment with no parseable timestamp is skipped (conservative: understates, never
+      // over-bills) rather than assumed in-period.
+      const paidAtMs = extractPaidAtMs(p);
+      if (paidAtMs === null || paidAtMs < startMs || paidAtMs >= endMs) continue;
       const cents = extractAmountCents(p);
       if (cents !== null) totalCents += cents;
     }

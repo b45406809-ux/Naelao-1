@@ -13,12 +13,23 @@ const PLATFORM_SECRET = "test-platform-secret";
 
 interface Call { method: string; url: string; headers: Record<string, string>; body: unknown }
 
+// F-26: revenue-tracker now keeps only payments whose paid/created timestamp falls inside the
+// snapshot period. Tests default their payments to "now" (current calendar month) unless they set
+// created_at explicitly; a helper stamps a current-month timestamp on any payment missing one.
+type TestPayment = { status?: string; final_amount?: number; amount?: number; subtotal?: number; created_at?: string | number; paid_at?: string | number };
+function stampNow(pages: TestPayment[][]): TestPayment[][] {
+  const now = new Date().toISOString();
+  return pages.map((page) => page.map((p) => (p.created_at === undefined && p.paid_at === undefined ? { ...p, created_at: now } : p)));
+}
+
 function makeEnv(opts: {
   servers?: Array<{ id: string; name: string }>;
-  paymentPages?: Array<{ status?: string; final_amount?: number; amount?: number; subtotal?: number }[]>;
+  paymentPages?: TestPayment[][];
   spacesResponder?: (call: Call) => unknown;
+  stampCurrentMonth?: boolean;
 }) {
-  const { servers = [{ id: "srv-whop", name: "whop" }], paymentPages = [[]], spacesResponder } = opts;
+  const { servers = [{ id: "srv-whop", name: "whop" }], paymentPages: rawPages = [[]], spacesResponder, stampCurrentMonth = true } = opts;
+  const paymentPages = stampCurrentMonth ? stampNow(rawPages) : rawPages;
   const hubCalls: Call[] = [];
   const spacesCalls: Call[] = [];
   let pageIdx = 0;
@@ -88,9 +99,39 @@ describe("revenue-tracker prebuilt — revenue.track_whop", () => {
   });
 
   it("uses an explicit period when provided", async () => {
-    const { env, spacesCalls } = makeEnv({ paymentPages: [[{ status: "paid", final_amount: 1000 }]] });
+    const { env, spacesCalls } = makeEnv({ paymentPages: [[{ status: "paid", final_amount: 1000, created_at: "2026-03-15T12:00:00Z" }]] });
     await revenueTracker.operations["revenue.track_whop"]!({ period: "2026-03" }, { env, run: noopRun });
     expect((spacesCalls[0]!.body as { period: string }).period).toBe("2026-03");
+    expect((spacesCalls[0]!.body as { revenue_cents: number }).revenue_cents).toBe(1000);
+  });
+
+  it("F-26: only counts payments INSIDE the snapshot period, not all-time revenue", async () => {
+    const { env, spacesCalls, hubCalls } = makeEnv({
+      stampCurrentMonth: false,
+      paymentPages: [[
+        { status: "paid", final_amount: 1000, created_at: "2026-03-05T00:00:00Z" }, // in period
+        { status: "paid", final_amount: 2000, created_at: "2026-03-28T00:00:00Z" }, // in period
+        { status: "paid", final_amount: 9999, created_at: "2026-02-27T00:00:00Z" }, // BEFORE period
+        { status: "paid", final_amount: 8888, created_at: "2026-04-01T00:00:00Z" }, // AFTER period (exclusive end)
+        { status: "paid", final_amount: 7777, created_at: 1740787200 },             // unix secs = 2025-03-01, out
+      ]],
+    });
+    await revenueTracker.operations["revenue.track_whop"]!({ period: "2026-03" }, { env, run: noopRun });
+    // Only the two March 2026 payments count.
+    expect((spacesCalls[0]!.body as { revenue_cents: number }).revenue_cents).toBe(3000);
+    // The request also carries a server-side created-at range for the period.
+    const callInput = (hubCalls.find((c) => /tools\/call$/.test(c.url))!.body as { input: Record<string, number> }).input;
+    expect(callInput["created_at[gte]"]).toBe(Math.floor(Date.UTC(2026, 2, 1) / 1000));
+    expect(callInput["created_at[lt]"]).toBe(Math.floor(Date.UTC(2026, 3, 1) / 1000));
+  });
+
+  it("F-26: skips a payment with no parseable timestamp (conservative — understates, never over-bills)", async () => {
+    const { env, spacesCalls } = makeEnv({
+      stampCurrentMonth: false,
+      paymentPages: [[{ status: "paid", final_amount: 5000 }]], // no created_at/paid_at at all
+    });
+    await revenueTracker.operations["revenue.track_whop"]!({ period: "2026-03" }, { env, run: noopRun });
+    expect((spacesCalls[0]!.body as { revenue_cents: number }).revenue_cents).toBe(0);
   });
 
   it("skips non-completed payments (pending/failed/refunded)", async () => {
