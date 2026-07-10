@@ -407,16 +407,37 @@ collision risk if a cron-fired script writes the same file a human has the threa
 
 | kind | singleton? | notes |
 |---|---|---|
+**Why these stay native (each checked against the connector-operated principle above, not
+assumed):** `wallet` is Naelao's actual money-custody moat — no 3rd-party platform can hold a
+Launchpad business's earned-revenue balance, this is infrastructure Naelao itself provides, not
+a reimplementation of anything. `business_email`/`business_phone` are Naelao PROVISIONING real
+infra (a mailbox, a number) the business didn't have before — not competing with Gmail/Twilio,
+using them as the underlying rail. `brand_kit`/`legal_compliance`/`bookkeeping` are generation
+and read-only synthesis (logo/docs/exports), not a competing design tool, law firm, or
+accounting platform. `crm`/`support_inbox` are lightweight and genuinely native ONLY because a
+typical Whop-style seller has no existing CRM/helpdesk to defer to — if a business already runs
+HubSpot/Zendesk, THAT should be operated via connector instead of forcing them onto Naelao's own
+(flag this as a config choice per business, not hardcoded either way). `affiliate_program` is
+native because it settles through Naelao's OWN wallet/reseller_ledger — the payout mechanism
+itself has no 3rd-party equivalent to defer to. `social_media` deliberately holds ONLY the OAuth
+connections, never publishes on its own — it's the connector-operated pattern's own credential
+surface for that domain, same role `integrations_hub` plays platform-wide.
+
 | `wallet` | yes | ALREADY BUILT feature-wise; needs F-32/F-34's DB enforcement |
-| `storefront` | yes | proposed remodel of `business_services`/`launchpad_products`/
-  `launchpad_orders` (today NOT project-scoped at all — see answer below) — add a
-  `project_id` column to those three tables rather than migrating the data model. **Naming
-  disambiguation (do not confuse the two):** spec §48's "NaelaoProduct" (CLAUDE.md item 30)
-  = a Tier-1 builder's deployed SPACE (LexSpace/CodePilot/FirmAI) — the `spaces` table row
-  with `product_slug`, resolved by `GET /v1/products/by-slug/:slug`. `launchpad_products`
-  here = a Tier-2 end-user BUSINESS's own storefront catalog item (a course/ebook/template
-  it sells to ITS customers) — a completely different, lower layer that happens to share
-  the English word "product." This registry entry only ever touches the second one. |
+| `storefront` | yes, **conditionally native — reconciled with the connector-operated
+  principle** | remodel of `business_services`/`launchpad_products`/`launchpad_orders` (today
+  NOT project-scoped — add a `project_id` column rather than migrating the model). **This is
+  ONLY the right default for a business with no existing commerce platform** (the `micro-saas`/
+  `creator-store` coming-soon templates selling direct through Naelao's own Lemon Squeezy
+  checkout — there IS no 3rd party to defer to). For `whop-seller` specifically, Whop already
+  has its own storefront/checkout — the assistant should operate THAT via `mcp-connector`
+  (connector-operated), never stand up a competing Naelao storefront selling the same product
+  twice. The registry's per-template pre-selection (not a global default) decides which mode a
+  given business gets; a business can't run both for the same catalog. **Naming
+  disambiguation:** spec §48's "NaelaoProduct" (CLAUDE.md item 30) = a Tier-1 builder's deployed
+  SPACE (LexSpace/CodePilot/FirmAI), resolved by `GET /v1/products/by-slug/:slug`.
+  `launchpad_products` here = a Tier-2 end-user BUSINESS's own storefront catalog item (a
+  course/ebook it sells to ITS customers) — unrelated layers sharing the word "product." |
 | `business_email` | yes | already partial (business_services kind='business_email');
   extend with an AI-triaged shared inbox as the project's thread surface |
 | `business_phone` | yes | new — Twilio-style number wired into the existing channel
@@ -424,10 +445,13 @@ collision risk if a cron-fired script writes the same file a human has the threa
 | `brand_kit` | yes | logo/palette/theme, generated once, referenced by storefront |
 | `bookkeeping` | yes | read-only rollup over the wallet ledger + CSV/QuickBooks export |
 | `affiliate_program` | yes | referral links + payout via existing wallet/reseller_ledger |
-| `crm` | yes | contacts/notes/deal pipeline — distinct from support tickets |
-| `support_inbox` | yes | ticket queue with SLAs — distinct from `business_email` |
-| `social_media` | yes | one project holding all connected platform OAuth grants (not
-  one project per platform) |
+| `crm` | yes | contacts/notes/deal pipeline — native default; if the business already runs an
+  external CRM, this SHOULD become connector-operated instead (config choice, not hardcoded) |
+| `support_inbox` | yes | ticket queue with SLAs — same caveat as `crm`: native default,
+  connector-operated if the business already runs Zendesk/Intercom/etc |
+| `social_media` | yes | holds ONLY connected-platform OAuth grants, never publishes directly
+  — the connector-operated pattern's credential surface for this domain (one project, not one
+  per platform) |
 | `legal_compliance` | yes | auto-generated ToS/Privacy/Refund + e-sign vault |
 | `analytics_dashboard` | yes | **deliberately cross-cutting**, not a peer of the other kinds
   — its own workspace/thread, but its prebuilt script surface reads ACROSS `wallet` (ledger),
@@ -440,43 +464,88 @@ collision risk if a cron-fired script writes the same file a human has the threa
   omitted, not errored. |
 | `hiring_freelance` | **no** | a business may run several hiring efforts concurrently |
 | `market_research` | **no** | ad hoc, no reason to cap |
-| `membership_access` | yes | **the biggest gap, verified against HEAD:** `whop-seller`
-  (spacetype.ts:298-324) today is READ-ONLY automation over an EXISTING Whop business —
-  Whop itself still does all tier/access-gating; Naelao has no native membership/access-
-  control layer of its own anywhere in the platform. This kind owns: who's paid for which
-  tier, auto-sync to Discord roles / Telegram groups / private channel invites, auto-revoke
-  on churn or refund. Distinct from `crm` (sales-relationship tracking, not a live gate) —
-  this is the thing actually deciding who's let into the Discord server right now. |
-| `courses` | yes | drip-scheduled lessons, video/file hosting via the R2 workspace,
-  quiz/completion tracking, certificates. Reads `membership_access` to gate which module a
-  given member can see (same cross-kind read pattern as `analytics_dashboard`, not a data
-  fork). |
-| `license_delivery` | yes | license-key generation/rotation, per-purchase download links
-  with expiry, basic anti-sharing (device/IP binding) for software/template sellers.
-  `launchpad_products.fulfillment_r2_key` (migration 0035) is today a flat file drop with
-  no key-gen or expiry logic at all — this is a real, currently-missing capability, not a
-  UI wrapper over something that exists. |
-| `churn_retention` | yes | PROACTIVE dunning (card expiring soon, not yet failed — distinct
-  from F-23's reactive expiry gate), win-back sequences for cancelled members, churn-risk
-  flags surfaced to the assistant. Reads `wallet`/subscription status, doesn't own new data. |
-| `waitlist_launch` | yes | pre-launch lead capture, hype/drip sequence, invite-code or
-  early-access gating before public sale opens — feeds into `membership_access` once the
-  business goes live. |
-| `coupons_promotions` | yes | discount codes, flash sales, time-limited bundles — wraps
-  Lemon Squeezy's own coupon API rather than reinventing discount math. |
-| `content_calendar` | yes | PLANNING layer (drafts, scheduling, approval queue, campaign
-  grouping) distinct from `social_media` (which only holds the connected-account OAuth
-  grants) — this kind decides what/when, `social_media` is what it publishes through. |
-| `ad_campaigns` | yes | cross-platform (Meta/TikTok/Google) spend + ROAS via MCP-connector.
-  Owns campaign/spend data; `analytics_dashboard` reads it, doesn't duplicate it. |
-| `live_events` | yes | scheduled calls/webinars/office-hours, attendance tracking, recording
-  archive in the project's own R2 workspace — relevant to `coaching-community` and
-  `micro-saas` templates specifically. |
-| `disputes_chargebacks` | yes | chargeback response drafting/evidence assembly, refund
-  triage queue with an audit trail and time-boxed responses — distinct from `support_inbox`
-  (casual back-and-forth, no SLA/audit requirement) and ties directly to F-18's exposure
-  (deleted product's live subscribers) as a place that exposure gets handled operationally
-  once F-18 itself is fixed. |
+
+**CORRECTION (user, 2026-07-10): Naelao is not trying to BE Whop, Shopify, Teachable, or any
+platform a Launchpad business is already built on — it operates them autonomously (the Polsia
+comparison). The batch of kinds below (previous revision of this doc) was spec'd wrong: it had
+Naelao OWNING native membership-gating, course-hosting, license-key generation, and coupon math
+— i.e. quietly rebuilding the exact platforms the business already runs on. Re-spec'd as
+CONNECTOR-OPERATED: the kind is the assistant's dedicated project (workspace + thread + a
+prebuilt script surface that is exclusively `mcp-connector` calls into the business's OWN
+Whop/Shopify/Teachable/Discord/ad-platform/payment-processor account) — Naelao stores no
+parallel copy of that platform's data as source of truth, ever. This is not a new pattern to
+invent — it's exactly what CLAUDE.md item 8 already establishes ("MCP is the mcp-connector
+prebuilt script... every capability is a script in a library... nothing else is hardcoded") and
+what `whop-seller` already does correctly for support/content today; the gap was never "Naelao
+needs its own membership system," it was "no connector-operated kind exists yet for the
+functions whop-seller doesn't touch (memberships/courses/coupons/disputes/etc)." A `kind`'s
+`connectorOperated: true` flag on the registry entry means: (a) its prebuilt script surface has
+NO local write path that becomes a second source of truth for that domain — every mutation is a
+live `mcp-connector` call; (b) the project's workspace/R2 is for the ASSISTANT's own working
+notes/drafts/logs about that domain, never a cache pretending to be authoritative; (c) if the
+business hasn't connected the relevant platform (no Whop credential, no Shopify credential), the
+kind's panel says so and the assistant can't act in that domain — never silently falls back to a
+native reimplementation.
+
+| `membership_access` | yes, connector-operated | the assistant operates the tier/access-gating
+  that ALREADY lives on the business's connected platform (Whop memberships, Discord/Telegram
+  role sync via THEIR APIs) via `mcp-connector` — who's revoked on churn, who's promoted on
+  upgrade — Naelao never becomes a second gate the real one can drift out of sync with. |
+| `courses` | yes, connector-operated | the assistant manages content on whatever LMS the
+  business already runs (Whop Courses, Teachable, Kajabi, Skool) via that platform's API —
+  publishing drip schedules, reading completion data — not a Naelao-hosted LMS. |
+| `churn_retention` | yes, connector-operated | PROACTIVE dunning/win-back is genuinely an
+  autonomous-operations task (decide WHEN to reach out, draft WHAT to say) even though the
+  underlying subscription state lives on the connected payment processor (LS/Whop) — the kind
+  is the assistant's decision/action log for this function, not a parallel subscription DB. |
+| `coupons_promotions` | yes, connector-operated | the assistant calls the connected commerce
+  platform's OWN coupon/discount API (Lemon Squeezy's, Whop's, Shopify's) — Naelao never
+  reimplements discount math or owns a competing coupon table. |
+| `ad_campaigns` | yes, connector-operated | the assistant operates the business's OWN Meta/
+  TikTok/Google Ads accounts via their APIs — campaign creation, budget decisions, pausing
+  underperformers. Naelao is not an ad platform; `analytics_dashboard` may read spend data back
+  out of this kind's action log, never duplicate ad-serving. |
+| `live_events` | yes, connector-operated | the assistant operates the business's existing
+  Zoom/Calendly/Google Meet account via API for scheduling — Naelao is not a video platform. |
+| `disputes_chargebacks` | yes, connector-operated | the assistant drafts responses and submits
+  evidence through the ACTUAL payment processor's dispute API (Whop/Stripe/LS each have one) —
+  ties to F-18's exposure as where that gets handled operationally, still never a parallel
+  Naelao-owned dispute system. |
+| `waitlist_launch` | yes, **native (no existing 3rd-party home)** | most connected platforms
+  have no "pre-launch waitlist" primitive at all — this is legitimately Naelao's own light
+  email-capture + drip sequence (built on the business's own auto-provisioned business_email),
+  not competing with anything the business is already running. |
+| `content_calendar` | yes, **native (planning only, publishes through a connector)** | the
+  PLANNING layer (drafts, approval queue, what/when) — genuinely Naelao's own since no
+  connected platform owns "my content plan" as a concept — but it never posts directly; it
+  hands off to `social_media`'s connected accounts (or a per-platform `mcp-connector` call) to
+  actually publish. Keep as native, but the boundary matters: this kind owns the PLAN, never
+  the published post itself. |
+| `license_delivery` | **re-scoped, not a default kind** | most Whop-style sellers' license/
+  delivery need is already solved by whichever platform they sell through (Whop's own digital
+  delivery, or Lemon Squeezy's file-attachment on a product). Only relevant for a business with
+  NO existing commerce platform at all (the `micro-saas` template selling direct via Naelao's
+  own storefront) — in that narrow case it's a feature WITHIN `storefront`'s own tool surface
+  (extend the storefront prebuilt), not a standalone kind. Removed from the default registry. |
+
+**Two genuinely NEW native kinds — the actual "Polsia-style autonomous operator" layer, not
+platform reimplementation:**
+
+| `integrations_hub` | yes, **native** | the control panel for every 3rd-party connection a
+  business runs on (Whop, Shopify, Discord, Meta Ads, Zoom, payment processor) — which
+  platforms are connected, credential health/expiry, which connector-operated kinds are
+  therefore "live" vs. greyed-out. This is the single place a builder sees "here's what my
+  autonomous assistant can actually touch right now." Backed by the existing credential
+  hierarchy (`workers/credentials`, CLAUDE.md item 18) — this kind is a UI/read surface over
+  that, not a new credential store. |
+| `operating_plan` | yes, **native** | the assistant's OWN strategic memory: current goals,
+  active initiatives, a running decision log ("raised prices 10% on 2026-07-01 because X") —
+  this has no 3rd-party home by definition, it's the thing that makes the assistant look like
+  it's actually RUNNING the business rather than just executing isolated tasks. Directly
+  reinforces the differentiator CLAUDE.md item 41 already stakes out against Polsia's black-box
+  autonomy ("honest escalation/transparency as the differentiator") — `agent_activity_log`
+  (already built, item 40) is the raw action feed; this kind is the assistant's own narrated
+  reasoning ABOVE that feed, builder-readable, not just an audit trail. |
 | `workspace` | **no** | today's default, unchanged |
 | `customer_bot` | **no** | already exists, unchanged |
 
