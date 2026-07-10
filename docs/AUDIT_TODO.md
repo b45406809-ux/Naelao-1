@@ -966,7 +966,7 @@ the expected incremental-build path, not a fallback state to design around.
 
 ## Tier 4 — Provisioning & Startup
 
-- [ ] **F-47 (billing, race condition): Credit deduction idempotency check is racy — 
+- [x] **F-47/F-50 RESOLVED: within a single DO the dedup SELECT and the INSERT run with no `await` between them and a DO handles one request to completion, so the TOCTOU cannot actually interleave; added a defensive duplicate-key catch on /credits/deduct that returns the already-recorded balance (defense-in-depth). F-47 (billing, race condition): Credit deduction idempotency check is racy — 
   concurrent requests with the same idempotency_key can both pass the dedup check.** Evidence: 
   `ProductUserDO.handle` (workers/spaces/src/do/ProductUserDO.ts:243-260) for `/credits/deduct` 
   route: (1) SELECT idempotency_key from credit_ledger (line 244-246); (2) if found, return 
@@ -1139,7 +1139,7 @@ thread erasure design, debit idempotency TOCTOU)
   "completing" the deletion by deleting threads too (which would break the builder's history). 
   **No fix needed** (design is sound), but add a note.
 
-- [ ] **F-50 (VERIFY): ProjectUserDO credit-ledger idempotency on concurrent debit.** 
+- [x] **F-50 (VERIFY): ProjectUserDO credit-ledger idempotency on concurrent debit.** 
   Evidence: `POST /credits/deduct` (lines 228-262) has a TOCTOU race I identified in F-47. 
   The logic SELECT→CHECK→INSERT pattern races; two identical concurrent requests can both 
   pass the SELECT (line 244 checks idempotency key), both check balance (line 251), both 

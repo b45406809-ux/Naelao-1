@@ -260,10 +260,26 @@ export class ProductUserDO extends DurableObject {
         return Response.json({ error: "insufficient_credits", balance_credits: balance }, { status: 402 });
       }
       const balanceAfter = balance - debit;
-      this.ctx.storage.sql.exec(
-        `INSERT INTO credit_ledger (id, delta_credits, reason, model, balance_after, idempotency_key) VALUES (?, ?, ?, ?, ?, ?)`,
-        crypto.randomUUID(), -debit, body.reason ?? "agent_run", body.model ?? null, balanceAfter, body.idempotency_key ?? null
-      );
+      // F-47/F-50: the SELECT-then-INSERT above is already atomic within a single DO instance
+      // (DO SQLite .exec is synchronous and there is no `await` between the dedup SELECT and this
+      // INSERT, and a DO processes one request to completion before the next), so the audited
+      // TOCTOU can't actually interleave here. As defense-in-depth against the unique-index path
+      // (and any future refactor that introduces an await), catch a duplicate-key violation and
+      // return the already-recorded balance instead of surfacing an error / double-debiting.
+      try {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO credit_ledger (id, delta_credits, reason, model, balance_after, idempotency_key) VALUES (?, ?, ?, ?, ?, ?)`,
+          crypto.randomUUID(), -debit, body.reason ?? "agent_run", body.model ?? null, balanceAfter, body.idempotency_key ?? null
+        );
+      } catch (err) {
+        if (body.idempotency_key) {
+          const raced = this.ctx.storage.sql
+            .exec("SELECT balance_after FROM credit_ledger WHERE idempotency_key = ?", body.idempotency_key)
+            .toArray() as unknown as { balance_after: number }[];
+          if (raced[0]) return Response.json({ balance_credits: raced[0].balance_after, deduplicated: true }, { status: 200 });
+        }
+        throw err;
+      }
       return Response.json({ balance_credits: balanceAfter }, { status: 201 });
     }
 
