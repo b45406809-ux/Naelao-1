@@ -839,6 +839,14 @@ export interface AgentDOEnv {
    *  the AI binding, which is for direct binding calls). Set via `wrangler secret put
    *  CF_API_TOKEN`. When absent, the reasoner uses the Anthropic-specific endpoint only. */
   CF_API_TOKEN?: string;
+  /** F-12: cross-provider LLM failover. When the primary model fails at the gateway, it falls
+   *  back to LLM_FALLBACK_MODEL (defaults to a cheaper Anthropic model on the SAME key — real
+   *  within-provider model failover with no extra secret) and, if OPENAI_API_KEY is set,
+   *  additionally to OPENAI_FALLBACK_MODEL on OpenAI — real CROSS-provider failover. All optional;
+   *  absent → single-provider behavior unchanged. */
+  LLM_FALLBACK_MODEL?: string;
+  OPENAI_API_KEY?: string;
+  OPENAI_FALLBACK_MODEL?: string;
   // ── Execution ladder Tiers 2-5 (spec bottom appendix §8 / code-runner.ts) ──
   /** CF Worker Loader (beta) — backs Tiers 2-4 (V8 isolate, npm-best-effort, browser). */
   LOADER?: WorkerLoaderBinding;
@@ -2143,6 +2151,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       },
       ctx: { spaceId, agentId, model: body.model ?? "claude-haiku-4-5-20251001" },
       ...(body.model ? { model: body.model } : {}),
+      fallbacks: this.resolveFailoverChain(body.model ?? "claude-haiku-4-5-20251001", body.apiKey ?? ""),
     });
 
     try {
@@ -2860,6 +2869,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}) },
       ctx: { spaceId, agentId, model },
       model,
+      fallbacks: this.resolveFailoverChain(model, body.apiKey ?? ""),
     });
 
     // Resolve config + rules once per distinct project among this batch (not per message).
@@ -3569,6 +3579,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     } catch {
       // Best-effort — do not fail the run if write-back fails
     }
+  }
+
+  /**
+   * F-12: resolve the cross-provider LLM failover chain from configured secrets. The primary model
+   * is passed separately; this returns ONLY the fallbacks (tried in order after it). Defaults to a
+   * cheaper Anthropic model on the SAME key (real within-provider model failover, zero extra
+   * config), then OpenAI when OPENAI_API_KEY is set (real cross-provider). All optional — an empty
+   * chain means single-provider behavior, unchanged.
+   */
+  private resolveFailoverChain(primaryModel: string, anthropicKey: string): { model: string; apiKey: string }[] {
+    const chain: { model: string; apiKey: string }[] = [];
+    const anthropicFallback = this.env.LLM_FALLBACK_MODEL ?? "claude-haiku-4-5-20251001";
+    if (anthropicKey && anthropicFallback && anthropicFallback !== primaryModel) {
+      chain.push({ model: anthropicFallback, apiKey: anthropicKey });
+    }
+    if (this.env.OPENAI_API_KEY && this.env.OPENAI_FALLBACK_MODEL) {
+      chain.push({ model: this.env.OPENAI_FALLBACK_MODEL, apiKey: this.env.OPENAI_API_KEY });
+    }
+    return chain;
   }
 
   private persistReactSteps(runId: string, steps: ReactStep[]): void {

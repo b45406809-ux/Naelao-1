@@ -161,6 +161,30 @@ describe("buildUniversalBody", () => {
     expect(withTok.providers).toHaveLength(1);
     expect(withTok.providers[0].provider).toBe("anthropic");
   });
+
+  // F-12: cross-provider failover — an ORDERED providers array the gateway tries in turn.
+  it("appends fallback provider entries in order (Anthropic primary → cheaper Anthropic → OpenAI)", () => {
+    const body = JSON.parse(buildUniversalBody({
+      ...baseOpts,
+      fallbacks: [
+        { model: "claude-sonnet-5", apiKey: "sk-ant-test" }, // dupe of primary → skipped
+        { model: "claude-opus-4-8", apiKey: "sk-ant-2" },
+        { model: "gpt-4o", apiKey: "sk-openai" },
+      ],
+      query: { ...baseOpts.query, model: "claude-sonnet-5" },
+    }));
+    expect(body.providers).toHaveLength(3); // primary + 2 (the primary-dupe fallback is dropped)
+    expect(body.providers[0].provider).toBe("anthropic");
+    expect(body.providers[1].provider).toBe("anthropic");
+    expect(body.providers[1].query.model).toBe("claude-opus-4-8");
+    expect(body.providers[2].provider).toBe("openai");
+    expect(body.providers[2].headers["Authorization"]).toBe("Bearer sk-openai");
+  });
+
+  it("no fallbacks → single provider (unchanged)", () => {
+    const body = JSON.parse(buildUniversalBody({ ...baseOpts, fallbacks: [] }));
+    expect(body.providers).toHaveLength(1);
+  });
 });
 
 // ── GatewayReasoner integration tests ────────────────────────────────────────

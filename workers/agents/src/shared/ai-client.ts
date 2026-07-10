@@ -60,9 +60,62 @@ export function inferProvider(model: string): string {
   return "anthropic";
 }
 
+/** One (model, apiKey) pair in a failover chain. */
+export interface FailoverModel {
+  model: string;
+  apiKey: string;
+  /** Only needed when this entry routes to the workers-ai provider. */
+  cfApiToken?: string;
+}
+
+/** Build a single Universal-Endpoint provider entry for a (model, apiKey) — the provider is
+ *  inferred from the model name, so a chain can mix Anthropic/OpenAI/Workers-AI freely. */
+function buildProviderEntry(
+  model: string,
+  apiKey: string,
+  cfApiToken: string | undefined,
+  max_tokens: number,
+  system: string,
+  messages: Array<{ role: string; content: string }>,
+  metadata: string,
+  skipCache: boolean,
+): UniversalProvider {
+  const provider = inferProvider(model);
+  if (provider === "workers-ai") {
+    return {
+      provider: "workers-ai",
+      endpoint: model,
+      headers: { "Authorization": `Bearer ${cfApiToken ?? ""}`, "cf-aig-metadata": metadata },
+      query: { messages: [{ role: "system", content: system }, ...messages], max_tokens },
+    };
+  }
+  if (provider === "anthropic") {
+    return {
+      provider: "anthropic",
+      endpoint: "messages",
+      headers: {
+        "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION, "anthropic-beta": ANTHROPIC_BETA,
+        "cf-aig-metadata": metadata, "cf-aig-cache-ttl": skipCache ? "0" : "0",
+      },
+      query: { model, max_tokens, system, messages },
+    };
+  }
+  // OpenAI and OpenAI-compatible providers
+  return {
+    provider,
+    endpoint: "chat/completions",
+    headers: { "Authorization": `Bearer ${apiKey}`, "cf-aig-metadata": metadata, "cf-aig-cache-ttl": skipCache ? "0" : "0" },
+    query: { model, max_tokens, messages: [{ role: "system", content: system }, ...messages] },
+  };
+}
+
 /**
- * Build a Universal Endpoint request body with a single provider entry inferred from the
- * model name. The gateway handles routing — callers just pick a model.
+ * Build a Universal Endpoint request body. F-12: the CF AI Gateway Universal Endpoint takes an
+ * ORDERED `providers` array and tries each in turn until one succeeds — real cross-provider
+ * failover, not just cross-request retry. The primary is inferred from `query.model`; `fallbacks`
+ * (a chain of {model, apiKey} the caller supplies only for configured providers) are appended in
+ * order, so a primary Anthropic model can fall back to a cheaper Anthropic model AND/OR to OpenAI
+ * when that key is set — no code change per new provider, just another chain entry.
  */
 export function buildUniversalBody(opts: {
   apiKey: string;
@@ -75,8 +128,10 @@ export function buildUniversalBody(opts: {
     system: string;
     messages: Array<{ role: string; content: string }>;
   };
+  /** Ordered failover chain tried after the primary (each with its own provider-specific key). */
+  fallbacks?: FailoverModel[];
 }): string {
-  const { apiKey, cfApiToken, ctx, query } = opts;
+  const { apiKey, cfApiToken, ctx, query, fallbacks } = opts;
   const metadata = JSON.stringify({
     spaceId:  ctx.spaceId,
     userId:   ctx.userId  ?? "system",
@@ -85,61 +140,19 @@ export function buildUniversalBody(opts: {
     version:  "1.0",
   });
   const skipCache = ctx.skipCache ?? false;
-  const provider  = inferProvider(query.model);
 
-  let entry: UniversalProvider;
-
-  if (provider === "workers-ai") {
-    entry = {
-      provider: "workers-ai",
-      endpoint: query.model,
-      headers: {
-        "Authorization":   `Bearer ${cfApiToken ?? ""}`,
-        "cf-aig-metadata": metadata,
-      },
-      query: {
-        messages: [
-          { role: "system", content: query.system },
-          ...query.messages,
-        ],
-        max_tokens: query.max_tokens,
-      },
-    };
-  } else if (provider === "anthropic") {
-    entry = {
-      provider: "anthropic",
-      endpoint: "messages",
-      headers: {
-        "x-api-key":         apiKey,
-        "anthropic-version": ANTHROPIC_VERSION,
-        "anthropic-beta":    ANTHROPIC_BETA,
-        "cf-aig-metadata":   metadata,
-        "cf-aig-cache-ttl":  skipCache ? "0" : "0",
-      },
-      query: { ...query },
-    };
-  } else {
-    // OpenAI and OpenAI-compatible providers
-    entry = {
-      provider,
-      endpoint: "chat/completions",
-      headers: {
-        "Authorization":   `Bearer ${apiKey}`,
-        "cf-aig-metadata": metadata,
-        "cf-aig-cache-ttl": skipCache ? "0" : "0",
-      },
-      query: {
-        model:      query.model,
-        max_tokens: query.max_tokens,
-        messages: [
-          { role: "system", content: query.system },
-          ...query.messages,
-        ],
-      },
-    };
+  const entries: UniversalProvider[] = [
+    buildProviderEntry(query.model, apiKey, cfApiToken, query.max_tokens, query.system, query.messages, metadata, skipCache),
+  ];
+  // De-dupe by model so a misconfigured chain repeating the primary doesn't waste a retry slot.
+  const seen = new Set<string>([query.model]);
+  for (const fb of fallbacks ?? []) {
+    if (!fb.model || !fb.apiKey || seen.has(fb.model)) continue;
+    seen.add(fb.model);
+    entries.push(buildProviderEntry(fb.model, fb.apiKey, fb.cfApiToken ?? cfApiToken, query.max_tokens, query.system, query.messages, metadata, skipCache));
   }
 
-  return JSON.stringify({ providers: [entry] });
+  return JSON.stringify({ providers: entries });
 }
 
 /**

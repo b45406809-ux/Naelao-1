@@ -937,8 +937,14 @@ the expected incremental-build path, not a fallback state to design around.
   /spaces/:spaceId/agent-activity` exists; nothing renders it).
 - [ ] **F-10: No first-run/onboarding flow for a new product.**
 - [x] **F-11: GDPR erasure for end users** — VERIFIED ALREADY BUILT: DELETE /spaces/:spaceId/product-users/me erases ProductUserDO session/conversation/preference state and anonymizes the D1 roster PII; router allowlist pattern makes it end-user-reachable. (export exists, deletion now does too).
-- [ ] **F-12: No cross-provider LLM failover** (only the Anthropic-compatible AI Gateway
-  endpoint is called, not the Universal multi-provider one).
+- [x] **F-12: cross-provider LLM failover** — BUILT: ai-client.ts now emits an ORDERED
+  multi-entry providers array (buildProviderEntry extracted; buildUniversalBody takes a fallbacks
+  chain, deduped by model), so the CF AI Gateway Universal Endpoint tries the primary then each
+  fallback until one succeeds — real cross-provider failover, not just cross-request retry.
+  GatewayReasoner threads a fallbacks chain; NaelaoAgentDO.resolveFailoverChain builds it from
+  secrets (a cheaper Anthropic model on the SAME key by default = zero-config within-provider
+  failover; OpenAI when OPENAI_API_KEY+OPENAI_FALLBACK_MODEL are set = cross-provider). All
+  optional; absent → single-provider unchanged. Tests in gateway-reasoner-failover.test.ts.
 
 - [ ] **F-3d: Prebuilt business-scaling skills library.** "Builders should be able to tell their AI assistant 'scale the business from $0 to $10k MRR' or 'optimize pricing' or 'build a brand identity' and the AI executes it." Currently there are zero pre-built skills — every builder starts from scratch. Fix: ship 4-6 prebuilt agent-authored skills in the skill library (accessible via `script.find` and auto-loaded into Launchpad's Space Assistant profile):
   - `scaling-zero-to-ten-k` — incremental steps: product-market fit → repeat sales → scaling channels → team handoff

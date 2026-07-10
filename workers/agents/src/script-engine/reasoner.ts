@@ -19,6 +19,7 @@ import {
   callWorkersAI,
   type AIClientContext,
   type GatewayOpts,
+  type FailoverModel,
 } from "../shared/ai-client.js";
 
 export interface ReasonerDeps {
@@ -26,6 +27,9 @@ export interface ReasonerDeps {
   gateway: GatewayOpts;
   ctx: AIClientContext;
   model?: string;
+  /** F-12: ordered cross-provider failover chain (each {model, apiKey}). The CF AI Gateway tries
+   *  the primary then each of these until one succeeds. Empty/absent = no failover (single provider). */
+  fallbacks?: FailoverModel[];
 }
 
 const DECISION_INSTRUCTIONS = `You are the reasoning core of a script-first agent. Your entire action space is choosing ONE next action, returned as STRICT JSON (no prose, no markdown fences). Schema:
@@ -89,6 +93,7 @@ export class GatewayReasoner implements Reasoner {
           gatewayOpts: this.deps.gateway,
           ctx: { ...this.deps.ctx, skipCache: true },
           query,
+          ...(this.deps.fallbacks && this.deps.fallbacks.length > 0 ? { fallbacks: this.deps.fallbacks } : {}),
         }),
       });
     } catch (err) {
