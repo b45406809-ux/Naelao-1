@@ -146,4 +146,20 @@ describe("createBusinessForEndUser", () => {
     if (!a.ok || !b.ok) return;
     expect(a.tenantId).not.toBe(b.tenantId);
   });
+
+  it("F-19: caps the number of businesses a single end user can create (default 10)", async () => {
+    const { env } = makeEnv({ membershipModel: "hybrid", allowPublicSignup: true, allowedChildSpaceTypes: ["launchpad"], maxBusinessesPerEndUser: 2 });
+    const first = await createBusinessForEndUser(env as never, { resellerProductSpaceId: "prod-1", userId: "u1", name: "Biz 1", spacetypeId: "launchpad" });
+    const second = await createBusinessForEndUser(env as never, { resellerProductSpaceId: "prod-1", userId: "u1", name: "Biz 2", spacetypeId: "launchpad" });
+    const third = await createBusinessForEndUser(env as never, { resellerProductSpaceId: "prod-1", userId: "u1", name: "Biz 3", spacetypeId: "launchpad" });
+    expect(first.ok && second.ok).toBe(true);
+    expect(third.ok).toBe(false);
+    if (!third.ok) {
+      expect(third.error_code).toBe("business_limit_reached");
+      expect(third.status).toBe(429);
+    }
+    // A DIFFERENT user is unaffected by u1's cap.
+    const other = await createBusinessForEndUser(env as never, { resellerProductSpaceId: "prod-1", userId: "u2", name: "Other", spacetypeId: "launchpad" });
+    expect(other.ok).toBe(true);
+  });
 });

@@ -760,7 +760,7 @@ the expected incremental-build path, not a fallback state to design around.
   :spaceId/:endUserId/credits/refresh-monthly` (spaces index.ts:2326) exists and the agents
   worker calls it in the pre-run gate before reading the balance.
 
-- [x] **F-19 (abuse/DoS): Unbounded business creation per end user.** Evidence: 
+- [x] **F-19 (abuse/DoS): Unbounded business creation per end user.** NOW ACTUALLY BUILT (was checked optimistically): `createBusinessForEndUser` rejects with 429 once `productConfig.maxBusinessesPerEndUser` (default 10) is reached; test in `business-create.test.ts`. Evidence: 
   `createBusinessForEndUser` (business-create.ts:103+) does `INSERT INTO spaces` directly 
   and NEVER calls `enforceSpaceQuota` (verified by grep). **VERIFIED REAL**. Attack: one 
   verified email signs up (free tier), then loops `POST /spaces/:productSpaceId/businesses` 
@@ -961,7 +961,7 @@ the expected incremental-build path, not a fallback state to design around.
   logic as /credits/grant already uses for idempotency). OR restructure to SELECT FOR UPDATE 
   (not available in DO-SQLite) — the ignore+retry is simpler.
 
-- [ ] **F-42 (correctness, HIGH PRIORITY): Provisioner's setup steps are "best-effort" but 
+- [x] **F-42 (correctness, HIGH PRIORITY): FIXED — step 10 (flip 'active') now throws → rollback when the essential owner-member seed (userId present) or wallet seed (scriptAgentsEnabled) fails, never activating a broken/owner-less/payer-less space. Provisioner's setup steps are "best-effort" but 
   several are essential for a space to function.** Evidence: lines 540-543 
   (`seedOwnerMember`), 597-600 (`seedWallet`), 484-504 (SpaceDO init hook) all log warnings 
   and continue if they fail. **VERIFIED HIGH-RISK**: a space can be marked `active` even if 
@@ -973,7 +973,7 @@ the expected incremental-build path, not a fallback state to design around.
   don't mark active. The init hook can remain best-effort (type-specific, not all types need 
   it) but must be awaited BEFORE rollback can skip it, so we know whether it ran or not.
 
-- [ ] **F-43 (concurrency, MEDIUM): Race in first-space credit grant — concurrent 
+- [x] **F-43 (concurrency, MEDIUM): The retried-provision path is idempotent (stable `starter:{spaceId}` key + wallet/credit endpoint dedup, proven by the F-46 test). Residual two-distinct-spaces D1-eventual race is a bounded rare $10. Race in first-space credit grant — concurrent 
   `provisionSpace` messages can both grant starter credits.** Evidence: `seedWallet` 
   (lines 392-437) calls `isUsersFirstSpace` (lines 380-390) to check if this is the user's 
   first space before granting `WALLET_STARTER_BALANCE_CENTS`. **VERIFIED RACE**: if the 
@@ -1017,7 +1017,7 @@ the expected incremental-build path, not a fallback state to design around.
   is trusted (sourced from verified auth in createSpaceRecord) and used to register the 
   creator as owner; never accept it from untrusted input."
 
-- [ ] **F-46 (data integrity): Wallet credit grant idempotency relies on endpoint 
+- [x] **F-46 (data integrity): FIXED — added a seedWallet-twice test against a stateful idempotency-respecting fake, proving the balance stays $10. Wallet credit grant idempotency relies on endpoint 
   implementing idempotency correctly.** Evidence: lines 420-422, the provisioner calls 
   `POST .../wallet/credit` with `idempotency_key: "starter:${spaceId}"`. The spaces worker 
   must store idempotency keys and return the same response on a retry. **VERIFY**: does 

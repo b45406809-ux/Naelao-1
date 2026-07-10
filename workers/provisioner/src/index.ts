@@ -544,7 +544,15 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     }
 
     // Step 5c: Register the creator as space_members owner.
-    if (await seedOwnerMember(env, spaceId, tenantId, userId)) {
+    // F-42: the owner member is ESSENTIAL when there's a userId to register — without it the
+    // creator can't manage the space they just made. A failure here throws (→ rollback), rather
+    // than marking a broken, owner-less space 'active'. A missing userId (a back-compat message
+    // or a system-initiated provision with no human creator) legitimately seeds nothing and is
+    // NOT an error — seedOwnerMember returns false in both cases, so distinguish them explicitly.
+    if (userId) {
+      if (!(await seedOwnerMember(env, spaceId, tenantId, userId))) {
+        throw new Error(`owner member seed failed for ${spaceId} — refusing to activate an owner-less space`);
+      }
       provisioned.push("owner_member");
     }
 
@@ -600,10 +608,16 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
     // Step 9a: Seed a wallet project + starter balance — the payer for this space's own
     // project-scoped agent runs (metering enforcement follow-up). Same manifest gate as agent
     // installation: any SpaceType with script-agent projects gets one, not just Launchpad.
+    // F-42: for a SpaceType with script-agent projects, the wallet is ESSENTIAL — it is the payer
+    // of last resort for every project-scoped agent run, so a space with no wallet project can't
+    // actually run its agents. A failure here throws (→ rollback) rather than activating a broken
+    // product. (The starter-credit grant WITHIN seedWallet stays best-effort — a $0 wallet is a
+    // real payer, just one that 402s until topped up; only the wallet PROJECT itself is gating.)
     if (manifest.backend.scriptAgentsEnabled) {
-      if (await seedWallet(env, spaceId, tenantId, userId)) {
-        provisioned.push("wallet");
+      if (!(await seedWallet(env, spaceId, tenantId, userId))) {
+        throw new Error(`wallet seed failed for ${spaceId} — refusing to activate a space with no payer for agent runs`);
       }
+      provisioned.push("wallet");
     }
 
     // Step 9b: Template bootstrap — inherit the shared template skill library (federated

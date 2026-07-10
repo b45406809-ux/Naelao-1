@@ -129,6 +129,40 @@ describe("seedWallet (provisioner step 9a)", () => {
     await expect(seedWallet(env, "space-1", "tenant-1", "user-1")).resolves.toBe(false);
   });
 
+  it("F-46: a retried provision (seedWallet twice for the same space) grants the starter balance exactly once", async () => {
+    // Model the real /wallet/credit endpoint's idempotency: it dedups on idempotency_key (see
+    // SpaceDO.creditWallet). If seedWallet sends a STABLE key across retries (`starter:{spaceId}`),
+    // the second call is a no-op and the balance stays $10, never $20.
+    const seenKeys = new Set<string>();
+    let balanceCents = 0;
+    const creditCalls: string[] = [];
+    const statefulSpaces = {
+      async fetch(reqInput: Request | string, init?: RequestInit): Promise<Response> {
+        const req = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
+        const body = await req.clone().json().catch(() => null) as { idempotency_key?: string; cents?: number } | null;
+        if (req.method === "POST" && /\/projects$/.test(req.url)) return new Response(JSON.stringify({ id: "wallet-proj-1" }), { status: 201 });
+        if (req.method === "PATCH" && /\/projects\/wallet-proj-1$/.test(req.url)) return new Response(JSON.stringify({ id: "wallet-proj-1", kind: "wallet" }), { status: 200 });
+        if (req.method === "POST" && /\/wallet\/credit$/.test(req.url)) {
+          creditCalls.push(body?.idempotency_key ?? "");
+          if (body?.idempotency_key && seenKeys.has(body.idempotency_key)) {
+            return new Response(JSON.stringify({ balance_cents: balanceCents, deduplicated: true }), { status: 200 });
+          }
+          if (body?.idempotency_key) seenKeys.add(body.idempotency_key);
+          balanceCents += body?.cents ?? 0;
+          return new Response(JSON.stringify({ balance_cents: balanceCents }), { status: 201 });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    };
+    const db = { prepare() { const s = { bind() { return s; }, async first() { return { cnt: 0 }; } }; return s; } };
+    const env = { ENVIRONMENT: "test", PLATFORM_SECRET: SECRET, SPACES_WORKER: statefulSpaces, PLATFORM_DB: db } as unknown as Env;
+
+    await seedWallet(env, "space-1", "tenant-1", "user-1");
+    await seedWallet(env, "space-1", "tenant-1", "user-1");
+    expect(creditCalls).toEqual(["starter:space-1", "starter:space-1"]); // stable key both times
+    expect(balanceCents).toBe(1000); // granted once, not twice
+  });
+
   it("mints a token scoped to the space's own tenant (the reseller child-tenant shape)", async () => {
     const { env, calls } = makeEnv();
     await seedWallet(env, "child-space-1", "ten_customerchild", "user-1");

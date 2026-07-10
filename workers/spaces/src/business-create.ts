@@ -55,7 +55,7 @@ export interface CreateBusinessErr {
   ok: false;
   error_code: string;
   message: string;
-  status: 400 | 403 | 404;
+  status: 400 | 403 | 404 | 429;
 }
 
 export type CreateBusinessResult = CreateBusinessOk | CreateBusinessErr;
@@ -155,6 +155,19 @@ export async function createBusinessForEndUser(
     pc.resellerRates?.referralSharePct ?? 0.0,
     now
   ).run();
+
+  // F-19 (abuse/DoS): bound how many businesses a single end user can create under this reseller
+  // product. Without this, one verified free-tier email could loop POST /businesses and provision
+  // unlimited spaces (SpaceDO init, agent installs, R2 writes, wallet seed each) — the rate limiter
+  // only slows it, never caps it. Counts this user's OWN existing non-deleted businesses under this
+  // product; a builder can tune the ceiling via productConfig.maxBusinessesPerEndUser (default 10).
+  const maxBusinesses = (pc as { maxBusinessesPerEndUser?: number }).maxBusinessesPerEndUser ?? 10;
+  const existingCount = await env.PLATFORM_DB.prepare(
+    "SELECT COUNT(*) AS cnt FROM spaces WHERE parent_space_id = ? AND created_by = ? AND status != 'deleted'"
+  ).bind(opts.resellerProductSpaceId, opts.userId).first<{ cnt: number }>();
+  if ((existingCount?.cnt ?? 0) >= maxBusinesses) {
+    return { ok: false, error_code: "business_limit_reached", message: `You have reached the maximum of ${maxBusinesses} businesses for this product`, status: 429 };
+  }
 
   // 4. Create the child business (space) under the child tenant.
   const spaceId = crypto.randomUUID();
