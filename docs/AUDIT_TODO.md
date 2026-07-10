@@ -1019,6 +1019,60 @@ the expected incremental-build path, not a fallback state to design around.
 - [ ] `nak_` agent-key approval gate's coarse action keys (`agentActionKey` collapses to
   first path segment) — deliberate, but untested against deep mutating routes.
 
+- [ ] **F-48 (LOW): Expired ProductUserDO sessions are never cleaned up from `session_state` 
+  table.** Evidence: `ProductUserDO` routes mint sessions with a 30-day TTL 
+  (`SESSION_TTL_MS = 30 * 86_400_000`) and expire them on verification (`expires_at` checked 
+  at line 172), but no job ever runs `DELETE FROM session_state WHERE expires_at < now()`. 
+  This is a low-risk accumulation issue (sessions table stays bounded by legitimate user 
+  activity, not a security hole) — every expired session is still unreachable (verification 
+  rejects it), and ProductUserDO's own storage doesn't persist across instance restarts 
+  anyway. **Verdict**: low priority but should eventually add to a background cleanup job 
+  (either a Workflow or a quarterly batch-delete of 30+ days old rows).
+
+- [ ] **F-49 (LOW): GDPR erasure in SpaceDO only deletes sessions/messages, not threads.** 
+  Evidence: lines 1745-1776, the `DELETE /me/data` route deletes sessions, messages, 
+  agent_state, and injection_attempts, but does NOT delete rows from the `threads` table 
+  where `user_id = ?`. **Context**: this is intentional by design — threads are structural 
+  (a builder's conversation history, linked to projects/spaces), while sessions/messages 
+  are user-account data (an end-user's temporary message history). The division is correct, 
+  but should be documented in a code comment to prevent a future refactor from accidentally 
+  "completing" the deletion by deleting threads too (which would break the builder's history). 
+  **No fix needed** (design is sound), but add a note.
+
+- [ ] **F-50 (VERIFY): ProjectUserDO credit-ledger idempotency on concurrent debit.** 
+  Evidence: `POST /credits/deduct` (lines 228-262) has a TOCTOU race I identified in F-47. 
+  The logic SELECT→CHECK→INSERT pattern races; two identical concurrent requests can both 
+  pass the SELECT (line 244 checks idempotency key), both check balance (line 251), both 
+  INSERT (only one succeeds, constraint violation on the second). The failing INSERT is not 
+  caught — it silently returns, but the logic has already debited. FIX: use INSERT OR IGNORE 
+  pattern + follow-up query (same as `/credits/grant` does) to atomically enforce idempotency 
+  on debit paths.
+
+## Verified solid during deep audit (not bugs)
+
+- **Channel webhook signature verification**: All four adapters (email/Slack/Discord/WhatsApp) 
+  properly verify signatures with timing-safe comparison before any handler runs. Replay 
+  windows enforced (Slack: 5 min max).
+- **Event trigger project scoping**: `resolveLastActiveOtherThread` and `matchesEvent` 
+  correctly enforce project boundaries — a space-scoped trigger sees all projects, a 
+  project-scoped trigger sees only that project.
+- **Knowledge base cross-tenant access**: F8 fixed via `verifySpaceOwnership` middleware 
+  run before any KB operation (line 155-161, `workers/knowledge/src/index.ts`).
+- **Local machine grants security**: Path traversal blocked, command matching is exact 
+  (no prefix), project scoping enforced. Tests verify all edge cases.
+- **Credential hierarchy resolution**: Three-tier model (override > user-scoped > space-wide 
+  fallback) correctly ordered; scope enforcement at create time.
+- **Thread/session lifecycle**: No orphaning risk; cleanup deletes messages via FK constraint 
+  before session/thread row. Max_threads enforcement excludes sub_agent threads (correct).
+- **Refund clawback idempotency**: `UPDATE ... WHERE status != 'refunded'` ensures retry-safe 
+  clawback (already tested).
+- **Custom domain provisioning**: CF-for-SaaS integration is thin wrapper around Cloudflare 
+  API; no application-logic gaps found.
+- **Session TTL enforcement**: 30-day ProductUserDO session TTL refreshes on verify; expired 
+  sessions rejected before any downstream call.
+- **Permission boundaries**: Cross-space checks fail closed; business membership verified on 
+  end-user routes; RBAC enforced (product_end_user has empty permissions by default).
+
 ## Disproven during audit (do NOT re-report)
 
 - Webhook idempotency/replay: top-level `processed_webhook_events` gate ((provider,
@@ -1041,3 +1095,5 @@ the expected incremental-build path, not a fallback state to design around.
 - Email delivery mechanism: notifications worker makes real Resend API calls
   (`sendEmailNow`), and spaces→notifications service binding exists in all env blocks.
   Only the secret is a deploy-time concern.
+- Rate limiter bucket cleanup: `RateLimitDO` reschedules 10-minute idle-cleanup alarm 
+  on every check (no unbounded growth).
