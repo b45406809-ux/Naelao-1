@@ -546,6 +546,64 @@ platform reimplementation:**
   autonomy ("honest escalation/transparency as the differentiator") — `agent_activity_log`
   (already built, item 40) is the raw action feed; this kind is the assistant's own narrated
   reasoning ABOVE that feed, builder-readable, not just an audit trail. |
+
+**A third batch — more of the genuinely native "autonomous operator" kinds (2026-07-10 follow-up).
+Test applied to each: does this have a 3rd-party home we should defer to via connector? If NO,
+and it's specifically about the assistant DOING the running (not just data storage), it belongs
+here. Several of these are the concrete UI-level implementation of gaps this audit already
+flagged as backend-only/no-surface — cited explicitly, not duplicated.**
+
+| `onboarding_flight_plan` | yes, **native, auto-created** | the CONCRETE fix for the already-
+  known **F-10 gap** ("No first-run/onboarding flow for a new product" — currently just a bullet
+  with no design). This kind IS the design: auto-created as the FIRST project in every new
+  business, its thread is where the assistant interviews the builder (what does the business
+  sell, which platforms is it already on, which other kinds to provision) and then actually
+  creates the resulting `integrations_hub` connections and kind selections itself, live, in
+  front of the builder — this is the actual "time-to-first-value" moment competing directly
+  against Polsia's onboarding. Auto-archives (not deleted — stays as a historical record of
+  day-one decisions) once the builder marks setup complete; never re-created. |
+| `competitor_watch` | yes, **native** | PERSISTENT competitive monitoring (pricing changes,
+  feature launches, review-volume shifts for named competitors) feeding `operating_plan`'s
+  decision log — distinct from `market_research` (ad hoc, non-singleton, one-off investigations)
+  by being an ongoing watch list with history, not a single report. Uses `web-search`/MCP to
+  gather data but the tracked-list + timeline + alert history is Naelao's own, native. |
+| `experiments_growth` | yes, **native** | structured hypothesis → test → result → decision
+  tracking for pricing tests, offer tests, channel tests — the actual "the AI runs experiments
+  and learns" capability that separates an autonomous operator from a task-executor. Distinct
+  from `operating_plan` (which records decisions already made) — this kind is what PRODUCES
+  the evidence behind a future `operating_plan` entry. An experiment's actual execution usually
+  routes through a connector-operated kind (e.g. a pricing test touches `storefront` or
+  `membership_access`); this kind owns only the experiment's design/tracking/conclusion. |
+| `customer_voice` | yes, **native, cross-cutting** (same pattern as `analytics_dashboard`) |
+  synthesizes qualitative signal — support ticket sentiment, social mentions, churn-survey
+  responses, review text — into one place the assistant reads before making decisions.
+  `analytics_dashboard` is the quantitative twin (revenue/orders numbers); this is the
+  qualitative one. Reads from `support_inbox`/`membership_access`(churn events)/`social_media`,
+  owns none of their underlying data — same per-source access re-check discipline as
+  `analytics_dashboard`. |
+| `incident_postmortems` | yes, **native** | "what broke, what I did about it, what's still
+  open" — a payment-processor outage, a spike in failed webhooks, a pricing bug the assistant
+  caught. This is the observability differentiator made concrete: a Polsia-style black box has
+  no equivalent surface; a builder using Naelao can always answer "did the assistant notice X
+  going wrong, and what did it do." Distinct from `disputes_chargebacks` (connector-operated,
+  handles ONE customer's dispute) — this is the assistant's own internal incident log. |
+| `handoff_escalations` | yes, **native, UI-only — no new backend** | the CONSOLIDATED,
+  builder-facing inbox specifically for "the assistant hit its autonomy ceiling and needs you"
+  moments — separate from `support_inbox` (customer-facing) and `business_email` (general
+  correspondence). The backend already exists and should NOT be rebuilt: `HITLApprovalDO`,
+  `assistant_policy`/`agent_policy_overrides` (Phase O), and `notifyApprovalRequested` already
+  generate exactly this signal — but per **F-9** (already flagged: "No builder UI for
+  `agent_activity_log`... nothing renders it"), there's no dedicated surface a builder actually
+  looks at. This kind is that surface: a project whose panel is a live feed of open approval
+  requests + past resolutions, nothing more — nothing net-new to build on the backend, purely
+  the missing UI these existing mechanisms need. |
+| `compliance_risk_monitor` | yes, **native** | PROACTIVE cross-metric risk detection —
+  chargeback-rate creep, refund-rate spike, unusual wallet spend velocity, subscription churn
+  spike — flagged BEFORE it's a crisis. Distinct from `disputes_chargebacks` (reactive,
+  connector-operated, handles one dispute at a time) and from `churn_retention` (customer-level
+  win-back) — this kind watches the aggregate trend across all of them and is what lets the
+  assistant say "something's off, here's what" without the builder having to notice first. |
+
 | `workspace` | **no** | today's default, unchanged |
 | `customer_bot` | **no** | already exists, unchanged |
 
