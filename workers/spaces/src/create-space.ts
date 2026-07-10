@@ -5,6 +5,8 @@
 // fully-working `POST /spaces` route this file now backs too. Both routes call the SAME
 // createSpaceRecord(); there is exactly one space-creation code path.
 
+import { checkFreeTierTemplateEligibility } from "./template-catalog.js";
+
 export interface ProvisionMessage {
   type: "space_provision" | "space_deprovision";
   spaceId: string;
@@ -19,6 +21,11 @@ export interface ProvisionMessage {
 export interface CreateSpaceEnv {
   PLATFORM_DB: D1Database;
   PROVISION_QUEUE?: Queue<ProvisionMessage>;
+  /** G-BF08: the free-tier template gate resolves the real catalogue (free_tier_eligible) from
+   *  the agents worker, KV-cached. Both optional — absent (dev/test), the gate degrades open;
+   *  see checkFreeTierTemplateEligibility. */
+  NAELAO_CONFIG_KV?: KVNamespace;
+  AGENTS_WORKER?: Fetcher;
 }
 
 export interface SchemaValidationError {
@@ -152,6 +159,15 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
   }
 
   await enforceSpaceQuota(env.PLATFORM_DB, params.tenantId);
+
+  // G-BF08 (Appendix BF): on the free plan only free_tier_eligible templates may be
+  // instantiated — the flag existed since Phase F but no creation path ever checked it.
+  if (params.templateId) {
+    const gate = await checkFreeTierTemplateEligibility(env.PLATFORM_DB, env, params.tenantId, [params.templateId]);
+    if (!gate.ok) {
+      throw new SpaceCreationError(gate.status, gate.error_code, gate.message);
+    }
+  }
 
   if (params.productSlug) {
     if (!/^[a-z0-9-]{2,40}$/.test(params.productSlug)) {

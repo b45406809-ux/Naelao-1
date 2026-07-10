@@ -10,6 +10,7 @@
 // no circular import.
 
 import type { SpaceTypeProductConfig, NaelaoSpaceTypeManifestV2, SpaceTypeRegistryDO } from "./do/SpaceTypeRegistryDO.js";
+import { checkFreeTierTemplateEligibility } from "./template-catalog.js";
 
 export interface ProvisionMessage {
   type: "space_provision" | "space_deprovision";
@@ -29,6 +30,10 @@ export interface BusinessCreateEnv {
   PROVISION_QUEUE?: Queue<ProvisionMessage>;
   SPACE_TYPE_REGISTRY_DO: DurableObjectNamespace<SpaceTypeRegistryDO>;
   NAELAO_CONFIG_KV: KVNamespace;
+  /** G-BF08: the free-tier template gate resolves the real catalogue (free_tier_eligible) from
+   *  the agents worker. Optional — absent (dev/test), the gate degrades open; see
+   *  checkFreeTierTemplateEligibility. */
+  AGENTS_WORKER?: Fetcher;
 }
 
 export interface CreateBusinessOptions {
@@ -126,6 +131,19 @@ export async function createBusinessForEndUser(
   const allowed = pc.allowedChildSpaceTypes ?? [];
   if (!allowed.includes(opts.spacetypeId)) {
     return { ok: false, error_code: "spacetype_not_allowed", message: `SpaceType '${opts.spacetypeId}' is not offered by this product`, status: 403 };
+  }
+
+  // 2b. G-BF08 (Appendix BF): on the free plan only free_tier_eligible templates may be
+  // instantiated. The plan that matters is the OWNING builder org's (parentTenantId) — end-user
+  // claims already resolve to it, and the child tenant minted below has no org/plan of its own.
+  // Checked BEFORE any side effect (reseller_accounts upsert, tenant mint) so a rejected create
+  // leaves nothing behind.
+  const requestedTemplates = opts.templateIds && opts.templateIds.length > 0
+    ? opts.templateIds
+    : opts.templateId ? [opts.templateId] : [];
+  const gate = await checkFreeTierTemplateEligibility(env.PLATFORM_DB, env, parentTenantId, requestedTemplates);
+  if (!gate.ok) {
+    return { ok: false, error_code: gate.error_code, message: gate.message, status: gate.status };
   }
 
   // 3. Find or mint the customer's child tenant (one per customer per reseller).

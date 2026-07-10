@@ -12,6 +12,7 @@ import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
 import type { ProvisionMessage } from "./create-space.js";
 import { requireBusinessMembership, resolveEndUserBusinessRole } from "./business-auth.js";
 import { createBusinessForEndUser } from "./business-create.js";
+import { loadTemplateCatalog } from "./template-catalog.js";
 import { registerBusinessRoutes } from "./business-routes.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
@@ -2804,26 +2805,11 @@ async function loadManifest(env: Env, spaceTypeId: string): Promise<NaelaoSpaceT
   return manifest;
 }
 
-/**
- * Load the Launchpad business-template catalog (id/name/coming_soon only — never the full
- * bootstrap/agents/skills shape, which is builder/provisioner-internal) from the agents worker's
- * real GET /templates, KV-cached 1h like loadManifest above. This is the single source of truth
- * the shell's create-business dialog and the dashboard's Templates Catalog config both render
- * from — replacing the two hand-maintained, drift-prone copies of LAUNCHPAD_TEMPLATES that used
- * to live in apps/dashboard and apps/shell (CLAUDE.md Phase F).
- */
-async function loadTemplateCatalog(env: Env): Promise<Array<{ id: string; name: string; coming_soon: boolean }>> {
-  const cacheKey = "launchpad-template-catalog";
-  const cached = await env.NAELAO_CONFIG_KV.get(cacheKey, "json") as Array<{ id: string; name: string; coming_soon: boolean }> | null;
-  if (cached) return cached;
-  if (!env.AGENTS_WORKER) return [];
-  const resp = await env.AGENTS_WORKER.fetch(new Request("http://agents-worker/templates"));
-  if (!resp.ok) return [];
-  const body = await resp.json<{ templates: Array<{ id: string; name: string; coming_soon?: boolean }> }>();
-  const catalog = body.templates.map((t) => ({ id: t.id, name: t.name, coming_soon: t.coming_soon ?? false }));
-  await env.NAELAO_CONFIG_KV.put(cacheKey, JSON.stringify(catalog), { expirationTtl: 3600 });
-  return catalog;
-}
+// loadTemplateCatalog (Phase F's single source of truth for template data in this worker — a
+// KV-cached call to the agents worker's real GET /templates, never a hand-maintained copy) moved
+// to template-catalog.ts so business-create.ts / create-space.ts can reuse it for the G-BF08
+// free-tier eligibility gate without importing index.ts. The projection now also carries
+// free_tier_eligible, which flows through shell/manifest's template_catalog untouched.
 
 /**
  * §A1.17 Phase L: load the Container Marketplace catalogue from the agents worker's real
