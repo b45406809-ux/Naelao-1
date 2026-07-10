@@ -9,6 +9,14 @@ interface Env {
   PLATFORM_DB: D1Database;
   /** Credentials worker — resolves auth_secret_name → plaintext at call time (never stored here). */
   CREDENTIALS_WORKER?: Fetcher;
+  /** Spec G-BF02 (universal-tools doctrine): PLATFORM-PROVIDED provider keys. Naelao holds ONE
+   *  Composio/Pipedream key as a Workers Secret so provider-backed connectors work with zero
+   *  builder configuration (the Claude/ChatGPT bundled-connector model) — never the BYO
+   *  space-credential path, which stays reserved for a builder's OWN provider project. The key
+   *  never leaves this worker. Optional: when unset and a connector has no BYO credential, calls
+   *  degrade honestly with `provider_not_configured`. */
+  COMPOSIO_API_KEY?: string;
+  PIPEDREAM_API_KEY?: string;
 }
 
 // Hosts that are external payment processors (incl. Naelao's own LS). A connector may never be
@@ -253,6 +261,49 @@ async function buildAuthHeaders(server: McpServer, env: Env, agentId: string): P
   return headers;
 }
 
+type ProviderKeyResolution =
+  | { ok: true; apiKey: string; source: "byo" | "platform" }
+  | { ok: false; status: 400 | 502 | 503; errorCode: string; message: string };
+
+/**
+ * G-BF02: resolve the provider API key for a Composio/Pipedream-routed connector.
+ *
+ * Order matters: BYO wins when the row names a vault credential — a builder running their own
+ * provider project keeps full control (and their own provider billing). Only when NO credential
+ * is named does the PLATFORM key apply: Naelao's own Composio/Pipedream key, injected
+ * server-side, never visible to (or enterable by) any builder or end user. Neither configured
+ * → an honest, explicit error — never a silent empty result.
+ */
+async function resolveProviderApiKey(server: McpServer, env: Env, agentId: string): Promise<ProviderKeyResolution> {
+  if (server.auth_secret_name) {
+    let authHeaders: Record<string, string>;
+    try {
+      authHeaders = await buildAuthHeaders(server, env, agentId);
+    } catch (err) {
+      return { ok: false, status: 502, errorCode: "credential_error", message: (err as Error).message };
+    }
+    const apiKey = authHeaders["Authorization"]?.replace("Bearer ", "") ?? authHeaders["X-API-Key"] ?? "";
+    if (!apiKey) {
+      // Declared BYO but resolved to nothing (e.g. auth_type 'none' with a secret name) — a
+      // registration bug. Deliberately NOT falling back to the platform key: that would silently
+      // mask the misconfiguration and bill Naelao's provider account for a builder-project
+      // connector.
+      return {
+        ok: false, status: 400, errorCode: "credential_error",
+        message: `Credential '${server.auth_secret_name}' resolved to no API key (check the connector's auth_type)`,
+      };
+    }
+    return { ok: true, apiKey, source: "byo" };
+  }
+
+  const platformKey = server.connector_provider === "composio" ? env.COMPOSIO_API_KEY : env.PIPEDREAM_API_KEY;
+  if (platformKey) return { ok: true, apiKey: platformKey, source: "platform" };
+  return {
+    ok: false, status: 503, errorCode: "provider_not_configured",
+    message: `${server.connector_provider} connectors are not configured on this platform (no platform API key set) and this connector has no credential of its own`,
+  };
+}
+
 // GET /v1/spaces/:spaceId/mcp-servers — list registered MCP servers
 app.get("/v1/spaces/:spaceId/mcp-servers", async (c) => {
   const { tenantId } = getCallerIdentity(c);
@@ -401,21 +452,20 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
   }
 
   // Provider-routed connectors skip direct SSRF/credential checks and go through the provider API.
+  // G-BF02: key resolution is BYO-credential-first, then Naelao's platform key — see
+  // resolveProviderApiKey.
   if (server.connector_provider === "composio" || server.connector_provider === "pipedream") {
-    let apiKey: string;
-    try {
-      const authHeaders = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
-      apiKey = authHeaders["Authorization"]?.replace("Bearer ", "") ?? authHeaders["X-API-Key"] ?? "";
-    } catch (err) {
-      return c.json({ error_code: "credential_error", message: (err as Error).message }, 502);
+    const keyRes = await resolveProviderApiKey(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
+    if (!keyRes.ok) {
+      return c.json({ error_code: keyRes.errorCode, message: keyRes.message }, keyRes.status);
     }
-    if (!apiKey || !server.provider_connection_id) {
-      return c.json({ error_code: "bad_request", message: "Provider API key or connection_id missing" }, 400);
+    if (!server.provider_connection_id) {
+      return c.json({ error_code: "bad_request", message: "Provider connection_id missing" }, 400);
     }
     if (server.connector_provider === "composio") {
-      return c.json(await composioListTools(server.provider_connection_id, apiKey));
+      return c.json(await composioListTools(server.provider_connection_id, keyRes.apiKey));
     }
-    return c.json(await pipedreamListTools(server.provider_connection_id, apiKey));
+    return c.json(await pipedreamListTools(server.provider_connection_id, keyRes.apiKey));
   }
 
   // S0.5: re-validate at CALL TIME, not just registration — a hostname that resolved to a
@@ -504,22 +554,20 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
   }
 
   // Provider-routed connectors skip SSRF/credential checks — route through provider API.
+  // G-BF02: key resolution is BYO-credential-first, then Naelao's platform key.
   if (server.connector_provider === "composio" || server.connector_provider === "pipedream") {
-    let apiKey: string;
-    try {
-      const authHeaders = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
-      apiKey = authHeaders["Authorization"]?.replace("Bearer ", "") ?? authHeaders["X-API-Key"] ?? "";
-    } catch (err) {
-      return c.json({ error_code: "credential_error", message: (err as Error).message }, 502);
+    const keyRes = await resolveProviderApiKey(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
+    if (!keyRes.ok) {
+      return c.json({ error_code: keyRes.errorCode, message: keyRes.message }, keyRes.status);
     }
-    if (!apiKey || !server.provider_connection_id) {
-      return c.json({ error_code: "bad_request", message: "Provider API key or connection_id missing" }, 400);
+    if (!server.provider_connection_id) {
+      return c.json({ error_code: "bad_request", message: "Provider connection_id missing" }, 400);
     }
     let providerResult: ProviderToolCallResult;
     if (server.connector_provider === "composio") {
-      providerResult = await composioToolCall(server.provider_connection_id, body.tool_name, body.input, apiKey);
+      providerResult = await composioToolCall(server.provider_connection_id, body.tool_name, body.input, keyRes.apiKey);
     } else {
-      providerResult = await pipedreamToolCall(server.provider_connection_id, body.tool_name, body.input, apiKey);
+      providerResult = await pipedreamToolCall(server.provider_connection_id, body.tool_name, body.input, keyRes.apiKey);
     }
     if (providerResult.error) {
       return c.json({ error_code: "upstream_error", message: providerResult.error }, 502);

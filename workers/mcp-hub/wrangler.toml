@@ -8,6 +8,16 @@ compatibility_flags = ["nodejs_compat"]
 # downstream workers, so direct workers.dev reachability is a tenant-spoofing hole.
 workers_dev = false
 
+# Secrets (set via `wrangler secret put`, never committed):
+#   PLATFORM_SECRET    — internal HMAC + credential-token signing
+#   COMPOSIO_API_KEY   — G-BF02 UNIVERSAL platform-provided connector key. Naelao holds ONE
+#                        Composio key so provider-backed connectors work with zero builder
+#                        configuration (like Claude/ChatGPT bundling connectors) — never the
+#                        BYO space-credential model, which stays for a builder's OWN provider
+#                        project. Optional: unset → provider-routed calls without a BYO
+#                        credential return provider_not_configured.
+#   PIPEDREAM_API_KEY  — same doctrine, Pipedream Connect.
+
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
