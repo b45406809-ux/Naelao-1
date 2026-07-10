@@ -849,6 +849,14 @@ const MIGRATIONS: Migration[] = [
         ON projects(space_id, kind) WHERE is_singleton_kind = 1 AND status = 'active';
     `,
   },
+  {
+    version: 29,
+    description: "project_members.assistant_mode — clamp an assistant's effective access when acting on behalf of a specific user (F-36)",
+    up: `
+      ALTER TABLE project_members ADD COLUMN assistant_mode TEXT NOT NULL DEFAULT 'inherit'
+        CHECK (assistant_mode IN ('inherit','read_only','none'));
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1132,6 +1140,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       const projectMemberIdMatch = url.pathname.match(/^\/projects\/([^/]+)\/members\/([^/]+)$/);
       if (method === "DELETE" && projectMemberIdMatch?.[1] && projectMemberIdMatch?.[2]) {
         return this.removeProjectMember(projectMemberIdMatch[1], projectMemberIdMatch[2]);
+      }
+      // F-36: GET /projects/:id/assistant-access?user_id=U — the effective role an assistant has
+      // in this project when acting on behalf of U (min of U's role and the assistant_mode clamp).
+      // The agent side queries this before touching a project on a user's behalf.
+      const assistantAccessMatch = url.pathname.match(/^\/projects\/([^/]+)\/assistant-access$/);
+      if (method === "GET" && assistantAccessMatch?.[1]) {
+        const uid = url.searchParams.get("user_id") ?? "";
+        const effective = this.resolveAssistantEffectiveRole(assistantAccessMatch[1], uid);
+        return Response.json({ project_id: assistantAccessMatch[1], user_id: uid, effective_role: effective });
       }
       // POST /projects/:id/activate-thread — hard exclusive-mode lock (§A1.17 Phase T3)
       const activateThreadMatch = url.pathname.match(/^\/projects\/([^/]+)\/activate-thread$/);
@@ -2407,21 +2424,54 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   }
 
   private async addProjectMember(projectId: string, request: Request): Promise<Response> {
-    const body = await request.json<{ user_id?: string; role?: string }>().catch(() => ({}) as Record<string, never>);
+    const body = await request.json<{ user_id?: string; role?: string; assistant_mode?: string }>().catch(() => ({}) as Record<string, never>);
     if (!body.user_id) return Response.json({ error_code: "bad_request", message: "user_id is required" }, { status: 400 });
     const role = body.role ?? "viewer";
     if (!["owner", "editor", "viewer"].includes(role)) {
       return Response.json({ error_code: "bad_request", message: "role must be one of owner, editor, viewer" }, { status: 400 });
     }
+    // F-36: per (project, user) clamp on what an assistant acting ON BEHALF OF this user may do.
+    const assistantMode = body.assistant_mode ?? "inherit";
+    if (!["inherit", "read_only", "none"].includes(assistantMode)) {
+      return Response.json({ error_code: "bad_request", message: "assistant_mode must be one of inherit, read_only, none" }, { status: 400 });
+    }
     const project = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE id = ?", projectId);
     if (!project) return Response.json({ error_code: "not_found", message: "Project not found" }, { status: 404 });
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO project_members (project_id, user_id, role, added_at) VALUES (?, ?, ?, ?)
-       ON CONFLICT(project_id, user_id) DO UPDATE SET role = excluded.role`,
-      projectId, body.user_id, role, new Date().toISOString()
+      `INSERT INTO project_members (project_id, user_id, role, assistant_mode, added_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(project_id, user_id) DO UPDATE SET role = excluded.role, assistant_mode = excluded.assistant_mode`,
+      projectId, body.user_id, role, assistantMode, new Date().toISOString()
     );
-    return Response.json({ project_id: projectId, user_id: body.user_id, role }, { status: 201 });
+    return Response.json({ project_id: projectId, user_id: body.user_id, role, assistant_mode: assistantMode }, { status: 201 });
+  }
+
+  /**
+   * F-36 — the whole security model, one place: the effective role an assistant has in a project
+   * when acting ON BEHALF OF user U. INVARIANT: never MORE than U's own project_members role.
+   *   - 'inherit' (default): assistant's effective role = U's role.
+   *   - 'read_only': clamps to 'viewer' even if U is owner/editor.
+   *   - 'none': null (zero access — the assistant won't touch this project for U; U must use it directly).
+   * When there is NO acting user (cron / trigger / autonomous heartbeat — no human in the loop),
+   * callers pass userId="" and this returns null; the dispatch path then falls back to the
+   * assistant's own base grant (documented at the enforcement point), NOT this per-user clamp.
+   */
+  private resolveAssistantEffectiveRole(projectId: string, userId: string): "owner" | "editor" | "viewer" | null {
+    if (!userId) return null; // no acting user — not this clamp's job (see doc above)
+    const row = queryOne<{ role: string; assistant_mode: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT role, assistant_mode FROM project_members WHERE project_id = ? AND user_id = ?",
+      projectId, userId
+    );
+    if (!row) {
+      // U isn't a member — but the space owner/admin has implicit access, and an assistant acting
+      // for them inherits it (mode can't clamp what isn't a project_members row; a builder wanting
+      // to clamp must add an explicit row). Fail closed for a plain non-member.
+      return this.isSpaceOwnerOrAdmin(userId) ? "owner" : null;
+    }
+    if (row.assistant_mode === "none") return null;
+    if (row.assistant_mode === "read_only") return "viewer";
+    return row.role as "owner" | "editor" | "viewer";
   }
 
   private removeProjectMember(projectId: string, userId: string): Response {

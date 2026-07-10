@@ -709,6 +709,20 @@ app.delete("/spaces/:spaceId/projects/:projectId/members/:userId", async (c) => 
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// F-36: the effective role an assistant has in a project when acting for a given user (member GET
+// gate — anyone who can read the member list can read this derived value).
+app.use("/spaces/:spaceId/projects/:projectId/assistant-access", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/projects/:projectId/assistant-access", requireBusinessMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/projects/:projectId/assistant-access", async (c) => {
+  const { spaceId, projectId } = c.req.param();
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const userId = c.req.query("user_id") ?? "";
+  const res = await forwardToSpaceDO(stub, `/projects/${encodeURIComponent(projectId)}/assistant-access?user_id=${encodeURIComponent(userId)}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 app.post("/spaces/:spaceId/projects/:projectId/activate-thread", async (c) => {
   const { spaceId, projectId } = c.req.param();
   const identity = getCallerIdentity(c);

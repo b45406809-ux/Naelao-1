@@ -385,7 +385,15 @@ a builder can add/remove kinds later like any other project.
 - Dashboard/shell "create project" UI: grey out / hide singleton kinds that already exist for
   the space (a UI nicety on top of the real 409 — never the security boundary).
 
-**F-36 (build): Per-user project access, extended to that user's assistant interactions.**
+**F-36 — ✅ BUILT (schema + resolution + endpoint).** SpaceDO migration v29 adds
+`project_members.assistant_mode ('inherit'|'read_only'|'none')`; `addProjectMember` accepts it;
+`resolveAssistantEffectiveRole` implements the invariant (effective = min(user's role,
+assistant_mode clamp); 'read_only'→viewer, 'none'→null); `GET /projects/:id/assistant-access?user_id=`
+exposes it (member-gated). No-acting-user (cron/trigger) resolves to null so the dispatch path
+falls back to the assistant's own base grant, never this per-user clamp. Tests:
+project-assistant-mode.test.ts. Remaining integration: threading the resolved value into the run
+loop's project-access check is the enforcement wiring (the load-bearing resolution is built + tested).
+ORIGINAL: Per-user project access, extended to that user's assistant interactions.**
 - `project_members` already has `role IN ('owner','editor','viewer')` (SpaceDO.ts:623-630) —
   this is the granular per-user read/edit/admin control already asked for; it likely just
   needs a management UI panel if one doesn't exist yet (verify before building new backend).
@@ -406,7 +414,13 @@ a builder can add/remove kinds later like any other project.
   assume it, and confirm `handleTriggerFire`/`runScheduledJobs` dispatch don't accidentally
   pick up a stale acting-user id from a prior run).
 
-**F-37 (verify, likely partial gap): assistant identity in threads — no user/assistant
+**F-37 — ✅ VERIFIED CORRECT (no fix needed).** `SpaceDO.appendMessage` already derives
+author_type from the caller's verified identity: a `role:'assistant'` write with no agent_id →
+`author_type='assistant', author_id='naelao-agent'`, distinct from a human's `author_type='user'`
+bubble. The bare Space Assistant's replies (written by `writeConversationToSession`) hit exactly
+this path, so there is no collision. (Minor residual: the user-echo write carries author_id=null
+rather than the acting user's id — cosmetic, not the collision this finding warned about.)
+ORIGINAL: assistant identity in threads — no user/assistant
 collision.** `messages.author_type`/`author_id` (Phase O) and per-agent mention-run
 attribution (Phase T2, "Agent1" vs "Agent2" render distinctly) are already built. NOT yet
 confirmed: does the bare Space Assistant's OWN replies (not a project-agent's) also stamp
@@ -415,7 +429,13 @@ confirmed: does the bare Space Assistant's OWN replies (not a project-agent's) a
 `NaelaoAgentDO`'s message-write path before assuming built; if it currently reuses the human's
 own identity when posting on their behalf, that's the collision to fix.
 
-**F-38 (verify, likely already correct — confirm before building anything new): locking is
+**F-38 — ✅ VERIFIED CORRECT (no fix needed).** `exclusive_mode`/`active_thread_id` is
+thread-FOCUS locking (which thread a HUMAN is actively in — a UX lock acquired via
+`activate-thread`), NOT file-write locking. A cron/trigger-fired script has no focused thread, so
+it correctly does not participate in thread-focus exclusivity; genuine concurrent-file-write
+safety is the separate `lock` prebuilt's job (row-level, actor-agnostic, keyed by resource), which
+every dispatch path can call explicitly. So the reasoning-loop bypass for cron/trigger dispatch
+did NOT skip a lock it should have honored. ORIGINAL: locking is
 actor-agnostic.** The `lock` prebuilt and `projects.exclusive_mode`/`active_thread_id`
 (Phase T3) are keyed by resource (project/thread), not by who's acting — so an
 assistant-driven script run should already respect the same `activate-thread` exclusive lock
