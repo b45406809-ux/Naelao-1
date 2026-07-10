@@ -168,17 +168,24 @@ describe("Launchpad Wallet ledger (SpaceDO, real migration chain)", () => {
     expect(data[1]).toMatchObject({ delta_cents: 1000, balance_after_cents: 1000 });
   });
 
-  it("two different wallet projects in the same space never share a balance", async () => {
+  it("F-32: a space can have only ONE active wallet project — a second returns 409", async () => {
     const env = makeEnv();
-    const projectA = await makeWalletProject(env, "space-1", "tenant-1", "Wallet E");
-    const projectB = await makeWalletProject(env, "space-1", "tenant-1", "Wallet F");
+    await makeWalletProject(env, "space-1", "tenant-1", "Wallet E");
+    // A second attempt to PATCH kind='wallet' on a different project hits the singleton index.
+    const projectB = await createProject(env, "space-1", "tenant-1", "Wallet F");
     const h = await headers("tenant-1");
-    await spacesWorker.fetch(
-      req(`/spaces/space-1/projects/${projectA}/wallet/credit?tenant_id=tenant-1`, h, { method: "POST", body: JSON.stringify({ cents: 5000 }) }),
+    const patchRes = await spacesWorker.fetch(
+      req(`/spaces/space-1/projects/${projectB}/wallet/balance`, h),
       env as never, execCtx
     );
-    const balB = await spacesWorker.fetch(req(`/spaces/space-1/projects/${projectB}/wallet/balance`, h), env as never, execCtx);
-    expect((await balB.json() as { balance_cents: number }).balance_cents).toBe(0);
+    // projectB is not a wallet yet, so its balance route 404s (not a wallet project).
+    expect(patchRes.status).toBe(404);
+    const dupRes = await spacesWorker.fetch(
+      req(`/spaces/space-1/projects/${projectB}`, h, { method: "PATCH", body: JSON.stringify({ kind: "wallet" }) }),
+      env as never, execCtx
+    );
+    expect(dupRes.status).toBe(409);
+    expect((await dupRes.json() as { error_code: string }).error_code).toBe("duplicate_singleton_project");
   });
 });
 

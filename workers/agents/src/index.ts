@@ -11,7 +11,7 @@ import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
-import { parseMentions, type MentionableAgent } from "@naelao/events";
+import { parseMentions, creatableFeatureKindsForRole, type MentionableAgent } from "@naelao/events";
 import { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
@@ -1521,9 +1521,23 @@ app.post("/channels/:channel/connect", async (c) => {
   return c.json({ connected: true, channel, project_id: body.project_id ?? null, webhook_path: `/v1/channels/${channel}/inbound/${body.space_id}` }, 201);
 });
 
-// GET /project-templates — no-code customer-bot presets (WhatsApp/Discord/email support bot).
-// The dashboard renders these as cards; applying one is filling in a name, never writing code.
-app.get("/project-templates", (c) => c.json({ data: PROJECT_TEMPLATES, count: PROJECT_TEMPLATES.length }));
+// GET /project-templates — no-code customer-bot presets (WhatsApp/Discord/email support bot) PLUS
+// the Business Feature Projects registry (F-35), the two catalogues a "create project" picker
+// draws from. Feature kinds are ROLE-FILTERED server-side (not just UI-hidden) by the caller's
+// verified space role — a non-admin member never sees "Create Wallet" as an option at all,
+// matching the identity-vs-authorization split used everywhere else. `?role=` carries the caller's
+// resolved space role from the router; absent → treated as the lowest (editor) so nothing
+// admin-only leaks to an unauthenticated/unknown caller.
+app.get("/project-templates", (c) => {
+  const role = c.req.query("role") ?? c.req.header("x-naelao-role") ?? "editor";
+  const featureKinds = creatableFeatureKindsForRole(role);
+  return c.json({
+    data: PROJECT_TEMPLATES,
+    count: PROJECT_TEMPLATES.length,
+    feature_kinds: featureKinds,
+    feature_kinds_count: featureKinds.length,
+  });
+});
 
 // POST /spaces/:spaceId/projects/from-template — creates a fully configured project in one
 // call, from any entry in the project-templates catalogue (not just customer_bot presets):

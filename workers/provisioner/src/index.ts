@@ -401,23 +401,23 @@ export async function seedWallet(env: Env, spaceId: string, tenantId: string, us
     const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
     const headers = { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token };
 
+    // F-32: create the wallet project WITH kind='wallet' in one shot (createProject now accepts
+    // `kind` and stamps is_singleton_kind, so the DB singleton index applies immediately) rather
+    // than the old create-then-PATCH sequence that raced a second wallet project into existence.
     const createResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
       method: "POST", headers,
-      body: JSON.stringify({ space_id: spaceId, name: "Wallet", visibility: "private" }),
+      body: JSON.stringify({ space_id: spaceId, name: "Wallet", visibility: "private", kind: "wallet" }),
     }));
     if (!createResp.ok) {
+      // A 409 (a wallet already exists — idempotent re-provision) is not a failure; look it up.
+      if (createResp.status === 409) {
+        const dup = await createResp.json<{ existing_project_id?: string }>().catch(() => ({}) as { existing_project_id?: string });
+        if (dup.existing_project_id) return true; // wallet already provisioned
+      }
       console.warn(`[provisioner] wallet project creation failed for ${spaceId}: ${await createResp.text()}`);
       return false;
     }
     const { id: projectId } = await createResp.json<{ id: string }>();
-
-    const kindResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}`, {
-      method: "PATCH", headers, body: JSON.stringify({ kind: "wallet" }),
-    }));
-    if (!kindResp.ok) {
-      console.warn(`[provisioner] wallet project kind=wallet PATCH failed for ${spaceId}/${projectId}: ${await kindResp.text()}`);
-      return false;
-    }
 
     // P0-4: skip the credit grant (not the wallet project itself) unless this is verifiably the
     // user's first space — a missing userId (a message queued before this fix, or a system-

@@ -400,3 +400,6 @@ export function isCronDue(
   }
   return false;
 }
+
+// ── Business Feature Projects registry (F-34/F-41) ──────────────────────────────
+export * from "./business-feature-kinds.js";

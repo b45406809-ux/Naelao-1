@@ -5,6 +5,7 @@ import type { MessageRole } from "@naelao/types";
 import {
   selectMatchingRules, evaluateCondition, buildFireParams,
   findPossibleDuplicateProjects, isPresenceFresh, PRESENCE_FRESHNESS_WINDOW_MS,
+  getBusinessFeatureKind, isKnownProjectKind, roleMeetsMinimum,
 } from "@naelao/events";
 import type { TriggerRule, TriggerCondition, EventEnvelope, ConditionContext } from "@naelao/events";
 import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
@@ -803,6 +804,49 @@ const MIGRATIONS: Migration[] = [
       );
       CREATE INDEX IF NOT EXISTS idx_agent_activity_space ON agent_activity_log(space_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_agent_activity_project ON agent_activity_log(project_id, created_at DESC);
+    `,
+  },
+  {
+    version: 28,
+    description: "Business Feature Projects: projects.is_singleton_kind + drop kind CHECK (validate in app against BUSINESS_FEATURE_KIND_REGISTRY) + partial unique index for singleton kinds",
+    up: `
+      CREATE TABLE projects_new (
+        id                      TEXT PRIMARY KEY,
+        space_id                TEXT NOT NULL,
+        name                    TEXT NOT NULL,
+        description             TEXT NOT NULL DEFAULT '',
+        status                  TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+        created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+        kind                    TEXT NOT NULL DEFAULT 'workspace',
+        execution_ceiling       INTEGER NOT NULL DEFAULT 5 CHECK (execution_ceiling BETWEEN 1 AND 5),
+        daily_spend_cap_credits INTEGER NOT NULL DEFAULT 0,
+        channel_config          TEXT NOT NULL DEFAULT '{}',
+        show_sub_threads        INTEGER NOT NULL DEFAULT 0,
+        default_agent_id        TEXT,
+        max_threads             INTEGER NOT NULL DEFAULT 0,
+        allowed_agent_ids       TEXT,
+        visibility              TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('public','private')),
+        created_by              TEXT,
+        exclusive_mode          INTEGER NOT NULL DEFAULT 0,
+        active_thread_id        TEXT,
+        active_thread_since     TEXT,
+        is_singleton_kind       INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO projects_new SELECT
+        id, space_id, name, description, status, created_at, kind, execution_ceiling,
+        daily_spend_cap_credits, channel_config, show_sub_threads, default_agent_id, max_threads,
+        allowed_agent_ids, visibility, created_by, exclusive_mode, active_thread_id, active_thread_since,
+        CASE WHEN kind = 'wallet' THEN 1 ELSE 0 END
+      FROM projects;
+      DROP TABLE projects;
+      ALTER TABLE projects_new RENAME TO projects;
+      CREATE INDEX IF NOT EXISTS idx_projects_space ON projects(space_id, created_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_space_name ON projects(space_id, name);
+      -- The real singleton guarantee (F-32): at most one ACTIVE project per (space, kind) among
+      -- singleton kinds. DO-SQLite has no SELECT FOR UPDATE, so an app-level check races — this
+      -- partial unique index is the enforcement, a second create attempt hits a constraint error.
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_singleton_kind
+        ON projects(space_id, kind) WHERE is_singleton_kind = 1 AND status = 'active';
     `,
   },
 ];
@@ -1992,7 +2036,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const body = await request.json<{
       space_id: string; name: string; description?: string; tenant_id?: string;
       default_agent_id?: string; max_threads?: number; allowed_agent_ids?: string[];
-      visibility?: "public" | "private"; created_by?: string;
+      visibility?: "public" | "private"; created_by?: string; kind?: string;
     }>();
     if (!body.space_id || !body.name) {
       return Response.json({ error_code: "bad_request", message: "space_id and name are required" }, { status: 400 });
@@ -2005,6 +2049,39 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     }
     const bindingError = SpaceDO.validateAgentBinding(body.default_agent_id, body.allowed_agent_ids);
     if (bindingError) return Response.json({ error_code: "bad_request", message: bindingError }, { status: 400 });
+
+    // F-33/F-35: `kind` support (default 'workspace', unchanged for existing callers). Validate
+    // against the Business Feature Projects registry; role-gate feature kinds; stamp
+    // is_singleton_kind so the DB partial unique index (F-32) is the real singleton guarantee.
+    const kind = body.kind ?? "workspace";
+    if (!isKnownProjectKind(kind)) {
+      return Response.json({ error_code: "bad_request", message: `Unknown project kind '${kind}'` }, { status: 400 });
+    }
+    const featureKind = getBusinessFeatureKind(kind);
+    let isSingletonKind = 0;
+    if (featureKind) {
+      // Role check BEFORE the singleton check, so a non-privileged member gets "not allowed"
+      // rather than leaking whether a singleton of this kind already exists. The creator's
+      // space-level role is authoritative (created_by → space_members).
+      const callerRole = body.created_by
+        ? (queryOne<{ role: string }>(this.ctx.storage.sql as never, "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", body.space_id, body.created_by)?.role ?? "")
+        : "owner"; // no created_by (system/provisioner-initiated) → treat as privileged
+      if (body.created_by && !roleMeetsMinimum(callerRole, featureKind.minCreationRole)) {
+        return Response.json({ error_code: "forbidden", message: `Creating a '${kind}' project requires at least the '${featureKind.minCreationRole}' role` }, { status: 403 });
+      }
+      isSingletonKind = featureKind.singleton ? 1 : 0;
+      // Pre-check for a friendlier 409 (the partial unique index is the real guarantee below).
+      if (isSingletonKind) {
+        const existing = queryOne<{ id: string }>(
+          this.ctx.storage.sql as never,
+          "SELECT id FROM projects WHERE space_id = ? AND kind = ? AND is_singleton_kind = 1 AND status = 'active'",
+          body.space_id, kind
+        );
+        if (existing) {
+          return Response.json({ error_code: "duplicate_singleton_project", message: `A '${kind}' project already exists for this space`, existing_project_id: existing.id }, { status: 409 });
+        }
+      }
+    }
 
     // Check BEFORE inserting — createProject is idempotent on (space_id, name), and
     // project.created should only fire on a genuinely NEW project, not a re-run of bootstrap.
@@ -2029,14 +2106,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const allowedAgentIdsJson = body.allowed_agent_ids && body.allowed_agent_ids.length > 0
       ? JSON.stringify(body.allowed_agent_ids)
       : null;
-    execute(
-      this.ctx.storage.sql as never,
-      `INSERT INTO projects (id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at)
-       VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(space_id, name) DO NOTHING`,
-      id, body.space_id, body.name, body.description ?? "", body.default_agent_id ?? null,
-      body.max_threads ?? 0, allowedAgentIdsJson, body.visibility ?? "private", body.created_by ?? null, now
-    );
+    try {
+      execute(
+        this.ctx.storage.sql as never,
+        `INSERT INTO projects (id, space_id, name, description, status, kind, is_singleton_kind, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(space_id, name) DO NOTHING`,
+        id, body.space_id, body.name, body.description ?? "", kind, isSingletonKind, body.default_agent_id ?? null,
+        body.max_threads ?? 0, allowedAgentIdsJson, body.visibility ?? "private", body.created_by ?? null, now
+      );
+    } catch (err) {
+      // F-32: the partial unique index (space_id, kind) WHERE is_singleton_kind=1 fired — a
+      // concurrent create raced past the pre-check above. Translate to the same 409 with the
+      // winner's id so the caller gets a real constraint guarantee, not just an app-level check.
+      if (isSingletonKind && /UNIQUE|constraint/i.test((err as Error).message)) {
+        const existing = queryOne<{ id: string }>(
+          this.ctx.storage.sql as never,
+          "SELECT id FROM projects WHERE space_id = ? AND kind = ? AND is_singleton_kind = 1 AND status = 'active'",
+          body.space_id, kind
+        );
+        return Response.json({ error_code: "duplicate_singleton_project", message: `A '${kind}' project already exists for this space`, existing_project_id: existing?.id }, { status: 409 });
+      }
+      throw err;
+    }
     const row = queryOne<{
       id: string; name: string; status: string; default_agent_id: string | null;
       max_threads: number; allowed_agent_ids: string | null; visibility: string; created_by: string | null; created_at: string;
@@ -2210,10 +2302,32 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       execute(this.ctx.storage.sql as never, "UPDATE projects SET status = ? WHERE id = ?", body.status, projectId);
     }
     if (body.kind !== undefined) {
-      if (body.kind !== "workspace" && body.kind !== "customer_bot" && body.kind !== "wallet") {
-        return Response.json({ error_code: "bad_request", message: "kind must be 'workspace', 'customer_bot', or 'wallet'" }, { status: 400 });
+      // F-33: validate against the registry (not a hardcoded set) and stamp is_singleton_kind so
+      // the singleton index applies even when kind is set via PATCH (the legacy seedWallet path).
+      if (!isKnownProjectKind(body.kind)) {
+        return Response.json({ error_code: "bad_request", message: `Unknown project kind '${body.kind}'` }, { status: 400 });
       }
-      execute(this.ctx.storage.sql as never, "UPDATE projects SET kind = ? WHERE id = ?", body.kind, projectId);
+      const fk = getBusinessFeatureKind(body.kind);
+      const singleton = fk?.singleton ? 1 : 0;
+      if (singleton) {
+        const dup = queryOne<{ id: string }>(
+          this.ctx.storage.sql as never,
+          "SELECT id FROM projects WHERE space_id = ? AND kind = ? AND is_singleton_kind = 1 AND status = 'active' AND id != ?",
+          existing.space_id, body.kind, projectId
+        );
+        if (dup) {
+          return Response.json({ error_code: "duplicate_singleton_project", message: `A '${body.kind}' project already exists for this space`, existing_project_id: dup.id }, { status: 409 });
+        }
+      }
+      try {
+        execute(this.ctx.storage.sql as never, "UPDATE projects SET kind = ?, is_singleton_kind = ? WHERE id = ?", body.kind, singleton, projectId);
+      } catch (err) {
+        if (singleton && /UNIQUE|constraint/i.test((err as Error).message)) {
+          const dup = queryOne<{ id: string }>(this.ctx.storage.sql as never, "SELECT id FROM projects WHERE space_id = ? AND kind = ? AND is_singleton_kind = 1 AND status = 'active' AND id != ?", existing.space_id, body.kind, projectId);
+          return Response.json({ error_code: "duplicate_singleton_project", message: `A '${body.kind}' project already exists for this space`, existing_project_id: dup?.id }, { status: 409 });
+        }
+        throw err;
+      }
     }
     if (body.execution_ceiling !== undefined) {
       if (!Number.isInteger(body.execution_ceiling) || body.execution_ceiling < 1 || body.execution_ceiling > 5) {

@@ -67,15 +67,13 @@ describe("seedWallet (provisioner step 9a)", () => {
     const { env, calls } = makeEnv({ priorSpaceCount: 0 });
     const seeded = await seedWallet(env, "space-1", "tenant-1", "user-1");
     expect(seeded).toBe(true);
-    expect(calls).toHaveLength(3);
+    // F-32: create WITH kind='wallet' in one shot (no separate PATCH), then the starter grant.
+    expect(calls).toHaveLength(2);
 
-    const [create, patch, credit] = calls;
+    const [create, credit] = calls;
     expect(create!.url).toBe("http://spaces-worker/spaces/space-1/projects");
-    expect(create!.body).toMatchObject({ space_id: "space-1", name: "Wallet", visibility: "private" });
+    expect(create!.body).toMatchObject({ space_id: "space-1", name: "Wallet", visibility: "private", kind: "wallet" });
     expect(await verifyInternalToken(create!.headers["x-naelao-internal-token"], "tenant-1", SECRET)).toBe(true);
-
-    expect(patch!.url).toBe("http://spaces-worker/spaces/space-1/projects/wallet-proj-1");
-    expect(patch!.body).toEqual({ kind: "wallet" });
 
     expect(credit!.url).toBe("http://spaces-worker/spaces/space-1/projects/wallet-proj-1/wallet/credit");
     expect(credit!.body).toMatchObject({ cents: 1000, reason: "starter_grant", idempotency_key: "starter:space-1" });
@@ -85,7 +83,7 @@ describe("seedWallet (provisioner step 9a)", () => {
     const { env, calls } = makeEnv({ priorSpaceCount: 1 });
     const seeded = await seedWallet(env, "space-2", "tenant-1", "user-1");
     expect(seeded).toBe(true);
-    expect(calls).toHaveLength(2); // create + kind=wallet PATCH only, no /wallet/credit call
+    expect(calls).toHaveLength(1); // single create-with-kind, no /wallet/credit call
     expect(calls.some((c) => /\/wallet\/credit$/.test(c.url))).toBe(false);
   });
 
@@ -109,10 +107,18 @@ describe("seedWallet (provisioner step 9a)", () => {
     expect(seeded).toBe(false);
   });
 
-  it("returns false when the kind=wallet PATCH fails", async () => {
-    const { env } = makeEnv({ patchOk: false });
-    const seeded = await seedWallet(env, "space-1", "tenant-1", "user-1");
-    expect(seeded).toBe(false);
+  it("F-32: treats a 409 (wallet already exists — idempotent re-provision) as success, not failure", async () => {
+    const spacesWorker = {
+      async fetch(reqInput: Request | string, init?: RequestInit): Promise<Response> {
+        const req = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
+        if (req.method === "POST" && /\/projects$/.test(req.url)) {
+          return new Response(JSON.stringify({ error_code: "duplicate_singleton_project", existing_project_id: "wallet-existing" }), { status: 409 });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    };
+    const env = { ENVIRONMENT: "test", PLATFORM_SECRET: SECRET, SPACES_WORKER: spacesWorker, PLATFORM_DB: { prepare() { const s = { bind() { return s; }, async first() { return { cnt: 0 }; } }; return s; } } } as unknown as Env;
+    await expect(seedWallet(env, "space-1", "tenant-1", "user-1")).resolves.toBe(true);
   });
 
   it("still returns true when only the starter-grant credit call fails (the wallet project itself exists, which is the real payer gate)", async () => {
