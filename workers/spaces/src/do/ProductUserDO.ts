@@ -261,6 +261,29 @@ export class ProductUserDO extends DurableObject {
       return Response.json({ balance_credits: balanceAfter }, { status: 201 });
     }
 
+    // POST /credits/clawback — F-29: reverse a refunded credit-pack grant. Unlike /credits/deduct
+    // this does NOT fail closed on insufficient balance: if the buyer already spent some of the
+    // refunded credits, the balance goes negative (they were refunded the money, so they genuinely
+    // owe the value) rather than leaving free credits behind. Idempotent on idempotency_key.
+    if (method === "POST" && url.pathname === "/credits/clawback") {
+      const body = await request.json<{ credits: number; reason?: string; idempotency_key: string }>();
+      if (!Number.isFinite(body.credits) || body.credits <= 0 || !body.idempotency_key) {
+        return Response.json({ error: "credits (positive) and idempotency_key are required" }, { status: 400 });
+      }
+      const existing = this.ctx.storage.sql
+        .exec("SELECT balance_after FROM credit_ledger WHERE idempotency_key = ?", body.idempotency_key)
+        .toArray() as unknown as { balance_after: number }[];
+      if (existing[0]) {
+        return Response.json({ balance_credits: existing[0].balance_after, deduplicated: true }, { status: 200 });
+      }
+      const balanceAfter = this.currentBalance() - Math.ceil(body.credits);
+      this.ctx.storage.sql.exec(
+        `INSERT INTO credit_ledger (id, delta_credits, reason, balance_after, idempotency_key) VALUES (?, ?, ?, ?, ?)`,
+        crypto.randomUUID(), -Math.ceil(body.credits), body.reason ?? "refund_clawback", balanceAfter, body.idempotency_key
+      );
+      return Response.json({ balance_credits: balanceAfter }, { status: 201 });
+    }
+
     // ── Conversation refs (metadata only — the builder's gated conversation access reads these) ──
     if (method === "POST" && url.pathname === "/conversation-refs") {
       const body = await request.json<{ thread_id: string; space_id: string; session_id?: string; title?: string }>();

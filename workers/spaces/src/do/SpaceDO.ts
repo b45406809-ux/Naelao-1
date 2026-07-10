@@ -1130,6 +1130,9 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "POST" && url.pathname === "/revenue-tracking/mark-billed") {
         return this.markRevenueBilled(request);
       }
+      if (method === "POST" && url.pathname === "/revenue-tracking/unmark-billed") {
+        return this.markRevenueUnbilled(request);
+      }
       // ── project-scoped Memory OS Layers 3/4/6 (§A1.17 Phase U) ─────────────────
       const projFactsMatch = url.pathname.match(/^\/projects\/([^/]+)\/memory\/facts$/);
       if (method === "POST" && projFactsMatch?.[1]) return this.rememberProjectFact(projFactsMatch[1], request);
@@ -2693,6 +2696,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       );
     }
     return Response.json({ space_id: spaceId, provider, billed_periods: periods });
+  }
+
+  // F-29: the inverse of markRevenueBilled — the billing worker calls this when a revenue-cut
+  // surcharge payment is refunded, so the periods it covered revert to unbilled and become
+  // re-billable on the next checkout. Idempotent: an already-unbilled period is a no-op.
+  private async markRevenueUnbilled(request: Request): Promise<Response> {
+    const body = await request.json<{ space_id?: string; periods?: string[]; provider?: string }>()
+      .catch(() => ({}) as Record<string, never>);
+    const spaceId = body.space_id ?? "";
+    const provider = body.provider ?? "whop";
+    const periods = Array.isArray(body.periods) ? body.periods.filter((p) => /^\d{4}-\d{2}$/.test(p)) : [];
+    if (!spaceId || periods.length === 0) {
+      return Response.json({ error_code: "bad_request", message: "space_id and at least one valid period are required" }, { status: 400 });
+    }
+    for (const period of periods) {
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE external_revenue_snapshots SET billed = 0 WHERE space_id = ? AND period = ? AND provider = ?",
+        spaceId, period, provider
+      );
+    }
+    return Response.json({ space_id: spaceId, provider, unbilled_periods: periods });
   }
 
   private getWalletBalance(projectId: string): Response {

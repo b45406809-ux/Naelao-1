@@ -227,6 +227,73 @@ async function recordOrderRefund(
   await settleOrderToWallet(order.space_id, order.tenant_id, order.net_cents, `refund:${event.providerEventId}`, "refund_clawback", env);
 }
 
+/**
+ * F-29 (monetary loss): the refund handler above only matches launchpad_orders rows (product
+ * sales + seats). A refunded wallet top-up, credit pack, or revenue-cut surcharge left the granted
+ * value in place — free platform spend, repeatable. This routes a refund by the ORIGINAL checkout
+ * kind (LS preserves the order's custom_data on the order_refunded event, same as the mark-billed
+ * path relies on) and reverses the matching grant:
+ *   - wallet_topup  → debit the wallet (the 402-tolerant refund_clawback path already exists)
+ *   - credit_pack   → negative credit_ledger entry via the deduct sink
+ *   - revenue_cut_surcharge → un-mark the periods so the cut is re-billable
+ * Idempotent: the top-level processed_webhook_events gate already prevents a refund event running
+ * twice; each downstream grant/debit is additionally keyed on `refund:{providerEventId}`.
+ */
+async function recordNonOrderRefundClawback(
+  event: NormalizedBillingEvent,
+  env: LemonSqueezyEnv
+): Promise<void> {
+  if (event.type !== "refund.issued" || !event.providerEventId || !event.spaceId) return;
+  const custom = (event.metadata ?? {}) as Record<string, unknown>;
+  const kind = typeof custom["kind"] === "string" ? custom["kind"] : null;
+  if (!kind || !env.SPACES_WORKER) return;
+
+  const space = await env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ?")
+    .bind(event.spaceId).first<{ tenant_id: string }>();
+  if (!space) return;
+  const headers = {
+    "content-type": "application/json",
+    "x-naelao-tenant-id": space.tenant_id,
+    "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, space.tenant_id),
+  };
+  const idempotencyKey = `refund:${event.providerEventId}`;
+
+  if (kind === "wallet_topup") {
+    const projectId = custom["project_id"] ? String(custom["project_id"]) : null;
+    const cents = custom["cents"] ? parseInt(String(custom["cents"]), 10) : 0;
+    if (!projectId || cents <= 0) return;
+    const resp = await env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${event.spaceId}/projects/${projectId}/wallet/debit`,
+      { method: "POST", headers, body: JSON.stringify({ cents, reason: "refund_clawback", idempotency_key: idempotencyKey }) }
+    ));
+    if (!resp.ok) console.warn(`[billing/ls] wallet_topup refund clawback failed space=${event.spaceId} project=${projectId}: ${await resp.text()}`);
+    return;
+  }
+
+  if (kind === "credit_pack") {
+    const endUserId = custom["end_user_id"] ? String(custom["end_user_id"]) : null;
+    const productSpaceId = custom["product_space_id"] ? String(custom["product_space_id"]) : null;
+    const credits = custom["credits"] ? parseInt(String(custom["credits"]), 10) : 0;
+    if (!endUserId || !productSpaceId || credits <= 0) return;
+    const resp = await env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/credit-packs/clawback", {
+      method: "POST", headers,
+      body: JSON.stringify({ product_space_id: productSpaceId, end_user_id: endUserId, credits, idempotency_key: idempotencyKey }),
+    }));
+    if (!resp.ok) console.warn(`[billing/ls] credit_pack refund clawback failed end_user=${endUserId}: ${await resp.text()}`);
+    return;
+  }
+
+  if (kind === "revenue_cut_surcharge") {
+    const periods = custom["periods"] ? String(custom["periods"]).split(",").filter(Boolean) : [];
+    if (periods.length === 0) return;
+    const resp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${event.spaceId}/revenue-tracking/unmark-billed`, {
+      method: "POST", headers, body: JSON.stringify({ periods }),
+    }));
+    if (!resp.ok) console.warn(`[billing/ls] surcharge refund unmark failed space=${event.spaceId}: ${await resp.text()}`);
+    return;
+  }
+}
+
 /** Map Lemon Squeezy's own subscription status vocabulary onto business_subscriptions' narrower
  *  CHECK-constrained enum. "on_trial" and "unpaid" don't have their own column value — trialing
  *  counts as active access, unpaid is a stronger past_due (the builder's UI doesn't currently
@@ -315,7 +382,12 @@ async function grantCreditPackPurchase(
     .bind(productSpaceId).first<{ tenant_id: string }>();
   if (!product) return false;
 
-  const idempotencyKey = event.subscriptionId ?? `credit_pack:${event.customerId ?? ""}:${event.amountCents}:${endUserId}:${credits}`;
+  // F-30: prefer the LS order id (providerEventId) — stable across webhook retries but UNIQUE per
+  // real purchase. The old synthetic fallback was identical for every purchase of the same pack by
+  // the same customer, so a legitimate second purchase (running low again) collided with the first
+  // on credit_ledger's unique idempotency index and was silently swallowed — customer paid, got
+  // nothing. subscriptionId is null for one-time orders, so it was never the real key anyway.
+  const idempotencyKey = event.providerEventId ?? event.subscriptionId ?? `credit_pack:${event.customerId ?? ""}:${event.amountCents}:${endUserId}:${credits}`;
   try {
     const resp = await env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/credit-packs/grant", {
       method: "POST",
@@ -363,7 +435,9 @@ async function grantWalletTopupPurchase(
     .bind(event.spaceId).first<{ tenant_id: string }>();
   if (!space) return false;
 
-  const idempotencyKey = event.subscriptionId ?? `wallet_topup:${event.customerId ?? ""}:${event.amountCents}:${projectId}:${cents}`;
+  // F-30: same fix as credit packs — key on the LS order id so two legitimate top-ups of the same
+  // amount to the same project don't collide on wallet_ledger's idempotency index and drop the second.
+  const idempotencyKey = event.providerEventId ?? event.subscriptionId ?? `wallet_topup:${event.customerId ?? ""}:${event.amountCents}:${projectId}:${cents}`;
   try {
     const resp = await env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/wallet-topups/grant", {
       method: "POST",
@@ -659,6 +733,23 @@ async function markEventProcessedOnce(
 }
 
 /**
+ * F-21 / F-28 (money leak): checkout kinds that must NEVER accrue a reseller/referral builder
+ * margin. The decided revenue model (ARCH-REVENUE) keeps 100% of subscription-class revenue for
+ * Naelao and treats a wallet top-up as the business's own capital (passthrough), so attributing a
+ * builder cut on any of them creates obligations exceeding money-in — WORST case a builder
+ * colluding with a child business loops wallet_topups to farm payout balance. revenue_cut_surcharge
+ * is excluded too (F-28): the surcharge IS the mechanism that already collects the cut, so running
+ * it through attribution as well double-pays a referral-mode builder for the same revenue. Genuine
+ * end-customer revenue — product sales (product_id, no kind) and seats — still attributes normally.
+ */
+const RESELLER_ATTRIBUTION_BLOCKED_KINDS = new Set([
+  "business_subscription",
+  "credit_pack",
+  "wallet_topup",
+  "revenue_cut_surcharge",
+]);
+
+/**
  * If the billing event belongs to a child tenant under a reseller, attribute it to the
  * parent and write a reseller-ledger entry (consolidated invoicing — spec G-AS34/G-AS35).
  * No-op when the space's tenant is not a child tenant or the relationship is "platform".
@@ -668,6 +759,10 @@ async function recordResellerAttribution(
   db: D1Database
 ): Promise<void> {
   if (!isLedgerEvent(event.type)) return;
+
+  // F-21 / F-28: filter by the checkout kind BEFORE any attribution work.
+  const kind = (event.metadata ?? {})["kind"];
+  if (typeof kind === "string" && RESELLER_ATTRIBUTION_BLOCKED_KINDS.has(kind)) return;
 
   // Resolve the space's tenant, then its parent reseller (if any).
   const space = await db.prepare(
@@ -814,6 +909,11 @@ export async function handleLemonSqueezyWebhook(
     await recordOrderRefund(event, env);
   } catch (err) {
     console.error("[billing/ls] Order refund clawback failed:", (err as Error).message);
+  }
+  try {
+    await recordNonOrderRefundClawback(event, env);
+  } catch (err) {
+    console.error("[billing/ls] Non-order refund clawback failed:", (err as Error).message);
   }
   try {
     await recordRevenueCutSurchargePayment(event, env);

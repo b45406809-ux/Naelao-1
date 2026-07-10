@@ -212,6 +212,14 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   `reseller_ledger` rows so ARCH-REVENUE-5's by-source breakdown is possible, and a test
   proving a wallet_topup on a child business accrues zero margin.
 
+  **PARTIALLY FIXED (money-leak closed):** `RESELLER_ATTRIBUTION_BLOCKED_KINDS` now excludes
+  `business_subscription`, `credit_pack`, `wallet_topup`, and `revenue_cut_surcharge` from
+  `recordResellerAttribution` — the wallet_topup payout-farming leak and the surcharge
+  double-dip (F-28) are closed, with a test proving zero margin on a child-business
+  wallet_topup. **Still open:** the `reseller_ledger.kind` column + ARCH-REVENUE-5's
+  by-source payout breakdown (a schema + payout-read change, deferred to the ARCH-REVENUE
+  build).
+
   **ARCH-REVENUE-5: Builder payout calculation** — the inverse of Naelao's cut:
   - Current code: `GET /builder/payouts*` exists (`builder-routes.ts:680+`) and calculates builder balance via `reseller_ledger`
   - Issue: `reseller_ledger` is a dual-purpose table (attribution for ALL transactions, including seats + credit packs where the builder doesn't earn anything). The payout code sums it all, which is imprecise.
@@ -797,8 +805,12 @@ the expected incremental-build path, not a fallback state to design around.
   builder-visible so gaming is at least auditable, and flag businesses holding a whop
   credential with no recent snapshot.
 
-- [ ] **F-28 (double-dip, F-21 instance worth its own line): the revenue-cut surcharge
-  payment itself flows through reseller attribution.**
+- [x] **F-28 (double-dip, F-21 instance worth its own line): the revenue-cut surcharge
+  payment itself flows through reseller attribution.** FIXED: `RESELLER_ATTRIBUTION_BLOCKED_KINDS`
+  in `billing/lemon-squeezy.ts` now excludes `revenue_cut_surcharge` (plus the ARCH-REVENUE-7
+  money-leak kinds) from `recordResellerAttribution`, gated on the checkout `kind` before any
+  attribution work. Test: `billing-refund-clawback.test.ts` proves a wallet_topup under a
+  referral reseller accrues zero margin.
   Evidence: tests/unit/revenue-cut-surcharge.test.ts:9-11's own comment —
   "recordResellerAttribution is unconditional for every payment.success — no new code
   needed there." The surcharge IS the mechanism collecting Naelao's/the builder's cut of
@@ -808,8 +820,16 @@ the expected incremental-build path, not a fallback state to design around.
   fee). Fix: same allowlist as F-21 — exclude `kind='revenue_cut_surcharge'` from reseller
   attribution.
 
-- [ ] **F-29 (monetary loss): refund clawback only exists for storefront product orders —
-  a refunded wallet top-up leaves the full spendable credit in the wallet.**
+- [x] **F-29 (monetary loss): refund clawback only exists for storefront product orders —
+  a refunded wallet top-up leaves the full spendable credit in the wallet.** FIXED:
+  `recordNonOrderRefundClawback` (`billing/lemon-squeezy.ts`) routes a `refund.issued` by the
+  original checkout `kind` — wallet_topup → wallet debit (`refund_clawback`), credit_pack →
+  new `/internal/credit-packs/clawback` (ProductUserDO `/credits/clawback`, allows negative
+  balance since the money was refunded), revenue_cut_surcharge → new
+  `/revenue-tracking/unmark-billed` (SpaceDO `markRevenueUnbilled`). Each keyed on
+  `refund:{providerEventId}` for idempotency. Tests in `billing-refund-clawback.test.ts`.
+  **Still open (noted, not fixed here):** a refunded SEAT purchase claws back the wallet
+  settlement but doesn't deactivate the seat member — tracked separately.
   Evidence: the `refund.issued` handler (lemon-squeezy.ts:215-227) only matches
   `launchpad_orders` rows and returns silently for anything else. A business tops up its
   wallet, spends nothing, requests an LS refund (or chargeback) → money returned by LS,
@@ -826,9 +846,12 @@ the expected incremental-build path, not a fallback state to design around.
   launchpad_orders, so the clawback path does fire) claws back the wallet settlement but
   never deactivates the seat member — the refunded member keeps access.
 
-- [ ] **F-30 (paying customer gets nothing): credit-pack / wallet-top-up idempotency keys
+- [x] **F-30 (paying customer gets nothing): credit-pack / wallet-top-up idempotency keys
   are derived from purchase ATTRIBUTES, so two identical legitimate purchases collide and
-  the second grant is silently dropped.**
+  the second grant is silently dropped.** FIXED: both `grantCreditPackPurchase` and
+  `grantWalletTopupPurchase` now key on `event.providerEventId` first (the LS order id —
+  unique per real purchase, stable across webhook retries), falling back to the synthetic key
+  only when no provider id exists.
   Evidence: lemon-squeezy.ts:318 and :366 — `event.subscriptionId ?? "credit_pack:
   {customerId}:{amountCents}:{endUserId}:{credits}"`. One-time LS orders have no
   subscriptionId, so the synthetic fallback is what actually runs — and it's identical for

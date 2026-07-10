@@ -892,6 +892,16 @@ app.post("/spaces/:spaceId/revenue-tracking/mark-billed", async (c) => {
   const res = await forwardToSpaceDO(stub, "/revenue-tracking/mark-billed", "POST", JSON.stringify({ ...body, space_id: spaceId }));
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
+app.use("/spaces/:spaceId/revenue-tracking/unmark-billed", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/spaces/:spaceId/revenue-tracking/unmark-billed", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const body = await c.req.json().catch(() => ({}));
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/revenue-tracking/unmark-billed", "POST", JSON.stringify({ ...body, space_id: spaceId }));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
 
 // Container Marketplace slots (§A1.17 Phase L) — builder/operator-only for now (like rules/
 // spend above): no catalogue image is live yet, so there is nothing for an end user's day-to-day
@@ -2238,6 +2248,29 @@ app.post("/internal/credit-packs/grant", async (c) => {
   return c.json(result, grantRes.status as 200 | 201);
 });
 
+// POST /internal/credit-packs/clawback — F-29: the billing worker calls this when a credit-pack
+// purchase is refunded, to reverse the grant on the buyer's ProductUserDO (allows the balance to
+// go negative if they already spent it — they were refunded the money). idempotency_key REQUIRED.
+app.use("/internal/credit-packs/clawback", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/credit-packs/clawback", async (c) => {
+  const body = await c.req.json<{ product_space_id: string; end_user_id: string; credits: number; idempotency_key: string }>();
+  if (!body.product_space_id || !body.end_user_id || !body.credits || !body.idempotency_key) {
+    return c.json({ error_code: "bad_request", message: "product_space_id, end_user_id, credits, and idempotency_key are required" }, 400);
+  }
+  const product = await c.env.PLATFORM_DB.prepare("SELECT tenant_id FROM spaces WHERE id = ? AND status != 'deleted'")
+    .bind(body.product_space_id).first<{ tenant_id: string }>();
+  if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+
+  const stub = await productUserDoStub(c.env, body.product_space_id, body.end_user_id, product.tenant_id);
+  const res = await stub.fetch(new Request("http://do/credits/clawback", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ credits: body.credits, reason: "credit_pack_refund", idempotency_key: body.idempotency_key }),
+  }));
+  const result = await res.json<{ balance_credits: number; deduplicated?: boolean }>();
+  return c.json(result, res.status as 200 | 201);
+});
+
 // POST /internal/wallet-topups/grant — the billing worker's webhook handler calls this after a
 // wallet-topup payment.success to credit the BUSINESS's own wallet_ledger (a project flagged
 // kind='wallet' under that business space) — never an individual end user's balance, unlike
@@ -2503,20 +2536,12 @@ app.post("/internal/stream-tickets/issue", async (c) => {
   }
   const { productId, endUserId, sessionToken } = await c.req.json<{ productId: string; endUserId: string; sessionToken: string }>();
   if (!productId || !endUserId || !sessionToken) return c.json({ error: "bad_request" }, 400);
-  // Verify the session first — only valid sessions may obtain a ticket.
-  const verifyRes = await c.env.SPACES_WORKER?.fetch(new Request("http://spaces/internal/product-sessions/verify", {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-naelao-platform-secret": c.env.PLATFORM_SECRET },
-    body: JSON.stringify({ productId, endUserId, sessionToken }),
-  })).catch(() => null);
-  // If SPACES_WORKER binding isn't available, verify inline.
+  // Verify the session inline — this IS the spaces worker, so there is no separate worker to call
+  // out to (a prior version referenced a non-existent SPACES_WORKER self-binding). Same logic as
+  // /internal/product-sessions/verify above: resolve the product's root space (walking a
+  // parent_space_id for child business spaces), verify the token against that ProductUserDO.
   let tenantId: string | undefined;
-  if (verifyRes?.ok) {
-    const v = await verifyRes.json<{ valid: boolean; tenant_id?: string }>();
-    if (!v.valid) return c.json({ error: "invalid_session" }, 401);
-    tenantId = v.tenant_id;
-  } else {
-    // Inline verification path (same logic as /internal/product-sessions/verify above).
+  {
     const urlSpace = await c.env.PLATFORM_DB.prepare(
       "SELECT tenant_id, parent_space_id FROM spaces WHERE id = ? AND status != 'deleted'"
     ).bind(productId).first<{ tenant_id: string; parent_space_id: string | null }>();
