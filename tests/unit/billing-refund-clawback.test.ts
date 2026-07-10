@@ -20,6 +20,7 @@ async function loadDb() {
     m("0035_commerce.sql"),
     m("0050_webhook_idempotency.sql"),
     m("0052_webhook_idempotency_event_type.sql"),
+    m("0061_reseller_ledger_kind.sql"), // adds launchpad_orders.builder_fee_cents (recordOrderRefund reads it)
   ]);
   await fakeDb.prepare("INSERT INTO spaces (id, tenant_id, status) VALUES (?, ?, 'active')").bind("space-1", "tenant-1").run();
   return fakeDb;

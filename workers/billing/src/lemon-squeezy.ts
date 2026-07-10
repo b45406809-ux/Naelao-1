@@ -211,8 +211,9 @@ async function recordProductOrder(
   // genuinely distinct same-price purchases of the same product by the same customer.
   const providerEventId = event.providerEventId ?? event.subscriptionId ?? `${event.type}:${event.customerId ?? ""}:${gross}:${productId}`;
 
-  // INSERT OR IGNORE on the unique provider_event_id index → idempotent.
-  const insertResult = await env.PLATFORM_DB.prepare(
+  // INSERT OR IGNORE on the unique provider_event_id index → idempotent (a retry re-inserts nothing
+  // but still re-attempts the idempotent settlement below).
+  await env.PLATFORM_DB.prepare(
     `INSERT OR IGNORE INTO launchpad_orders
        (id, space_id, tenant_id, product_id, customer_email, gross_cents, fee_cents, builder_fee_cents, net_cents,
         currency, ls_subscription_id, status, provider_event_id)
@@ -227,14 +228,16 @@ async function recordProductOrder(
   // kept 100% of every storefront sale, and the seller got a database row. Settle it into the
   // SAME space's auto-provisioned wallet (seedWallet, P0-4) — the wallet is already the payer of
   // last resort for that space's own project-scoped agent runs (P0-2), so this closes the loop:
-  // a business's own sales now fund its own agent's compute. Only on a genuinely new insert
-  // (insertResult.meta.changes === 0 means the top-level webhook dedup somehow let a duplicate
-  // through — defense in depth, never double-settle the same order).
-  if (insertResult.meta.changes > 0) {
-    await settleOrderToWallet(event.spaceId, space.tenant_id, net, `settle:${providerEventId}`, "sale_settlement", env);
-    if (builderShare && builderFee > 0) {
-      await recordBuilderRevenueShare(env.PLATFORM_DB, builderShare, event, builderFee, providerEventId, false);
-    }
+  // a business's own sales now fund its own agent's compute.
+  //
+  // Settlement is ALWAYS attempted (not only on a first insert) and is idempotent via
+  // `settle:${providerEventId}` on wallet_ledger — so a webhook RETRY after a transient settlement
+  // failure completes the settlement instead of being skipped. Previously this was gated on
+  // insertResult.meta.changes > 0, which meant a retry (order row already present → changes=0)
+  // never re-settled, permanently losing the revenue if the first settlement had failed.
+  await settleOrderToWallet(event.spaceId, space.tenant_id, net, `settle:${providerEventId}`, "sale_settlement", env);
+  if (builderShare && builderFee > 0) {
+    await recordBuilderRevenueShare(env.PLATFORM_DB, builderShare, event, builderFee, providerEventId, false);
   }
   return id;
 }
@@ -256,38 +259,41 @@ async function settleOrderToWallet(
   reason: "sale_settlement" | "refund_clawback",
   env: LemonSqueezyEnv
 ): Promise<boolean> {
+  // Benign no-ops (nothing to settle / not configured) — return false, never a retriable failure.
   if (cents <= 0 || !env.SPACES_WORKER) return false;
-  try {
-    const headers = {
-      "content-type": "application/json",
-      "x-naelao-tenant-id": tenantId,
-      "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
-    };
-    const wpRes = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/wallet-project`, { headers }));
-    if (!wpRes.ok) return false;
-    const { project_id } = await wpRes.json<{ project_id: string | null }>();
-    if (!project_id) return false; // no wallet ever provisioned for this space — nothing to settle to
+  const headers = {
+    "content-type": "application/json",
+    "x-naelao-tenant-id": tenantId,
+    "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+  };
+  // A network/parse error reaching the wallet-project lookup is TRANSIENT — let it throw so the
+  // webhook returns non-200 and Lemon Squeezy retries (see handleLemonSqueezyWebhook), rather than
+  // silently dropping a business's earned revenue. Idempotency_key makes the eventual retry safe.
+  const wpRes = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/wallet-project`, { headers }));
+  if (!wpRes.ok) throw new Error(`wallet-project lookup ${wpRes.status} for space=${spaceId}`);
+  const { project_id } = await wpRes.json<{ project_id: string | null }>();
+  if (!project_id) return false; // no wallet ever provisioned for this space — nothing to settle to (permanent, not retriable)
 
-    const op = reason === "sale_settlement" ? "credit" : "debit";
-    const resp = await env.SPACES_WORKER.fetch(new Request(
-      `http://spaces-worker/spaces/${spaceId}/projects/${project_id}/wallet/${op}`,
-      { method: "POST", headers, body: JSON.stringify({ cents, reason, idempotency_key: idempotencyKey }) }
-    ));
-    if (!resp.ok) {
-      // A refund clawback that 402s (insufficient balance — the seller already spent the
-      // proceeds running their agent) is a real, documented limitation: this debits AT MOST what
-      // the wallet currently holds' worth of protection, never a negative balance (the underlying
-      // wallet_ledger never goes negative, same as every other debit in the platform). Building
-      // real seller-debt tracking/invoicing for the shortfall is a separate, later feature.
-      console.warn(`[billing/ls] wallet ${op} failed for space=${spaceId} project=${project_id}: ${await resp.text()}`);
+  const op = reason === "sale_settlement" ? "credit" : "debit";
+  const resp = await env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${spaceId}/projects/${project_id}/wallet/${op}`,
+    { method: "POST", headers, body: JSON.stringify({ cents, reason, idempotency_key: idempotencyKey }) }
+  ));
+  if (!resp.ok) {
+    // A refund clawback that 402s (insufficient balance — the seller already spent the proceeds
+    // running their agent) is a real, documented, NON-retriable limitation: debit AT MOST what the
+    // wallet holds, never a negative balance. Return false (no retry). Any OTHER non-2xx on the
+    // credit path (a sale settlement) is transient → throw so the webhook retries instead of losing
+    // the business's earned revenue.
+    const bodyText = await resp.text();
+    if (op === "debit" && resp.status === 402) {
+      console.warn(`[billing/ls] wallet debit insufficient-balance (documented) for space=${spaceId} project=${project_id}: ${bodyText}`);
       return false;
     }
-    console.log(`[billing/ls] wallet ${op} ${cents}c for space=${spaceId} project=${project_id} (${reason})`);
-    return true;
-  } catch (err) {
-    console.error(`[billing/ls] wallet settlement error for space=${spaceId}:`, (err as Error).message);
-    return false;
+    throw new Error(`wallet ${op} ${resp.status} for space=${spaceId} project=${project_id}: ${bodyText}`);
   }
+  console.log(`[billing/ls] wallet ${op} ${cents}c for space=${spaceId} project=${project_id} (${reason})`);
+  return true;
 }
 
 /**
@@ -513,14 +519,18 @@ async function grantCreditPackPurchase(
       body: JSON.stringify({ product_space_id: productSpaceId, end_user_id: endUserId, credits, idempotency_key: idempotencyKey }),
     }));
     if (!resp.ok) {
-      console.error(`[billing/ls] Credit pack grant failed for end_user=${endUserId}: ${await resp.text()}`);
-      return false;
+      // Transient — throw so the webhook retries rather than the paying customer getting nothing.
+      // The grant is idempotency-keyed, so a retry never double-grants.
+      throw new Error(`credit pack grant ${resp.status} for end_user=${endUserId}: ${await resp.text()}`);
     }
     console.log(`[billing/ls] Granted ${credits} credits to end_user=${endUserId} product=${productSpaceId}`);
     return true;
   } catch (err) {
+    // Re-throw: a transient grant failure must surface to the orchestrator so the webhook returns
+    // non-200 and Lemon Squeezy retries (idempotency-keyed → safe). Swallowing here silently
+    // dropped a paid credit pack.
     console.error("[billing/ls] Credit pack grant error:", (err as Error).message);
-    return false;
+    throw err;
   }
 }
 
@@ -563,14 +573,15 @@ async function grantWalletTopupPurchase(
       body: JSON.stringify({ business_space_id: event.spaceId, project_id: projectId, cents, idempotency_key: idempotencyKey }),
     }));
     if (!resp.ok) {
-      console.error(`[billing/ls] Wallet top-up grant failed for space=${event.spaceId} project=${projectId}: ${await resp.text()}`);
-      return false;
+      // Transient — throw so the webhook retries (idempotency-keyed → safe) rather than silently
+      // dropping the business's own topped-up capital.
+      throw new Error(`wallet top-up grant ${resp.status} for space=${event.spaceId} project=${projectId}: ${await resp.text()}`);
     }
     console.log(`[billing/ls] Granted ${cents} wallet cents to space=${event.spaceId} project=${projectId}`);
     return true;
   } catch (err) {
     console.error("[billing/ls] Wallet top-up grant error:", (err as Error).message);
-    return false;
+    throw err;
   }
 }
 
@@ -853,6 +864,19 @@ async function markEventProcessedOnce(
 }
 
 /**
+ * Reverse markEventProcessedOnce so a later delivery of the same event is reprocessed. Called when
+ * a money side-effect failed TRANSIENTLY (see handleLemonSqueezyWebhook): the event was reserved to
+ * dedupe concurrent deliveries, but since it didn't fully succeed we release the reservation and
+ * return a non-200 so Lemon Squeezy retries. Every money handler is idempotent, so reprocessing is
+ * safe — the parts that succeeded are no-ops, the failed part completes.
+ */
+async function unmarkEventProcessed(provider: string, eventId: string, db: D1Database): Promise<void> {
+  try {
+    await db.prepare(`DELETE FROM processed_webhook_events WHERE provider = ? AND event_id = ?`).bind(provider, eventId).run();
+  } catch { /* best-effort — a failed delete just means the retry is deduped, no worse than today */ }
+}
+
+/**
  * F-21 / F-28 (money leak): checkout kinds that must NEVER accrue a reseller/referral builder
  * margin. The decided revenue model (ARCH-REVENUE) keeps 100% of subscription-class revenue for
  * Naelao and treats a wallet top-up as the business's own capital (passthrough), so attributing a
@@ -997,55 +1021,50 @@ export async function handleLemonSqueezyWebhook(
     return Response.json({ ok: true, skipped: true });
   }
 
+  // Every money side-effect below is idempotent (INSERT OR IGNORE / ON CONFLICT / a settlement or
+  // grant keyed by an idempotency_key). So a transient failure in ANY of them must NOT be silently
+  // swallowed with a 200 (which would permanently lose the money — Lemon Squeezy never retries a
+  // 200). Instead we collect the failures, and if any occurred we RELEASE the exactly-once
+  // reservation and return a 500 so LS retries the whole event; the retry re-runs every handler,
+  // the succeeded ones no-op, the failed one completes. Each handler still runs even if a prior one
+  // failed, so as much as possible settles on the first pass.
+  const failures: string[] = [];
+  const runHandler = async (label: string, fn: () => Promise<unknown>): Promise<void> => {
+    try {
+      await fn();
+    } catch (err) {
+      console.error(`[billing/ls] ${label} failed:`, (err as Error).message);
+      failures.push(label);
+    }
+  };
+
   // 4. Reseller attribution — if this space is a child tenant under a reseller, roll the
-  //    event up into the parent's consolidated ledger (G-AS34/G-AS35). Best-effort.
-  try {
-    await recordResellerAttribution(event, env.PLATFORM_DB);
-  } catch (err) {
-    console.error("[billing/ls] Reseller attribution failed:", (err as Error).message);
-  }
+  //    event up into the parent's consolidated ledger (G-AS34/G-AS35).
+  await runHandler("reseller attribution", () => recordResellerAttribution(event, env.PLATFORM_DB));
 
   // 5. Record money-in (idempotent). A seat purchase activates a member; otherwise a
   //    product sale is fulfilled. Plan/subscription events for the builder skip both.
   let orderId: string | null = null;
-  try {
+  await runHandler("order recording", async () => {
     orderId = (await recordSeatActivation(event, env)) ?? (await recordProductOrder(event, env));
-  } catch (err) {
-    console.error("[billing/ls] Order recording failed:", (err as Error).message);
-  }
+  });
 
   // 5b. Phase E: business subscription state (subscription.* events only) and credit-pack grants
   //     (payment.success only) — both keyed off checkout metadata.kind, so they never collide
   //     with the seat/product paths above (each event matches at most one of these four kinds).
-  try {
-    await recordBusinessSubscription(event, env);
-  } catch (err) {
-    console.error("[billing/ls] Business subscription recording failed:", (err as Error).message);
-  }
-  try {
-    await grantCreditPackPurchase(event, env);
-  } catch (err) {
-    console.error("[billing/ls] Credit pack grant failed:", (err as Error).message);
-  }
-  try {
-    await grantWalletTopupPurchase(event, env);
-  } catch (err) {
-    console.error("[billing/ls] Wallet top-up grant failed:", (err as Error).message);
-  }
-  try {
-    await recordOrderRefund(event, env);
-  } catch (err) {
-    console.error("[billing/ls] Order refund clawback failed:", (err as Error).message);
-  }
-  try {
-    await recordNonOrderRefundClawback(event, env);
-  } catch (err) {
-    console.error("[billing/ls] Non-order refund clawback failed:", (err as Error).message);
-  }
-  try {
-    await recordRevenueCutSurchargePayment(event, env);
-  } catch (err) {
-    console.error("[billing/ls] Revenue-cut surcharge mark-billed failed:", (err as Error).message);
+  await runHandler("business subscription recording", () => recordBusinessSubscription(event, env));
+  await runHandler("credit pack grant", () => grantCreditPackPurchase(event, env));
+  await runHandler("wallet top-up grant", () => grantWalletTopupPurchase(event, env));
+  await runHandler("order refund clawback", () => recordOrderRefund(event, env));
+  await runHandler("non-order refund clawback", () => recordNonOrderRefundClawback(event, env));
+  await runHandler("revenue-cut surcharge mark-billed", () => recordRevenueCutSurchargePayment(event, env));
+
+  // If any money side-effect failed transiently, release the exactly-once reservation and 500 so
+  // Lemon Squeezy retries (all handlers are idempotent → the retry is safe and completes the gap).
+  if (failures.length > 0) {
+    await unmarkEventProcessed("lemon_squeezy", eventId, env.PLATFORM_DB);
+    console.warn(`[billing/ls] event=${eventId} had ${failures.length} failed side-effect(s) [${failures.join(", ")}] — released for retry`);
+    return Response.json({ error: "processing_failed", failed: failures }, { status: 500 });
   }
 
   // 6. Wake an agent asynchronously (ctx.waitUntil equivalent: fire-and-forget). Pass the order

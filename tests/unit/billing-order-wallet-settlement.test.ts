@@ -209,3 +209,45 @@ describe("Lemon Squeezy webhook — refund claws back the settled amount (P0-5)"
     expect(order?.status).toBe("refunded");
   });
 });
+
+describe("Lemon Squeezy webhook — transient settlement failure retries instead of losing revenue", () => {
+  // A wallet CREDIT (sale settlement) that fails transiently used to be swallowed with a 200, so
+  // Lemon Squeezy never retried and the seller silently lost the proceeds. Now it returns 500 and
+  // releases the exactly-once reservation, so the LS retry re-settles (idempotency_key → safe).
+  function makeFlakyCreditWorker(failFirst: number) {
+    let creditCalls = 0;
+    const fetcher = {
+      async fetch(reqInput: Request | string, init?: RequestInit): Promise<Response> {
+        const req = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
+        if (/\/wallet-project$/.test(req.url)) return Response.json({ project_id: "wallet-proj-1" });
+        if (/\/wallet\/credit$/.test(req.url)) {
+          creditCalls++;
+          return creditCalls <= failFirst
+            ? new Response("upstream boom", { status: 503 })
+            : Response.json({ balance_cents: 1899 }, { status: 201 });
+        }
+        return new Response("not found", { status: 404 });
+      },
+    };
+    return { fetcher, get creditCalls() { return creditCalls; } };
+  }
+
+  it("first delivery 500s and releases the event; the retry settles (no lost revenue)", async () => {
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    await fakeDb.prepare("INSERT INTO spaces (id, tenant_id) VALUES ('space-1', 'tenant-1')").run();
+    const worker = makeFlakyCreditWorker(1); // credit fails once, then succeeds
+    const env = makeEnv(fakeDb, worker.fetcher as unknown as Fetcher);
+    const raw = makeOrderPaidBody("space-1", "ord_flaky", "prod-1", 1999);
+
+    // 1st delivery: credit fails transiently → 500, and the event is released for retry.
+    const first = await post(raw, env);
+    expect(first.status).toBe(500);
+    const marker = await fakeDb.prepare("SELECT COUNT(*) AS n FROM processed_webhook_events WHERE event_id = 'ord_flaky'").first<{ n: number }>();
+    expect(marker?.n).toBe(0); // reservation released → LS retry won't be deduped away
+
+    // 2nd delivery (the LS retry): credit succeeds → 200, and settlement happened exactly once.
+    const second = await post(raw, env);
+    expect(second.status).toBe(200);
+    expect(worker.creditCalls).toBe(2); // one failed attempt + one successful
+  });
+});
