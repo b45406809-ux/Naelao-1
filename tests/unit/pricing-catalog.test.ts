@@ -56,6 +56,18 @@ function req(path: string, init: RequestInit & { headers?: Record<string, string
   });
 }
 
+// An end-user request as the router would forward it: role/user claims PLUS the internal HMAC token
+// (proxyTo mints it off ANY verified claims, role included) and the owning tenant header the
+// requireInternalHmac backstop verifies against.
+async function endUserHeaders(tenant: string, userId: string): Promise<Record<string, string>> {
+  return {
+    "x-naelao-role": "product_end_user",
+    "x-naelao-user-id": userId,
+    "x-naelao-tenant-id": tenant,
+    "x-naelao-internal-token": await mintInternalToken(PLATFORM_SECRET, tenant),
+  };
+}
+
 async function seedProductWithPlans(env: ReturnType<typeof makeEnv>) {
   const pricingConfig = {
     model: "subscription",
@@ -81,7 +93,7 @@ describe("GET /spaces/:spaceId/pricing (business-scoped, walks to product root)"
     const env = makeEnv();
     await seedProductWithPlans(env);
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/pricing", { headers: { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" } }),
+      req("/spaces/biz-alice/pricing", { headers: await endUserHeaders("alice-tenant", "alice") }),
       env as never,
       execCtx
     );
@@ -97,7 +109,7 @@ describe("GET /spaces/:spaceId/pricing (business-scoped, walks to product root)"
     const env = makeEnv();
     await seedProductWithPlans(env);
     const res = await spacesWorker.fetch(
-      req("/spaces/biz-alice/pricing", { headers: { "x-naelao-role": "product_end_user", "x-naelao-user-id": "mallory" } }),
+      req("/spaces/biz-alice/pricing", { headers: await endUserHeaders("alice-tenant", "mallory") }),
       env as never,
       execCtx
     );
@@ -108,7 +120,7 @@ describe("GET /spaces/:spaceId/pricing (business-scoped, walks to product root)"
     const env = makeEnv();
     await seedProductWithPlans(env);
     const res = await spacesWorker.fetch(
-      req("/spaces/prod-root/pricing", { headers: { "x-naelao-role": "product_end_user", "x-naelao-user-id": "anyone" } }),
+      req("/spaces/prod-root/pricing", { headers: await endUserHeaders("root-tenant", "anyone") }),
       env as never,
       execCtx
     );
@@ -120,7 +132,7 @@ describe("GET /spaces/:spaceId/pricing (business-scoped, walks to product root)"
   it("404s for a nonexistent space", async () => {
     const env = makeEnv();
     const res = await spacesWorker.fetch(
-      req("/spaces/no-such-space/pricing", { headers: { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" } }),
+      req("/spaces/no-such-space/pricing", { headers: await endUserHeaders("alice-tenant", "alice") }),
       env as never,
       execCtx
     );

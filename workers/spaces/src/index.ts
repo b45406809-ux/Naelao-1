@@ -1222,6 +1222,7 @@ app.post("/spaces/:spaceId/local-tunnel/connect-token", async (c) => {
 // project/thread). Callers poll GET periodically to see who's currently active. Phase B
 // (§A1.17): allowlisted for product_end_user callers on the router — the same membership floor
 // as projects/threads above (every other role's access is unchanged).
+app.use("/spaces/:spaceId/presence", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/presence", requireBusinessMembership({ GET: "member", POST: "member" }));
 app.post("/spaces/:spaceId/presence", async (c) => {
   const spaceId = c.req.param("spaceId");
@@ -1763,9 +1764,17 @@ app.get("/internal/builder-fee-bps", async (c) => {
 // can view/manage its commerce data through the manifest-driven operator-shell view — any active
 // member may view (GET), mutating the catalog needs admin+ (the requireBusinessMembership
 // default for unlisted methods). Every other caller (builder JWT) is unaffected.
+// requireInternalHmac backstop ("did this come through the router") + the requireBusinessMembership
+// floor — both are required per business-auth.ts's design; loadCommerceContext's tenant-ownership
+// check trusts x-naelao-tenant-id, which is only trustworthy once the HMAC gate verifies the router
+// set it from verified claims.
+app.use("/spaces/:spaceId/products", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/products", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/products/:id", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/products/:id", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/orders", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/orders", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/revenue", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/revenue", requireBusinessMembership({ GET: "member" }));
 
 // GET /spaces/:spaceId/products
@@ -2264,6 +2273,7 @@ async function loadPricingCatalog(
 // GET /spaces/:spaceId/pricing — the plans + credit packs a business's end users can buy. Safe
 // to show any member (same "purchasers should see prices" precedent as a storefront) — never
 // leaks lsVariantId internals beyond what's needed to reference the item at checkout.
+app.use("/spaces/:spaceId/pricing", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/pricing", requireBusinessMembership({ GET: "member" }));
 app.get("/spaces/:spaceId/pricing", async (c) => {
   const catalog = await loadPricingCatalog(c.env, c.req.param("spaceId"));
@@ -2279,6 +2289,7 @@ app.get("/spaces/:spaceId/pricing", async (c) => {
 // checkout for their business to subscribe to one of the product's plans. Proxies to the billing
 // worker (only it holds Lemon Squeezy credentials) rather than duplicating checkout-construction
 // logic here.
+app.use("/spaces/:spaceId/business-subscription/checkout", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/business-subscription/checkout", requireBusinessMembership({ POST: "member" }));
 app.post("/spaces/:spaceId/business-subscription/checkout", async (c) => {
   const spaceId = c.req.param("spaceId");
@@ -2304,6 +2315,7 @@ app.post("/spaces/:spaceId/business-subscription/checkout", async (c) => {
 // POST /spaces/:spaceId/credit-packs/checkout — an end user buys a one-time credit pack for
 // their OWN balance (not the business's). end_user_id is derived from the caller's OWN verified
 // identity, never a client-supplied field.
+app.use("/spaces/:spaceId/credit-packs/checkout", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/credit-packs/checkout", requireBusinessMembership({ POST: "member" }));
 app.post("/spaces/:spaceId/credit-packs/checkout", async (c) => {
   const spaceId = c.req.param("spaceId");
