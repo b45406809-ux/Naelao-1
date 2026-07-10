@@ -210,6 +210,31 @@ describe("Lemon Squeezy webhook — refund claws back the settled amount (P0-5)"
   });
 });
 
+describe("Lemon Squeezy webhook — a seat sale settles to the seller's own wallet", () => {
+  function makeSeatPaidBody(spaceId: string, orderId: string, userId: string, totalCents = 900): string {
+    return JSON.stringify({
+      meta: { event_name: "order_created", custom_data: { spaceId, kind: "seat", user_id: userId } },
+      data: { id: orderId, attributes: { total: totalCents, currency: "USD", customer_id: "cust_seat", custom_data: { spaceId, kind: "seat", user_id: userId } } },
+    });
+  }
+
+  it("credits the wallet with the seat's net (gross − platform fee), not just recording the order", async () => {
+    const fakeDb = createFakeD1([SPACES_SQL, RESELLER_MIGRATION, COMMERCE_MIGRATION, WEBHOOK_IDEMPOTENCY_MIGRATION, WEBHOOK_IDEMPOTENCY_EVENT_TYPE_MIGRATION, LEDGER_KIND_MIGRATION]);
+    await fakeDb.prepare("INSERT INTO spaces (id, tenant_id) VALUES ('space-1', 'tenant-1')").run();
+    const worker = makeSpacesWorker(); // wallet-project → wallet-proj-1, credit ok
+    const env = makeEnv(fakeDb, worker.fetcher);
+    const res = await post(makeSeatPaidBody("space-1", "seat_ord_1", "buyer-42", 900), env);
+    expect(res.status).toBe(200);
+    // The 900c seat at the default 5% fee settles net 855c into the space's wallet.
+    const creditCall = worker.calls.find((c) => /\/wallet\/credit$/.test(c.url));
+    expect(creditCall).toBeDefined();
+    expect((creditCall!.body as { cents: number }).cents).toBe(855);
+    // And the order row records it too.
+    const order = await fakeDb.prepare("SELECT net_cents, fee_cents FROM launchpad_orders WHERE provider_event_id = 'seat_ord_1'").first<{ net_cents: number; fee_cents: number }>();
+    expect(order).toMatchObject({ net_cents: 855, fee_cents: 45 });
+  });
+});
+
 describe("Lemon Squeezy webhook — transient settlement failure retries instead of losing revenue", () => {
   // A wallet CREDIT (sale settlement) that fails transiently used to be swallowed with a 200, so
   // Lemon Squeezy never retried and the seller silently lost the proceeds. Now it returns 500 and

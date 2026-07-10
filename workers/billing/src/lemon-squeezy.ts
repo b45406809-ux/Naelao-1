@@ -143,7 +143,7 @@ async function recordSeatActivation(
   // at the same price.
   const providerEventId = event.providerEventId ?? event.subscriptionId ?? `seat:${event.customerId ?? ""}:${gross}:${event.spaceId}`;
 
-  const insertResult = await env.PLATFORM_DB.prepare(
+  await env.PLATFORM_DB.prepare(
     `INSERT OR IGNORE INTO launchpad_orders
        (id, space_id, tenant_id, product_id, customer_email, gross_cents, fee_cents, builder_fee_cents, net_cents,
         currency, ls_subscription_id, status, provider_event_id)
@@ -152,7 +152,15 @@ async function recordSeatActivation(
     id, event.spaceId, space.tenant_id, event.customerId ?? null,
     gross, fee, builderFee, net, event.currency ?? "USD", event.subscriptionId ?? null, providerEventId
   ).run();
-  if (insertResult.meta.changes > 0 && builderShare && builderFee > 0) {
+  // Settle the seat's net proceeds into the SELLING space's own wallet — the same P0-5 loop
+  // recordProductOrder closes (a business's own sales fund its own agent's compute). Was missing
+  // here: seat net_cents was recorded but went nowhere (stranded in Naelao's LS account), and the
+  // consolidated wallet view's "net settled" total counts it. Settled UNCONDITIONALLY + idempotently
+  // (settle:${providerEventId}) so a retry completes a settlement the first delivery missed — same
+  // reasoning as recordProductOrder. A space with no wallet (a top-level builder charging seats,
+  // not a business) is a no-op (settleOrderToWallet returns false on a null wallet project).
+  await settleOrderToWallet(event.spaceId, space.tenant_id, net, `settle:${providerEventId}`, "sale_settlement", env);
+  if (builderShare && builderFee > 0) {
     await recordBuilderRevenueShare(env.PLATFORM_DB, builderShare, event, builderFee, providerEventId, false);
   }
 
