@@ -160,7 +160,10 @@ export function Chat({
   );
 
   const streamRun = React.useCallback(
-    (sid: string, runId: string) => {
+    // F-17: this must be async — it awaits getStreamUrl (which mints a short-lived stream ticket
+    // rather than putting the raw nps_ session token in the EventSource URL). Callers fire it and
+    // don't await (starting a stream is fire-and-forget), so the Promise return is intentional.
+    async (sid: string, runId: string) => {
       if (typeof EventSource === "undefined") {
         pollUntilDone(sid, runId);
         return;

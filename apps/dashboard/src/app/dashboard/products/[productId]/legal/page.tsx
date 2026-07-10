@@ -21,6 +21,16 @@ export default function ProductLegalPage() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
+  // exactOptionalPropertyTypes forbids assigning an explicit `undefined` to an optional prop, so
+  // an empty input clears the field by DELETING the key rather than setting it to undefined.
+  const setField = (key: keyof LegalConfig, value: string) =>
+    setForm((f) => {
+      const next: LegalConfig = { ...f };
+      if (value) next[key] = value as never;
+      else delete next[key];
+      return next;
+    });
+
   useEffect(() => {
     if (product) setForm(product.product_config.legal ?? {});
   }, [product]);
@@ -62,7 +72,7 @@ export default function ProductLegalPage() {
             <input
               type="url"
               value={form.tosUrl ?? ""}
-              onChange={(e) => setForm((f) => ({ ...f, tosUrl: e.target.value || undefined }))}
+              onChange={(e) => setField("tosUrl", e.target.value)}
               placeholder="https://your-product.com/terms"
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
             />
@@ -75,7 +85,7 @@ export default function ProductLegalPage() {
             <input
               type="url"
               value={form.privacyPolicyUrl ?? ""}
-              onChange={(e) => setForm((f) => ({ ...f, privacyPolicyUrl: e.target.value || undefined }))}
+              onChange={(e) => setField("privacyPolicyUrl", e.target.value)}
               placeholder="https://your-product.com/privacy"
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
             />
@@ -89,7 +99,7 @@ export default function ProductLegalPage() {
             <input
               type="url"
               value={form.dpaUrl ?? ""}
-              onChange={(e) => setForm((f) => ({ ...f, dpaUrl: e.target.value || undefined }))}
+              onChange={(e) => setField("dpaUrl", e.target.value)}
               placeholder="https://your-product.com/dpa"
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
             />
@@ -128,7 +138,7 @@ export default function ProductLegalPage() {
             <input
               type="text"
               value={form.supportContact ?? ""}
-              onChange={(e) => setForm((f) => ({ ...f, supportContact: e.target.value || undefined }))}
+              onChange={(e) => setField("supportContact", e.target.value)}
               placeholder="mailto:support@your-product.com"
               className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
             />
