@@ -1144,6 +1144,33 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     1625/1625 tests pass (4 new), `pnpm turbo run typecheck` clean (75 tasks). **Not done:** an
     operational `TAVILY_API_KEY` must be set via `wrangler secret put` per environment before
     search returns live results — the code degrades honestly until then.
+43. **GROWTH LAYER spec'd as canonical-spec Appendix BF (G-BF01..20) + Phase 1 code BUILT.** The
+    spec itself gained a new appended appendix (the file's own running-log convention;
+    `SPEC_HEADER_INDEX.md` regenerated) covering five directions: (BF.1) the universal-tools
+    doctrine extended to CONNECTORS — Composio/Pipedream-backed MCP tools are platform-keyed
+    (Naelao holds ONE key; users only ever do OAuth consent, never enter provider keys), with a
+    curated auto-provided catalogue for the Space Assistant; (BF.2) business idea discovery
+    (App Store trend scout + Starter Story playbook scout as seeded skills — inspiration/
+    validation framing, never cloning); (BF.3) the free-plan simple-business program — flagship
+    `freelance-web-studio` ($50 sites) with **compliant** multi-channel cold outreach (email-first
+    + click-to-WhatsApp so the prospect initiates WhatsApp = the Meta-policy opt-in; HITL batches,
+    hard caps, STOP), sample-site hosting, reserved-commerce checkout, and a catalogue of ~11 other
+    simple free businesses; (BF.4) the Business Network — per-business-type feed where same-template
+    businesses + their assistants share distilled learnings/skills/metric BANDS, default-on for
+    free/growth, `private` mode is business/enterprise-gated (fails closed to a plan check), and
+    PII/credentials/exact figures are NEVER shared regardless of plan (server-side anonymization
+    gate); (BF.5) a DEFERRED private-playbook bidding exchange. **Phase 1 code:** (a) mcp-hub gained
+    `COMPOSIO_API_KEY`/`PIPEDREAM_API_KEY` platform secrets + `resolveProviderApiKey` — BYO vault
+    credential wins, platform key otherwise, honest `provider_not_configured` when neither; a broken
+    BYO declaration errors rather than silently billing Naelao's provider account; closes §A1.18
+    Phase P's key-model gap (the routing already existed). (b) `free_tier_eligible` — which existed
+    since Phase F but was NEVER checked anywhere — is now enforced at both template entry points
+    (`createBusinessForEndUser` before any side effect; `createSpaceRecord` for POST /spaces +
+    /builder/products) via new `workers/spaces/src/template-catalog.ts` (loader extracted from
+    index.ts + flag added to projection, KV key bumped v2; tier lookup fails CLOSED to free, an
+    UNAVAILABLE catalogue degrades OPEN — monetization gate, not a security boundary);
+    `shell/manifest.template_catalog` carries the flag for the create-business dialog. 1646/1646
+    tests (29 new), typecheck clean. Full detail: appendix §A1.19.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
