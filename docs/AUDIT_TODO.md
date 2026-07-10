@@ -914,6 +914,96 @@ the expected incremental-build path, not a fallback state to design around.
 - [ ] `PRODUCT_SUBDOMAIN_APEX` matches the real production apex (e.g., `naelao.com` → `*.naelao.com` subdomains).
 - [ ] Verify `NAELAO_REVENUE_SHARE` is set in agents/spaces workers (the percentage cut F-WALLET deducts; e.g., 0.15 for 15%).
 
+## Tier 4 — Provisioning & Startup
+
+- [ ] **F-47 (billing, race condition): Credit deduction idempotency check is racy — 
+  concurrent requests with the same idempotency_key can both pass the dedup check.** Evidence: 
+  `ProductUserDO.handle` (workers/spaces/src/do/ProductUserDO.ts:243-260) for `/credits/deduct` 
+  route: (1) SELECT idempotency_key from credit_ledger (line 244-246); (2) if found, return 
+  existing balance (line 247-249); (3) if not found, check balance (line 252-254) then INSERT 
+  new row (line 257-260). **VERIFIED RACE**: two concurrent `/credits/deduct` requests with 
+  the same `idempotency_key` and the same `credits` amount can both:
+  - Pass the SELECT (line 245, result empty on first check by both)
+  - Both check balance and find 1000 credits
+  - Both compute new balance = 1000 - 100 = 900
+  - Both INSERT with the same idempotency_key
+  - Second INSERT fails with UNIQUE constraint, but the damage is already done (debited twice in 
+    the logic, even though only one row exists)
+  Actually wait, let me re-examine: if the UNIQUE constraint on idempotency_key is enforced at 
+  the DB level, only ONE INSERT succeeds. But I need to verify whether the DO-SQLite actually 
+  enforces uniqueness and what error is returned. Test FIRST before fixing — if the constraint 
+  properly enforces it, a second INSERT on same key fails and we can use that. Fix: use a 
+  `INSERT OR IGNORE` + a follow-up query to fetch the row that exists (either the new one just 
+  inserted or the one that was already there from the race), then return that balance (same 
+  logic as /credits/grant already uses for idempotency). OR restructure to SELECT FOR UPDATE 
+  (not available in DO-SQLite) — the ignore+retry is simpler.
+
+- [ ] **F-42 (correctness, HIGH PRIORITY): Provisioner's setup steps are "best-effort" but 
+  several are essential for a space to function.** Evidence: lines 540-543 
+  (`seedOwnerMember`), 597-600 (`seedWallet`), 484-504 (SpaceDO init hook) all log warnings 
+  and continue if they fail. **VERIFIED HIGH-RISK**: a space can be marked `active` even if 
+  its owner was never registered, its wallet was never created, or its type-specific init 
+  never ran. For Launchpad, the wallet is essential (all project runs need a payer); the 
+  owner member is essential (no way to manage the space). If these fail silently, a builder 
+  gets a broken product. Fix: gate step 10 (flip to 'active') on step 5c (owner_member) and 
+  step 9a (wallet) being completed successfully — if either fails, throw and trigger rollback, 
+  don't mark active. The init hook can remain best-effort (type-specific, not all types need 
+  it) but must be awaited BEFORE rollback can skip it, so we know whether it ran or not.
+
+- [ ] **F-43 (concurrency, MEDIUM): Race in first-space credit grant — concurrent 
+  `provisionSpace` messages can both grant starter credits.** Evidence: `seedWallet` 
+  (lines 392-437) calls `isUsersFirstSpace` (lines 380-390) to check if this is the user's 
+  first space before granting `WALLET_STARTER_BALANCE_CENTS`. **VERIFIED RACE**: if the 
+  same user's space-creation trigger enqueues TWO `ProvisionMessage`s (e.g., network retry, 
+  or race in the web request handler), both messages can be processed concurrently by the 
+  provisioner. Both call `isUsersFirstSpace` at nearly the same time, both see 0 existing 
+  spaces (the new space isn't yet visible to other concurrent queries in D1), both grant 
+  $10 starter credits. The space record itself is only created once (INSERT with ON CONFLICT 
+  on the space_id), but the TWO provisioner runs both credit the wallet, double-granting. 
+  Fix: the idempotency key for the credit grant (`starter:${spaceId}`) is already correct 
+  — make the idempotency work by ensuring the wallet endpoint STRICTLY implements idempotency 
+  (test explicitly: re-sending the same POST with same idempotency_key returns 200/same 
+  balance, not 200/+$10). Alternatively, gate the grant on the space being newly created 
+  (check `created_at` timestamp vs. provisionMessage.requestedAt window, or require a 
+  unique "grant applied" flag in config_json).
+
+- [ ] **F-44 (correctness): Project creation in provisioner lacks singleton enforcement 
+  for wallet.** Evidence: step 9a (`seedWallet`, lines 392-437) creates a project with 
+  `POST /spaces/:spaceId/projects { name: "Wallet" }`. The spaces worker's `createProject` 
+  is idempotent on (space_id, name) (line 2001-2003, ON CONFLICT DO NOTHING), so a retry 
+  of the provisioner creates only one project. **BUT**: `projects.kind` is only set via a 
+  follow-up PATCH (lines 407-409), not at creation time. If this PATCH fails, the project 
+  exists with kind=null, and a retry creates nothing (idempotent on name), leaving the 
+  space with a broken wallet project. This is F-32's twin: the singleton index doesn't 
+  exist yet (F-33 to be built). Fix rides with F-32/F-33: the wallet project must be 
+  created with `kind: "wallet"` in the initial POST, not set via PATCH, so the singleton 
+  check can prevent a second "Wallet" project ever existing.
+
+- [ ] **F-45 (authorization): `seedOwnerMember` uses unauthenticated internal token.** 
+  Evidence: lines 343-352, the provisioner creates an `x-naelao-internal-token` and POSTs 
+  to `/spaces/:spaceId/members` with `{ role: "owner" }` — no identity is passed in the 
+  body, and the spaces worker trusts the internal token alone. **RISK**: the provisioner 
+  itself has PLATFORM_SECRET and can forge any internal token. If the provisioner's message 
+  queue is publicly reachable (unlikely but possible in a misconfigured setup), an attacker 
+  could enqueue a ProvisionMessage with an attacker-supplied `userId`, and `seedOwnerMember` 
+  would register them as owner of a space they don't control. The mitigation is that 
+  ProvisionMessages come from a TRUSTED internal queue enqueued only by `createSpaceRecord`, 
+  which sources tenantId from verified auth. **VERDICT**: not an active bug given queue 
+  gating, but document the assumption: ProvisionMessage.userId must never come from 
+  untrusted input. Add a comment on line 67 of workers/provisioner/src/index.ts: "userId 
+  is trusted (sourced from verified auth in createSpaceRecord) and used to register the 
+  creator as owner; never accept it from untrusted input."
+
+- [ ] **F-46 (data integrity): Wallet credit grant idempotency relies on endpoint 
+  implementing idempotency correctly.** Evidence: lines 420-422, the provisioner calls 
+  `POST .../wallet/credit` with `idempotency_key: "starter:${spaceId}"`. The spaces worker 
+  must store idempotency keys and return the same response on a retry. **VERIFY**: does 
+  `SpaceDO.creditWallet` (or whichever endpoint this is) actually implement idempotency? 
+  If not, a retry of provisioner step 9a grants $10 twice. Current code assumes it exists 
+  but doesn't verify it in tests. Fix: add a test in `provisioner-seed-wallet.test.ts` 
+  that calls `seedWallet` twice with the same spaceId and verifies the balance is only $10, 
+  not $20.
+
 ## Structural
 
 - [ ] **F-STRUCT: Route-parity test.** Extract every path prefix `apps/dashboard` and
