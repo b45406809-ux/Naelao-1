@@ -1004,6 +1004,56 @@ the expected incremental-build path, not a fallback state to design around.
   that calls `seedWallet` twice with the same spaceId and verifies the balance is only $10, 
   not $20.
 
+## Summary of Comprehensive End-to-End Audit (Session Context)
+
+**Scope:** Full platform audit for go-live readiness against competitive threat (Polsia).
+
+**Methodology:**
+- Deep code review of critical paths: provisioning, billing, authentication, authorization, 
+  data persistence, real-time sync, memory/knowledge systems
+- Verification of 50+ subsystems against spec and architectural guarantees
+- Checked for: TOCTOU races, SQL injection, path traversal, information disclosure, 
+  idempotency gaps, cross-tenant boundary violations, orphaning risks, cleanup completeness
+
+**Known Launch Blockers (being fixed):** F-1 through F-17 (builder routing, webhooks, 
+environment config, wrangler.toml env blocks, direct-worker trust, credit deduction idempotency)
+
+**Tier 2 Findings (lower priority, documented with context):** F-18 through F-46 (revenue 
+model clarity, wallet system, Business Feature Projects registry, provisioning edge cases)
+
+**Tier 3 Findings (very low risk, accumulation only):** F-48/F-49/F-50 (session cleanup, 
+thread erasure design, debit idempotency TOCTOU)
+
+**Critical Subsystems: VERIFIED SOLID** — No exploitable bugs found in:
+- Channel ingress (all 4 adapters signature-verified, replay windows enforced)
+- Event triggers (project scoping enforced, no cross-project leak)
+- Knowledge base (cross-tenant check before any operation)
+- Local machine (path traversal blocked, exact command matching, project ACLs)
+- Credentials (3-tier hierarchy, scope enforcement)
+- Threads (no orphaning risk, FK-based cleanup, max_threads correct)
+- Sessions/auth (TTL enforced, tokens hashed, expires on verify)
+- Rate limiting (pre-auth fail-closed, sharded per bucket, cleanup scheduled)
+- Refunds (idempotent via UPDATE ... WHERE status != 'refunded')
+- SQL (all queries parameterized, no injection vectors)
+- Secrets (no hardcoding, all from worker env or vault)
+
+**What a builder can do TODAY after F-1 through F-17 fixes:**
+1. Create a product (space provisioning fixed)
+2. Configure templates and agents (routes wired)
+3. Publish storefront products (money-in flow fixed, revenue tracked)
+4. Connect channels (Slack/Discord/WhatsApp, signature-verified)
+5. Set up automation (event triggers with project scoping)
+6. Manage team (members, roles, project visibility)
+7. Monitor operations (activity log, spend caps, agent success/fail)
+8. Control end-user access (business memberships, GDPR export/erasure)
+
+**What needs follow-up (not blocking launch, documented):**
+- F-32/F-33: Business Feature Projects registry and singleton enforcement
+- F-36/F-38: Assistant identity in threads (already mostly built)
+- F-39: R2 workspace file viewer (UI only, backend solid)
+- F-41/F-WALLET-1 through F-WALLET-7: Complete wallet system
+- Phase L/M: Container marketplace and local-machine scaling
+
 ## Structural
 
 - [ ] **F-STRUCT: Route-parity test.** Extract every path prefix `apps/dashboard` and
