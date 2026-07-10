@@ -447,15 +447,25 @@ Spend card / revenue-based financing / KYB-gated payouts are NOT separate kinds 
 features WITHIN the `wallet` project's own tool surface (extend `wallet.ts`), since they
 operate on the same balance and ledger, not a separate workspace/thread context.
 
-**F-40 (build, UI): every kind's UI is the general workspace project view PLUS a kind-specific
-panel — never a fork.** A `storefront` or `wallet` project's page in the dashboard/shell is the
-SAME chat/thread/file-viewer (F-39) shell every other project already gets, with one additional
-tab/panel injected from the registry's `uiPanel` key (e.g. `wallet-ledger`, `storefront-catalog`,
-`crm-pipeline`). This is why the registry's `uiPanel` field is optional — a kind with no special
-UI (e.g. `market_research`) just renders as a plain workspace project, no fork of the project
-shell component needed. Concretely: the existing per-project page component gains one
-conditionally-rendered slot keyed by `project.kind`, resolved against a small
-`kind -> React component` map on the frontend — not a kind-by-kind route/page split.
+**F-40 (build, UI): every kind's UI is the general workspace project SHELL (identical for
+every kind) plus a NATIVELY hand-built kind-specific panel — not a generic registry-driven
+component lookup.** Correction from the user (2026-07-10): do NOT resolve `uiPanel` through a
+generic `kind -> component` map treated as interchangeable/data-driven. The shared shell
+(chat/thread/file-viewer from F-39, project header, member/access management) is genuinely
+identical scaffolding reused by every kind — that part stays one component. But each kind's
+EXTRA panel is real, purpose-built frontend code written one kind at a time, not templated
+output: `WalletLedgerPanel`, `StorefrontCatalogPanel`, `CrmPipelinePanel`, etc. are each their
+own component with their own layout, own data-fetching, own visual identity — wallet should
+look and feel like a bank-account ledger, storefront should look like a product/orders admin,
+CRM should look like a pipeline board. The registry's `uiPanel` field is still useful as a
+STRING KEY so the frontend's project-page shell knows WHICH natively-built panel to mount for
+a given `project.kind` (a simple switch/lookup at the mount point, e.g.
+`{project.kind === 'wallet' && <WalletLedgerPanel .../>}` per kind, not a lookup table that
+implies the panels are structurally interchangeable) — but the panel implementations
+themselves are NOT generated or genericized from the registry data; each is built and
+maintained as its own real component. A kind with no built panel yet (e.g. `market_research`
+before its panel exists) simply renders the shared shell alone until one is built — this is
+the expected incremental-build path, not a fallback state to design around.
 
 ## Tier 2 — Serious
 
