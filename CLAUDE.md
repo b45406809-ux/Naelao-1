@@ -1172,6 +1172,54 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     `shell/manifest.template_catalog` carries the flag for the create-business dialog. 1646/1646
     tests (29 new), typecheck clean. Full detail: appendix §A1.19.
 
+44. **A go-live security+logic audit scoped to the Launchpad launch path found and FIXED two real
+    issues — one launch-blocker, one serious — and confirmed several prior fixes intact.**
+    - **F1 (launch-blocker, FIXED): the `naelao-agents` worker trusted spoofable identity headers
+      on ~13 routes.** This worker has no `workers_dev = false` backstop (its channel gateway
+      needs public ingress), so `x-naelao-tenant-id` is only trustworthy AFTER naelao-router
+      verified a JWT/session and `proxyTo` minted the matching `x-naelao-internal-token`.
+      `/agent/run` (+`mention-run`, `script/run`) have verified that token since S0.2 — but a batch
+      of routes added in later phases only called `getCallerIdentity` and stopped, so a direct
+      caller at the `workers.dev` URL could spoof any tenant. Worst case: `POST /internal/tasks/
+      :taskId/run` (Phase Q's durable-run executor) had NO auth of ANY kind and ran the full
+      reasoning loop against the platform `ANTHROPIC_API_KEY` straight from body fields — a free,
+      unattributed, unrate-limited LLM oracle for any spoofed tenant. Also exposed: cross-tenant
+      run/task read+cancel+SSE-stream, connector/channel credential WRITES (an attacker could store
+      their own signing secret for a victim's Slack/WhatsApp channel then legitimately sign forged
+      inbound messages), skill promotion (proprietary-skill leak), and the assistant read panels.
+      Fixed with a new `requireVerifiedTenant()` helper (the exact three-line check `/agent/run`
+      already used) applied to every `getCallerIdentity`-only route; `/internal/tasks/:taskId/run`
+      HMAC-gated exactly like `/internal/triggers/fire` (verified token whose tenant must match the
+      body's `tenantId`), with `AgentTaskWorkflow` updated to mint that token. New
+      `agents-worker-internal-token-gate.test.ts` locks in reject-without-token / reject-wrong-
+      secret / pass-with-token per phase family. **Root cause of the miss:** items 21-23's thorough
+      direct-ingress sweep predates Phase Q and the connectors/channels/skills routes — nobody
+      re-ran the S0.2 hardening after adding them.
+    - **F2 (serious, FIXED): the builder's own platform-subscription surface was a dead route.**
+      The billing worker implements `GET /billing/subscription` (plan+quota), `POST /billing/
+      checkout` (upgrade), and `/billing/portal` — but naelao-router never proxied `/billing/*` to
+      it, so `apps/dashboard`'s Settings page (`getBillingSubscription`/`createBillingCheckout`)
+      404'd on every call. A builder could neither see their plan nor upgrade off free — and free
+      now gates `free_tier_eligible` templates (G-BF08, item 43), so a free builder had no in-
+      product way out. Fixed by proxying the three builder-facing routes EXPLICITLY (not a blanket
+      `/billing/*` — `/billing/usage` and every `/internal/*` billing route are `requireInternalHmac`
+      service-only and must not become builder-reachable); the billing worker is shielded by
+      `workers_dev=false` so trusting `proxyTo`'s identity headers is safe. The existing
+      `router-dispatch` "frontend route-parity" guard test — which exists precisely to catch this
+      class — grew `/billing/subscription`+`/billing/checkout` entries so this can't regress.
+    - **Confirmed intact / stale-doc:** builder-register column bugs (item 41) verified still fixed
+      against the real `orgs`/`org_members` schema; `listSpaceTypes` dead route already repointed to
+      `/builder/space-types`; end-user credit deduction (`debitEndUserCredits`/`debitProjectWallet`)
+      is genuinely wired into `handleScriptRun` with correct pre-run gates (fail-open-on-error,
+      fail-closed-on-confirmed-empty). NOTE: `business_subscriptions` gating and the
+      `creditsIncludedPerMonth` monthly refresh — item 41's "not built" list — ARE in fact built and
+      HMAC-gated (a "Tier 2 metering follow-up" pass that landed after item 43 but was never logged
+      here); the code is correct, item 41's changelog was stale. 1669/1669 tests (23 new),
+      `pnpm turbo run typecheck` clean (75 tasks). **Not completed this pass:** the full builder- and
+      end-user-journey traces were partly delegated to background agents that were killed by an
+      account API session limit; the hops above are what was verified by hand. A follow-up should
+      finish the wizard→domain→pricing UI trace and the signup→verify→SSE-stream frontend trace.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

@@ -35,6 +35,7 @@ function makeEnv() {
     KNOWLEDGE_WORKER: namedFetcher("KNOWLEDGE"),
     AGENTS_WORKER: namedFetcher("AGENTS"),
     CREDENTIALS_WORKER: namedFetcher("CREDENTIALS"),
+    BILLING_WORKER: namedFetcher("BILLING"),
   };
 }
 
@@ -67,6 +68,23 @@ describe("router — /spaces dispatch order (F15)", () => {
   it("POST /v1/spaces/s1/sessions → SPACES_WORKER (session CRUD lives on SpaceDO)", async () => {
     const res = await authedFetch("POST", "/v1/spaces/s1/sessions", makeEnv());
     expect(await res.json()).toEqual({ worker: "SPACES" });
+  });
+
+  it("GET /v1/billing/subscription → BILLING_WORKER (F2 — builder's own plan/quota)", async () => {
+    const res = await authedFetch("GET", "/v1/billing/subscription", makeEnv());
+    expect(await res.json()).toEqual({ worker: "BILLING" });
+  });
+
+  it("POST /v1/billing/checkout → BILLING_WORKER (F2 — builder upgrade)", async () => {
+    const res = await authedFetch("POST", "/v1/billing/checkout", makeEnv());
+    expect(await res.json()).toEqual({ worker: "BILLING" });
+  });
+
+  it("returns 503 for /v1/billing/subscription when BILLING_WORKER isn't bound", async () => {
+    const env = makeEnv() as Record<string, unknown>;
+    delete env.BILLING_WORKER;
+    const res = await authedFetch("GET", "/v1/billing/subscription", env);
+    expect(res.status).toBe(503);
   });
 
   it("POST /v1/spaces/s1/sessions/sess1/messages → SPACES_WORKER", async () => {
@@ -138,9 +156,11 @@ describe("router — Lemon Squeezy webhook ingress (F-2)", () => {
   });
 
   it("returns 503 when the billing worker is not bound", async () => {
+    const env = makeEnv() as Record<string, unknown>;
+    delete env.BILLING_WORKER; // makeEnv now binds BILLING by default (F2); this case needs it absent
     const res = await routerWorker.fetch(
       new Request("https://router.naelao.com/v1/webhooks/lemon-squeezy", { method: "POST", body: "{}" }),
-      makeEnv() as never, execCtx
+      env as never, execCtx
     );
     expect(res.status).toBe(503);
   });
@@ -166,6 +186,9 @@ describe("router — frontend route-parity (F-STRUCT)", () => {
       ["/templates (wizard)", /["'`]\/templates\/\*["'`]/],
       ["/products/by-slug (shell)", /\/v1\/products\/by-slug/],
       ["/webhooks/lemon-squeezy (money-in)", /\/v1\/webhooks\/lemon-squeezy/],
+      // F2: the builder's own platform subscription surface (Settings page) — was a dead route.
+      ["/billing/subscription (dashboard settings)", /["'`]\/billing\/subscription["'`]/],
+      ["/billing/checkout (dashboard settings)", /["'`]\/billing\/checkout["'`]/],
     ];
     const missing = REQUIRED_PREFIXES.filter(([, needle]) => !needle.test(routerSrc)).map(([label]) => label);
     expect(missing, `router is missing a route for: ${missing.join(", ")}`).toEqual([]);

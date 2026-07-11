@@ -980,6 +980,25 @@ api.all("/reseller", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), 
 api.all("/builder/*", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 api.all("/builder", async (c) => proxyTo(c.env.SPACES_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
+// Go-live audit F2: the builder's OWN platform subscription surface (billing worker's
+// /billing/subscription plan+quota, /billing/checkout upgrade, /billing/portal) was never
+// proxied here at all — apps/dashboard's Settings page calls getBillingSubscription()/
+// createBillingCheckout() against these paths and every call 404'd at the router, so a builder
+// could neither see their plan nor upgrade off free (which now gates free_tier_eligible templates,
+// G-BF08 — a builder stuck on free had no in-product way out). These are builder-authenticated
+// (the billing worker reads x-naelao-tenant-id set by proxyTo from the validated JWT; the worker
+// is shielded by workers_dev=false so the header can't be spoofed by a direct caller). Proxied as
+// three EXPLICIT routes rather than a blanket /billing/* on purpose: /billing/usage and every
+// /internal/* billing route are requireInternalHmac-gated for service callers only and must NOT
+// become reachable by an ordinary authenticated builder.
+const proxyBilling = async (c: { env: Env; get: (k: "claims") => NaelaoJwtClaims | undefined; req: { raw: Request } }) =>
+  c.env.BILLING_WORKER
+    ? proxyTo(c.env.BILLING_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+    : new Response(JSON.stringify({ error_code: "billing_unavailable", message: "Billing worker not configured" }), { status: 503, headers: { "content-type": "application/json" } });
+api.all("/billing/subscription", proxyBilling);
+api.all("/billing/checkout", proxyBilling);
+api.all("/billing/portal", proxyBilling);
+
 // Founder roadmap catalog (space types + templates, dev-only) → agents worker.
 // (/product/* and /business/* used to proxy here too, for the retired BusinessDO/ProductDO
 // Whop-niche runtime — removed alongside those DOs.)
