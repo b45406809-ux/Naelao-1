@@ -50,10 +50,7 @@ function makeEnv(opts: {
   const env = {
     ENVIRONMENT: "test",
     PLATFORM_SECRET: SECRET,
-    STRIPE_SECRET_KEY: "sk_test",
-    STRIPE_WEBHOOK_SECRET: "whsec_test",
-    STRIPE_GROWTH_PRICE_ID: "price_growth",
-    STRIPE_BUSINESS_PRICE_ID: "price_business",
+
     PLATFORM_DB: db,
     SPACES_WORKER: spacesWorker,
     ...(hasLsCreds ? { LEMON_SQUEEZY_API_KEY: "ls_test", LEMON_SQUEEZY_STORE_ID: "store_1" } : {}),

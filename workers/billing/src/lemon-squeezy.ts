@@ -19,6 +19,7 @@
 import { LemonSqueezyProvider, computeResellerAttribution, isLedgerEvent, billingPeriod } from "@naelao/billing-core";
 import type { NormalizedBillingEvent, BillingRelationship } from "@naelao/billing-core";
 import { mintInternalToken } from "@naelao/http";
+import { invalidateQuotaCache } from "./quota.js";
 
 /**
  * ARCH-REVENUE-6: the maximum builder revenue share, in basis points. A builder configures their
@@ -109,6 +110,9 @@ export interface LemonSqueezyEnv {
   PLATFORM_DB: D1Database;
   /** For minting the internal HMAC token the direct (non-router) SPACES_WORKER call below needs. */
   PLATFORM_SECRET: string;
+  /** Optional — platform-plan upserts invalidate the org's quota cache so a paid upgrade takes
+   *  effect immediately instead of after the KV TTL. Degrades to a no-op when unbound. */
+  QUOTA_CACHE?: KVNamespace;
 }
 
 /**
@@ -431,6 +435,7 @@ function mapSubscriptionStatus(event: NormalizedBillingEvent): string {
     case "subscription.cancelled": return "cancelled";
     case "subscription.paused": return "paused";
     case "subscription.resumed": return "active";
+    case "subscription.expired": return "expired";
     default: break;
   }
   switch (event.providerStatus) {
@@ -443,6 +448,62 @@ function mapSubscriptionStatus(event: NormalizedBillingEvent): string {
     case "expired": return "expired";
     default: return "active";
   }
+}
+
+/**
+ * Vendor cutover (Lemon Squeezy is the ONLY billing provider): the BUILDER's own platform plan
+ * (growth/business), previously the last Stripe-backed path. Fires on every subscription.* /
+ * payment.success event whose checkout metadata carries kind="platform_plan" (set by
+ * POST /billing/checkout). This is an ORG-level event — there is no space to resolve and no
+ * agent to wake, so handleLemonSqueezyWebhook branches here BEFORE its space-dispatch machinery.
+ *
+ * Writes BOTH plan_tier locations on purpose:
+ *   - `subscriptions` (org-unique row) — what GET /billing/subscription displays;
+ *   - `orgs.plan_tier` — what EntitlementsChecker.getTenantTier actually enforces platform-wide
+ *     (free-tier template gating, space/seat quotas). The old Stripe webhook only ever wrote
+ *     `subscriptions`, so a paid upgrade never actually unlocked entitlements — a real,
+ *     previously-undetected bug this cutover closes, not just relocates.
+ */
+export async function recordPlatformPlanSubscription(
+  event: NormalizedBillingEvent,
+  env: LemonSqueezyEnv
+): Promise<boolean> {
+  const custom = (event.metadata ?? {}) as Record<string, unknown>;
+  if (custom["kind"] !== "platform_plan") return false;
+  const orgId = custom["org_id"] ? String(custom["org_id"]) : null;
+  const plan = custom["plan"] ? String(custom["plan"]) : null;
+  if (!orgId || (plan !== "growth" && plan !== "business")) return false;
+
+  const status = mapSubscriptionStatus(event);
+  // Access policy: cancelled keeps the paid tier until LS sends subscription.expired at period
+  // end (LS's own grace semantics); expired drops the org back to free. past_due keeps the tier
+  // (dunning may still recover the payment) but surfaces the status.
+  const planTier = status === "expired" ? "free" : plan;
+
+  await env.PLATFORM_DB.prepare(
+    `INSERT INTO subscriptions
+       (id, org_id, plan_tier, status, ls_customer_id, ls_subscription_id,
+        current_period_end, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+     ON CONFLICT(org_id) DO UPDATE SET
+       plan_tier          = excluded.plan_tier,
+       status             = excluded.status,
+       ls_customer_id     = COALESCE(excluded.ls_customer_id, subscriptions.ls_customer_id),
+       ls_subscription_id = COALESCE(excluded.ls_subscription_id, subscriptions.ls_subscription_id),
+       current_period_end = excluded.current_period_end,
+       updated_at         = datetime('now')`
+  ).bind(
+    crypto.randomUUID(), orgId, planTier, status,
+    event.customerId ?? null, event.subscriptionId ?? null, event.currentPeriodEnd ?? null
+  ).run();
+
+  await env.PLATFORM_DB.prepare(
+    "UPDATE orgs SET plan_tier = ? WHERE id = ?"
+  ).bind(planTier, orgId).run();
+
+  if (env.QUOTA_CACHE) await invalidateQuotaCache(env.QUOTA_CACHE, orgId);
+  console.log(`[billing/ls] Platform plan ${status}: org=${orgId} tier=${planTier}`);
+  return true;
 }
 
 /**
@@ -652,6 +713,7 @@ const GOAL_MAP: Record<NormalizedBillingEvent["type"], string> = {
   "subscription.cancelled": "A subscription has been cancelled. Schedule access removal and send a goodbye message.",
   "subscription.paused": "A subscription has been paused. Temporarily remove access and notify the customer.",
   "subscription.resumed": "A subscription has been resumed. Restore access and notify the customer.",
+  "subscription.expired": "A subscription has expired (grace period over). Remove access and send a win-back message.",
   "refund.issued": "A refund has been issued. Revoke access and send confirmation to the customer.",
 };
 
@@ -1003,6 +1065,28 @@ export async function handleLemonSqueezyWebhook(
     console.warn("[billing/ls] Unrecognised event:", (err as Error).message);
     // Return 200 so Lemon Squeezy doesn't retry unknown events
     return Response.json({ ok: true, skipped: true });
+  }
+
+  // 2b. Platform-plan events (the builder's own growth/business subscription) are ORG-level:
+  // there is no space to resolve and no agent to wake, so they branch off here — before the
+  // space-dispatch machinery — with their own exactly-once gate and retry-release, mirroring
+  // the main path's semantics below.
+  const topCustom = (event.metadata ?? {}) as Record<string, unknown>;
+  if (topCustom["kind"] === "platform_plan") {
+    const planEventId = event.providerEventId ?? `hash:${await sha256Hex(rawBody)}`;
+    const firstDelivery = await markEventProcessedOnce("lemon_squeezy", planEventId, event.type, env.PLATFORM_DB);
+    if (!firstDelivery) {
+      console.log(`[billing/ls] Duplicate delivery of platform-plan event=${planEventId} — no-op`);
+      return Response.json({ ok: true, duplicate: true });
+    }
+    try {
+      await recordPlatformPlanSubscription(event, env);
+    } catch (err) {
+      console.error("[billing/ls] platform plan recording failed:", (err as Error).message);
+      await unmarkEventProcessed("lemon_squeezy", planEventId, env.PLATFORM_DB);
+      return Response.json({ error: "processing_failed", failed: ["platform plan recording"] }, { status: 500 });
+    }
+    return Response.json({ ok: true, kind: "platform_plan" });
   }
 
   // 3. Resolve the Naelao space from spaceId in the event

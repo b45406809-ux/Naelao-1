@@ -7,15 +7,12 @@ import {
   mintInternalToken,
   requireInternalHmac,
 } from "@naelao/http";
-// G-D05: Billing worker — Stripe webhooks, Lemon Squeezy webhooks, checkout, subscription sync
+// G-D05: Billing worker — Lemon Squeezy webhooks, checkout, subscription sync.
+// Vendor cutover: Lemon Squeezy is the ONLY billing provider — the builder's own platform-plan
+// checkout/portal (previously the last Stripe-backed path) now runs through the same LS store as
+// every other money path. stripe.ts is deleted; /webhooks/stripe removed.
 import { Hono } from "hono";
-import { checkQuota, recordUsageEvent, invalidateQuotaCache } from "./quota.js";
-import {
-  createBillingPortalSession,
-  createCheckoutSession,
-  createCustomer,
-  verifyStripeWebhook,
-} from "./stripe.js";
+import { checkQuota, recordUsageEvent } from "./quota.js";
 import { handleLemonSqueezyWebhook } from "./lemon-squeezy.js";
 import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
 
@@ -24,17 +21,18 @@ export interface BillingEnv {
   /** Shared inter-worker HMAC secret (mintInternalToken/requireInternalHmac, @naelao/http) —
    *  needed to call spaces worker's internal routes directly (bypassing naelao-router). */
   PLATFORM_SECRET: string;
-  STRIPE_SECRET_KEY: string;
-  STRIPE_WEBHOOK_SECRET: string;
-  STRIPE_GROWTH_PRICE_ID: string;
-  STRIPE_BUSINESS_PRICE_ID: string;
   PLATFORM_DB: D1Database;
   QUOTA_CACHE: KVNamespace;
   BILLING_EVENTS: Queue;
-  // Lemon Squeezy (primary billing provider — spec Appendix H / CLAUDE.md #9)
+  // Lemon Squeezy (the ONLY billing provider — spec Appendix H / CLAUDE.md #9)
   LEMON_SQUEEZY_WEBHOOK_SECRET?: string;
   LEMON_SQUEEZY_API_KEY?: string;
   LEMON_SQUEEZY_STORE_ID?: string;
+  /** LS subscription variant ids for the builder's own platform plans (created once in the
+   *  Naelao LS store, like STRIPE_*_PRICE_ID used to be). Optional — /billing/checkout degrades
+   *  to the same dev-placeholder flow as /internal/commerce/checkout when unset. */
+  LEMON_SQUEEZY_GROWTH_VARIANT_ID?: string;
+  LEMON_SQUEEZY_BUSINESS_VARIANT_ID?: string;
   /** Platform fee on customer product sales, basis points. Default 500 (5%). */
   LAUNCHPAD_FEE_BPS?: string;
   // Service binding to agents worker — billing events wake the Space Assistant agent
@@ -68,91 +66,12 @@ async function resolveBuilderFeeBps(env: BillingEnv, spaceId: string): Promise<n
   }
 }
 
-// ── Stripe event type stubs ───────────────────────────────────────────────────
-interface StripeSubscription {
-  id: string;
-  customer: string;
-  status: string;
-  current_period_start: number;
-  current_period_end: number;
-  cancel_at_period_end: boolean;
-  items: {
-    data: Array<{
-      price: {
-        id: string;
-        metadata: Record<string, string>;
-        nickname?: string | null;
-      };
-    }>;
-  };
-  metadata: Record<string, string>;
-}
-
-interface StripeInvoice {
-  id: string;
-  customer: string;
-  subscription?: string | null;
-  amount_due: number;
-  currency: string;
-  status: string;
-  period_start: number;
-  period_end: number;
-  paid: boolean;
-  metadata: Record<string, string>;
-}
-
-interface StripeEvent {
-  id: string;
-  type: string;
-  data: {
-    object: StripeSubscription | StripeInvoice | Record<string, unknown>;
-  };
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/** Map a Stripe price ID to a Naelao plan tier. */
-function priceToPlan(
-  priceId: string,
-  growthPriceId: string,
-  businessPriceId: string
-): string {
-  if (priceId === growthPriceId) return "growth";
-  if (priceId === businessPriceId) return "business";
-  // Fall back to price metadata if we know it
-  return "growth"; // safe default — actual tier resolved from metadata below
-}
-
-/** Unix epoch seconds → ISO 8601 string */
-function epochToIso(epoch: number): string {
-  return new Date(epoch * 1000).toISOString();
-}
-
-/** Get orgId for a Stripe customer from D1. */
-async function orgForCustomer(
-  db: D1Database,
-  customerId: string
-): Promise<string | null> {
-  const row = await db
-    .prepare(
-      "SELECT org_id FROM subscriptions WHERE stripe_customer_id = ? LIMIT 1"
-    )
-    .bind(customerId)
-    .first<{ org_id: string }>();
-  return row?.org_id ?? null;
-}
-
-// G-A11: Validate required secrets at startup
+// G-A11: Validate required secrets at startup. Vendor cutover: the STRIPE_* requirement is gone
+// (Lemon Squeezy is the only provider, and its own vars are optional-with-honest-degradation like
+// every other LS caller in this file); PLATFORM_SECRET is what every HMAC-gated route and direct
+// spaces-worker call actually depends on.
 function validateEnv(env: BillingEnv): void {
-  const required = [
-    "STRIPE_SECRET_KEY",
-    "STRIPE_WEBHOOK_SECRET",
-    "STRIPE_GROWTH_PRICE_ID",
-    "STRIPE_BUSINESS_PRICE_ID",
-  ] as const;
-  for (const key of required) {
-    if (!env[key]) throw new Error(`Missing required secret: ${key}`);
-  }
+  if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
 }
 
 // ── App setup ─────────────────────────────────────────────────────────────────
@@ -172,7 +91,7 @@ app.get("/billing/subscription", async (c) => {
     );
 
   const sub = await c.env.PLATFORM_DB.prepare(
-    `SELECT plan_tier, status, stripe_customer_id, stripe_subscription_id,
+    `SELECT plan_tier, status,
             current_period_start, current_period_end, cancel_at_period_end, trial_ends_at
      FROM subscriptions WHERE org_id = ?`
   )
@@ -180,8 +99,6 @@ app.get("/billing/subscription", async (c) => {
     .first<{
       plan_tier: string;
       status: string;
-      stripe_customer_id: string | null;
-      stripe_subscription_id: string | null;
       current_period_start: string | null;
       current_period_end: string | null;
       cancel_at_period_end: number;
@@ -237,76 +154,62 @@ app.post("/billing/checkout", async (c) => {
   const body = await c.req.json<{
     plan: "growth" | "business";
     success_url: string;
-    cancel_url: string;
+    /** Accepted for back-compat with existing clients; Lemon Squeezy checkouts have no
+     *  cancel-redirect concept (the buyer just closes the hosted page), so it is unused. */
+    cancel_url?: string;
   }>();
 
-  if (!body.plan || !body.success_url || !body.cancel_url) {
-    throw badRequest("plan, success_url, and cancel_url are required");
+  if (!body.plan || !body.success_url) {
+    throw badRequest("plan and success_url are required");
   }
   if (body.plan !== "growth" && body.plan !== "business") {
     throw badRequest("plan must be 'growth' or 'business'");
   }
 
-  const priceId =
+  const variantId =
     body.plan === "growth"
-      ? c.env.STRIPE_GROWTH_PRICE_ID
-      : c.env.STRIPE_BUSINESS_PRICE_ID;
+      ? c.env.LEMON_SQUEEZY_GROWTH_VARIANT_ID
+      : c.env.LEMON_SQUEEZY_BUSINESS_VARIANT_ID;
 
-  if (!priceId) {
-    throw internalError(
-      `STRIPE_${body.plan.toUpperCase()}_PRICE_ID is not configured`
-    );
-  }
-
-  // Get or create stripe_customer_id
-  const sub = await c.env.PLATFORM_DB.prepare(
-    "SELECT stripe_customer_id FROM subscriptions WHERE org_id = ?"
+  // The buyer email prefills the LS checkout (same lookup the Stripe path used to do).
+  const owner = await c.env.PLATFORM_DB.prepare(
+    "SELECT u.email FROM users u JOIN orgs o ON o.id = u.org_id WHERE u.id = ? LIMIT 1"
   )
-    .bind(orgId)
-    .first<{ stripe_customer_id: string | null }>();
+    .bind(userId)
+    .first<{ email: string }>();
 
-  let customerId = sub?.stripe_customer_id ?? null;
-
-  if (!customerId) {
-    // Look up the org owner email to pass to Stripe
-    const org = await c.env.PLATFORM_DB.prepare(
-      "SELECT u.email FROM users u JOIN orgs o ON o.id = u.org_id WHERE u.id = ? LIMIT 1"
-    )
-      .bind(userId)
-      .first<{ email: string }>();
-    const email = org?.email ?? `org-${orgId}@placeholder.naelao.com`;
-
-    const customer = await createCustomer(
-      c.env.STRIPE_SECRET_KEY,
-      email,
-      orgId
-    );
-    customerId = customer.id;
-
-    // Upsert subscription row with the new customer ID
-    await c.env.PLATFORM_DB.prepare(
-      `INSERT INTO subscriptions (id, org_id, plan_tier, status, stripe_customer_id, created_at, updated_at)
-       VALUES (?, ?, 'free', 'active', ?, datetime('now'), datetime('now'))
-       ON CONFLICT(org_id) DO UPDATE SET
-         stripe_customer_id = excluded.stripe_customer_id,
-         updated_at = datetime('now')`
-    )
-      .bind(crypto.randomUUID(), orgId, customerId)
-      .run();
+  // Without LS credentials or a provisioned plan variant (local/dev) return a deterministic
+  // placeholder so the flow is testable end-to-end — the exact convention every other checkout
+  // route in this file follows (/internal/commerce/checkout etc.).
+  if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !variantId) {
+    return c.json({
+      checkout_url: `https://checkout.naelao.com/dev/platform-plan/${body.plan}`,
+      plan: body.plan,
+      dev: true,
+    });
   }
 
-  const session = await createCheckoutSession(c.env.STRIPE_SECRET_KEY, {
-    customerId,
-    priceId,
+  const { LemonSqueezyProvider } = await import("@naelao/billing-core");
+  const provider = new LemonSqueezyProvider({
+    LEMON_SQUEEZY_API_KEY: c.env.LEMON_SQUEEZY_API_KEY,
+    LEMON_SQUEEZY_STORE_ID: c.env.LEMON_SQUEEZY_STORE_ID,
+  });
+  // metadata.kind="platform_plan" is what routes the resulting subscription.* / payment.success
+  // webhooks to recordPlatformPlanSubscription (lemon-squeezy.ts) — an ORG-level event with no
+  // space to resolve, handled before the webhook's space-dispatch machinery.
+  const { url } = await provider.createCheckout({
+    spaceId: orgId, // no space involved — carries the org through custom.spaceId harmlessly
+    variantOrPriceId: variantId,
+    ...(owner?.email ? { customerEmail: owner.email } : {}),
     successUrl: body.success_url,
-    cancelUrl: body.cancel_url,
-    metadata: { org_id: orgId, plan: body.plan },
+    metadata: { kind: "platform_plan", org_id: orgId, plan: body.plan },
   });
 
-  return c.json({ checkout_url: session.url });
+  return c.json({ checkout_url: url, plan: body.plan });
 });
 
 // ── POST /billing/portal ──────────────────────────────────────────────────────
+// Lemon Squeezy's hosted customer portal (subscription management / cancel / update card).
 app.post("/billing/portal", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!orgId)
@@ -315,31 +218,37 @@ app.post("/billing/portal", async (c) => {
       401
     );
 
-  const body = await c.req
-    .json<{ return_url: string }>()
-    .catch(() => ({ return_url: "" }));
-
   const sub = await c.env.PLATFORM_DB.prepare(
-    "SELECT stripe_customer_id FROM subscriptions WHERE org_id = ?"
+    "SELECT ls_customer_id FROM subscriptions WHERE org_id = ?"
   )
     .bind(orgId)
-    .first<{ stripe_customer_id: string | null }>();
+    .first<{ ls_customer_id: string | null }>();
 
-  const customerId = sub?.stripe_customer_id;
+  const customerId = sub?.ls_customer_id;
   if (!customerId) {
-    throw notFound("Stripe customer");
+    throw notFound("Billing profile (subscribe to a plan first)");
+  }
+  if (!c.env.LEMON_SQUEEZY_API_KEY) {
+    return c.json({ error_code: "billing_unavailable", message: "Lemon Squeezy is not configured" }, 503);
   }
 
-  const returnUrl =
-    body.return_url || "https://app.naelao.com/dashboard/billing";
+  // LS exposes a signed customer-portal URL on the customer object itself.
+  const resp = await fetch(`https://api.lemonsqueezy.com/v1/customers/${encodeURIComponent(customerId)}`, {
+    headers: {
+      Authorization: `Bearer ${c.env.LEMON_SQUEEZY_API_KEY}`,
+      Accept: "application/vnd.api+json",
+    },
+  });
+  if (!resp.ok) {
+    throw internalError(`Lemon Squeezy customer lookup failed (${resp.status})`);
+  }
+  const data = await resp.json<{ data?: { attributes?: { urls?: { customer_portal?: string } } } }>();
+  const portalUrl = data.data?.attributes?.urls?.customer_portal;
+  if (!portalUrl) {
+    throw internalError("Lemon Squeezy returned no customer portal URL");
+  }
 
-  const portal = await createBillingPortalSession(
-    c.env.STRIPE_SECRET_KEY,
-    customerId,
-    returnUrl
-  );
-
-  return c.json({ portal_url: portal.url });
+  return c.json({ portal_url: portalUrl });
 });
 
 // ── POST /billing/usage ───────────────────────────────────────────────────────
@@ -423,7 +332,7 @@ app.post("/billing/usage", async (c) => {
     await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "llm_tokens");
   }
 
-  // Enqueue to BILLING_EVENTS for async Stripe metering
+  // Enqueue to BILLING_EVENTS for async usage metering
   await c.env.BILLING_EVENTS.send({
     type: "meter",
     org_id: orgId,
@@ -947,197 +856,10 @@ app.post("/webhooks/lemon-squeezy", async (c) => {
     ...(c.env.SPACES_WORKER ? { SPACES_WORKER: c.env.SPACES_WORKER } : {}),
     PLATFORM_DB: c.env.PLATFORM_DB,
     PLATFORM_SECRET: c.env.PLATFORM_SECRET,
+    // Platform-plan upserts invalidate the org's quota cache so a paid upgrade unlocks
+    // entitlements immediately, not after the KV TTL.
+    QUOTA_CACHE: c.env.QUOTA_CACHE,
   });
-});
-
-// ── POST /webhooks/stripe ─────────────────────────────────────────────────────
-// Unauthenticated — Stripe calls this directly
-app.post("/webhooks/stripe", async (c) => {
-  const rawBody = await c.req.text();
-  const signature = c.req.header("stripe-signature") ?? "";
-
-  const valid = await verifyStripeWebhook(
-    rawBody,
-    signature,
-    c.env.STRIPE_WEBHOOK_SECRET
-  );
-  if (!valid) {
-    return c.json(
-      { error_code: "forbidden", message: "Invalid webhook signature" },
-      400
-    );
-  }
-
-  let event: StripeEvent;
-  try {
-    event = JSON.parse(rawBody) as StripeEvent;
-  } catch {
-    return c.json({ error_code: "bad_request", message: "Invalid JSON" }, 400);
-  }
-
-  const db = c.env.PLATFORM_DB;
-  const kv = c.env.QUOTA_CACHE;
-
-  switch (event.type) {
-    case "customer.subscription.created":
-    case "customer.subscription.updated": {
-      const stripe_sub = event.data.object as StripeSubscription;
-      const orgId = await orgForCustomer(db, stripe_sub.customer);
-      if (!orgId) {
-        // Org not found — possibly created via checkout before our subscription row; log and ack
-        console.warn(
-          `[billing] subscription event for unknown customer: ${stripe_sub.customer}`
-        );
-        return c.json({ received: true });
-      }
-
-      // Determine plan tier from price metadata or price ID
-      const priceItem = stripe_sub.items.data[0];
-      let planTier = "growth"; // safe default
-      if (priceItem) {
-        const priceMeta = priceItem.price.metadata.plan_tier;
-        if (priceMeta) {
-          planTier = priceMeta;
-        } else {
-          // Fall back to matching against our configured price IDs
-          planTier = priceToPlan(
-            priceItem.price.id,
-            c.env.STRIPE_GROWTH_PRICE_ID,
-            c.env.STRIPE_BUSINESS_PRICE_ID
-          );
-        }
-      }
-
-      await db
-        .prepare(
-          `INSERT INTO subscriptions
-             (id, org_id, plan_tier, status, stripe_subscription_id,
-              current_period_start, current_period_end, cancel_at_period_end,
-              created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-           ON CONFLICT(org_id) DO UPDATE SET
-             plan_tier               = excluded.plan_tier,
-             status                  = excluded.status,
-             stripe_subscription_id  = excluded.stripe_subscription_id,
-             current_period_start    = excluded.current_period_start,
-             current_period_end      = excluded.current_period_end,
-             cancel_at_period_end    = excluded.cancel_at_period_end,
-             updated_at              = datetime('now')`
-        )
-        .bind(
-          crypto.randomUUID(),
-          orgId,
-          planTier,
-          stripe_sub.status,
-          stripe_sub.id,
-          epochToIso(stripe_sub.current_period_start),
-          epochToIso(stripe_sub.current_period_end),
-          stripe_sub.cancel_at_period_end ? 1 : 0
-        )
-        .run();
-
-      // Invalidate quota cache so limits take effect immediately
-      await invalidateQuotaCache(kv, orgId);
-      break;
-    }
-
-    case "customer.subscription.deleted": {
-      const stripe_sub = event.data.object as StripeSubscription;
-      const orgId = await orgForCustomer(db, stripe_sub.customer);
-      if (orgId) {
-        await db
-          .prepare(
-            `UPDATE subscriptions
-             SET plan_tier = 'free', status = 'cancelled', updated_at = datetime('now')
-             WHERE org_id = ?`
-          )
-          .bind(orgId)
-          .run();
-        await invalidateQuotaCache(kv, orgId);
-      }
-      break;
-    }
-
-    case "invoice.paid": {
-      const invoice = event.data.object as StripeInvoice;
-      const orgId = await orgForCustomer(db, invoice.customer);
-      if (!orgId) break;
-
-      const invoiceId = crypto.randomUUID();
-      const now = new Date().toISOString();
-
-      await db
-        .prepare(
-          `INSERT INTO invoices
-             (id, org_id, amount_cents, currency, status, stripe_invoice_id,
-              period_start, period_end, paid_at, created_at)
-           VALUES (?, ?, ?, ?, 'paid', ?, ?, ?, ?, ?)
-           ON CONFLICT(stripe_invoice_id) DO UPDATE SET
-             status  = 'paid',
-             paid_at = excluded.paid_at`
-        )
-        .bind(
-          invoiceId,
-          orgId,
-          invoice.amount_due,
-          invoice.currency,
-          invoice.id,
-          epochToIso(invoice.period_start),
-          epochToIso(invoice.period_end),
-          now,
-          now
-        )
-        .run();
-      break;
-    }
-
-    case "invoice.payment_failed": {
-      const invoice = event.data.object as StripeInvoice;
-      const orgId = await orgForCustomer(db, invoice.customer);
-      if (!orgId) break;
-
-      const invoiceId = crypto.randomUUID();
-      const now = new Date().toISOString();
-
-      await db
-        .prepare(
-          `INSERT INTO invoices
-             (id, org_id, amount_cents, currency, status, stripe_invoice_id,
-              period_start, period_end, paid_at, created_at)
-           VALUES (?, ?, ?, ?, 'failed', ?, ?, ?, NULL, ?)
-           ON CONFLICT(stripe_invoice_id) DO UPDATE SET
-             status = 'failed'`
-        )
-        .bind(
-          invoiceId,
-          orgId,
-          invoice.amount_due,
-          invoice.currency,
-          invoice.id,
-          epochToIso(invoice.period_start),
-          epochToIso(invoice.period_end),
-          now
-        )
-        .run();
-
-      // Enqueue dunning event for async handling (CF Workflows later)
-      await c.env.BILLING_EVENTS.send({
-        type: "dunning",
-        org_id: orgId,
-        invoice_id: invoice.id,
-        amount_due: invoice.amount_due,
-        currency: invoice.currency,
-      });
-      break;
-    }
-
-    default:
-      // Acknowledge unhandled event types without error — Stripe retries on non-2xx
-      console.log(`[billing] unhandled stripe event type: ${event.type}`);
-  }
-
-  // Always return 200 so Stripe doesn't retry
-  return c.json({ received: true });
 });
 
 // ── Error handler ─────────────────────────────────────────────────────────────
@@ -1176,13 +898,14 @@ async function handleQueue(
         }
 
         case "meter": {
-          // G-D07: Stripe Meter API call stub — sends usage to Stripe Billing meters
-          // Real implementation will call POST /v1/billing/meter_events once price meters are configured
+          // G-D07: usage-metering stub. Vendor cutover note: this used to be a planned Stripe
+          // Billing Meters call; with Lemon Squeezy as the only provider, usage-based add-on
+          // billing (if ever needed beyond plan tiers) would go through LS usage records
+          // instead. Today real enforcement runs on @naelao/entitlements' D1 aggregates, so
+          // this remains a log-only intent record.
           console.log(
             `[billing/meter] org=${msg.org_id} event=${msg.event_type} qty=${msg.quantity} id=${msg.event_id} — metering intent logged`
           );
-          // Future: stripeCall(env.STRIPE_SECRET_KEY, "POST", "/billing/meter_events", { ... })
-          // and then update usage_events.stripe_meter_event_id in D1
           message.ack();
           break;
         }

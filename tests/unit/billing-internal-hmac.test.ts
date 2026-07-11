@@ -31,10 +31,7 @@ function makeEnv(overrides: Record<string, unknown> = {}): Record<string, unknow
   return {
     ENVIRONMENT: "test",
     PLATFORM_SECRET: SECRET,
-    STRIPE_SECRET_KEY: "sk_test",
-    STRIPE_WEBHOOK_SECRET: "whsec_test",
-    STRIPE_GROWTH_PRICE_ID: "price_growth",
-    STRIPE_BUSINESS_PRICE_ID: "price_business",
+
     PLATFORM_DB: db,
     ...overrides,
   };

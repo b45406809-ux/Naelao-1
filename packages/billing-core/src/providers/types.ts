@@ -16,6 +16,7 @@ export interface NormalizedBillingEvent {
     | "subscription.cancelled"
     | "subscription.paused"
     | "subscription.resumed"
+    | "subscription.expired"
     | "refund.issued";
   provider: "lemon_squeezy" | "stripe";
   spaceId: string;

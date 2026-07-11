@@ -38,6 +38,10 @@ const EVENT_MAP: Record<string, NormalizedBillingEvent["type"]> = {
   subscription_payment_success: "payment.success",
   subscription_payment_failed: "payment.failed",
   subscription_payment_recovered: "payment.success",
+  // A subscription that actually ENDED (grace period over). Previously unmapped — parseWebhookEvent
+  // threw "Unmapped Lemon Squeezy event" and the webhook 200-skipped it, so an expired subscription
+  // silently kept its paid tier forever (business subscriptions AND builder platform plans).
+  subscription_expired: "subscription.expired",
 };
 
 /** Constant-time hex compare to avoid signature timing leaks. */

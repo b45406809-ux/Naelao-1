@@ -1,0 +1,245 @@
+import { describe, it, expect } from "vitest";
+import billingWorker from "../../workers/billing/src/index.js";
+
+// Vendor cutover: Lemon Squeezy is the ONLY billing provider. The builder's own platform plan
+// (growth/business) — previously the last Stripe-backed path — now runs through the same LS
+// store: POST /billing/checkout creates an LS checkout tagged kind="platform_plan", and the LS
+// webhook's new early branch (recordPlatformPlanSubscription) upserts the org's subscription.
+// The webhook tests run against a real fake-D1 loaded with the REAL migrations, which is what
+// locks in the entitlement fix: the old Stripe webhook only ever wrote subscriptions.plan_tier,
+// but EntitlementsChecker.getTenantTier reads orgs.plan_tier — so a paid upgrade never actually
+// unlocked anything. The platform-plan handler must write BOTH.
+
+const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
+const SECRET = "test-platform-secret";
+const ORG_ID = "org-1";
+
+function makeEnv(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const db = {
+    prepare() {
+      const stmt = {
+        bind() { return stmt; },
+        async first() { return null; },
+        async run() { return { meta: { changes: 1 } }; },
+      };
+      return stmt;
+    },
+  };
+  return { ENVIRONMENT: "test", PLATFORM_SECRET: SECRET, PLATFORM_DB: db, ...overrides };
+}
+
+function checkoutReq(body: unknown): Request {
+  return new Request("https://billing.naelao.com/billing/checkout", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": ORG_ID,
+      "x-naelao-user-id": "user-1",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+describe("POST /billing/checkout — Lemon Squeezy platform plans (Stripe removed)", () => {
+  it("boots without any STRIPE_* env at all (validateEnv no longer requires them)", async () => {
+    const res = await billingWorker.fetch(
+      checkoutReq({ plan: "growth", success_url: "https://app.naelao.com/dashboard/settings" }),
+      makeEnv() as never,
+      execCtx
+    );
+    expect(res.status).toBe(200); // would 500 "Missing required secret" before the cutover
+  });
+
+  it("returns the dev placeholder when LS creds / plan variant are unset", async () => {
+    const res = await billingWorker.fetch(
+      checkoutReq({ plan: "business", success_url: "https://x.example/done" }),
+      makeEnv() as never,
+      execCtx
+    );
+    const body = (await res.json()) as { checkout_url: string; dev?: boolean; plan: string };
+    expect(body.dev).toBe(true);
+    expect(body.plan).toBe("business");
+    expect(body.checkout_url).toContain("/dev/platform-plan/business");
+  });
+
+  it("no longer requires cancel_url (an LS checkout has no cancel redirect)", async () => {
+    const res = await billingWorker.fetch(
+      checkoutReq({ plan: "growth", success_url: "https://x.example/done" }),
+      makeEnv() as never,
+      execCtx
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("creates a real LS checkout tagged kind=platform_plan with org_id + plan when configured", async () => {
+    const originalFetch = globalThis.fetch;
+    let captured: { data: { attributes: { checkout_data: { custom: Record<string, string> } } } } | null = null;
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      captured = JSON.parse(init!.body as string);
+      return new Response(JSON.stringify({ data: { attributes: { url: "https://checkout.lemonsqueezy.com/plan" } } }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const res = await billingWorker.fetch(
+        checkoutReq({ plan: "growth", success_url: "https://x.example/done" }),
+        makeEnv({
+          LEMON_SQUEEZY_API_KEY: "key",
+          LEMON_SQUEEZY_STORE_ID: "store",
+          LEMON_SQUEEZY_GROWTH_VARIANT_ID: "var_growth",
+        }) as never,
+        execCtx
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { checkout_url: string; dev?: boolean };
+      expect(body.checkout_url).toBe("https://checkout.lemonsqueezy.com/plan");
+      expect(body.dev).toBeUndefined();
+      expect(captured!.data.attributes.checkout_data.custom).toMatchObject({
+        kind: "platform_plan",
+        org_id: ORG_ID,
+        plan: "growth",
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe("POST /billing/portal — Lemon Squeezy customer portal", () => {
+  it("404s when the org has no LS billing profile yet", async () => {
+    const res = await billingWorker.fetch(
+      new Request("https://billing.naelao.com/billing/portal", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": ORG_ID },
+        body: "{}",
+      }),
+      makeEnv() as never,
+      execCtx
+    );
+    expect(res.status).toBe(404);
+  });
+});
+
+// ── Webhook: platform_plan events against a real fake-D1 with the REAL migrations ────────────
+
+async function loadDb() {
+  const { readFileSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { createFakeD1 } = await import("../stubs/d1-sqlite.js");
+  const m = (f: string) => readFileSync(join(__dirname, "../../infra/migrations/", f), "utf8");
+  const fakeDb = createFakeD1([
+    m("0002_orgs.sql"),
+    m("0004_billing.sql"),
+    m("0033_reseller_accounts.sql"), // 0050/0052's idempotency index references reseller_ledger
+    m("0035_commerce.sql"),
+    m("0050_webhook_idempotency.sql"),
+    m("0052_webhook_idempotency_event_type.sql"),
+    m("0062_subscriptions_lemon_squeezy.sql"),
+  ]);
+  await fakeDb.prepare("INSERT INTO orgs (id, name, owner_id, plan_tier) VALUES (?, 'Test Org', 'user-1', 'free')")
+    .bind(ORG_ID).run();
+  return fakeDb;
+}
+
+async function signedWebhook(rawBody: string, webhookSecret: string): Promise<Request> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(webhookSecret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(rawBody));
+  const sig = [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return new Request("https://billing.naelao.com/webhooks/lemon-squeezy", { method: "POST", headers: { "X-Signature": sig }, body: rawBody });
+}
+
+function planEventBody(eventName: string, opts: { subId?: string; status?: string; plan?: string } = {}): string {
+  const custom = { kind: "platform_plan", org_id: ORG_ID, plan: opts.plan ?? "growth", spaceId: ORG_ID };
+  return JSON.stringify({
+    meta: { event_name: eventName, custom_data: custom },
+    data: {
+      id: opts.subId ?? "sub_1",
+      attributes: {
+        status: opts.status ?? "active",
+        customer_id: "cust_9",
+        renews_at: "2026-08-11T00:00:00Z",
+        custom_data: custom,
+      },
+    },
+  });
+}
+
+async function webhookEnv(fakeDb: unknown) {
+  return {
+    PLATFORM_SECRET: SECRET,
+    PLATFORM_DB: fakeDb,
+    LEMON_SQUEEZY_WEBHOOK_SECRET: "whsec_test",
+    AGENTS_WORKER: { fetch: async () => new Response("{}") },
+  };
+}
+
+describe("LS webhook — kind=platform_plan upserts the ORG's plan (no space dispatch)", () => {
+  it("subscription_created activates the plan in BOTH subscriptions AND orgs.plan_tier", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    const res = await handleLemonSqueezyWebhook(await signedWebhook(planEventBody("subscription_created"), "whsec_test"), await webhookEnv(fakeDb) as never);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, kind: "platform_plan" });
+
+    const sub = await fakeDb.prepare("SELECT plan_tier, status, ls_customer_id, ls_subscription_id FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
+    expect(sub).toMatchObject({ plan_tier: "growth", status: "active", ls_customer_id: "cust_9", ls_subscription_id: "sub_1" });
+
+    // THE entitlement fix: getTenantTier reads orgs.plan_tier — the old Stripe webhook never
+    // wrote it, so upgrades never unlocked free-tier gates. This is what makes the upgrade real.
+    const org = await fakeDb.prepare("SELECT plan_tier FROM orgs WHERE id = ?").bind(ORG_ID).first();
+    expect(org).toMatchObject({ plan_tier: "growth" });
+  });
+
+  it("subscription_expired drops the org back to free in both tables", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    const env = await webhookEnv(fakeDb);
+    await handleLemonSqueezyWebhook(await signedWebhook(planEventBody("subscription_created", { subId: "sub_1" }), "whsec_test"), env as never);
+    const res = await handleLemonSqueezyWebhook(
+      await signedWebhook(planEventBody("subscription_expired", { subId: "sub_2", status: "expired" }), "whsec_test"),
+      env as never
+    );
+    expect(res.status).toBe(200);
+    const sub = await fakeDb.prepare("SELECT plan_tier, status FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
+    expect(sub).toMatchObject({ plan_tier: "free", status: "expired" });
+    const org = await fakeDb.prepare("SELECT plan_tier FROM orgs WHERE id = ?").bind(ORG_ID).first();
+    expect(org).toMatchObject({ plan_tier: "free" });
+  });
+
+  it("a duplicate delivery of the same event id is a no-op (exactly-once gate)", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    const env = await webhookEnv(fakeDb);
+    const body = planEventBody("subscription_created", { subId: "sub_dup" });
+    const first = await handleLemonSqueezyWebhook(await signedWebhook(body, "whsec_test"), env as never);
+    expect(await first.json()).toMatchObject({ ok: true, kind: "platform_plan" });
+    const second = await handleLemonSqueezyWebhook(await signedWebhook(body, "whsec_test"), env as never);
+    expect(await second.json()).toMatchObject({ ok: true, duplicate: true });
+  });
+
+  it("cancelled keeps the paid tier (LS grace until expiry) but surfaces the status", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    const env = await webhookEnv(fakeDb);
+    await handleLemonSqueezyWebhook(await signedWebhook(planEventBody("subscription_created", { subId: "s1" }), "whsec_test"), env as never);
+    await handleLemonSqueezyWebhook(
+      await signedWebhook(planEventBody("subscription_cancelled", { subId: "s2", status: "cancelled" }), "whsec_test"),
+      env as never
+    );
+    const sub = await fakeDb.prepare("SELECT plan_tier, status FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
+    expect(sub).toMatchObject({ plan_tier: "growth", status: "cancelled" });
+  });
+
+  it("ignores events without a valid org_id/plan (never dispatched to space machinery)", async () => {
+    const { handleLemonSqueezyWebhook } = await import("../../workers/billing/src/lemon-squeezy.js");
+    const fakeDb = await loadDb();
+    const custom = { kind: "platform_plan", plan: "enterprise-typo", spaceId: "x" }; // no org_id, bad plan
+    const body = JSON.stringify({
+      meta: { event_name: "subscription_created", custom_data: custom },
+      data: { id: "sub_bad", attributes: { status: "active", customer_id: "c", custom_data: custom } },
+    });
+    const res = await handleLemonSqueezyWebhook(await signedWebhook(body, "whsec_test"), await webhookEnv(fakeDb) as never);
+    // Still 200 (acked, exactly-once recorded) — but nothing written.
+    expect(res.status).toBe(200);
+    const sub = await fakeDb.prepare("SELECT * FROM subscriptions WHERE org_id = ?").bind(ORG_ID).first();
+    expect(sub).toBeNull();
+  });
+});

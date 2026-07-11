@@ -30,10 +30,17 @@ max_retries = 3
 max_concurrency = 50
 dead_letter_queue = "naelao-billing-events-dlq"
 
-# Primary billing: Lemon Squeezy webhook dispatcher → wakes NaelaoAgentDO
-# Set LEMON_SQUEEZY_WEBHOOK_SECRET and LEMON_SQUEEZY_API_KEY via wrangler secret put
-# Also set PLATFORM_SECRET (shared with every other worker) — required to call spaces
-# worker's internal routes directly (mintInternalToken, @naelao/http).
+# Billing provider: Lemon Squeezy ONLY (Stripe removed in the vendor cutover).
+# Secrets (set via `wrangler secret put`, per environment):
+#   LEMON_SQUEEZY_API_KEY             — LS API key (app.lemonsqueezy.com → Settings → API)
+#   LEMON_SQUEEZY_STORE_ID            — Naelao's LS store id
+#   LEMON_SQUEEZY_WEBHOOK_SECRET      — signing secret of the LS webhook pointed at
+#                                       /v1/webhooks/lemon-squeezy
+#   LEMON_SQUEEZY_GROWTH_VARIANT_ID   — LS subscription variant for the builder Growth plan
+#   LEMON_SQUEEZY_BUSINESS_VARIANT_ID — LS subscription variant for the builder Business plan
+#   PLATFORM_SECRET                   — shared inter-worker HMAC secret (same value everywhere)
+# The plan variants are created ONCE in the Naelao LS store (Products → New → subscription);
+# without them /billing/checkout degrades to the dev-placeholder flow.
 [[services]]
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
@@ -45,12 +52,11 @@ service = "naelao-spaces"
 
 [vars]
 ENVIRONMENT = "development"
-STRIPE_PUBLISHABLE_KEY = ""
 
 [env.staging]
 # wrangler does NOT merge [env.X].vars with the top-level [vars] block — it replaces it
-# entirely, so STRIPE_PUBLISHABLE_KEY must be repeated here or it's undefined in staging.
-vars = { ENVIRONMENT = "staging", STRIPE_PUBLISHABLE_KEY = "" }
+# entirely; any var added above must be repeated per environment.
+vars = { ENVIRONMENT = "staging" }
 
 [[env.staging.services]]
 binding = "AGENTS_WORKER"
@@ -62,7 +68,7 @@ service = "naelao-spaces"
 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
-vars = { ENVIRONMENT = "production", STRIPE_PUBLISHABLE_KEY = "" }
+vars = { ENVIRONMENT = "production" }
 
 [[env.production.services]]
 binding = "AGENTS_WORKER"

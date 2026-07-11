@@ -24,8 +24,8 @@ variable "project_name" {
   default     = "naelao"
 }
 
-variable "stripe_api_key" {
-  description = "Stripe secret API key for billing integration"
+variable "lemon_squeezy_api_key" {
+  description = "Lemon Squeezy API key — the ONLY billing provider (Stripe removed)"
   type        = string
   sensitive   = true
   default     = ""
