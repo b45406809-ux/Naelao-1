@@ -4058,3 +4058,63 @@ exact figures NEVER shared regardless of plan), and a deferred private-playbook 
 G-GRW04 universal connector catalogue + assistant advertisement, AJ.2 discovery skills, AJ.3
 flagship template/sample hosting/outreach agents (G-GRW10..14), AJ.4 Business Network
 (G-GRW15..19), G-GRW20 exchange.
+
+## A1.20 F-36 enforcement — the assistant per-user permission clamp is now actually consulted at runtime — BUILT
+
+**The gap (audit finding, HIGH):** SpaceDO has carried the complete F-36 model since the audit
+pass that introduced it — `project_members.assistant_mode` (`inherit`/`read_only`/`none`),
+`resolveAssistantEffectiveRole(projectId, userId)` (never more than the user's own project role),
+and `GET /spaces/:spaceId/projects/:projectId/assistant-access?user_id=U` — but a grep for any of
+those names across `workers/agents` returned **zero matches**. The clamp was decorative: an
+assistant acting on behalf of a `read_only`- or even `none`-clamped user ran with full
+space-scoped authority. Same story for the approval policy: `fetchAssistantPolicy` is space-wide,
+so an owner flipping the space to `yolo` granted un-gated autonomy to runs made on behalf of ANY
+caller (a viewer, a product end user).
+
+**What was wired (no redesign of the clamp itself — SpaceDO stays the single definition):**
+
+- **Entry gate** (`NaelaoAgentDO.handleScriptRun`): a project-scoped run that acts on behalf of a
+  user (non-empty `userId`, excluding the channel drain's synthetic `channel:...` ids, which never
+  route through here anyway) resolves the clamp via a new `fetchAssistantAccess` (internal HMAC
+  call to the existing spaces-worker endpoint) BEFORE any billing gate. `null` effective role
+  (`assistant_mode='none'`, or a plain non-member) → 403 `assistant_access_denied`; lookup error →
+  403 `assistant_access_unverified` (fail CLOSED — the fetchProjectConfig/F17 posture: an
+  authorization check that fails open isn't one). No acting user (cron/trigger/webhook/bootstrap
+  wakes) → no clamp, the assistant's own base grant, exactly as the clamp's SpaceDO doc always
+  specified.
+- **Read-only enforcement** (`ScriptEngineEnv.effectiveRole` + `ScriptToolSurface`, the `maxTier`
+  structural precedent): `"viewer"` (which is also what `read_only` maps to server-side, even for
+  a project owner) refuses `script.create/update/delete`, every STORED script (arbitrary
+  agent-authored code is assumed mutating — fail closed), and any prebuilt op not on the explicit
+  read-safe allowlist in the new `script-engine/assistant-access.ts` (`READ_SAFE_PREBUILT_OPS` —
+  small and explicit like wallet.ts's credential-name list; a new prebuilt op is write-gated until
+  consciously classified). `script.read`/`script.find` and read ops (read_file, knowledge.search,
+  wallet.balance, project.list, ...) still work.
+- **Approval-policy intersection** (`resolveAssistantApprovalPlan`, pure + unit-tested): `yolo`
+  now fully applies only for system wakes (no `x-naelao-role` — the autonomous operation the owner
+  configured it for) and owner/admin callers (who could self-authorize any gated action anyway);
+  every other verified caller role — editor/viewer builders, `product_end_user`, `agent` API keys,
+  and unrecognized roles (fail closed) — downgrades to the always_ask posture
+  (`gate_unless_listed` + the policy's own `auto_approved_actions`).
+- **Two escape hatches closed while wiring:** (1) `POST /agents/:agentId/script/run` (the worker's
+  script-first entrypoint, whose own doc says "owner-initiated calls arrive with the usual
+  JWT-derived headers") silently DROPPED `x-naelao-user-id`/`x-naelao-role` when forwarding to the
+  DO — so not just the clamp but also handleScriptRun's per-caller billing branches could never
+  apply to runs entering there; both headers are now forwarded (the route already requires the
+  internal token, so they're router-verified). (2) sub-agent spawns carried `projectId` but not
+  `userId` — a clamped parent could have laundered work through `agent.spawn` into an unclamped
+  child; the parent's acting user is now threaded through `buildOrchestrationHooks` →
+  `spawnSubAgentBatch` so the child re-resolves the same clamp.
+
+**Known bounded scope (documented, not silently dropped):** a NON-project Space Assistant run can
+still touch projects mid-run via prebuilt ops (`project.configure` etc.) without a per-project
+clamp lookup — per-op project clamping inside prebuilts is a deeper pass; the mitigation today is
+the policy intersection above (those actions are HITL-gated for any caller who couldn't
+self-authorize them). The legacy ReAct path (`/run`) has no project/tool-surface concept and is
+out of F-36's scope.
+
+New `tests/unit/assistant-permission-clamp.test.ts` (14 tests): none/error/no-user/channel-id/
+viewer entry-gate cases against a real `NaelaoAgentDO` instance (sqlite-shim harness), the
+read-only surface (reads pass, writes refuse, stored scripts refuse, even-owner read_only case),
+allowlist hygiene, and the yolo-intersection matrix. 1707/1707 tests pass; `pnpm turbo run
+typecheck` clean (75 tasks).

@@ -466,6 +466,19 @@ export interface ScriptEngineEnv {
    * Enforced structurally in ScriptToolSurface — not a prompt instruction.
    */
   maxTier?: ExecutionTier;
+  /**
+   * F-36 — the assistant's clamped effective role when this run acts ON BEHALF OF a specific
+   * user in a project (resolved from SpaceDO's `/projects/:id/assistant-access`, the min of
+   * that user's own project_members role and the row's assistant_mode). `"viewer"` makes the
+   * run read-only: ScriptToolSurface structurally refuses script.create/update/delete,
+   * stored-script execution, and any prebuilt op not on the read-safe allowlist (see
+   * assistant-access.ts). Absent = unclamped — a system/autonomous run with no acting user,
+   * or an acting user whose effective role is editor/owner. A `null` effective role
+   * (assistant_mode='none', or a plain non-member) never reaches this env: the run is refused
+   * before the engine is invoked. Enforced structurally (the maxTier precedent), not a prompt
+   * instruction.
+   */
+  effectiveRole?: "owner" | "editor" | "viewer";
 }
 
 /**

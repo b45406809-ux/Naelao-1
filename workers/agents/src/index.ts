@@ -797,10 +797,24 @@ app.post("/agents/:agentId/script/run", async (c) => {
   }
 
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, agentId, c.get("requestId"));
+  // F-36: forward the VERIFIED acting-user identity to the DO. For a router-proxied owner/
+  // member call these headers were set by proxyTo from verified claims (and this route already
+  // required the matching internal token above, so a direct caller can't spoof them past that
+  // gate); internal wakes (billing/triggers) never set them, so a system run reaches the DO
+  // with no acting user — exactly the "fall back to the assistant's own base grant" case the
+  // clamp documents. Previously this route silently DROPPED both headers, so the per-user
+  // clamp (and handleScriptRun's per-caller billing branches) could never apply to runs
+  // entering here.
+  const actingUserId = c.req.header("x-naelao-user-id") ?? "";
+  const actingRole = c.req.header("x-naelao-role") ?? "";
   const doResp = await stub.fetch(
     new Request("http://agent-do/script/run", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(actingUserId ? { "x-naelao-user-id": actingUserId } : {}),
+        ...(actingRole ? { "x-naelao-role": actingRole } : {}),
+      },
       body: JSON.stringify({
         goal: body.goal,
         spaceId,

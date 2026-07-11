@@ -29,6 +29,7 @@ import { scriptFind, indexScriptEmbedding, removeScriptEmbedding } from "./scrip
 import { runStoredScript } from "./execution-ladder.js";
 import { buildOperationMap, type PrebuiltOp, type PrebuiltScript } from "./prebuilt/index.js";
 import { assertNoReservedViolation } from "./reserved-capabilities.js";
+import { isReadSafeOperation } from "./assistant-access.js";
 
 export class ScriptToolSurface {
   private readonly library: SkillLibrary;
@@ -68,12 +69,30 @@ export class ScriptToolSurface {
     }
   }
 
+  /**
+   * F-36 read-only clamp (see assistant-access.ts / ScriptEngineEnv.effectiveRole) — this run
+   * acts on behalf of a user whose effective role in the bound project is `viewer`, so every
+   * mutation is structurally refused. Same posture as assertWithinCeiling: a compromised or
+   * over-eager reasoner cannot talk its way past this, and the error tells the agent to relay
+   * the limitation honestly instead of retrying.
+   */
+  private assertWritable(context: string): void {
+    if (this.env.effectiveRole === "viewer") {
+      throw new Error(
+        `${context} refused: this run acts on behalf of a user whose assistant access to this ` +
+        `project is read-only (F-36 clamp). Only read operations are permitted — tell the user ` +
+        `a project owner/editor must make this change (or adjust their assistant_mode).`
+      );
+    }
+  }
+
   // ── script.create ──────────────────────────────────────────────────────────
   async create(input: {
     name: string;
     code?: string;
     metadata: Partial<ScriptMetadata> & Pick<ScriptMetadata, "description" | "domain" | "requires_tier">;
   }): Promise<ScriptMetadata> {
+    this.assertWritable(`script.create('${input.name}')`);
     this.assertWithinCeiling(input.metadata.requires_tier, `script.create('${input.name}')`);
 
     // Income-wallet protection: a user/agent script may never collect money. Only the
@@ -112,6 +131,7 @@ export class ScriptToolSurface {
     patch: { code?: string; metadata?: Partial<ScriptMetadata> },
     reason: string
   ): Promise<ScriptMetadata> {
+    this.assertWritable(`script.update('${name}')`);
     // Re-check on update so a benign script can't be edited into a money-in bypass — and so a
     // ceiling lowered AFTER creation (admin restricts a project) is enforced retroactively.
     if (patch.metadata?.requires_tier !== undefined) {
@@ -133,6 +153,7 @@ export class ScriptToolSurface {
 
   // ── script.delete ──────────────────────────────────────────────────────────
   async delete(name: string): Promise<void> {
+    this.assertWritable(`script.delete('${name}')`);
     await this.library.delete(name);
     await removeScriptEmbedding(this.env, name);
   }
@@ -152,6 +173,24 @@ export class ScriptToolSurface {
    */
   async run(name: string, params: Record<string, unknown> = {}): Promise<ScriptRunResult> {
     const started = Date.now();
+
+    // F-36 read-only clamp: a viewer-clamped run may execute only explicitly read-safe
+    // prebuilt ops — never a stored script (arbitrary agent-authored code is assumed to
+    // mutate; fail closed). Checked before resolution so a refused name never even reads
+    // the library (no outcome recorded against the script's stability score).
+    if (this.env.effectiveRole === "viewer" && !isReadSafeOperation(name)) {
+      return {
+        ok: false,
+        error:
+          `script.run('${name}') refused: this run acts on behalf of a user whose assistant ` +
+          `access to this project is read-only (F-36 clamp). Only read operations are ` +
+          `permitted — tell the user a project owner/editor must perform this action ` +
+          `(or adjust their assistant_mode).`,
+        tier: 1,
+        duration_ms: Date.now() - started,
+        tokens_used: 0,
+      };
+    }
 
     // 1. Prebuilt operation?
     const prebuilt = this.ops.get(name);

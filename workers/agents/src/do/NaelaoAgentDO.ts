@@ -23,6 +23,7 @@ import {
   type ExecutionTier,
 } from "../script-engine/index.js";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
+import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
 import { buildProjectMemoryStore, buildHybridMemoryStore } from "../script-engine/project-memory-client.js";
@@ -1532,7 +1533,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     parentRunId: string,
     parentThreadId?: string,
     projectId?: string,
-    tools?: ScriptToolSurface
+    tools?: ScriptToolSurface,
+    // F-36: the acting user the PARENT run is on behalf of — threaded into every child spawn
+    // so a clamped parent can't escape its per-user clamp by fanning work out to sub-agents
+    // (the child's own handleScriptRun re-resolves the same clamp for the same user).
+    userId?: string
   ): import("../script-engine/types.js").OrchestrationHooks {
     const hooks: import("../script-engine/types.js").OrchestrationHooks = {};
 
@@ -1558,7 +1563,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
 
         try {
-          return await this.spawnSubAgentBatch(tasks, spaceId, agentId, tenantId, apiKey, parentRunId, parentThreadId, projectId, agentDO);
+          return await this.spawnSubAgentBatch(tasks, spaceId, agentId, tenantId, apiKey, parentRunId, parentThreadId, projectId, agentDO, userId);
         } finally {
           await this.releaseConcurrencySlot(concurrencyKey, parentRunId);
         }
@@ -1696,7 +1701,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     parentRunId: string,
     parentThreadId: string | undefined,
     projectId: string | undefined,
-    agentDO: DurableObjectNamespace<NaelaoAgentDO>
+    agentDO: DurableObjectNamespace<NaelaoAgentDO>,
+    userId?: string
   ): Promise<{ id: string }> {
     const spawned = await Promise.all(
       tasks.map(async (t) => {
@@ -1741,6 +1747,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               // project, not a different filesystem (spec: threads in a project share one R2
               // workspace).
               ...(projectId ? { projectId } : {}),
+              // F-36: a child acts on behalf of the SAME user as its parent — its own
+              // handleScriptRun re-resolves the clamp, so a viewer-clamped parent can't
+              // launder a mutation through a spawn.
+              ...(userId ? { userId } : {}),
               ...(typeof t["model"] === "string" ? { model: t["model"] } : {}),
               context: {
                 parent_run_id: parentRunId,
@@ -1999,6 +2009,36 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // business to actually have money at all.
     let walletProjectId: string | null = null;
     if (projectId) {
+      // F-36 enforcement: a project-scoped run made ON BEHALF OF a specific user is clamped to
+      // that user's effective role in the project BEFORE any other gate runs — authorization
+      // precedes billing. No acting user (cron/trigger/webhook/bootstrap wakes pass no userId,
+      // and the channel drain's synthetic `channel:...` ids never route through here) means no
+      // per-user clamp — the run keeps the assistant's own base grant, per the clamp's own doc
+      // in SpaceDO.resolveAssistantEffectiveRole. Fails CLOSED on a lookup error: an
+      // authorization check that fails open isn't one (fetchProjectConfig/F17 precedent).
+      if (userId && !userId.startsWith("channel:")) {
+        const access = await this.fetchAssistantAccess(spaceId, tenantId, projectId, userId);
+        if (access.status === "error") {
+          return Response.json(
+            { error: "unable to verify assistant access to this project — try again shortly", error_code: "assistant_access_unverified" },
+            { status: 403 }
+          );
+        }
+        if (access.effectiveRole === null) {
+          return Response.json(
+            {
+              error: "the assistant is not permitted to act in this project on behalf of this user (assistant access is 'none' or the user is not a project member)",
+              error_code: "assistant_access_denied",
+            },
+            { status: 403 }
+          );
+        }
+        // "viewer" makes the whole run read-only — enforced structurally in ScriptToolSurface
+        // (script.create/update/delete, stored scripts, and non-read-safe prebuilt ops all
+        // refuse). editor/owner run unclamped at the six-op surface.
+        engineEnv.effectiveRole = access.effectiveRole;
+      }
+
       const projectCfg = await this.fetchProjectConfig(spaceId, tenantId, projectId);
       if (projectCfg.status === "error") {
         // F17 / A1.13: a transient SpaceDO error must fail CLOSED, never read as "unrestricted"
@@ -2134,12 +2174,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       requiresApprovalFor = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];
     } else {
       const policy = await this.fetchAssistantPolicy(spaceId, tenantId);
-      if (policy?.approval_mode === "yolo") {
-        requiresApprovalFor = [];
-      } else {
-        requiresApprovalFor = policy?.auto_approved_actions ?? [];
-        approvalMode = "gate_unless_listed";
-      }
+      // F-36 enforcement (policy half): the space-wide policy is intersected with the VERIFIED
+      // acting caller's role — `yolo` fully applies only for system wakes (no x-naelao-role:
+      // the autonomous operation the owner configured it for) and owner/admin callers, who
+      // could self-authorize any gated action anyway. For everyone else (editor/viewer
+      // builders, product end users, agent API keys) yolo downgrades to the always_ask
+      // posture, so a space set to yolo no longer grants un-gated autonomy to a run made on
+      // behalf of a user who couldn't approve those actions themself. Pure logic + tests in
+      // script-engine/assistant-access.ts.
+      const plan = resolveAssistantApprovalPlan(policy, callerRole);
+      requiresApprovalFor = plan.requiresApprovalFor;
+      approvalMode = plan.approvalMode;
     }
 
     const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
@@ -2147,7 +2192,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // conceptually a subthread of the same project, not a different workspace. Built after
     // `tools` (§A1.17 Phase J's workflow.create/run ops need it to author/re-run stored
     // scripts) — read lazily at call time, so ordering relative to runScriptLoop is safe.
-    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools);
+    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools, userId);
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
       gateway: {
@@ -2516,6 +2561,33 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return await resp.json<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] }>();
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * F-36 enforcement — resolve the clamp SpaceDO defines (`resolveAssistantEffectiveRole`:
+   * the min of the acting user's own project_members role and that row's assistant_mode)
+   * for a project-scoped run made ON BEHALF OF a specific user. The clamp existed since the
+   * F-36 pass but nothing in this worker ever consulted it, so a `read_only`/`none`-clamped
+   * user's assistant ran with full space-scoped authority anyway. Callers fail CLOSED on
+   * `status:"error"` (refuse the run — matching the fetchProjectConfig/F17 posture: an
+   * authorization check that fails open isn't one); a `null` effectiveRole means the clamp
+   * POSITIVELY denies this user (assistant_mode='none', or a plain non-member).
+   */
+  private async fetchAssistantAccess(
+    spaceId: string, tenantId: string, projectId: string, userId: string
+  ): Promise<{ status: "ok"; effectiveRole: AssistantEffectiveRole | null } | { status: "error" }> {
+    if (!this.env.SPACES_WORKER || !tenantId) return { status: "error" };
+    try {
+      const resp = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${spaceId}/projects/${encodeURIComponent(projectId)}/assistant-access?user_id=${encodeURIComponent(userId)}`,
+        { headers: await this.internalHeaders(tenantId) }
+      ));
+      if (!resp.ok) return { status: "error" };
+      const { effective_role } = await resp.json<{ effective_role: AssistantEffectiveRole | null }>();
+      return { status: "ok", effectiveRole: effective_role ?? null };
+    } catch {
+      return { status: "error" };
     }
   }
 
