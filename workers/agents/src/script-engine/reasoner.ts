@@ -16,6 +16,8 @@ import {
   buildUniversalBody,
   normalizeUniversalResponse,
   universalGatewayUrl,
+  universalGatewayHeaders,
+  canAuthenticateLlm,
   callWorkersAI,
   type AIClientContext,
   type GatewayOpts,
@@ -81,12 +83,18 @@ export class GatewayReasoner implements Reasoner {
       messages: [{ role: "user", content: userContent }],
     };
 
+    // No provider key AND no gateway-stored-key auth → the call can't authenticate. Fail honestly
+    // here rather than firing a doomed request (whose 401 would just surface as a vague give_up).
+    if (!canAuthenticateLlm(this.deps.gateway, this.deps.apiKey)) {
+      return { action: "give_up", reason: "no LLM credentials configured: set NAELAO_AIG_TOKEN (CF AI Gateway stored key) or a provider apiKey" };
+    }
+
     const url = universalGatewayUrl(this.deps.gateway);
     let resp: Response;
     try {
       resp = await fetch(url, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: universalGatewayHeaders(this.deps.gateway),
         body: buildUniversalBody({
           apiKey: this.deps.apiKey,
           ...(this.deps.gateway.cfApiToken ? { cfApiToken: this.deps.gateway.cfApiToken } : {}),

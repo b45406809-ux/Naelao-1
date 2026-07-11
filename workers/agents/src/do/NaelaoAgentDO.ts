@@ -834,6 +834,12 @@ export interface AgentDOEnv {
   /** AI Gateway identity (spec §15). */
   NAELAO_ACCOUNT_ID?: string;
   NAELAO_GATEWAY_ID?: string;
+  /** CF AI Gateway Authenticated-Gateway token (`cf-aig-authorization`). When set, the gateway
+   *  holds the Anthropic/OpenAI key itself (BYOK / stored keys), so no ANTHROPIC_API_KEY is needed
+   *  on the worker. Set via `wrangler secret put NAELAO_AIG_TOKEN`. */
+  NAELAO_AIG_TOKEN?: string;
+  /** Optional since the vendor cutover — see NAELAO_AIG_TOKEN. */
+  ANTHROPIC_API_KEY?: string;
   /** CF API token — enables the Universal Endpoint's Workers AI fallback provider (spec §15
    *  cross-provider failover). Required for Workers AI via the universal endpoint (distinct from
    *  the AI binding, which is for direct binding calls). Set via `wrangler secret put
@@ -2148,6 +2154,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder",
         gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
         ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}),
+        ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}),
       },
       ctx: { spaceId, agentId, model: body.model ?? "claude-haiku-4-5-20251001" },
       ...(body.model ? { model: body.model } : {}),
@@ -2866,7 +2873,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const model = body.model ?? "claude-haiku-4-5-20251001";
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
-      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}) },
+      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}) },
       ctx: { spaceId, agentId, model },
       model,
       fallbacks: this.resolveFailoverChain(model, body.apiKey ?? ""),
@@ -3304,7 +3311,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(tools.length > 0 ? { tools } : {}),
         max_tokens: 4096,
         temperature: 0,
-      });
+      }, undefined, this.aiGatewayConfig());
 
       // G-AZ09: Track per-call costs for unit economics model
       const usage = (llmResponse as { usage?: Record<string, number> }).usage ?? {};
@@ -3588,6 +3595,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * config), then OpenAI when OPENAI_API_KEY is set (real cross-provider). All optional — an empty
    * chain means single-provider behavior, unchanged.
    */
+  /** CF AI Gateway config for the @naelao/llm-gateway callLlm path (the ReAct loop). Routes
+   *  through the gateway when a real account is configured; carries the Authenticated-Gateway
+   *  token so the gateway can supply its own stored Anthropic key (no per-worker key needed). */
+  private aiGatewayConfig(): { accountId: string; gatewayId: string; aigToken?: string } {
+    return {
+      accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder",
+      gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
+      ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}),
+    };
+  }
+
   private resolveFailoverChain(primaryModel: string, anthropicKey: string): { model: string; apiKey: string }[] {
     const chain: { model: string; apiKey: string }[] = [];
     const anthropicFallback = this.env.LLM_FALLBACK_MODEL ?? "claude-haiku-4-5-20251001";

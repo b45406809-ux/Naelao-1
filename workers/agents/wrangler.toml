@@ -202,6 +202,12 @@ NAELAO_GATEWAY_ID = "naelao-gateway"
 # binding used for direct calls — the Universal Endpoint needs a real API token).
 # Set via `wrangler secret put CF_API_TOKEN`. When absent, Anthropic-only (no fallback).
 # CF_API_TOKEN = ""  # set as a secret, not a plain var
+#
+# Vendor cutover: CF AI Gateway holds the LLM provider key (Authenticated Gateway / BYOK), so
+# NO ANTHROPIC_API_KEY is needed on this worker. Configure the gateway with your Anthropic key
+# in the CF dashboard, enable Authentication, and set the gateway token:
+#   wrangler secret put NAELAO_AIG_TOKEN
+# When NAELAO_AIG_TOKEN is unset AND no ANTHROPIC_API_KEY is provided, LLM calls fail honestly.
 
 # CF Workers AI — used by free-tier agents and sub-agent vision tasks.
 [[ai]]

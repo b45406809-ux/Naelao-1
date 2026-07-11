@@ -37,6 +37,12 @@ export interface GatewayOpts {
   /** CF API token — required when the selected model routes to the workers-ai provider.
    *  Supplied via `CF_API_TOKEN` worker secret. Not needed for Anthropic or OpenAI models. */
   cfApiToken?: string;
+  /** Authenticated-Gateway token (the gateway's own auth, `cf-aig-authorization: Bearer …`,
+   *  supplied via the `NAELAO_AIG_TOKEN` worker secret). When set, this is what lets the CF AI
+   *  Gateway hold the PROVIDER keys itself (BYOK / stored keys): the worker authenticates to the
+   *  gateway, and the gateway injects the real Anthropic/OpenAI key — so a deployment needs no
+   *  `ANTHROPIC_API_KEY` of its own. Per-provider `apiKey` becomes optional (see buildProviderEntry). */
+  aigToken?: string;
 }
 
 // ── CF AI Gateway Universal Endpoint ─────────────────────────────────────────
@@ -44,6 +50,23 @@ export interface GatewayOpts {
 /** The Universal Endpoint URL — provider and model are specified in the request BODY. */
 export function universalGatewayUrl(opts: GatewayOpts): string {
   return `https://gateway.ai.cloudflare.com/v1/${opts.accountId}/${opts.gatewayId}`;
+}
+
+/** Fetch headers for a Universal Endpoint request. The `cf-aig-authorization` gateway token (when
+ *  configured) travels as an HTTP header, NOT in the request body — this is the header the CF AI
+ *  Gateway checks to authorize the caller and unlock its stored provider keys. */
+export function universalGatewayHeaders(opts: GatewayOpts): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    ...(opts.aigToken ? { "cf-aig-authorization": `Bearer ${opts.aigToken}` } : {}),
+  };
+}
+
+/** Whether an LLM call can actually authenticate: either the gateway holds the provider key
+ *  (aigToken set) or the caller supplied a real provider key. Neither → honest failure at the
+ *  call site rather than a doomed request to the provider. */
+export function canAuthenticateLlm(opts: GatewayOpts, apiKey: string): boolean {
+  return Boolean(opts.aigToken) || Boolean(apiKey);
 }
 
 export interface UniversalProvider {
@@ -81,11 +104,15 @@ function buildProviderEntry(
   skipCache: boolean,
 ): UniversalProvider {
   const provider = inferProvider(model);
+  // When apiKey is empty the CF AI Gateway is expected to inject its OWN stored provider key
+  // (Authenticated Gateway / BYOK — gated by the top-level cf-aig-authorization header). In that
+  // case we MUST NOT send an empty auth header, which would override the gateway's stored key with
+  // a blank one; omit it entirely and let the gateway supply the credential.
   if (provider === "workers-ai") {
     return {
       provider: "workers-ai",
       endpoint: model,
-      headers: { "Authorization": `Bearer ${cfApiToken ?? ""}`, "cf-aig-metadata": metadata },
+      headers: { ...(cfApiToken ? { "Authorization": `Bearer ${cfApiToken}` } : {}), "cf-aig-metadata": metadata },
       query: { messages: [{ role: "system", content: system }, ...messages], max_tokens },
     };
   }
@@ -94,7 +121,8 @@ function buildProviderEntry(
       provider: "anthropic",
       endpoint: "messages",
       headers: {
-        "x-api-key": apiKey, "anthropic-version": ANTHROPIC_VERSION, "anthropic-beta": ANTHROPIC_BETA,
+        ...(apiKey ? { "x-api-key": apiKey } : {}),
+        "anthropic-version": ANTHROPIC_VERSION, "anthropic-beta": ANTHROPIC_BETA,
         "cf-aig-metadata": metadata, "cf-aig-cache-ttl": skipCache ? "0" : "0",
       },
       query: { model, max_tokens, system, messages },
@@ -104,7 +132,7 @@ function buildProviderEntry(
   return {
     provider,
     endpoint: "chat/completions",
-    headers: { "Authorization": `Bearer ${apiKey}`, "cf-aig-metadata": metadata, "cf-aig-cache-ttl": skipCache ? "0" : "0" },
+    headers: { ...(apiKey ? { "Authorization": `Bearer ${apiKey}` } : {}), "cf-aig-metadata": metadata, "cf-aig-cache-ttl": skipCache ? "0" : "0" },
     query: { model, max_tokens, messages: [{ role: "system", content: system }, ...messages] },
   };
 }

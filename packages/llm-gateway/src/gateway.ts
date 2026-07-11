@@ -19,6 +19,33 @@ export type { LlmTool, TokenBudget } from "./types.js";
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_API_VERSION = "2023-06-01";
+
+/** CF AI Gateway config for routing Anthropic calls through the gateway (spec §15). When
+ *  `aigToken` is set (an Authenticated Gateway), the gateway can hold the Anthropic key itself
+ *  (BYOK / stored keys) so the worker needs no ANTHROPIC_API_KEY of its own. */
+export interface AiGatewayConfig {
+  accountId: string;
+  gatewayId: string;
+  /** `cf-aig-authorization: Bearer …` — authorizes the caller AND unlocks the gateway's stored
+   *  provider key. Supplied via the `NAELAO_AIG_TOKEN` worker secret. */
+  aigToken?: string;
+}
+
+/** Resolve the Anthropic Messages endpoint + any gateway auth headers. Routes through the CF AI
+ *  Gateway's Anthropic provider endpoint when a real gateway is configured (accountId set and not
+ *  the "placeholder" default); otherwise falls back to calling Anthropic directly. */
+export function resolveAnthropicEndpoint(gateway?: AiGatewayConfig): {
+  url: string;
+  headers: Record<string, string>;
+} {
+  if (gateway && gateway.accountId && gateway.accountId !== "placeholder") {
+    return {
+      url: `https://gateway.ai.cloudflare.com/v1/${gateway.accountId}/${gateway.gatewayId}/anthropic/v1/messages`,
+      headers: gateway.aigToken ? { "cf-aig-authorization": `Bearer ${gateway.aigToken}` } : {},
+    };
+  }
+  return { url: ANTHROPIC_API_URL, headers: {} };
+}
 const RESPONSE_RESERVE_TOKENS = 4096;
 const CHARS_PER_TOKEN = 4; // approximate
 
@@ -170,21 +197,29 @@ function buildRequestBody(request: LlmRequest): Record<string, unknown> {
 export async function callLlm(
   apiKey: string,
   request: LlmRequest,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  gateway?: AiGatewayConfig
 ): Promise<LlmResponse> {
   // G-AO11: Fail fast if circuit breaker is open
   if (cbIsOpen()) {
     throw new LlmGatewayError(503, "circuit_open", "LLM provider circuit breaker is open — too many recent failures");
   }
+  if (!apiKey && !gateway?.aigToken) {
+    throw new LlmGatewayError(500, "no_llm_credentials", "no LLM credentials: set NAELAO_AIG_TOKEN (CF AI Gateway stored key) or ANTHROPIC_API_KEY");
+  }
+  const endpoint = resolveAnthropicEndpoint(gateway);
 
   return withRetry(
     async () => {
       const body = buildRequestBody({ ...request, stream: false });
 
-      const response = await fetch(ANTHROPIC_API_URL, {
+      const response = await fetch(endpoint.url, {
         method: "POST",
         headers: {
-          "x-api-key": apiKey,
+          // Omit x-api-key when empty so the gateway's stored Anthropic key (BYOK) isn't
+          // overridden by a blank one — the cf-aig-authorization header authorizes the call.
+          ...(apiKey ? { "x-api-key": apiKey } : {}),
+          ...endpoint.headers,
           "anthropic-version": ANTHROPIC_API_VERSION,
           "content-type": "application/json",
           "anthropic-beta": "prompt-caching-2024-07-31",
@@ -229,21 +264,27 @@ export async function streamLlm(
   apiKey: string,
   request: LlmRequest,
   onChunk: (delta: string) => void,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  gateway?: AiGatewayConfig
 ): Promise<LlmResponse> {
   // G-AO11: Fail fast if circuit breaker is open
   if (cbIsOpen()) {
     throw new LlmGatewayError(503, "circuit_open", "LLM provider circuit breaker is open — too many recent failures");
   }
+  if (!apiKey && !gateway?.aigToken) {
+    throw new LlmGatewayError(500, "no_llm_credentials", "no LLM credentials: set NAELAO_AIG_TOKEN (CF AI Gateway stored key) or ANTHROPIC_API_KEY");
+  }
+  const endpoint = resolveAnthropicEndpoint(gateway);
 
   return withRetry(
     async () => {
       const body = buildRequestBody({ ...request, stream: true });
 
-      const response = await fetch(ANTHROPIC_API_URL, {
+      const response = await fetch(endpoint.url, {
         method: "POST",
         headers: {
-          "x-api-key": apiKey,
+          ...(apiKey ? { "x-api-key": apiKey } : {}),
+          ...endpoint.headers,
           "anthropic-version": ANTHROPIC_API_VERSION,
           "content-type": "application/json",
           "anthropic-beta": "prompt-caching-2024-07-31",

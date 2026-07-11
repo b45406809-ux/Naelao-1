@@ -44,12 +44,19 @@ export { ScriptRunWorkflow } from "./workflows/ScriptRunWorkflow.js";
 
 export interface AgentsEnv {
   ENVIRONMENT: string;
-  ANTHROPIC_API_KEY: string;
+  /** Optional since the vendor cutover: the CF AI Gateway can hold the Anthropic key itself
+   *  (Authenticated Gateway / BYOK — see NAELAO_AIG_TOKEN), so a deployment needs no per-worker
+   *  Anthropic key. When BOTH this and NAELAO_AIG_TOKEN are unset, LLM calls fail honestly. */
+  ANTHROPIC_API_KEY?: string;
   PLATFORM_SECRET: string;
   // CF AI Gateway — spec §15. Every LLM call routes through the gateway.
   // Set to "placeholder" in dev; override with real values in production secrets.
   NAELAO_ACCOUNT_ID: string;
   NAELAO_GATEWAY_ID: string;
+  /** CF AI Gateway Authenticated-Gateway token (`cf-aig-authorization`). When set, the gateway
+   *  injects its OWN stored Anthropic/OpenAI key so no ANTHROPIC_API_KEY is needed on the worker.
+   *  Set via `wrangler secret put NAELAO_AIG_TOKEN`. */
+  NAELAO_AIG_TOKEN?: string;
   // CF Workers AI — for free-tier agents and sub-agent vision tasks.
   AI: Ai;
   PLATFORM_DB: D1Database;
@@ -114,12 +121,12 @@ interface SpaceTypeRow {
 
 // ── Hono app ──────────────────────────────────────────────────────────────────
 
-// G-A11: Validate required secrets at startup
+// G-A11: Validate required secrets at startup. Vendor cutover: ANTHROPIC_API_KEY is no longer
+// required — the CF AI Gateway can hold the provider key itself (NAELAO_AIG_TOKEN). PLATFORM_SECRET
+// is the real hard dependency (every HMAC gate + internal call). LLM calls degrade honestly at the
+// call site when neither an Anthropic key nor a gateway token is configured.
 function validateEnv(env: AgentsEnv): void {
-  const required = ["ANTHROPIC_API_KEY", "PLATFORM_SECRET"] as const;
-  for (const key of required) {
-    if (!env[key]) throw new Error(`Missing required secret: ${key}`);
-  }
+  if (!env.PLATFORM_SECRET) throw new Error("Missing required secret: PLATFORM_SECRET");
 }
 
 const app = new Hono<{ Bindings: AgentsEnv }>();
@@ -598,7 +605,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         systemPrompt,
         tools: toolsConfig,
         kbContext,
-        apiKey: c.env.ANTHROPIC_API_KEY,
+        apiKey: c.env.ANTHROPIC_API_KEY ?? "",
         model: modelConfig.model ?? "claude-sonnet-4-6",
         allowedDomains: [],
       }),
@@ -803,7 +810,7 @@ app.post("/agents/:agentId/script/run", async (c) => {
         ...(body.projectId ? { projectId: body.projectId } : {}),
         ...(body.context ? { context: body.context } : {}),
         // Inject the platform LLM key so webhook/cron wakes (which carry none) can reason.
-        apiKey: c.env.ANTHROPIC_API_KEY,
+        apiKey: c.env.ANTHROPIC_API_KEY ?? "",
         ...(body.model ? { model: body.model } : {}),
       }),
     })
@@ -866,7 +873,7 @@ async function wakeAgentGoal(
         sessionId: `scheduled-job-${Date.now()}`,
         ...(params.projectId ? { projectId: params.projectId } : {}),
         context: { trigger: "scheduled_job" },
-        apiKey: env.ANTHROPIC_API_KEY,
+        apiKey: env.ANTHROPIC_API_KEY ?? "",
       }),
     })
   );
@@ -1189,7 +1196,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           systemPrompt: body.systemPrompt,
           tools: body.tools,
           kbContext: body.kbContext,
-          apiKey: c.env.ANTHROPIC_API_KEY,
+          apiKey: c.env.ANTHROPIC_API_KEY ?? "",
           model: body.model,
           allowedDomains: [],
         }),
@@ -1492,7 +1499,7 @@ app.post("/connectors/:platform/webhook/:spaceId", async (c) => {
         tenantId: space.tenant_id,
         sessionId: `webhook-${platform}-${Date.now()}`,
         context: { trigger: "connector_webhook", platform, event_type: normalized.event_type, payload: normalized.payload },
-        apiKey: c.env.ANTHROPIC_API_KEY,
+        apiKey: c.env.ANTHROPIC_API_KEY ?? "",
       }),
     }));
   } catch (err) {
@@ -1722,7 +1729,7 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
         // waiting for the hourly cron — this is the only call site with ANTHROPIC_API_KEY in
         // scope for the channel-ingress path, so it's threaded through the request body rather
         // than widened onto the DO's own narrower AgentDOEnv type.
-        apiKey: c.env.ANTHROPIC_API_KEY,
+        apiKey: c.env.ANTHROPIC_API_KEY ?? "",
       }),
     }));
   } catch (err) {
@@ -1910,7 +1917,7 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
           spaceId, agentId: "naelao-agent", tenantId,
           sessionId: `bootstrap-${Date.now()}`,
           context: { trigger: "bootstrap", setup_scripts: setupScripts, projects: createdProjects },
-          apiKey: c.env.ANTHROPIC_API_KEY,
+          apiKey: c.env.ANTHROPIC_API_KEY ?? "",
         }),
       }));
     } catch (err) {
@@ -2340,7 +2347,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       await stub.fetch(new Request("http://agent-do/channels/heartbeat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ spaceId: msg.spaceId, agentId: "naelao-agent", tenantId: msg.tenantId, apiKey: env.ANTHROPIC_API_KEY }),
+        body: JSON.stringify({ spaceId: msg.spaceId, agentId: "naelao-agent", tenantId: msg.tenantId, apiKey: env.ANTHROPIC_API_KEY ?? "" }),
       }));
       await stub.fetch(new Request("http://agent-do/memory/maintenance", {
         method: "POST",
@@ -2364,7 +2371,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
           spaceId: msg.spaceId, agentId: "naelao-agent", tenantId: msg.tenantId,
           sessionId: `poll-${msg.connectorName}-${Date.now()}`,
           context: { trigger: "connector_poll", platform: msg.connectorName, since },
-          apiKey: env.ANTHROPIC_API_KEY,
+          apiKey: env.ANTHROPIC_API_KEY ?? "",
         }),
       }));
       await env.AGENT_CACHE.put(kvKey, new Date().toISOString(), { expirationTtl: 60 * 60 * 24 * 30 });
