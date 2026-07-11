@@ -4151,3 +4151,46 @@ both the per-project wallet routes AND the consolidated `/wallet` view for the P
 builder still reads it (200, correct balance); a business owner still reads their OWN business's
 wallet (200); a different end user with no membership on that business still gets 403. 1712/1712
 tests pass (5 new); `pnpm turbo run typecheck` clean (75 tasks).
+
+## A1.22 channel replay hardening: freshness window on email/discord/whatsapp + skip drain on dup — BUILT
+
+**The gap:** Slack's webhook verifier (`channels.ts`) already rejects requests older than 300s
+(replay defense-in-depth on top of the primary control — the `(session, direction, external_id)`
+unique-index dedupe in `channel_messages`, `NaelaoAgentDO.ts` — and per-space secret scoping,
+which blocks cross-business replay). Email, Discord, and WhatsApp had no freshness check at all:
+a captured, validly-signed webhook for any of these three channels could be replayed indefinitely
+and would still verify.
+
+**Fix — freshness window, matching Slack's:**
+- **Email** (Mailgun-style): `x-mailgun-timestamp` now rejected if more than 300s from now, same
+  spot as the existing HMAC check.
+- **Discord**: `x-signature-timestamp` (already read for the Ed25519 message, now also checked
+  for staleness) rejected past 300s.
+- **WhatsApp**: Meta's Cloud API sends no request-level timestamp header — the only timestamp is
+  inside the message payload itself (`entry[0].changes[0].value.messages[0].timestamp`, epoch
+  seconds). New `extractWhatsAppMessageTimestamp` pulls it from the raw body; since
+  `X-Hub-Signature-256` signs the WHOLE raw body, that embedded timestamp is exactly as trustworthy
+  as a header would be — an attacker can't advance it without the app secret invalidating the HMAC.
+  A status-callback payload (delivery/read receipts — no `messages` array) has nothing to
+  freshness-check and is deliberately left to validate on signature alone, unchanged from before.
+
+**Fix — skip the redundant drain on a deduped delivery:** `handleChannelInbound`
+(`NaelaoAgentDO.ts`) unconditionally kicked an immediate `handleChannelHeartbeat` drain
+(`ctx.waitUntil`) after every inbound webhook, even when the `INSERT OR IGNORE` into
+`channel_messages` hit the existing unique index and inserted nothing (a duplicate/replayed
+`external_id`). `SqlStorageCursor.rowsWritten` (real DO SQLite property; the shared
+`tests/unit/helpers/sqlite-do-shim.ts` now returns it too, sourced from `node:sqlite`'s own
+`.run().changes`) tells us whether the row was actually new — `rowsWritten === 0` means "already
+handled," so the drain kick is skipped entirely. The response now also reports
+`duplicate: boolean` so a caller (or test) can observe which branch it took.
+
+New tests: `tests/unit/launchpad-channels.test.ts` gained stale-timestamp rejection cases for
+email/Discord/WhatsApp (mirroring the pre-existing Slack one) plus a WhatsApp status-callback
+freshness-exemption case — and two PRE-EXISTING "valid signature" assertions in that file were
+using a hardcoded year-2023 timestamp (`"1700000000"`) that this change would have turned into a
+false rejection; updated to a live timestamp so they still test what they claim to (signature
+validity, not incidentally-current freshness). New
+`tests/unit/channel-replay-dedup-drain.test.ts` (3 tests): first delivery inserts + drains;
+re-delivery of the same `external_id` is deduped AND kicks no second drain (`waitUntil` promise
+count stays at 1); a genuinely different `external_id` from the same sender still gets its own
+drain. 1719/1719 tests pass (7 new), `pnpm turbo run typecheck` clean (75 tasks).

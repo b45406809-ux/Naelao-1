@@ -2382,19 +2382,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       });
     }
 
-    // Dedupe on (session, direction, external_id) — re-delivered webhook events no-op.
-    this.ctx.storage.sql.exec(
+    // Dedupe on (session, direction, external_id) — re-delivered webhook events no-op. A
+    // replayed event (freshness window bypassed, or delivered twice within it) that hits the
+    // unique index is IGNORED, so rowsWritten is 0 — that's the "already handled" signal used
+    // below to skip kicking a second drain for a message already in the queue/answered.
+    const insertResult = this.ctx.storage.sql.exec(
       `INSERT OR IGNORE INTO channel_messages (id, session_id, direction, text, external_id, answered, created_at)
        VALUES (?, ?, 'inbound', ?, ?, 0, ?)`,
       crypto.randomUUID(), sessionId, norm.text, norm.external_id, norm.timestamp
     );
+    const isNewMessage = insertResult.rowsWritten > 0;
 
     // Kick a drain immediately rather than leaving this message for the next hourly cron
     // heartbeat — the difference between a customer getting a WhatsApp reply in seconds vs. up
     // to 60 minutes later. Best-effort: handleChannelHeartbeat has its own per-message error
     // handling and the claim/revert step above makes it safe to overlap with a concurrent cron
-    // sweep or another inbound message's own immediate drain on this same DO.
-    if (body.spaceId && body.tenantId) {
+    // sweep or another inbound message's own immediate drain on this same DO. Skipped entirely
+    // for a duplicate (isNewMessage false) — the message is already queued/answered, so a
+    // redundant heartbeat sweep would just do wasted work (or, worse, contend with an
+    // in-flight drain of the ORIGINAL delivery).
+    if (isNewMessage && body.spaceId && body.tenantId) {
       const spaceId = body.spaceId, tenantId = body.tenantId, apiKey = body.apiKey ?? "";
       this.ctx.waitUntil(
         this.handleChannelHeartbeat(new Request("http://agent-do/channels/heartbeat", {
@@ -2407,7 +2414,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       );
     }
 
-    return Response.json({ session_id: sessionId, queued: true });
+    return Response.json({ session_id: sessionId, queued: true, duplicate: !isNewMessage });
   }
 
   // Observability surface for customer-bot projects ("all you do is see what the customers

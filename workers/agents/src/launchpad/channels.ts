@@ -98,11 +98,13 @@ const emailAdapter: ChannelAdapter = {
   },
   // Mailgun-style inbound: HMAC-SHA256(timestamp + token, signing_key) — the shared scheme
   // for inbound-parse webhooks that support signing at all (most do, modeled on Mailgun's).
+  // Reject requests older than 5 minutes to block replay (same window as Slack).
   async verifySignature({ headers, secret }) {
     const timestamp = headers["x-mailgun-timestamp"] ?? headers["x-timestamp"];
     const token = headers["x-mailgun-token"] ?? headers["x-token"];
     const signature = headers["x-mailgun-signature"] ?? headers["x-signature"];
     if (!timestamp || !token || !signature || !secret) return false;
+    if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return false;
     try {
       const expected = await hmacSha256Hex(secret, `${timestamp}${token}`);
       return timingSafeEqual(expected, signature.toLowerCase());
@@ -158,11 +160,13 @@ const discordAdapter: ChannelAdapter = {
   },
   // Discord signing: Ed25519 over (timestamp + rawBody) vs X-Signature-Ed25519, verified
   // against the application's public key (hex). `secret` here IS the public key, not a
-  // shared HMAC secret — Discord's scheme is asymmetric.
+  // shared HMAC secret — Discord's scheme is asymmetric. Reject requests older than 5
+  // minutes to block replay (same window as Slack).
   async verifySignature({ rawBody, headers, secret }) {
     const signature = headers["x-signature-ed25519"];
     const timestamp = headers["x-signature-timestamp"];
     if (!signature || !timestamp || !secret) return false;
+    if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return false;
     try {
       const key = await crypto.subtle.importKey(
         "raw",
@@ -182,6 +186,26 @@ const discordAdapter: ChannelAdapter = {
     }
   },
 };
+
+// WhatsApp's Cloud API has no request-level timestamp header — the only timestamp is inside
+// the message payload itself (entry[0].changes[0].value.messages[0].timestamp, epoch seconds).
+// That field is covered by the X-Hub-Signature-256 HMAC (which signs the whole raw body), so an
+// attacker can't forge a fresher timestamp without the app secret. Returns undefined for a
+// status-callback payload (no `messages` array) — those have nothing to freshness-check and
+// stay valid on signature alone, same as before this change.
+function extractWhatsAppMessageTimestamp(rawBody: string): number | undefined {
+  try {
+    const parsed = JSON.parse(rawBody) as Record<string, unknown>;
+    const entry = (parsed["entry"] as Array<Record<string, unknown>> | undefined)?.[0];
+    const change = (entry?.["changes"] as Array<Record<string, unknown>> | undefined)?.[0];
+    const value = change?.["value"] as Record<string, unknown> | undefined;
+    const message = (value?.["messages"] as Array<Record<string, unknown>> | undefined)?.[0];
+    const ts = message ? str(message, "timestamp") : undefined;
+    return ts ? Number(ts) : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 // WhatsApp Business (Meta Cloud API) — the customer-facing business-number bot use case.
 // Inbound webhook shape: entry[0].changes[0].value.messages[0] (delivery-receipt "statuses"
@@ -209,10 +233,14 @@ const whatsappAdapter: ChannelAdapter = {
     return { messaging_product: "whatsapp", type: "text", text: { body: msg.text } };
   },
   // Meta Cloud API signing: HMAC-SHA256(rawBody, app_secret) vs X-Hub-Signature-256
-  // (prefixed "sha256="). `secret` here is the WhatsApp app's App Secret.
+  // (prefixed "sha256="). `secret` here is the WhatsApp app's App Secret. Reject a message
+  // (not a status callback — see extractWhatsAppMessageTimestamp) older than 5 minutes, using
+  // its own embedded timestamp since Meta sends no request-level one.
   async verifySignature({ rawBody, headers, secret }) {
     const header = headers["x-hub-signature-256"];
     if (!header?.startsWith("sha256=") || !secret) return false;
+    const msgTimestamp = extractWhatsAppMessageTimestamp(rawBody);
+    if (msgTimestamp !== undefined && Math.abs(Date.now() / 1000 - msgTimestamp) > 300) return false;
     try {
       const expected = `sha256=${await hmacSha256Hex(secret, rawBody)}`;
       return timingSafeEqual(expected, header);

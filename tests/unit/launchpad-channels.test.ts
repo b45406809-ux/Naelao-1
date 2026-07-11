@@ -158,7 +158,7 @@ describe("channel adapters — inbound signature verification", () => {
 
   it("email: valid Mailgun-style HMAC(timestamp+token) passes, wrong secret fails", async () => {
     const secret = "mailgun-key";
-    const timestamp = "1700000000";
+    const timestamp = String(Math.floor(Date.now() / 1000));
     const token = "tok123";
     const signature = await hmacSha256Hex(secret, `${timestamp}${token}`);
     const adapter = getAdapter("email")!;
@@ -178,6 +178,39 @@ describe("channel adapters — inbound signature verification", () => {
     expect(wrong).toBe(false);
   });
 
+  it("email: rejects a replayed (stale) timestamp even with a correct signature", async () => {
+    const secret = "mailgun-key";
+    const staleTimestamp = String(Math.floor(Date.now() / 1000) - 600); // 10 minutes old
+    const token = "tok123";
+    const signature = await hmacSha256Hex(secret, `${staleTimestamp}${token}`);
+    const ok = await getAdapter("email")!.verifySignature({
+      rawBody: "from=a@b.com&text=hi",
+      headers: { "x-mailgun-timestamp": staleTimestamp, "x-mailgun-token": token, "x-mailgun-signature": signature },
+      secret,
+    });
+    expect(ok).toBe(false);
+  });
+
+  it("Discord: rejects a replayed (stale) timestamp even with a correct signature", async () => {
+    const keyPair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+    const publicKeyBytes = new Uint8Array(await crypto.subtle.exportKey("raw", keyPair.publicKey));
+    const publicKeyHex = [...publicKeyBytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+    const rawBody = JSON.stringify({ type: 1 });
+    const staleTimestamp = String(Math.floor(Date.now() / 1000) - 600); // 10 minutes old
+    const sigBytes = new Uint8Array(
+      await crypto.subtle.sign("Ed25519", keyPair.privateKey, new TextEncoder().encode(staleTimestamp + rawBody))
+    );
+    const signatureHex = [...sigBytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+    const ok = await getAdapter("discord")!.verifySignature({
+      rawBody,
+      headers: { "x-signature-ed25519": signatureHex, "x-signature-timestamp": staleTimestamp },
+      secret: publicKeyHex,
+    });
+    expect(ok).toBe(false);
+  });
+
   it("WhatsApp (Meta Cloud API): valid HMAC-SHA256(rawBody, app_secret) passes, tampered body fails", async () => {
     const secret = "meta-app-secret";
     const rawBody = JSON.stringify({ entry: [] });
@@ -189,6 +222,25 @@ describe("channel adapters — inbound signature verification", () => {
 
     const tampered = await adapter.verifySignature({ rawBody: rawBody + "x", headers: { "x-hub-signature-256": header }, secret });
     expect(tampered).toBe(false);
+  });
+
+  it("WhatsApp: rejects a replayed message with a stale embedded timestamp even with a correct signature", async () => {
+    const secret = "meta-app-secret";
+    const staleTimestamp = String(Math.floor(Date.now() / 1000) - 600); // 10 minutes old
+    const rawBody = JSON.stringify({
+      entry: [{ changes: [{ value: { messages: [{ from: "165", id: "wamid.replay", timestamp: staleTimestamp, text: { body: "hi" } }] } }] }],
+    });
+    const header = `sha256=${await hmacSha256Hex(secret, rawBody)}`;
+    const ok = await getAdapter("whatsapp")!.verifySignature({ rawBody, headers: { "x-hub-signature-256": header }, secret });
+    expect(ok).toBe(false);
+  });
+
+  it("WhatsApp: a status-callback payload (no messages array) is unaffected by the freshness check", async () => {
+    const secret = "meta-app-secret";
+    const rawBody = JSON.stringify({ entry: [{ changes: [{ value: { statuses: [{ id: "wamid.X", status: "delivered" }] } }] }] });
+    const header = `sha256=${await hmacSha256Hex(secret, rawBody)}`;
+    const ok = await getAdapter("whatsapp")!.verifySignature({ rawBody, headers: { "x-hub-signature-256": header }, secret });
+    expect(ok).toBe(true);
   });
 
   it("every channel fails closed when headers/secret are missing entirely", async () => {

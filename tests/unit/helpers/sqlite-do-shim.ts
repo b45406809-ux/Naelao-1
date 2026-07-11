@@ -16,7 +16,7 @@ import { createRequire } from "node:module";
 const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 
 export interface DOSqlStorage {
-  exec<T = unknown>(query: string, ...params: unknown[]): { toArray(): T[] };
+  exec<T = unknown>(query: string, ...params: unknown[]): { toArray(): T[]; rowsWritten: number };
 }
 
 export function createDOSqlStorage(): DOSqlStorage {
@@ -31,7 +31,7 @@ export function createDOSqlStorage(): DOSqlStorage {
       // case into the DDL path (db.exec() executes but discards results), silently returning
       // empty rows for any param-less SELECT.
       if (/^select/i.test(trimmed)) {
-        return { toArray: () => db.prepare(trimmed).all(...(params as never[])) as never[] };
+        return { toArray: () => db.prepare(trimmed).all(...(params as never[])) as never[], rowsWritten: 0 };
       }
       if (params.length === 0) {
         // Multi-statement DDL/transaction control (BEGIN/COMMIT/CREATE TABLE; ...; ALTER ...),
@@ -43,11 +43,11 @@ export function createDOSqlStorage(): DOSqlStorage {
         // single-connection in-memory test database anyway — strip them.
         const stripped = trimmed.replace(/PRAGMA\s+(journal_mode|synchronous)\s*=\s*\w+\s*;?/gi, "");
         db.exec(stripped);
-        return { toArray: () => [] };
+        return { toArray: () => [], rowsWritten: 0 };
       }
       const stmt = db.prepare(trimmed);
-      stmt.run(...(params as never[]));
-      return { toArray: () => [] };
+      const result = stmt.run(...(params as never[]));
+      return { toArray: () => [], rowsWritten: Number(result.changes ?? 0) };
     },
   };
 }
