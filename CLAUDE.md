@@ -1220,6 +1220,47 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       account API session limit; the hops above are what was verified by hand. A follow-up should
       finish the wizard→domain→pricing UI trace and the signup→verify→SSE-stream frontend trace.
 
+45. **VENDOR CUTOVER — Lemon Squeezy is the ONLY billing provider, and the LLM path runs entirely
+    through the Cloudflare AI Gateway (no per-worker Anthropic key).** Two independent subsystem
+    cutovers, both BUILT and fully tested, plus a grounded secrets reference (`docs/DEPLOYMENT_SECRETS.md`).
+    - **Billing → Lemon Squeezy only (Stripe removed).** The builder's own platform-plan surface
+      (`/billing/checkout` + `/billing/portal`) was the last Stripe-backed path; it now runs
+      through the same Naelao LS store as every other money path (new
+      `LEMON_SQUEEZY_GROWTH/BUSINESS_VARIANT_ID`, provision-once in the LS dashboard; dev-placeholder
+      degradation matching `/internal/commerce/checkout`). `/webhooks/stripe` and `stripe.ts`
+      deleted; `validateEnv` dropped the four `STRIPE_*` requirements (PLATFORM_SECRET is the real
+      dependency); Terraform's `stripe_api_key` → `lemon_squeezy_api_key`. New `kind="platform_plan"`
+      LS webhook branch (`recordPlatformPlanSubscription`) — an ORG-level event handled before the
+      space-dispatch machinery, own exactly-once gate + retry-release. **Fixed a real pre-existing
+      entitlement bug in the process:** the old Stripe webhook only wrote `subscriptions.plan_tier`,
+      but `EntitlementsChecker.getTenantTier` enforces from `orgs.plan_tier` — a paid upgrade never
+      actually unlocked free-tier template gates or quotas; the new handler writes both + invalidates
+      the quota KV cache. **Second real gap found:** LS's `subscription_expired` event was unmapped
+      in billing-core's `EVENT_MAP` (parseWebhookEvent threw → webhook 200-skipped it), so ANY
+      expired subscription silently kept its paid tier forever; added `subscription.expired` through
+      the event union / EVENT_MAP / mapSubscriptionStatus / GOAL_MAP. Migration 0062 adds
+      `subscriptions.ls_customer_id/ls_subscription_id` (stripe_* columns stay — D1 has no cheap DROP
+      COLUMN; nothing writes them). New `platform-plan-billing.test.ts` (10 tests, real migrations).
+    - **LLM → Cloudflare AI Gateway with gateway-held provider key (no `ANTHROPIC_API_KEY` on any
+      worker).** The gateway can hold the Anthropic key itself (Authenticated Gateway / BYOK): the
+      worker authenticates with a `cf-aig-authorization` token (`NAELAO_AIG_TOKEN`) and the gateway
+      injects the real key. BOTH LLM paths updated: the `GatewayReasoner`/Universal Endpoint
+      (`shared/ai-client.ts` — `GatewayOpts.aigToken`, new `universalGatewayHeaders()` puts the token
+      on the request header not the body, `buildProviderEntry` OMITS the per-provider auth header
+      when the key is empty so the gateway's stored key isn't blanked, new `canAuthenticateLlm()` →
+      honest `give_up`) AND `callLlm`/`streamLlm` in `@naelao/llm-gateway` (which were hitting
+      `api.anthropic.com` DIRECTLY, bypassing the gateway — now route through the gateway's anthropic
+      provider endpoint via `resolveAnthropicEndpoint`, carry the token, omit `x-api-key` when empty,
+      throw `no_llm_credentials` when neither key nor token is set). `ANTHROPIC_API_KEY` is now
+      optional in `AgentsEnv`/`AgentDOEnv` and dropped from `validateEnv`; NaelaoAgentDO threads
+      `NAELAO_AIG_TOKEN` into both reasoner sites + the ReAct `callLlm` path via a new
+      `aiGatewayConfig()` helper. New `ai-gateway-stored-keys.test.ts` (14 tests). 1693/1693 tests
+      pass (24 new across both cutovers), `pnpm turbo run typecheck` clean (75 tasks). **Not done:**
+      real deployment must (a) create the LS subscription variants + point the LS webhook at
+      `/v1/webhooks/lemon-squeezy`, and (b) store the Anthropic key in the CF AI Gateway + set
+      `NAELAO_AIG_TOKEN` — the code degrades honestly (dev placeholder / `no_llm_credentials`) until
+      then. `docs/DEPLOYMENT_SECRETS.md` has the full per-worker key/secret inventory.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
@@ -1238,8 +1279,12 @@ appendixes are authoritative** and override the early framing. Always confirm ag
 - CF Workflows (provisioning, erasure, ingestion, billing, dunning)
 - CF Analytics Engine (events, metrics — append-only, 25M rows/day limit)
 - D1 (platform metadata, billing, users — single instance today; sharding a named future milestone)
-- LLM: Anthropic Claude (primary) with fallback chain
-- Stripe (billing + Connect + Meters)
+- LLM: Cloudflare AI Gateway is the LLM path — the gateway HOLDS the Anthropic provider key
+  (Authenticated Gateway / BYOK via `NAELAO_AIG_TOKEN`), so no `ANTHROPIC_API_KEY` lives on any
+  worker (item 45). Claude is primary with a gateway-driven fallback chain.
+- Lemon Squeezy is the ONLY billing provider (Stripe removed — item 45). Builder platform plans,
+  product/seat/credit-pack/business-subscription checkouts, and every money-in webhook run through
+  one Naelao LS store.
 - Next.js on CF Pages (builder dashboard)
 
 ## DO SQLite Pattern — CRITICAL

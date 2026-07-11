@@ -29,23 +29,34 @@ that worker's directory. For local dev, create `workers/<name>/.dev.vars` (gitig
 | `WEBHOOK_SIGNING_SECRET` | notifications | Signs outbound webhook deliveries. Hard-required. |
 | `ADMIN_SECRET` | admin | Gates the internal admin surface. Hard-required. |
 
+> **Vendor model (this deployment):** Billing is **Lemon Squeezy only** (Stripe removed). LLM
+> inference goes through the **Cloudflare AI Gateway**, which holds the Anthropic key itself —
+> so **no `ANTHROPIC_API_KEY` on any worker**. Both are reflected below.
+
 ## Tier 1 — Third-party keys the product cannot run without
 
 | Key | Worker(s) | Where to get it |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | agents (hard-required) | [console.anthropic.com](https://console.anthropic.com) → API Keys. The reasoning loop's brain — nothing agentic works without it. |
-| Cloudflare account: `CF_ACCOUNT_ID` + `CF_API_TOKEN` | deploy-time (wrangler/Terraform/CI), analytics, spaces, agents | [dash.cloudflare.com](https://dash.cloudflare.com) → account ID is in the URL/sidebar; token at My Profile → API Tokens. Deploy token needs Workers/D1/KV/R2/Queues/Vectorize/Pages edit. Two additional scoped uses below. |
-| `LEMON_SQUEEZY_API_KEY`, `LEMON_SQUEEZY_STORE_ID`, `LEMON_SQUEEZY_WEBHOOK_SECRET` | billing | [app.lemonsqueezy.com](https://app.lemonsqueezy.com) → Settings → API (key), Settings → Stores (ID), Settings → Webhooks (create one pointing at `https://<router>/v1/webhooks/lemon-squeezy`, copy its signing secret). PRIMARY commerce rail: product/seat/credit-pack/business-subscription checkouts and all money-in webhooks. |
-| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_GROWTH_PRICE_ID`, `STRIPE_BUSINESS_PRICE_ID` | billing (ALL FOUR hard-required by `validateEnv`) | [dashboard.stripe.com](https://dashboard.stripe.com) → Developers → API keys; Developers → Webhooks (endpoint → signing secret); create two recurring Prices (Growth + Business plans) and copy their `price_...` IDs. This is the BUILDER's own platform-plan upgrade rail (`POST /billing/checkout`) — distinct from Lemon Squeezy, which handles the builders' end-user commerce. The worker won't boot without these. |
+| Cloudflare account: `CF_ACCOUNT_ID` + `CF_API_TOKEN` | deploy-time (wrangler/Terraform/CI), analytics, spaces, agents | [dash.cloudflare.com](https://dash.cloudflare.com) → account ID is in the URL/sidebar; token at My Profile → API Tokens. Deploy token needs Workers/D1/KV/R2/Queues/Vectorize/Pages edit. Additional scoped uses below. |
+| **CF AI Gateway** — `NAELAO_ACCOUNT_ID`, `NAELAO_GATEWAY_ID`, `NAELAO_AIG_TOKEN` | agents | CF dashboard → AI → AI Gateway → create a gateway (e.g. `naelao-gateway`). In the gateway settings, **store your Anthropic key** (BYOK / provider keys) and **enable Authentication**; copy the gateway token. Then: `wrangler secret put NAELAO_ACCOUNT_ID`, `NAELAO_GATEWAY_ID`, `NAELAO_AIG_TOKEN`. This is the LLM brain — the gateway injects the provider key, so the worker never holds `ANTHROPIC_API_KEY`. Get the Anthropic key at [console.anthropic.com](https://console.anthropic.com) and paste it into the gateway, not into a worker secret. |
+| `LEMON_SQUEEZY_API_KEY`, `LEMON_SQUEEZY_STORE_ID`, `LEMON_SQUEEZY_WEBHOOK_SECRET`, `LEMON_SQUEEZY_GROWTH_VARIANT_ID`, `LEMON_SQUEEZY_BUSINESS_VARIANT_ID` | billing | [app.lemonsqueezy.com](https://app.lemonsqueezy.com) → Settings → API (key), Settings → Stores (ID), Settings → Webhooks (create one pointing at `https://<router>/v1/webhooks/lemon-squeezy`, copy its signing secret). Create two **subscription** products for the builder Growth + Business plans and copy their variant IDs. The ONLY billing provider: builder platform plans AND product/seat/credit-pack/business-subscription checkouts and all money-in webhooks. |
 | `RESEND_API_KEY` (+ `RESEND_API_URL` = `https://api.resend.com`) | notifications (hard-required) | [resend.com](https://resend.com) → API Keys. Also verify your sending domain there (DNS records). Powers email verification, password resets, approval-request emails, agent notifications — signup is functionally broken without it (credits are only granted on email verification). |
 | `TOGETHER_API_KEY` (+ `TOGETHER_API_URL` = `https://api.together.xyz`) | together-ai (hard-required) | [api.together.ai](https://api.together.ai) → Settings → API Keys. Open-model inference the `together-ai` prebuilt exposes to agents. |
+
+> **No `ANTHROPIC_API_KEY` worker secret.** The agents worker's `validateEnv` no longer requires
+> it; the CF AI Gateway holds it. You *may* still set `ANTHROPIC_API_KEY` on the agents worker as
+> a fallback for when the gateway isn't configured, but the intended production path is the gateway
+> token. If neither the gateway token nor a key is set, LLM calls fail honestly (`no_llm_credentials`).
+
+> **No Stripe.** `validateEnv` on the billing worker requires only `PLATFORM_SECRET`. The four
+> `STRIPE_*` secrets are gone; `/webhooks/stripe` is removed.
 
 ## Tier 2 — Cloudflare-side setup (same account, extra provisioning)
 
 | Item | Worker | How |
 |---|---|---|
 | `CF_SAAS_ZONE_ID` + a **zone-scoped** `CF_API_TOKEN` (SSL and Certificates: Edit) | spaces | CF dashboard → the naelao.com zone → Overview (zone ID); create a second, narrower token for CF-for-SaaS. Powers builder custom domains (`createCustomHostname` + DCV). Degrades honestly if absent — domains just can't be connected. |
-| `NAELAO_ACCOUNT_ID` + `NAELAO_GATEWAY_ID` | agents | CF dashboard → AI → AI Gateway → create a gateway named `naelao-gateway`. Set the account ID via `wrangler secret put NAELAO_ACCOUNT_ID --env <env>` (defaults to `"placeholder"` = direct-Anthropic fallback, which works but loses gateway caching/retries/analytics). |
+| `CF_API_TOKEN` (agents, optional) | agents | Enables the AI Gateway Universal Endpoint's Workers AI *fallback* provider (cross-provider failover). Not needed for the primary Anthropic path. |
 | `CF_ANALYTICS_API_TOKEN` | analytics | CF API token with Account Analytics: Read — lets the analytics worker query Analytics Engine's SQL API. |
 | `CF_PAGES_TOKEN` (CI secret) | GitHub Actions | CF token with Pages: Edit. CI also needs `CF_ACCOUNT_ID` + `CF_API_TOKEN` as GitHub repo secrets (Settings → Secrets → Actions) — the only three CI secrets the workflows reference. |
 | D1/KV/R2/Queues/Vectorize resources | all | Provisioned by `infra/terraform` (`terraform.tfvars` from the example file) or manually; wrangler.tomls reference them by binding. |
@@ -90,12 +101,14 @@ flows. Never platform secrets:
 1. Generate the five Tier-0 secrets; set `PLATFORM_SECRET` identically on every worker.
 2. Cloudflare: account + deploy token; run Terraform (or create D1/KV/R2/Queues/Vectorize by
    hand); apply D1 migrations `infra/migrations/0001..`.
-3. `ANTHROPIC_API_KEY` on agents.
-4. Stripe: key + webhook + 2 price IDs on billing (worker won't boot without them).
-5. Lemon Squeezy: key + store + webhook on billing.
-6. Resend: key + verified domain on notifications.
-7. `TOGETHER_API_KEY` on together-ai.
-8. Deploy all workers (`--env production` — check secrets are set PER environment), deploy
-   Pages apps with `NEXT_PUBLIC_API_URL` including `/v1`.
-9. Optional but recommended before real traffic: `TAVILY_API_KEY` (agents advertise web
-   search), CF-for-SaaS zone token (custom domains), AI Gateway IDs.
+3. CF AI Gateway: create the gateway, store your Anthropic key in it, enable Authentication, and
+   set `NAELAO_ACCOUNT_ID` / `NAELAO_GATEWAY_ID` / `NAELAO_AIG_TOKEN` on agents. (No
+   `ANTHROPIC_API_KEY` worker secret.)
+4. Lemon Squeezy: key + store + webhook + the two plan variant IDs on billing (the ONLY billing
+   provider — no Stripe).
+5. Resend: key + verified domain on notifications.
+6. `TOGETHER_API_KEY` on together-ai.
+7. Deploy all workers (`--env production` — secrets are set PER environment), deploy Pages apps
+   with `NEXT_PUBLIC_API_URL` including `/v1`.
+8. Optional but recommended before real traffic: `TAVILY_API_KEY` (agents advertise web search),
+   CF-for-SaaS zone token (custom domains).
