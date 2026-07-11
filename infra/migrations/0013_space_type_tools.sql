@@ -11,4 +11,4 @@ CREATE TABLE IF NOT EXISTS space_type_tools (
 
 CREATE INDEX IF NOT EXISTS idx_stt_space_type ON space_type_tools (space_type_id, enabled);
 CREATE INDEX IF NOT EXISTS idx_stt_tenant ON space_type_tools (tenant_id);
-UNIQUE INDEX IF NOT EXISTS idx_stt_unique ON space_type_tools (space_type_id, tool_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_stt_unique ON space_type_tools (space_type_id, tool_id);
