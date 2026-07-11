@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
+import { mintInternalToken } from "@naelao/http";
 
 // POST /spaces/:spaceId/projects/from-template generalized beyond customer_bot: any catalogue
 // entry (workspace-kind included) can be stamped onto a new project in one call — the project
@@ -44,10 +45,17 @@ function makeEnv() {
   return { env, projectCalls };
 }
 
-function req(templateId: string): Request {
+// Go-live audit F1: /projects/from-template now requires the signed x-naelao-internal-token
+// naelao-router's proxyTo mints for every real request (this worker has no workers_dev=false
+// backstop, so a bare spoofed x-naelao-tenant-id can no longer be trusted).
+async function req(templateId: string): Promise<Request> {
   return new Request(`https://agents.naelao.com/spaces/${SPACE_ID}/projects/from-template`, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-naelao-tenant-id": TENANT_ID },
+    headers: {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": TENANT_ID,
+      "x-naelao-internal-token": await mintInternalToken(SECRET, TENANT_ID),
+    },
     body: JSON.stringify({ template_id: templateId }),
   });
 }
@@ -55,7 +63,7 @@ function req(templateId: string): Request {
 describe("POST /spaces/:spaceId/projects/from-template — generalized beyond customer_bot", () => {
   it("applies a customer_bot template: kind, channel_config, rules — no scheduled jobs", async () => {
     const { env, projectCalls } = makeEnv();
-    const res = await app.fetch(req("whatsapp-support-bot"), env);
+    const res = await app.fetch(await req("whatsapp-support-bot"), env);
     expect(res.status).toBe(201);
     const body = await res.json() as { kind: string; suggested_channel: string; next_step: string };
     expect(body.kind).toBe("customer_bot");
@@ -75,7 +83,7 @@ describe("POST /spaces/:spaceId/projects/from-template — generalized beyond cu
 
   it("applies a workspace-kind template: agent binding at creation, no channel_config, seeds a scheduled job", async () => {
     const { env, projectCalls } = makeEnv();
-    const res = await app.fetch(req("community-member-monitoring"), env);
+    const res = await app.fetch(await req("community-member-monitoring"), env);
     expect(res.status).toBe(201);
     const body = await res.json() as { kind: string; suggested_channel?: string; next_step?: string };
     expect(body.kind).toBe("workspace");
@@ -100,7 +108,7 @@ describe("POST /spaces/:spaceId/projects/from-template — generalized beyond cu
 
   it("404s for an unknown template id", async () => {
     const { env } = makeEnv();
-    const res = await app.fetch(req("does-not-exist"), env);
+    const res = await app.fetch(await req("does-not-exist"), env);
     expect(res.status).toBe(404);
   });
 });

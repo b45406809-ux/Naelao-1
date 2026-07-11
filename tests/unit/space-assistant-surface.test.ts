@@ -66,8 +66,18 @@ function makeEnv(opts: { spacesOk: boolean; withR2?: boolean }): AgentsEnv & { _
   } as unknown as AgentsEnv & { __calls: string[] };
 }
 
-function req(path: string, headers: Record<string, string>): Request {
-  return new Request(`https://agents.naelao.com${path}`, { headers });
+// Go-live audit F1: these routes now require the same signed x-naelao-internal-token /agent/run
+// has always required (this worker has no workers_dev=false backstop, so a bare spoofed
+// x-naelao-tenant-id can no longer be trusted). naelao-router's proxyTo mints exactly this token
+// for every real request; the test mirrors that by minting one for the caller's tenant whenever a
+// tenant header is present (a tokenless caller still gets 401, as the "no tenant identity" case
+// asserts).
+async function req(path: string, headers: Record<string, string>): Promise<Request> {
+  const tenantId = headers["x-naelao-tenant-id"];
+  const withToken = tenantId
+    ? { ...headers, "x-naelao-internal-token": await mintInternalToken(SECRET, tenantId) }
+    : headers;
+  return new Request(`https://agents.naelao.com${path}`, { headers: withToken });
 }
 
 describe("WS-2 — Space Assistant surface routes require business membership for product_end_user", () => {
@@ -81,32 +91,32 @@ describe("WS-2 — Space Assistant surface routes require business membership fo
   for (const path of ROUTES) {
     it(`${path}: denies a product_end_user who isn't a member`, async () => {
       const env = makeEnv({ spacesOk: false, withR2: true });
-      const res = await app.fetch(req(path, { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-1" }), env);
+      const res = await app.fetch(await req(path, { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-1" }), env);
       expect(res.status).toBe(403);
     });
 
     it(`${path}: allows a product_end_user who IS a member`, async () => {
       const env = makeEnv({ spacesOk: true, withR2: true });
-      const res = await app.fetch(req(path, { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-1" }), env);
+      const res = await app.fetch(await req(path, { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-1" }), env);
       expect(res.status).toBe(200);
     });
 
     it(`${path}: allows a builder JWT role without any business-role check`, async () => {
       const env = makeEnv({ spacesOk: false, withR2: true }); // spacesOk:false proves the check is skipped
-      const res = await app.fetch(req(path, { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner", "x-naelao-user-id": "owner-1" }), env);
+      const res = await app.fetch(await req(path, { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner", "x-naelao-user-id": "owner-1" }), env);
       expect(res.status).toBe(200);
     });
   }
 
   it("rejects any caller with no tenant identity at all", async () => {
     const env = makeEnv({ spacesOk: true, withR2: true });
-    const res = await app.fetch(req("/spaces/space1/assistant/memory", {}), env);
+    const res = await app.fetch(await req("/spaces/space1/assistant/memory", {}), env);
     expect(res.status).toBe(401);
   });
 
   it("files panel lists real R2 objects, hiding the .keep placeholder", async () => {
     const env = makeEnv({ spacesOk: true, withR2: true });
-    const res = await app.fetch(req("/spaces/space1/assistant/files", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner" }), env);
+    const res = await app.fetch(await req("/spaces/space1/assistant/files", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner" }), env);
     const body = await res.json() as { data: Array<{ path: string }>; count: number };
     expect(body.count).toBe(1);
     expect(body.data[0]!.path).toBe("notes.txt");
@@ -114,20 +124,20 @@ describe("WS-2 — Space Assistant surface routes require business membership fo
 
   it("files panel degrades honestly (503) when SCRIPTS_R2 isn't bound", async () => {
     const env = makeEnv({ spacesOk: true, withR2: false });
-    const res = await app.fetch(req("/spaces/space1/assistant/files", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner" }), env);
+    const res = await app.fetch(await req("/spaces/space1/assistant/files", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner" }), env);
     expect(res.status).toBe(503);
   });
 
   it("channels panel reads real channel_links rows", async () => {
     const env = makeEnv({ spacesOk: true });
-    const res = await app.fetch(req("/spaces/space1/assistant/channels", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner" }), env);
+    const res = await app.fetch(await req("/spaces/space1/assistant/channels", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner" }), env);
     const body = await res.json() as { data: Array<{ channel: string; enabled: number }> };
     expect(body.data[0]).toMatchObject({ channel: "slack", enabled: 1 });
   });
 
   it("sub-agents panel forwards parent_run_id to the agent DO", async () => {
     const env = makeEnv({ spacesOk: true });
-    await app.fetch(req("/spaces/space1/assistant/sub-agents?parent_run_id=run-42", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner" }), env);
+    await app.fetch(await req("/spaces/space1/assistant/sub-agents?parent_run_id=run-42", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner" }), env);
     expect(env.__calls.some((c) => c.includes("parent_run_id=run-42"))).toBe(true);
   });
 });

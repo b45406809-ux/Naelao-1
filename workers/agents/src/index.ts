@@ -137,6 +137,29 @@ function getCallerIdentity(c: {
   };
 }
 
+// Go-live audit F1: this worker has NO workers_dev=false backstop (the channel gateway needs
+// public ingress), so x-naelao-tenant-id is only trustworthy AFTER naelao-router verified a
+// JWT/session and proxyTo minted the matching x-naelao-internal-token. `/agent/run` has verified
+// that token since S0.2 (see its own comment) — but a batch of routes added in later phases
+// (Phase Q's runs/tasks polling, the connectors/channels/skills/assistant/bootstrap surfaces)
+// only called getCallerIdentity and stopped, so a direct caller at the workers.dev URL could
+// spoof any tenant and read/write cross-tenant state or run the LLM-spending loop for free. This
+// helper is the same three-line check /agent/run uses, factored out so every getCallerIdentity
+// route can share it: returns the VERIFIED tenantId (proven by the signed token to be the caller's
+// own) or throws. Every legitimate router-proxied request already carries this token, so adding
+// the check costs real traffic nothing.
+async function requireVerifiedTenant(c: {
+  req: { header: (h: string) => string | undefined };
+  env: { PLATFORM_SECRET: string };
+}): Promise<string> {
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!tenantId) throw unauthorized("Missing tenant identity");
+  if (!(await verifyInternalToken(c.req.header("x-naelao-internal-token"), tenantId, c.env.PLATFORM_SECRET))) {
+    throw unauthorized("Missing or invalid internal token");
+  }
+  return tenantId;
+}
+
 
 // Get DO stub for agent session.
 // G-BA01: cross-tenant isolation comes from getDOName itself — the name is
@@ -961,8 +984,7 @@ async function fetchRunOrTaskStatus(
 app.get(
   "/spaces/:spaceId/sessions/:sessionId/agent/runs/:runId",
   async (c) => {
-    const { tenantId } = getCallerIdentity(c);
-    if (!tenantId) throw unauthorized("Missing tenant identity");
+    const tenantId = await requireVerifiedTenant(c);
 
     const spaceId = c.req.param("spaceId");
     const sessionId = c.req.param("sessionId");
@@ -987,8 +1009,7 @@ app.get(
 app.post(
   "/spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/cancel",
   async (c) => {
-    const { tenantId } = getCallerIdentity(c);
-    if (!tenantId) throw unauthorized("Missing tenant identity");
+    const tenantId = await requireVerifiedTenant(c);
 
     const spaceId = c.req.param("spaceId");
     const sessionId = c.req.param("sessionId");
@@ -1019,8 +1040,7 @@ app.post(
 app.get(
   "/spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/stream",
   async (c) => {
-    const { tenantId } = getCallerIdentity(c);
-    if (!tenantId) throw unauthorized("Missing tenant identity");
+    const tenantId = await requireVerifiedTenant(c);
 
     const spaceId = c.req.param("spaceId");
     const sessionId = c.req.param("sessionId");
@@ -1099,8 +1119,7 @@ app.get(
 // POST /internal/tasks/:taskId/run        — internal: invoked by AgentTaskWorkflow
 
 app.get("/spaces/:spaceId/tasks", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId");
 
   const space = await c.env.PLATFORM_DB.prepare(
@@ -1113,8 +1132,7 @@ app.get("/spaces/:spaceId/tasks", async (c) => {
 });
 
 app.get("/spaces/:spaceId/tasks/:taskId", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId");
   const taskId = c.req.param("taskId");
 
@@ -1128,9 +1146,20 @@ app.get("/spaces/:spaceId/tasks/:taskId", async (c) => {
   return stub.fetch(`http://task-do/tasks/${taskId}?timeout=${timeout}`);
 });
 
-// Internal route: AgentTaskWorkflow calls this to execute the agent synchronously
+// Internal route: AgentTaskWorkflow calls this to execute the agent synchronously.
+// Go-live audit F1: this route had NO auth of any kind — it took tenantId/spaceId/goal straight
+// from the body and ran the full reasoning loop against the platform's ANTHROPIC_API_KEY, so a
+// direct caller at the workers.dev URL got a free, unattributed, unrate-limited LLM oracle for
+// any spoofed tenant. Now HMAC-gated exactly like /internal/triggers/fire + /internal/scripts/
+// run-durable (verified token whose tenant must match the body's tenantId); AgentTaskWorkflow
+// mints this token (its env carries PLATFORM_SECRET — see AgentTaskWorkflow.ts).
 app.post("/internal/tasks/:taskId/run", async (c) => {
   const taskId = c.req.param("taskId");
+  const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const validToken = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
+  if (!headerTenantId || !validToken) {
+    return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  }
   const body = await c.req.json<{
     taskId: string;
     spaceId: string;
@@ -1142,6 +1171,9 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
     kbContext: string;
     model: string;
   }>();
+  if (body.tenantId !== headerTenantId) {
+    return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
+  }
 
   try {
     const stub = await getAgentDO(c.env, body.tenantId, body.sessionId);
@@ -1282,8 +1314,7 @@ app.get("/connectors", async (c) => {
 // GET /connectors/status?space_id= — catalogue annotated with which are already connected
 // for the space (i.e. registered as an MCP server in the hub).
 app.get("/connectors/status", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.query("space_id") ?? "";
   if (!spaceId) throw badRequest("space_id is required");
 
@@ -1320,8 +1351,8 @@ app.get("/connectors/status", async (c) => {
 // key is stored under the connector's credential_name; the hub resolves it at call time, so the
 // agent never sees it. Idempotent: an existing server with the same name is reused.
 app.post("/connectors/:platform/connect", async (c) => {
-  const { tenantId, userId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
+  const { userId } = getCallerIdentity(c);
   const platform = c.req.param("platform");
   const connector = getConnector(platform);
   if (!connector) throw notFound("Connector");
@@ -1484,8 +1515,7 @@ const CHANNEL_SECRET_CREDENTIAL: Record<string, string> = {
 // /connectors/:platform/connect. The builder gets the webhook URL back to paste into the
 // provider's console: https://<router>/v1/channels/:channel/inbound/:spaceId.
 app.post("/channels/:channel/connect", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
   const channel = c.req.param("channel");
   if (!isChannelType(channel)) throw notFound("Channel");
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
@@ -1548,8 +1578,7 @@ app.get("/project-templates", (c) => {
 // sets up the Naelao-side config.
 app.post("/spaces/:spaceId/projects/from-template", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
 
   type FromTemplateBody = { template_id: string; name?: string };
   const body = await c.req.json<FromTemplateBody>().catch(() => ({ template_id: "" }) as FromTemplateBody);
@@ -1707,16 +1736,14 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
 // in). Proxies straight to the space's agent DO.
 app.get("/spaces/:spaceId/channels/sessions", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
   return stub.fetch(new Request("http://agent-do/channels/sessions"));
 });
 
 app.get("/spaces/:spaceId/channels/unanswered", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
   return stub.fetch(new Request("http://agent-do/channels/unanswered"));
 });
@@ -1748,8 +1775,7 @@ async function requireEndUserBusinessMembership(c: { env: AgentsEnv; req: { head
 // (agentId naelao-agent, no projectId — the same identity every dispatcher hardcodes).
 app.get("/spaces/:spaceId/assistant/memory", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
   if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
   const category = c.req.query("category");
@@ -1761,8 +1787,7 @@ app.get("/spaces/:spaceId/assistant/memory", async (c) => {
 // the credentials vault.
 app.get("/spaces/:spaceId/assistant/channels", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  await requireVerifiedTenant(c);
   if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
   const { results } = await c.env.PLATFORM_DB.prepare(
     "SELECT channel, enabled, created_at FROM channel_links WHERE space_id = ? ORDER BY channel"
@@ -1774,8 +1799,7 @@ app.get("/spaces/:spaceId/assistant/channels", async (c) => {
 // (the Sub-agents panel's "live" list). Forwards to NaelaoAgentDO's existing GET /sub-agents.
 app.get("/spaces/:spaceId/assistant/sub-agents", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
   if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
   const parentRunId = c.req.query("parent_run_id") ?? "";
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
@@ -1787,8 +1811,7 @@ app.get("/spaces/:spaceId/assistant/sub-agents", async (c) => {
 // Assistant has no projectId). Read-only: names + sizes, never file contents.
 app.get("/spaces/:spaceId/assistant/files", async (c) => {
   const spaceId = c.req.param("spaceId");
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  await requireVerifiedTenant(c);
   if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
   const prefix = `spaces/${spaceId}/workspace/`;
@@ -1803,16 +1826,14 @@ app.get("/spaces/:spaceId/assistant/files", async (c) => {
 // toggle. A customer can also trigger takeover via a project_rule ("talk to a human").
 app.post("/spaces/:spaceId/channels/sessions/:sessionId/resume", async (c) => {
   const { spaceId, sessionId } = c.req.param();
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
   return stub.fetch(new Request(`http://agent-do/channels/sessions/${encodeURIComponent(sessionId)}/resume`, { method: "POST" }));
 });
 
 app.post("/spaces/:spaceId/channels/sessions/:sessionId/takeover", async (c) => {
   const { spaceId, sessionId } = c.req.param();
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
   const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
   return stub.fetch(new Request(`http://agent-do/channels/sessions/${encodeURIComponent(sessionId)}/takeover`, { method: "POST" }));
 });
@@ -1825,8 +1846,7 @@ app.post("/spaces/:spaceId/channels/sessions/:sessionId/takeover", async (c) => 
 // the setup scripts, and marks onboarding complete. Called by the dashboard wizard after
 // credentials/preferences are collected (which it does directly via connect + config PATCH).
 app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId");
 
   const row = await c.env.PLATFORM_DB.prepare(
@@ -1925,8 +1945,7 @@ async function resolveSpaceTemplate(env: AgentsEnv, spaceId: string, tenantId: s
 // POST /skills/promote { space_id, name, template_id? } — promote a proven space skill to the
 // shared template library (gated: stability ≥ 0.8 and ≥ 5 successes).
 app.post("/skills/promote", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Skill library not bound" }, 503);
   const body = await c.req.json<{ space_id: string; name: string; template_id?: string }>().catch(() => ({ space_id: "", name: "" } as { space_id: string; name: string; template_id?: string }));
   if (!body.space_id || !body.name) throw badRequest("space_id and name are required");
@@ -2049,8 +2068,7 @@ app.get("/templates/:templateId/skills", async (c) => {
 // POST /skills/inherit { space_id, template_id? } — pull the shared template library into a space
 // (adds only skills the space lacks; never clobbers a space's own learned version).
 app.post("/skills/inherit", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
-  if (!tenantId) throw unauthorized("Missing tenant identity");
+  const tenantId = await requireVerifiedTenant(c);
   if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Skill library not bound" }, 503);
   const body = await c.req.json<{ space_id: string; template_id?: string }>().catch(() => ({ space_id: "" } as { space_id: string; template_id?: string }));
   if (!body.space_id) throw badRequest("space_id is required");

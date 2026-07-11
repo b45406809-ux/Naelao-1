@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
+import { mintInternalToken } from "@naelao/http";
 
 // Templates now seed projects bound to a default agent (spacetype.ts's TemplateProjectSeed,
 // SpaceDO migration v18's projects.default_agent_id) — POST /bootstrap/complete is what turns
@@ -70,10 +71,17 @@ function makeEnv(onboarding: OnboardingConfig): {
   return { env, projectCalls, threadCalls };
 }
 
-function bootstrapReq(): Request {
+// Go-live audit F1: /bootstrap/complete now requires the signed x-naelao-internal-token
+// naelao-router's proxyTo mints for every real request (this worker has no workers_dev=false
+// backstop, so a bare spoofed x-naelao-tenant-id can no longer be trusted).
+async function bootstrapReq(): Promise<Request> {
   return new Request(`https://agents.naelao.com/spaces/${SPACE_ID}/bootstrap/complete`, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-naelao-tenant-id": TENANT_ID },
+    headers: {
+      "content-type": "application/json",
+      "x-naelao-tenant-id": TENANT_ID,
+      "x-naelao-internal-token": await mintInternalToken(SECRET, TENANT_ID),
+    },
   });
 }
 
@@ -88,7 +96,7 @@ describe("POST /spaces/:spaceId/bootstrap/complete — pre-wired projects + star
       setup_scripts: [],
     });
 
-    const res = await app.fetch(bootstrapReq(), env);
+    const res = await app.fetch(await bootstrapReq(), env);
     expect(res.status).toBe(200);
     const body = await res.json() as { projects_created: string[] };
     expect(body.projects_created).toEqual(["Products", "Orders", "Support"]);
@@ -106,14 +114,14 @@ describe("POST /spaces/:spaceId/bootstrap/complete — pre-wired projects + star
 
   it("creates no starter threads when every seeded project is unbound", async () => {
     const { env, threadCalls } = makeEnv({ projects: ["Members", "Escalations", "FAQ"], setup_scripts: [] });
-    const res = await app.fetch(bootstrapReq(), env);
+    const res = await app.fetch(await bootstrapReq(), env);
     expect(res.status).toBe(200);
     expect(threadCalls).toHaveLength(0);
   });
 
   it("still works against an older onboarding record whose projects are plain strings", async () => {
     const { env, projectCalls, threadCalls } = makeEnv({ projects: ["Inbox", "FAQ"], setup_scripts: [] });
-    const res = await app.fetch(bootstrapReq(), env);
+    const res = await app.fetch(await bootstrapReq(), env);
     expect(res.status).toBe(200);
     expect(projectCalls).toEqual([{ name: "Inbox" }, { name: "FAQ" }]);
     expect(threadCalls).toHaveLength(0);

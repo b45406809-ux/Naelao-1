@@ -11,6 +11,7 @@
  */
 
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
+import { mintInternalToken } from "@naelao/http";
 import type { Env } from "../env.js";
 
 export interface AgentTaskParams {
@@ -53,11 +54,19 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
 
     // ── Step 2: Run agent via agents-worker internal endpoint ─────────────────
     const runResult = await step.do("run-agent", { ...retry, timeout: 29_000 }, async () => {
+      // Go-live audit F1: /internal/tasks/:taskId/run is HMAC-gated (verified tenant must match
+      // the body's tenantId) — mint the same signed internal token naelao-router's proxyTo and
+      // every other internal caller uses. Without this the workflow's own run would now 403.
+      const internalToken = await mintInternalToken(this.env.PLATFORM_SECRET, p.tenantId);
       const resp = await this.env.AGENTS_WORKER.fetch(
         `https://agents-worker/internal/tasks/${p.taskId}/run`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            "x-naelao-tenant-id": p.tenantId,
+            "x-naelao-internal-token": internalToken,
+          },
           body: JSON.stringify({
             taskId: p.taskId,
             spaceId: p.spaceId,
