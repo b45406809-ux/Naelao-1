@@ -160,7 +160,7 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
 
   await enforceSpaceQuota(env.PLATFORM_DB, params.tenantId);
 
-  // G-BF08 (Appendix BF): on the free plan only free_tier_eligible templates may be
+  // G-GRW08 (Appendix AJ): on the free plan only free_tier_eligible templates may be
   // instantiated — the flag existed since Phase F but no creation path ever checked it.
   if (params.templateId) {
     const gate = await checkFreeTierTemplateEligibility(env.PLATFORM_DB, env, params.tenantId, [params.templateId]);

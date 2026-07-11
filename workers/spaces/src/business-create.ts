@@ -133,7 +133,7 @@ export async function createBusinessForEndUser(
     return { ok: false, error_code: "spacetype_not_allowed", message: `SpaceType '${opts.spacetypeId}' is not offered by this product`, status: 403 };
   }
 
-  // 2b. G-BF08 (Appendix BF): on the free plan only free_tier_eligible templates may be
+  // 2b. G-GRW08 (Appendix AJ): on the free plan only free_tier_eligible templates may be
   // instantiated. The plan that matters is the OWNING builder org's (parentTenantId) — end-user
   // claims already resolve to it, and the child tenant minted below has no org/plan of its own.
   // Checked BEFORE any side effect (reseller_accounts upsert, tenant mint) so a rejected create

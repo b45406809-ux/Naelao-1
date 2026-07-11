@@ -1740,10 +1740,9 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
         spaceId,
         tenantId: space.tenant_id,
         // Lets the DO kick an immediate heartbeat drain (see handleChannelInbound) instead of
-        // waiting for the hourly cron — this is the only call site with ANTHROPIC_API_KEY in
-        // scope for the channel-ingress path, so it's threaded through the request body rather
-        // than widened onto the DO's own narrower AgentDOEnv type.
-        apiKey: c.env.ANTHROPIC_API_KEY ?? "",
+        // waiting for the hourly cron. LLM credentials come from the DO's own NAELAO_AIG_TOKEN
+        // (CF AI Gateway stored key) — no provider apiKey is threaded through this body.
+        apiKey: "",
       }),
     }));
   } catch (err) {
