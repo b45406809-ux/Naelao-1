@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
 import spacesWorker from "../../workers/spaces/src/index.js";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
+import { seedWallet } from "../../workers/provisioner/src/index.js";
+import type { Env as ProvisionerEnv } from "../../workers/provisioner/src/index.js";
 import { makeStatefulDoNamespace } from "./helpers/fake-do-namespace.js";
+import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 import { mintInternalToken } from "@naelao/http";
 import {
   BUSINESS_FEATURE_KIND_REGISTRY, getBusinessFeatureKind, isKnownProjectKind,
@@ -109,5 +112,69 @@ describe("createProject with kind (F-33/F-35, via the real spaces worker)", () =
       env as never, execCtx
     );
     expect(res.status).toBe(201);
+  });
+});
+
+// Defense in depth: createProject's feature-kind role check used to treat a MISSING created_by as
+// privileged 'owner' outright. Not exploitable through the real spaces-worker route today (it
+// always derives created_by from verified identity — see the `system_caller` computation in
+// index.ts's POST /spaces/:spaceId/projects handler), but any FUTURE route that forwards a client
+// body straight into SpaceDO.createProject without forcing created_by would have been an instant
+// wallet/feature-kind privilege bypass. Fixed: a missing created_by now fails CLOSED unless the
+// request explicitly carries `system_caller: true` — a value only the trusted spaces-worker route
+// computes server-side (from the verified absence of x-naelao-user-id), never read from a client
+// body field. These tests talk to the SpaceDO directly (bypassing index.ts entirely) to prove the
+// DO itself, not just the router in front of it, refuses to grant privilege on a missing creator.
+describe("createProject feature-kind gate — fail closed on missing created_by (defense in depth)", () => {
+  function makeDO(): SpaceDO {
+    const ctx = { storage: { sql: createDOSqlStorage() } };
+    return new SpaceDO(ctx as never, {} as never);
+  }
+  function doReq(body: Record<string, unknown>): Request {
+    return new Request("http://space-do/projects", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("kind='wallet' with no created_by and no system_caller marker => 403 (fails closed)", async () => {
+    const spaceDO = makeDO();
+    const res = await spaceDO.fetch(doReq({ space_id: "space-1", name: "Wallet", kind: "wallet" }));
+    expect(res.status).toBe(403);
+    const body = await res.json() as { error_code: string };
+    expect(body.error_code).toBe("forbidden");
+  });
+
+  it("kind='wallet' with no created_by but system_caller: true => allowed (the provisioner's path)", async () => {
+    const spaceDO = makeDO();
+    const res = await spaceDO.fetch(doReq({ space_id: "space-1", name: "Wallet", kind: "wallet", system_caller: true }));
+    expect(res.status).toBe(201);
+  });
+
+  it("a resolvable but insufficient created_by role is rejected even if system_caller is also (wrongly) set", async () => {
+    const spaceDO = makeDO();
+    // Register 'u-viewer' as a plain member (no explicit role row => role query returns "" => not
+    // >= 'admin'). system_caller must NOT become a blanket override once created_by IS present.
+    await spaceDO.fetch(new Request("http://space-do/members", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ space_id: "space-1", user_id: "u-viewer", role: "viewer" }),
+    }));
+    const res = await spaceDO.fetch(doReq({ space_id: "space-1", name: "Wallet", kind: "wallet", created_by: "u-viewer", system_caller: true }));
+    expect(res.status).toBe(403);
+  });
+
+  it("structural kinds (workspace, customer_bot) are unaffected — no created_by needed at all", async () => {
+    const spaceDO = makeDO();
+    const res = await spaceDO.fetch(doReq({ space_id: "space-1", name: "Plain" }));
+    expect(res.status).toBe(201);
+  });
+
+  it("seedWallet (the provisioner's real system-initiated call) still succeeds end to end through the real spaces-worker route", async () => {
+    const env = makeEnv();
+    const spacesWorkerBinding = { fetch: (r: Request) => spacesWorker.fetch(r, env as never, execCtx) };
+    const provisionerEnv = { ENVIRONMENT: "test", PLATFORM_SECRET, SPACES_WORKER: spacesWorkerBinding, PLATFORM_DB: { prepare() { const s = { bind() { return s; }, async first() { return { cnt: 0 }; } }; return s; } } } as unknown as ProvisionerEnv;
+    const seeded = await seedWallet(provisionerEnv, "space-seed-1", "tenant-1", "user-1");
+    expect(seeded).toBe(true);
   });
 });

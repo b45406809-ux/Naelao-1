@@ -2076,6 +2076,12 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       space_id: string; name: string; description?: string; tenant_id?: string;
       default_agent_id?: string; max_threads?: number; allowed_agent_ids?: string[];
       visibility?: "public" | "private"; created_by?: string; kind?: string;
+      /** Set ONLY by the spaces worker's own POST /spaces/:spaceId/projects handler, derived from
+       *  the verified absence of an authenticated caller (no x-naelao-user-id) — never read from
+       *  a client body field. True for the provisioner's seedWallet call and other genuinely
+       *  system-initiated creates. See the role check below: defense in depth means a MISSING
+       *  created_by must never itself imply privilege. */
+      system_caller?: boolean;
     }>();
     if (!body.space_id || !body.name) {
       return Response.json({ error_code: "bad_request", message: "space_id and name are required" }, { status: 400 });
@@ -2102,11 +2108,22 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // Role check BEFORE the singleton check, so a non-privileged member gets "not allowed"
       // rather than leaking whether a singleton of this kind already exists. The creator's
       // space-level role is authoritative (created_by → space_members).
-      const callerRole = body.created_by
-        ? (queryOne<{ role: string }>(this.ctx.storage.sql as never, "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", body.space_id, body.created_by)?.role ?? "")
-        : "owner"; // no created_by (system/provisioner-initiated) → treat as privileged
-      if (body.created_by && !roleMeetsMinimum(callerRole, featureKind.minCreationRole)) {
-        return Response.json({ error_code: "forbidden", message: `Creating a '${kind}' project requires at least the '${featureKind.minCreationRole}' role` }, { status: 403 });
+      //
+      // Fail CLOSED on a missing created_by: it must NEVER itself imply privilege. Only the
+      // explicit, server-derived system_caller marker (see the field's own doc comment above —
+      // never a client-suppliable value) may create a feature-kind project without a resolvable
+      // creator, matching the provisioner's seedWallet call. Any other caller with no created_by
+      // is denied outright, so a future route that forwards a client body into createProject
+      // without forcing created_by can never silently inherit owner-level privilege.
+      if (!body.created_by) {
+        if (!body.system_caller) {
+          return Response.json({ error_code: "forbidden", message: `Creating a '${kind}' project requires a resolvable creator` }, { status: 403 });
+        }
+      } else {
+        const callerRole = queryOne<{ role: string }>(this.ctx.storage.sql as never, "SELECT role FROM space_members WHERE space_id = ? AND user_id = ?", body.space_id, body.created_by)?.role ?? "";
+        if (!roleMeetsMinimum(callerRole, featureKind.minCreationRole)) {
+          return Response.json({ error_code: "forbidden", message: `Creating a '${kind}' project requires at least the '${featureKind.minCreationRole}' role` }, { status: 403 });
+        }
       }
       isSingletonKind = featureKind.singleton ? 1 : 0;
       // Pre-check for a friendlier 409 (the partial unique index is the real guarantee below).

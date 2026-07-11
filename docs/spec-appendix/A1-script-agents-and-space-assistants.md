@@ -4194,3 +4194,46 @@ validity, not incidentally-current freshness). New
 re-delivery of the same `external_id` is deduped AND kicks no second drain (`waitUntil` promise
 count stays at 1); a genuinely different `external_id` from the same sender still gets its own
 drain. 1719/1719 tests pass (7 new), `pnpm turbo run typecheck` clean (75 tasks).
+
+## A1.23 createProject feature-kind gate: fail closed on missing created_by (defense in depth) — BUILT
+
+**The gap:** `SpaceDO.createProject`'s role check for a feature-kind project (`kind='wallet'`,
+`'storefront'`, etc. — `packages/events/src/business-feature-kinds.ts`, `minCreationRole`) was
+SKIPPED entirely whenever `body.created_by` was empty, treating a missing creator as privileged
+`'owner'`. Not exploitable today — the only real caller, `workers/spaces/src/index.ts`'s
+`POST /spaces/:spaceId/projects`, always derives `created_by` from the verified caller identity
+(`x-naelao-user-id`, set by the router only after JWT/session validation, never client-suppliable)
+— but the DO itself had no opinion of its own: any FUTURE route that forwarded a client body into
+`createProject` without remembering to force `created_by` would have instantly and silently
+inherited owner-level privilege, an easy-to-introduce, hard-to-notice regression.
+
+**Fix — invert the default to fail closed.** A missing `created_by` now DENIES creation of any
+`BUSINESS_FEATURE_KIND` project outright (403 `forbidden`) unless the request also carries
+`system_caller: true` — a new field on the `createProject` body, checked ONLY when `created_by` is
+absent; once `created_by` IS present, the ordinary space-member role lookup runs exactly as before
+and `system_caller` has no effect (verified by a dedicated test — it must never become a blanket
+override). Structural kinds (`workspace`, `customer_bot`) are untouched; they never entered this
+role-gated branch in the first place.
+
+**Where `system_caller` comes from:** `system_caller` is never read from a client-supplied JSON
+field — `index.ts`'s `POST /spaces/:spaceId/projects` handler computes it itself as
+`!identity.userId` (the verified absence of an authenticated caller) and places it in the object
+literal AFTER the `...body` spread, so any value a caller tried to smuggle into their own request
+body is unconditionally overwritten by the server-derived one. `requireInternalHmac` already gates
+this entire route (only the router, which always sets `x-naelao-user-id` for a real session, or a
+genuine internal caller like the provisioner, which never does, can reach it at all), so the
+combination of "passed the internal-HMAC gate" + "no verified user identity" is the same signal
+already used to compute `created_by` — just made an explicit, dedicated field instead of an
+implicit by-omission one. The provisioner's `seedWallet` step needed no code changes at all: it
+already calls this exact route with no `x-naelao-user-id` header (by design — it has no human
+caller), so `index.ts` derives `system_caller: true` for it automatically.
+
+New tests in `tests/unit/business-feature-kinds.test.ts` (5 added), talking to a bare `SpaceDO`
+instance directly (bypassing `index.ts` entirely, to prove the DO's OWN posture rather than just
+the router's): `kind='wallet'` with no `created_by` and no `system_caller` → 403; the same with
+`system_caller: true` → 201 (the provisioner's shape); a resolvable-but-insufficient `created_by`
+(a `viewer`) is still rejected even when `system_caller: true` is also (wrongly) present, proving
+it's not a blanket override; a structural `kind` (default `workspace`) needs neither field; and
+`seedWallet` run end-to-end through the REAL `spacesWorker` + `SpaceDO` (not the provisioner's own
+mocked-fetch unit tests) still succeeds. 1725/1725 tests pass (5 new), `pnpm turbo run typecheck`
+clean (75 tasks).

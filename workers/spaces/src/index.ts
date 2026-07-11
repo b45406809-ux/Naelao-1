@@ -672,9 +672,15 @@ app.post("/spaces/:spaceId/projects", async (c) => {
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
   const body = await c.req.json<{ name: string; description?: string; visibility?: "public" | "private" }>().catch(() => ({ name: "" }));
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  // system_caller is computed from the verified absence of an authenticated identity (no
+  // x-naelao-user-id) — NOT read from the client's own JSON body — and placed after `...body` so
+  // it always overrides anything a caller tried to smuggle in. requireInternalHmac (line ~632)
+  // already ensures this route is only reachable via the router (which always sets
+  // x-naelao-user-id for a real session) or a genuine internal caller (the provisioner, which
+  // never does) — see SpaceDO.createProject's fail-closed feature-kind gate.
   const res = await forwardToSpaceDO(
     stub, "/projects", "POST",
-    JSON.stringify({ ...body, space_id: spaceId, tenant_id: tenantId, created_by: identity.userId || undefined })
+    JSON.stringify({ ...body, space_id: spaceId, tenant_id: tenantId, created_by: identity.userId || undefined, system_caller: !identity.userId })
   );
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
