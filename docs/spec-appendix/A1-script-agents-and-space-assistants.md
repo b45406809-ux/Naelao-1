@@ -4118,3 +4118,36 @@ viewer entry-gate cases against a real `NaelaoAgentDO` instance (sqlite-shim har
 read-only surface (reads pass, writes refuse, stored scripts refuse, even-owner read_only case),
 allowlist hygiene, and the yolo-intersection matrix. 1707/1707 tests pass; `pnpm turbo run
 typecheck` clean (75 tasks).
+
+## A1.21 S-2 — the product-root wallet was end-user "member"-readable — BUILT
+
+**The gap (audit finding, HIGH):** every space, INCLUDING the product root, is seeded a
+`kind='wallet'` project by the provisioner (`seedWallet`) — the ROOT one is the BUILDER's own
+platform-cost ledger, not a business's money. `requireBusinessMembership`'s generic rule (a
+verified product session for the product ROOT space implies `"member"` — correct and safe for
+sessions/projects/threads, resources an end user legitimately reaches on the product root) was
+also applied, unexamined, to the wallet read routes. Leak path: `GET /spaces/:spaceId/projects`
+is member-readable, so an end user could enumerate the root wallet project's id, then
+`GET .../wallet/balance` / `.../wallet/history` (gated only at `member`) disclosed the builder's
+full ledger — reasons and amounts — to any signed-up end user of the product.
+
+**Fix — a wallet-specific role resolver, not a change to the generic one:** the generic
+`resolveEndUserBusinessRole`'s root-is-`"member"` shortcut stays untouched (sessions, projects,
+threads all still need it). New `resolveWalletAccessRole` (`business-auth.ts`) instead: for a
+space with no `parent_space_id` (the product root), returns `null` — no product_end_user has any
+legitimate wallet access there, full stop; for a business (child) space, delegates to the same
+real `business_memberships` lookup as everything else, so a business owner/admin still reads
+their OWN business's wallet exactly as before. Wrapped in a new
+`requireBusinessMembershipForWallet` middleware (its own 5s-TTL cache, kept separate from the
+generic role cache so the two resolvers' answers for the same `(spaceId, endUserId)` key can never
+cross-contaminate) — applied in place of `requireBusinessMembership` on all three end-user-reachable
+wallet read routes: `GET .../projects/:projectId/wallet/{balance,history}` and the consolidated
+`GET /spaces/:spaceId/wallet`. Every non-`product_end_user` caller (builder JWT roles) is
+unaffected, per the file's existing additive-only convention.
+
+New `tests/unit/wallet-root-access.test.ts` (5 tests, real `spacesWorker` + real `SpaceDO` +
+fake D1, mirroring `business-auth.test.ts`'s harness): a product_end_user is refused (403) on
+both the per-project wallet routes AND the consolidated `/wallet` view for the PRODUCT ROOT; the
+builder still reads it (200, correct balance); a business owner still reads their OWN business's
+wallet (200); a different end user with no membership on that business still gets 403. 1712/1712
+tests pass (5 new); `pnpm turbo run typecheck` clean (75 tasks).

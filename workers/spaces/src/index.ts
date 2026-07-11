@@ -10,7 +10,7 @@ import { registerBuilderRoutes } from "./builder-routes.js";
 import { registerProductEndUserRoutes, FREE_TIER_DEFAULT_SIGNUP_CREDITS } from "./product-end-user-routes.js";
 import { createSpaceRecord, SpaceCreationError } from "./create-space.js";
 import type { ProvisionMessage } from "./create-space.js";
-import { requireBusinessMembership, resolveEndUserBusinessRole } from "./business-auth.js";
+import { requireBusinessMembership, requireBusinessMembershipForWallet, resolveEndUserBusinessRole } from "./business-auth.js";
 import { createBusinessForEndUser } from "./business-create.js";
 import { loadTemplateCatalog } from "./template-catalog.js";
 import { registerBusinessRoutes } from "./business-routes.js";
@@ -639,12 +639,15 @@ app.use("/spaces/:spaceId/projects/:projectId/spend", requireInternalHmac((c) =>
 // Launchpad Wallet (user-directed feature). credit/debit are internal-only (called by the
 // billing worker's LS webhook handler after a top-up, and by the wallet script-engine prebuilt
 // running inside NaelaoAgentDO) — same posture as /spend, never a direct end-user write surface.
-// balance/history ARE end-user-reachable (a business owner checking their own wallet), gated
-// with requireBusinessMembership like the other read surfaces.
+// balance/history ARE end-user-reachable (a business owner checking their OWN business's wallet),
+// but the PRODUCT ROOT's wallet project is the builder's own platform-cost ledger, not something
+// any product_end_user should ever read — requireBusinessMembershipForWallet (unlike the generic
+// requireBusinessMembership) refuses a product_end_user outright on the root instead of applying
+// the generic root-implies-"member" shortcut.
 app.use("/spaces/:spaceId/projects/:projectId/wallet/balance", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/wallet/balance", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/wallet/balance", requireBusinessMembershipForWallet({ GET: "member" }));
 app.use("/spaces/:spaceId/projects/:projectId/wallet/history", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/projects/:projectId/wallet/history", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/projects/:projectId/wallet/history", requireBusinessMembershipForWallet({ GET: "member" }));
 app.use("/spaces/:spaceId/projects/:projectId/wallet/credit", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/projects/:projectId/wallet/debit", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 
@@ -909,10 +912,13 @@ app.get("/spaces/:spaceId/projects/:projectId/wallet/history", async (c) => {
 // met. Gated by requireInternalHmac (the request must arrive through naelao-router, which mints
 // the token from verified claims — the same direct-worker-ingress backstop every other
 // /spaces/:spaceId/* data route carries; without it a direct caller could spoof identity headers)
-// PLUS requireBusinessMembership (member GET — additive-only for a product_end_user business admin;
-// a builder acting via the router passes through unchanged).
+// PLUS requireBusinessMembershipForWallet (member GET — additive-only for a product_end_user
+// business member reading their OWN business's wallet; a builder acting via the router passes
+// through unchanged). On the PRODUCT ROOT this is the builder's own platform-cost ledger, so the
+// wallet-specific resolver refuses a product_end_user outright there instead of the generic
+// root-implies-"member" shortcut requireBusinessMembership uses for every other root resource.
 app.use("/spaces/:spaceId/wallet", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
-app.use("/spaces/:spaceId/wallet", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/wallet", requireBusinessMembershipForWallet({ GET: "member" }));
 app.get("/spaces/:spaceId/wallet", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
