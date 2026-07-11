@@ -4008,11 +4008,11 @@ the way, test counts) — this section only records what didn't fit there.
   supplied via CF Workers Secrets before it can run against live providers — the routing logic
   itself can be built and tested with mocked provider APIs regardless.
 
-## A1.19 Growth Layer (spec Appendix BF) — Phase 1: platform provider keys + free-tier gating — BUILT
+## A1.19 Growth Layer (spec Appendix AJ) — Phase 1: platform provider keys + free-tier gating — IN PROGRESS
 
-The canonical spec gained **Appendix BF — Growth Layer** (G-BF01..G-BF20, appended at the end of
+The canonical spec gained **Appendix AJ — Growth Layer** (G-GRW01..G-GRW20, appended at the end of
 `naelao_expanded_gaps_resolved.html` per its running-log convention; `docs/SPEC_HEADER_INDEX.md`
-regenerated). It codifies the **universal-tools doctrine** (G-BF01, generalizing the web-search
+regenerated). It codifies the **universal-tools doctrine** (G-GRW01, generalizing the web-search
 fix): a universal capability is PLATFORM-KEYED — Naelao holds ONE provider key as a Workers
 Secret, users never see or enter it (the Claude/ChatGPT bundled-connector model); BYO credentials
 are reserved for a builder's OWN external accounts. It also specs business idea discovery
@@ -4023,21 +4023,20 @@ batches, hard daily caps, STOP honored; never cold WhatsApp blasts, which violat
 Business Network (default-on anonymized sharing for free/growth, private-as-paid, PII/credentials/
 exact figures NEVER shared regardless of plan), and a deferred private-playbook bidding exchange.
 
-**Phase 1 code (this pass):**
+**Phase 1 code (in progress):**
 
-- **G-BF02 — platform Composio/Pipedream keys in mcp-hub.** `COMPOSIO_API_KEY`/`PIPEDREAM_API_KEY`
+- **G-GRW01..04 — platform Composio/Pipedream keys in mcp-hub.** `COMPOSIO_API_KEY`/`PIPEDREAM_API_KEY`
   optional Workers Secrets; new `resolveProviderApiKey` — a BYO vault credential (`auth_secret_name`)
   still WINS when present (a builder running their own provider project keeps control + their own
   billing); otherwise the platform key is injected server-side and never leaves the worker; neither
   → honest 503 `provider_not_configured`. A BYO declaration that resolves to no key errors clearly
   (400) instead of silently falling back — fallback would mask the misconfiguration and bill
   Naelao's provider account. Applied to both provider branches (tools-list + tool-call); the
-  reserved money-in tool-name guard covers platform-keyed calls identically. This closes §A1.18
-  Phase P: the routing existed; the key model was the missing piece. Still needed for live use:
+  reserved money-in tool-name guard covers platform-keyed calls identically. Still needed for live use:
   `wrangler secret put COMPOSIO_API_KEY` per environment (degrades honestly until set); the
-  per-user OAuth connect flow (G-BF03) and the curated universal catalogue entries (G-BF04) are
+  per-user OAuth connect flow (G-GRW03) and the curated universal catalogue entries (G-GRW04) are
   the next increments.
-- **G-BF08 — `free_tier_eligible` enforcement.** The flag existed since Phase F, was projected to
+- **G-GRW08 — `free_tier_eligible` enforcement.** The flag existed since Phase F, was projected to
   the dashboard, and was never checked anywhere. New `workers/spaces/src/template-catalog.ts`
   (loadTemplateCatalog extracted from index.ts — preserving business-create.ts/create-space.ts's
   one-way import rule — with `free_tier_eligible` added to the projection and the KV cache key
@@ -4055,7 +4054,7 @@ exact figures NEVER shared regardless of plan), and a deferred private-playbook 
 `free-tier-template-gating.test.ts` (+1 shell-manifest assertion updated for the new field).
 1646/1646 tests pass; `pnpm turbo run typecheck` clean (75 tasks).
 
-**Deferred to later sessions (spec'd in Appendix BF, not built):** G-BF03 OAuth connect flow,
-G-BF04 universal connector catalogue + assistant advertisement, BF.2 discovery skills, BF.3
-flagship template/sample hosting/outreach agents (G-BF10..14), BF.4 Business Network
-(G-BF15..19), G-BF20 exchange.
+**Deferred to later sessions (spec'd in Appendix AJ, not built):** G-GRW03 OAuth connect flow,
+G-GRW04 universal connector catalogue + assistant advertisement, AJ.2 discovery skills, AJ.3
+flagship template/sample hosting/outreach agents (G-GRW10..14), AJ.4 Business Network
+(G-GRW15..19), G-GRW20 exchange.

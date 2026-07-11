@@ -1,6 +1,6 @@
 # Original Spec — Header Index (auto-generated)
 
-Source: naelao_expanded_gaps_resolved.html · 2720 headers.
+Source: naelao_expanded_gaps_resolved.html · 2721 headers.
 Regenerate: `python3 infra/gen-spec-index.py`.
 Read THIS file instead of grepping the 68k-line spec. Numbers are byte offsets.
 
@@ -2724,3 +2724,4 @@ Read THIS file instead of grepping the 68k-line spec. Numbers are byte offsets.
     - [6752078] BF.3 — Free Plan Simple-Business Program
     - [6762837] BF.4 — The Business Network
     - [6770613] BF.5 — Future Direction (Deferred)
+  - [6772631] Appendix AJ — Growth Layer: Universal Connectors, Free-Tier Businesses, Business Network
