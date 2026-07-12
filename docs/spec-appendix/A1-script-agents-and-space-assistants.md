@@ -4638,4 +4638,85 @@ end-to-end and parses the actual wire-format output, proving no `event:` line su
 frame carries `type`; `context-window-usage-endpoint.test.ts` covers both the context-size and
 usage-summary halves plus every degradation path; `billing-usage-summary.test.ts` covers the new
 day/week/month SQL windowing directly; 2 new `contextWindowForModel` cases), `pnpm turbo run
-typecheck` clean (75 tasks), `apps/shell` verified via `next build`. Next: Phase 5 (model switcher).
+typecheck` clean (75 tasks), `apps/shell` verified via `next build`.
+
+---
+
+## A1.28 Second full-vision batch, Phase 5: model switcher — BUILT (closes the dead
+`spacetypes.model_config` gap)
+
+**The gap.** `workers/agents/src/index.ts` resolved a run's model via a `modelConfig` variable
+read off `spaceTypeRow.model_config` — but grepping every migration under `infra/migrations/`
+confirms no migration ever adds a `model_config` column to `spacetypes` (`0003_spaces.sql`,
+the table's own creation migration, has no such column and nothing later adds it). The read
+therefore always produced `{}`, and all live dispatch sites silently fell back to a hardcoded
+model string — a builder had no way to actually choose a model despite the plumbing appearing
+to support it.
+
+**The fix — extend the existing config-override convention, don't resurrect the dead column.**
+Per CLAUDE.md's own standing rule (avoid a split-brain between a manifest and a parallel DB
+table), the fix is the same shape as `memberBilling`/`pricingConfig`/`catalog`/
+`containerMarketplace` before it: a new optional field on the per-space `config_json` override,
+merged over the SpaceType manifest's base config by the existing `loadEffectiveProductConfig`.
+
+- `workers/spaces/src/do/SpaceTypeRegistryDO.ts` — `SpaceTypeProductConfig` gains
+  `modelConfig?: { model?: string }`, with an explicit comment distinguishing this from the dead
+  `spacetypes.model_config` D1 column so a future session doesn't conflate the two or try to
+  "restore" the column.
+- `workers/spaces/src/builder-routes.ts` — new `ALLOWED_MODELS` curated allowlist
+  (`claude-haiku-4-5-20251001`, `claude-sonnet-4-6`, `claude-opus-4-8`) — deliberately not
+  arbitrary free text, for cost predictability and to keep the platform's own AI-Gateway routing
+  table meaningful. The generic `PATCH /builder/products/:id` handler already shallow-merges any
+  `product_config` object into `config.productConfig` — the only change needed is a validation
+  branch: if `body.product_config?.modelConfig?.model` is present and not on the allowlist, `400
+  bad_request`. No new route.
+- `workers/spaces/src/index.ts` — `GET /spaces/:spaceId/shell/manifest` projects
+  `model: pc?.modelConfig?.model ?? null` (`pc` is the already-loaded effective product config)
+  so the end-user shell can read the configured model without a second round trip.
+- `workers/agents/src/index.ts` — the actual bug fix. Removed the dead `model_config: string`
+  field from the `SpaceTypeRow` interface entirely (nothing ever populated it). The dispatch
+  path now parses `spaceRow.config_json` — a column that already exists and is already fetched
+  by the same `SELECT * FROM spaces WHERE id = ? AND tenant_id = ?` query every run already
+  issues, so this costs zero new queries — for `productConfig.modelConfig.model`, falling back
+  to the pre-existing hardcoded model string (`claude-sonnet-4-6`) whenever the override is
+  absent OR `config_json` fails to parse (malformed JSON degrades to the same safe fallback,
+  never a 500).
+- `apps/dashboard` — `BuilderProductConfig` (`src/lib/api.ts`) gains the matching
+  `modelConfig?: {model?: string}` field; the Configuration tab
+  (`dashboard/products/[productId]/configuration/page.tsx`) gains a new "Model" card — a
+  3-button picker (Haiku/Sonnet/Opus), styled identically to the existing Product Mode
+  button-group, writing through the SAME generic PATCH handler above with no new endpoint.
+
+**Deliberately NOT wired — two call sites, both investigated and left alone on purpose.**
+1. `NaelaoAgentDO.handleChannelHeartbeat`'s own hardcoded model default (the per-space hourly
+   channel-heartbeat sweep). `NaelaoAgentDO` has no `PLATFORM_DB` binding anywhere (confirmed by
+   grep — zero matches in the file), so resolving the builder's configured model there would
+   require a new cross-worker HTTP round trip to SPACES_WORKER on every hourly tick, for every
+   space with an active channel link, platform-wide. Judged not worth the cost for a
+   machine-triggered, already cost-conscious-by-design background path — a cheap default model
+   is the right call for unattended heartbeat processing regardless of what an end user picks
+   for their own interactive chat.
+2. The other hardcoded-model call site inside the legacy ReAct `handleRun` path
+   (`workers/agents/src/do/NaelaoAgentDO.ts`, the pre-item-47 dispatch target). Unreferenced
+   since item 47's A-2 cutover moved `/agent/run` onto `handleScriptRun` exclusively — matching
+   that item's own explicit decision to leave the dead ReAct code in place rather than delete it
+   (its `agent_runs` SQLite table still backs `handleGetRun`/`handleCancelRun`/the stale-run
+   sweep), this pass makes no further changes to it.
+
+**Tests.** `tests/unit/model-switcher-config-resolution.test.ts` (5 tests): PATCH-route allowlist
+reject/accept + persistence round-trip (reusing the real `createFakeD1` + migration fixture from
+`builder-dashboard-api.test.ts`), and `/agent/run` resolving the configured model, falling back
+correctly on both an absent override and malformed `config_json` (reusing the raw-D1-mock +
+`mintInternalToken` fixture pattern from `agent-run-script-native-dispatch.test.ts`). A third
+planned test case (`shell/manifest`'s `model` field surfacing end-to-end) was dropped after its
+minimal env fixture threw on a missing `SPACE_TYPE_REGISTRY_DO` binding — building the heavier
+`SpaceTypeRegistryDO`-backed fixture needed to exercise `loadManifest` was judged out of
+proportion to testing one already-covered projection line, since the PATCH→GET round-trip test
+above already proves the identical `loadEffectiveProductConfig` merge path this field reads from.
+
+1804/1804 tests pass (5 new), `pnpm turbo run typecheck` clean (75 tasks), `apps/dashboard`
+verified via `next build` (32 routes generated).
+
+**With Phase 5 complete, all 5 phases of this second full-vision batch (AutoRAG/Wiki, native web
+search, per-tenant infra usage metering, real streaming + context-window UI, model switcher) are
+now BUILT.** No further phases are planned in this batch absent new direction.

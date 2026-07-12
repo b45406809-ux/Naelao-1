@@ -632,6 +632,11 @@ export interface BuilderProductConfig {
     businessTemplates?: string[];
     projectTemplates?: string[];
   };
+  // §A1.28: which LLM this product's agents run on — validated against a curated allowlist at
+  // the PATCH route (workers/spaces/src/builder-routes.ts's ALLOWED_MODELS).
+  modelConfig?: {
+    model?: string;
+  };
   // Tier 2/3 follow-up: a proactive daily digest email (agent activity summary) — opt-in, off by
   // default.
   notificationsConfig?: {

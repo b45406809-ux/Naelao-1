@@ -1485,10 +1485,36 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       typecheck` clean (75 tasks), `apps/shell` verified via `next build` (compiles, all routes
       generate) — not verified via a live browser session this pass (no CDP mock session run for
       this specific component, unlike some earlier phases' UI work).
-    Next: Phase 5 (model switcher, which also fixes a found dead-code bug — `spacetypes.
-    model_config` is read by `index.ts` but no migration ever created that column, so every run
-    silently falls through to hardcoded model-name fallbacks). Full plan:
-    `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.24-A1.27.
+    **Phase 5 (model switcher) is now BUILT — fixes the dead-code bug this build order
+    predicted: `spacetypes.model_config` is read by `workers/agents/src/index.ts` but no
+    migration anywhere ever created that column on `spacetypes` (confirmed by grepping every
+    migration), so `modelConfig` always parsed to `{}` and every run silently fell through to a
+    hardcoded model-name fallback regardless of what a builder configured.** Fixed at the root
+    rather than resurrecting the dead column: `index.ts` now parses the ALREADY-FETCHED
+    `spaceRow.config_json` (`SELECT * FROM spaces ...` already runs every call) for
+    `productConfig.modelConfig.model` instead — the same config-override convention
+    `memberBilling`/`pricingConfig`/`catalog`/`containerMarketplace` already use, avoiding a
+    split-brain against the manifest exactly as CLAUDE.md's own standing rule requires. New
+    `SpaceTypeProductConfig.modelConfig?: {model?: string}` field
+    (`workers/spaces/src/do/SpaceTypeRegistryDO.ts`); `PATCH /builder/products/:id` validates
+    against a curated `ALLOWED_MODELS` allowlist (`claude-haiku-4-5-20251001`,
+    `claude-sonnet-4-6`, `claude-opus-4-8` — not arbitrary free text, for cost predictability);
+    `shell/manifest` projects the resolved `model` field for the end-user shell to read.
+    Dashboard: a new Model card on the Configuration tab (3-button picker, same UI pattern as
+    the existing Product Mode picker), round-tripping through the same PATCH handler with zero
+    new backend surface beyond the allowlist check. **Deliberately NOT wired:**
+    `handleChannelHeartbeat`'s own hardcoded model default — `NaelaoAgentDO` has no
+    `PLATFORM_DB` binding (confirmed via grep, zero matches), so resolving the configured model
+    there would cost an extra cross-worker round trip on every hourly per-space heartbeat tick
+    platform-wide for a machine-triggered, cost-conscious-by-design background path; and the
+    OTHER hardcoded-model call site inside the dead legacy `handleRun`/ReAct path (unreferenced
+    since item 47's A-2 cutover) — left untouched on purpose, matching that item's own scoping.
+    1804/1804 tests pass (5 new: PATCH allowlist accept/reject, `/agent/run` resolving the
+    configured model vs. falling back on unset/malformed `config_json`), `pnpm turbo run
+    typecheck` clean (75 tasks), `apps/dashboard` verified via `next build` (32 routes).
+    **With Phase 5 done, all 5 phases of this build (AutoRAG/Wiki, native web search, infra
+    usage metering, real streaming + context-window UI, model switcher) are now BUILT.** Full
+    plan: `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.24-A1.28.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

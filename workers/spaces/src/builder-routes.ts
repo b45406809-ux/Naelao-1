@@ -61,6 +61,11 @@ interface SpaceRow {
 
 const ALLOWED_STATUSES = ["draft", "active", "paused", "suspended", "deleted"] as const;
 
+// §A1.28: the model switcher's curated allowlist — matches packages/billing-core's known model
+// set (computeTokenCostMicro/MODEL_CONTEXT_WINDOWS) so a chosen model is always priced/windowed
+// correctly rather than silently falling back to a default for an unrecognized string.
+const ALLOWED_MODELS = ["claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-8"] as const;
+
 async function sha256Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -270,6 +275,13 @@ export function registerBuilderRoutes(app: Hono<any>): void {
       if (body.legal.cookiePolicy && !validCookiePolicies.includes(body.legal.cookiePolicy)) {
         return c.json({ error_code: "bad_request", message: `legal.cookiePolicy must be one of ${validCookiePolicies.join(", ")}` }, 400);
       }
+    }
+    // §A1.28 (model switcher): a curated allowlist, not an arbitrary caller-supplied string — cost
+    // predictability, and it keeps this in sync with what contextWindowForModel/tokensToCredits
+    // (packages/billing-core) actually know how to price.
+    const model = body.product_config?.modelConfig?.model;
+    if (model && !ALLOWED_MODELS.includes(model as (typeof ALLOWED_MODELS)[number])) {
+      return c.json({ error_code: "bad_request", message: `modelConfig.model must be one of ${ALLOWED_MODELS.join(", ")}` }, 400);
     }
 
     const config = parseProductConfig(product.config_json);

@@ -1,0 +1,178 @@
+import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import spacesWorker from "../../workers/spaces/src/index.js";
+import { BuilderAccountDO } from "../../workers/spaces/src/do/BuilderAccountDO.js";
+import { ProductUserDO } from "../../workers/spaces/src/do/ProductUserDO.js";
+import { createFakeD1 } from "../stubs/d1-sqlite.js";
+import { makeStatefulDoNamespace } from "./helpers/fake-do-namespace.js";
+import { app as agentsApp } from "../../workers/agents/src/index.js";
+import type { AgentsEnv } from "../../workers/agents/src/index.js";
+import { mintInternalToken } from "@naelao/http";
+
+// §A1.28: the model switcher. `productConfig.modelConfig.model` is a per-space config_json
+// override (the same convention memberBilling/pricingConfig/catalog already use), validated
+// against a curated allowlist at the PATCH route — deliberately NOT the dead
+// `spacetypes.model_config` D1 column /agent/run used to read (no migration ever created it, so
+// it always parsed to `{}` and every run silently used a hardcoded fallback model regardless of
+// what a builder configured).
+
+const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
+
+const SPACES_TABLE_SQL = `
+  CREATE TABLE spaces (
+    id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+    name TEXT NOT NULL DEFAULT '', spacetype_id TEXT NOT NULL DEFAULT 'launchpad',
+    config_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')), created_by TEXT
+  );
+  CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
+  CREATE TABLE spacetypes (id TEXT PRIMARY KEY, config_schema TEXT);
+`;
+const NAELAO_PRODUCT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0044_naelao_product.sql"), "utf8");
+const BUILDER_DASHBOARD_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0045_builder_dashboard_api.sql"), "utf8");
+const COMMERCE_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0035_commerce.sql"), "utf8");
+const LEDGER_KIND_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0061_reseller_ledger_kind.sql"), "utf8");
+const RESELLER_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0033_reseller_accounts.sql"), "utf8");
+
+function makeSpacesEnv() {
+  const fakeDb = createFakeD1([SPACES_TABLE_SQL, NAELAO_PRODUCT_MIGRATION, BUILDER_DASHBOARD_MIGRATION, COMMERCE_MIGRATION, RESELLER_MIGRATION, LEDGER_KIND_MIGRATION]);
+  return {
+    PLATFORM_SECRET: "s",
+    ENVIRONMENT: "test",
+    PLATFORM_DB: fakeDb,
+    BUILDER_ACCOUNT_DO: makeStatefulDoNamespace(BuilderAccountDO),
+    PRODUCT_USER_DO: makeStatefulDoNamespace(ProductUserDO),
+    NAELAO_CONFIG_KV: { get: async () => null, put: async () => {} },
+  };
+}
+
+function req(path: string, opts: { method?: string; body?: unknown; tenant?: string } = {}): Request {
+  const headers = new Headers();
+  if (opts.tenant) headers.set("x-naelao-tenant-id", opts.tenant);
+  if (opts.body !== undefined) headers.set("content-type", "application/json");
+  return new Request(`https://spaces.naelao.com${path}`, {
+    method: opts.method ?? "GET",
+    headers,
+    ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
+  });
+}
+
+describe("PATCH /builder/products/:id — modelConfig allowlist", () => {
+  it("rejects a model not on the curated allowlist", async () => {
+    const env = makeSpacesEnv();
+    const created = await (await spacesWorker.fetch(
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+    const res = await spacesWorker.fetch(
+      req(`/builder/products/${created.id}`, { method: "PATCH", tenant: "tenant-1", body: { product_config: { modelConfig: { model: "gpt-5-super-mega" } } } }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts an allowed model and persists it", async () => {
+    const env = makeSpacesEnv();
+    const created = await (await spacesWorker.fetch(
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+    const ok = await spacesWorker.fetch(
+      req(`/builder/products/${created.id}`, { method: "PATCH", tenant: "tenant-1", body: { product_config: { modelConfig: { model: "claude-opus-4-8" } } } }),
+      env as never, execCtx
+    );
+    expect(ok.status).toBe(200);
+    const fetched = await (await spacesWorker.fetch(req(`/builder/products/${created.id}`, { tenant: "tenant-1" }), env as never, execCtx)).json() as { product_config: { modelConfig?: { model?: string } } };
+    expect(fetched.product_config.modelConfig?.model).toBe("claude-opus-4-8");
+  });
+
+  // Note: shell/manifest's own `model: pc?.modelConfig?.model ?? null` line is a one-line
+  // projection off the SAME loadEffectiveProductConfig merge already proven above (the PATCH ->
+  // GET /builder/products/:id round trip reads through the identical config_json override path) —
+  // not re-tested here directly since exercising shell/manifest end-to-end needs a full
+  // SpaceTypeRegistryDO-backed manifest fixture that's out of proportion to this one field.
+});
+
+describe("POST /agent/run — resolves the configured model, not the dead spacetypes.model_config column", () => {
+  const SECRET = "test-platform-secret";
+  const agentExecCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
+
+  function makeAgentsEnv(spaceConfigJson: string) {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const agentDoStub = {
+      async fetch(reqInput: Request) {
+        const path = new URL(reqInput.url).pathname;
+        const body = await reqInput.json().catch(() => null);
+        calls.push({ path, body });
+        return new Response(JSON.stringify({ level: "L1", result: { ok: true, output: "ok", tokens_used: 1 }, notes: [] }), { status: 200 });
+      },
+    };
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind: (..._args: unknown[]) => ({
+            first: async () => {
+              if (sql.includes("FROM spaces")) {
+                return { id: "space-1", tenant_id: "tenant-a", status: "active", spacetype_id: "st-1", config_json: spaceConfigJson };
+              }
+              if (sql.includes("FROM spacetypes")) {
+                return { id: "st-1", system_prompt_template: null, tools_config: "[]" };
+              }
+              if (sql.includes("usage_events")) return { total: 0 };
+              return null;
+            },
+          }),
+        };
+      },
+    };
+    const env = {
+      ANTHROPIC_API_KEY: "test-key",
+      PLATFORM_SECRET: SECRET,
+      NAELAO_AGENT_DO: { idFromName: (name: string) => ({ toString: () => name }), get: () => agentDoStub },
+      ANALYTICS: { writeDataPoint() {} },
+      PLATFORM_DB: db,
+      SPACES_WORKER: { async fetch(reqInput: Request) {
+        const url = new URL(reqInput.url);
+        if (/\/me\/injection$/.test(url.pathname)) return Response.json({ rate_limited: false });
+        return new Response("not found", { status: 404 });
+      } },
+      KNOWLEDGE_WORKER: { async fetch() { return new Response("not found", { status: 404 }); } },
+    } as unknown as AgentsEnv;
+    return { env, calls };
+  }
+
+  async function runReq(env: AgentsEnv, goal: string) {
+    const token = await mintInternalToken(SECRET, "tenant-a");
+    return agentsApp.fetch(
+      new Request("https://agents.naelao.com/spaces/space-1/sessions/sess-1/agent/run", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": "tenant-a",
+          "x-naelao-internal-token": token,
+          "prefer": "respond-sync",
+        },
+        body: JSON.stringify({ goal }),
+      }),
+      env,
+      agentExecCtx
+    );
+  }
+
+  it("uses the builder-configured model from productConfig.modelConfig.model", async () => {
+    const { env, calls } = makeAgentsEnv(JSON.stringify({ productConfig: { modelConfig: { model: "claude-opus-4-8" } } }));
+    await runReq(env, "hello");
+    expect((calls[0]!.body as { model?: string }).model).toBe("claude-opus-4-8");
+  });
+
+  it("falls back to the hardcoded default when no model is configured", async () => {
+    const { env, calls } = makeAgentsEnv("{}");
+    await runReq(env, "hello");
+    expect((calls[0]!.body as { model?: string }).model).toBe("claude-sonnet-4-6");
+  });
+
+  it("falls back to the hardcoded default when config_json is malformed", async () => {
+    const { env, calls } = makeAgentsEnv("{not valid json");
+    await runReq(env, "hello");
+    expect((calls[0]!.body as { model?: string }).model).toBe("claude-sonnet-4-6");
+  });
+});

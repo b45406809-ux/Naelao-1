@@ -405,6 +405,18 @@ export interface SpaceTypeProductConfig {
     maxSlotsPerProject?: number;
   };
 
+  /** §A1.28 (model switcher): the LLM this product's agents run on. Same "config_json override,
+   *  never a manifest fork" convention as memberBilling/pricingConfig/catalog above — deliberately
+   *  NOT a new `spacetypes.model_config` D1 column (a prior, unused, dead column read by
+   *  `index.ts` with no migration ever creating it — do not resurrect it as a foundation).
+   *  `model` is validated against a small curated allowlist at the PATCH route (cost
+   *  predictability — never an arbitrary caller-supplied string). Unset → the existing
+   *  per-dispatch-site hardcoded fallback (e.g. "claude-haiku-4-5-20251001") is used, unchanged
+   *  from before this feature existed. */
+  modelConfig?: {
+    model?: string;
+  };
+
   /** Legal & support config — builder-defined, surfaced in the product shell so end users know
    *  how to get help, and so a builder can point to their own ToS/privacy policy instead of (or
    *  in addition to) Naelao's platform defaults. All fields are optional (reasonable fallbacks

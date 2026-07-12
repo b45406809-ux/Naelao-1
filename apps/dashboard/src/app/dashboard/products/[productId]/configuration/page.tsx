@@ -138,6 +138,37 @@ export default function ProductConfigurationPage() {
         </div>
       </div>
 
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Model</h2>
+        <p className="text-xs text-gray-400 mb-3">
+          The LLM your product&apos;s agents run on. A pricier model costs more per message but may
+          give better answers for complex work.
+        </p>
+        <div className="flex gap-3">
+          {(
+            [
+              { id: "claude-haiku-4-5-20251001", label: "Haiku", blurb: "Fastest, cheapest — good for most conversations." },
+              { id: "claude-sonnet-4-6", label: "Sonnet", blurb: "Balanced — the default for most products." },
+              { id: "claude-opus-4-8", label: "Opus", blurb: "Most capable, highest cost — complex reasoning." },
+            ] as const
+          ).map((m) => (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => setForm((f) => ({ ...f, modelConfig: { model: m.id } }))}
+              className={`flex-1 text-left px-4 py-3 rounded-lg border text-sm transition-colors ${
+                (form.modelConfig?.model ?? "claude-haiku-4-5-20251001") === m.id
+                  ? "border-brand-500 bg-brand-50 text-brand-800"
+                  : "border-gray-200 text-gray-600 hover:border-gray-300"
+              }`}
+            >
+              <div className="font-semibold">{m.label}</div>
+              <div className="text-xs mt-0.5 text-gray-500">{m.blurb}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
       {form.membershipModel !== "team" && (
         <div className="bg-white rounded-xl border border-gray-200 p-5">
           <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Templates Catalog</h2>

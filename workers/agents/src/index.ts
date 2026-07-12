@@ -157,7 +157,6 @@ interface SpaceTypeRow {
   id: string;
   name: string;
   system_prompt_template: string;
-  model_config: string;
   tools_config: string;
 }
 
@@ -386,7 +385,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     throw badRequest(`Space is ${spaceRow.status}, cannot run agent`);
   }
 
-  // Fetch space type from D1 — only for its default model preference now (A-2 cutover: the
+  // Fetch space type from D1 — kept for existence validation only now (A-2 cutover: the
   // ReAct-era system_prompt_template/tools_config are dead once /agent/run dispatches to the
   // script-native engine, which loads the agent's OWN system prompt/tools from its real R2
   // config — see agentId resolution below).
@@ -400,9 +399,19 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     throw notFound("SpaceType");
   }
 
+  // §A1.28 (model switcher): `spacetypes.model_config` was a dead D1 column — no migration ever
+  // created it, so this always parsed to `{}`. The real, live source of a builder's model choice
+  // is the SAME per-space config_json override every other productConfig field
+  // (memberBilling/pricingConfig/catalog/...) uses — read directly here since `spaceRow` (fetched
+  // above) already carries `config_json` and no SpaceType manifest sets a default model today, so
+  // a cross-worker call to resolve the manifest's own (currently always-absent) modelConfig isn't
+  // worth the round trip. `productConfig.modelConfig.model` was validated against a curated
+  // allowlist at the PATCH route that wrote it (workers/spaces/src/builder-routes.ts) — trusted
+  // here without re-validating.
   let modelConfig: { model?: string } = {};
   try {
-    modelConfig = JSON.parse(spaceTypeRow.model_config ?? "{}") as typeof modelConfig;
+    const cfg = JSON.parse(spaceRow.config_json || "{}") as { productConfig?: { modelConfig?: { model?: string } } };
+    modelConfig = cfg.productConfig?.modelConfig ?? {};
   } catch {
     modelConfig = {};
   }

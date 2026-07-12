@@ -2943,6 +2943,10 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
       suppress_naelao_branding: pc?.branding?.suppressNaelaoBranding ?? false,
     },
     assistant_mode: pc?.assistantMode ?? "per-user",
+    // §A1.28 (model switcher): null means "unset" — the dispatch layer's own hardcoded fallback
+    // (e.g. "claude-haiku-4-5-20251001") applies, same meaning as every other unset productConfig
+    // field in this projection.
+    model: pc?.modelConfig?.model ?? null,
     sub_space_display: pc?.subSpaceDisplay ?? null,
     allow_public_signup: pc?.allowPublicSignup ?? false,
     auth_provider: pc?.authProvider?.provider ?? "naelao-native",
