@@ -3001,6 +3001,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     if (!Number.isFinite(body.cents) || (body.cents ?? 0) <= 0) {
       return Response.json({ error_code: "bad_request", message: "cents must be a positive number" }, { status: 400 });
     }
+    // walletBalance/getWalletBalance sum delta_cents across the whole ledger with no currency
+    // filter — a single-currency ledger (USD only) is the only thing that's actually correct
+    // today. Rather than silently accept a non-USD row that a currency-blind SUM would then
+    // conflate with USD balances (cf. the builder-payout multi-currency bug, item 39), reject it
+    // outright with a clear error until multi-currency wallets are actually built (which would
+    // need per-currency balances/gates, not just a per-row column).
+    if (body.currency && body.currency !== "USD") {
+      return Response.json({ error_code: "unsupported_currency", message: "Wallet ledger is single-currency (USD) only" }, { status: 400 });
+    }
     if (body.idempotency_key) {
       const existing = queryOne<{ balance_after_cents: number }>(
         this.ctx.storage.sql as never,
@@ -3014,8 +3023,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     execute(
       this.ctx.storage.sql as never,
       `INSERT INTO wallet_ledger (id, project_id, space_id, delta_cents, currency, reason, balance_after_cents, idempotency_key)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      crypto.randomUUID(), projectId, project.space_id, credit, body.currency ?? "USD",
+       VALUES (?, ?, ?, ?, 'USD', ?, ?, ?)`,
+      crypto.randomUUID(), projectId, project.space_id, credit,
       body.reason ?? "top_up", balanceAfter, body.idempotency_key ?? null
     );
     await this.fireMatchingTriggers(

@@ -107,6 +107,37 @@ describe("Launchpad Wallet ledger (SpaceDO, real migration chain)", () => {
     expect(await balRes.json()).toEqual({ project_id: projectId, balance_cents: 2500, currency: "USD" });
   });
 
+  it("rejects a non-USD credit with a clear 400 — walletBalance sums delta_cents with no currency filter, so a single-currency ledger is the only currently-correct semantics (cf. item 39's builder-payout multi-currency bug)", async () => {
+    const env = makeEnv();
+    const projectId = await makeWalletProject(env, "space-1", "tenant-1", "Wallet EUR");
+    const h = await headers("tenant-1");
+    const res = await spacesWorker.fetch(
+      req(`/spaces/space-1/projects/${projectId}/wallet/credit?tenant_id=tenant-1`, h, {
+        method: "POST", body: JSON.stringify({ cents: 1000, currency: "EUR" }),
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error_code: string }).error_code).toBe("unsupported_currency");
+    // The rejected credit must not have landed in the ledger at all.
+    const balRes = await spacesWorker.fetch(req(`/spaces/space-1/projects/${projectId}/wallet/balance`, h), env as never, execCtx);
+    expect((await balRes.json() as { balance_cents: number }).balance_cents).toBe(0);
+  });
+
+  it("an explicit currency:'USD' credit is accepted (unchanged behavior)", async () => {
+    const env = makeEnv();
+    const projectId = await makeWalletProject(env, "space-1", "tenant-1", "Wallet USD explicit");
+    const h = await headers("tenant-1");
+    const res = await spacesWorker.fetch(
+      req(`/spaces/space-1/projects/${projectId}/wallet/credit?tenant_id=tenant-1`, h, {
+        method: "POST", body: JSON.stringify({ cents: 1500, currency: "USD" }),
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ balance_cents: 1500 });
+  });
+
   it("a replayed credit with the same idempotency_key does not double-credit", async () => {
     const env = makeEnv();
     const projectId = await makeWalletProject(env, "space-1", "tenant-1", "Wallet B");
