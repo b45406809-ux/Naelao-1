@@ -5,6 +5,41 @@ baseline: 1532/1532 tests pass, typecheck clean — all green *while these holes
 because tests hit workers directly and UI verification mocked the network layer).
 Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
 
+## Deferred, tracked follow-up (NOT for the go-live window)
+
+- [ ] **A-2 (deferred from S-A1, CLAUDE.md item 46): converge `/agent/run` onto the
+  script-native `handleScriptRun`; retire `handleRun`/`runReActLoop` entirely.**
+  S-A1 (item 46) closed the exploitable gap by extracting `enforceRunGates`/
+  `settleRunBilling` and calling them identically from both `handleScriptRun` (script-native
+  engine) and `handleRun` (legacy ReAct loop) — but the platform still runs TWO parallel agent
+  runtimes in `NaelaoAgentDO`, which is exactly the duality that let the gap exist undetected
+  for as long as it did (every future gate/feature added to one risks not being mirrored to the
+  other, same class of bug). Ground rule #8 (CLAUDE.md) already establishes the script-native
+  6-op engine (`script.create/read/update/delete/find/run`) as the ONE authoritative agent
+  runtime — `handleRun`/`runReActLoop` is the pre-script-engine implementation that should not
+  still be live on the interactive chat surface.
+  **Why this is explicitly NOT to be implemented now:** it is a behavior change to the LIVE
+  chat surface — tool surface (hardcoded ReAct tools vs. the 6-op script surface), response
+  shape, streaming/SSE framing, and every existing test that asserts against `handleRun`'s
+  specific behavior would need to move. Doing this inside the go-live window risks regressing
+  the one thing that currently works end-to-end (apps/shell + apps/portal chat, per item 44's
+  Phase Q fixes). Scope for the eventual pass: (1) confirm every capability `handleRun`'s
+  hardcoded tools provide today has an equivalent script/prebuilt in the script-native engine
+  (audit first, do not assume parity); (2) switch `/agent/run`'s dispatch to always call
+  `handleScriptRun`; (3) delete `handleRun`/`runReActLoop` and the now-dead `ReActLoopResult`
+  type; (4) migrate/delete tests that were asserting on the legacy path specifically (keep the
+  ones that assert on gating behavior, since `enforceRunGates`/`settleRunBilling` are shared);
+  (5) re-verify apps/shell and apps/portal chat live (or via CDP-mocked network) end-to-end
+  before calling it done, per this repo's own "claimed success without UI verification" lesson
+  from item 41/44.
+
+- [ ] **A-3 (deferred from S-A1, CLAUDE.md item 46): the wallet ledger's latent
+  multi-currency conflation — low severity, tracked not urgent.** Noted as still-open in item
+  46 without further detail there; needs its own investigation pass to characterize the exact
+  failure scenario (which ledger/table conflates currencies, whether it's a display-only issue
+  or an actual cross-currency balance miscalculation) before scoping a fix. Do not assume
+  severity or scope beyond "low, still open" until that investigation happens.
+
 ## Tier 1 — Launch blockers
 
 - [x] **F-17: `apps/shell` fails typecheck → `next build` fails → the Product Shell cannot

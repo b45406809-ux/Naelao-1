@@ -1288,7 +1288,10 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     script-native `handleScriptRun` and retiring `handleRun`/`runReActLoop` entirely per ground
     rule #8 — S-A1 closes the exploitable gap; A-2 removes the duality that caused it, and is a
     larger behavior change to the live chat surface better done as its own pass. A-3 (the wallet
-    ledger's latent multi-currency conflation) is also still open, low severity.
+    ledger's latent multi-currency conflation) is also still open, low severity. **Both filed as
+    tracked follow-ups in `docs/AUDIT_TODO.md`'s "Deferred, tracked follow-up (NOT for the
+    go-live window)" section — explicitly scoped to NOT be implemented during the current
+    go-live push; a dedicated future pass should re-read that section before starting.**
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
