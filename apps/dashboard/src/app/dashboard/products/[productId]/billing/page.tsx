@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import { getBuilderBilling, getBuilderBillingHistory, getBuilderProductRevenue } from "@/lib/api";
 import type { BuilderBillingPeriod, BuilderProductRevenue } from "@/lib/api";
+import PaymentsAccountCard from "./PaymentsAccountCard";
 
 function centsToDisplay(cents: number): string {
   return new Intl.NumberFormat("en-US", {
@@ -50,6 +51,10 @@ export default function ProductBillingPage() {
 
   return (
     <div className="space-y-6">
+      {/* Wallet Connect: the product's OWN payment account (a NaelaoProduct IS a space, so the
+          product id is the space id the wallet routes expect). */}
+      <PaymentsAccountCard spaceId={params.productId} />
+
       <div>
         <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">
           This product&apos;s revenue — {revenue?.period}

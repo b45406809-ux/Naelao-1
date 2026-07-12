@@ -509,6 +509,11 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // pricing/products routes above (identity here, authorization there).
   /^\/spaces\/([^/]+)\/local-grants(\/|$)/,
   /^\/spaces\/([^/]+)\/local-tunnel\/connect-token$/,
+  // Wallet Connect (§A1.29): a business owner connecting THEIR OWN payment account (Stripe
+  // Connect Express / BYO Lemon Squeezy store) to their business — additionally gated by
+  // requireBusinessMembership(admin) on the spaces worker exactly like the routes above
+  // (identity here, authorization there).
+  /^\/spaces\/([^/]+)\/payment-connection(\/(stripe|lemon-squeezy))?$/,
   // WS-2 (Space Assistant surface): the Status/Crons panels — additionally gated by
   // resolveEndUserBusinessRole on the spaces worker exactly like the routes above.
   /^\/spaces\/([^/]+)\/assistant-policy$/,

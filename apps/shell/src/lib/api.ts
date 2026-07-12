@@ -755,3 +755,60 @@ export async function createKbDocument(
 export async function deleteKbDocument(spaceId: string, docId: string, session: SessionCredentials): Promise<void> {
   await apiFetch(`/v1/spaces/${spaceId}/kb/documents/${encodeURIComponent(docId)}`, { method: "DELETE", session });
 }
+
+// ── Wallet Connect (§A1.29): the business's OWN payment account ─────────────────────────────
+// A business owner connects a fresh Stripe Connect Express account (Stripe-hosted onboarding —
+// Naelao never sees bank details) or their own dedicated Lemon Squeezy store. Admin-only on
+// every verb (enforced by requireBusinessMembership on the spaces worker).
+
+export interface PaymentConnection {
+  id: string;
+  provider: "stripe" | "lemon_squeezy";
+  status: "pending" | "active" | "disabled" | "error";
+  provider_account_id: string | null;
+  details: {
+    charges_enabled: boolean;
+    payouts_enabled: boolean;
+    details_submitted: boolean;
+    store_name: string | null;
+    webhook_created: boolean;
+  };
+  created_at: string;
+  updated_at: string;
+}
+
+export async function getPaymentConnection(spaceId: string, session: SessionCredentials): Promise<PaymentConnection | null> {
+  const res = await apiFetch<{ connection: PaymentConnection | null }>(`/v1/spaces/${spaceId}/payment-connection`, { session });
+  return res.connection;
+}
+
+export async function connectStripePayments(
+  spaceId: string,
+  session: SessionCredentials,
+  returnUrl: string
+): Promise<{ onboarding_url: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/payment-connection/stripe`, {
+    method: "POST",
+    body: JSON.stringify({ return_url: returnUrl }),
+    session,
+  });
+}
+
+/** Without storeId: verifies the key, returns the store list (nothing persisted). With storeId:
+ *  vaults the key, auto-creates the order-sync webhook on their store, activates. */
+export async function connectLemonSqueezyPayments(
+  spaceId: string,
+  session: SessionCredentials,
+  apiKey: string,
+  storeId?: string
+): Promise<{ stores?: Array<{ id: string; name: string }>; connection?: PaymentConnection }> {
+  return apiFetch(`/v1/spaces/${spaceId}/payment-connection/lemon-squeezy`, {
+    method: "POST",
+    body: JSON.stringify({ api_key: apiKey, ...(storeId ? { store_id: storeId } : {}) }),
+    session,
+  });
+}
+
+export async function disconnectPayments(spaceId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/payment-connection`, { method: "DELETE", session });
+}

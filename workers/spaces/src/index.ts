@@ -1231,6 +1231,74 @@ app.post("/spaces/:spaceId/local-tunnel/connect-token", async (c) => {
   });
 });
 
+// ── Wallet Connect shell wrapper (§A1.29) ──────────────────────────────────────────────────────
+// A business owner (Launchpad end user running their own business) connecting THEIR OWN payment
+// account to their business space. Same two-gate pattern as local-grants above: requireInternalHmac
+// proves the request came through naelao-router; requireBusinessMembership(admin) does the real
+// per-business authorization (a product session is product-scoped, never per-business — Phase C's
+// cross-business fix). The handler then proxies to the billing worker's /billing/wallet/* routes
+// with role=admin — legitimately, because the admin check just happened here; billing's own guard
+// re-verifies tenant/space ownership on its side. Payment configuration is admin-only on every
+// verb, including GET (account status is operator information).
+app.use("/spaces/:spaceId/payment-connection", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/payment-connection/:provider", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/payment-connection", requireBusinessMembership({ GET: "admin", DELETE: "admin" }));
+app.use("/spaces/:spaceId/payment-connection/:provider", requireBusinessMembership({ POST: "admin" }));
+
+async function proxyWalletToBilling(
+  c: { env: Env; req: { header: (n: string) => string | undefined } },
+  path: string,
+  method: "GET" | "POST" | "DELETE",
+  body?: Record<string, unknown>
+): Promise<Response> {
+  if (!c.env.BILLING_WORKER) {
+    return Response.json({ error_code: "billing_unavailable", message: "Billing worker not configured" }, { status: 503 });
+  }
+  const identity = getCallerIdentity(c);
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId) return Response.json({ error_code: "unauthorized", message: "Missing tenant" }, { status: 401 });
+  const resp = await c.env.BILLING_WORKER.fetch(
+    new Request(`http://billing-worker${path}`, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-user-id": identity.userId ?? "",
+        "x-naelao-role": "admin",
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+  );
+  return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
+}
+
+app.get("/spaces/:spaceId/payment-connection", async (c) =>
+  proxyWalletToBilling(c, `/billing/wallet/connection?space_id=${encodeURIComponent(c.req.param("spaceId"))}`, "GET")
+);
+
+app.post("/spaces/:spaceId/payment-connection/stripe", async (c) => {
+  const body = await c.req.json<{ return_url?: string; refresh_url?: string }>().catch(() => ({}) as Record<string, never>);
+  return proxyWalletToBilling(c, "/billing/wallet/connect/stripe", "POST", {
+    space_id: c.req.param("spaceId"),
+    return_url: body.return_url,
+    ...(body.refresh_url ? { refresh_url: body.refresh_url } : {}),
+  });
+});
+
+app.post("/spaces/:spaceId/payment-connection/lemon-squeezy", async (c) => {
+  const body = await c.req.json<{ api_key?: string; store_id?: string }>().catch(() => ({}) as Record<string, never>);
+  return proxyWalletToBilling(c, "/billing/wallet/connect/lemon-squeezy", "POST", {
+    space_id: c.req.param("spaceId"),
+    api_key: body.api_key,
+    ...(body.store_id ? { store_id: body.store_id } : {}),
+  });
+});
+
+app.delete("/spaces/:spaceId/payment-connection", async (c) =>
+  proxyWalletToBilling(c, `/billing/wallet/connection?space_id=${encodeURIComponent(c.req.param("spaceId"))}`, "DELETE")
+);
+
 // Presence (space collaboration, A1.8) — heartbeat: "I'm here" (space-level, or scoped to a
 // project/thread). Callers poll GET periodically to see who's currently active. Phase B
 // (§A1.17): allowlisted for product_end_user callers on the router — the same membership floor

@@ -949,3 +949,70 @@ export async function getBuilderBillingHistory(): Promise<BuilderBillingPeriod[]
   const res = await apiFetch<{ data: BuilderBillingPeriod[] }>("/builder/billing/history");
   return res.data ?? [];
 }
+
+// ── Wallet Connect (payment_connections) — the product's OWN payment account ─────────────────
+// Revenue settles into an account the builder owns: a fresh Stripe Connect Express account
+// (isolated business account, Stripe-hosted onboarding — Naelao never sees bank details) or the
+// builder's own dedicated Lemon Squeezy store (guided BYO; key stored encrypted in the
+// credentials vault). Routes are proxied by naelao-router (explicit entries, owner/admin only).
+
+export interface PaymentConnection {
+  id: string;
+  provider: "stripe" | "lemon_squeezy";
+  status: "pending" | "active" | "disabled" | "error";
+  provider_account_id: string | null;
+  details: {
+    charges_enabled: boolean;
+    payouts_enabled: boolean;
+    details_submitted: boolean;
+    store_name: string | null;
+    webhook_created: boolean;
+  };
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LsStoreOption {
+  id: string;
+  name: string;
+  url?: string;
+}
+
+export async function getPaymentConnection(spaceId: string): Promise<PaymentConnection | null> {
+  const res = await apiFetch<{ connection: PaymentConnection | null }>(
+    `/billing/wallet/connection?space_id=${encodeURIComponent(spaceId)}`
+  );
+  return res.connection;
+}
+
+export async function connectStripeWallet(
+  spaceId: string,
+  returnUrl: string
+): Promise<{ onboarding_url: string }> {
+  return apiFetch<{ onboarding_url: string }>("/billing/wallet/connect/stripe", {
+    method: "POST",
+    body: JSON.stringify({ space_id: spaceId, return_url: returnUrl }),
+  });
+}
+
+/** Without storeId: verifies the key and returns the store list for the picker (nothing
+ *  persisted). With storeId: vaults the key, auto-creates the webhook, activates. */
+export async function connectLemonSqueezyWallet(
+  spaceId: string,
+  apiKey: string,
+  storeId?: string
+): Promise<{ stores?: LsStoreOption[]; connection?: PaymentConnection }> {
+  return apiFetch<{ stores?: LsStoreOption[]; connection?: PaymentConnection }>(
+    "/billing/wallet/connect/lemon-squeezy",
+    {
+      method: "POST",
+      body: JSON.stringify({ space_id: spaceId, api_key: apiKey, ...(storeId ? { store_id: storeId } : {}) }),
+    }
+  );
+}
+
+export async function disconnectWallet(spaceId: string): Promise<void> {
+  await apiFetch(`/billing/wallet/connection?space_id=${encodeURIComponent(spaceId)}`, {
+    method: "DELETE",
+  });
+}

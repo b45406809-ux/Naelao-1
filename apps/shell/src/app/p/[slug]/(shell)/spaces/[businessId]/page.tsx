@@ -24,6 +24,10 @@ import {
   createLocalGrant,
   deleteLocalGrant,
   mintLocalTunnelConnectToken,
+  getPaymentConnection,
+  connectStripePayments,
+  connectLemonSqueezyPayments,
+  disconnectPayments,
   type BusinessMember,
   type Business,
   type PricingPlan,
@@ -33,6 +37,7 @@ import {
   type RevenueSummary,
   type BusinessWallet,
   type LocalGrant,
+  type PaymentConnection,
 } from "@/lib/api";
 
 const GRANT_TYPES = ["read", "write", "readwrite", "exec"] as const;
@@ -75,6 +80,13 @@ export default function BusinessDetailPage() {
   const [creatingGrant, setCreatingGrant] = React.useState(false);
   const [connectInfo, setConnectInfo] = React.useState<{ token: string; connect_path: string; expires_in_seconds: number } | null>(null);
   const [connecting, setConnecting] = React.useState(false);
+  // Wallet Connect (§A1.29): the business's OWN payment account.
+  const [paymentConnection, setPaymentConnection] = React.useState<PaymentConnection | null>(null);
+  const [payBusy, setPayBusy] = React.useState(false);
+  const [lsKeyOpen, setLsKeyOpen] = React.useState(false);
+  const [lsKey, setLsKey] = React.useState("");
+  const [lsStores, setLsStores] = React.useState<Array<{ id: string; name: string }> | null>(null);
+  const [lsStoreId, setLsStoreId] = React.useState("");
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -82,13 +94,15 @@ export default function BusinessDetailPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      const [mine, mem, pricing, manifest, grants, wal] = await Promise.all([
+      const [mine, mem, pricing, manifest, grants, wal, payConn] = await Promise.all([
         listMyBusinesses(product.space_id, creds),
         listBusinessMembers(params.businessId, creds),
         getPricing(params.businessId, creds).catch(() => ({ plans: [], credit_packs: [] })),
         getShellManifest(params.businessId, creds).catch(() => null),
         listLocalGrants(params.businessId, creds).catch(() => []),
         getBusinessWallet(params.businessId, creds).catch(() => null),
+        // Admin-only route — a plain member's 403 is expected, not an error.
+        getPaymentConnection(params.businessId, creds).catch(() => null),
       ]);
       setBusiness(mine.find((b) => b.id === params.businessId) ?? null);
       setMembers(mem);
@@ -96,6 +110,7 @@ export default function BusinessDetailPage() {
       setCreditPacks(pricing.credit_packs);
       setLocalGrants(grants);
       setWallet(wal);
+      setPaymentConnection(payConn);
       const commerce = manifest?.ui.sidebar_items.some((item) => item.id === "revenue") ?? false;
       setHasCommerce(commerce);
       if (commerce) {
@@ -187,6 +202,58 @@ export default function BusinessDetailPage() {
       show(err instanceof Error ? err.message : "Failed to mint a connect token");
     } finally {
       setConnecting(false);
+    }
+  }
+
+  async function handleConnectStripePayments() {
+    if (!creds) return;
+    setPayBusy(true);
+    try {
+      const { onboarding_url } = await connectStripePayments(params.businessId, creds, window.location.href);
+      window.location.href = onboarding_url;
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Stripe connect failed");
+      setPayBusy(false);
+    }
+  }
+
+  async function handleLsPaymentsSubmit() {
+    if (!creds) return;
+    setPayBusy(true);
+    try {
+      if (!lsStores) {
+        const res = await connectLemonSqueezyPayments(params.businessId, creds, lsKey);
+        const stores = res.stores ?? [];
+        const first = stores[0];
+        if (!first) show("This API key has no stores — create a dedicated Lemon Squeezy store first");
+        else {
+          setLsStores(stores);
+          setLsStoreId(first.id);
+        }
+      } else {
+        await connectLemonSqueezyPayments(params.businessId, creds, lsKey, lsStoreId);
+        setLsKeyOpen(false);
+        setLsKey("");
+        setLsStores(null);
+        await refresh();
+      }
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Lemon Squeezy connect failed");
+    } finally {
+      setPayBusy(false);
+    }
+  }
+
+  async function handleDisconnectPayments() {
+    if (!creds) return;
+    setPayBusy(true);
+    try {
+      await disconnectPayments(params.businessId, creds);
+      await refresh();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Disconnect failed");
+    } finally {
+      setPayBusy(false);
     }
   }
 
@@ -341,6 +408,90 @@ export default function BusinessDetailPage() {
             {creatingGrant ? "Adding…" : "Add grant"}
           </Button>
         </form>
+      )}
+
+      {/* Wallet Connect (§A1.29): the business's OWN payment account — admin-only. */}
+      {canManage && (
+        <>
+          <div className="section-label">Payments Account</div>
+          <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
+            Connect your own payment account so sales settle directly with YOU — a fresh, isolated
+            business account, never your personal one. Without one, sales run through Naelao&rsquo;s
+            checkout and settle to this business&rsquo;s wallet.
+          </p>
+          <div className="settings-block">
+            {paymentConnection ? (
+              <div className="settings-row">
+                <div>
+                  <div className="settings-row-label">
+                    {paymentConnection.provider === "stripe" ? "Stripe" : "Lemon Squeezy"}
+                    {paymentConnection.details.store_name ? ` — ${paymentConnection.details.store_name}` : ""}
+                  </div>
+                  <div className="settings-row-sub">
+                    <Badge color={paymentConnection.status === "active" ? "green" : paymentConnection.status === "pending" ? "amber" : "red"}>
+                      {paymentConnection.status === "pending" ? "pending onboarding" : paymentConnection.status}
+                    </Badge>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {paymentConnection.provider === "stripe" && paymentConnection.status === "pending" && (
+                    <Button onClick={handleConnectStripePayments} disabled={payBusy}>
+                      Resume onboarding
+                    </Button>
+                  )}
+                  <button className="btn btn-secondary" type="button" onClick={handleDisconnectPayments} disabled={payBusy}>
+                    Disconnect
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="settings-row">
+                <div>
+                  <div className="settings-row-label">Not connected</div>
+                  <div className="settings-row-sub">Stripe creates a new isolated business account; Lemon Squeezy uses your own store.</div>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <Button onClick={handleConnectStripePayments} disabled={payBusy}>
+                    {payBusy ? "Starting…" : "Connect Stripe"}
+                  </Button>
+                  <button className="btn btn-secondary" type="button" onClick={() => setLsKeyOpen(true)} disabled={payBusy}>
+                    Connect Lemon Squeezy
+                  </button>
+                </div>
+              </div>
+            )}
+            {lsKeyOpen && !paymentConnection && (
+              <div style={{ padding: "0 12px 12px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+                {!lsStores ? (
+                  <FormInput
+                    type="password"
+                    placeholder="Lemon Squeezy API key (lsq_api_...)"
+                    value={lsKey}
+                    onChange={(e) => setLsKey(e.target.value)}
+                    style={{ flex: 1, minWidth: 220 }}
+                  />
+                ) : (
+                  <FormSelect value={lsStoreId} onChange={(e) => setLsStoreId(e.target.value)} style={{ flex: 1, minWidth: 220 }}>
+                    {lsStores.map((s) => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </FormSelect>
+                )}
+                <Button onClick={handleLsPaymentsSubmit} disabled={payBusy || (!lsStores && !lsKey)}>
+                  {payBusy ? "Working…" : lsStores ? "Connect store" : "Verify key"}
+                </Button>
+                <button
+                  className="btn btn-secondary"
+                  type="button"
+                  onClick={() => { setLsKeyOpen(false); setLsStores(null); setLsKey(""); }}
+                  disabled={payBusy}
+                >
+                  Cancel
+                </button>
+              </div>
+            )}
+          </div>
+        </>
       )}
 
       {/* F-WALLET-7: the transparency section — "your AI only spends money this business earned". */}
