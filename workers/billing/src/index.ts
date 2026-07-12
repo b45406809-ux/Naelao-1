@@ -12,7 +12,7 @@ import {
 // checkout/portal (previously the last Stripe-backed path) now runs through the same LS store as
 // every other money path. stripe.ts is deleted; /webhooks/stripe removed.
 import { Hono } from "hono";
-import { checkQuota, recordUsageEvent } from "./quota.js";
+import { checkQuota, recordUsageEvent, getUsageSummary } from "./quota.js";
 import { handleLemonSqueezyWebhook } from "./lemon-squeezy.js";
 import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
 
@@ -385,6 +385,26 @@ app.get("/internal/usage/infra-credits/check", async (c) => {
 
   const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "infra_credits", planTier);
   return c.json({ ...quota, plan_tier: planTier });
+});
+
+// ── GET /internal/usage/llm-tokens/summary ───────────────────────────────────
+// §A1.27: day/week/month usage for the context-window usage UI (apps/shell) — distinct from
+// /internal/usage/llm-tokens/check above, which is a single monthly allowed/blocked gate decision
+// for enforceRunGates. This is a display-only summary across three windows, uncached (reads the
+// D1 aggregate directly — see getUsageSummary's own comment on why that's the right tradeoff for
+// a UI number instead of a gate check).
+app.use("/internal/usage/llm-tokens/summary", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.get("/internal/usage/llm-tokens/summary", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+
+  const sub = await c.env.PLATFORM_DB.prepare(
+    "SELECT plan_tier FROM subscriptions WHERE org_id = ?"
+  ).bind(orgId).first<{ plan_tier: string }>();
+  const planTier = sub?.plan_tier ?? "free";
+
+  const summary = await getUsageSummary(c.env.PLATFORM_DB, orgId, "llm_tokens", planTier);
+  return c.json({ ...summary, plan_tier: planTier });
 });
 
 // ── POST /internal/commerce/checkout ─────────────────────────────────────────

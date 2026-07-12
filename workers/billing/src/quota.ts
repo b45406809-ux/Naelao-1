@@ -215,3 +215,76 @@ export async function invalidateQuotaCache(
   const metrics: QuotaMetric[] = ["spaces", "kb_docs", "api_calls", "llm_tokens", "infra_credits"];
   await Promise.all(metrics.map((m) => kv.delete(kvKey(orgId, m))));
 }
+
+/** §A1.27: a "usage_events"-backed metric — the only ones a day/week/month rollup makes sense
+ *  for (spaces/kb_docs are point-in-time counts, not accumulating events). */
+type WindowedMetric = "api_calls" | "llm_tokens" | "infra_credits";
+type UsageWindow = "day" | "week" | "month";
+
+const WINDOW_SQL: Record<UsageWindow, string> = {
+  day: "datetime('now', 'start of day')",
+  week: "datetime('now', '-7 days')",
+  month: "datetime('now', 'start of month')",
+};
+
+/** Uncached — direct D1 aggregate for one (metric, window) pair. Deliberately bypasses the KV
+ *  cache `getCurrentUsage` uses for the monthly gate check: this feeds a usage DISPLAY (the
+ *  context-usage UI), not an enforcement decision, so a moment of extra D1 load in exchange for
+ *  never showing a builder a stale number is the right tradeoff here — unlike the monthly gate,
+ *  which intentionally tolerates ~300s staleness to avoid a D1 read on every single run. */
+async function getUsageForWindow(
+  db: D1Database,
+  orgId: string,
+  metric: WindowedMetric,
+  window: UsageWindow
+): Promise<number> {
+  const row = await db
+    .prepare(
+      `SELECT COALESCE(SUM(quantity), 0) as cnt
+       FROM usage_events
+       WHERE org_id = ?
+         AND event_type = ?
+         AND recorded_at >= ${WINDOW_SQL[window]}`
+    )
+    .bind(orgId, metric)
+    .first<{ cnt: number }>();
+  return row?.cnt ?? 0;
+}
+
+export interface UsageWindowSummary {
+  used: number;
+  limit: number;
+}
+
+/**
+ * §A1.27: day/week/month usage for a metric, each against the SAME monthly plan-tier limit
+ * (there's no separate daily/weekly plan allowance today — the context-usage UI shows all three
+ * windows against the one real limit so a user can see how fast they're burning through it, not
+ * because the platform enforces three different ceilings). llm_tokens is the metric the
+ * context-window UI actually needs; infra_credits/api_calls reuse the same shape for completeness.
+ */
+export async function getUsageSummary(
+  db: D1Database,
+  orgId: string,
+  metric: WindowedMetric,
+  planTier: string
+): Promise<{ daily: UsageWindowSummary; weekly: UsageWindowSummary; monthly: UsageWindowSummary }> {
+  const limits = PLAN_LIMITS[planTier] ?? {
+    maxSpaces: 0, maxKbDocs: 0, maxApiCallsPerMonth: 0, maxMonthlyTokens: 0, maxMonthlyInfraCredits: 0,
+  };
+  const limit =
+    metric === "llm_tokens" ? limits.maxMonthlyTokens
+    : metric === "infra_credits" ? limits.maxMonthlyInfraCredits
+    : limits.maxApiCallsPerMonth;
+
+  const [daily, weekly, monthly] = await Promise.all([
+    getUsageForWindow(db, orgId, metric, "day"),
+    getUsageForWindow(db, orgId, metric, "week"),
+    getUsageForWindow(db, orgId, metric, "month"),
+  ]);
+  return {
+    daily: { used: daily, limit },
+    weekly: { used: weekly, limit },
+    monthly: { used: monthly, limit },
+  };
+}

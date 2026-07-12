@@ -924,6 +924,16 @@ api.all("/spaces/:spaceId/sessions/:sessionId/approvals/*", async (c) =>
 api.all("/spaces/:spaceId/sessions/:sessionId/approvals", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
+// §A1.27: context-window usage UI + pre-send compaction — implemented on the agents worker
+// (reuses NaelaoAgentDO/getAgentDOForSpace), so these two need the same explicit-before-catch-all
+// registration the agent/approvals sub-paths above needed, or they'd silently fall through to the
+// generic sessions/* catch-all below and 404 against SPACES_WORKER (which doesn't implement them).
+api.all("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/sessions/:sessionId/compact", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
 
 // Session + message CRUD (session create/get, message get/post, feedback) → spaces worker,
 // which owns this via SpaceDO. proxyTo already mints the x-naelao-internal-token

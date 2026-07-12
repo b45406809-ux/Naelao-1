@@ -4505,3 +4505,137 @@ narrow BUILDER_CALLER_ROLES-only scoping via the same `NaelaoAgentDO` `/run` fix
 `interactive-run-end-user-credit-gate.test.ts` established), `pnpm turbo run typecheck` clean (75
 tasks). Next: Phase 4 (real token streaming + context-window usage UI + pre-send
 auto-compaction), Phase 5 (model switcher).
+
+## A1.27 Second full-vision batch, Phase 4: real streaming fixes + context-window usage UI — BUILT (re-scoped)
+
+The user's ask was a Claude-Code-web-style context-window meter with pre-send auto-compaction,
+plus "real" background streaming (client sees live text if open, run survives if closed). Before
+writing any UI, traced how the LIVE dispatch path (`handleScriptRun`, the only path `/agent/run`
+calls since item 47's A-2 cutover) actually assembles what it sends the LLM — and found the
+literal "check %, compact if too full" design doesn't map onto it.
+
+### The re-scoping finding
+
+`GatewayReasoner.decide()` (`workers/agents/src/script-engine/reasoner.ts:63-84`) builds its
+`userContent` fresh on every call from `input.snapshot` (an `ObserveSnapshot` — a small
+fingerprint + a handful of domain fields, NOT a conversation transcript) and `input.candidates`
+(a fixed-size list of matched scripts). This payload's size does not grow as a conversation gets
+longer — there is no accumulating array to trim. The classic "compaction" mechanism (drop/summarize
+old messages once a growing `messages` array gets too big) DOES exist in this codebase, but only
+inside the legacy ReAct `runReActLoop`/`applyContextBudget`/`truncateMiddle`
+(`NaelaoAgentDO.ts:129-199`) — dead code, unreferenced from any dispatch path since A-2. Retrofitting
+that dead machinery to accept a real per-model window (instead of its hardcoded
+`MODEL_CONTEXT_LIMIT_TOKENS=190_000`, tagged to Sonnet) would have been real work spent on code
+nothing calls. Decision: leave it exactly as-is (not worth the churn/risk for unreferenced code),
+and build a fresh, honestly-scoped mechanism for the live path instead — one that measures and acts
+on something that actually grows: the session's own persisted message transcript.
+
+### Real bug #1 — the SSE endpoint was silently dead weight
+
+`GET .../agent/runs/:runId/stream` used named SSE events (`event: status`, `event: done`) with
+payloads carrying no `type` field. A browser's native `EventSource.onmessage` only fires for
+UNNAMED (default `message`) events — so it never fired for this endpoint's output at all. Read all
+three known chat clients (`apps/shell/Chat.tsx`, `apps/widget/naelao-chat.ts`,
+`apps/portal/.../page.tsx`) and confirmed they independently already expect an unnamed event
+carrying `{type: "delta"|"done"|"error", ...}` — a systemic, shared assumption, not a typo in one
+file. The only way any client ever progressed was `onerror` firing once the stream closed
+(interpreted as a dropped connection), falling back to plain polling. **Fixed the server to match
+what every client already expects** (one `sendEvent()` helper now emits `data: {...}\n\n` with no
+`event:` line, `type` always present) rather than touching three separate client files — lower
+blast radius, one source of truth. The poll loop (which re-reads `fetchRunOrTaskStatus` every
+second, unchanged) now also diffs the run's `final_answer` against what it last sent and emits the
+new substring as a real `type:"delta"` event — honest about its own limitation: since nothing
+today writes `final_answer` incrementally mid-generation, this fires once with the whole answer in
+practice, not truly token-by-token (see the deferred item below).
+
+### Real bug #2 — Chat.tsx never reattached to its own in-flight run
+
+`apps/shell/Chat.tsx`'s init effect only ever called `getMessages()` (history) — never checked
+whether a run it had itself started was still going. A reload or a remount (navigating away and
+back within the same tab) showed only history, with zero indication anything was still running,
+until the next explicit send. Fixed with `getActiveRunId`/`storeActiveRunId`/`clearActiveRunId`
+(`apps/shell/src/lib/chatSession.ts`, same `sessionStorage` scope as the existing chat-session-id
+helpers) — `handleSubmit` stores the run id the moment a message is sent, a new effect (gated on
+`chatSessionId` being resolved) checks for a stored active run id on mount and reattaches via
+`pollRun`+`streamRun` if it's still `"running"`, and all three run-resolution paths
+(`streamRun`'s done/error handlers, `pollUntilDone`'s terminal branches) clear it. **Scoped
+honestly:** `sessionStorage` survives a reload/remount of the SAME tab, not a genuinely new
+tab/browser session — that would need a broader `localStorage`-based redesign of session lifetime
+semantics this pass didn't make.
+
+### Context-window usage UI (the actually-growing thing: session message history, not reasoner payload)
+
+New `contextWindowForModel()`/`MODEL_CONTEXT_WINDOWS` (`packages/billing-core`, alongside the
+existing per-model pricing table) — replaces the single hardcoded Sonnet-tagged
+`MODEL_CONTEXT_LIMIT_TOKENS` with a real per-model lookup (documented as approximate defaults,
+verify against current model docs before relying on it for a hard cutoff, matching this
+codebase's own precedent for this class of assumption).
+
+New `GET /spaces/:spaceId/sessions/:sessionId/context-usage` (agents worker): fetches the
+session's real message transcript from SpaceDO (same call shape `resolveRunGoal` already uses),
+estimates `current_tokens` via the same chars/4 approximation used elsewhere in this codebase,
+compares against `contextWindowForModel(model)` for `percent_full`, and best-effort attaches
+day/week/month `llm_tokens` usage against the org's plan limit (degrades to `null` fields, never
+fails the request, if the billing worker is unbound or unreachable).
+
+New `getUsageSummary()` (`workers/billing/src/quota.ts`) — day/week/month rollups over the same
+`usage_events` table the existing monthly-only `checkQuota`/`getCurrentUsage` already query,
+parameterizing the date-window SQL clause (`start of day` / `-7 days` / `start of month`).
+**Deliberately uncached and NOT reusing the monthly gate's KV cache** — that cache exists to avoid
+a D1 read on every single run's enforcement check and intentionally tolerates ~300s staleness;
+this feeds a UI number a user is actively looking at, where a stale figure is a worse tradeoff than
+one extra D1 read. Exposed via `GET /internal/usage/llm-tokens/summary`, HMAC-gated identically to
+the existing `/llm-tokens/check`.
+
+New `ContextUsageMeter` component (`apps/shell/src/components/ContextUsageMeter.tsx`), rendered in
+`Chat.tsx`'s thread-panel Stats tab, refetching whenever `messages.length` changes (i.e. after
+every completed run).
+
+### Pre-send auto-compaction, re-scoped to what's real
+
+New `POST /spaces/:spaceId/sessions/:sessionId/compact`: triggers `NaelaoAgentDO`'s Memory OS
+maintenance pass (`handleMemoryMaintenance` — decay/promote/prune, previously only reachable via
+the hourly heartbeat cron) on demand, addressed at the space-wide assistant DO via the same
+`getAgentDOForSpace` helper the cron itself uses (`sessionId` is accepted for a symmetrical
+session-scoped client API but not used for scoping — the underlying action is space-wide, matching
+the cron's own granularity). `ContextUsageMeter` calls this once `percent_full` crosses 85%, gated
+(via a ref keyed on the last-seen `refreshKey`) to fire at most once per completed run rather than
+on every poll tick. **Deliberately client-driven, not a hidden per-message server-side check** —
+checking this inline on every single run would add a full extra round trip plus embedding calls to
+the hot path for a condition that, per the re-scoping finding above, rarely actually matters for
+the reasoner's own token spend.
+
+### Router wiring found and fixed along the way
+
+`context-usage`/`compact` are implemented on the agents worker, but both live under
+`/spaces/:spaceId/sessions/:sessionId/...`, whose generic catch-all
+(`api.all("/spaces/:spaceId/sessions/*", ...)`, `workers/router/src/index.ts`) forwards to
+SPACES_WORKER, not agents — the exact trap Phase 6's own history documents having hit once already
+for the `/agent/*`/`/approvals/*` sub-paths (which needed their own explicit registration BEFORE
+the catch-all to win). Added the same explicit `api.all` entries for these two new routes; without
+them they'd have silently 404'd against the wrong worker in production despite passing every local
+test that talks to the agents worker directly. Also found (while wiring the billing-summary route
+and Phase 3's Workflow infra-usage reporting): both `AgentsEnv` (`workers/agents/src/index.ts`) and
+the Workflow classes' shared `Env` (`workers/agents/src/env.ts`) were missing a
+`BILLING_WORKER?: Fetcher` field despite the binding already existing in `wrangler.toml` — added to
+both.
+
+### Deliberately NOT built — true token-by-token live streaming
+
+Two real paths exist to deliver this, neither attempted this pass: (a) run the terminal-answer LLM
+call with `streamLlm` (real as of Phase 2) and persist growing partial text somewhere the SSE poll
+loop can diff against — needs new storage (a partial-answer field on `agent_runs`/TaskDO, updated
+mid-generation) the script-native path doesn't have today; (b) broadcast real per-chunk deltas
+through the already-built `WsHubDO`/`broadcastSpaceEvent` pub-sub (Phase V, §A1.18) and add a
+WebSocket consumer to the frontend — the backend fan-out primitive already exists, matching Phase
+V's own stated "backend built, live UI consumer is the next step" precedent. Both are real, scoped
+follow-ups, not silently dropped. The durability half of the user's original ask — a run surviving
+a closed tab — was already real before this phase (Phase Q's Workflow+TaskDO default) and is
+unaffected by any of the above.
+
+1799/1799 tests pass (18 new: `streaming-real-deltas.test.ts` drives the real SSE endpoint
+end-to-end and parses the actual wire-format output, proving no `event:` line survives and every
+frame carries `type`; `context-window-usage-endpoint.test.ts` covers both the context-size and
+usage-summary halves plus every degradation path; `billing-usage-summary.test.ts` covers the new
+day/week/month SQL windowing directly; 2 new `contextWindowForModel` cases), `pnpm turbo run
+typecheck` clean (75 tasks), `apps/shell` verified via `next build`. Next: Phase 5 (model switcher).

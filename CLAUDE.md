@@ -1405,11 +1405,90 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     (`infra.execution.completed`) alongside the isolate/container recording, tenant_id in
     `indexes[0]`, best-effort. **Deliberately NOT extended this pass:** `handleChannelHeartbeat`'s
     separate per-message customer-bot debit loop (still token-credits only). 1781/1781 tests pass
-    (12 new), `pnpm turbo run typecheck` clean (75 tasks). Next: Phase 4 (real token streaming +
-    context-window usage UI + pre-send auto-compaction), Phase 5 (model switcher, which also fixes
-    a found dead-code bug — `spacetypes.model_config` is read by `index.ts` but no migration ever
-    created that column, so every run silently falls through to hardcoded model-name fallbacks).
-    Full plan: `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.24-A1.26.
+    (12 new), `pnpm turbo run typecheck` clean (75 tasks). **Phase 4 (real streaming fixes +
+    context-window usage UI + pre-send auto-compaction) is now BUILT, re-scoped against a real
+    architectural finding.** Investigating the "check % full, compact if needed" ask found that
+    the script-native loop's own per-turn reasoner payload (`GatewayReasoner.decide()`'s
+    `userContent`) does NOT grow with conversation length — it's rebuilt fresh each call from a
+    small fingerprint snapshot + a fixed-size candidate list, not a growing message array (that
+    growing-array design lives only in the now-dead ReAct `runReActLoop`/`applyContextBudget`,
+    unreferenced since item 47's A-2 cutover). So "compaction" can't mean "trim the reasoner's own
+    payload" for the live path — there's nothing there to trim. Re-scoped honestly: context
+    usage is measured from the session's REAL, actually-growing artifact (its persisted message
+    transcript), and "compaction" means running Memory OS maintenance early, not trimming a
+    payload that was never going to overflow.
+    - **Real bug fixed:** the SSE endpoint (`GET .../agent/runs/:runId/stream`) emitted NAMED SSE
+      events (`event: status`/`event: done`) with no `type` field in the payload. A browser's
+      native `EventSource.onmessage` never fires for a named event — and all three known chat
+      clients (`apps/shell`, `apps/widget`, `apps/portal`) independently check `data.type ===
+      "delta"|"done"|"error"` on unnamed events, confirmed by reading all three. `onmessage`
+      therefore never fired for any of them; every client's only real path to a result was
+      `onerror` firing once the stream closed, falling back to plain polling — the SSE endpoint
+      was silent dead weight. Fixed the SERVER to match what every client already expects (unnamed
+      `data:`-only frames, `type` field) rather than changing three client files. The poll loop
+      also now emits the delta between what was last sent and the run's current `final_answer` as
+      a real `type:"delta"` event (today's runs only populate `final_answer` once, at completion,
+      so in practice this fires once with the whole answer — true incremental mid-generation
+      writes are the deferred item below, not silently claimed as done here).
+    - **Real bug fixed:** `apps/shell/Chat.tsx` never checked for an in-flight run on mount — a
+      reload or remount showed only history with no sign a run was still going. New
+      `getActiveRunId`/`storeActiveRunId`/`clearActiveRunId` (`chatSession.ts`, same sessionStorage
+      scope as the existing chat-session-id helpers) let a remount detect and reattach to its own
+      in-flight run via `pollRun` + `streamRun`. Scoped honestly: this fixes reload/remount within
+      the SAME tab (sessionStorage), not resumption in a genuinely new tab/browser session, which
+      would need a broader localStorage-based redesign not made here.
+    - **Context-window usage UI**, real this time: new `GET .../sessions/:sessionId/context-usage`
+      (agents worker) returns `current_tokens` (estimated from the session's real message
+      transcript, fetched from SpaceDO — chars/4 approximation, same convention used elsewhere),
+      `model_window` (new `contextWindowForModel()`/`MODEL_CONTEXT_WINDOWS`, `packages/billing-core`
+      — replaces the single hardcoded `MODEL_CONTEXT_LIMIT_TOKENS=190_000` in `NaelaoAgentDO.ts`,
+      which was already wrong for any model but Sonnet; that dead-ReAct-code constant itself was
+      left untouched rather than retrofitted, since threading a real model param through it isn't
+      worth the churn for unreferenced code), `percent_full`, and day/week/month `llm_tokens` usage
+      against the org's plan limit. New `getUsageSummary()` (`workers/billing/src/quota.ts`) adds
+      real day/week/month rollups (only a monthly one existed before) over the same `usage_events`
+      table, uncached (a UI number, not a gate decision — the existing KV-cached monthly gate check
+      is untouched), exposed via a new `GET /internal/usage/llm-tokens/summary` route mirroring the
+      existing `/llm-tokens/check`'s HMAC gate. New `ContextUsageMeter` component (`apps/shell`)
+      renders this in the chat thread panel's Stats tab, refetching after every completed run.
+    - **Pre-send auto-compaction, re-scoped:** new client-driven `POST .../sessions/:sessionId/
+      compact` triggers `NaelaoAgentDO`'s existing (previously only cron-triggered hourly) Memory
+      OS maintenance pass on demand, addressed at the space-wide assistant DO via the same
+      `getAgentDOForSpace` helper the heartbeat cron uses. `ContextUsageMeter` calls it once when
+      `percent_full` crosses 85%, gated to fire at most once per completed run rather than on every
+      poll. Deliberately client-driven, not a hidden per-message server-side check — that would add
+      a full extra round trip + embedding calls to every single run's hot path for a condition that
+      rarely fires.
+    - New router entries: `context-usage`/`compact` are implemented on the agents worker but live
+      under `/spaces/:spaceId/sessions/:sessionId/...`, whose generic catch-all
+      (`api.all("/spaces/:spaceId/sessions/*", ...)`) routes to SPACES_WORKER, not agents — same
+      trap the `/agent/*`/`/approvals/*` sub-paths already needed their own explicit
+      before-the-catch-all registration for (Phase 6's own documented finding); added the same
+      explicit entries for these two, or they'd have silently 404'd against the wrong worker.
+      `AgentsEnv`/Workflow classes' shared `Env` also both needed a `BILLING_WORKER?: Fetcher`
+      field added — already bound in `wrangler.toml`, just missing from these two particular
+      TypeScript interfaces (found while wiring the summary route + Workflow step infra-usage
+      reporting in Phase 3).
+    - **Deliberately NOT built this pass — true token-by-token live streaming.** The two paths that
+      could deliver it: (a) run the terminal-answer LLM call with the now-real `streamLlm`
+      (Phase 2) and write growing partial text somewhere the SSE poll loop can diff against, which
+      needs new persistence (a partial-answer field on `agent_runs`/TaskDO updated mid-generation)
+      that today's script-native path doesn't have; or (b) broadcast real per-chunk deltas through
+      the already-built `WsHubDO`/`broadcastSpaceEvent` pub-sub (Phase V) and add a WebSocket
+      consumer to the frontend. Both are real, scoped follow-ups — not attempted here to avoid a
+      rushed schema/pub-sub change on top of an already large phase; the durability half (a run
+      surviving a closed tab, Phase Q) was already real before this phase and is unaffected.
+      1799/1799 tests pass (18 new: `streaming-real-deltas.test.ts` drives the REAL SSE endpoint
+      end-to-end and parses actual wire-format frames, proving no `event:` line survives and every
+      frame carries the `type` field clients expect; `context-window-usage-endpoint.test.ts`;
+      `billing-usage-summary.test.ts`; 2 new `contextWindowForModel` cases), `pnpm turbo run
+      typecheck` clean (75 tasks), `apps/shell` verified via `next build` (compiles, all routes
+      generate) — not verified via a live browser session this pass (no CDP mock session run for
+      this specific component, unlike some earlier phases' UI work).
+    Next: Phase 5 (model switcher, which also fixes a found dead-code bug — `spacetypes.
+    model_config` is read by `index.ts` but no migration ever created that column, so every run
+    silently falls through to hardcoded model-name fallbacks). Full plan:
+    `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.24-A1.27.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

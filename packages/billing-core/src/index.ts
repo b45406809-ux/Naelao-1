@@ -134,6 +134,29 @@ export async function updateSubscriptionPrice(
   });
 }
 
+/**
+ * §A1.27: per-model context window size, in tokens — replaces the single hardcoded
+ * `MODEL_CONTEXT_LIMIT_TOKENS = 190_000` figure previously baked into `NaelaoAgentDO.ts` (tagged
+ * to Sonnet specifically, so it was already wrong for any other model even before the model
+ * switcher makes model choice real). Verify against current model documentation before relying on
+ * this for a hard cutoff — these are the platform's own approximate defaults, kept next to
+ * computeTokenCostMicro's per-model pricing table since both vary per model and should stay
+ * mutually consistent (same set of known model strings).
+ */
+export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
+  "claude-sonnet-4-6": 200_000,
+  "claude-haiku-4-5-20251001": 200_000,
+  "claude-opus-4-8": 200_000,
+};
+const DEFAULT_CONTEXT_WINDOW = 200_000;
+
+/** Context window size for a model, falling back to a documented default for an unknown model
+ *  string rather than throwing — a model-switcher allowlist entry that outpaces this table
+ *  should degrade to a sane default, not break context accounting. */
+export function contextWindowForModel(model: string): number {
+  return MODEL_CONTEXT_WINDOWS[model] ?? DEFAULT_CONTEXT_WINDOW;
+}
+
 // Compute token cost in USD micros (cost * 1,000,000 for integer storage)
 export function computeTokenCostMicro(
   inputTokens: number,

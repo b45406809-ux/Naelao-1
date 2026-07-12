@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeTokenCostMicro, tokensToCredits, CREDITS_PER_USD } from "@naelao/billing-core";
+import { computeTokenCostMicro, tokensToCredits, CREDITS_PER_USD, contextWindowForModel, MODEL_CONTEXT_WINDOWS } from "@naelao/billing-core";
 
 describe("computeTokenCostMicro — per-model USD pricing", () => {
   it("prices a known model's input/output tokens separately", () => {
@@ -36,5 +36,18 @@ describe("tokensToCredits — the ONLY place tokens become the platform credit u
     const micro = computeTokenCostMicro(500_000, 200_000, "claude-sonnet-4-6");
     const credits = tokensToCredits(500_000, 200_000, "claude-sonnet-4-6");
     expect(credits).toBe(Math.max(1, Math.ceil((micro * CREDITS_PER_USD) / 1_000_000)));
+  });
+});
+
+describe("contextWindowForModel — §A1.27 per-model context window lookup", () => {
+  it("returns a real window size for every known model", () => {
+    for (const model of Object.keys(MODEL_CONTEXT_WINDOWS)) {
+      expect(contextWindowForModel(model)).toBeGreaterThan(0);
+    }
+  });
+
+  it("degrades to a sane documented default for an unknown model rather than throwing", () => {
+    expect(() => contextWindowForModel("some-future-model")).not.toThrow();
+    expect(contextWindowForModel("some-future-model")).toBeGreaterThan(0);
   });
 });

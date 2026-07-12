@@ -9,6 +9,7 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
+import { contextWindowForModel } from "@naelao/billing-core";
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
 import { parseMentions, creatableFeatureKindsForRole, type MentionableAgent } from "@naelao/events";
@@ -112,6 +113,9 @@ export interface AgentsEnv {
   MCP_HUB?: Fetcher;
   /** Credentials vault — stores a connector's API key (only the name is referenced elsewhere). */
   CREDENTIALS_WORKER?: Fetcher;
+  /** §A1.27: already bound in wrangler.toml (naelao-billing); added here so the context-usage
+   *  endpoint can read the day/week/month llm_tokens summary. */
+  BILLING_WORKER?: Fetcher;
   /** Tier 2/3 follow-up — the daily digest email. The service binding already exists in
    *  wrangler.toml (NaelaoAgentDO's own env type declares it for approval-request emails) but was
    *  never surfaced on the top-level Worker's env type until this pass needed it directly. */
@@ -1046,31 +1050,51 @@ app.get(
     const writer = writable.getWriter();
     const enc = new TextEncoder();
 
-    const sendEvent = async (event: string, data: unknown): Promise<void> => {
-      const line = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+    // §A1.27: `sendEvent` used to emit a NAMED SSE event (`event: status`/`event: done`), which a
+    // browser's native EventSource never fires `onmessage` for (only unnamed/default `message`
+    // events do) — and the payload carried no `type` field at all, so even a client that somehow
+    // did receive it couldn't route it. All three known clients (apps/shell, apps/widget,
+    // apps/portal) independently expect an unnamed event with a `type` field
+    // (`"delta"|"done"|"error"`) — confirmed by reading all three; this fixes the SERVER to match
+    // what every existing client already assumes, rather than changing three client files
+    // (lower blast radius, single source of truth). Previously `es.onmessage` never fired at all
+    // for this endpoint; the only way a client ever progressed was `onerror` firing once the
+    // stream closed, falling back to polling — the SSE endpoint was silently dead weight.
+    const sendEvent = async (data: { type: string; [key: string]: unknown }): Promise<void> => {
+      const line = `data: ${JSON.stringify(data)}\n\n`;
       await writer.write(enc.encode(line));
     };
 
     // Poll the run until it terminates (max 2 minutes) — falls back to TaskDO for a
     // durable-by-default run's task_id (see fetchRunOrTaskStatus above).
     const pollTask = async (): Promise<void> => {
+      let lastSentAnswer = "";
       try {
         const deadline = Date.now() + 120_000;
         while (Date.now() < deadline) {
           const { body: run } = await fetchRunOrTaskStatus(c.env, tenantId, sessionId, spaceId, runId);
 
-          await sendEvent("status", {
-            run_id: runId,
-            status: run.status,
-            steps: run.react_steps?.length ?? 0,
-          });
+          // §A1.27: honest partial progress — if the run has already accumulated more final_answer
+          // text than we've sent (a run whose underlying execution writes incremental output),
+          // forward the NEW portion as a real delta rather than only a content-free status ping.
+          // Today's script-engine/ReAct runs still only populate final_answer once, at
+          // completion, so in practice this fires once with the whole answer rather than
+          // incrementally — true token-level incremental writes are tracked as follow-up work
+          // (see docs/spec-appendix's A1.27 note), not silently claimed here.
+          const currentAnswer = run.final_answer ?? "";
+          if (currentAnswer.length > lastSentAnswer.length && currentAnswer.startsWith(lastSentAnswer)) {
+            await sendEvent({ type: "delta", run_id: runId, content: currentAnswer.slice(lastSentAnswer.length) });
+            lastSentAnswer = currentAnswer;
+          }
+
+          await sendEvent({ type: "status", run_id: runId, status: run.status, steps: run.react_steps?.length ?? 0 });
 
           if (
             run.status === "completed" ||
             run.status === "failed" ||
             run.status === "cancelled"
           ) {
-            await sendEvent("done", { run_id: runId, status: run.status, final_answer: run.final_answer, error: run.error });
+            await sendEvent({ type: "done", run_id: runId, status: run.status, final_answer: run.final_answer, error: run.error });
             break;
           }
 
@@ -1078,7 +1102,7 @@ app.get(
         }
       } catch (err) {
         try {
-          await sendEvent("error", { message: err instanceof Error ? err.message : String(err) });
+          await sendEvent({ type: "error", message: err instanceof Error ? err.message : String(err) });
         } catch { /* ignore write error after close */ }
       } finally {
         try { await writer.close(); } catch { /* already closed */ }
@@ -1097,6 +1121,102 @@ app.get(
     });
   }
 );
+
+// ── GET /spaces/:spaceId/sessions/:sessionId/context-usage ───────────────────
+// §A1.27: the Claude-Code-web-style context-window usage UI's data source. Two independent
+// numbers: (1) this session's current message-history size against the selected model's context
+// window (estimated from the session's own persisted transcript — the script-native loop's own
+// per-turn reasoner payload does NOT grow with conversation length, so THIS is the honest thing
+// to measure; see the A1.27 appendix note for why), and (2) day/week/month LLM-token usage
+// against the org's plan limit (best-effort — degrades to nulls, never fails the request, if the
+// billing worker is unbound or unreachable).
+app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const sessionId = c.req.param("sessionId");
+  const model = c.req.query("model") || "claude-haiku-4-5-20251001";
+
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(spaceId, tenantId).first<{ id: string }>();
+  if (!space) throw notFound("Space");
+
+  let currentTokens = 0;
+  try {
+    const resp = await c.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/messages?limit=500`,
+      { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }
+    ));
+    if (resp.ok) {
+      const data = await resp.json<{ data?: Array<{ content: string }> }>();
+      const totalChars = (data.data ?? []).reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
+      currentTokens = Math.ceil(totalChars / 4); // same chars-per-token approximation used elsewhere
+    }
+  } catch {
+    // Message history unreachable — report 0 rather than failing the whole endpoint.
+  }
+
+  const modelWindow = contextWindowForModel(model);
+  const percentFull = modelWindow > 0 ? Math.min(100, Math.round((currentTokens / modelWindow) * 100)) : 0;
+
+  let usage: { daily: { used: number; limit: number }; weekly: { used: number; limit: number }; monthly: { used: number; limit: number } } | null = null;
+  if (c.env.BILLING_WORKER) {
+    try {
+      const resp = await c.env.BILLING_WORKER.fetch(new Request(
+        "http://billing-worker/internal/usage/llm-tokens/summary",
+        { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }
+      ));
+      if (resp.ok) usage = await resp.json();
+    } catch {
+      // Billing service unreachable — the context-size half of the response is still useful.
+    }
+  }
+
+  return c.json({
+    current_tokens: currentTokens,
+    model,
+    model_window: modelWindow,
+    percent_full: percentFull,
+    daily_used: usage?.daily.used ?? null,
+    daily_limit: usage?.daily.limit ?? null,
+    weekly_used: usage?.weekly.used ?? null,
+    weekly_limit: usage?.weekly.limit ?? null,
+    monthly_used: usage?.monthly.used ?? null,
+    monthly_limit: usage?.monthly.limit ?? null,
+  });
+});
+
+// ── POST /spaces/:spaceId/sessions/:sessionId/compact ────────────────────────
+// §A1.27: the pre-send auto-compaction action. The script-native loop's own per-turn reasoner
+// payload doesn't grow with conversation length (see the context-usage endpoint's comment) — so
+// there's no reasoner-side transcript to trim. What DOES help a long-running thread is running
+// Memory OS's maintenance pass (decay/promote/prune, normally only cron-triggered hourly) EARLY,
+// on demand, so facts/episodic notes accumulated so far get distilled into durable memory before
+// the thread keeps growing. Deliberately client-driven (called when the context-usage endpoint's
+// `percent_full` crosses a threshold), not a hidden check on every single message send — that
+// would add a full extra round trip + embedding calls to every run's hot path for a condition
+// that rarely fires. `sessionId` isn't used for scoping (maintenance runs per-space, matching the
+// existing heartbeat cron's own addressing) — accepted as a param for a symmetrical, session-
+// scoped client API even though the underlying action is space-wide.
+app.post("/spaces/:spaceId/sessions/:sessionId/compact", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId");
+
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(spaceId, tenantId).first<{ id: string }>();
+  if (!space) throw notFound("Space");
+
+  const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent");
+  const resp = await stub.fetch(new Request("http://agent-do/memory/maintenance", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ spaceId }),
+  }));
+  if (!resp.ok) return c.json({ ok: false, message: "compaction pass failed" }, 502);
+  const result = await resp.json();
+  return c.json({ ok: true, result });
+});
 
 // ── G-AX04: Async Task routes ─────────────────────────────────────────────────
 // GET  /spaces/:spaceId/tasks             — list tasks for space

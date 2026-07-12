@@ -235,6 +235,37 @@ export async function pollRun(spaceId: string, sessionId: string, runId: string,
   };
 }
 
+// ── Context-window usage (§A1.27) ────────────────────────────────────────────
+
+export interface ContextUsage {
+  current_tokens: number;
+  model: string;
+  model_window: number;
+  percent_full: number;
+  daily_used: number | null;
+  daily_limit: number | null;
+  weekly_used: number | null;
+  weekly_limit: number | null;
+  monthly_used: number | null;
+  monthly_limit: number | null;
+}
+
+export async function getContextUsage(
+  spaceId: string,
+  sessionId: string,
+  session: SessionCredentials,
+  model?: string
+): Promise<ContextUsage> {
+  const qs = model ? `?model=${encodeURIComponent(model)}` : "";
+  return apiFetch(`/v1/spaces/${spaceId}/sessions/${sessionId}/context-usage${qs}`, { session });
+}
+
+/** Client-driven pre-send compaction — call when getContextUsage's percent_full crosses a
+ *  threshold (the shell UI uses 85%, matching the compaction hook's own documented default). */
+export async function compactSession(spaceId: string, sessionId: string, session: SessionCredentials): Promise<{ ok: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/sessions/${sessionId}/compact`, { method: "POST", body: JSON.stringify({}), session });
+}
+
 // ── Projects ───────────────────────────────────────────────────────────────
 
 export interface Project {

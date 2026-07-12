@@ -16,7 +16,15 @@ import {
   type Message,
 } from "@/lib/api";
 import type { SessionCredentials } from "@/lib/api";
-import { getChatSessionId, storeChatSessionId, clearChatSessionId } from "@/lib/chatSession";
+import {
+  getChatSessionId,
+  storeChatSessionId,
+  clearChatSessionId,
+  getActiveRunId,
+  storeActiveRunId,
+  clearActiveRunId,
+} from "@/lib/chatSession";
+import { ContextUsageMeter } from "./ContextUsageMeter";
 
 const POLL_INTERVAL_MS = 1500;
 const MAX_POLL_DURATION_MS = 60_000;
@@ -140,6 +148,7 @@ export function Chat({
           stopPolling();
           setStreamingContent("");
           setIsLoading(false);
+          clearActiveRunId(spaceId, sessionKey);
           if (run.status === "completed" && run.final_answer) {
             setMessages((prev) => [
               ...prev,
@@ -152,6 +161,7 @@ export function Chat({
           stopPolling();
           setStreamingContent("");
           setIsLoading(false);
+          clearActiveRunId(spaceId, sessionKey);
           setError(err instanceof Error ? err.message : "Polling failed");
         }
       }, POLL_INTERVAL_MS);
@@ -183,6 +193,7 @@ export function Chat({
             closeSSE();
             setStreamingContent("");
             setIsLoading(false);
+            clearActiveRunId(spaceId, sessionKey);
             setLastRun({ id: data.run_id ?? runId, status: "completed", final_answer: accumulated });
             if (accumulated) {
               setMessages((prev) => [
@@ -194,6 +205,7 @@ export function Chat({
             closeSSE();
             setStreamingContent("");
             setIsLoading(false);
+            clearActiveRunId(spaceId, sessionKey);
             setError(data.message ?? "The agent run failed");
           }
         } catch {
@@ -211,8 +223,40 @@ export function Chat({
         }
       };
     },
-    [spaceId, session, closeSSE, pollUntilDone]
+    [spaceId, sessionKey, session, closeSSE, pollUntilDone]
   );
+
+  // §A1.27: reattach to an in-flight run on mount (a reload, or a remount from navigating away
+  // and back within the same tab) instead of only showing history with no sign a run is still
+  // going. Runs once chatSessionId is resolved (i.e. init() above has finished).
+  React.useEffect(() => {
+    if (!chatSessionId) return;
+    const activeRunId = getActiveRunId(spaceId, sessionKey);
+    if (!activeRunId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const run = await pollRun(spaceId, chatSessionId, activeRunId, session);
+        if (cancelled) return;
+        if (run.status === "running") {
+          setIsLoading(true);
+          void streamRun(chatSessionId, activeRunId);
+        } else {
+          // Already resolved while we were away — history (fetched above) already reflects it.
+          clearActiveRunId(spaceId, sessionKey);
+        }
+      } catch {
+        // Can't confirm the run's state — leave it be rather than guess; the next send will
+        // overwrite the stored id regardless.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- streamRun/session intentionally
+    // excluded: this should only re-run when the session actually changes, not on every render
+    // streamRun/session identity happens to change.
+  }, [chatSessionId, spaceId, sessionKey]);
 
   const handleSubmit = React.useCallback(async () => {
     const trimmed = input.trim();
@@ -225,13 +269,14 @@ export function Chat({
     setMessages((prev) => [...prev, optimistic]);
     try {
       const { agentRunId } = await sendMessage(spaceId, chatSessionId, trimmed, session);
+      storeActiveRunId(spaceId, agentRunId, sessionKey);
       streamRun(chatSessionId, agentRunId);
     } catch (err) {
       setIsLoading(false);
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       setError(err instanceof Error ? err.message : "Failed to send message");
     }
-  }, [input, isLoading, chatSessionId, spaceId, session, streamRun]);
+  }, [input, isLoading, chatSessionId, spaceId, sessionKey, session, streamRun]);
 
   if (initializing) {
     return (
@@ -380,6 +425,12 @@ export function Chat({
                     {lastRun?.status ?? "—"}
                   </span>
                 </div>
+                <ContextUsageMeter
+                  spaceId={spaceId}
+                  sessionId={chatSessionId}
+                  session={session}
+                  refreshKey={messages.length}
+                />
               </>
             )}
             {panelTab !== "stats" && (
