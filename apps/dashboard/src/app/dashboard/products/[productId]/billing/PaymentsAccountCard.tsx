@@ -22,6 +22,7 @@ import type { BusinessWalletBalance, WalletTransaction, PayoutDestination, Payou
 const STATUS_CHIP: Record<BusinessWalletBalance["status"], { label: string; className: string }> = {
   active: { label: "Active", className: "bg-green-50 text-green-700 border-green-200" },
   pending: { label: "Provisioning", className: "bg-amber-50 text-amber-700 border-amber-200" },
+  awaiting_kyc: { label: "Verification needed", className: "bg-amber-50 text-amber-700 border-amber-200" },
   error: { label: "Needs attention", className: "bg-red-50 text-red-700 border-red-200" },
   not_provisioned: { label: "Not provisioned yet", className: "bg-gray-50 text-gray-500 border-gray-200" },
 };
@@ -118,6 +119,27 @@ export default function PaymentsAccountCard({ spaceId }: { spaceId: string }) {
           and any connected 3rd-party platform settles here automatically. Naelao never holds this
           money; Whop custodies it and handles payout compliance.
         </p>
+
+        {balance?.status === "awaiting_kyc" && (
+          <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-3 text-sm space-y-2">
+            <p className="font-medium">One more step to enable payouts</p>
+            <p>
+              Your wallet can already receive revenue, but Whop requires a quick identity
+              verification before it can send payouts.
+              {balance.onboarding_url ? " Complete it here:" : " Check your email for a verification link from Whop, or ask them to resend it."}
+            </p>
+            {balance.onboarding_url && (
+              <a
+                href={balance.onboarding_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-block text-sm font-medium bg-amber-600 hover:bg-amber-700 text-white rounded-lg px-3 py-1.5"
+              >
+                Complete verification
+              </a>
+            )}
+          </div>
+        )}
 
         {transactions.length > 0 && (
           <div>

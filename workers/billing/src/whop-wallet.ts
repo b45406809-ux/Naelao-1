@@ -47,7 +47,12 @@ export interface WhopSubMerchantRow {
   space_id: string;
   company_id: string;
   owner_email: string;
-  status: "pending" | "active" | "error";
+  status: "pending" | "awaiting_kyc" | "active" | "error";
+  /** The one-time Whop-hosted KYC/onboarding link, set only while status='awaiting_kyc'. Not
+   *  every enrollment response includes this (see createSubMerchant's header) — a
+   *  status='awaiting_kyc' row with a null onboarding_url means the owner must check their email
+   *  for the link Whop sends directly, surfaced honestly rather than fabricated. */
+  onboarding_url: string | null;
   balance_cents: number;
   currency: string;
   last_synced_at: string | null;
@@ -88,9 +93,12 @@ export async function provisionSubMerchant(
       businessName: params.businessName,
     });
     await env.PLATFORM_DB.prepare(
-      `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    ).bind(crypto.randomUUID(), params.tenantId, params.spaceId, sub.company_id, params.ownerEmail, sub.status).run();
+      `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status, onboarding_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).bind(crypto.randomUUID(), params.tenantId, params.spaceId, sub.company_id, params.ownerEmail, sub.status, sub.onboarding_url ?? null).run();
+    if (sub.status === "awaiting_kyc") {
+      await notifyOwnerOnboardingRequired(env, { tenantId: params.tenantId, spaceId: params.spaceId, ownerEmail: params.ownerEmail, onboardingUrl: sub.onboarding_url ?? null });
+    }
   } catch (err) {
     console.error(`[billing/whop-wallet] sub-merchant provisioning failed for space ${params.spaceId}:`, (err as Error).message);
     await env.PLATFORM_DB.prepare(
@@ -196,6 +204,38 @@ async function sendApprovalEmail(env: BillingEnv, params: { tenantId: string; sp
   }
 }
 
+/** Best-effort email telling a brand-new owner they need to complete Whop's KYC/onboarding link
+ *  before their wallet can receive payouts. Sent once, right after provisioning — never blocks
+ *  provisioning itself on failure. When Whop's response didn't include a link (see
+ *  createSubMerchant's header), this honestly points the owner to check their email from Whop
+ *  directly rather than fabricating a URL. */
+async function notifyOwnerOnboardingRequired(
+  env: BillingEnv,
+  params: { tenantId: string; spaceId: string; ownerEmail: string; onboardingUrl: string | null }
+): Promise<void> {
+  if (!env.NOTIFICATIONS_WORKER) return;
+  try {
+    const body = params.onboardingUrl
+      ? `Your business's wallet is almost ready — one more step. Complete a quick identity verification here so it can receive payouts: ${params.onboardingUrl}\n\nUntil this is done, your wallet can still receive revenue, but payouts will be held.`
+      : `Your business's wallet needs one more step before it can send payouts — check your email for a verification link from Whop. Until it's completed, your wallet can still receive revenue, but payouts will be held.`;
+    await env.NOTIFICATIONS_WORKER.fetch(
+      new Request("http://notifications-worker/internal/notify", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": params.tenantId },
+        body: JSON.stringify({
+          channel: "email",
+          space_id: params.spaceId,
+          to: params.ownerEmail,
+          subject: "One more step to activate your business wallet",
+          body,
+        }),
+      })
+    );
+  } catch {
+    // Best-effort — the wallet row's status/onboarding_url is still readable in the dashboard/shell.
+  }
+}
+
 export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): void {
   app.use("/billing/whop-wallet/*", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
 
@@ -256,6 +296,7 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
         balance_cents: row.balance_cents,
         currency: row.currency,
         last_synced_at: row.last_synced_at,
+        onboarding_url: row.status === "awaiting_kyc" ? row.onboarding_url : null,
       },
     });
   });
@@ -339,7 +380,10 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
 
     const wallet = await getSubMerchant(c.env.PLATFORM_DB, spaceId);
     if (!wallet || wallet.status !== "active") {
-      return c.json({ error_code: "wallet_not_active", message: "This business's Whop wallet is not yet active" }, 409);
+      const message = wallet?.status === "awaiting_kyc"
+        ? "This business's owner needs to complete Whop's verification step before payouts work — check the wallet card for the link."
+        : "This business's Whop wallet is not yet active";
+      return c.json({ error_code: "wallet_not_active", message }, 409);
     }
     const synced = await syncBalance(c.env, wallet);
     if (synced.balance_cents < body.amount_cents) {

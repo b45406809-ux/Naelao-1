@@ -763,10 +763,13 @@ export async function deleteKbDocument(spaceId: string, docId: string, session: 
 // requireBusinessMembership on the spaces worker).
 
 export interface WhopWalletBalance {
-  status: "pending" | "active" | "error" | "not_provisioned";
+  status: "pending" | "awaiting_kyc" | "active" | "error" | "not_provisioned";
   balance_cents?: number;
   currency?: string;
   last_synced_at?: string | null;
+  /** Set only while status='awaiting_kyc' — the one-time Whop verification link the owner must
+   *  complete before payouts work. Null when Whop's response didn't include a direct link. */
+  onboarding_url?: string | null;
 }
 
 export interface WhopWalletTransaction {

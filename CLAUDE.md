@@ -1615,6 +1615,35 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     insufficient-balance rejection, secret hygiene; `reserved-capabilities.test.ts` updated for
     Whop's new reserved status), `pnpm turbo run typecheck` clean (75 tasks), dashboard + shell
     both verified via `next build`. Full detail: appendix §A1.30.
+51. **Whop connected-account KYC/onboarding gate — item 50's real gap, now BUILT.** Whop's docs
+    (their current term is "connected accounts," not "sub-merchants" — same Platforms API,
+    same invite-only access) reveal that enrolling a business creates the company record
+    instantly, but a recipient with no prior Whop account must ALSO complete an emailed
+    KYC/onboarding link before that account can receive transfers — item 50's original
+    `pending/active/error` status model would have silently told an owner their wallet was
+    ready when payouts would in fact fail. Migration `0065_whop_kyc_onboarding.sql` rebuilds
+    `whop_sub_merchants` (SQLite can't ALTER a CHECK constraint in place, same limitation
+    migration 0052 hit) adding a fourth status, `awaiting_kyc`, plus an `onboarding_url` column.
+    `createSubMerchant` (`packages/billing-core/src/providers/whop.ts`) checks a few plausible
+    response field names for the onboarding link (exact name unverified — `docs.whop.com` blocks
+    unauthenticated fetches, confirm once Platforms API access is granted) and returns
+    `awaiting_kyc` honestly even when no link is present; `getCompanyStatus` derives
+    `awaiting_kyc` from the plain `payouts_enabled: false` boolean during a live sync — a more
+    reliable signal than guessing a field name, mirroring how the removed Stripe Connect rail
+    polled `charges_enabled`/`payouts_enabled`. `provisionSubMerchant` best-effort emails the
+    owner the moment a wallet lands in `awaiting_kyc` (never blocks provisioning on send
+    failure); the payout route's 409 message names the verification step explicitly instead of
+    a generic "not active." Dashboard/shell wallet UI show an amber "verification needed" banner
+    with a direct link when Whop supplied one; both Space Assistant profiles were told
+    explicitly that `awaiting_kyc` means "can receive revenue, cannot pay out yet — tell the
+    owner, don't let a payout silently fail." 1823/1823 tests pass (5 new: onboarding-link
+    capture + owner notification, straight-to-active when no link is needed, balance surfacing
+    the link only while awaiting_kyc, payout rejection naming verification explicitly, live-sync
+    deriving awaiting_kyc from `payouts_enabled`), `pnpm turbo run typecheck` clean (75 tasks),
+    dashboard + shell both verified via `next build`. **Not done:** the exact onboarding-link
+    field name and full connected-account response shape are unverified against live Whop docs —
+    real Platforms API access (invite-only, apply via `sales@whop.com`) is needed to confirm and
+    narrow the defensive multi-field check to the one Whop actually returns.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

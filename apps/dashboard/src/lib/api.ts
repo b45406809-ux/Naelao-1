@@ -957,10 +957,14 @@ export async function getBuilderBillingHistory(): Promise<BuilderBillingPeriod[]
 // proxied by naelao-router (explicit entries, owner/admin only).
 
 export interface BusinessWalletBalance {
-  status: "pending" | "active" | "error" | "not_provisioned";
+  status: "pending" | "awaiting_kyc" | "active" | "error" | "not_provisioned";
   balance_cents?: number;
   currency?: string;
   last_synced_at?: string | null;
+  /** Set only while status='awaiting_kyc' — the one-time Whop verification link the owner must
+   *  complete before payouts work. Null when Whop's response didn't include a direct link (the
+   *  owner should check their email from Whop instead). */
+  onboarding_url?: string | null;
 }
 
 export interface WalletTransaction {

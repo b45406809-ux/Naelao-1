@@ -26,6 +26,7 @@ const SPACES_SQL = `CREATE TABLE spaces (id TEXT PRIMARY KEY, tenant_id TEXT NOT
 const MIGRATIONS = [
   SPACES_SQL,
   readFileSync(join(__dirname, "../../infra/migrations/0064_whop_sub_merchants.sql"), "utf8"),
+  readFileSync(join(__dirname, "../../infra/migrations/0065_whop_kyc_onboarding.sql"), "utf8"),
 ];
 
 function makeDb() {
@@ -136,6 +137,114 @@ describe("provisionSubMerchant", () => {
     const row = await getSubMerchant(db as unknown as D1Database, "space-a");
     expect(row?.status).toBe("error");
     expect(row?.company_id).toBe("");
+  });
+
+  it("records status='awaiting_kyc' + the onboarding link when Whop returns one, and best-effort emails the owner", async () => {
+    const db = makeDb();
+    const { calls, restore } = mockWhopFetch([
+      { match: /\/v5\/platforms\/sub_merchants$/, method: "POST", respond: () => Response.json({ id: "co_new", onboarding_url: "https://whop.com/onboard/abc123" }) },
+    ]);
+    restoreFetch = restore;
+    const notifyCalls: { url: string; body: unknown }[] = [];
+    const env = makeEnv(db, {
+      NOTIFICATIONS_WORKER: {
+        async fetch(reqInput: Request | string, init?: RequestInit) {
+          const req = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
+          notifyCalls.push({ url: req.url, body: await req.clone().json() });
+          return Response.json({ delivered: true });
+        },
+      } as unknown as Fetcher,
+    });
+
+    await provisionSubMerchant(env, { tenantId: "tenant-a", spaceId: "space-a", ownerEmail: "a@example.com", businessName: "Biz A" });
+
+    const row = await getSubMerchant(db as unknown as D1Database, "space-a");
+    expect(row?.status).toBe("awaiting_kyc");
+    expect(row?.onboarding_url).toBe("https://whop.com/onboard/abc123");
+    expect(calls.some((c) => /\/v5\/platforms\/sub_merchants$/.test(c.url))).toBe(true);
+    expect(notifyCalls.length).toBe(1);
+    expect((notifyCalls[0]!.body as { to: string }).to).toBe("a@example.com");
+    expect(JSON.stringify(notifyCalls[0]!.body)).toContain("abc123");
+  });
+
+  it("an owner with an existing Whop account (no onboarding link needed) provisions straight to active", async () => {
+    const db = makeDb();
+    restoreFetch = mockWhopFetch([
+      { match: /\/v5\/platforms\/sub_merchants$/, method: "POST", respond: () => Response.json({ id: "co_new", status: "active" }) },
+    ]).restore;
+    const env = makeEnv(db);
+    await provisionSubMerchant(env, { tenantId: "tenant-a", spaceId: "space-a", ownerEmail: "a@example.com", businessName: "Biz A" });
+    const row = await getSubMerchant(db as unknown as D1Database, "space-a");
+    expect(row?.status).toBe("active");
+    expect(row?.onboarding_url).toBeNull();
+  });
+});
+
+// ── 2b. Verification gate: a wallet can receive revenue but not pay out until KYC completes ───
+
+describe("KYC/onboarding gate blocks payouts, not revenue", () => {
+  it("GET balance surfaces the onboarding_url only while status='awaiting_kyc'", async () => {
+    const db = makeDb();
+    await db.prepare(
+      `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status, onboarding_url, balance_cents)
+       VALUES ('sm-a', 'tenant-a', 'space-a', 'co_a', 'a@example.com', 'awaiting_kyc', 'https://whop.com/onboard/xyz', 500)`
+    ).run();
+    const env = makeEnv(db);
+
+    const res = await billingWorker.fetch(
+      await walletReq("/billing/whop-wallet/balance?space_id=space-a"),
+      env as never, execCtx
+    );
+    const j = await res.json() as { wallet: { status: string; onboarding_url: string | null; balance_cents: number } };
+    expect(j.wallet.status).toBe("awaiting_kyc");
+    expect(j.wallet.onboarding_url).toBe("https://whop.com/onboard/xyz");
+    // Revenue already received is visible even though payouts aren't possible yet.
+    expect(j.wallet.balance_cents).toBe(500);
+  });
+
+  it("a payout request is rejected with a clear message while status='awaiting_kyc'", async () => {
+    const db = makeDb();
+    await db.prepare(
+      `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status, onboarding_url, balance_cents)
+       VALUES ('sm-a', 'tenant-a', 'space-a', 'co_a', 'a@example.com', 'awaiting_kyc', 'https://whop.com/onboard/xyz', 5000)`
+    ).run();
+    await db.prepare(
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
+       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending')`
+    ).run();
+    const env = makeEnv(db);
+
+    const res = await billingWorker.fetch(
+      await walletReq("/billing/whop-wallet/payouts", {
+        method: "POST",
+        body: { space_id: "space-a", destination_id: "dest-1", amount_cents: 1000 },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(409);
+    const j = await res.json() as { error_code: string; message: string };
+    expect(j.error_code).toBe("wallet_not_active");
+    expect(j.message.toLowerCase()).toContain("verification");
+  });
+
+  it("a live status sync derives 'awaiting_kyc' from Whop's payouts_enabled:false, independent of Whop's own status string", async () => {
+    const db = makeDb();
+    await db.prepare(
+      `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status, balance_cents)
+       VALUES ('sm-a', 'tenant-a', 'space-a', 'co_a', 'a@example.com', 'pending', 0)`
+    ).run();
+    restoreFetch = mockWhopFetch([
+      { match: /sub_merchants\/co_a$/, method: "GET", respond: () => Response.json({ id: "co_a", balance_cents: 1200, currency: "usd", status: "pending", payouts_enabled: false }) },
+    ]).restore;
+    const env = makeEnv(db);
+
+    const res = await billingWorker.fetch(
+      await walletReq("/billing/whop-wallet/balance?space_id=space-a"),
+      env as never, execCtx
+    );
+    const j = await res.json() as { wallet: { status: string; balance_cents: number } };
+    expect(j.wallet.status).toBe("awaiting_kyc");
+    expect(j.wallet.balance_cents).toBe(1200);
   });
 });
 

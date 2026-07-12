@@ -62,19 +62,43 @@ async function whopRequest<T>(
 
 export interface WhopSubMerchant {
   company_id: string;
-  status: "pending" | "active" | "error";
+  status: "pending" | "awaiting_kyc" | "active" | "error";
+  /** Set only when Whop requires the owner to complete KYC before this connected account can
+   *  receive transfers/payouts — present on a brand-new owner with no prior Whop account, absent
+   *  on an owner who already has one (their existing company is enrolled directly, active
+   *  immediately). Naelao must surface this link to the owner; it cannot be completed on their
+   *  behalf. */
+  onboarding_url?: string;
 }
 
 /**
- * Auto-provision an isolated Whop company (sub-merchant) for one Naelao business. No consent
- * screen, no OAuth — the Platforms enrollment API creates the company directly under the
- * platform account; it starts empty and is funded entirely by that business's own future sales.
+ * Auto-provision an isolated Whop company ("connected account" in Whop's current terminology —
+ * the Platforms API docs called this "sub-merchant" enrollment in an earlier version; same
+ * mechanism, same invite-only access, name updated here to match). No consent screen, no OAuth —
+ * the enrollment API creates the company directly under the platform account; it starts empty and
+ * is funded entirely by that business's own future sales.
+ *
+ * IMPORTANT — enrollment creating the company record is NOT the same as being payout-ready: per
+ * Whop's docs, a recipient with no existing Whop company must additionally complete an emailed
+ * account-onboarding link (KYC verification) before the connected account can receive transfers.
+ * The exact response field name for that link is unverified against live Whop docs (docs.whop.com
+ * blocks unauthenticated fetches) — this checks a few plausible names defensively and degrades to
+ * `status: 'active'` if none are present, matching this codebase's own "verify against real docs
+ * before production" precedent (see revenue-tracker.ts's header). Confirm the real field name
+ * once Platforms API access is granted, then narrow this to the one that's actually returned.
  */
 export async function createSubMerchant(
   masterApiKey: string,
   params: { tenantId: string; businessId: string; ownerEmail: string; businessName: string }
 ): Promise<WhopSubMerchant> {
-  const result = await whopRequest<{ id?: string; status?: string }>(
+  const result = await whopRequest<{
+    id?: string;
+    status?: string;
+    onboarding_url?: string;
+    account_link?: string;
+    verification_url?: string;
+    requires_onboarding?: boolean;
+  }>(
     masterApiKey,
     "POST",
     "/v5/platforms/sub_merchants",
@@ -85,18 +109,35 @@ export async function createSubMerchant(
     }
   );
   if (!result.id) throw new Error("Whop sub-merchant creation returned no company id");
-  return { company_id: result.id, status: (result.status as WhopSubMerchant["status"]) ?? "pending" };
+
+  const onboardingUrl = result.onboarding_url ?? result.account_link ?? result.verification_url;
+  if (onboardingUrl) {
+    return { company_id: result.id, status: "awaiting_kyc", onboarding_url: onboardingUrl };
+  }
+  if (result.requires_onboarding) {
+    // Whop signaled onboarding is required but didn't include a link in this response —
+    // surface the state honestly rather than fabricating a URL; a later status poll
+    // (getCompanyStatus) may pick up the link once Whop issues it.
+    return { company_id: result.id, status: "awaiting_kyc" };
+  }
+  return { company_id: result.id, status: (result.status as WhopSubMerchant["status"]) ?? "active" };
 }
 
 export interface WhopCompanyStatus {
   company_id: string;
   balance_cents: number;
   currency: string;
-  status: "pending" | "active" | "error";
+  status: "pending" | "awaiting_kyc" | "active" | "error";
+  /** False while the owner still needs to complete Whop's KYC/onboarding link — the primary
+   *  payout-readiness signal (mirrors Stripe Connect's own charges_enabled/payouts_enabled
+   *  polling pattern this replaced), independent of whatever `status` string Whop returns. */
   payouts_enabled: boolean;
 }
 
-/** Live balance/status read for a sub-merchant company. */
+/** Live balance/status read for a sub-merchant company. Derives 'awaiting_kyc' from
+ *  `payouts_enabled: false` when Whop's own status doesn't already say 'error' — this is more
+ *  reliable than depending on an unverified onboarding-link field name (see createSubMerchant's
+ *  header) since `payouts_enabled` is a plain boolean unlikely to have a naming ambiguity. */
 export async function getCompanyStatus(masterApiKey: string, companyId: string): Promise<WhopCompanyStatus> {
   const result = await whopRequest<{
     id: string;
@@ -112,12 +153,16 @@ export async function getCompanyStatus(masterApiKey: string, companyId: string):
       : typeof result.balance === "number"
         ? Math.round(result.balance * 100)
         : 0;
+  const payoutsEnabled = result.payouts_enabled === true;
+  const rawStatus = (result.status as WhopCompanyStatus["status"]) ?? "pending";
+  const status: WhopCompanyStatus["status"] =
+    rawStatus === "error" ? "error" : payoutsEnabled ? "active" : "awaiting_kyc";
   return {
     company_id: result.id,
     balance_cents: cents,
     currency: (result.currency ?? "usd").toUpperCase(),
-    status: (result.status as WhopCompanyStatus["status"]) ?? "pending",
-    payouts_enabled: result.payouts_enabled === true,
+    status,
+    payouts_enabled: payoutsEnabled,
   };
 }
 

@@ -75,8 +75,26 @@ that worker's directory. For local dev, create `workers/<name>/.dev.vars` (gitig
 | `CF_API_TOKEN` (agents) | agents | Workers AI fallback provider through the AI Gateway Universal Endpoint. Anthropic-only without it. |
 | `EVAL_LLM_KEY` + `EVAL_LLM_URL` | eval | Any OpenAI-compatible endpoint used as the eval judge. Eval suites only. |
 | `APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_PRIVATE_KEY_BASE64`, `APNS_BUNDLE_ID`, `APNS_HOST` | notifications | Apple Developer account → Keys → APNs auth key (.p8, base64 it). Only for iOS push; email/webhooks work without. |
-| `WHOP_PLATFORM_API_KEY` | billing | [dev.whop.com](https://dev.whop.com) → your Whop Platform account → API keys. Naelao's ONE master Whop Platform key (universal-tools doctrine, like `COMPOSIO_API_KEY`) — auto-provisions an isolated sub-merchant company per business, reads balances, creates checkouts, issues withdrawals. Without it, every business's wallet stays `status: "error"` (never fabricates a company id). |
+| `WHOP_PLATFORM_API_KEY` | billing | **Access to this API is invite-only** — Whop calls the feature "Platforms" / "connected accounts" (the sub-merchant model this wallet system uses). Apply via `sales@whop.com` (or your Whop account rep) describing the use case: "our platform provisions an isolated payment account per business created on it." Once approved: [dev.whop.com](https://dev.whop.com) → your Whop Platform account → API keys. Naelao's ONE master Whop Platform key (universal-tools doctrine, like `COMPOSIO_API_KEY`) — auto-provisions an isolated connected-account company per business, reads balances, creates checkouts, issues withdrawals. Without it (or before approval), every business's wallet stays `status: "error"` (never fabricates a company id) — the rest of the platform works normally; only the wallet feature is unavailable. |
 | `WHOP_WEBHOOK_SECRET` | billing | Whop dashboard → your Platform account → Webhooks → add an endpoint pointed at `/v1/webhooks/whop` → signing secret. Without it, `/webhooks/whop` returns `whop_not_configured` and revenue events never sync. |
+
+> **Two separate Whop concepts, don't conflate them:** the business-wallet rail above (invite-only
+> Platforms API, per-business connected accounts) is entirely separate from Naelao's OWN platform
+> billing (builder plans, seat/credit-pack/business-subscription checkouts), which stays Lemon
+> Squeezy only — see item 45/the `LEMON_SQUEEZY_*` row above, untouched by the wallet feature.
+> Whop's normal (non-Platforms) product API — a single business selling its own subscriptions
+> directly, no invite required — is a real alternative worth considering for Naelao's OWN plan
+> billing someday, but that would be a separate, deliberate integration decision, not something
+> this build does implicitly.
+>
+> **Connected accounts have two readiness states, not one:** enrolling a business (`POST
+> /v5/platforms/sub_merchants`) creates the company record instantly, but per Whop's own docs a
+> recipient with no prior Whop account must ALSO complete an emailed KYC/onboarding link before
+> that account can receive transfers — `whop_sub_merchants.status` models this as `awaiting_kyc`
+> (revenue can still arrive; payouts are held until KYC completes). Exact response field names for
+> the onboarding link are unverified against live Whop docs (`docs.whop.com` blocks unauthenticated
+> fetches) — confirm them once Platforms API access is granted (see `packages/billing-core/src/
+> providers/whop.ts`'s `createSubMerchant` header).
 | `PUBLIC_WEBHOOK_BASE_URL` (var, not secret) | billing | Public base URL webhooks are reachable at (e.g. `https://api.naelao.com`). Used to build the one-time payout-approval email link (`/v1/webhooks/whop-wallet/payouts/:id/approve`); a payout request still exists in the dashboard/shell without it, just with no emailed link. |
 
 ## NOT env vars — per-builder credentials entered in-product

@@ -5008,3 +5008,61 @@ assert Whop is now blocked as a direct-fetch host (previously asserted the oppos
 became a reserved rail). 1818/1818 suite green (13 new, 3 pre-existing owner-email-lookup
 crashes fixed via try/catch wrapping), `pnpm turbo run typecheck` clean (75 tasks), dashboard +
 shell both verified via `next build`.
+
+### A1.30 addendum — the KYC/onboarding gate (item 51) — BUILT
+
+Follow-up research (prompted by a user question about Whop's "connected accounts" terminology)
+surfaced a real gap in the model above: Whop's docs distinguish ENROLLING a connected account
+(the company record, instant, API-only) from that account being PAYOUT-READY (requires the
+recipient to complete an emailed KYC/onboarding link if they don't already have a Whop account).
+The original `pending/active/error` status model conflated these — a business could show
+`active` the moment its company was created, when in fact its first payout would fail until KYC
+completed. Fixed:
+
+- **Migration `0065_whop_kyc_onboarding.sql`** rebuilds `whop_sub_merchants` (SQLite can't ALTER
+  a CHECK constraint in place — same limitation migration 0052 hit for `processed_webhook_events`)
+  adding `status IN ('pending','awaiting_kyc','active','error')` and a nullable `onboarding_url`
+  column.
+- **`createSubMerchant`** (`packages/billing-core/src/providers/whop.ts`) now returns
+  `{company_id, status, onboarding_url?}`. Since the exact response field name Whop uses for the
+  onboarding link is unverified (docs.whop.com blocks unauthenticated fetches — confirmed by
+  direct testing during this session), it defensively checks a few plausible names
+  (`onboarding_url`/`account_link`/`verification_url`) and falls back to an honest
+  `awaiting_kyc` with no link (rather than fabricating one) if Whop signals
+  `requires_onboarding` without supplying a URL.
+- **`getCompanyStatus`** derives `awaiting_kyc` from the plain `payouts_enabled: false` boolean
+  during a live sync, independent of whatever status string Whop's own API returns — a more
+  reliable signal than the unverified onboarding-link field name, mirroring exactly how the
+  removed Stripe Connect rail (A1.29) polled `charges_enabled`/`payouts_enabled` rather than
+  trusting the return-redirect.
+- **`provisionSubMerchant`** best-effort emails the owner the moment a wallet lands in
+  `awaiting_kyc` (`notifyOwnerOnboardingRequired`, never blocks provisioning on send failure) —
+  with the link if one was captured, or a plain "check your email from Whop" if not.
+- **Payout gating** (`POST /billing/whop-wallet/payouts`) now names the verification step
+  explicitly in its 409 rather than a generic "wallet not active" message.
+- **UI**: dashboard `PaymentsAccountCard` and the shell business-detail page both show an amber
+  "one more step" banner with a direct "Complete verification" link when Whop supplied one, or a
+  "check your email" fallback when it didn't. Both wallet-carrying assistant profiles
+  (`DEFAULT_NAELAO_AGENT`, `LAUNCHPAD_ASSISTANT_PROFILE`) were told explicitly: `awaiting_kyc`
+  means the wallet can still receive revenue but cannot pay out yet — tell the owner plainly,
+  never let a payout request fail with no explanation.
+
+**Also clarified while researching this** (a distinct question, not a code change): Whop is a
+full Merchant of Record and could in principle run Naelao's OWN platform subscription billing
+directly (a normal, non-Platforms "whop" selling recurring access — self-serve, no invite
+needed) — a genuinely separate integration from the Platforms/connected-accounts API this build
+uses. Deliberately NOT pursued this pass: Lemon Squeezy remains the sole PLATFORM billing
+provider (item 45 stands untouched — verified by diff that none of `/billing/subscription`,
+`/billing/checkout`, `/billing/portal`, or the LS webhook handler were touched by any of the
+Whop wallet work). Moving platform billing to Whop would be a deliberate, separate decision, not
+an implicit side effect of the business-wallet feature.
+
+Tests: 5 new in `tests/unit/whop-wallet.test.ts` — onboarding-link capture + best-effort owner
+notification, an owner with an existing Whop account provisioning straight to `active` (no link
+needed), `GET balance` surfacing `onboarding_url` only while `awaiting_kyc`, a payout rejection
+naming verification explicitly, and a live sync deriving `awaiting_kyc` from
+`payouts_enabled: false` independent of Whop's own status string. 1823/1823 suite green,
+`pnpm turbo run typecheck` clean (75 tasks), dashboard + shell both verified via `next build`.
+**Not done:** the exact onboarding-link field name and full connected-account response shape
+remain unverified against live Whop docs — confirm once Platforms API access is actually granted
+(apply via `sales@whop.com`) and narrow the defensive multi-field check accordingly.

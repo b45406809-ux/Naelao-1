@@ -402,8 +402,8 @@ export default function BusinessDetailPage() {
           <div>
             <div className="settings-row-label">Balance</div>
             <div className="settings-row-sub">
-              <Badge color={whopWallet?.status === "active" ? "green" : whopWallet?.status === "pending" ? "amber" : "red"}>
-                {whopWallet?.status === "not_provisioned" ? "not provisioned yet" : whopWallet?.status ?? "loading"}
+              <Badge color={whopWallet?.status === "active" ? "green" : whopWallet?.status === "pending" || whopWallet?.status === "awaiting_kyc" ? "amber" : "red"}>
+                {whopWallet?.status === "not_provisioned" ? "not provisioned yet" : whopWallet?.status === "awaiting_kyc" ? "verification needed" : whopWallet?.status ?? "loading"}
               </Badge>
             </div>
           </div>
@@ -412,6 +412,20 @@ export default function BusinessDetailPage() {
             <div className="settings-row-sub">{whopWallet?.currency ?? "USD"}</div>
           </div>
         </div>
+        {whopWallet?.status === "awaiting_kyc" && (
+          <div className="settings-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 6 }}>
+            <div className="settings-row-sub" style={{ color: "var(--amber, #b45309)" }}>
+              One more step before this wallet can send payouts: Whop requires a quick identity
+              verification.
+              {whopWallet.onboarding_url ? "" : " Check your email for a verification link from Whop."}
+            </div>
+            {whopWallet.onboarding_url && (
+              <a href={whopWallet.onboarding_url} target="_blank" rel="noopener noreferrer" className="btn btn-secondary" style={{ display: "inline-block" }}>
+                Complete verification
+              </a>
+            )}
+          </div>
+        )}
         {whopTransactions.slice(0, 8).map((t, i) => (
           <div className="settings-row" key={i}>
             <div>
