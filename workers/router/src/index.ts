@@ -1008,6 +1008,13 @@ const proxyBilling = async (c: { env: Env; get: (k: "claims") => NaelaoJwtClaims
 api.all("/billing/subscription", proxyBilling);
 api.all("/billing/checkout", proxyBilling);
 api.all("/billing/portal", proxyBilling);
+// Wallet Connect (payment_connections): the builder's OWN payment account (Stripe Connect
+// Express / BYO Lemon Squeezy store). Same explicit-not-blanket rule as above. The billing
+// worker's own requireInternalHmac gate verifies the token proxyTo mints from validated JWT
+// claims, and its guard() additionally enforces owner/admin role + space-tenant ownership.
+api.all("/billing/wallet/connection", proxyBilling);
+api.all("/billing/wallet/connect/stripe", proxyBilling);
+api.all("/billing/wallet/connect/lemon-squeezy", proxyBilling);
 
 // Founder roadmap catalog (space types + templates, dev-only) → agents worker.
 // (/product/* and /business/* used to proxy here too, for the retired BusinessDO/ProductDO

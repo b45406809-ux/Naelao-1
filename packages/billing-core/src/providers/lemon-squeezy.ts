@@ -184,3 +184,75 @@ export class LemonSqueezyProvider implements BillingProvider {
     if (!resp.ok) throw new Error(`Lemon Squeezy cancel failed: ${resp.status}`);
   }
 }
+
+// ── Wallet Connect helpers (builder-owned LS stores) ────────────────────────────────────────────
+// LS has NO OAuth and NO create-store API — the connect flow is guided BYO: verify the builder's
+// own API key by listing the stores it can see, let them pick one, then auto-create a webhook on
+// THEIR store (LS's POST /v1/webhooks is real) pointing back at Naelao with a generated
+// per-connection signing secret. The key itself lives encrypted in the credentials vault, never
+// in D1 plaintext and never in an agent isolate.
+
+export interface LsStoreSummary {
+  id: string;
+  name: string;
+  url: string;
+}
+
+/** Verify an API key by listing its stores. Throws on a bad key (401/403). */
+export async function lsListStores(apiKey: string): Promise<LsStoreSummary[]> {
+  const resp = await fetch(`${LS_API}/stores`, {
+    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/vnd.api+json" },
+  });
+  if (!resp.ok) throw new Error(`Lemon Squeezy store list failed: ${resp.status}`);
+  const json = (await resp.json()) as {
+    data?: Array<{ id?: string; attributes?: { name?: string; url?: string } }>;
+  };
+  return (json.data ?? []).map((store) => ({
+    id: String(store.id ?? ""),
+    name: String(store.attributes?.name ?? ""),
+    url: String(store.attributes?.url ?? ""),
+  }));
+}
+
+/** Events a wallet-connection webhook subscribes to (mirror of EVENT_MAP's keys). */
+const LS_WALLET_WEBHOOK_EVENTS = Object.keys(EVENT_MAP);
+
+/** Create a webhook on the builder's own store; returns the LS webhook id (for later cleanup). */
+export async function lsCreateWebhook(
+  apiKey: string,
+  storeId: string,
+  url: string,
+  secret: string
+): Promise<{ id: string }> {
+  const resp = await fetch(`${LS_API}/webhooks`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/vnd.api+json",
+      Accept: "application/vnd.api+json",
+    },
+    body: JSON.stringify({
+      data: {
+        type: "webhooks",
+        attributes: { url, secret, events: LS_WALLET_WEBHOOK_EVENTS },
+        relationships: { store: { data: { type: "stores", id: storeId } } },
+      },
+    }),
+  });
+  if (!resp.ok) throw new Error(`Lemon Squeezy webhook create failed: ${resp.status}`);
+  const json = (await resp.json()) as { data?: { id?: string } };
+  const id = json.data?.id;
+  if (!id) throw new Error("Lemon Squeezy webhook create returned no id");
+  return { id: String(id) };
+}
+
+/** Best-effort webhook deletion on disconnect (never blocks the disconnect itself). */
+export async function lsDeleteWebhook(apiKey: string, webhookId: string): Promise<void> {
+  const resp = await fetch(`${LS_API}/webhooks/${encodeURIComponent(webhookId)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/vnd.api+json" },
+  });
+  if (!resp.ok && resp.status !== 404) {
+    throw new Error(`Lemon Squeezy webhook delete failed: ${resp.status}`);
+  }
+}

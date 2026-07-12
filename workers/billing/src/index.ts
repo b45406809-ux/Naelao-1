@@ -15,6 +15,7 @@ import { Hono } from "hono";
 import { checkQuota, recordUsageEvent, getUsageSummary } from "./quota.js";
 import { handleLemonSqueezyWebhook } from "./lemon-squeezy.js";
 import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
+import { registerWalletConnectionRoutes } from "./wallet-connections.js";
 
 export interface BillingEnv {
   ENVIRONMENT: string;
@@ -39,6 +40,21 @@ export interface BillingEnv {
   AGENTS_WORKER?: Fetcher;
   // Service binding to spaces worker — seat purchases activate the member in SpaceDO
   SPACES_WORKER?: Fetcher;
+  // ── Wallet Connect (payment_connections — builder-owned payment accounts) ──
+  /** Service binding to credentials worker — vaults the builder's own LS API key +
+   *  per-connection webhook secret, AES-256-GCM encrypted (never D1 plaintext). */
+  CREDENTIALS_WORKER?: Fetcher;
+  /** Naelao's ONE Stripe platform integration key (sk_...) — universal-tools doctrine, like
+   *  COMPOSIO_API_KEY. Used ONLY to create/read Express connected accounts and their checkouts;
+   *  never platform billing custody (item 45 stands). Optional — wallet Stripe routes degrade
+   *  honestly (stripe_not_configured) when unset. */
+  STRIPE_PLATFORM_SECRET_KEY?: string;
+  /** Signing secret (whsec_...) for the platform's Connect webhook endpoint. */
+  STRIPE_CONNECT_WEBHOOK_SECRET?: string;
+  /** Public base URL webhooks are reachable at (e.g. https://api.naelao.com) — used to
+   *  auto-create the per-connection LS webhook. Optional: the connection still activates
+   *  without it, surfaced as webhook_created:false. */
+  PUBLIC_WEBHOOK_BASE_URL?: string;
 }
 
 /**
@@ -901,6 +917,9 @@ app.post("/webhooks/lemon-squeezy", async (c) => {
     QUOTA_CACHE: c.env.QUOTA_CACHE,
   });
 });
+
+// ── Wallet Connect (payment_connections) — builder-owned payment accounts ────
+registerWalletConnectionRoutes(app);
 
 // ── Error handler ─────────────────────────────────────────────────────────────
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));

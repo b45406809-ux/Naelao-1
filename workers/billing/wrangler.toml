@@ -50,6 +50,18 @@ service = "naelao-agents"
 binding = "SPACES_WORKER"
 service = "naelao-spaces"
 
+# Wallet Connect: vaults the builder's own LS API key + per-connection webhook secret
+# (AES-256-GCM in the credentials worker — never D1 plaintext).
+# Additional Wallet Connect secrets (set via `wrangler secret put`, per environment):
+#   STRIPE_PLATFORM_SECRET_KEY    — Naelao's ONE Stripe platform key (Connect Express accounts
+#                                   + direct-charge checkouts only; platform billing stays LS)
+#   STRIPE_CONNECT_WEBHOOK_SECRET — whsec_... of the Connect webhook → /v1/webhooks/stripe
+# And a per-environment var:
+#   PUBLIC_WEBHOOK_BASE_URL       — public base URL for auto-created LS wallet webhooks
+[[services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
+
 [vars]
 ENVIRONMENT = "development"
 
@@ -66,6 +78,10 @@ service = "naelao-agents"
 binding = "SPACES_WORKER"
 service = "naelao-spaces"
 
+[[env.staging.services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
+
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
 vars = { ENVIRONMENT = "production" }
@@ -77,3 +93,7 @@ service = "naelao-agents"
 [[env.production.services]]
 binding = "SPACES_WORKER"
 service = "naelao-spaces"
+
+[[env.production.services]]
+binding = "CREDENTIALS_WORKER"
+service = "naelao-credentials"
