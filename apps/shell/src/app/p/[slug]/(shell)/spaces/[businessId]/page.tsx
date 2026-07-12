@@ -28,6 +28,8 @@ import {
   getBusinessWalletTransactions,
   getPayoutDestinations,
   addPayoutDestination,
+  getConnectorStatus,
+  connectPlatform,
   type BusinessMember,
   type Business,
   type PricingPlan,
@@ -40,6 +42,7 @@ import {
   type WhopWalletBalance,
   type WhopWalletTransaction,
   type PayoutDestination,
+  type ConnectorInfo,
 } from "@/lib/api";
 
 const GRANT_TYPES = ["read", "write", "readwrite", "exec"] as const;
@@ -91,6 +94,12 @@ export default function BusinessDetailPage() {
   const [destType, setDestType] = React.useState<PayoutDestination["type"]>("bank");
   const [destLabel, setDestLabel] = React.useState("");
   const [destDetails, setDestDetails] = React.useState("");
+  // Connect your OWN Whop account (BYO, no Naelao Platforms invite needed) — the working revenue
+  // path today, while the business-wallet rail above waits on Whop Platforms access.
+  const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
+  const [whopKeyOpen, setWhopKeyOpen] = React.useState(false);
+  const [whopKey, setWhopKey] = React.useState("");
+  const [connectBusy, setConnectBusy] = React.useState(false);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -98,7 +107,7 @@ export default function BusinessDetailPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      const [mine, mem, pricing, manifest, grants, wal, whopBal, whopTx, destinations] = await Promise.all([
+      const [mine, mem, pricing, manifest, grants, wal, whopBal, whopTx, destinations, conns] = await Promise.all([
         listMyBusinesses(product.space_id, creds),
         listBusinessMembers(params.businessId, creds),
         getPricing(params.businessId, creds).catch(() => ({ plans: [], credit_packs: [] })),
@@ -109,6 +118,7 @@ export default function BusinessDetailPage() {
         getBusinessWalletTransactions(params.businessId, creds).catch(() => []),
         // Admin-only route — a plain member's 403 is expected, not an error.
         getPayoutDestinations(params.businessId, creds).catch(() => []),
+        getConnectorStatus(params.businessId, creds).catch(() => []),
       ]);
       setBusiness(mine.find((b) => b.id === params.businessId) ?? null);
       setMembers(mem);
@@ -119,6 +129,7 @@ export default function BusinessDetailPage() {
       setWhopWallet(whopBal);
       setWhopTransactions(whopTx);
       setPayoutDestinations(destinations);
+      setConnectors(conns);
       const commerce = manifest?.ui.sidebar_items.some((item) => item.id === "revenue") ?? false;
       setHasCommerce(commerce);
       if (commerce) {
@@ -232,6 +243,21 @@ export default function BusinessDetailPage() {
       show(err instanceof Error ? err.message : "Failed to add payout destination");
     } finally {
       setPayBusy(false);
+    }
+  }
+
+  async function handleConnectWhop() {
+    if (!creds || !whopKey.trim()) return;
+    setConnectBusy(true);
+    try {
+      await connectPlatform(params.businessId, creds, "whop", whopKey.trim());
+      setWhopKeyOpen(false);
+      setWhopKey("");
+      await refresh();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to connect your Whop account");
+    } finally {
+      setConnectBusy(false);
     }
   }
 
@@ -388,10 +414,71 @@ export default function BusinessDetailPage() {
         </form>
       )}
 
-      {/* Business Wallet (Whop sub-merchant model): every business auto-provisions its own bank
-          account — no owner action required. Balance is member-visible; adding a payout
-          destination is admin-only. */}
-      <div className="section-label">Business Wallet</div>
+      {/* Connect your OWN Whop account — the working path today (no Naelao Platforms invite
+          needed). Naelao's revenue cut is billed as a surcharge on the builder's next platform
+          subscription rather than auto-split at checkout, since a BYO account can't do that. */}
+      {canManage && (() => {
+        const whopConnector = connectors.find((c) => c.id === "whop");
+        return (
+          <>
+            <div className="section-label">Connect Your Whop Account</div>
+            <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
+              Connect your own Whop account (an API key from your own Whop dashboard — no special
+              access required) so the assistant can read your orders/members and help you run this
+              business. Naelao&rsquo;s revenue-share cut is billed as a line item on your next
+              subscription payment, not split automatically at checkout.
+            </p>
+            <div className="settings-block">
+              {whopConnector?.connected ? (
+                <div className="settings-row">
+                  <div className="settings-row-label">Whop</div>
+                  <Badge color="green">Connected</Badge>
+                </div>
+              ) : (
+                <div className="settings-row">
+                  <div>
+                    <div className="settings-row-label">Whop</div>
+                    <div className="settings-row-sub">Not connected yet</div>
+                  </div>
+                  {!whopKeyOpen && (
+                    <Button onClick={() => setWhopKeyOpen(true)} disabled={connectBusy}>
+                      Connect
+                    </Button>
+                  )}
+                </div>
+              )}
+              {whopKeyOpen && !whopConnector?.connected && (
+                <div style={{ padding: "0 12px 12px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+                  <FormInput
+                    type="password"
+                    placeholder="Whop API key"
+                    value={whopKey}
+                    onChange={(e) => setWhopKey(e.target.value)}
+                    style={{ flex: 1, minWidth: 220 }}
+                  />
+                  <Button onClick={handleConnectWhop} disabled={connectBusy || !whopKey.trim()}>
+                    {connectBusy ? "Connecting…" : "Connect"}
+                  </Button>
+                  <button
+                    className="btn btn-secondary"
+                    type="button"
+                    onClick={() => { setWhopKeyOpen(false); setWhopKey(""); }}
+                    disabled={connectBusy}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+          </>
+        );
+      })()}
+
+      {/* Business Wallet (Whop Platforms/sub-merchant model): every business auto-provisions its
+          own isolated wallet — but this rail needs Naelao's own invite-only Whop Platforms API
+          access, not yet granted, so it stays inactive until then. The Connect card above is the
+          working path today. Balance is member-visible; adding a payout destination is admin-only. */}
+      <div className="section-label">Business Wallet (Naelao-managed, pending Whop approval)</div>
       <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
         This business&rsquo;s own Whop sub-merchant wallet — a real bank account, auto-provisioned
         at creation. Revenue from Whop&rsquo;s own storefront/checkout and any connected 3rd-party

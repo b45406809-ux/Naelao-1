@@ -1644,6 +1644,45 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     field name and full connected-account response shape are unverified against live Whop docs —
     real Platforms API access (invite-only, apply via `sales@whop.com`) is needed to confirm and
     narrow the defensive multi-field check to the one Whop actually returns.
+52. **BYO Whop connector (a business owner's OWN Whop account) is now BUILT — the working
+    revenue path while the invite-only Platforms API (items 50-51) waits on approval.** User
+    direction: keep the Naelao-managed business-wallet rail exactly as built (nothing deleted —
+    it activates automatically the moment Whop grants Platforms access), but until then, let a
+    business owner connect their OWN normal Whop account (an API key from their own Whop
+    dashboard — no invite needed) so the assistant can read it and the business can operate.
+    Naelao's revenue-share cut is billed the way it was BEFORE items 49-51 — the existing
+    `revenue-tracker` prebuilt reads the owner's reported gross revenue and the surcharge is
+    charged on the builder's NEXT platform subscription payment, not auto-split at checkout
+    (a BYO/normal Whop account has no application-fee-split primitive; only the invite-gated
+    Platforms/connected-accounts model does). This mechanism (a builder's own Whop API key →
+    `mcp-connector`/`revenue-tracker`) already existed and was exercised via the dashboard's
+    Connectors console (`GET/POST /connectors*` on the agents worker) — but that route had NO
+    per-space ownership check (`requireVerifiedTenant` only proves the caller is SOME verified
+    tenant, never that they own the specific `space_id` in the request body), fine for a builder
+    (their JWT's tenant owns every space they have) but unsafe to open to a product end user
+    directly, whose session tenant is the PRODUCT root spanning every business under it — an end
+    user in Business A could otherwise have set `space_id` to Business B's space and stored
+    THEIR key as Business B's connector. Fixed with new spaces-worker wrapper routes,
+    `GET /spaces/:spaceId/connectors/status` (member-level) and
+    `POST /spaces/:spaceId/connectors/connect` (admin-level, `platform` in the BODY not the URL —
+    see below), gated by `requireBusinessMembership` exactly like `business-wallet`/`pricing`/
+    `local-grants` before it, then proxying to the agents worker's already-tested connect logic
+    with the space's own verified owning tenant. **A real, reproduced instance of the documented
+    Hono RegExpRouter route-table-scale corruption**: the first draft used
+    `POST /spaces/:spaceId/connectors/:platform/connect` (a NEW dynamic-segment-then-static-
+    suffix shape) — this silently 404'd 8 UNRELATED tests across members/agent-definitions/
+    sessions routes elsewhere in this same 170+-route file, not the new route itself. Fixed the
+    established way: removed the extra dynamic segment (`platform` moved into the POST body)
+    rather than adding a second `app.use(dynamicPattern, ...)` registration — confirms this bug
+    class is still live and any new spaces-worker route needs a full-suite run, not just its own
+    test file, before being trusted. Shell UI: a new "Connect Your Whop Account" card on the
+    business detail page (admin-only, paste-an-API-key form) placed ABOVE the relabeled
+    "Business Wallet (Naelao-managed, pending Whop approval)" section so it's unambiguous which
+    path is actually live today. 1823/1823 tests pass, `pnpm turbo run typecheck` clean (75
+    tasks), shell verified via `next build`. **Not done this pass:** an equivalent card in the
+    dashboard's own product Configuration/Billing tabs (the dashboard's existing generic
+    `/dashboard/spaces/[spaceId]/connectors` console already covers a TOP-level product/space;
+    a Launchpad end-user-created BUSINESS sub-space specifically is what this pass targeted).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

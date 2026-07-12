@@ -1335,6 +1335,76 @@ app.get("/spaces/:spaceId/business-wallet/payouts", async (c) =>
   proxyWalletToBilling(c, `/billing/whop-wallet/payouts?space_id=${encodeURIComponent(c.req.param("spaceId"))}`, "GET")
 );
 
+// ── Per-business connector connect (BYO Whop account, no Naelao Platforms invite needed) ──────
+// Every business's revenue-cut billing runs through the existing revenue-tracker + reseller_ledger
+// surcharge mechanism, NOT the invite-only Whop Platforms/business-wallet rail above — a business
+// owner connects their OWN Whop account here (a normal Whop API key from their own dashboard,
+// generally available, no invite required), the agent reads it read-only via mcp-connector, and
+// revenue-tracker bills Naelao's configured cut % on the builder's NEXT platform subscription.
+// The existing /connectors/* routes on the agents worker already implement the store-credential +
+// register-mcp-server logic (dashboard's Connectors console has used them since that build) but
+// only check `requireVerifiedTenant` — no per-space ownership check at all, which is fine for a
+// builder (their JWT's tenant owns every one of their own spaces) but NOT safe to open to an end
+// user directly, whose session tenant is the PRODUCT's owning tenant spanning every business under
+// it. This wrapper adds the missing requireBusinessMembership check, then proxies to the
+// already-tested agents-worker logic with the space's own owning tenant (not the caller's raw
+// claims), matching the exact pattern proxyWalletToBilling established above.
+// F-33-class trap (documented repeatedly in this file): a NEW dynamic path segment shape can
+// silently corrupt Hono's RegExpRouter compilation for UNRELATED routes elsewhere in this
+// 170+-route file. A `/spaces/:spaceId/connectors/:platform/connect` shape reproduced exactly
+// that corruption (members/agent-definitions/sessions routes started 404ing in the full suite,
+// not this route itself) — fixed the established way: remove the extra dynamic segment rather
+// than add a second `app.use(dynamicPattern, ...)` registration. `platform` moves to the request
+// body; only "whop" is supported today anyway.
+app.use("/spaces/:spaceId/connectors/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/connectors/status", requireBusinessMembership({ GET: "member" }));
+app.use("/spaces/:spaceId/connectors/connect", requireBusinessMembership({ POST: "admin" }));
+
+async function proxyConnectorsToAgents(
+  c: { env: Env; req: { header: (n: string) => string | undefined } },
+  path: string,
+  method: "GET" | "POST",
+  body?: Record<string, unknown>
+): Promise<Response> {
+  if (!c.env.AGENTS_WORKER) {
+    return Response.json({ error_code: "connectors_unavailable", message: "Agents worker not configured" }, { status: 503 });
+  }
+  const identity = getCallerIdentity(c);
+  // Same reasoning as proxyWalletToBilling: prefer the already-verified header set by the
+  // router/requireBusinessMembership chain (the space's OWNING tenant), never the raw caller
+  // identity — an end user's own claims.tid is the product root's tenant, which is what we want
+  // here too since a business's connectors are scoped by space_id, not by who's asking.
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? identity.tenantId;
+  if (!tenantId) return Response.json({ error_code: "unauthorized", message: "Missing tenant" }, { status: 401 });
+  const resp = await c.env.AGENTS_WORKER.fetch(
+    new Request(`http://agents-worker${path}`, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-user-id": identity.userId ?? "",
+        "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    })
+  );
+  return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
+}
+
+app.get("/spaces/:spaceId/connectors/status", async (c) =>
+  proxyConnectorsToAgents(c, `/connectors/status?space_id=${encodeURIComponent(c.req.param("spaceId"))}`, "GET")
+);
+
+app.post("/spaces/:spaceId/connectors/connect", async (c) => {
+  const body = await c.req.json<{ platform?: string; api_key?: string }>().catch(() => ({}) as Record<string, never>);
+  const platform = body.platform ?? "";
+  if (!platform) return c.json({ error_code: "bad_request", message: "platform is required" }, 400);
+  return proxyConnectorsToAgents(c, `/connectors/${encodeURIComponent(platform)}/connect`, "POST", {
+    space_id: c.req.param("spaceId"),
+    api_key: body.api_key,
+  });
+});
+
 app.post("/spaces/:spaceId/business-wallet/payouts", async (c) => {
   const body = await c.req.json<{ destination_id?: string; amount_cents?: number; note?: string }>().catch(() => ({}) as Record<string, never>);
   const identity = getCallerIdentity(c);

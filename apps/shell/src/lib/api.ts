@@ -828,3 +828,36 @@ export async function requestPayout(
     session,
   });
 }
+
+// ── Connect your OWN Whop account (no Naelao Platforms invite needed) ─────────────────────────
+// A business owner's OWN Whop API key (from their own Whop dashboard — generally available, no
+// invite required, unlike the Platforms/business-wallet rail above). The agent then reads it
+// read-only via mcp-connector, and Naelao's revenue cut is billed as a surcharge on the builder's
+// NEXT platform subscription (the existing revenue-tracker mechanism), not auto-split at checkout.
+
+export interface ConnectorInfo {
+  id: string;
+  name: string;
+  category: string;
+  status: "available" | "coming_soon";
+  summary: string;
+  connected?: boolean;
+}
+
+export async function getConnectorStatus(spaceId: string, session: SessionCredentials): Promise<ConnectorInfo[]> {
+  const res = await apiFetch<{ connectors: ConnectorInfo[] }>(`/v1/spaces/${spaceId}/connectors/status`, { session });
+  return res.connectors ?? [];
+}
+
+export async function connectPlatform(
+  spaceId: string,
+  session: SessionCredentials,
+  platform: string,
+  apiKey: string
+): Promise<{ connected: boolean; platform: string; server_id: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/connectors/connect`, {
+    method: "POST",
+    body: JSON.stringify({ platform, api_key: apiKey }),
+    session,
+  });
+}

@@ -514,6 +514,11 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // (identity here, authorization there; balance/transactions are member-level, destinations/
   // payouts are admin-level).
   /^\/spaces\/([^/]+)\/business-wallet\/(balance|transactions|destinations|payouts)$/,
+  // Per-business connector connect (BYO Whop account — no Naelao Platforms invite needed):
+  // additionally gated by requireBusinessMembership on the spaces worker exactly like the
+  // routes above (status is member-level read, connect is admin-level write).
+  /^\/spaces\/([^/]+)\/connectors\/status$/,
+  /^\/spaces\/([^/]+)\/connectors\/connect$/,
   // WS-2 (Space Assistant surface): the Status/Crons panels — additionally gated by
   // resolveEndUserBusinessRole on the spaces worker exactly like the routes above.
   /^\/spaces\/([^/]+)\/assistant-policy$/,
