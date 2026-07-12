@@ -326,6 +326,9 @@ export async function streamLlm(
         number,
         { type: string; id?: string; name?: string }
       > = {};
+      // §A1.25: web_search_tool_result blocks arrive whole in content_block_start (see below),
+      // not accumulated via content_block_delta like text/tool_use blocks are.
+      const currentBlockResults: Record<number, NonNullable<ContentBlock["web_search_results"]>> = {};
 
       let buffer = "";
 
@@ -381,7 +384,10 @@ export async function streamLlm(
           } else if (eventType === "content_block_start") {
             const index = parsed.index as number;
             const block = parsed.content_block as Record<string, unknown>;
-            const blockId = block.id as string | undefined;
+            // A "web_search_tool_result" block identifies itself via tool_use_id (linking back
+            // to the server_tool_use call it answers), not `id` like tool_use/server_tool_use
+            // blocks do — capture whichever the block actually carries.
+            const blockId = (block.id as string | undefined) ?? (block.tool_use_id as string | undefined);
             const blockName = block.name as string | undefined;
             currentBlockMeta[index] = {
               type: block.type as string,
@@ -389,6 +395,12 @@ export async function streamLlm(
               ...(blockName !== undefined ? { name: blockName } : {}),
             };
             currentBlockText[index] = "";
+            // §A1.25: a "web_search_tool_result" block (Anthropic's native web-search tool)
+            // arrives fully formed here — its results, not a text stream to accumulate via
+            // content_block_delta — so capture them now for content_block_stop to emit.
+            if (block.type === "web_search_tool_result") {
+              currentBlockResults[index] = (block.content as ContentBlock["web_search_results"]) ?? [];
+            }
           } else if (eventType === "content_block_delta") {
             const index = parsed.index as number;
             const delta = parsed.delta as Record<string, unknown>;
@@ -410,7 +422,11 @@ export async function streamLlm(
             if (meta) {
               if (meta.type === "text") {
                 contentBlocks.push({ type: "text", text });
-              } else if (meta.type === "tool_use") {
+              } else if (meta.type === "tool_use" || meta.type === "server_tool_use") {
+                // §A1.25: "server_tool_use" is Anthropic's native web-search tool calling itself
+                // server-side — streamed the same way as a regular tool_use (input_json_delta),
+                // just a distinct block type in the final response so callers can tell "the
+                // caller must execute this" apart from "Anthropic already executed this".
                 let input: Record<string, unknown> = {};
                 try {
                   input = JSON.parse(text) as Record<string, unknown>;
@@ -418,10 +434,16 @@ export async function streamLlm(
                   // keep empty object
                 }
                 contentBlocks.push({
-                  type: "tool_use",
+                  type: meta.type as "tool_use" | "server_tool_use",
                   ...(meta.id !== undefined ? { id: meta.id } : {}),
                   ...(meta.name !== undefined ? { name: meta.name } : {}),
                   input,
+                });
+              } else if (meta.type === "web_search_tool_result") {
+                contentBlocks.push({
+                  type: "web_search_tool_result",
+                  ...(meta.id !== undefined ? { tool_use_id: meta.id } : {}),
+                  web_search_results: currentBlockResults[index] ?? [],
                 });
               }
             }

@@ -1354,12 +1354,32 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     memories and genuinely space-level ones are queried separately and merged, deduped by id) —
     mirrors the exact `user_id IN (?, ?)` two-tier scoping `structured_facts`/`episodic_log` already
     used in this same file. 1757/1757 tests pass (17 new), `pnpm turbo run typecheck` clean (75
-    tasks). Next: Phase 2 (native web search via CF AI Gateway's provider passthrough), Phase 3
-    (per-tenant/per-user CF infra usage tracking), Phase 4 (real token streaming + context-window
-    usage UI + pre-send auto-compaction), Phase 5 (model switcher, which also fixes a found dead-code
-    bug — `spacetypes.model_config` is read by `index.ts` but no migration ever created that column,
-    so every run silently falls through to hardcoded model-name fallbacks). Full plan:
-    `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.24.
+    tasks). **Phase 2 (native web search via CF AI Gateway's provider tool-passthrough) is now
+    BUILT, alongside the existing Tavily-backed path (unchanged).** `@naelao/llm-gateway`'s
+    `LlmTool` is now a union (`LlmFunctionTool` — Naelao's own custom function-calling shape —
+    or the new `LlmNativeWebSearchTool`, Anthropic's server-executed `web_search_20250305` tool);
+    `ContentBlock.type` gained `"server_tool_use"`/`"web_search_tool_result"`. `buildRequestBody`
+    already passed `tools` through to Anthropic unconditionally, so `callLlm` needed no change —
+    but `streamLlm`'s SSE handler previously silently DROPPED any content-block type other than
+    `text`/`tool_use` (confirmed dead code, zero callers anywhere in the repo before this phase);
+    fixed to capture `server_tool_use` (accumulated via `input_json_delta` like an ordinary
+    tool_use) and `web_search_tool_result` (delivered whole in `content_block_start`, not via
+    delta — and identified by `tool_use_id`, not `id`, unlike every other block type, a real
+    bug caught by the first test draft). New `web-search.grounded_answer(query)` prebuilt op
+    calls a cheap model with the native tool enabled directly — search-and-synthesize in ONE
+    gateway-billed call, no Tavily round trip. **The real fix that makes this a billed call, not
+    a free side-channel:** `ScriptToolSurface.run()`'s prebuilt-success branch previously
+    hardcoded `tokens_used: 0` unconditionally for every prebuilt op with no way for an op that
+    makes its own internal LLM call to report real usage — now reads an optional
+    `output.usage.{tokens_used,input_tokens,output_tokens}` from the op's own return value, which
+    `loop.ts`'s pre-existing `withTokenUsage()` then ADDS the reasoner's own usage on top of (it
+    already summed rather than overwrote, so this was a one-line gap, not a redesign). 1769/1769
+    tests pass (12 new), `pnpm turbo run typecheck` clean (75 tasks). Next: Phase 3 (per-tenant/
+    per-user CF infra usage tracking), Phase 4 (real token streaming + context-window usage UI +
+    pre-send auto-compaction), Phase 5 (model switcher, which also fixes a found dead-code bug —
+    `spacetypes.model_config` is read by `index.ts` but no migration ever created that column, so
+    every run silently falls through to hardcoded model-name fallbacks). Full plan:
+    `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.24-A1.25.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

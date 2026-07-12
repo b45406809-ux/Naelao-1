@@ -214,12 +214,21 @@ export class ScriptToolSurface {
             return r.output;
           },
         });
+        // §A1.25: a prebuilt op that made its OWN LLM call internally (e.g. web-search's
+        // grounded_answer, which calls the native-web-search-enabled LLM directly rather than
+        // going through the reasoner) reports its real usage in `output.usage` — surfaced here
+        // so it's billed exactly like reasoner-driven tokens are (settleRunBilling reads
+        // ScriptRunResult.tokens_used/input_tokens/output_tokens via withTokenUsage). An op that
+        // never touches an LLM leaves this at 0, unchanged from before this feature existed.
+        const usage = (output as { usage?: { tokens_used?: number; input_tokens?: number; output_tokens?: number } } | null)?.usage;
         return {
           ok: true,
           output,
           tier: prebuilt.prebuilt.requires_tier,
           duration_ms: Date.now() - started,
-          tokens_used: 0,
+          tokens_used: usage?.tokens_used ?? 0,
+          ...(usage?.input_tokens !== undefined ? { input_tokens: usage.input_tokens } : {}),
+          ...(usage?.output_tokens !== undefined ? { output_tokens: usage.output_tokens } : {}),
         };
       } catch (err) {
         return {

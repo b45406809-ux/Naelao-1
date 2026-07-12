@@ -4,6 +4,8 @@ export type {
   ContentBlock,
   SystemBlock,
   LlmTool,
+  LlmFunctionTool,
+  LlmNativeWebSearchTool,
   LlmRequest,
   LlmResponse,
   TokenBudget,

@@ -9,7 +9,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
-import type { LlmTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
+import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
@@ -1394,6 +1394,43 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             mintInternalToken,
           }))
         : localMemoryStore;
+    }
+    // §A1.25: lets web-search's grounded_answer op make its own direct LLM call (native
+    // web-search tool) — degrades to unavailable (never a silent no-op) when neither credential
+    // is configured, same posture as canAuthenticateLlm() elsewhere in this file.
+    if (this.env.ANTHROPIC_API_KEY || this.env.NAELAO_AIG_TOKEN) {
+      const anthropicKey = this.env.ANTHROPIC_API_KEY ?? "";
+      const gatewayConfig = this.aiGatewayConfig();
+      env.llmCaller = {
+        callWithNativeWebSearch: async ({ model, query, maxUses }) => {
+          const response = await callLlm(
+            anthropicKey,
+            {
+              model,
+              system: "Answer the user's question, using web search when it would help. Be concise and factual.",
+              messages: [{ role: "user", content: query }],
+              tools: [{ type: "web_search_20250305", name: "web_search", max_uses: maxUses ?? 5 }],
+              max_tokens: 1024,
+            },
+            undefined,
+            gatewayConfig
+          );
+          const answer = response.content
+            .filter((b) => b.type === "text")
+            .map((b) => b.text ?? "")
+            .join("\n");
+          const citations = response.content
+            .filter((b) => b.type === "web_search_tool_result")
+            .flatMap((b) => (b.web_search_results ?? []).map((r) => ({ title: r.title, url: r.url })));
+          return {
+            answer,
+            citations,
+            tokens_used: response.usage.input_tokens + response.usage.output_tokens,
+            input_tokens: response.usage.input_tokens,
+            output_tokens: response.usage.output_tokens,
+          };
+        },
+      };
     }
     if (this.env.KNOWLEDGE_WORKER) env.knowledgeWorker = this.env.KNOWLEDGE_WORKER;
     if (this.env.SPACES_WORKER) env.spacesWorker = this.env.SPACES_WORKER;
@@ -3664,9 +3701,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         const toolResults: ContentBlock[] = [];
         let toolCallsThisTurn = 0;
 
-        // G-AY01: Build a fast-lookup map of require_approval per tool name
+        // G-AY01: Build a fast-lookup map of require_approval per tool name. `tools` is
+        // LlmTool[] (a union with §A1.25's LlmNativeWebSearchTool, which has no
+        // require_approval field at all) — this ReAct loop only ever deals in Naelao's own
+        // custom function-calling tools, so narrow to that member first.
         const approvalRequiredTools = new Set(
-          tools.filter((t) => t.require_approval).map((t) => t.name)
+          tools
+            .filter((t): t is LlmFunctionTool => "require_approval" in t && t.require_approval === true)
+            .map((t) => t.name)
         );
 
         // Partition: pre-check limits and policy before dispatching in parallel

@@ -343,6 +343,24 @@ export interface LockGateway {
 }
 
 /**
+ * §A1.25: lets a prebuilt op make its OWN direct LLM call rather than going through the
+ * reasoner's decide() loop — needed for web-search's `grounded_answer` op, which wants
+ * Anthropic's native web-search tool (proxied by CF AI Gateway, billed through the same Unified
+ * Billing as every other LLM call — no separate provider key). Returns real token usage so the
+ * caller (ScriptToolSurface.run's success branch) can fold it into ScriptRunResult and have it
+ * billed exactly like reasoner-driven tokens are, instead of being a free, unmetered LLM call.
+ */
+export interface LlmCallerGateway {
+  callWithNativeWebSearch(args: { model: string; query: string; maxUses?: number | undefined }): Promise<{
+    answer: string;
+    citations: Array<{ title?: string | undefined; url?: string | undefined }>;
+    tokens_used: number;
+    input_tokens: number;
+    output_tokens: number;
+  }>;
+}
+
+/**
  * Local-machine-as-container (spec "Local PC as a Container Target", gap G-3; §A1.17 Phase M).
  * Relays a grant-checked op (read_file/write_file/exec) to a builder's own machine over the
  * WebSocket tunnel LocalTunnelDO holds. `userId` addresses WHICH (space, user) tunnel to use —
@@ -438,6 +456,10 @@ export interface ScriptEngineEnv {
   /** Memory OS (structured facts + episodic + semantic recall) — present when the host DO
    *  has initialized its memory tables. Absent in environments that haven't wired it yet. */
   memoryStore?: MemoryStore;
+  /** §A1.25 — present when the host DO can make its own direct LLM calls (native web search).
+   *  Absent → web-search's grounded_answer op reports itself unavailable, same posture as every
+   *  other optional gateway here. */
+  llmCaller?: LlmCallerGateway;
   /** Identity for scoping R2 keys + Vectorize filters. */
   spaceId: string;
   agentId: string;

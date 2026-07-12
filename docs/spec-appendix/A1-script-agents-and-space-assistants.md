@@ -4331,3 +4331,97 @@ unscoped query doesn't regress to two redundant Vectorize calls.
 alongside the existing Tavily-backed path), Phase 3 (per-tenant/per-user CF infra usage tracking),
 Phase 4 (real token-level streaming + context-window usage UI + pre-send auto-compaction), Phase 5
 (model switcher).
+
+## A1.25 Second full-vision batch, Phase 2: native web search via CF AI Gateway — BUILT
+
+Alongside the existing Tavily-backed `web-search` prebuilt (item 42/§A1.x, unchanged — still the
+only option for raw structured search results with no LLM in the loop), Phase 2 adds a second,
+genuinely different mechanism: Anthropic's native, server-executed `web_search` tool, proxied
+transparently by Cloudflare AI Gateway. Per Cloudflare's own docs
+(https://developers.cloudflare.com/ai-gateway/usage/web-search/), this is NOT a Cloudflare-owned
+search index — the gateway passes the model provider's own native tool through, applying its
+standard logging/caching/guardrails, and **bills it through the same Unified Billing as the rest
+of the LLM call, with no separate web-search fee**. This is the "search then summarize via a
+small model, on the gateway, using the run's normal credits" mechanism the user originally asked
+about, collapsed into a single call rather than two script hops.
+
+### Type changes (`packages/llm-gateway/src/types.ts`)
+
+`LlmTool` was a single interface (`{name, description, input_schema, require_approval?}` —
+Naelao's own custom function-calling shape, the only kind this codebase's ReAct/script-engine tool
+surfaces have ever used). It's now a union:
+- `LlmFunctionTool` — the old shape, renamed, unchanged in every field.
+- `LlmNativeWebSearchTool` — `{type: "web_search_20250305", name: "web_search", max_uses?,
+  allowed_domains?, blocked_domains?, user_location?}`, matching Anthropic's native tool's wire
+  shape (no `input_schema` — Anthropic executes it server-side, the caller never sees an
+  `input_schema` to validate against).
+
+`ContentBlock.type` gained `"server_tool_use"` (the model calling its own native tool — same
+`input_json_delta` streaming shape as an ordinary `tool_use`, just executed by Anthropic instead
+of the caller) and `"web_search_tool_result"` (the search results Anthropic's server already
+executed and is handing back inline), plus a new `web_search_results?: Array<{title?, url?,
+encrypted_content?, page_age?}>` field to carry them.
+
+### `buildRequestBody` needed no change; `streamLlm` needed a real fix
+
+`buildRequestBody` (`packages/llm-gateway/src/gateway.ts`) already does
+`if (request.tools?.length) body.tools = request.tools;` unconditionally — no per-tool-shape
+validation, so a native tool block passes through to Anthropic exactly as-is. `callLlm`'s
+non-streaming response mapping is a bare `response.json()` cast — also needed no change, since it
+never inspects block types at all.
+
+`streamLlm`'s SSE handler DID need a real fix — and turned out to be entirely untested and
+uncalled dead code before this phase (`grep -rln "streamLlm"` across the whole repo returned zero
+callers anywhere outside the `llm-gateway` package itself, confirmed independently by two people
+tracing this same finding). Its `content_block_stop` handler only recognized `meta.type ===
+"text"` or `"tool_use"` — anything else (silently, no `else` branch) was dropped on the floor.
+Fixed to also emit `server_tool_use` (parses accumulated `input_json_delta` text as `input`,
+exactly like `tool_use` already did — just a different resulting block `type`) and
+`web_search_tool_result` (captured in full at `content_block_start`, NOT accumulated via delta —
+Anthropic delivers the whole result set the moment the block starts, unlike text/tool_use blocks
+which stream in incrementally). **A real bug caught by the first test draft, not by inspection:**
+a `web_search_tool_result` block identifies itself via `tool_use_id` (linking back to the
+`server_tool_use` call it answers), NOT `id` like every other block type — the initial
+implementation only ever read `block.id`, which is always `undefined` for this block type, so the
+result would have been captured with a permanently missing `tool_use_id`. Fixed by reading
+`block.id ?? block.tool_use_id` at `content_block_start`.
+
+### New prebuilt op: `web-search.grounded_answer` (`workers/agents/src/script-engine/prebuilt/web-search.ts`)
+
+`grounded_answer(query, model?, max_results?)`: calls a small model (default
+`claude-haiku-4-5-20251001`) with the native web-search tool enabled, directly — no Tavily/
+knowledge-worker round trip. Returns `{answer, citations, usage}`. Degrades honestly
+(`{ok:false, reason:...}`) when the new `llmCaller` gateway isn't wired (same posture as every
+other optional integration).
+
+### The real fix that makes this billed, not a free side-channel
+
+This is the part worth reading carefully, because it's the difference between "a feature that
+looks metered" and one that actually is. A prebuilt op making its OWN internal LLM call is new —
+nothing in this codebase did that before. `ScriptToolSurface.run()`'s prebuilt-success branch
+(`workers/agents/src/script-engine/tool-surface.ts`) previously hardcoded `tokens_used: 0`
+unconditionally for EVERY prebuilt op, with no path at all for an op to report real usage back.
+Fixed generically (not just for this one op): the success branch now reads an optional
+`output.usage.{tokens_used, input_tokens, output_tokens}` from whatever the op returned, and folds
+it into the `ScriptRunResult` the same fields `settleRunBilling` already reads. `loop.ts`'s
+pre-existing `withTokenUsage()` — which runs after every level, adding the reasoner's OWN
+`decide()`-call usage onto `loopResult.result.tokens_used` — already summed rather than
+overwrote (`tokens_used: loopResult.result.tokens_used + total`), so once the EXECUTE step's
+result carries a real number instead of a hardcoded zero, the existing pipeline correctly adds
+the reasoner's usage on top with no further changes needed. This also means any FUTURE prebuilt
+op that calls an LLM internally is billed correctly for free, without needing its own bespoke
+wiring — the fix is at the one chokepoint every prebuilt op's result already passes through.
+
+New `ScriptEngineEnv.llmCaller?: LlmCallerGateway` (`{callWithNativeWebSearch({model, query,
+maxUses?}): Promise<{answer, citations, tokens_used, input_tokens, output_tokens}>}`), wired in
+`NaelaoAgentDO.buildScriptEngineEnv` reusing the existing `this.aiGatewayConfig()` helper and
+`ANTHROPIC_API_KEY`/`NAELAO_AIG_TOKEN` resolution (the exact same credential-availability check
+`canAuthenticateLlm()` uses elsewhere in this file) — degrades to absent (never a silent no-op)
+when neither is configured.
+
+1769/1769 tests pass (12 new: `llm-gateway-native-web-search.test.ts` proving both the SSE fix and
+the pre-existing pass-through; `web-search-grounded-answer.test.ts` proving the op's own behavior
+AND that its usage reaches `ScriptToolSurface.run()`'s billed `ScriptRunResult` fields, not just
+the op's own return value), `pnpm turbo run typecheck` clean (75 tasks). Next: Phase 3 (per-tenant/
+per-user CF infra usage tracking), Phase 4 (real token streaming + context-window usage UI +
+pre-send auto-compaction), Phase 5 (model switcher).
