@@ -291,6 +291,22 @@ app.all("/v1/webhooks/lemon-squeezy", async (c) => {
   );
 });
 
+// ── Wallet Connect webhook ingress (unauthenticated; provider HMAC signatures are the auth) ──
+// Same posture as the platform LS webhook above: /v1/webhooks/stripe is the platform's ONE
+// Stripe Connect endpoint (verified against STRIPE_CONNECT_WEBHOOK_SECRET in the billing
+// worker); /v1/webhooks/lemon-squeezy/wallet/:connectionId is the per-connection webhook
+// auto-created on a builder's OWN LS store, verified with that connection's vault-held secret.
+const proxyBillingWebhook = async (c: { env: Env; req: { url: string; method: string; raw: Request } }) => {
+  if (!c.env.BILLING_WORKER) return new Response(JSON.stringify({ error_code: "billing_unavailable", message: "Billing worker not configured" }), { status: 503, headers: { "content-type": "application/json" } });
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.BILLING_WORKER.fetch(
+    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body, duplex: "half" } as RequestInit)
+  );
+};
+app.all("/v1/webhooks/stripe", proxyBillingWebhook);
+app.all("/v1/webhooks/lemon-squeezy/wallet/:connectionId", proxyBillingWebhook);
+
 // Security audit follow-up: the authenticated `api` group's rate limiter (G-AX12, below) only
 // covers routes registered AFTER it — every route in this unauthenticated block runs before
 // that middleware exists in the chain, so none of it was ever rate limited. That's the exact

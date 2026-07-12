@@ -16,6 +16,8 @@ import { checkQuota, recordUsageEvent, getUsageSummary } from "./quota.js";
 import { handleLemonSqueezyWebhook } from "./lemon-squeezy.js";
 import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
 import { registerWalletConnectionRoutes } from "./wallet-connections.js";
+import { handleStripeConnectWebhook, handleWalletLsWebhook } from "./wallet-webhooks.js";
+import { routeWalletCheckout, WalletCheckoutUnavailableError } from "./wallet-checkout.js";
 
 export interface BillingEnv {
   ENVIRONMENT: string;
@@ -441,9 +443,9 @@ app.post("/internal/commerce/checkout", async (c) => {
   }
 
   const product = await c.env.PLATFORM_DB.prepare(
-    "SELECT id, name, price_cents, currency, ls_variant_id, status FROM launchpad_products WHERE id = ? AND space_id = ?"
+    "SELECT id, name, price_cents, currency, kind, ls_variant_id, status FROM launchpad_products WHERE id = ? AND space_id = ?"
   ).bind(body.product_id, body.space_id).first<{
-    id: string; name: string; price_cents: number; currency: string; ls_variant_id: string | null; status: string;
+    id: string; name: string; price_cents: number; currency: string; kind: "one_time" | "subscription"; ls_variant_id: string | null; status: string;
   }>();
   if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
   if (product.status !== "published") {
@@ -455,6 +457,32 @@ app.post("/internal/commerce/checkout", async (c) => {
   // reseller product's config via the spaces worker) so a later config change can't re-price this
   // order. Zero for a top-level space with no parent builder.
   const builderFeeBps = await resolveBuilderFeeBps(c.env, body.space_id);
+
+  // Wallet Connect: a space with an ACTIVE payment connection checks out on the BUILDER's OWN
+  // account (Stripe direct charge with application fee / their LS store), never Naelao's store.
+  // No connection → null → the existing Naelao-store path below runs byte-identically. A broken
+  // rail fails CLOSED (503) rather than falling back — falling back would settle the builder's
+  // revenue into the wrong custody, the exact thing this feature exists to prevent.
+  try {
+    const walletCheckout = await routeWalletCheckout(c.env, {
+      spaceId: body.space_id,
+      product,
+      ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+      feeBps,
+      builderFeeBps,
+    });
+    if (walletCheckout) {
+      return c.json({
+        checkout_url: walletCheckout.checkout_url,
+        product: { id: product.id, name: product.name, price_cents: product.price_cents, currency: product.currency },
+        fee_bps: feeBps, builder_fee_bps: builderFeeBps,
+        rail: walletCheckout.rail,
+      });
+    }
+  } catch (err) {
+    const code = err instanceof WalletCheckoutUnavailableError ? err.errorCode : "wallet_checkout_failed";
+    return c.json({ error_code: code, message: (err as Error).message }, 503);
+  }
 
   // Without LS credentials (local/dev) return a deterministic placeholder so the flow is
   // testable end-to-end; production carries real store creds in Workers Secrets.
@@ -917,6 +945,22 @@ app.post("/webhooks/lemon-squeezy", async (c) => {
     QUOTA_CACHE: c.env.QUOTA_CACHE,
   });
 });
+
+// ── POST /webhooks/stripe ─────────────────────────────────────────────────────
+// Wallet Connect: the platform's ONE Stripe Connect webhook endpoint (unauthenticated — the
+// Stripe-Signature HMAC is the auth, same posture as /webhooks/lemon-squeezy above). Events
+// carry the connected account they happened on; dispatch resolves the payment_connections row
+// and forces the space from it, never from payload metadata.
+app.post("/webhooks/stripe", async (c) => handleStripeConnectWebhook(c.req.raw, c.env));
+
+// ── POST /webhooks/lemon-squeezy/wallet/:connectionId ────────────────────────
+// Wallet Connect: per-connection webhook auto-created on the BUILDER's OWN LS store, verified
+// with that connection's vault-held signing secret (never LEMON_SQUEEZY_WEBHOOK_SECRET, which
+// belongs to Naelao's store). Registered on a deeper static-prefix path than the platform
+// webhook above so the two can never shadow each other.
+app.post("/webhooks/lemon-squeezy/wallet/:connectionId", async (c) =>
+  handleWalletLsWebhook(c.req.raw, c.env, c.req.param("connectionId"))
+);
 
 // ── Wallet Connect (payment_connections) — builder-owned payment accounts ────
 registerWalletConnectionRoutes(app);

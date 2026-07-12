@@ -29,7 +29,7 @@ import { invalidateQuotaCache } from "./quota.js";
  */
 const BUILDER_FEE_BPS_CEILING = 3000; // 30%
 
-interface BuilderShare {
+export interface BuilderShare {
   builderFeeCents: number;
   parentTenantId: string;
   childTenantId: string;
@@ -45,7 +45,7 @@ interface BuilderShare {
  * re-price an in-flight order), capped at the ceiling, and clamped so naelao_fee + builder_fee
  * never exceeds gross.
  */
-async function resolveBuilderShare(
+export async function resolveBuilderShare(
   event: NormalizedBillingEvent,
   gross: number,
   naelaoFee: number,
@@ -78,7 +78,7 @@ async function resolveBuilderShare(
  * refund so the payout balance nets to zero (never deletes the original — audit trail). Idempotent
  * via a per-order provider_event_id (suffixed for the reversal so it never collides with the grant).
  */
-async function recordBuilderRevenueShare(
+export async function recordBuilderRevenueShare(
   db: D1Database,
   share: BuilderShare,
   event: NormalizedBillingEvent,
@@ -718,7 +718,7 @@ const GOAL_MAP: Record<NormalizedBillingEvent["type"], string> = {
 };
 
 /** Look up the default agent for a space from D1. Returns null if the space is not found. */
-async function resolveDefaultAgent(
+export async function resolveDefaultAgent(
   spaceId: string,
   db: D1Database
 ): Promise<{ agentId: string; tenantId: string } | null> {
@@ -854,7 +854,7 @@ export async function isFulfillmentAgentBound(
 }
 
 /** POST to agents worker: wake the agent with a billing event goal. */
-async function wakeAgent(
+export async function wakeAgent(
   spaceId: string,
   agentId: string,
   tenantId: string,
@@ -907,7 +907,7 @@ async function wakeAgent(
 }
 
 /** Fallback dedup key for the pathological case of an event carrying no provider id at all. */
-async function sha256Hex(text: string): Promise<string> {
+export async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
@@ -921,7 +921,7 @@ async function sha256Hex(text: string): Promise<string> {
  * (provider, event_id) primary key: returns true (process it) only the first time; false on
  * every subsequent delivery of the same event.
  */
-async function markEventProcessedOnce(
+export async function markEventProcessedOnce(
   provider: string,
   eventId: string,
   eventType: string,
@@ -940,7 +940,7 @@ async function markEventProcessedOnce(
  * return a non-200 so Lemon Squeezy retries. Every money handler is idempotent, so reprocessing is
  * safe — the parts that succeeded are no-ops, the failed part completes.
  */
-async function unmarkEventProcessed(provider: string, eventId: string, db: D1Database): Promise<void> {
+export async function unmarkEventProcessed(provider: string, eventId: string, db: D1Database): Promise<void> {
   try {
     await db.prepare(`DELETE FROM processed_webhook_events WHERE provider = ? AND event_id = ?`).bind(provider, eventId).run();
   } catch { /* best-effort — a failed delete just means the retry is deduped, no worse than today */ }

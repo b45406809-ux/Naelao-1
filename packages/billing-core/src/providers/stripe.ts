@@ -176,6 +176,10 @@ export class StripeProvider implements BillingProvider {
     const obj = event.data?.object ?? {};
     const metadata: Record<string, string> = { ...(obj.metadata ?? {}) };
     if (event.account) metadata["stripe_account"] = event.account;
+    // The payment_intent is the ONE id shared between a checkout.session.completed event and the
+    // later charge.refunded event for the same purchase (their evt_ ids never match) — carried so
+    // order recording can key launchpad_orders on it and refund handling can find the order.
+    if (obj["payment_intent"]) metadata["payment_intent"] = String(obj["payment_intent"]);
 
     const isSubscription = eventType.startsWith("customer.subscription.");
     // amount_total (checkout sessions), amount_refunded (charges), amount_due (invoices) — all
