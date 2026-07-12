@@ -1374,12 +1374,42 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     `output.usage.{tokens_used,input_tokens,output_tokens}` from the op's own return value, which
     `loop.ts`'s pre-existing `withTokenUsage()` then ADDS the reasoner's own usage on top of (it
     already summed rather than overwrote, so this was a one-line gap, not a redesign). 1769/1769
-    tests pass (12 new), `pnpm turbo run typecheck` clean (75 tasks). Next: Phase 3 (per-tenant/
-    per-user CF infra usage tracking), Phase 4 (real token streaming + context-window usage UI +
-    pre-send auto-compaction), Phase 5 (model switcher, which also fixes a found dead-code bug —
-    `spacetypes.model_config` is read by `index.ts` but no migration ever created that column, so
-    every run silently falls through to hardcoded model-name fallbacks). Full plan:
-    `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.24-A1.25.
+    tests pass (12 new), `pnpm turbo run typecheck` clean (75 tasks). **Phase 3 (per-tenant/
+    per-user CF infra usage tracking) is now BUILT.** Meters Tier 2-5 isolate/container wall-clock
+    time and durable CF Workflow step overhead, converts it to the platform credit unit via a new
+    `infraTimeToCredits(resourceType, durationMs)` (`packages/billing-core`, the infra counterpart
+    to `tokensToCredits` — same "round up, minimum 1 credit for any nonzero cost" invariant;
+    isolate cheapest, container costed higher, a workflow step a small flat per-invocation fee —
+    approximate default rates, documented as needing tuning against the platform's real CF
+    invoice, not authoritative Cloudflare pricing). Recorded as a new `infra_credits`
+    `usage_events` metric via the SAME `/billing/usage` mechanism `llm_tokens` already uses —
+    for EVERY run with a measurable tier+duration, regardless of caller role (observability);
+    enforcement (a monthly ceiling, 402 `infra_quota_exceeded`) is deliberately scoped narrower,
+    exactly matching the pre-existing `llm_tokens` builder-quota gate's own scoping: only a
+    builder (owner/admin/editor/viewer) chatting with their own Space Assistant is checked —
+    project-scoped and signed-in-product-end-user runs already have their own separate wallet/
+    credit gates, not extended with an infra ceiling this pass. New `monthly_infra_credits` field
+    on `@naelao/entitlements`' `PlanLimits` (and `workers/billing/src/quota.ts`'s own parallel
+    `QuotaLimits` table, kept in sync in the same commit per that file's own "numbers match"
+    convention) + a new `GET /internal/usage/infra-credits/check` route mirroring
+    `llm-tokens/check` exactly. `NaelaoAgentDO.settleRunBilling` records infra credits BEFORE its
+    existing `if (!tokensUsed) return` early-out — a pure script execution with zero LLM tokens
+    still consumes real isolate/container time and must not go unrecorded. CF Workflow steps
+    (`ScriptRunWorkflow`'s `execute-script`, `AgentTaskWorkflow`'s `run-agent` — the two steps
+    that do real dispatched work, not the trivial DO status-update steps) gained real `Date.now()`
+    wall-clock bracketing where none existed before (a confirmed gap, not a pre-existing pattern)
+    via a new shared `reportWorkflowStepInfraUsage` helper, since Workflow classes share the
+    agents worker's plain `Env` (which needed a new `BILLING_WORKER?: Fetcher` — already bound in
+    `wrangler.toml`, just missing from this particular TypeScript interface), not
+    `NaelaoAgentDO`'s own env/`internalHeaders()` machinery. New Analytics Engine data point
+    (`infra.execution.completed`) alongside the isolate/container recording, tenant_id in
+    `indexes[0]`, best-effort. **Deliberately NOT extended this pass:** `handleChannelHeartbeat`'s
+    separate per-message customer-bot debit loop (still token-credits only). 1781/1781 tests pass
+    (12 new), `pnpm turbo run typecheck` clean (75 tasks). Next: Phase 4 (real token streaming +
+    context-window usage UI + pre-send auto-compaction), Phase 5 (model switcher, which also fixes
+    a found dead-code bug — `spacetypes.model_config` is read by `index.ts` but no migration ever
+    created that column, so every run silently falls through to hardcoded model-name fallbacks).
+    Full plan: `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.24-A1.26.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

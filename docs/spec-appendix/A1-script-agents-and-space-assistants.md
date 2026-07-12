@@ -4425,3 +4425,83 @@ AND that its usage reaches `ScriptToolSurface.run()`'s billed `ScriptRunResult` 
 the op's own return value), `pnpm turbo run typecheck` clean (75 tasks). Next: Phase 3 (per-tenant/
 per-user CF infra usage tracking), Phase 4 (real token streaming + context-window usage UI +
 pre-send auto-compaction), Phase 5 (model switcher).
+
+## A1.26 Second full-vision batch, Phase 3: per-tenant/per-user Cloudflare infra usage tracking — BUILT
+
+The user's ask: "track all this CF infra usage per tenant/per user per their subscription plan
+limits, track everything." Reuses three already-proven metering patterns found during the earlier
+exploration pass rather than inventing new ones: `tokensToCredits`'s conversion-function shape
+(`packages/billing-core`), `quota.ts`'s KV-cache-invalidate-not-increment pattern (item 27), and
+the existing `llm_tokens` builder-quota gate's exact scoping (item 46's P0-3).
+
+### `infraTimeToCredits` (`packages/billing-core/src/index.ts`)
+
+New `InfraResourceType = "isolate" | "container" | "workflow_step"` and
+`infraTimeToCredits(resourceType, durationMs)` — the infra counterpart to `tokensToCredits`, same
+"always round up, minimum 1 credit for any nonzero cost" invariant. A small per-resource pricing
+table: isolate cheapest (proportional to CF's own CPU-ms billing), container costed materially
+higher per-ms (full-VM compute), a workflow step a flat per-invocation fee (its cost is dominated
+by orchestration overhead, not wall-clock, at Naelao's scale). **Explicitly documented as
+approximate default rates, not authoritative Cloudflare pricing** — tune against the platform's
+real CF invoice before relying on this for margin analysis; the relative ordering is what matters
+for fair per-tenant metering.
+
+### Capture points
+
+- `NaelaoAgentDO.settleRunBilling`: a new `NaelaoAgentDO.infraResourceTypeForTier(tier)` maps
+  `ExecutionTier` 2-4 → `"isolate"`, 5 → `"container"` (Tier 1, in-process R2, is excluded — not a
+  distinct CF resource, and `duration_ms` is always 0 there anyway). The infra-credit computation
+  and recording now happens **before** the function's pre-existing `if (!tokensUsed) return;`
+  early-out, not after — a pure script execution with zero LLM tokens (e.g. a scheduled
+  `workflow.run` with no reasoning step) still consumes real isolate/container time and must not
+  silently go unmetered just because it made no LLM call. Recorded via the same `/billing/usage`
+  POST mechanism (`event_type: "infra_credits"`) the existing `llm_tokens` recording already uses,
+  for **every** run with a measurable tier+duration regardless of caller role (pure observability
+  — this is deliberately broader than the enforcement gate below). Also emits a new Analytics
+  Engine data point (`infra.execution.completed`, `packages/analytics-schema`'s versioned slot
+  layout, `tenant_id` in `indexes[0]`, best-effort try/catch matching every existing call site).
+- `ScriptRunWorkflow`'s `execute-script` step and `AgentTaskWorkflow`'s `run-agent` step (the two
+  steps that dispatch real work — not the trivial DO status-update steps in either workflow,
+  which aren't metered) gained real `Date.now()` wall-clock bracketing where **none existed
+  before** (confirmed during the earlier exploration pass: zero `Date.now()` calls in either
+  file). A new shared `reportWorkflowStepInfraUsage()` (`workers/agents/src/workflows/
+  report-infra-usage.ts`) posts `resourceType: "workflow_step"` usage — Workflow classes share the
+  agents worker's plain `Env` (`workers/agents/src/env.ts`), not `NaelaoAgentDO`'s own
+  `internalHeaders()`/`BILLING_WORKER` wiring, so this needed a small standalone equivalent rather
+  than a DO method; `Env` gained `BILLING_WORKER?: Fetcher` (the binding already exists in
+  `wrangler.toml` under the `naelao-billing` service — it was just missing from this particular
+  shared TypeScript interface, a real but narrow gap).
+
+### Enforcement — extends the existing `quota.ts`/`entitlements` mechanism, doesn't build a parallel one
+
+New `monthly_infra_credits` field on `@naelao/entitlements`'s `PlanLimits`/`PLAN_LIMITS` (all four
+tiers, roughly the same 1:20:200:2000 tier ratio as `monthly_tokens`) **and** the same field
+(`maxMonthlyInfraCredits`) added to `workers/billing/src/quota.ts`'s own separate `QuotaLimits`
+table in the same commit — that file already maintains a second, independently-hand-synced copy
+of these numbers (a pre-existing, documented duplication, not something this pass introduced or
+tried to unify) and its own comment insists the two stay numerically identical. New
+`QuotaMetric = "infra_credits"` case added to `getCurrentUsage`'s D1 aggregate switch (identical
+shape to the existing `llm_tokens` case: `SUM(quantity) FROM usage_events WHERE event_type =
+'infra_credits' AND recorded_at >= start of month`) and to `invalidateQuotaCache`'s metric list.
+New `GET /internal/usage/infra-credits/check` (`workers/billing/src/index.ts`) mirrors
+`/internal/usage/llm-tokens/check` exactly (same HMAC gate, same response shape).
+
+`NaelaoAgentDO.enforceRunGates`'s existing `BUILDER_CALLER_ROLES` branch (the builder-chatting-
+with-their-own-Space-Assistant scope — P0-3's exact scoping, re-used verbatim) now ALSO checks the
+new infra-credits quota alongside the pre-existing llm-tokens one, same fail-open-on-transient-
+error / 402-`error_code: "infra_quota_exceeded"`-on-confirmed-over-cap posture. **Deliberately NOT
+extended to project-scoped or signed-in-product-end-user runs** — those already have their own
+separate wallet/project-spend-cap/credit-balance gates (project_spend, ProductUserDO credits),
+which are a fundamentally different metering axis (currency-like spend) from this one (a resource-
+consumption ceiling); folding infra credits into those existing gates is a real, separate design
+question left for its own pass, not silently done here. **Also deliberately NOT extended:**
+`handleChannelHeartbeat`'s separate per-message customer-bot debit loop (still token-credits only,
+unchanged).
+
+1781/1781 tests pass (12 new: `infra-usage-metering.test.ts` proving the conversion function's
+invariants and `reportWorkflowStepInfraUsage`'s real-and-degrades-honestly behavior;
+`infra-usage-quota-gate.test.ts` proving the pre-run gate's fail-closed/fail-open cases and its
+narrow BUILDER_CALLER_ROLES-only scoping via the same `NaelaoAgentDO` `/run` fixture pattern
+`interactive-run-end-user-credit-gate.test.ts` established), `pnpm turbo run typecheck` clean (75
+tasks). Next: Phase 4 (real token streaming + context-window usage UI + pre-send
+auto-compaction), Phase 5 (model switcher).

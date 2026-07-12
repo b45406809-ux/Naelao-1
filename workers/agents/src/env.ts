@@ -14,6 +14,9 @@ export interface Env {
   KNOWLEDGE_WORKER: Fetcher;
   SPACES_WORKER: Fetcher;
   AGENTS_WORKER: Fetcher;
+  /** Already bound in wrangler.toml (naelao-billing); added here so Workflow classes (which
+   *  share this Env, not AgentDOEnv) can report §A1.26 infra-credit usage for their own steps. */
+  BILLING_WORKER?: Fetcher;
   AGENT_CACHE: KVNamespace;
   AGENT_TASK_WORKFLOW: { create(opts: { id?: string; params?: unknown }): Promise<void> };
   /** §A1.17 Phase J — durable dispatch for runtime:"workflow" scripts (ScriptRunWorkflow). */

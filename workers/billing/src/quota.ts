@@ -9,26 +9,33 @@ export interface QuotaLimits {
   // credit gates). Numbers match @naelao/entitlements' PLAN_LIMITS.monthly_tokens exactly so the
   // two systems agree on what each tier is entitled to.
   maxMonthlyTokens: number;
+  // §A1.26: the same builder-Space-Assistant scoping as maxMonthlyTokens, but for Cloudflare
+  // infra consumption (isolate/container/workflow-step credits, billing-core's
+  // infraTimeToCredits) rather than LLM tokens. Numbers match @naelao/entitlements'
+  // PLAN_LIMITS.monthly_infra_credits exactly — keep both in sync in the same commit.
+  maxMonthlyInfraCredits: number;
 }
 
 export const PLAN_LIMITS: Record<string, QuotaLimits> = {
-  free: { maxSpaces: 0, maxKbDocs: 0, maxApiCallsPerMonth: 0, maxMonthlyTokens: 100_000 },
-  growth: { maxSpaces: 10, maxKbDocs: 1_000, maxApiCallsPerMonth: 100_000, maxMonthlyTokens: 2_000_000 },
+  free: { maxSpaces: 0, maxKbDocs: 0, maxApiCallsPerMonth: 0, maxMonthlyTokens: 100_000, maxMonthlyInfraCredits: 5_000 },
+  growth: { maxSpaces: 10, maxKbDocs: 1_000, maxApiCallsPerMonth: 100_000, maxMonthlyTokens: 2_000_000, maxMonthlyInfraCredits: 100_000 },
   business: {
     maxSpaces: 50,
     maxKbDocs: 10_000,
     maxApiCallsPerMonth: 1_000_000,
     maxMonthlyTokens: 20_000_000,
+    maxMonthlyInfraCredits: 1_000_000,
   },
   enterprise: {
     maxSpaces: 999_999,
     maxKbDocs: 999_999,
     maxApiCallsPerMonth: 999_999_999,
     maxMonthlyTokens: 200_000_000,
+    maxMonthlyInfraCredits: 10_000_000,
   },
 };
 
-type QuotaMetric = "spaces" | "kb_docs" | "api_calls" | "llm_tokens";
+type QuotaMetric = "spaces" | "kb_docs" | "api_calls" | "llm_tokens" | "infra_credits";
 
 /** KV key format: quota:{orgId}:{metric} */
 function kvKey(orgId: string, metric: QuotaMetric): string {
@@ -110,6 +117,20 @@ async function getCurrentUsage(
       count = row?.cnt ?? 0;
       break;
     }
+    case "infra_credits": {
+      const row = await db
+        .prepare(
+          `SELECT COALESCE(SUM(quantity), 0) as cnt
+           FROM usage_events
+           WHERE org_id = ?
+             AND event_type = 'infra_credits'
+             AND recorded_at >= datetime('now', 'start of month')`
+        )
+        .bind(orgId)
+        .first<{ cnt: number }>();
+      count = row?.cnt ?? 0;
+      break;
+    }
   }
 
   // Populate cache with the fresh value
@@ -133,6 +154,7 @@ export async function checkQuota(
     maxKbDocs: 0,
     maxApiCallsPerMonth: 0,
     maxMonthlyTokens: 0,
+    maxMonthlyInfraCredits: 0,
   };
 
   let limit: number;
@@ -148,6 +170,9 @@ export async function checkQuota(
       break;
     case "llm_tokens":
       limit = limits.maxMonthlyTokens;
+      break;
+    case "infra_credits":
+      limit = limits.maxMonthlyInfraCredits;
       break;
   }
 
@@ -187,6 +212,6 @@ export async function invalidateQuotaCache(
   kv: KVNamespace,
   orgId: string
 ): Promise<void> {
-  const metrics: QuotaMetric[] = ["spaces", "kb_docs", "api_calls", "llm_tokens"];
+  const metrics: QuotaMetric[] = ["spaces", "kb_docs", "api_calls", "llm_tokens", "infra_credits"];
   await Promise.all(metrics.map((m) => kv.delete(kvKey(orgId, m))));
 }

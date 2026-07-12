@@ -13,7 +13,7 @@ import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
-import { tokensToCredits } from "@naelao/billing-core";
+import { tokensToCredits, infraTimeToCredits } from "@naelao/billing-core";
 import {
   ScriptToolSurface,
   runScriptLoop,
@@ -2177,6 +2177,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         outputTokens: result.result?.output_tokens ?? 0,
         model: body.model,
         notes: result.notes,
+        tier: result.result?.tier,
+        durationMs: result.result?.duration_ms,
       });
 
       // Layer 4 (Fabric) auto-consolidation (spec: "runs LLM-driven session extraction
@@ -2698,6 +2700,30 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         } catch {
           // Billing service unreachable — do not block the run over a transient outage.
         }
+
+        // §A1.26: same scoping/posture as the llm-tokens check above, for Cloudflare infra
+        // consumption (isolate/container/workflow-step credits) instead of LLM tokens — a
+        // separate monthly ceiling per @naelao/entitlements' monthly_infra_credits.
+        try {
+          const infraQuotaRes = await this.env.BILLING_WORKER.fetch(new Request(
+            "http://billing-worker/internal/usage/infra-credits/check",
+            { headers: await this.internalHeaders(tenantId) }
+          ));
+          if (infraQuotaRes.ok) {
+            const { allowed, current, limit } = await infraQuotaRes.json<{ allowed: boolean; current: number; limit: number }>();
+            if (!allowed) {
+              return {
+                ok: false,
+                response: Response.json(
+                  { error: "monthly infra usage limit reached for your plan — upgrade to keep chatting", error_code: "infra_quota_exceeded", current, limit },
+                  { status: 402 }
+                ),
+              };
+            }
+          }
+        } catch {
+          // Billing service unreachable — do not block the run over a transient outage.
+        }
       }
     }
 
@@ -2712,13 +2738,64 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * billing-side hiccup in the run's own response rather than silently swallowing it. Best-effort
    * throughout: a debit failure never fails an already-completed run.
    */
+  /** §A1.26: maps a script's execution tier to the Cloudflare resource billing-core's
+   *  infraTimeToCredits prices — Tier 1 (in-process R2) never carries a real duration_ms and
+   *  isn't a distinct CF resource, so it's excluded (returns undefined, meaning "don't record"). */
+  private static infraResourceTypeForTier(tier: number | string | undefined): import("@naelao/billing-core").InfraResourceType | undefined {
+    if (tier === 2 || tier === 3 || tier === 4) return "isolate";
+    if (tier === 5) return "container";
+    return undefined;
+  }
+
   private async settleRunBilling(params: {
     spaceId: string; tenantId: string; projectId?: string | undefined; userId?: string | undefined; callerRole?: string | undefined;
     hasSpendCap: boolean; walletProjectId: string | null;
     tokensUsed: number; inputTokens: number; outputTokens: number;
     model?: string | undefined; notes: string[]; runId: string;
+    /** §A1.26: the executed script's tier + wall-clock duration, when known (script-native runs
+     *  only — the legacy ReAct path has no equivalent concept and omits these). */
+    tier?: number | string | undefined; durationMs?: number | undefined;
   }): Promise<void> {
-    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId, tokensUsed, inputTokens, outputTokens, model, notes, runId } = params;
+    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId, tokensUsed, inputTokens, outputTokens, model, notes, runId, tier, durationMs } = params;
+
+    // §A1.26: infra-credit usage is recorded independent of whether this run used any LLM
+    // tokens at all (a pure script execution — e.g. a scheduled workflow.run with no reasoning
+    // step — still consumes real isolate/container time) — so this happens before the
+    // token-billing early-return below, not gated by it. Best-effort, never fails the run;
+    // recorded for every caller (observability), the monthly-quota GATE in enforceRunGates is
+    // deliberately scoped narrower (builder-Space-Assistant runs only, matching llm_tokens).
+    const resourceType = NaelaoAgentDO.infraResourceTypeForTier(tier);
+    if (resourceType && durationMs !== undefined && this.env.BILLING_WORKER) {
+      const infraCredits = infraTimeToCredits(resourceType, durationMs);
+      if (infraCredits > 0) {
+        try {
+          await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/billing/usage", {
+            method: "POST",
+            headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+            body: JSON.stringify({
+              event_type: "infra_credits",
+              quantity: infraCredits,
+              space_id: spaceId,
+              idempotency_key: `run:${runId}:infra`,
+            }),
+          }));
+          if (this.env.ANALYTICS) {
+            try {
+              this.env.ANALYTICS.writeDataPoint({
+                blobs: ["infra.execution.completed", tenantId, spaceId, "", "", "", "agents", "", "", JSON.stringify({ resource_type: resourceType, run_id: runId })],
+                doubles: [durationMs, infraCredits],
+                indexes: [tenantId],
+              });
+            } catch {
+              /* Analytics Engine is append-only best-effort — never block on failure */
+            }
+          }
+        } catch {
+          // Billing service unreachable — best-effort usage recording, never fails the run.
+        }
+      }
+    }
+
     if (!tokensUsed) return;
     const credits = inputTokens || outputTokens
       ? tokensToCredits(inputTokens, outputTokens, model ?? "claude-haiku-4-5-20251001")

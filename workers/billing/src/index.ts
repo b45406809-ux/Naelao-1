@@ -330,6 +330,8 @@ app.post("/billing/usage", async (c) => {
     await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "kb_docs");
   } else if (body.event_type === "llm_tokens") {
     await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "llm_tokens");
+  } else if (body.event_type === "infra_credits") {
+    await recordUsageEvent(c.env.QUOTA_CACHE, orgId, "infra_credits");
   }
 
   // Enqueue to BILLING_EVENTS for async usage metering
@@ -364,6 +366,24 @@ app.get("/internal/usage/llm-tokens/check", async (c) => {
   const planTier = sub?.plan_tier ?? "free";
 
   const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "llm_tokens", planTier);
+  return c.json({ ...quota, plan_tier: planTier });
+});
+
+// ── GET /internal/usage/infra-credits/check ──────────────────────────────────
+// §A1.26: the infra-usage counterpart to /internal/usage/llm-tokens/check above — same scoping
+// (a builder chatting with their own Space Assistant; project/end-user runs have their own
+// separate wallet/spend-cap gates), same HMAC gate, same shape.
+app.use("/internal/usage/infra-credits/check", requireInternalHmac((c) => (c as unknown as { env: BillingEnv }).env.PLATFORM_SECRET));
+app.get("/internal/usage/infra-credits/check", async (c) => {
+  const orgId = c.req.header("x-naelao-tenant-id") ?? "";
+  if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+
+  const sub = await c.env.PLATFORM_DB.prepare(
+    "SELECT plan_tier FROM subscriptions WHERE org_id = ?"
+  ).bind(orgId).first<{ plan_tier: string }>();
+  const planTier = sub?.plan_tier ?? "free";
+
+  const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "infra_credits", planTier);
   return c.json({ ...quota, plan_tier: planTier });
 });
 

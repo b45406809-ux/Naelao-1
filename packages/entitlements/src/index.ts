@@ -16,6 +16,11 @@ export interface PlanLimits {
   advanced_analytics: boolean;
   sso: boolean;
   audit_log_retention_days: number;
+  /** §A1.26: monthly ceiling on Cloudflare infra credits (isolate/container wall-clock time +
+   *  durable Workflow steps, converted via billing-core's infraTimeToCredits) — the compute-
+   *  consumption counterpart to monthly_tokens, which only meters LLM usage. Same 1:20:200:2000
+   *  tier ratio as monthly_tokens. */
+  monthly_infra_credits: number;
 }
 
 const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
@@ -33,6 +38,7 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
     advanced_analytics: false,
     sso: false,
     audit_log_retention_days: 7,
+    monthly_infra_credits: 5_000,
   },
   growth: {
     spaces: 25,
@@ -48,6 +54,7 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
     advanced_analytics: false,
     sso: false,
     audit_log_retention_days: 30,
+    monthly_infra_credits: 100_000,
   },
   business: {
     spaces: 100,
@@ -63,6 +70,7 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
     advanced_analytics: true,
     sso: true,
     audit_log_retention_days: 90,
+    monthly_infra_credits: 1_000_000,
   },
   enterprise: {
     spaces: 1_000,
@@ -78,6 +86,7 @@ const PLAN_LIMITS: Record<PlanTier, PlanLimits> = {
     advanced_analytics: true,
     sso: true,
     audit_log_retention_days: 365,
+    monthly_infra_credits: 10_000_000,
   },
 };
 

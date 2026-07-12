@@ -13,6 +13,7 @@
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
 import { mintInternalToken } from "@naelao/http";
 import type { Env } from "../env.js";
+import { reportWorkflowStepInfraUsage } from "./report-infra-usage.js";
 
 export interface AgentTaskParams {
   taskId: string;
@@ -61,6 +62,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
 
     // ── Step 2: Run agent via agents-worker internal endpoint ─────────────────
     const runResult = await step.do("run-agent", { ...retry, timeout: 29_000 }, async () => {
+      const stepStarted = Date.now();
       // Go-live audit F1: /internal/tasks/:taskId/run is HMAC-gated (verified tenant must match
       // the body's tenantId) — mint the same signed internal token naelao-router's proxyTo and
       // every other internal caller uses. Without this the workflow's own run would now 403.
@@ -88,6 +90,10 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           }),
         }
       );
+
+      // §A1.26: this step's own async-dispatch orchestration overhead (distinct from the run's
+      // own isolate/container/LLM billing, which settleRunBilling handles inside the agent DO).
+      await reportWorkflowStepInfraUsage(this.env, p.tenantId, p.spaceId, Date.now() - stepStarted, `workflow:${event.instanceId}:run-agent`);
 
       if (!resp.ok) {
         const text = await resp.text();

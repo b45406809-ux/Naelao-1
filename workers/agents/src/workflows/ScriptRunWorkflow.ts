@@ -13,6 +13,7 @@
 import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:workers";
 import { mintInternalToken } from "@naelao/http";
 import type { Env } from "../env.js";
+import { reportWorkflowStepInfraUsage } from "./report-infra-usage.js";
 
 export interface ScriptRunWorkflowParams {
   spaceId: string;
@@ -35,10 +36,11 @@ export class ScriptRunWorkflow extends WorkflowEntrypoint<Env, ScriptRunWorkflow
   async run(event: WorkflowEvent<ScriptRunWorkflowParams>, step: WorkflowStep): Promise<ScriptRunWorkflowResult> {
     const p = event.payload;
 
-    return await step.do(
+    const result = await step.do(
       "execute-script",
       { retries: { limit: 3, delay: 5000, backoff: "exponential" as const }, timeout: "10 minutes" },
       async (): Promise<ScriptRunWorkflowResult> => {
+        const started = Date.now();
         const token = await mintInternalToken(this.env.PLATFORM_SECRET, p.tenantId);
         const resp = await this.env.AGENTS_WORKER.fetch(
           new Request("https://agents-worker/internal/scripts/run-durable", {
@@ -59,11 +61,16 @@ export class ScriptRunWorkflow extends WorkflowEntrypoint<Env, ScriptRunWorkflow
           })
         );
         const body = await resp.text();
+        // §A1.26: this step's own orchestration/dispatch wall-clock time (distinct from any
+        // isolate/container time the durable script run itself reports, which is billed
+        // separately inside NaelaoAgentDO.settleRunBilling when that script executes).
+        await reportWorkflowStepInfraUsage(this.env, p.tenantId, p.spaceId, Date.now() - started, `workflow:${event.instanceId}:execute-script`);
         if (!resp.ok) {
           throw new Error(`durable script run failed (${resp.status}): ${body}`);
         }
         return { ok: true, status: resp.status, body };
       }
     );
+    return result;
   }
 }

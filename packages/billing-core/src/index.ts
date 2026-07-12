@@ -172,3 +172,40 @@ export function tokensToCredits(inputTokens: number, outputTokens: number, model
   const costMicro = computeTokenCostMicro(inputTokens, outputTokens, model);
   return Math.max(1, Math.ceil((costMicro * CREDITS_PER_USD) / 1_000_000));
 }
+
+/**
+ * §A1.26: which Cloudflare compute resource an execution ran on — used to price it, and to
+ * choose the `usage_events` metric an infra-credit debit is recorded against. "workflow_step" is
+ * billed as a flat per-invocation cost rather than per-ms (a durable CF Workflow step's own
+ * orchestration overhead isn't meaningfully proportional to wall-clock time at Naelao's scale).
+ */
+export type InfraResourceType = "isolate" | "container" | "workflow_step";
+
+/**
+ * Approximate default USD rates for each resource type — NOT authoritative Cloudflare pricing.
+ * Tune against the platform's real CF invoice before relying on this for margin analysis; the
+ * relative ordering (container > isolate, workflow steps a small flat fee) is what actually
+ * matters for fair per-tenant metering, not the exact figures.
+ */
+const INFRA_PRICING: Record<InfraResourceType, { perMs: number; flatUsd?: number }> = {
+  // Tier 2-4 CF Worker Loader isolates — cheapest, proportional to CF's own CPU-ms billing.
+  isolate: { perMs: 0.00000002 },
+  // Tier 5 CF Containers — full-VM compute, materially costlier per unit time than an isolate.
+  container: { perMs: 0.0000006 },
+  // A durable CF Workflow step's cost is dominated by orchestration overhead, not wall-clock —
+  // a small flat per-step fee rather than a per-ms rate.
+  workflow_step: { perMs: 0, flatUsd: 0.00005 },
+};
+
+/**
+ * Converts real Cloudflare infra consumption (isolate/container wall-clock time, or a durable
+ * Workflow step) into the platform credit unit — the infra-usage counterpart to tokensToCredits.
+ * Same "always round up, minimum 1 credit for any nonzero cost" invariant: an execution that
+ * consumed real compute must never be recorded as free.
+ */
+export function infraTimeToCredits(resourceType: InfraResourceType, durationMs: number): number {
+  const pricing = INFRA_PRICING[resourceType];
+  const costUsd = pricing.perMs * Math.max(0, durationMs) + (pricing.flatUsd ?? 0);
+  if (costUsd <= 0) return 0;
+  return Math.max(1, Math.ceil(costUsd * CREDITS_PER_USD));
+}
