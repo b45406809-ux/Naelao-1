@@ -1287,11 +1287,14 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     **Not done this pass (tracked, not urgent):** A-2, converging `/agent/run` onto the
     script-native `handleScriptRun` and retiring `handleRun`/`runReActLoop` entirely per ground
     rule #8 — S-A1 closes the exploitable gap; A-2 removes the duality that caused it, and is a
-    larger behavior change to the live chat surface better done as its own pass. A-3 (the wallet
-    ledger's latent multi-currency conflation) is also still open, low severity. **Both filed as
-    tracked follow-ups in `docs/AUDIT_TODO.md`'s "Deferred, tracked follow-up (NOT for the
-    go-live window)" section — explicitly scoped to NOT be implemented during the current
-    go-live push; a dedicated future pass should re-read that section before starting.**
+    larger behavior change to the live chat surface better done as its own pass, tracked in
+    `docs/AUDIT_TODO.md`'s "Deferred, tracked follow-up (NOT for the go-live window)" section
+    (explicitly scoped to NOT be implemented during the current go-live push). **A-3 (the wallet
+    ledger's latent multi-currency conflation) is now FIXED:** `creditWallet` rejects any
+    non-USD `currency` with a clear `400 unsupported_currency` (no real caller ever sent one;
+    single-currency-reject chosen over building out real multi-currency wallets) and both
+    credit/debit always write the literal `'USD'` ledger column rather than trusting the
+    request body. 1735/1735 tests pass (2 new), `pnpm turbo run typecheck` clean (75 tasks).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

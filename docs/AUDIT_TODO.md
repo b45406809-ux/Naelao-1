@@ -33,12 +33,21 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   before calling it done, per this repo's own "claimed success without UI verification" lesson
   from item 41/44.
 
-- [ ] **A-3 (deferred from S-A1, CLAUDE.md item 46): the wallet ledger's latent
-  multi-currency conflation — low severity, tracked not urgent.** Noted as still-open in item
-  46 without further detail there; needs its own investigation pass to characterize the exact
-  failure scenario (which ledger/table conflates currencies, whether it's a display-only issue
-  or an actual cross-currency balance miscalculation) before scoping a fix. Do not assume
-  severity or scope beyond "low, still open" until that investigation happens.
+- [x] **A-3 (deferred from S-A1, CLAUDE.md item 46): the wallet ledger's latent
+  multi-currency conflation — FIXED.** Root cause: `SpaceDO.walletBalance` sums `delta_cents`
+  across the whole `wallet_ledger` with no `currency` filter, while `creditWallet` stored a
+  per-row `currency` from the request body — a display-only column with no bearing on the
+  SUM, meaning a hypothetical non-USD credit would have silently blended into the same
+  USD-assumed balance (same failure class as item 39's builder-payout multi-currency bug).
+  Confirmed no real caller passes a non-USD currency today (grepped every `wallet/credit`
+  caller: `workers/spaces/src/index.ts`, `workers/provisioner/src/index.ts` — none set
+  `currency`), so the single-currency-reject option was chosen over making the whole ledger
+  currency-scoped. Fix: `creditWallet` now rejects any `currency` other than `"USD"` with a
+  clear `400 unsupported_currency`, and both `creditWallet`/`debitWallet` always write the
+  literal `'USD'` column value rather than trusting the request body. Tests added to
+  `wallet-ledger.test.ts`: a non-USD credit is rejected and never lands in the ledger; an
+  explicit `currency:"USD"` credit is unaffected. 1735/1735 tests pass (2 new),
+  `pnpm turbo run typecheck` clean (75 tasks).
 
 ## Tier 1 — Launch blockers
 
