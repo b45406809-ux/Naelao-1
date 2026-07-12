@@ -29,6 +29,20 @@ interface KnowledgeEnv {
   // free — never the BYO-key `space_credentials` model. Optional: when unset, `search`/`extract`
   // report `configured:false` and `fetch` (a keyless SSRF-guarded GET) still works.
   TAVILY_API_KEY?: string;
+  // §A1.19 (AutoRAG/AI Search): the AutoRAG instance name backing an opt-in retrieval mode
+  // alongside the existing hand-built dense+BM25+RRF hybrid pipeline (default, unchanged).
+  // Optional — when unset, `retrieval_mode=autorag` requests fall back to the legacy pipeline
+  // rather than erroring, same honest-degradation posture as every other optional integration.
+  // The AutoRAG instance must be configured (via the CF dashboard/API, outside this codebase) to
+  // watch this worker's own KB_BUCKET at the `autorag/` prefix this file writes mirror docs to —
+  // no separate bucket binding is introduced.
+  AUTORAG_KB_INSTANCE?: string;
+}
+
+/** R2 key for the whole-document mirror AutoRAG indexes (one file per doc, not per-chunk —
+ *  AutoRAG does its own chunking). Distinct prefix from the existing per-chunk `chunkR2Key`. */
+function autoragKbKey(spaceId: string, projectId: string | null, docId: string): string {
+  return `autorag/${spaceId}/${projectId ?? "_space"}/${docId}.md`;
 }
 
 // ── R2 chunk record shape ─────────────────────────────────────────────────────
@@ -352,6 +366,17 @@ app.post("/spaces/:spaceId/kb/documents", async (c) => {
       await c.env.KB_VECTORS.upsert(batch);
     }
 
+    // §A1.19: best-effort whole-document mirror for AutoRAG (only written when an instance is
+    // configured — cheap, and a failed mirror write never fails ingestion since the legacy
+    // pipeline above already succeeded and is the default retrieval path regardless).
+    if (c.env.AUTORAG_KB_INSTANCE) {
+      try {
+        await c.env.KB_BUCKET.put(autoragKbKey(spaceId, projectId, docId), sanitizedContent);
+      } catch {
+        /* best-effort — legacy retrieval is unaffected */
+      }
+    }
+
     // ── Update DB: status=indexed ────────────────────────────────────────────
     await c.env.PLATFORM_DB.prepare(
       `UPDATE kb_documents
@@ -508,6 +533,16 @@ app.patch("/spaces/:spaceId/kb/documents/:docId", async (c) => {
       await c.env.KB_VECTORS.upsert(vectorUpserts.slice(i, i + VECTOR_BATCH_SIZE));
     }
 
+    // §A1.19: keep the AutoRAG mirror in sync with the re-indexed content (best-effort, same
+    // posture as the POST route's mirror write).
+    if (c.env.AUTORAG_KB_INSTANCE) {
+      try {
+        await c.env.KB_BUCKET.put(autoragKbKey(spaceId, projectId, docId), newContent);
+      } catch {
+        /* best-effort — legacy retrieval is unaffected */
+      }
+    }
+
     await c.env.PLATFORM_DB.prepare(
       "UPDATE kb_documents SET status = 'indexed', title = ?, chunk_count = ?, updated_at = datetime('now') WHERE id = ?"
     ).bind(newTitle, chunks.length, docId).run();
@@ -569,6 +604,15 @@ app.delete("/spaces/:spaceId/kb/documents/:docId", async (c) => {
     cursor = listed.truncated ? listed.cursor : undefined;
   } while (cursor);
 
+  // §A1.19: the AutoRAG mirror lives at a separate `autorag/` prefix (not under docR2Prefix
+  // above, since it's one whole-document file rather than per-chunk records) — delete it
+  // explicitly, best-effort, so a purged document doesn't stay searchable via AutoRAG.
+  if (c.env.AUTORAG_KB_INSTANCE) {
+    await c.env.KB_BUCKET.delete(autoragKbKey(spaceId, doc.project_id, docId)).catch(() => {
+      /* best-effort */
+    });
+  }
+
   // ── Delete DB record ──────────────────────────────────────────────────────
   await c.env.PLATFORM_DB.prepare(
     "DELETE FROM kb_documents WHERE id = ?"
@@ -590,6 +634,11 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   // WS-4: no project_id param = the pre-existing default, search space-wide documents only —
   // never silently mixes in a project's own isolated KB.
   const projectId = url.searchParams.get("project_id");
+  // §A1.19: opt-in per request (the caller — e.g. the knowledge-base prebuilt or dashboard —
+  // decides), not a stored per-space policy. Falls back to the legacy hybrid pipeline whenever
+  // AutoRAG isn't configured on this worker, even if the caller asked for it — never a hard
+  // error for an unconfigured optional integration.
+  const useAutoRag = url.searchParams.get("retrieval_mode") === "autorag" && Boolean(c.env.AUTORAG_KB_INSTANCE);
 
   if (!query || query.trim().length === 0) {
     throw badRequest("q parameter is required");
@@ -598,12 +647,50 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   // Ownership already verified by the "/spaces/:spaceId/kb/*" gate above (F8) — the cache key
   // still folds tenantId (and now project_id) in as defense-in-depth so a future refactor of
   // that gate can't reintroduce a cross-tenant/cross-project cache-serving path.
-  const cacheHash = await sha256Hex(tenantId + ":" + query + spaceId + ":" + (projectId ?? ""));
+  const cacheHash = await sha256Hex(tenantId + ":" + query + spaceId + ":" + (projectId ?? "") + ":" + (useAutoRag ? "autorag" : "legacy"));
   const cacheKey = `kbcache:${cacheHash}`;
 
   const cached = await c.env.KB_CACHE.get(cacheKey);
   if (cached) {
     return c.json({ data: JSON.parse(cached), cached: true });
+  }
+
+  if (useAutoRag) {
+    try {
+      const ai = c.env.AI as unknown as {
+        autorag(name: string): {
+          search(args: { query: string; max_num_results?: number; filters?: unknown }): Promise<{
+            data?: Array<{ filename?: string; score?: number; content?: Array<{ text?: string }> }>;
+          }>;
+        };
+      };
+      const instance = ai.autorag(c.env.AUTORAG_KB_INSTANCE as string);
+      const res = await instance.search({
+        query: query.trim(),
+        max_num_results: topK,
+        // AutoRAG is configured to watch this worker's own KB_BUCKET at the `autorag/` prefix
+        // (see autoragKbKey) — filenames there already encode space/project, so a metadata
+        // filter further narrows results to this exact space+project (defense in depth, same
+        // isolation guarantee the legacy path's Vectorize filter already provides).
+        filters: { type: "eq", key: "folder", value: `autorag/${spaceId}/${projectId ?? "_space"}/` },
+      });
+      const results = (res.data ?? []).map((d, i) => {
+        const rawContent = (d.content ?? []).map((c2) => c2.text ?? "").join("\n");
+        return {
+          chunk_id: d.filename ?? `autorag_${i}`,
+          doc_id: (d.filename ?? "").split("/").pop()?.replace(/\.md$/, "") ?? "",
+          chunk_index: 0,
+          content: `<kb_content>${rawContent}</kb_content>`,
+          score: d.score ?? 1 - i / Math.max(1, (res.data?.length ?? 1)),
+          dense_score: d.score ?? 0,
+          sparse_score: 0,
+        };
+      });
+      await safeKvPut(c.env.KB_CACHE, cacheKey, JSON.stringify(results), { expirationTtl: 3600 });
+      return c.json({ data: results, cached: false, retrieval_mode: "autorag" });
+    } catch {
+      // Best-effort — fall through to the legacy hybrid pipeline below rather than erroring.
+    }
   }
 
   // ── Dense retrieval (Vectorize) ───────────────────────────────────────────
@@ -686,7 +773,7 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   // ── Cache results (G-BE02: safeKvPut validates size before write) ────────
   await safeKvPut(c.env.KB_CACHE, cacheKey, JSON.stringify(results), { expirationTtl: 3600 });
 
-  return c.json({ data: results, cached: false });
+  return c.json({ data: results, cached: false, retrieval_mode: "legacy" });
 });
 
 // ── G-AZ19: Semantic Response Cache ──────────────────────────────────────────

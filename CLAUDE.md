@@ -1327,6 +1327,39 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     REAL `/agent/run` route against a stubbed DO returning a realistic `LoopResult`, not just the
     normalization function in isolation. 1740/1740 tests pass (5 new), `pnpm turbo run typecheck`
     clean (75 tasks).
+48. **Phase 1 of a new 5-part build (AutoRAG/AI Search, native web search, per-tenant infra usage,
+    context-window UI, model switcher) is IN PROGRESS — Phase 1 (Cloudflare AutoRAG/AI Search)
+    is BUILT, scoped to exactly what a research pass confirmed fits.** AutoRAG is a "point at an
+    R2 bucket of documents, auto-chunk/embed/reindex" product — a good fit for the Knowledge Base
+    pipeline and Memory OS's Layer 6 (Wiki, the auto-curated concept vault), a bad fit for Layer 5
+    (episodic→semantic), which needs instant per-message embed+query that AutoRAG's R2-batch
+    reindex cadence can't provide. Confirmed via AskUserQuestion before building. **KB pipeline**
+    (`workers/knowledge/src/index.ts`): a new optional `AUTORAG_KB_INSTANCE` config — ingestion
+    additionally mirrors the sanitized whole document to a `autorag/{spaceId}/{projectId}/{docId}.md`
+    R2 key (best-effort, never fails ingestion), kept in sync on PATCH and cleaned up on DELETE;
+    `GET .../kb/search?retrieval_mode=autorag` calls the AutoRAG instance via the existing `AI`
+    binding's `.autorag(name)` accessor instead of the hand-built dense+BM25+RRF hybrid pipeline
+    (still the default — `retrieval_mode` is opt-in per request, not a stored per-space policy, and
+    falls back to the legacy pipeline whenever unconfigured or on any AutoRAG error). **Memory OS
+    Layer 6** (`workers/agents/src/script-engine/memory-os.ts`): `upsertWikiConcept` mirrors each
+    concept to R2 (`spaces/{spaceId}/memory/wiki/{scope}/{concept-slug}.md`); `searchWiki` optionally
+    queries AutoRAG for semantically-matched concept names, then **always re-hydrates the actual
+    `WikiArticle` from SQLite** rather than trusting AutoRAG's own unstructured result — SQLite stays
+    authoritative, so a deleted/stale mirror can never surface a phantom article. **A real,
+    independent bug was found and fixed while in this file**: the `wrangler.toml` binding comment for
+    `MEMORY_VECTORIZE` has always claimed Layer 5 semantic recall is "queried by embedding + user_id
+    filter" — the actual code only ever filtered by `spaceId`, so in shared-assistant mode one user's
+    promoted episodic memories were recallable by every OTHER user sharing the same space/DO. Fixed
+    with a two-query merge (Vectorize's flat `$eq` filter has no `OR`/`IN`, so a scoped user's own
+    memories and genuinely space-level ones are queried separately and merged, deduped by id) —
+    mirrors the exact `user_id IN (?, ?)` two-tier scoping `structured_facts`/`episodic_log` already
+    used in this same file. 1757/1757 tests pass (17 new), `pnpm turbo run typecheck` clean (75
+    tasks). Next: Phase 2 (native web search via CF AI Gateway's provider passthrough), Phase 3
+    (per-tenant/per-user CF infra usage tracking), Phase 4 (real token streaming + context-window
+    usage UI + pre-send auto-compaction), Phase 5 (model switcher, which also fixes a found dead-code
+    bug — `spacetypes.model_config` is read by `index.ts` but no migration ever created that column,
+    so every run silently falls through to hardcoded model-name fallbacks). Full plan:
+    `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.24.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

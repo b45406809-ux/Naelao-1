@@ -26,11 +26,47 @@ export interface SqlStorageLike {
   exec(query: string, ...params: unknown[]): { toArray(): unknown[] };
 }
 
+/** The minimal R2 surface needed to mirror Wiki concepts for AutoRAG indexing (avoids a hard
+ *  dependency on the CF R2Bucket type, same rationale as VectorIndex above). */
+export interface R2PutLike {
+  put(key: string, value: string): Promise<unknown>;
+}
+
+/** Cloudflare AutoRAG (or AI Search), injected behind a minimal interface — same pattern as
+ *  VectorIndex/Embedder above — so this module never takes a hard dependency on the concrete CF
+ *  binding shape. Only used for Layer 6 (Wiki): a stable, document-like "auto-curated concept
+ *  vault" is a good fit for AutoRAG's R2-batch reindexing cadence. Layer 5 (episodic/semantic)
+ *  deliberately does NOT use this — it needs instant per-message embed+query, and AutoRAG's
+ *  reindex lag would make freshly-remembered facts unsearchable for a while (see CLAUDE.md).
+ */
+export interface AutoRagGateway {
+  /** Returns candidate concept names (matched against mirrored Wiki documents), best score first. */
+  search(query: string, opts: { topK: number }): Promise<Array<{ concept: string; score: number }>>;
+}
+
 export interface MemoryOSOptions {
   sql: SqlStorageLike;
   spaceId: string;
   vectorIndex?: VectorIndex;
   embedder?: Embedder;
+  /** R2 bucket to mirror Wiki concepts into for AutoRAG indexing. Optional — Wiki CRUD works
+   *  identically (SQLite stays authoritative) with or without this; only searchWiki's recall
+   *  gets richer semantic matching when both this and autoRag are present. */
+  wikiBucket?: R2PutLike;
+  /** AutoRAG/AI Search gateway for semantic Wiki search. Optional — searchWiki degrades to its
+   *  existing SQLite LIKE-match when absent, unchanged from before this feature existed. */
+  autoRag?: AutoRagGateway;
+}
+
+/** Turns a concept name into a safe R2 key segment — mirrors are one file per (user scope,
+ *  concept), so two users' same-named concept never collides. */
+function wikiConceptSlug(concept: string): string {
+  return concept.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "concept";
+}
+
+function wikiR2Key(spaceId: string, userId: string, concept: string): string {
+  const scope = userId || "_space";
+  return `spaces/${spaceId}/memory/wiki/${scope}/${wikiConceptSlug(concept)}.md`;
 }
 
 // Unscoped (space-level) facts use this sentinel instead of NULL — keeps every query a plain
@@ -302,25 +338,41 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
         ...userIdField(r.user_id),
       }));
 
-      // Semantic (Vectorize): promoted long-term memories, embedding-similarity search.
+      // Semantic (Vectorize): promoted long-term memories, embedding-similarity search. Vectorize
+      // filters are a flat {field:{$eq}} match with no OR support (no `IN`), so — mirroring the
+      // `user_id IN (?, ?)` two-tier scoping structured_facts/episodic_log already use above —
+      // a scoped user gets two queries merged: their own promoted memories, plus space-level
+      // (unscoped) ones. Previously this only filtered by spaceId, so one user's promoted
+      // episodic memories were recallable by every other user sharing the same space/DO — the
+      // wrangler.toml binding comment already (incorrectly) claimed a userId filter existed.
       let semanticResults: MemoryRecallResult[] = [];
       if (opts.vectorIndex && opts.embedder) {
         try {
           const vec = await opts.embedder.embed(query.text);
-          const res = await opts.vectorIndex.query(vec, {
-            topK: limit,
-            filter: { spaceId: { $eq: opts.spaceId } },
-            returnMetadata: true,
-          });
-          semanticResults = res.matches
-            .filter((m) => m.score > SEMANTIC_SCORE_FLOOR)
-            .map((m) => ({
-              id: m.id,
-              layer: "semantic" as const,
-              text: String(m.metadata?.["text"] ?? ""),
-              score: m.score,
-              ...userIdField((m.metadata?.["userId"] as string | undefined) ?? ""),
-            }));
+          const scopes = userId === UNSCOPED ? [UNSCOPED] : [userId, UNSCOPED];
+          const matches = await Promise.all(
+            scopes.map((s) =>
+              opts.vectorIndex!.query(vec, {
+                topK: limit,
+                filter: { spaceId: { $eq: opts.spaceId }, userId: { $eq: s } },
+                returnMetadata: true,
+              })
+            )
+          );
+          const seenIds = new Set<string>();
+          for (const res of matches) {
+            for (const m of res.matches) {
+              if (m.score <= SEMANTIC_SCORE_FLOOR || seenIds.has(m.id)) continue;
+              seenIds.add(m.id);
+              semanticResults.push({
+                id: m.id,
+                layer: "semantic" as const,
+                text: String(m.metadata?.["text"] ?? ""),
+                score: m.score,
+                ...userIdField((m.metadata?.["userId"] as string | undefined) ?? ""),
+              });
+            }
+          }
         } catch {
           /* semantic recall is best-effort */
         }
@@ -397,6 +449,19 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
          ON CONFLICT(user_id, concept) DO UPDATE SET definition = excluded.definition, relationships = excluded.relationships, updated_at = excluded.updated_at`,
         userId, entry.concept, entry.definition, JSON.stringify(entry.relationships ?? []), Date.now()
       );
+      // Best-effort mirror to R2 so AutoRAG (if configured) has something to index. SQLite is
+      // still authoritative for CRUD — this mirror only feeds searchWiki's optional semantic
+      // recall below, and a failed write here never fails the (already-succeeded) upsert.
+      if (opts.wikiBucket) {
+        const relationships = entry.relationships ?? [];
+        const body = `# ${entry.concept}\n\n${entry.definition}\n\n` +
+          (relationships.length ? `Related: ${relationships.join(", ")}\n` : "");
+        try {
+          await opts.wikiBucket.put(wikiR2Key(opts.spaceId, userId, entry.concept), body);
+        } catch {
+          /* best-effort — the SQLite row is the source of truth */
+        }
+      }
       return { concept: entry.concept };
     },
 
@@ -419,7 +484,33 @@ export function buildMemoryStore(opts: MemoryOSOptions): MemoryStore {
           userId, UNSCOPED, like, like, limit
         )
         .toArray() as WikiStoreRow[];
-      return rows.map(toWikiArticle);
+      const results = new Map<string, WikiArticle>();
+      for (const r of rows) results.set(`${r.user_id} ${r.concept}`, toWikiArticle(r));
+
+      // Optional semantic assist: AutoRAG matches concept names by meaning, not just substring —
+      // useful for a query like "what's our refund window" finding a concept named
+      // "return-policy". AutoRAG only tells us WHICH concepts matched; the actual WikiArticle is
+      // always re-read from SQLite (the authoritative store) rather than reconstructed from
+      // AutoRAG's own (unstructured) search result, so a stale/deleted mirror can never surface
+      // a phantom article.
+      if (opts.autoRag && results.size < limit) {
+        try {
+          const hits = await opts.autoRag.search(query.text, { topK: limit });
+          for (const hit of hits) {
+            if (results.size >= limit) break;
+            const key1 = `${userId} ${hit.concept}`;
+            const key2 = `${UNSCOPED} ${hit.concept}`;
+            if (results.has(key1) || results.has(key2)) continue;
+            const hydrated = opts.sql
+              .exec(`SELECT * FROM wiki_store WHERE user_id IN (?, ?) AND concept = ? LIMIT 1`, userId, UNSCOPED, hit.concept)
+              .toArray() as WikiStoreRow[];
+            if (hydrated[0]) results.set(`${hydrated[0].user_id} ${hydrated[0].concept}`, toWikiArticle(hydrated[0]));
+          }
+        } catch {
+          /* AutoRAG assist is best-effort — the SQLite LIKE search above already ran */
+        }
+      }
+      return [...results.values()].slice(0, limit);
     },
   };
 }

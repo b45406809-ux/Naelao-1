@@ -4238,3 +4238,96 @@ it's not a blanket override; a structural `kind` (default `workspace`) needs nei
 `seedWallet` run end-to-end through the REAL `spacesWorker` + `SpaceDO` (not the provisioner's own
 mocked-fetch unit tests) still succeeds. 1725/1725 tests pass (5 new), `pnpm turbo run typecheck`
 clean (75 tasks).
+
+## A1.24 Second full-vision batch, Phase 1: Cloudflare AutoRAG/AI Search — BUILT (scoped to KB + Wiki)
+
+User-directed batch of five items (AutoRAG/AI Search, native web search via CF AI Gateway,
+per-tenant/per-user CF infra usage tracking, a Claude-Code-style context-window usage UI with
+pre-send auto-compaction, and a model switcher). This section covers Phase 1 only; later phases
+get their own `## A1.25+` sections as they land.
+
+**Scoping decision, confirmed via AskUserQuestion before writing any code:** Cloudflare AutoRAG is
+a managed "point at an R2 bucket of documents, auto-chunk/embed/reindex, query later" product. It
+is a good fit for the Knowledge Base pipeline and Memory OS's Layer 6 (Wiki — an "auto-curated
+concept vault," stable and document-like) and a bad fit for Layer 5 (episodic→semantic memory),
+which needs instant per-message embed+query; AutoRAG's R2-batch reindexing has real lag that would
+make a just-remembered fact unsearchable for a while. Layer 5 keeps its existing direct Vectorize
+embed+query, untouched by this phase.
+
+### KB pipeline (`workers/knowledge/src/index.ts`)
+
+New optional `AUTORAG_KB_INSTANCE: string` config. Ingestion (`POST .../kb/documents`) additionally
+writes the sanitized whole document to a new `autorag/{spaceId}/{projectId ?? "_space"}/{docId}.md`
+R2 key (distinct prefix from the existing per-chunk `kb/{spaceId}/{projectId}/{docId}/chunk_{i}.json`
+records) whenever an instance is configured — best-effort, wrapped in its own try/catch, never fails
+ingestion since the existing dense+BM25+RRF hybrid pipeline (unchanged, still the default) already
+succeeded. `PATCH .../kb/documents/:docId` keeps the mirror in sync (overwrites); `DELETE` removes it
+explicitly (it lives outside `docR2Prefix`'s existing prefix-based cleanup, so needed its own
+best-effort delete call).
+
+`GET .../kb/search` gained `retrieval_mode=autorag` (default: `legacy`, the existing pipeline) — a
+**per-request** opt-in the caller decides (the knowledge-base prebuilt, or whatever's calling this
+route), not a stored per-space policy row. When requested and configured, calls
+`c.env.AI.autorag(instanceName).search({query, max_num_results, filters: {folder: "autorag/{spaceId}/{projectId}/"}})`
+— the `folder` filter narrows to this exact space+project (defense in depth matching the legacy
+path's own Vectorize metadata filter guarantee) — and maps AutoRAG's result shape into the same
+`{chunk_id, doc_id, chunk_index, content, score, dense_score, sparse_score}` shape the legacy path
+already returns (`<kb_content>` XML wrapping preserved for prompt-injection protection). Any
+AutoRAG error, or the flag being requested without an instance configured, falls through to the
+legacy pipeline rather than erroring — same honest-degradation posture as every other optional
+platform integration in this codebase (`TAVILY_API_KEY`, `COMPOSIO_API_KEY`, ...). The cache key
+now folds in retrieval mode too, so a legacy-mode result is never served back for an autorag-mode
+request or vice versa.
+
+**Note on the exact AutoRAG binding/response shape:** written defensively (typed via a narrow local
+interface, wrapped in try/catch) since this is comparatively new Cloudflare product surface —
+verify the real `.autorag(name).search()` response shape against current Cloudflare docs before a
+live deployment depends on it, matching this codebase's own established precedent for newer/less-
+verified third-party API assumptions (e.g. `revenue-tracker.ts`'s Whop-shape comment).
+
+### Memory OS Layer 6 — Wiki (`workers/agents/src/script-engine/memory-os.ts`)
+
+New optional `MemoryOSOptions.wikiBucket` (a minimal `{put(key, value)}` interface, not a hard CF
+`R2Bucket` dependency — same rationale as the existing `VectorIndex`/`Embedder` minimal interfaces)
+and `MemoryOSOptions.autoRag` (`{search(query, {topK}): Promise<Array<{concept, score}>>}`).
+`upsertWikiConcept` mirrors each concept to R2 at
+`spaces/{spaceId}/memory/wiki/{userId || "_space"}/{concept-slug}.md` (best-effort — SQLite's
+`wiki_store` row is written first and is unaffected by a mirror-write failure). `searchWiki` first
+runs its existing SQLite LIKE-match (unchanged); if that doesn't already fill the requested `limit`
+and an `autoRag` gateway is configured, it ALSO queries AutoRAG for semantically-matched concept
+names (useful for e.g. a query like "what's our refund window" finding a concept literally named
+"return_policy" that no substring match would ever find) — but **always re-hydrates the actual
+`WikiArticle` from SQLite** for each AutoRAG-named concept rather than trusting AutoRAG's own
+(unstructured) result directly; a concept AutoRAG still has indexed but that's since been deleted
+from SQLite is silently skipped, never fabricated. Wired in `NaelaoAgentDO.buildScriptEngineEnv`: a
+new `AUTORAG_WIKI_INSTANCE` env config, `wikiBucket` reuses the already-bound `SCRIPTS_R2`, and the
+`autoRag` gateway is a small inline adapter over the existing `AI` binding's `.autorag(name)`
+accessor (same accessor the KB pipeline above uses, different instance name/config so the two
+subsystems can be configured independently). Explicitly NOT done this phase: wiring AutoRAG into the
+SpaceDO-backed **project-shared** Wiki path (`project-memory-client.ts`, §A1.17 Phase U) — that's a
+structurally separate implementation (HTTP calls to SpaceDO's own `wiki_store`-equivalent, not this
+DO's local SQLite), deliberately deferred rather than silently left half-covered.
+
+### A real, independent bug found and fixed while in this file
+
+The `MEMORY_VECTORIZE` binding's own `wrangler.toml` comment has always claimed Layer 5 semantic
+recall is "queried by embedding + user_id filter" — the actual `recall()` code only ever filtered
+Vectorize by `{spaceId: {$eq}}`, never `userId`. In shared-assistant mode (one DO/SQLite instance
+serving multiple end users), this meant one user's promoted episodic memories were fully recallable
+by every OTHER user sharing the same space — a real cross-user memory leak, not a documentation
+typo, since the comment described intended behavior that the code never implemented. Fixed with a
+two-query merge: Vectorize's flat `{field: {$eq}}` filter has no `OR`/`IN` support, so — mirroring
+the exact `user_id IN (?, ?)` two-tier scoping `structured_facts`/`episodic_log` recall already use
+in this same file — a scoped user's recall now issues one query filtered to their own `userId` and
+one filtered to the space-level (`""`) sentinel, merged and deduped by vector id. An unscoped
+(space-level) caller still issues only the single query it always did. New
+`tests/unit/memory-os-layer5-user-scoping.test.ts` proves the leak is closed (one user's recall
+never surfaces another's promoted memory) while space-level sharing still works, and that an
+unscoped query doesn't regress to two redundant Vectorize calls.
+
+1757/1757 tests pass (17 new: `memory-os-layer5-user-scoping.test.ts`,
+`memory-os-wiki-autorag.test.ts`, `kb-autorag-retrieval.test.ts`), `pnpm turbo run typecheck` clean
+(75 tasks). Next: Phase 2 (native web search via CF AI Gateway's provider tool-passthrough,
+alongside the existing Tavily-backed path), Phase 3 (per-tenant/per-user CF infra usage tracking),
+Phase 4 (real token-level streaming + context-window usage UI + pre-send auto-compaction), Phase 5
+(model switcher).

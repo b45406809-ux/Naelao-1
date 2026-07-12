@@ -878,6 +878,15 @@ export interface AgentDOEnv {
   LOCAL_TUNNEL?: DurableObjectNamespace;
   /** Vectorize index for the Memory OS semantic layer (episodic→semantic promotion). */
   MEMORY_VECTORIZE?: VectorizeIndex;
+  /** §A1.19 (AutoRAG/AI Search): the Cloudflare AutoRAG instance name backing Memory OS Layer 6
+   *  (Wiki) semantic search, invoked via the existing `AI` binding's `.autorag(name)` accessor —
+   *  no separate binding needed. Optional — wiki.search degrades to its existing SQLite
+   *  LIKE-match when unset, same "configured:false" honest-degradation posture as every other
+   *  optional platform integration (TAVILY_API_KEY, COMPOSIO_API_KEY, ...). Verify the exact
+   *  `.autorag()` search response shape against current Cloudflare AutoRAG docs before relying on
+   *  it in production — the adapter below is written defensively (best-effort try/catch) for
+   *  exactly this reason. */
+  AUTORAG_WIKI_INSTANCE?: string;
   /** Self-binding — lets a running agent spawn sibling/child NaelaoAgentDO instances as
    *  sub-agents (script-engine/prebuilt/sub-agent.ts's agent.spawn/receive/terminate ops). */
   NAELAO_AGENT_DO?: DurableObjectNamespace<NaelaoAgentDO>;
@@ -1339,6 +1348,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // Memory OS — backed by this DO's own SQLite + (optionally) MEMORY_VECTORIZE for the
       // semantic layer. Always available (Layer 3 works with no Vectorize binding at all).
       const memoryEmbedder = this.env.AI ? new WorkersAIEmbedder(this.env.AI) : undefined;
+      const ai = this.env.AI;
+      const autoRagInstance = this.env.AUTORAG_WIKI_INSTANCE;
       const localMemoryStore = buildMemoryStore({
         sql: this.ctx.storage.sql,
         spaceId,
@@ -1346,6 +1357,27 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           ? { vectorIndex: this.env.MEMORY_VECTORIZE as unknown as NonNullable<ScriptEngineEnv["vectorIndex"]> }
           : {}),
         ...(memoryEmbedder ? { embedder: memoryEmbedder } : {}),
+        ...(this.env.SCRIPTS_R2 ? { wikiBucket: this.env.SCRIPTS_R2 } : {}),
+        // §A1.19: AutoRAG-backed Wiki semantic search. `.autorag(name)` is Workers AI's own
+        // sub-binding accessor — no separate wrangler binding needed beyond `AI` + the instance
+        // name. Wrapped defensively since this is a newer CF product; searchWiki's own try/catch
+        // already treats this as best-effort, degrading to plain SQLite LIKE-match on any error.
+        ...(ai && autoRagInstance
+          ? {
+              autoRag: {
+                async search(query: string, opts: { topK: number }) {
+                  const instance = (ai as unknown as { autorag(name: string): { search(args: { query: string; max_num_results?: number }): Promise<{ data?: Array<{ filename?: string; attributes?: Record<string, unknown> }> }> } }).autorag(autoRagInstance);
+                  const res = await instance.search({ query, max_num_results: opts.topK });
+                  return (res.data ?? [])
+                    .map((d, i) => ({
+                      concept: String(d.attributes?.["concept"] ?? d.filename ?? ""),
+                      score: 1 - i / Math.max(1, (res.data?.length ?? 1)),
+                    }))
+                    .filter((r) => r.concept);
+                },
+              },
+            }
+          : {}),
       });
       // §A1.17 Phase U: a project-bound run (this DO instance addressed per (thread, agentId) —
       // see T2) composes the local store with SpaceDO's project-scoped Layers 3/4/6, so agents
