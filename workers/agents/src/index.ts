@@ -263,7 +263,7 @@ async function resolveRunGoal(
 // ── POST /spaces/:spaceId/sessions/:sessionId/agent/run ───────────────────────
 
 app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
-  const { tenantId } = getCallerIdentity(c);
+  const { tenantId, userId, role: callerRole } = getCallerIdentity(c);
   if (!tenantId) {
     throw unauthorized("Missing tenant identity");
   }
@@ -279,7 +279,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.param("sessionId");
 
-  const rawBody = await c.req.json<{ goal?: string; agent_definition_id?: string }>();
+  const rawBody = await c.req.json<{ goal?: string; agent_definition_id?: string; project_id?: string }>();
   const resolvedGoal = await resolveRunGoal(c.env, tenantId, spaceId, sessionId, rawBody.goal);
   if (!resolvedGoal) {
     throw badRequest("goal is required and must be a string (or the session must already have a user message)");
@@ -303,7 +303,6 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   }
 
   // G-AO17: Runtime prompt injection detection — silent detection, no oracle
-  const { userId } = getCallerIdentity(c);
   const injectionFlags = detectPromptInjection(body.goal);
   if (injectionFlags.length > 0) {
     // Record attempt and check rate-limit without revealing detection to user
@@ -564,6 +563,11 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         kbContext,
         model: modelConfig.model ?? "claude-sonnet-4-6",
         taskDoName,
+        // Go-live audit A-1/A-2: threaded through to /internal/tasks/:taskId/run's own
+        // http://agent-do/run call — see that route's own comment.
+        userId,
+        projectId: rawBody.project_id,
+        callerRole,
       },
     });
 
@@ -608,6 +612,11 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         apiKey: c.env.ANTHROPIC_API_KEY ?? "",
         model: modelConfig.model ?? "claude-sonnet-4-6",
         allowedDomains: [],
+        // Go-live audit A-1/A-2: previously dropped here — handleRun had no way to resolve the
+        // F-36 clamp, project wallet gate, or product_end_user credit gate without them.
+        userId,
+        projectId: rawBody.project_id,
+        callerRole,
       }),
     })
   );
@@ -721,7 +730,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/mention-run", async (c) => 
           "x-naelao-internal-token": dispatchToken,
           prefer: "respond-sync",
         },
-        body: JSON.stringify({ goal: body.text, agent_definition_id: agentId }),
+        body: JSON.stringify({ goal: body.text, agent_definition_id: agentId, project_id: body.project_id }),
       },
       c.env,
       c.executionCtx
@@ -1191,6 +1200,9 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
     tools: unknown[];
     kbContext: string;
     model: string;
+    userId?: string;
+    projectId?: string;
+    callerRole?: string;
   }>();
   if (body.tenantId !== headerTenantId) {
     return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
@@ -1213,6 +1225,11 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           apiKey: c.env.ANTHROPIC_API_KEY ?? "",
           model: body.model,
           allowedDomains: [],
+          // Go-live audit A-1/A-2: previously dropped here — see AgentTaskWorkflow.ts's own
+          // comment for the full chain this closes.
+          userId: body.userId,
+          projectId: body.projectId,
+          callerRole: body.callerRole,
         }),
       })
     );

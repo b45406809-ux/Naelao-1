@@ -25,6 +25,12 @@ export interface AgentTaskParams {
   kbContext: string;
   model: string;
   taskDoName: string;  // DO name for TaskDO stub
+  // Go-live audit A-1/A-2: carried through to /internal/tasks/:taskId/run so handleRun can
+  // resolve the F-36 clamp / project wallet gate / product_end_user credit gate — previously
+  // dropped entirely, leaving the async chat path completely unmetered.
+  userId?: string;
+  projectId?: string;
+  callerRole?: string;
 }
 
 export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> {
@@ -77,6 +83,9 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
             tools: p.tools,
             kbContext: p.kbContext,
             model: p.model,
+            userId: p.userId,
+            projectId: p.projectId,
+            callerRole: p.callerRole,
           }),
         }
       );

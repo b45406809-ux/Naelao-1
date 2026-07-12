@@ -1258,6 +1258,37 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       `/v1/webhooks/lemon-squeezy`, and (b) store the Anthropic key in the CF AI Gateway + set
       `NAELAO_AIG_TOKEN` — the code degrades honestly (dev placeholder / `no_llm_credentials`) until
       then. `docs/DEPLOYMENT_SECRETS.md` has the full per-worker key/secret inventory.
+46. **A re-audit (`docs/AUDIT_2026-07-11_reaudit_blueprint.md`) found the interactive chat path was
+    completely unmetered — TWO PARALLEL AGENT RUNTIMES in `NaelaoAgentDO`, with every billing/
+    authorization gate wired onto only one of them — now FIXED (S-A1, the audit's HIGH-severity
+    finding A-1).** The script-native engine (`handleScriptRun`) carried the F-36 assistant
+    permission clamp, the customer-bot execution ceiling + daily spend cap, the project wallet
+    gate, and the `product_end_user` pre-run credit check/post-run debit — but the legacy ReAct
+    loop (`handleRun`), which is what every interactive `POST /agent/run` message from `apps/shell`
+    and `apps/portal` actually reaches (on both the sync dispatch and the async-by-default
+    Workflow/TaskDO path), carried NONE of them: a signed-in end user (or a business whose wallet
+    was drained) could chat against Naelao's own CF AI Gateway key with zero limit. Fixed by
+    extracting the shared gate logic into two new `NaelaoAgentDO` methods —
+    `enforceRunGates`(pre-run: F-36 clamp, spend cap, wallet, credit check) and
+    `settleRunBilling` (post-run debit) — called identically from both `handleScriptRun` and
+    `handleRun`, so the two runtimes can never drift again. `runReActLoop` used to return only the
+    final-answer string, discarding the token usage it already tracked internally; it now returns
+    `{finalAnswer, inputTokens, outputTokens, tokensUsed}` (its one call site, so a safe signature
+    change) so `handleRun` can settle billing with real numbers. `userId`/`projectId`/`callerRole`
+    were previously dropped when `workers/agents/src/index.ts`'s `/agent/run` route dispatched to
+    `http://agent-do/run` — threaded through at both the sync dispatch and the async path
+    (`AgentTaskWorkflow`'s params → `/internal/tasks/:taskId/run`), plus into `/agent/mention-run`'s
+    inner re-dispatch. Every fail-open/fail-closed posture preserved verbatim: authorization denial
+    and a CONFIRMED empty balance/wallet fail CLOSED; a transient lookup error fails OPEN, matching
+    `handleScriptRun` exactly. New tests
+    (`interactive-run-end-user-credit-gate.test.ts`, `interactive-run-project-wallet-gate.test.ts`)
+    drive the previously-uncovered interactive `/run` path directly and assert the refusal + no
+    un-debited LLM call. 1733/1733 tests pass (8 new), `pnpm turbo run typecheck` clean (75 tasks).
+    **Not done this pass (tracked, not urgent):** A-2, converging `/agent/run` onto the
+    script-native `handleScriptRun` and retiring `handleRun`/`runReActLoop` entirely per ground
+    rule #8 — S-A1 closes the exploitable gap; A-2 removes the duality that caused it, and is a
+    larger behavior change to the live chat surface better done as its own pass. A-3 (the wallet
+    ledger's latent multi-currency conflation) is also still open, low severity.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

@@ -386,6 +386,18 @@ type ProjectConfigResult =
   | { status: "not_found" }
   | { status: "error" };
 
+// Go-live audit A-1/A-2: runReActLoop used to return only the final answer string, discarding the
+// real token usage it already tracks internally (totalInputTokens/totalOutputTokens) — handleRun
+// had no way to settle billing on its run because of this. Every return point in the loop now
+// reports its accumulated usage so handleRun can call settleRunBilling with real numbers, the same
+// way handleScriptRun already does from runScriptLoop's result.
+interface ReActLoopResult {
+  finalAnswer: string;
+  inputTokens: number;
+  outputTokens: number;
+  tokensUsed: number;
+}
+
 // S0.4: same fail-closed discipline as ProjectConfigResult — fetchProjectRules used to collapse
 // "found, zero rules configured" and "SpaceDO error, rules unknown" into the same `[]`, so a
 // rules-endpoint-only outage (config still loads fine) silently disabled the STOP/UNSUBSCRIBE/
@@ -1998,157 +2010,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // entirely. Apply the identical cap-then-execution-ceiling gate here.
     // F9: the gate itself now checks through SpaceDO (single writer for the whole project),
     // not this DO's own local tally — see checkAndDebitProjectSpend.
-    let hasSpendCap = false;
-    // Metering enforcement follow-up: daily_spend_cap_credits (below) is an OPTIONAL rate-limit
-    // ceiling a builder may or may not configure — a project with none set previously ran with NO
-    // payer of any kind. walletProjectId (resolved below) is the space's own auto-provisioned
-    // wallet (see the provisioner's seedWallet step) — this check ALWAYS applies to a
-    // project-scoped run, independent of whether a spend cap is configured, so "no cap" and "free
-    // forever" stop meaning the same thing. The two gates are complementary: the cap (when set)
-    // bounds daily burn even when the wallet is flush; the wallet check (always on) requires the
-    // business to actually have money at all.
-    let walletProjectId: string | null = null;
-    if (projectId) {
-      // F-36 enforcement: a project-scoped run made ON BEHALF OF a specific user is clamped to
-      // that user's effective role in the project BEFORE any other gate runs — authorization
-      // precedes billing. No acting user (cron/trigger/webhook/bootstrap wakes pass no userId,
-      // and the channel drain's synthetic `channel:...` ids never route through here) means no
-      // per-user clamp — the run keeps the assistant's own base grant, per the clamp's own doc
-      // in SpaceDO.resolveAssistantEffectiveRole. Fails CLOSED on a lookup error: an
-      // authorization check that fails open isn't one (fetchProjectConfig/F17 precedent).
-      if (userId && !userId.startsWith("channel:")) {
-        const access = await this.fetchAssistantAccess(spaceId, tenantId, projectId, userId);
-        if (access.status === "error") {
-          return Response.json(
-            { error: "unable to verify assistant access to this project — try again shortly", error_code: "assistant_access_unverified" },
-            { status: 403 }
-          );
-        }
-        if (access.effectiveRole === null) {
-          return Response.json(
-            {
-              error: "the assistant is not permitted to act in this project on behalf of this user (assistant access is 'none' or the user is not a project member)",
-              error_code: "assistant_access_denied",
-            },
-            { status: 403 }
-          );
-        }
-        // "viewer" makes the whole run read-only — enforced structurally in ScriptToolSurface
-        // (script.create/update/delete, stored scripts, and non-read-safe prebuilt ops all
-        // refuse). editor/owner run unclamped at the six-op surface.
-        engineEnv.effectiveRole = access.effectiveRole;
-      }
-
-      const projectCfg = await this.fetchProjectConfig(spaceId, tenantId, projectId);
-      if (projectCfg.status === "error") {
-        // F17 / A1.13: a transient SpaceDO error must fail CLOSED, never read as "unrestricted"
-        // — that would silently disable BOTH structural customer-bot controls (execution
-        // ceiling and daily spend cap) this project depends on being un-bypassable. Clamp to
-        // the most restrictive tier and treat the run exactly like a real spend-cap hit.
-        engineEnv.maxTier = 1 as ExecutionTier;
-        return Response.json(
-          { error: "unable to verify project restrictions — try again shortly", error_code: "spend_capped" },
-          { status: 429 }
-        );
-      }
-      if (projectCfg.status === "found") {
-        if (projectCfg.daily_spend_cap_credits > 0) {
-          hasSpendCap = true;
-          const spend = await this.checkAndDebitProjectSpend(spaceId, tenantId, projectId, 0);
-          if (spend.capped) {
-            return Response.json(
-              { error: "daily spend cap reached for this project", error_code: "spend_capped" },
-              { status: 429 }
-            );
-          }
-        }
-        engineEnv.maxTier = projectCfg.execution_ceiling as ExecutionTier;
-      }
-      // status === "not_found": no project config row — permissive by design, unchanged.
-
-      // Wallet gate — fails OPEN only when the lookup/balance check itself errors (network/worker
-      // outage, or no wallet ever provisioned e.g. a space created before this fix shipped),
-      // matching the end-user credit gate's posture. A CONFIRMED zero/negative wallet balance
-      // always blocks the run.
-      const walletCheck = await this.checkProjectWallet(spaceId, tenantId);
-      if (!walletCheck.ok) {
-        return Response.json(
-          { error: "this business's wallet is empty — top up to keep this agent running", error_code: "insufficient_credits", balance_cents: walletCheck.balance_cents },
-          { status: 402 }
-        );
-      }
-      walletProjectId = walletCheck.walletProjectId;
-    } else if (callerRole === "product_end_user" && userId) {
-      // Metering enforcement pass: a non-project (Space Assistant / Home chat) run by a signed-in
-      // product end user used to debit their ProductUserDO balance ONLY after the run completed
-      // (debitEndUserCredits below) — so an empty balance was discovered by a 402 on the debit
-      // call, by which point the real Anthropic tokens for the run were already spent on Naelao's
-      // own platform key. Check the balance BEFORE running the loop instead; refuse the run itself
-      // when it's already at or below zero. Fails OPEN only when the balance check itself errors
-      // (network/worker outage) — matching this run's own overall "never crash on a billing-side
-      // hiccup" posture elsewhere in this method — but a *confirmed* zero/negative balance always
-      // blocks the run.
-      // Tier 2 metering follow-up: creditsIncludedPerMonth used to grant once, ever, at signup —
-      // lazily refresh it here (idempotent, month-scoped — see that route's own comment) so the
-      // FIRST run of a new calendar month tops up before the balance below is even read. This is
-      // deliberately NOT in its own try/catch — a failure here must not silently skip straight to
-      // reading a stale (pre-refresh) balance without at least attempting the top-up; the shared
-      // catch below already covers both calls with the same fail-open posture.
-      try {
-        await this.env.SPACES_WORKER.fetch(new Request(
-          `http://spaces-worker/internal/product-users/${spaceId}/${userId}/credits/refresh-monthly`,
-          { method: "POST", headers: await this.internalHeaders(tenantId) }
-        ));
-        const balRes = await this.env.SPACES_WORKER.fetch(new Request(
-          `http://spaces-worker/internal/product-users/${spaceId}/${userId}/credits/balance`,
-          { headers: await this.internalHeaders(tenantId) }
-        ));
-        if (balRes.ok) {
-          const { balance_credits } = await balRes.json<{ balance_credits: number }>();
-          if (balance_credits <= 0) {
-            return Response.json(
-              { error: "insufficient credits — top up or subscribe to keep chatting", error_code: "insufficient_credits", balance_credits },
-              { status: 402 }
-            );
-          }
-        }
-      } catch {
-        // Balance service unreachable — do not block the run over a transient outage; the
-        // post-run debit below still enforces the real ledger and will 402 on genuine overdraw.
-      }
-    } else if (!projectId && BUILDER_CALLER_ROLES.has(callerRole ?? "")) {
-      // P0-3: a builder (owner/admin/editor/viewer — a Team collaborator, not a signed-in
-      // product end user) chatting with their OWN Space Assistant had NO metering at all — the
-      // end-user credit gate above only fires for callerRole === "product_end_user". A free-tier
-      // builder could burn the platform's Anthropic key all day at zero cost. Reuses the
-      // existing per-org plan-tier/usage-quota infrastructure (@naelao/entitlements's numbers,
-      // enforced via the billing worker's usage_events + KV-cached quota check) rather than
-      // building a parallel ledger — this is a MONTHLY QUOTA (resets naturally each calendar
-      // month via the underlying SQL window), not a wallet/credit balance. Deliberately scoped
-      // to only these four caller roles: internal/system-initiated runs (billing webhooks,
-      // scheduled jobs, triggers) never set x-naelao-role at all and must not be swept in here,
-      // and an "agent" API-key caller (Phase O) is a different identity/pricing situation left
-      // for a separate pass. Fails OPEN when BILLING_WORKER is unbound or the check itself
-      // errors — matching every other billing gate's posture in this method.
-      if (this.env.BILLING_WORKER) {
-        try {
-          const quotaRes = await this.env.BILLING_WORKER.fetch(new Request(
-            "http://billing-worker/internal/usage/llm-tokens/check",
-            { headers: await this.internalHeaders(tenantId) }
-          ));
-          if (quotaRes.ok) {
-            const { allowed, current, limit } = await quotaRes.json<{ allowed: boolean; current: number; limit: number }>();
-            if (!allowed) {
-              return Response.json(
-                { error: "monthly usage limit reached for your plan — upgrade to keep chatting", error_code: "quota_exceeded", current, limit },
-                { status: 402 }
-              );
-            }
-          }
-        } catch {
-          // Billing service unreachable — do not block the run over a transient outage.
-        }
-      }
+    // Go-live audit A-1/A-2: this block (F-36 clamp, execution ceiling + daily spend cap, project
+    // wallet gate, product_end_user pre-run credit check) is shared with the legacy ReAct
+    // `handleRun` path via `enforceRunGates` — see that method's own doc for why both runtimes
+    // must call the identical gate logic rather than each carrying their own copy.
+    const gate = await this.enforceRunGates({ spaceId, tenantId, projectId, userId, callerRole });
+    if (!gate.ok) return gate.response;
+    const { hasSpendCap, walletProjectId } = gate;
+    if (gate.effectiveRole !== undefined) {
+      // "viewer" makes the whole run read-only — enforced structurally in ScriptToolSurface
+      // (script.create/update/delete, stored scripts, and non-read-safe prebuilt ops all
+      // refuse). editor/owner run unclamped at the six-op surface.
+      engineEnv.effectiveRole = gate.effectiveRole;
+    }
+    if (gate.maxTier !== undefined) {
+      engineEnv.maxTier = gate.maxTier;
     }
 
     // Load the agent's 4-file config; without it the agent is not provisioned.
@@ -2222,52 +2098,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(onProgress ? { onProgress } : {}),
       });
 
-      if (projectId && result.result?.tokens_used) {
-        const credits =
-          result.result.input_tokens || result.result.output_tokens
-            ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, body.model ?? "claude-haiku-4-5-20251001")
-            : result.result.tokens_used;
-        // F9: SpaceDO is now the authoritative tally (single writer across every thread on
-        // this project); the local table is kept only as this DO's own telemetry/cache.
-        this.addProjectSpend(projectId, credits);
-        if (hasSpendCap) await this.checkAndDebitProjectSpend(spaceId, tenantId, projectId, credits);
-        // Metering enforcement follow-up: debit the space's own wallet for this run's real cost.
-        // credits and wallet cents are the SAME unit by construction (packages/billing-core's
-        // CREDITS_PER_USD = 100, i.e. 1 credit == 1 cent) — no conversion needed. Best-effort,
-        // same "never fail an already-completed run over a billing-side hiccup" posture as the
-        // end-user debit below.
-        if (walletProjectId) await this.debitProjectWallet(spaceId, tenantId, walletProjectId, credits, result.notes, runId);
-      } else if (!projectId && callerRole === "product_end_user" && userId && result.result?.tokens_used) {
-        // §A1.17 Phase I: a non-project run (Space Assistant / Home chat) by a signed-in product
-        // end user debits THEIR OWN ProductUserDO balance, not a project cap — mutually exclusive
-        // with the branch above (a project-scoped run never reaches here). Post-hoc, best-effort,
-        // same posture as the project-spend accounting above: never fails an already-completed
-        // run's response over a billing-side hiccup, but insufficient balance is still surfaced
-        // in the result notes so it's visible, not silently swallowed.
-        const credits =
-          result.result.input_tokens || result.result.output_tokens
-            ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, body.model ?? "claude-haiku-4-5-20251001")
-            : result.result.tokens_used;
-        await this.debitEndUserCredits(spaceId, tenantId, userId, credits, body.model, result.notes, runId);
-      } else if (!projectId && BUILDER_CALLER_ROLES.has(callerRole ?? "") && result.result?.tokens_used) {
-        // P0-3: record this builder's own real token usage against their org's monthly quota —
-        // mutually exclusive with both branches above (a project-scoped run and a product-end-user
-        // run never reach here). Raw token count, not credits — this feeds a MONTHLY QUOTA
-        // (@naelao/entitlements' monthly_tokens limits), a different unit/purpose from the
-        // wallet/credit ledgers above. Best-effort: never fails an already-completed run's
-        // response over a billing-side hiccup.
-        if (this.env.BILLING_WORKER) {
-          try {
-            await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/billing/usage", {
-              method: "POST",
-              headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-              body: JSON.stringify({ event_type: "llm_tokens", quantity: result.result.tokens_used, idempotency_key: `run:${runId}` }),
-            }));
-          } catch {
-            // Billing service unreachable — best-effort usage recording, never fails the run.
-          }
-        }
-      }
+      // Go-live audit A-1/A-2: shared with handleRun via settleRunBilling — see that method's
+      // doc for why both runtimes must settle billing identically rather than each carrying
+      // their own copy (the divergence that let handleRun run completely unmetered).
+      await this.settleRunBilling({
+        spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId, runId,
+        tokensUsed: result.result?.tokens_used ?? 0,
+        inputTokens: result.result?.input_tokens ?? 0,
+        outputTokens: result.result?.output_tokens ?? 0,
+        model: body.model,
+        notes: result.notes,
+      });
 
       // Layer 4 (Fabric) auto-consolidation (spec: "runs LLM-driven session extraction
       // post-run"). Reuses the trace this run already produced instead of a second LLM call —
@@ -2606,6 +2447,254 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * any error (network, non-2xx, missing SPACES_WORKER) is treated as capped, matching the
    * fetchAssistantPolicy precedent — a spend limiter that fails open isn't one.
    */
+  /**
+   * Go-live audit A-1/A-2: the F-36 clamp, execution-ceiling + daily-spend-cap, project wallet
+   * gate, and product_end_user pre-run credit check used to live ONLY inline in handleScriptRun
+   * (the script-native 6-op path) — the legacy ReAct `handleRun` path (every interactive
+   * /agent/run message from apps/shell and apps/portal) called none of it, so a signed-in end
+   * user could chat unmetered against a drained wallet/zero credit balance forever. Extracted so
+   * BOTH runtimes call the identical gate — see CLAUDE.md item "S-A1" / the audit blueprint for
+   * the full incident writeup. Every fail-open/fail-closed posture below is verbatim what
+   * handleScriptRun always had: authorization denial and a CONFIRMED empty balance/wallet fail
+   * CLOSED (block the run); a transient lookup error fails OPEN (never bricks a legitimate run
+   * over a network hiccup) EXCEPT the project-config lookup itself, which fails CLOSED (clamps
+   * to tier 1 and refuses) per F17/A1.13 — a spend-cap check that fails open isn't one.
+   */
+  private async enforceRunGates(opts: {
+    spaceId: string; tenantId: string; projectId?: string | undefined; userId?: string | undefined; callerRole?: string | undefined;
+  }): Promise<
+    | { ok: true; hasSpendCap: boolean; walletProjectId: string | null; effectiveRole?: AssistantEffectiveRole | undefined; maxTier?: ExecutionTier | undefined }
+    | { ok: false; response: Response }
+  > {
+    const { spaceId, tenantId, projectId, userId, callerRole } = opts;
+    let hasSpendCap = false;
+    let walletProjectId: string | null = null;
+    let effectiveRole: AssistantEffectiveRole | undefined;
+    let maxTier: ExecutionTier | undefined;
+
+    if (projectId) {
+      // F-36 enforcement: a project-scoped run made ON BEHALF OF a specific user is clamped to
+      // that user's effective role in the project BEFORE any other gate runs — authorization
+      // precedes billing. No acting user (cron/trigger/webhook/bootstrap wakes pass no userId,
+      // and the channel drain's synthetic `channel:...` ids never route through here) means no
+      // per-user clamp — the run keeps the assistant's own base grant, per the clamp's own doc
+      // in SpaceDO.resolveAssistantEffectiveRole. Fails CLOSED on a lookup error: an
+      // authorization check that fails open isn't one (fetchProjectConfig/F17 precedent).
+      if (userId && !userId.startsWith("channel:")) {
+        const access = await this.fetchAssistantAccess(spaceId, tenantId, projectId, userId);
+        if (access.status === "error") {
+          return {
+            ok: false,
+            response: Response.json(
+              { error: "unable to verify assistant access to this project — try again shortly", error_code: "assistant_access_unverified" },
+              { status: 403 }
+            ),
+          };
+        }
+        if (access.effectiveRole === null) {
+          return {
+            ok: false,
+            response: Response.json(
+              {
+                error: "the assistant is not permitted to act in this project on behalf of this user (assistant access is 'none' or the user is not a project member)",
+                error_code: "assistant_access_denied",
+              },
+              { status: 403 }
+            ),
+          };
+        }
+        effectiveRole = access.effectiveRole;
+      }
+
+      const projectCfg = await this.fetchProjectConfig(spaceId, tenantId, projectId);
+      if (projectCfg.status === "error") {
+        // F17 / A1.13: a transient SpaceDO error must fail CLOSED, never read as "unrestricted"
+        // — that would silently disable BOTH structural customer-bot controls (execution
+        // ceiling and daily spend cap) this project depends on being un-bypassable. Clamp to
+        // the most restrictive tier and treat the run exactly like a real spend-cap hit.
+        return {
+          ok: false,
+          response: Response.json(
+            { error: "unable to verify project restrictions — try again shortly", error_code: "spend_capped" },
+            { status: 429 }
+          ),
+        };
+      }
+      if (projectCfg.status === "found") {
+        if (projectCfg.daily_spend_cap_credits > 0) {
+          hasSpendCap = true;
+          const spend = await this.checkAndDebitProjectSpend(spaceId, tenantId, projectId, 0);
+          if (spend.capped) {
+            return {
+              ok: false,
+              response: Response.json(
+                { error: "daily spend cap reached for this project", error_code: "spend_capped" },
+                { status: 429 }
+              ),
+            };
+          }
+        }
+        maxTier = projectCfg.execution_ceiling as ExecutionTier;
+      }
+      // status === "not_found": no project config row — permissive by design, unchanged.
+
+      // Wallet gate — fails OPEN only when the lookup/balance check itself errors (network/worker
+      // outage, or no wallet ever provisioned e.g. a space created before this fix shipped),
+      // matching the end-user credit gate's posture. A CONFIRMED zero/negative wallet balance
+      // always blocks the run.
+      const walletCheck = await this.checkProjectWallet(spaceId, tenantId);
+      if (!walletCheck.ok) {
+        return {
+          ok: false,
+          response: Response.json(
+            { error: "this business's wallet is empty — top up to keep this agent running", error_code: "insufficient_credits", balance_cents: walletCheck.balance_cents },
+            { status: 402 }
+          ),
+        };
+      }
+      walletProjectId = walletCheck.walletProjectId;
+    } else if (callerRole === "product_end_user" && userId) {
+      // Metering enforcement pass: a non-project (Space Assistant / Home chat) run by a signed-in
+      // product end user used to debit their ProductUserDO balance ONLY after the run completed
+      // (debitEndUserCredits below) — so an empty balance was discovered by a 402 on the debit
+      // call, by which point the real Anthropic tokens for the run were already spent on Naelao's
+      // own platform key. Check the balance BEFORE running the loop instead; refuse the run itself
+      // when it's already at or below zero. Fails OPEN only when the balance check itself errors
+      // (network/worker outage) — matching this run's own overall "never crash on a billing-side
+      // hiccup" posture elsewhere in this method — but a *confirmed* zero/negative balance always
+      // blocks the run.
+      // Tier 2 metering follow-up: creditsIncludedPerMonth used to grant once, ever, at signup —
+      // lazily refresh it here (idempotent, month-scoped — see that route's own comment) so the
+      // FIRST run of a new calendar month tops up before the balance below is even read. This is
+      // deliberately NOT in its own try/catch — a failure here must not silently skip straight to
+      // reading a stale (pre-refresh) balance without at least attempting the top-up; the shared
+      // catch below already covers both calls with the same fail-open posture.
+      try {
+        await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/internal/product-users/${spaceId}/${userId}/credits/refresh-monthly`,
+          { method: "POST", headers: await this.internalHeaders(tenantId) }
+        ));
+        const balRes = await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/internal/product-users/${spaceId}/${userId}/credits/balance`,
+          { headers: await this.internalHeaders(tenantId) }
+        ));
+        if (balRes.ok) {
+          const { balance_credits } = await balRes.json<{ balance_credits: number }>();
+          if (balance_credits <= 0) {
+            return {
+              ok: false,
+              response: Response.json(
+                { error: "insufficient credits — top up or subscribe to keep chatting", error_code: "insufficient_credits", balance_credits },
+                { status: 402 }
+              ),
+            };
+          }
+        }
+      } catch {
+        // Balance service unreachable — do not block the run over a transient outage; the
+        // post-run debit below still enforces the real ledger and will 402 on genuine overdraw.
+      }
+    } else if (BUILDER_CALLER_ROLES.has(callerRole ?? "")) {
+      // P0-3: a builder (owner/admin/editor/viewer — a Team collaborator, not a signed-in
+      // product end user) chatting with their OWN Space Assistant had NO metering at all — the
+      // end-user credit gate above only fires for callerRole === "product_end_user". A free-tier
+      // builder could burn the platform's Anthropic key all day at zero cost. Reuses the
+      // existing per-org plan-tier/usage-quota infrastructure (@naelao/entitlements's numbers,
+      // enforced via the billing worker's usage_events + KV-cached quota check) rather than
+      // building a parallel ledger — this is a MONTHLY QUOTA (resets naturally each calendar
+      // month via the underlying SQL window), not a wallet/credit balance. Deliberately scoped
+      // to only these four caller roles: internal/system-initiated runs (billing webhooks,
+      // scheduled jobs, triggers) never set x-naelao-role at all and must not be swept in here,
+      // and an "agent" API-key caller (Phase O) is a different identity/pricing situation left
+      // for a separate pass. Fails OPEN when BILLING_WORKER is unbound or the check itself
+      // errors — matching every other billing gate's posture in this method.
+      if (this.env.BILLING_WORKER) {
+        try {
+          const quotaRes = await this.env.BILLING_WORKER.fetch(new Request(
+            "http://billing-worker/internal/usage/llm-tokens/check",
+            { headers: await this.internalHeaders(tenantId) }
+          ));
+          if (quotaRes.ok) {
+            const { allowed, current, limit } = await quotaRes.json<{ allowed: boolean; current: number; limit: number }>();
+            if (!allowed) {
+              return {
+                ok: false,
+                response: Response.json(
+                  { error: "monthly usage limit reached for your plan — upgrade to keep chatting", error_code: "quota_exceeded", current, limit },
+                  { status: 402 }
+                ),
+              };
+            }
+          }
+        } catch {
+          // Billing service unreachable — do not block the run over a transient outage.
+        }
+      }
+    }
+
+    return { ok: true, hasSpendCap, walletProjectId, effectiveRole, maxTier };
+  }
+
+  /**
+   * Go-live audit A-1/A-2: the post-run debit counterpart to enforceRunGates — shared by
+   * handleScriptRun and handleRun so a run's real token cost always lands on the same payer the
+   * pre-run gate checked (project wallet, end-user credit balance, or the builder's org quota).
+   * `notes` is mutated in place (pushed onto), matching the pre-existing convention of surfacing a
+   * billing-side hiccup in the run's own response rather than silently swallowing it. Best-effort
+   * throughout: a debit failure never fails an already-completed run.
+   */
+  private async settleRunBilling(params: {
+    spaceId: string; tenantId: string; projectId?: string | undefined; userId?: string | undefined; callerRole?: string | undefined;
+    hasSpendCap: boolean; walletProjectId: string | null;
+    tokensUsed: number; inputTokens: number; outputTokens: number;
+    model?: string | undefined; notes: string[]; runId: string;
+  }): Promise<void> {
+    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId, tokensUsed, inputTokens, outputTokens, model, notes, runId } = params;
+    if (!tokensUsed) return;
+    const credits = inputTokens || outputTokens
+      ? tokensToCredits(inputTokens, outputTokens, model ?? "claude-haiku-4-5-20251001")
+      : tokensUsed;
+
+    if (projectId) {
+      // F9: SpaceDO is now the authoritative tally (single writer across every thread on
+      // this project); the local table is kept only as this DO's own telemetry/cache.
+      this.addProjectSpend(projectId, credits);
+      if (hasSpendCap) await this.checkAndDebitProjectSpend(spaceId, tenantId, projectId, credits);
+      // Metering enforcement follow-up: debit the space's own wallet for this run's real cost.
+      // credits and wallet cents are the SAME unit by construction (packages/billing-core's
+      // CREDITS_PER_USD = 100, i.e. 1 credit == 1 cent) — no conversion needed. Best-effort,
+      // same "never fail an already-completed run over a billing-side hiccup" posture as the
+      // end-user debit below.
+      if (walletProjectId) await this.debitProjectWallet(spaceId, tenantId, walletProjectId, credits, notes, runId);
+    } else if (callerRole === "product_end_user" && userId) {
+      // §A1.17 Phase I: a non-project run (Space Assistant / Home chat) by a signed-in product
+      // end user debits THEIR OWN ProductUserDO balance, not a project cap — mutually exclusive
+      // with the branch above (a project-scoped run never reaches here). Post-hoc, best-effort,
+      // same posture as the project-spend accounting above: never fails an already-completed
+      // run's response over a billing-side hiccup, but insufficient balance is still surfaced
+      // in the result notes so it's visible, not silently swallowed.
+      await this.debitEndUserCredits(spaceId, tenantId, userId, credits, model, notes, runId);
+    } else if (BUILDER_CALLER_ROLES.has(callerRole ?? "")) {
+      // P0-3: record this builder's own real token usage against their org's monthly quota —
+      // mutually exclusive with both branches above (a project-scoped run and a product-end-user
+      // run never reach here). Raw token count, not credits — this feeds a MONTHLY QUOTA
+      // (@naelao/entitlements' monthly_tokens limits), a different unit/purpose from the
+      // wallet/credit ledgers above. Best-effort: never fails an already-completed run's
+      // response over a billing-side hiccup.
+      if (this.env.BILLING_WORKER) {
+        try {
+          await this.env.BILLING_WORKER.fetch(new Request("http://billing-worker/billing/usage", {
+            method: "POST",
+            headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+            body: JSON.stringify({ event_type: "llm_tokens", quantity: tokensUsed, idempotency_key: `run:${runId}` }),
+          }));
+        } catch {
+          // Billing service unreachable — best-effort usage recording, never fails the run.
+        }
+      }
+    }
+  }
+
   private async checkAndDebitProjectSpend(
     spaceId: string, tenantId: string, projectId: string, credits: number
   ): Promise<{ capped: boolean; spent_today: number }> {
@@ -3172,6 +3261,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       apiKey: string;
       model?: string;
       allowedDomains?: string[];
+      userId?: string;
+      projectId?: string;
+      callerRole?: string;
     }>();
 
     // Validate goal length
@@ -3200,6 +3292,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { status: 422 }
       );
     }
+
+    // Go-live audit A-1/A-2: this is the runtime every interactive /agent/run message from
+    // apps/shell and apps/portal actually reaches — it used to carry NONE of the F-36 clamp /
+    // spend-cap / wallet / product_end_user credit gates handleScriptRun always had, so a
+    // signed-in end user (or a business whose wallet was drained) could chat unmetered forever.
+    // Same shared gate handleScriptRun calls; see enforceRunGates' own doc.
+    const gate = await this.enforceRunGates({
+      spaceId: body.spaceId, tenantId: body.tenantId, projectId: body.projectId,
+      userId: body.userId, callerRole: body.callerRole,
+    });
+    if (!gate.ok) return gate.response;
 
     const runId = crypto.randomUUID();
     const now = new Date().toISOString();
@@ -3232,7 +3335,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     };
 
     try {
-      const finalAnswer = await this.runReActLoop(
+      const loopResult = await this.runReActLoop(
         runId,
         body.goal,
         body.systemPrompt,
@@ -3243,6 +3346,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         allowedDomains,
         services
       );
+      const { finalAnswer } = loopResult;
 
       // Cancel the alarm since we finished
       await this.ctx.storage.deleteAlarm();
@@ -3274,12 +3378,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         finalAnswer
       );
 
+      // Go-live audit A-1/A-2: settle this run's real LLM cost on the same payer the pre-run
+      // gate above checked (project wallet, end-user credit balance, or the builder's org
+      // quota) — mirrors handleScriptRun's post-run debit exactly. Best-effort: a billing-side
+      // hiccup is surfaced in billingNotes, never fails an already-completed run.
+      const billingNotes: string[] = [];
+      await this.settleRunBilling({
+        spaceId: body.spaceId, tenantId: body.tenantId, projectId: body.projectId,
+        userId: body.userId, callerRole: body.callerRole,
+        hasSpendCap: gate.hasSpendCap, walletProjectId: gate.walletProjectId,
+        tokensUsed: loopResult.tokensUsed, inputTokens: loopResult.inputTokens, outputTokens: loopResult.outputTokens,
+        model: body.model, notes: billingNotes, runId,
+      });
+
       return Response.json(
         {
           runId,
           status: "completed",
           finalAnswer,
           reactSteps: JSON.parse(run.react_steps as string) as ReactStep[],
+          ...(billingNotes.length > 0 ? { billingNotes } : {}),
         },
         { status: 200 }
       );
@@ -3318,7 +3436,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     model: string,
     allowedDomains: string[],
     services: ToolServices
-  ): Promise<string> {
+  ): Promise<ReActLoopResult> {
     // System prompt + KB context forms the system; goal is first user message
     const messages: LlmMessage[] = [
       { role: "user", content: goal },
@@ -3438,7 +3556,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           step.finalAnswer = "I'm unable to provide that response as it was flagged by content policy.";
           reactSteps.push(step);
           this.persistReactSteps(runId, reactSteps);
-          return step.finalAnswer;
+          return { finalAnswer: step.finalAnswer, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, tokensUsed: totalInputTokens + totalOutputTokens };
         }
 
         step.finalAnswer = answerText;
@@ -3487,7 +3605,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
         // G-AZ01: SUMMARIZING → DONE
         this.transitionFsm(runId, "SUMMARIZING", "DONE");
-        return answerText;
+        return { finalAnswer: answerText, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, tokensUsed: totalInputTokens + totalOutputTokens };
       }
 
       // Handle tool use
@@ -3622,7 +3740,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       reactSteps.push(step);
       this.persistReactSteps(runId, reactSteps);
 
-      return step.finalAnswer;
+      return { finalAnswer: step.finalAnswer, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, tokensUsed: totalInputTokens + totalOutputTokens };
     }
 
     // Exceeded max iterations
@@ -3636,7 +3754,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     reactSteps.push(lastStep);
     this.persistReactSteps(runId, reactSteps);
 
-    return maxIterAnswer;
+    return { finalAnswer: maxIterAnswer, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, tokensUsed: totalInputTokens + totalOutputTokens };
   }
 
   // G-I11: Write user goal and agent answer back to SpaceDO session messages
