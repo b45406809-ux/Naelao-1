@@ -1515,6 +1515,40 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     **With Phase 5 done, all 5 phases of this build (AutoRAG/Wiki, native web search, infra
     usage metering, real streaming + context-window UI, model switcher) are now BUILT.** Full
     plan: `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.24-A1.28.
+49. **Wallet Connect (builder-owned payment accounts) is BUILT — Stripe Connect Express + BYO
+    Lemon Squeezy, per-space `payment_connections` (migration 0063).** Item 45 stands untouched:
+    platform billing custody is LS-only; Stripe returns EXCLUSIVELY as the per-space connected-
+    account rail (`selectBillingProvider("stripe")` still throws). Custody model: Stripe connect
+    creates a FRESH Express account (never an OAuth link to a possibly-personal one) with
+    Stripe-HOSTED onboarding — Naelao never sees KYC/bank details, and activation happens only on
+    a live `charges_enabled` poll (the return redirect proves nothing, per Stripe's own docs);
+    checkouts are direct charges ON that account with `application_fee_amount` auto-collecting
+    Naelao's fee + any parent-builder share. LS is a guided BYO flow (LS has no OAuth and no
+    create-store API — verified): key verified via store list → store picker → key + a generated
+    per-connection webhook signing secret vault-encrypted (only credential NAMES in D1) → webhook
+    auto-created on THEIR store; nothing can be auto-split on this rail so Naelao's fee is a
+    `reseller_ledger` `kind='platform_fee_receivable'` row written at webhook time (reversed
+    negative on refund; parent-builder share deliberately not attributed — nothing was collected
+    to pay it from). `/internal/commerce/checkout` (the storefront's path too) routes to the
+    builder's rail when a connection is ACTIVE — no connection → the Naelao-store path
+    byte-identical; a broken rail on a CONNECTED space fails CLOSED (503), never falls back into
+    the wrong custody. Wallet webhooks — `/v1/webhooks/stripe` (ONE platform Connect endpoint,
+    connection resolved from the event's connected-account id) and `/v1/webhooks/lemon-squeezy/
+    wallet/:connectionId` (per-connection vault secret) — FORCE `event.spaceId` from the
+    connection row (a builder controls their own store's custom_data) and NEVER settle to the
+    platform-internal wallet (the gross already sits in the builder's own account); orders are
+    recorded in `launchpad_orders` (Stripe keyed `pi:{payment_intent}` so refunds match). UI:
+    dashboard Billing-tab `PaymentsAccountCard` + shell business-detail card (admin-only via the
+    local-grants two-gate pattern; spaces-worker wrapper sets `role=admin` toward billing only
+    AFTER its own per-business admin check). **Trap re-confirmed while building:** two
+    static-suffix routes under `/spaces/:spaceId/payment-connection/...` re-triggered the
+    documented Hono RegExpRouter corruption — 8 UNRELATED spaces-worker routes silently 404'd in
+    tests; fixed as one `:provider` param route branching internally. Always run the FULL suite
+    after adding any spaces-worker route. New billing env (all optional, honest degradation):
+    `STRIPE_PLATFORM_SECRET_KEY`, `STRIPE_CONNECT_WEBHOOK_SECRET`, `PUBLIC_WEBHOOK_BASE_URL`,
+    plus a `CREDENTIALS_WORKER` service binding. Full detail: appendix §A1.29. 1828/1828 tests
+    (24 new in `wallet-connect.test.ts`), `pnpm turbo run typecheck` clean, dashboard + shell
+    `next build` verified.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

@@ -1277,22 +1277,30 @@ app.get("/spaces/:spaceId/payment-connection", async (c) =>
   proxyWalletToBilling(c, `/billing/wallet/connection?space_id=${encodeURIComponent(c.req.param("spaceId"))}`, "GET")
 );
 
-app.post("/spaces/:spaceId/payment-connection/stripe", async (c) => {
-  const body = await c.req.json<{ return_url?: string; refresh_url?: string }>().catch(() => ({}) as Record<string, never>);
-  return proxyWalletToBilling(c, "/billing/wallet/connect/stripe", "POST", {
-    space_id: c.req.param("spaceId"),
-    return_url: body.return_url,
-    ...(body.refresh_url ? { refresh_url: body.refresh_url } : {}),
-  });
-});
-
-app.post("/spaces/:spaceId/payment-connection/lemon-squeezy", async (c) => {
-  const body = await c.req.json<{ api_key?: string; store_id?: string }>().catch(() => ({}) as Record<string, never>);
-  return proxyWalletToBilling(c, "/billing/wallet/connect/lemon-squeezy", "POST", {
-    space_id: c.req.param("spaceId"),
-    api_key: body.api_key,
-    ...(body.store_id ? { store_id: body.store_id } : {}),
-  });
+// ONE :provider param route, NOT two static-suffix siblings (/payment-connection/stripe +
+// /payment-connection/lemon-squeezy): a multi-segment dynamic route ending in a static suffix is
+// the exact shape that triggers this app's documented Hono RegExpRouter corruption (see the
+// /internal/space-types-record-install/:id rename comment) — the two-static-siblings version of
+// this route verifiably 404'd unrelated routes (members, agent-definitions, sessions) in tests.
+app.post("/spaces/:spaceId/payment-connection/:provider", async (c) => {
+  const provider = c.req.param("provider");
+  if (provider === "stripe") {
+    const body = await c.req.json<{ return_url?: string; refresh_url?: string }>().catch(() => ({}) as Record<string, never>);
+    return proxyWalletToBilling(c, "/billing/wallet/connect/stripe", "POST", {
+      space_id: c.req.param("spaceId"),
+      return_url: body.return_url,
+      ...(body.refresh_url ? { refresh_url: body.refresh_url } : {}),
+    });
+  }
+  if (provider === "lemon-squeezy") {
+    const body = await c.req.json<{ api_key?: string; store_id?: string }>().catch(() => ({}) as Record<string, never>);
+    return proxyWalletToBilling(c, "/billing/wallet/connect/lemon-squeezy", "POST", {
+      space_id: c.req.param("spaceId"),
+      api_key: body.api_key,
+      ...(body.store_id ? { store_id: body.store_id } : {}),
+    });
+  }
+  return c.json({ error_code: "not_found", message: "Unknown payment provider" }, 404);
 });
 
 app.delete("/spaces/:spaceId/payment-connection", async (c) =>

@@ -72,6 +72,9 @@ that worker's directory. For local dev, create `workers/<name>/.dev.vars` (gitig
 | `CF_API_TOKEN` (agents) | agents | Workers AI fallback provider through the AI Gateway Universal Endpoint. Anthropic-only without it. |
 | `EVAL_LLM_KEY` + `EVAL_LLM_URL` | eval | Any OpenAI-compatible endpoint used as the eval judge. Eval suites only. |
 | `APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_PRIVATE_KEY_BASE64`, `APNS_BUNDLE_ID`, `APNS_HOST` | notifications | Apple Developer account → Keys → APNs auth key (.p8, base64 it). Only for iOS push; email/webhooks work without. |
+| `STRIPE_PLATFORM_SECRET_KEY` | billing | [dashboard.stripe.com](https://dashboard.stripe.com) → Developers → API keys (`sk_...`), with Connect enabled on the account. Wallet Connect's Stripe rail (§A1.29): creates Express connected accounts + direct-charge checkouts ONLY — platform billing stays Lemon Squeezy (item 45). Stripe wallet connect returns `stripe_not_configured` until set; a space with an already-ACTIVE Stripe connection fails CLOSED on checkout rather than falling back to Naelao's store. |
+| `STRIPE_CONNECT_WEBHOOK_SECRET` | billing | Stripe Dashboard → Webhooks → add a **Connect** endpoint pointed at `/v1/webhooks/stripe` (listen to events on connected accounts: `checkout.session.completed`, `charge.refunded`, subscription events) → signing secret (`whsec_...`). Without it, Connect events 503 and orders don't sync. |
+| `PUBLIC_WEBHOOK_BASE_URL` (var, not secret) | billing | Public base URL webhooks are reachable at (e.g. `https://api.naelao.com`). Used to auto-create per-connection Lemon Squeezy webhooks on a builder's OWN store; a connection still activates without it, surfaced as `webhook_created:false`. |
 
 ## NOT env vars — per-builder credentials entered in-product
 
@@ -82,6 +85,9 @@ flows. Never platform secrets:
   secret, **Discord** public key, inbound **email** — via `POST /channels/:channel/connect`.
 - **Whop / Gumroad** keys (`revenue-tracker`, connector catalogue's `WHOP_API_KEY`
   `credential_name`), any BYO MCP server auth — via space credentials.
+- **Wallet Connect Lemon Squeezy** (§A1.29): the builder's own LS store API key + the generated
+  per-connection webhook signing secret — vault-encrypted via the connect flow
+  (`POST /billing/wallet/connect/lemon-squeezy`), only credential NAMES in D1.
 
 ## Plain config vars (wrangler `[vars]`, not secrets)
 

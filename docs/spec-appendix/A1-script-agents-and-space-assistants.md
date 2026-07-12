@@ -4720,3 +4720,112 @@ verified via `next build` (32 routes generated).
 **With Phase 5 complete, all 5 phases of this second full-vision batch (AutoRAG/Wiki, native web
 search, per-tenant infra usage metering, real streaming + context-window UI, model switcher) are
 now BUILT.** No further phases are planned in this batch absent new direction.
+
+## A1.29 Wallet Connect — builder-owned payment accounts (Stripe Connect + BYO Lemon Squeezy) — BUILT
+
+User direction: product revenue should settle into a payment account the BUILDER owns — never
+Naelao's account, and never the builder's *personal* money. The connect experience should feel
+like "Sign in with Google" (click Connect → provider-hosted permissions/onboarding page →
+redirected back). For safety the connection creates/uses an **isolated business account**, and
+the platform must never be able to move the builder's money — the integration surface is
+checkout creation (money-in), account-status reads, and webhook receives, nothing else.
+
+This lands directly on the gap `infra/migrations/0053_payout_requests.sql`'s own header named:
+payouts were manual-fulfillment "by design" because LS has "no Stripe-Connect-style
+split-payment primitive". Stripe Connect IS that primitive; this pass adds it — as a per-space
+rail only. **Item 45's decision stands untouched: Naelao's own platform billing (builder plans,
+the platform LS store, seats, credit packs) is Lemon Squeezy ONLY.** Stripe enters exclusively
+per `payment_connections` row, constructed from the platform integration key, never selected as
+a platform provider (`selectBillingProvider("stripe")` still throws loudly).
+
+### Custody model (the safety core)
+
+- **stripe** — Naelao holds ONE platform integration key (`STRIPE_PLATFORM_SECRET_KEY`,
+  universal-tools doctrine, same as `COMPOSIO_API_KEY`). On connect, a **fresh Express
+  connected account** is created (deliberately never an OAuth link to an existing — possibly
+  personal — account), and the builder is redirected to **Stripe-hosted onboarding** (Stripe
+  collects KYC/bank directly; Naelao never sees them). Checkouts are **direct charges on the
+  connected account** (`Stripe-Account` header) with `application_fee_amount` = Naelao's fee +
+  any parent-builder share, auto-collected. Funds settle in the builder's isolated account;
+  Stripe pays out to their bank. Per Stripe's own docs the onboarding return redirect proves
+  NOTHING — the connection stays `pending` and only activates when a live status poll reports
+  `charges_enabled` (the GET route polls; the dashboard re-fetches every 5s while pending).
+- **lemon_squeezy** — LS has NO OAuth and NO create-store API (verified), so this is a guided
+  BYO flow, honestly presented as such: builder pastes an API key from their own dedicated LS
+  store → key verified via `GET /v1/stores` → store picker → key + a generated per-connection
+  webhook signing secret stored ENCRYPTED in the credentials vault (only credential NAMES on
+  the D1 row) → a webhook auto-created on THEIR store pointing at the per-connection ingress.
+  Money settles 100% with their store (LS is merchant-of-record on THEIR account); Naelao's fee
+  can't be auto-split, so it's recorded at webhook time as a `reseller_ledger` row
+  `kind='platform_fee_receivable'` (`parent_tenant_id='platform'`, `margin_cents` = what the
+  tenant owes Naelao; a refund writes a negative reversing row). Parent-builder revenue share is
+  deliberately NOT attributed on this rail (Naelao collected nothing to pay it from) —
+  documented limitation, not silently wrong.
+
+### What was built
+
+- **`packages/billing-core/src/providers/stripe.ts`** — fetch-based `StripeProvider`
+  (form-encoded, no SDK): `verifyWebhook` (Stripe-Signature `t=…,v1=…` HMAC, 5-min tolerance,
+  constant-time compare), `parseWebhookEvent` (checkout.session.completed → payment.success,
+  subscription.*, charge.refunded → refund.issued; folds the Connect event's `account` into
+  `metadata.stripe_account` and captures `payment_intent` — the ONE id shared between a
+  checkout event and its later refund event), `createCheckout` (ad-hoc `price_data`, direct
+  charge + application fee). Connect helpers: `createExpressAccount` / `createAccountLink` /
+  `getAccountStatus`. LS provider gained `lsListStores` / `lsCreateWebhook` / `lsDeleteWebhook`.
+- **Migration `0063_payment_connections`** — one live (non-disabled) connection per space
+  (partial unique index, the 0040 technique); vault credential POINTERS only; indexed by
+  `(provider, provider_account_id)` for webhook dispatch.
+- **`workers/billing/src/wallet-connections.ts`** — HMAC-gated, owner/admin-only lifecycle
+  routes (`GET/DELETE /billing/wallet/connection`, `POST /billing/wallet/connect/{stripe,
+  lemon-squeezy}`), tenant/space ownership checked on every route; `role="agent"` can never
+  manage payments. Disconnect keeps the row as an audit record (`disabled`), best-effort
+  deletes the LS webhook, and deliberately never deletes the Stripe account (it's the
+  builder's own business account — they keep it via their Express dashboard).
+- **`workers/billing/src/wallet-checkout.ts`** — `/internal/commerce/checkout` (which the
+  storefront also flows through) routes to the builder's provider when a connection is ACTIVE;
+  no connection → the Naelao-store path byte-identical. **Fail-closed rule:** a broken rail on
+  a connected space (missing platform key, unreachable vault) 503s rather than falling back —
+  falling back would settle revenue into the wrong custody, the exact thing this feature
+  prevents. The LS rail lazily provisions a product+variant ONCE on the builder's own store
+  (cached in `details_json.product_variants`).
+- **`workers/billing/src/wallet-webhooks.ts`** — two public signature-verified ingress routes
+  (router-proxied like the platform LS webhook): `POST /v1/webhooks/stripe` (the platform's ONE
+  Connect endpoint; connection resolved from the event's connected-account id) and
+  `POST /v1/webhooks/lemon-squeezy/wallet/:connectionId` (per-connection vault secret; a
+  builder controls their own store so the payload's spaceId claim is NEVER trusted — both
+  handlers FORCE `event.spaceId` from the connection row). Reuses the platform webhook's
+  exactly-once + release-on-transient-failure machinery (exported from `lemon-squeezy.ts`).
+  **Never settles to the platform-internal wallet** — the gross already sits in the builder's
+  own account; only `launchpad_orders` (Stripe keyed `pi:{payment_intent}` so refunds match),
+  builder-share ledger rows (Stripe rail), and the fee receivable (LS rail) are recorded.
+  Agent wake (fulfillment specialist when bound) mirrors the platform path.
+- **UI** — dashboard Billing tab `PaymentsAccountCard` (Connect with Stripe → hosted
+  onboarding; guided LS key→store flow; status chip; disconnect-with-confirm) and a shell
+  business-detail "Payments Account" card (admin-only). Spaces-worker wrapper
+  `/spaces/:spaceId/payment-connection*` uses the local-grants two-gate pattern
+  (requireInternalHmac + requireBusinessMembership admin on every verb, GET included) and sets
+  `role=admin` toward billing only after that per-business check passes; router allowlist entry
+  follows the established identity-here/authorization-there split.
+
+### Found while building (worth remembering)
+
+- The two static-suffix shell routes (`/payment-connection/stripe` + `/payment-connection/
+  lemon-squeezy`) re-triggered the documented Hono RegExpRouter corruption in
+  `workers/spaces/src/index.ts` — 8 UNRELATED routes (members, agent-definitions, sessions)
+  silently 404'd in tests. Fixed with the established pattern: one `:provider` param route
+  branching internally instead of two static siblings under a dynamic segment. The full-suite
+  run caught it immediately; any future route added to this file should run the full suite, not
+  just its own test file.
+
+### Deployment
+
+`STRIPE_PLATFORM_SECRET_KEY` + `STRIPE_CONNECT_WEBHOOK_SECRET` (billing Workers Secrets) and
+`PUBLIC_WEBHOOK_BASE_URL` (billing var) — all optional with honest degradation; the Stripe
+Connect webhook endpoint must be registered in the Stripe dashboard as a **Connect** (not
+account) endpoint at `/v1/webhooks/stripe`. Full inventory: `docs/DEPLOYMENT_SECRETS.md`.
+
+Tests: `tests/unit/wallet-connect.test.ts` (24 tests — real HMAC signature verification both
+providers, connect lifecycle against real migration SQL, checkout routing connected/not/
+fail-closed, spaceId-forcing, receivable + refund reversal, exactly-once, cross-tenant
+isolation, secrets-never-in-D1). 1828/1828 suite green; typecheck clean; dashboard + shell
+`next build` verified.
