@@ -5066,3 +5066,90 @@ naming verification explicitly, and a live sync deriving `awaiting_kyc` from
 **Not done:** the exact onboarding-link field name and full connected-account response shape
 remain unverified against live Whop docs — confirm once Platforms API access is actually granted
 (apply via `sales@whop.com`) and narrow the defensive multi-field check accordingly.
+
+### A1.30 addendum — BYO Whop connector + "Connect with Whop" OAuth flow (items 52-53) — BUILT
+
+Two follow-on passes while items 50-51's invite-only Platforms API access is still pending.
+
+**Item 52 (BYO connector):** a business owner connects their OWN normal Whop account (an API key
+from their own dashboard, no invite needed — a completely different, always-available Whop
+mechanism from the Platforms API) so the assistant can read it via the existing `mcp-connector`
+prebuilt, with Naelao's revenue-share cut billed via the pre-existing `revenue-tracker` surcharge
+mechanism (charged on the builder's next platform subscription, not auto-split at checkout — a
+BYO account has no application-fee-split primitive). The dashboard's `/connectors/*` connect
+route already did the store-credential + register-MCP-server work, but only checked
+`requireVerifiedTenant` (proves SOME verified tenant, never that it owns the specific `space_id`
+in the body) — safe for a builder (their tenant owns every space they have) but not for a
+product end user, whose session tenant is the PRODUCT root spanning every business under it. New
+spaces-worker wrapper routes (`GET /spaces/:spaceId/connectors/status`,
+`POST /spaces/:spaceId/connectors/connect`) close that gap with `requireBusinessMembership`
+before proxying to the agents worker's already-tested logic. Reproduced (and fixed, the
+established way) the documented Hono router-table-scale corruption: a
+`POST /spaces/:spaceId/connectors/:platform/connect` shape silently 404'd 8 unrelated tests
+elsewhere in the file; fixed by moving `platform` into the request body instead of a URL param.
+
+**Item 53 ("Connect with Whop" OAuth):** Whop also has a real, self-serve OAuth2+PKCE app model
+("Sign in with Whop" — Developer Dashboard, `client_id`/`client_secret`, registered redirect
+URIs), a much better UX than pasting an API key and, crucially, still no invite required (a third
+distinct Whop mechanism alongside the Platforms API and the plain BYO key). Built as the new
+primary connect path, with the manual-key form kept as an explicit fallback:
+
+- `workers/agents/src/connectors/oauth.ts` — generic OAuth2+PKCE helpers (not Whop-specific code;
+  any future connector with a catalogue `oauth` spec reuses these): `generatePkce`,
+  `buildAuthorizeUrl`, `exchangeCodeForTokens`, `refreshTokens` (Whop rotates the refresh token on
+  every use — the new one is always persisted, the old one never reused), and a KV-backed
+  single-use OAuth ticket (`issueOAuthTicket`/`consumeOAuthTicket`) mirroring the codebase's own
+  stream-ticket precedent: a short-lived, server-held, single-use ticket rather than putting a
+  PKCE verifier or any credential in a browser-navigable URL.
+- New `ConnectorDefinition.oauth` field (`catalogue.ts`): authorize/token URLs, scopes, and env-var
+  NAMES for the client id/secret (never values in catalogue data). Whop's entry gained one.
+- `POST /connectors/:platform/oauth/start` (authenticated `requireVerifiedTenant`, since this hop
+  is a plain fetch, not a page navigation): generates the PKCE pair, stores
+  `{verifier, spaceId, tenantId, userId, returnUrl, platform}` under a random ticket id
+  (`AGENT_CACHE`, 10-minute TTL — long enough for a human to click through Whop's consent
+  screen), and returns `{authorize_url}` with the ticket as `state`. The frontend does a REAL
+  browser navigation to this URL.
+- `GET /connectors/:platform/oauth/callback` — PUBLIC/unauthenticated (Whop redirects the raw
+  browser here; the single-use ticket in `state` IS the auth, consumed — deleted — on first
+  read, so a replayed callback URL from browser history/proxy logs can never redeem twice).
+  Exchanges the code server-side (holds the client secret), vaults
+  `{access_token, refresh_token, expires_at}` as JSON under the connector's own credential name
+  (reusing the exact `POST /spaces/:spaceId/credentials` upsert path item 52's manual flow
+  already used), upserts the `mcp_servers` row to `auth_type: "oauth2"`, and 302-redirects the
+  browser to the caller's own `return_url` with `?whop_connected=1` (or `?whop_oauth_error=...`)
+  — the tokens themselves never reach the browser.
+- `POST /internal/connectors/oauth/refresh` (HMAC-gated, same `requireVerifiedTenant` check) is
+  the ONLY place that ever holds the Whop OAuth client secret. `workers/mcp-hub/src/index.ts`'s
+  `buildAuthHeaders` gained an `oauth2` branch (`resolveOAuthAccessToken`): parses the vaulted
+  JSON, and when within 5 minutes of `expires_at`, calls this refresh endpoint (new
+  `AGENTS_WORKER` service binding on mcp-hub) rather than duplicating the client secret onto
+  mcp-hub — deliberately proactive (checked before the call) rather than reactive
+  (retry-on-401), and falls back to the current (possibly stale) access token on any refresh
+  failure rather than throwing, so a transient outage of the refresh endpoint doesn't turn every
+  connector call into a hard failure; a genuinely expired token still surfaces a real 401 from
+  the upstream connector itself.
+- New spaces-worker route `POST /spaces/:spaceId/connectors/oauth-start` (admin-gated via
+  `requireBusinessMembership`, `platform` in the body — same router-corruption-avoidance
+  precedent as item 52's `connect` route), proxying to the agents worker's start route with the
+  space's own verified owning tenant.
+- Shell UI: "Connect with Whop" is now the primary button on the business detail page (does
+  `window.location.href = authorize_url`), with "Use an API key instead" collapsing to the
+  original manual-paste form. A mount-time effect reads `?whop_connected=1`/
+  `?whop_oauth_error=` off the URL, shows a toast, strips the marker (so a reload doesn't
+  re-fire it), and refreshes connector status.
+
+Tests: `tests/unit/whop-oauth-connect.test.ts` (12 tests) — authorize-URL construction (client
+id, PKCE challenge method, redirect_uri, state), honest `oauth_not_configured` degradation when
+the OAuth app isn't set up, a missing/unknown state ticket rejected with a clear message, the
+full happy path (code exchange → vaulted tokens never appearing in the redirect → MCP server
+upserted with the right `auth_type`/`auth_secret_name`), single-use ticket replay rejection, an
+`error=` query param from Whop redirecting cleanly instead of 500ing, the refresh endpoint's HMAC
+gate and token-rotation persistence, and mcp-hub's `resolveOAuthAccessToken` exercised directly
+(fresh token passthrough, proactive refresh + verified HMAC token to the agents worker, graceful
+fallback to the stale token on a failed refresh call or a missing `AGENTS_WORKER` binding).
+1835/1835 suite green, `pnpm turbo run typecheck` clean (75 tasks), shell verified via
+`next build`. **Not verified against a live Whop OAuth app** (exact endpoint paths/scopes/response
+shapes are per Whop's published guide, not exercised against a real registered app — confirm once
+`WHOP_OAUTH_CLIENT_ID`/`WHOP_OAUTH_CLIENT_SECRET` are actually issued). **Not done:** an
+equivalent OAuth button on the dashboard's own `/dashboard/spaces/[spaceId]/connectors` console
+(still manual-key-only — this pass targeted the shell's per-business flow specifically).

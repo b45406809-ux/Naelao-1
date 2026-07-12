@@ -25,6 +25,14 @@ import { isCronDue } from "@naelao/events";
 import { SkillLibrary } from "./script-engine/skill-library.js";
 import { promoteSkill, inheritTemplateSkills } from "./script-engine/federation.js";
 import { verifyWebhookSignature, normalizeWebhook, webhookGoal } from "./connectors/webhook-normalizer.js";
+import {
+  generatePkce,
+  buildAuthorizeUrl,
+  exchangeCodeForTokens,
+  refreshTokens,
+  issueOAuthTicket,
+  consumeOAuthTicket,
+} from "./connectors/oauth.js";
 import { isChannelType, getAdapter } from "./launchpad/channels.js";
 import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
 
@@ -113,6 +121,17 @@ export interface AgentsEnv {
   MCP_HUB?: Fetcher;
   /** Credentials vault — stores a connector's API key (only the name is referenced elsewhere). */
   CREDENTIALS_WORKER?: Fetcher;
+  /** "Connect with Whop" OAuth2+PKCE app — self-serve via Whop's Developer Dashboard, no invite
+   *  needed (a completely separate mechanism from the invite-gated Platforms API the
+   *  business-wallet rail uses). Optional: the OAuth start/callback routes degrade to an honest
+   *  `oauth_not_configured` error when unset; the manual-API-key connect flow still works. */
+  WHOP_OAUTH_CLIENT_ID?: string;
+  WHOP_OAUTH_CLIENT_SECRET?: string;
+  /** Public base URL this worker is reachable at (e.g. https://api.naelao.com) — used to build
+   *  the OAuth redirect_uri registered with Whop's Developer Dashboard. Optional: the OAuth start
+   *  route degrades honestly when unset (a redirect_uri must be an exact match, so a guess would
+   *  silently fail at Whop's end instead). */
+  PUBLIC_AGENTS_URL?: string;
   /** §A1.27: already bound in wrangler.toml (naelao-billing); added here so the context-usage
    *  endpoint can read the day/week/month llm_tokens summary. */
   BILLING_WORKER?: Fetcher;
@@ -1560,6 +1579,191 @@ app.post("/connectors/:platform/connect", async (c) => {
   }
 
   return c.json({ connected: true, platform: connector.id, server_id: serverId }, 201);
+});
+
+// POST /connectors/:platform/oauth/start — "Connect with X" (Whop first): generates a PKCE pair,
+// stashes it server-side under a short-lived single-use ticket (AGENT_CACHE, 10 min TTL — see
+// oauth.ts's header for why this mirrors the stream-ticket precedent rather than putting anything
+// sensitive in a browser-navigable URL), and returns the real authorize URL for the frontend to
+// navigate the browser to. Authenticated (requireVerifiedTenant) since this call itself is a plain
+// fetch, not a page navigation — only the NEXT hop (the browser following authorize_url) has no
+// custom headers available.
+app.post("/connectors/:platform/oauth/start", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const { userId } = getCallerIdentity(c);
+  const platform = c.req.param("platform");
+  const connector = getConnector(platform);
+  if (!connector) throw notFound("Connector");
+  if (!connector.oauth) {
+    return c.json({ error_code: "oauth_not_supported", message: `${connector.name} has no OAuth connect flow` }, 400);
+  }
+  const clientId = (c.env as unknown as Record<string, string | undefined>)[connector.oauth.client_id_env];
+  if (!clientId || !c.env.PUBLIC_AGENTS_URL) {
+    return c.json({ error_code: "oauth_not_configured", message: `${connector.name} OAuth is not configured on this deployment` }, 503);
+  }
+
+  interface StartBody { space_id: string; return_url: string }
+  const body = await c.req.json<StartBody>().catch(() => ({ space_id: "", return_url: "" } as StartBody));
+  if (!body.space_id) throw badRequest("space_id is required");
+  if (!body.return_url) throw badRequest("return_url is required");
+
+  const { verifier, challenge } = await generatePkce();
+  const ticket = await issueOAuthTicket(c.env.AGENT_CACHE, {
+    verifier, spaceId: body.space_id, tenantId, userId, returnUrl: body.return_url, platform,
+  });
+  const redirectUri = `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/connectors/${encodeURIComponent(platform)}/oauth/callback`;
+  const authorize_url = buildAuthorizeUrl({
+    authorizeUrl: connector.oauth.authorize_url,
+    clientId,
+    redirectUri,
+    scopes: connector.oauth.scopes,
+    state: ticket,
+    codeChallenge: challenge,
+  });
+  return c.json({ authorize_url });
+});
+
+// GET /connectors/:platform/oauth/callback — PUBLIC/unauthenticated (Whop redirects the raw
+// browser here with no Naelao auth attached; the single-use ticket in `state` IS the auth,
+// same posture as the webhook route below). Exchanges the code server-side (holds the client
+// secret — never exposed to the browser or the agent), vaults the resulting tokens, registers/
+// reuses the connector's MCP server row with auth_type "oauth2", and redirects the browser back
+// to the caller's own return_url — the tokens themselves never reach the browser at all.
+app.get("/connectors/:platform/oauth/callback", async (c) => {
+  const platform = c.req.param("platform");
+  const connector = getConnector(platform);
+  const code = c.req.query("code");
+  const state = c.req.query("state");
+  const errorParam = c.req.query("error");
+  if (!connector?.oauth) return c.text("Unknown connector", 404);
+
+  const ticket = state ? await consumeOAuthTicket(c.env.AGENT_CACHE, state) : null;
+  if (!ticket || ticket.platform !== platform) {
+    return c.text("This connection link has expired or was already used. Go back and try connecting again.", 400);
+  }
+  const failRedirect = (reason: string) => {
+    const u = new URL(ticket.returnUrl);
+    u.searchParams.set(`${platform}_oauth_error`, reason);
+    return c.redirect(u.toString(), 302);
+  };
+  if (errorParam) return failRedirect(errorParam);
+  if (!code) return failRedirect("missing_code");
+
+  const clientId = (c.env as unknown as Record<string, string | undefined>)[connector.oauth.client_id_env];
+  const clientSecret = (c.env as unknown as Record<string, string | undefined>)[connector.oauth.client_secret_env];
+  if (!clientId || !clientSecret || !c.env.PUBLIC_AGENTS_URL) return failRedirect("oauth_not_configured");
+
+  try {
+    const redirectUri = `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/connectors/${encodeURIComponent(platform)}/oauth/callback`;
+    const tokens = await exchangeCodeForTokens({
+      tokenUrl: connector.oauth.token_url,
+      clientId, clientSecret, code, codeVerifier: ticket.verifier, redirectUri,
+    });
+
+    if (!c.env.CREDENTIALS_WORKER || !c.env.MCP_HUB) return failRedirect("connectors_unavailable");
+    const credInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, ticket.tenantId);
+    const credResp = await c.env.CREDENTIALS_WORKER.fetch(
+      new Request(`http://credentials/spaces/${ticket.spaceId}/credentials`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": ticket.tenantId,
+          "x-naelao-user-id": ticket.userId,
+          "x-naelao-internal-token": credInternalToken,
+        },
+        body: JSON.stringify({
+          name: connector.oauth.credential_name,
+          value: JSON.stringify(tokens),
+          description: `${connector.name} OAuth tokens (connector)`,
+        }),
+      })
+    );
+    if (!credResp.ok && credResp.status !== 409) return failRedirect("credential_store_failed");
+
+    const mcpInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, ticket.tenantId);
+    const listResp = await c.env.MCP_HUB.fetch(
+      new Request(`http://mcp-hub/v1/spaces/${ticket.spaceId}/mcp-servers`, {
+        headers: { "x-naelao-tenant-id": ticket.tenantId, "x-naelao-internal-token": mcpInternalToken },
+      })
+    );
+    let serverId: string | null = null;
+    if (listResp.ok) {
+      const { data } = await listResp.json<{ data?: Array<{ id: string; name: string }> }>();
+      serverId = (data ?? []).find((s) => s.name === connector.id)?.id ?? null;
+    }
+    const upsertBody = {
+      name: connector.id,
+      url: connector.mcp_endpoint,
+      auth_type: "oauth2",
+      auth_secret_name: connector.oauth.credential_name,
+    };
+    if (!serverId) {
+      const regResp = await c.env.MCP_HUB.fetch(
+        new Request(`http://mcp-hub/v1/spaces/${ticket.spaceId}/mcp-servers`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-naelao-tenant-id": ticket.tenantId, "x-naelao-internal-token": mcpInternalToken },
+          body: JSON.stringify(upsertBody),
+        })
+      );
+      if (!regResp.ok) return failRedirect("register_failed");
+    } else {
+      // Reconnecting an existing (e.g. previously-manual-key) registration onto OAuth — patch it
+      // to the oauth2 auth_type/credential rather than leaving a stale bearer registration.
+      await c.env.MCP_HUB.fetch(
+        new Request(`http://mcp-hub/v1/spaces/${ticket.spaceId}/mcp-servers/${serverId}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json", "x-naelao-tenant-id": ticket.tenantId, "x-naelao-internal-token": mcpInternalToken },
+          body: JSON.stringify(upsertBody),
+        })
+      );
+    }
+
+    const successUrl = new URL(ticket.returnUrl);
+    successUrl.searchParams.set(`${platform}_connected`, "1");
+    return c.redirect(successUrl.toString(), 302);
+  } catch (err) {
+    return failRedirect((err as Error).message.slice(0, 200));
+  }
+});
+
+// POST /internal/connectors/oauth/refresh — called by mcp-hub's buildAuthHeaders when a stored
+// OAuth credential is near expiry. HMAC-gated (requireVerifiedTenant's same check) since this
+// carries no other auth of its own; ONLY this worker ever holds the connector's OAuth client
+// secret, so refreshing lives here rather than duplicating the secret onto mcp-hub.
+app.post("/internal/connectors/oauth/refresh", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  interface RefreshBody { space_id: string; platform: string; refresh_token: string }
+  const body = await c.req.json<RefreshBody>().catch(() => ({ space_id: "", platform: "", refresh_token: "" } as RefreshBody));
+  const connector = getConnector(body.platform);
+  if (!connector?.oauth) return c.json({ error_code: "oauth_not_supported" }, 400);
+  const clientId = (c.env as unknown as Record<string, string | undefined>)[connector.oauth.client_id_env];
+  const clientSecret = (c.env as unknown as Record<string, string | undefined>)[connector.oauth.client_secret_env];
+  if (!clientId || !clientSecret) return c.json({ error_code: "oauth_not_configured" }, 503);
+  if (!body.refresh_token) return c.json({ error_code: "bad_request", message: "refresh_token is required" }, 400);
+
+  try {
+    const tokens = await refreshTokens({ tokenUrl: connector.oauth.token_url, clientId, clientSecret, refreshToken: body.refresh_token });
+    if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "credentials_unavailable" }, 503);
+    const credInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
+    await c.env.CREDENTIALS_WORKER.fetch(
+      new Request(`http://credentials/spaces/${body.space_id}/credentials`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": tenantId,
+          // mcp-hub triggers this refresh on mcp_servers' own schedule, with no end-user request
+          // in flight to attribute it to — mcp_servers doesn't track who originally connected it.
+          // A synthetic system identity is more honest than guessing a stale real user id.
+          "x-naelao-user-id": "system:oauth-refresh",
+          "x-naelao-internal-token": credInternalToken,
+        },
+        body: JSON.stringify({ name: connector.oauth.credential_name, value: JSON.stringify(tokens), description: `${connector.name} OAuth tokens (connector)` }),
+      })
+    );
+    return c.json({ access_token: tokens.access_token, expires_at: tokens.expires_at });
+  } catch (err) {
+    return c.json({ error_code: "refresh_failed", message: (err as Error).message }, 502);
+  }
 });
 
 // POST /connectors/:platform/webhook/:spaceId — generic inbound webhook ingress (#3).

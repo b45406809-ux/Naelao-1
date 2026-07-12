@@ -1405,6 +1405,21 @@ app.post("/spaces/:spaceId/connectors/connect", async (c) => {
   });
 });
 
+// "Connect with X" OAuth flow — same admin-only gate as the manual-key connect above, same
+// platform-in-body shape (never a URL param) for the same router-corruption reason. Returns
+// {authorize_url}; the frontend does a real browser navigation to it (see oauth.ts's header).
+app.use("/spaces/:spaceId/connectors/oauth-start", requireBusinessMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/connectors/oauth-start", async (c) => {
+  const body = await c.req.json<{ platform?: string; return_url?: string }>().catch(() => ({}) as Record<string, never>);
+  const platform = body.platform ?? "";
+  if (!platform) return c.json({ error_code: "bad_request", message: "platform is required" }, 400);
+  if (!body.return_url) return c.json({ error_code: "bad_request", message: "return_url is required" }, 400);
+  return proxyConnectorsToAgents(c, `/connectors/${encodeURIComponent(platform)}/oauth/start`, "POST", {
+    space_id: c.req.param("spaceId"),
+    return_url: body.return_url,
+  });
+});
+
 app.post("/spaces/:spaceId/business-wallet/payouts", async (c) => {
   const body = await c.req.json<{ destination_id?: string; amount_cents?: number; note?: string }>().catch(() => ({}) as Record<string, never>);
   const identity = getCallerIdentity(c);

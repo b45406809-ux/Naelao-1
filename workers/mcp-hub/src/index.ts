@@ -1,9 +1,9 @@
 // G-I17: MCP Tool Server Registry — registers MCP servers per Space and proxies tool calls
 import { Hono } from "hono";
-import { errorResponse, requestId, requireInternalHmac } from "@naelao/http";
+import { errorResponse, requestId, requireInternalHmac, mintInternalToken } from "@naelao/http";
 import { checkSsrf } from "@naelao/security";
 
-interface Env {
+export interface Env {
   ENVIRONMENT: string;
   PLATFORM_SECRET: string;
   PLATFORM_DB: D1Database;
@@ -17,6 +17,10 @@ interface Env {
    *  degrade honestly with `provider_not_configured`. */
   COMPOSIO_API_KEY?: string;
   PIPEDREAM_API_KEY?: string;
+  /** OAuth2 connectors ("Connect with Whop" etc.): buildAuthHeaders proactively refreshes a
+   *  near-expiry access token by calling this internal endpoint — only the agents worker holds
+   *  the connector's OAuth client secret, so refresh logic lives there, not here. */
+  AGENTS_WORKER?: Fetcher;
 }
 
 // Hosts that are external payment processors (incl. Naelao's own LS). A connector may never be
@@ -69,13 +73,13 @@ async function generateCredentialToken(platformSecret: string, spaceId: string, 
 
 type ConnectorProvider = "direct" | "composio" | "pipedream";
 
-interface McpServer {
+export interface McpServer {
   id: string;
   space_id: string;
   tenant_id: string;
   name: string;
   url: string;
-  auth_type: "bearer" | "api_key" | "none";
+  auth_type: "bearer" | "api_key" | "none" | "oauth2";
   auth_secret_name: string | null; // references space_credentials table
   enabled: number; // 0 or 1 (D1 stores booleans as integers)
   connector_provider: ConnectorProvider;
@@ -231,7 +235,7 @@ async function validateMcpUrl(rawUrl: string): Promise<{ ok: true; url: URL } | 
  * fetched per call and never persisted in mcp_servers — the row only holds the credential NAME.
  * agentId scopes the short-lived credential token (for the vault's audit trail).
  */
-async function buildAuthHeaders(server: McpServer, env: Env, agentId: string): Promise<Record<string, string>> {
+export async function buildAuthHeaders(server: McpServer, env: Env, agentId: string): Promise<Record<string, string>> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (server.auth_type === "none" || !server.auth_secret_name) return headers;
 
@@ -258,7 +262,55 @@ async function buildAuthHeaders(server: McpServer, env: Env, agentId: string): P
   const { value } = await resp.json<{ value: string }>();
   if (server.auth_type === "bearer") headers["Authorization"] = `Bearer ${value}`;
   else if (server.auth_type === "api_key") headers["X-API-Key"] = value;
+  else if (server.auth_type === "oauth2") {
+    headers["Authorization"] = `Bearer ${await resolveOAuthAccessToken(server, env, value)}`;
+  }
   return headers;
+}
+
+interface OAuthCredentialValue {
+  access_token: string;
+  refresh_token: string;
+  /** Epoch millis. */
+  expires_at: number;
+}
+
+// Refresh a bit before actual expiry so a call in flight doesn't race token expiration.
+const OAUTH_REFRESH_BUFFER_MS = 5 * 60_000;
+
+/** Resolves an oauth2 connector's access token, proactively refreshing via the agents worker
+ *  (the only place that holds the connector's OAuth client secret) when near expiry. Never
+ *  throws on a refresh failure — falls back to the current (possibly stale) access token so a
+ *  transient refresh-endpoint outage doesn't turn every call into a hard failure; the upstream
+ *  connector call itself will surface a real 401 if the token has actually expired. */
+export async function resolveOAuthAccessToken(server: McpServer, env: Env, rawValue: string): Promise<string> {
+  let tokens: OAuthCredentialValue;
+  try {
+    tokens = JSON.parse(rawValue) as OAuthCredentialValue;
+  } catch {
+    // Not a JSON blob — treat as a bare access token (defensive; shouldn't happen for a
+    // correctly-registered oauth2 server).
+    return rawValue;
+  }
+  if (!tokens.expires_at || Date.now() < tokens.expires_at - OAUTH_REFRESH_BUFFER_MS) {
+    return tokens.access_token;
+  }
+  if (!env.AGENTS_WORKER) return tokens.access_token;
+  try {
+    const token = await mintInternalToken(env.PLATFORM_SECRET, server.tenant_id);
+    const resp = await env.AGENTS_WORKER.fetch(
+      new Request("http://agents-worker/internal/connectors/oauth/refresh", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": server.tenant_id, "x-naelao-internal-token": token },
+        body: JSON.stringify({ space_id: server.space_id, platform: server.name, refresh_token: tokens.refresh_token }),
+      })
+    );
+    if (!resp.ok) return tokens.access_token;
+    const refreshed = await resp.json<{ access_token?: string }>();
+    return refreshed.access_token ?? tokens.access_token;
+  } catch {
+    return tokens.access_token;
+  }
 }
 
 type ProviderKeyResolution =

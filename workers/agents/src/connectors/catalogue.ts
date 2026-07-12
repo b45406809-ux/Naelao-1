@@ -54,6 +54,24 @@ export interface ConnectorWebhookSpec {
   secret_credential_name: string;
 }
 
+/**
+ * OAuth2 + PKCE "Sign in with X" support — a real-account redirect flow (Whop's Developer
+ * Dashboard OAuth app model), distinct from the manual-API-key-paste path `auth` above already
+ * supports. Self-serve, no invite needed (unlike Whop's separate Platforms/connected-accounts
+ * API used by the business-wallet rail). Client id/secret are env-var NAMES, never values —
+ * resolved from Workers Secrets at request time by the routes that use this config.
+ */
+export interface ConnectorOAuthSpec {
+  authorize_url: string;
+  token_url: string;
+  scopes: string[];
+  client_id_env: string;
+  client_secret_env: string;
+  /** The credential name the resolved {access_token, refresh_token, expires_at} JSON blob is
+   *  vaulted under — mcp-hub's buildAuthHeaders recognizes this shape via auth_type "oauth2". */
+  credential_name: string;
+}
+
 export interface ConnectorDefinition {
   id: string;
   name: string;
@@ -65,6 +83,9 @@ export interface ConnectorDefinition {
   auth: ConnectorAuth;
   /** Inbound webhook signing/shape (absent when the platform has no webhooks). */
   webhook?: ConnectorWebhookSpec;
+  /** Present when this connector ALSO supports a "Connect with X" OAuth redirect, as an
+   *  alternative to pasting `auth.credential_name`'s API key by hand. */
+  oauth?: ConnectorOAuthSpec;
   /**
    * Canonical MCP endpoint for the platform's shim (Naelao-hosted or a hosted gateway like
    * Composio/Pipedream). The connect flow may override per deploy via env. Absent for
@@ -87,6 +108,19 @@ const WHOP: ConnectorDefinition = {
     "members, orders and payments, and posts community updates — Whop keeps processing the payments.",
   docs_url: "https://dev.whop.com/api-reference",
   auth: { type: "bearer", credential_name: "WHOP_API_KEY" },
+  // "Sign in with Whop" — a real OAuth2+PKCE app registered once in Whop's Developer Dashboard
+  // (self-serve, no invite — a completely separate mechanism from the invite-gated Platforms/
+  // connected-accounts API the business-wallet rail uses). Exact endpoint paths per Whop's
+  // published OAuth guide; verify against the live Whop Developer Dashboard when registering the
+  // app, since this wasn't exercised against a real Whop OAuth app in this pass.
+  oauth: {
+    authorize_url: "https://api.whop.com/oauth/authorize",
+    token_url: "https://api.whop.com/oauth/token",
+    scopes: ["read_memberships", "read_payments"],
+    client_id_env: "WHOP_OAUTH_CLIENT_ID",
+    client_secret_env: "WHOP_OAUTH_CLIENT_SECRET",
+    credential_name: "WHOP_OAUTH_TOKENS",
+  },
   mcp_endpoint: "https://mcp.naelao.com/connectors/whop",
   webhook: {
     signature_header: "x-whop-signature",

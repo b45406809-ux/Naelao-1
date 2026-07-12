@@ -861,3 +861,21 @@ export async function connectPlatform(
     session,
   });
 }
+
+/** "Connect with X" OAuth flow (Whop first) — returns the real Whop authorize URL to navigate
+ *  the browser to; the caller does `window.location.href = authorize_url` itself (a real page
+ *  navigation, never a fetch — no Naelao credential appears in it, only an opaque single-use
+ *  ticket). return_url should be the current page — the callback redirects back here with
+ *  `?whop_connected=1` or `?whop_oauth_error=...` on completion. */
+export async function startOAuthConnect(
+  spaceId: string,
+  session: SessionCredentials,
+  platform: string,
+  returnUrl: string
+): Promise<{ authorize_url: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/connectors/oauth-start`, {
+    method: "POST",
+    body: JSON.stringify({ platform, return_url: returnUrl }),
+    session,
+  });
+}

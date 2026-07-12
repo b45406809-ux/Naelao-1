@@ -30,6 +30,7 @@ import {
   addPayoutDestination,
   getConnectorStatus,
   connectPlatform,
+  startOAuthConnect,
   type BusinessMember,
   type Business,
   type PricingPlan,
@@ -261,6 +262,35 @@ export default function BusinessDetailPage() {
     }
   }
 
+  async function handleConnectWhopOAuth() {
+    if (!creds) return;
+    setConnectBusy(true);
+    try {
+      const { authorize_url } = await startOAuthConnect(params.businessId, creds, "whop", window.location.href);
+      window.location.href = authorize_url;
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to start the Whop connection");
+      setConnectBusy(false);
+    }
+  }
+
+  // Land back here after the OAuth redirect — clean the marker out of the URL either way so a
+  // reload doesn't re-trigger the toast, and refresh so the newly-connected status shows up.
+  React.useEffect(() => {
+    const params2 = new URLSearchParams(window.location.search);
+    const connected = params2.get("whop_connected");
+    const error = params2.get("whop_oauth_error");
+    if (!connected && !error) return;
+    if (connected) show("Whop account connected.");
+    if (error) show(`Whop connection failed: ${error}`);
+    params2.delete("whop_connected");
+    params2.delete("whop_oauth_error");
+    const clean = `${window.location.pathname}${params2.toString() ? `?${params2}` : ""}`;
+    window.history.replaceState({}, "", clean);
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function handleCreateProduct(e: React.FormEvent) {
     e.preventDefault();
     if (!creds || !newProductName.trim()) return;
@@ -441,9 +471,20 @@ export default function BusinessDetailPage() {
                     <div className="settings-row-sub">Not connected yet</div>
                   </div>
                   {!whopKeyOpen && (
-                    <Button onClick={() => setWhopKeyOpen(true)} disabled={connectBusy}>
-                      Connect
-                    </Button>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <Button onClick={handleConnectWhopOAuth} disabled={connectBusy}>
+                        {connectBusy ? "Redirecting…" : "Connect with Whop"}
+                      </Button>
+                      <button
+                        className="btn btn-secondary"
+                        type="button"
+                        onClick={() => setWhopKeyOpen(true)}
+                        disabled={connectBusy}
+                        style={{ fontSize: 12 }}
+                      >
+                        Use an API key instead
+                      </button>
+                    </div>
                   )}
                 </div>
               )}

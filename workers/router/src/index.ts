@@ -263,6 +263,18 @@ app.all("/v1/connectors/:platform/webhook/:spaceId", async (c) => {
   );
 });
 
+// ── Public "Connect with X" OAuth callback (unauthenticated; the single-use ticket in `state`
+// is the auth) ── Whop (and any future oauth-capable connector) redirects the raw BROWSER here
+// with no Naelao credential attached at all — same posture as the webhook ingress above, and
+// registered the same way (before the authenticated api group).
+app.all("/v1/connectors/:platform/oauth/callback", async (c) => {
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.AGENTS_WORKER.fetch(
+    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+  );
+});
+
 // ── Public multi-channel ingress (unauthenticated; the channel's own signature is the auth) ──
 // Slack/Discord/inbound-email providers can't carry a JWT either — same pattern as connectors
 // above, registered before the authenticated api group. The agents worker verifies the
@@ -519,6 +531,7 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // routes above (status is member-level read, connect is admin-level write).
   /^\/spaces\/([^/]+)\/connectors\/status$/,
   /^\/spaces\/([^/]+)\/connectors\/connect$/,
+  /^\/spaces\/([^/]+)\/connectors\/oauth-start$/,
   // WS-2 (Space Assistant surface): the Status/Crons panels — additionally gated by
   // resolveEndUserBusinessRole on the spaces worker exactly like the routes above.
   /^\/spaces\/([^/]+)\/assistant-policy$/,

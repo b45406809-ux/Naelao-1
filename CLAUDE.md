@@ -1683,6 +1683,49 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     dashboard's own product Configuration/Billing tabs (the dashboard's existing generic
     `/dashboard/spaces/[spaceId]/connectors` console already covers a TOP-level product/space;
     a Launchpad end-user-created BUSINESS sub-space specifically is what this pass targeted).
+53. **"Connect with Whop" OAuth2+PKCE flow is now BUILT — a real redirect connect experience,
+    replacing the manual-API-key-paste form as the primary path (kept as a fallback).** Research
+    (web + Whop's own OAuth docs) confirmed Whop has a genuine, self-serve OAuth2+PKCE "Sign in
+    with Whop" app model (Developer Dashboard → create an app → `client_id`/`client_secret`,
+    registered redirect URIs) — completely separate from the invite-gated Platforms/connected-
+    accounts API items 50-51 use. New `workers/agents/src/connectors/oauth.ts`: PKCE generation,
+    authorize-URL building, code-for-tokens exchange, and refresh (Whop rotates refresh tokens
+    on every use — always persists the new one, never reuses the old). New `ConnectorDefinition.
+    oauth` field (`catalogue.ts`) carries Whop's authorize/token URLs + scopes + env-var NAMES
+    for the client id/secret (never values in code). Flow mirrors the codebase's own stream-
+    ticket precedent rather than putting anything sensitive in a browser-navigable URL:
+    `POST /connectors/:platform/oauth/start` (authenticated) generates a PKCE pair, stashes it
+    server-side under a random single-use ticket (`AGENT_CACHE` KV, 10-minute TTL) and returns
+    the real authorize URL with the ticket as `state`; the frontend does an actual browser
+    navigation to it — no credential in that URL, only an opaque ticket. Whop redirects the raw
+    browser to `GET /connectors/:platform/oauth/callback` (PUBLIC/unauthenticated — the
+    single-use ticket IS the auth, same posture as the existing webhook ingress), which exchanges
+    the code server-side (holds the client secret), vaults the resulting `{access_token,
+    refresh_token, expires_at}` JSON under the connector's own credential name, upserts the MCP
+    server row to `auth_type: "oauth2"`, and 302-redirects the browser back to the caller's own
+    `return_url` — the tokens themselves never reach the browser. New
+    `POST /internal/connectors/oauth/refresh` (HMAC-gated) is the ONLY place that holds the
+    Whop OAuth client secret; mcp-hub's `buildAuthHeaders` gained an `oauth2` branch
+    (`resolveOAuthAccessToken`) that proactively refreshes a near-expiry token by calling this
+    endpoint (5-minute buffer) rather than duplicating the secret onto mcp-hub, and falls back to
+    the stale token (never throws) on a transient refresh failure — the real upstream call
+    surfaces an honest 401 if the token had actually expired. New spaces-worker wrapper
+    `POST /spaces/:spaceId/connectors/oauth-start` (admin-gated via `requireBusinessMembership`,
+    same precedent as `connect`/`status`), proxying to the agents worker's start route with the
+    space's own verified owning tenant. Shell UI: "Connect with Whop" is now the primary button
+    (a real redirect), with "Use an API key instead" collapsing to the original manual form; a
+    mount-time effect reads `?whop_connected=1`/`?whop_oauth_error=` off the return URL, shows a
+    toast, strips the marker from the URL (so a reload doesn't re-fire it), and refreshes.
+    1835/1835 tests pass (12 new in `whop-oauth-connect.test.ts` — authorize-URL construction,
+    honest `oauth_not_configured` degradation, single-use ticket rejection/replay-prevention,
+    token exchange never leaking into the redirect, MCP server upsert, the refresh endpoint's
+    HMAC gate + token rotation, and mcp-hub's proactive-refresh/stale-fallback logic directly),
+    `pnpm turbo run typecheck` clean (75 tasks), shell verified via `next build`. **Not verified
+    against a live Whop OAuth app** — exact endpoint paths/scopes are per Whop's published guide,
+    not exercised against a real registered app in this pass; confirm when `WHOP_OAUTH_CLIENT_ID`
+    is actually issued. **Not done:** an equivalent OAuth button on the dashboard's own
+    `/dashboard/spaces/[spaceId]/connectors` console (still manual-key-only) — the shell's
+    per-business flow was this pass's target.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

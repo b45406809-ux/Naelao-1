@@ -29,6 +29,13 @@ database_id = "PLACEHOLDER_D1_ID"
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
 
+# OAuth2 connectors (e.g. Whop's "Sign in with Whop"): buildAuthHeaders proactively refreshes a
+# near-expiry access token by calling the agents worker's internal refresh endpoint — the ONLY
+# place that holds the Whop OAuth client secret, so it never needs duplicating onto this worker.
+[[services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
 [vars]
 ENVIRONMENT = "development"
 
@@ -39,9 +46,17 @@ vars = { ENVIRONMENT = "staging" }
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
 
+[[env.staging.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
 
 [[env.production.services]]
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
+
+[[env.production.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
