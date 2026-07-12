@@ -7,31 +7,54 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
 
 ## Deferred, tracked follow-up (NOT for the go-live window)
 
-- [ ] **A-2 (deferred from S-A1, CLAUDE.md item 46): converge `/agent/run` onto the
-  script-native `handleScriptRun`; retire `handleRun`/`runReActLoop` entirely.**
-  S-A1 (item 46) closed the exploitable gap by extracting `enforceRunGates`/
-  `settleRunBilling` and calling them identically from both `handleScriptRun` (script-native
-  engine) and `handleRun` (legacy ReAct loop) — but the platform still runs TWO parallel agent
-  runtimes in `NaelaoAgentDO`, which is exactly the duality that let the gap exist undetected
-  for as long as it did (every future gate/feature added to one risks not being mirrored to the
-  other, same class of bug). Ground rule #8 (CLAUDE.md) already establishes the script-native
-  6-op engine (`script.create/read/update/delete/find/run`) as the ONE authoritative agent
-  runtime — `handleRun`/`runReActLoop` is the pre-script-engine implementation that should not
-  still be live on the interactive chat surface.
-  **Why this is explicitly NOT to be implemented now:** it is a behavior change to the LIVE
-  chat surface — tool surface (hardcoded ReAct tools vs. the 6-op script surface), response
-  shape, streaming/SSE framing, and every existing test that asserts against `handleRun`'s
-  specific behavior would need to move. Doing this inside the go-live window risks regressing
-  the one thing that currently works end-to-end (apps/shell + apps/portal chat, per item 44's
-  Phase Q fixes). Scope for the eventual pass: (1) confirm every capability `handleRun`'s
-  hardcoded tools provide today has an equivalent script/prebuilt in the script-native engine
-  (audit first, do not assume parity); (2) switch `/agent/run`'s dispatch to always call
-  `handleScriptRun`; (3) delete `handleRun`/`runReActLoop` and the now-dead `ReActLoopResult`
-  type; (4) migrate/delete tests that were asserting on the legacy path specifically (keep the
-  ones that assert on gating behavior, since `enforceRunGates`/`settleRunBilling` are shared);
-  (5) re-verify apps/shell and apps/portal chat live (or via CDP-mocked network) end-to-end
-  before calling it done, per this repo's own "claimed success without UI verification" lesson
-  from item 41/44.
+- [x] **A-2 (deferred from S-A1, CLAUDE.md item 46): converge `/agent/run` onto the
+  script-native `handleScriptRun` — DISPATCH CUTOVER DONE; physical deletion of
+  `handleRun`/`runReActLoop` DELIBERATELY DEFERRED (see below).**
+  Traced the full dispatch/response chain (not just the two DO methods) before touching
+  anything, per user direction to implement now rather than only file it: confirmed tool-
+  capability parity first (ReAct's entire hardcoded surface — `http_get`, a never-implemented
+  `search_web` stub, `calculate`, `search_kb` — is a strict subset of what the script-native
+  prebuilts already cover: `web-search`, `knowledge-base`, `code-exec`). Found the cutover is
+  NOT a one-line dispatch swap: (1) `agent_definition_id` (used by @mention dispatch) is stored
+  as the composite `${spaceId}:${agentId}` row id — converting it to script-native's bare
+  `agentId` needs the space prefix stripped; (2) `handleScriptRun`'s response
+  (`{level, result: {ok, output, ...}, notes}`, answer nested at `result.result.output`) is a
+  genuinely different shape from `handleRun`'s (`{runId, status, finalAnswer, reactSteps}`) —
+  three existing consumers (mention-run's parser, the async Workflow→TaskDO chain, apps/shell's
+  polling) assume the old shape, so a raw swap would have silently broken them; (3) discovered a
+  **separate, pre-existing bug** while tracing that chain: `AgentTaskWorkflow.ts`'s step 3 read
+  `body.final_answer` (snake_case) off a response that actually carried `finalAnswer`
+  (camelCase) — the key was always `undefined` at runtime, so a TaskDO-completed async run
+  likely stored an empty result object in production. Fixed alongside (user's explicit choice)
+  since it's on the exact code path being touched.
+  **What shipped:** `workers/agents/src/index.ts`'s `/agent/run` route (both the async
+  Workflow-dispatch branch and the sync branch) now calls `.../script/run` (handleScriptRun)
+  instead of `.../run` (handleRun), with a new `normalizeScriptRunResult()` helper translating
+  the script-native `LoopResult` back into `{finalAnswer, final_answer, status, reactSteps: []}`
+  so mention-run/polling/Workflow consumers need ZERO changes. `agentId` is derived from
+  `agent_definition_id` (stripping the `${spaceId}:` prefix) defaulting to `"naelao-agent"`. The
+  now-dead SpaceType-D1-driven `systemPrompt`/`toolsConfig`/inline KB-context-fetch block was
+  removed from the route (script-native loads the agent's real R2 config instead).
+  `AgentTaskWorkflow.ts`'s `AgentTaskParams` swapped `systemPrompt`/`tools`/`kbContext` for
+  `agentId`, and its result-read now checks `finalAnswer ?? final_answer` defensively (the bug
+  fix). `/internal/tasks/:taskId/run` mirrors the same script/run dispatch + normalization.
+  New end-to-end test `tests/unit/agent-run-script-native-dispatch.test.ts` (5 tests) drives the
+  REAL `/agent/run` route against a stubbed DO returning a realistic `LoopResult`, proving the
+  normalization (not just testing the pure function in isolation) — plus dispatch-target and
+  `agent_definition_id`-stripping assertions. 1740/1740 tests pass (5 new),
+  `pnpm turbo run typecheck` clean (75 tasks).
+  **Deliberately NOT done — physical deletion of `handleRun`/`runReActLoop`/`dispatchTool`/
+  `beforeToolCall`/the `agent_runs` FSM machinery.** Tracing the delete surface found
+  `handleRun`'s `agent_runs` SQLite table is shared load-bearing infrastructure for
+  `handleGetRun` (GET run status), `handleCancelRun`, and the DO's `alarm()`-based stale-run
+  sweep/timeout-cancellation — none of which `handleScriptRun` populates or maintains. Deleting
+  `handleRun`/`runReActLoop` outright without first redesigning what backs status-polling/
+  cancellation for the `Prefer: respond-sync` / no-Workflow-configured fallback path would strand
+  that machinery or silently break it. This is a second, separable piece of work — routing is
+  cut over (the exploitable duality no caller reaches `handleRun` through anymore), but the code
+  itself stays in place, unreferenced from `/agent/run`, until the FSM/alarm/cancel redesign is
+  done as its own scoped pass. Not urgent: nothing dispatches to it anymore, so it can't drift
+  out of sync with `handleScriptRun`'s gates again.
 
 - [x] **A-3 (deferred from S-A1, CLAUDE.md item 46): the wallet ledger's latent
   multi-currency conflation — FIXED.** Root cause: `SpaceDO.walletBalance` sums `delta_cents`

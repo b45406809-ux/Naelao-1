@@ -31,6 +31,44 @@ function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
 }
 
+// A-2 cutover: /agent/run now dispatches to the script-native engine (handleScriptRun via
+// POST .../script/run) instead of the legacy ReAct loop (handleRun via POST .../run). The two
+// return genuinely different shapes — handleRun returned {runId, status, finalAnswer,
+// reactSteps} directly; handleScriptRun returns a script-engine LoopResult
+// ({level, script_name?, result: {ok, output, tokens_used, ...}, notes}), with the actual answer
+// nested at result.result.output. Every existing consumer of /agent/run's response (mention-run's
+// parser, the async Workflow→TaskDO chain, apps/shell/apps/portal via the run/stream GET
+// endpoints) was written against the OLD shape — rather than teaching each of them the new one,
+// normalize once here so nothing downstream needs to change. Carries both camelCase and
+// snake_case final-answer keys since existing callers read one or the other inconsistently
+// (see AgentTaskWorkflow.ts's own fix for the concrete bug this inconsistency caused).
+function normalizeScriptRunResult(raw: unknown, runId: string): {
+  runId: string;
+  status: "completed" | "failed";
+  finalAnswer: string | null;
+  final_answer: string | null;
+  reactSteps: unknown[];
+  error?: string;
+} {
+  const r = raw as { result?: { ok?: boolean; output?: unknown; error?: unknown }; error?: string } | null;
+  const inner = r?.result;
+  const ok = inner?.ok !== false && !r?.error;
+  const answer = ok
+    ? (typeof inner?.output === "string" ? inner.output : inner?.output != null ? JSON.stringify(inner.output) : "")
+    : null;
+  const errorMessage = !ok
+    ? (r?.error ?? (typeof inner?.error === "string" ? inner.error : inner?.error != null ? JSON.stringify(inner.error) : "Run did not complete successfully"))
+    : undefined;
+  return {
+    runId,
+    status: ok ? "completed" : "failed",
+    finalAnswer: answer,
+    final_answer: answer,
+    reactSteps: [],
+    ...(errorMessage !== undefined ? { error: errorMessage } : {}),
+  };
+}
+
 export { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 export { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 export { TaskDO } from "./do/TaskDO.js";
@@ -344,7 +382,10 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     throw badRequest(`Space is ${spaceRow.status}, cannot run agent`);
   }
 
-  // Fetch space type from D1
+  // Fetch space type from D1 — only for its default model preference now (A-2 cutover: the
+  // ReAct-era system_prompt_template/tools_config are dead once /agent/run dispatches to the
+  // script-native engine, which loads the agent's OWN system prompt/tools from its real R2
+  // config — see agentId resolution below).
   const spaceTypeRow = await c.env.PLATFORM_DB.prepare(
     "SELECT * FROM spacetypes WHERE id = ?"
   )
@@ -355,115 +396,23 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     throw notFound("SpaceType");
   }
 
-  // Parse space type configuration
-  let modelConfig: {
-    model?: string;
-    maxTokens?: number;
-    temperature?: number;
-  } = {};
-  let toolsConfig: Array<{
-    name: string;
-    description: string;
-    input_schema: Record<string, unknown>;
-  }> = [];
-
+  let modelConfig: { model?: string } = {};
   try {
     modelConfig = JSON.parse(spaceTypeRow.model_config ?? "{}") as typeof modelConfig;
   } catch {
     modelConfig = {};
   }
 
-  try {
-    toolsConfig = JSON.parse(spaceTypeRow.tools_config ?? "[]") as typeof toolsConfig;
-  } catch {
-    toolsConfig = [];
-  }
-
-  // Resolve system prompt: agent_definition_id overrides SpaceType-level config (§11)
-  let systemPrompt =
-    spaceTypeRow.system_prompt_template ??
-    "You are a helpful assistant. Answer the user's questions accurately and concisely.";
-
-  if (body.agent_definition_id) {
-    try {
-      const defResp = await c.env.SPACES_WORKER.fetch(
-        new Request(
-          `http://spaces-worker/spaces/${spaceId}/agent-definitions/${encodeURIComponent(body.agent_definition_id)}`,
-          {
-            method: "GET",
-            headers: {
-              "x-naelao-tenant-id": tenantId,
-              "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
-            },
-          }
-        )
-      );
-      if (defResp.ok) {
-        const defData = await defResp.json<{
-          data?: {
-            config_json?: string;
-            config?: {
-              system_prompt?: string;
-              model?: string;
-              allowed_skills?: string[];
-            };
-          };
-        }>();
-        const def = defData.data;
-        if (def) {
-          const defConfig =
-            def.config ??
-            (def.config_json ? (safeParse(def.config_json) as typeof def.config) : undefined);
-          if (defConfig?.system_prompt) {
-            systemPrompt = defConfig.system_prompt;
-          }
-          if (defConfig?.model) {
-            modelConfig = { ...modelConfig, model: defConfig.model };
-          }
-          if (defConfig?.allowed_skills && defConfig.allowed_skills.length > 0) {
-            // Filter toolsConfig to only skills the agent is allowed to use
-            const allowed = new Set(defConfig.allowed_skills);
-            if (toolsConfig.length > 0) {
-              toolsConfig = toolsConfig.filter((t) => allowed.has(t.name));
-            }
-          }
-        }
-      }
-    } catch {
-      // agent_definition resolution is best-effort; fall back to SpaceType config
-      console.warn(`[agents] Failed to resolve agent_definition_id=${body.agent_definition_id}, using SpaceType defaults`);
-    }
-  }
-
-  // Fetch KB context from knowledge worker (G-D04)
-  let kbContext = "";
-  try {
-    const kbResp = await c.env.KNOWLEDGE_WORKER.fetch(
-      `http://knowledge-worker/spaces/${spaceId}/kb/search?q=${encodeURIComponent(body.goal)}&top_k=5`,
-      {
-        method: "GET",
-        headers: {
-          "x-naelao-tenant-id": tenantId,
-          "x-naelao-user-id": c.req.header("x-naelao-user-id") ?? "",
-          "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
-        },
-      }
-    );
-
-    if (kbResp.ok) {
-      const kbData = await kbResp.json<{
-        data?: Array<{ content: string; score?: number }>;
-      }>();
-      if (kbData.data && kbData.data.length > 0) {
-        kbContext = kbData.data
-          .map((chunk) => chunk.content)
-          .join("\n\n---\n\n");
-      }
-    }
-  } catch {
-    // KB context is best-effort — continue without it
-    console.warn("Failed to fetch KB context, continuing without it");
-  }
+  // A-2 cutover: the script-native engine addresses agents by their R2-config `agentId`
+  // ("naelao-agent" by default), not a SpaceType/D1 concept. `agent_definition_id` (used by
+  // @mention dispatch) is stored as the composite `${spaceId}:${agentId}` row id
+  // (provisioner's registerAgentIndex) — strip the space prefix to recover the bare agentId
+  // handleScriptRun/loadAgentConfig expects. A caller that passes something else entirely
+  // (not one of this space's registered ids) simply hits handleScriptRun's own
+  // "agent not provisioned" 404, same as today.
+  const agentId = body.agent_definition_id?.startsWith(`${spaceId}:`)
+    ? body.agent_definition_id.slice(spaceId.length + 1)
+    : (body.agent_definition_id ?? "naelao-agent");
 
   // G-X04: Pre-run token quota check — reject if monthly limit exceeded
   // This prevents unbounded overspend from async billing lag
@@ -558,13 +507,13 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         sessionId,
         tenantId,
         goal: body.goal,
-        systemPrompt,
-        tools: toolsConfig,
-        kbContext,
+        // A-2 cutover: the script-native engine resolves its own system prompt/tools from the
+        // agent's R2 config by agentId — systemPrompt/tools/kbContext are no longer meaningful.
+        agentId,
         model: modelConfig.model ?? "claude-sonnet-4-6",
         taskDoName,
         // Go-live audit A-1/A-2: threaded through to /internal/tasks/:taskId/run's own
-        // http://agent-do/run call — see that route's own comment.
+        // http://agent-do/script/run call — see that route's own comment.
         userId,
         projectId: rawBody.project_id,
         callerRole,
@@ -597,31 +546,34 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   const doKey = rawBody.agent_definition_id ? `${sessionId}:${rawBody.agent_definition_id}` : sessionId;
   const stub = await getAgentDO(c.env, tenantId, doKey, c.get("requestId"));
 
+  // A-2 cutover: dispatch to the script-native engine (handleScriptRun) instead of the legacy
+  // ReAct loop (handleRun) — see normalizeScriptRunResult's doc for why the response is
+  // reshaped before returning.
+  const scriptRunId = crypto.randomUUID();
   const doResponse = await stub.fetch(
-    new Request("http://agent-do/run", {
+    new Request("http://agent-do/script/run", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(userId ? { "x-naelao-user-id": userId } : {}),
+        ...(callerRole ? { "x-naelao-role": callerRole } : {}),
+      },
       body: JSON.stringify({
         goal: body.goal,
         sessionId,
         spaceId,
+        agentId,
         tenantId,
-        systemPrompt,
-        tools: toolsConfig,
-        kbContext,
-        apiKey: c.env.ANTHROPIC_API_KEY ?? "",
-        model: modelConfig.model ?? "claude-sonnet-4-6",
-        allowedDomains: [],
-        // Go-live audit A-1/A-2: previously dropped here — handleRun had no way to resolve the
-        // F-36 clamp, project wallet gate, or product_end_user credit gate without them.
         userId,
         projectId: rawBody.project_id,
-        callerRole,
+        apiKey: c.env.ANTHROPIC_API_KEY ?? "",
+        model: modelConfig.model ?? "claude-sonnet-4-6",
       }),
     })
   );
 
-  const doBody = await doResponse.json<unknown>();
+  const rawDoBody = await doResponse.json<unknown>();
+  const doBody = doResponse.ok ? normalizeScriptRunResult(rawDoBody, scriptRunId) : rawDoBody;
 
   // G-AZ19: Store successful agent response in semantic cache for future hits
   if (doResponse.ok) {
@@ -642,7 +594,10 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     );
   }
 
-  return c.json(doBody, doResponse.status as 200 | 201 | 400 | 404 | 422 | 500);
+  // A-2 cutover: handleScriptRun can also return 402 (spend cap / wallet / end-user credit gate),
+  // 403 (revenue-reporting-lapsed gate), and 503 (script engine unavailable) — handleRun never
+  // did, so the status union widens accordingly.
+  return c.json(doBody, doResponse.status as 200 | 201 | 400 | 402 | 403 | 404 | 422 | 500 | 503);
 });
 
 // §A1.17 Phase T2: @mention multi-agent dispatch within one thread. Per the confirmed decision,
@@ -1196,9 +1151,9 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
     sessionId: string;
     tenantId: string;
     goal: string;
-    systemPrompt: string;
-    tools: unknown[];
-    kbContext: string;
+    // A-2 cutover: systemPrompt/tools/kbContext are gone — the script-native engine resolves
+    // its own config from R2 by agentId (see AgentTaskWorkflow.ts's matching param change).
+    agentId?: string;
     model: string;
     userId?: string;
     projectId?: string;
@@ -1211,30 +1166,31 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
   try {
     const stub = await getAgentDO(c.env, body.tenantId, body.sessionId);
     const doResponse = await stub.fetch(
-      new Request("http://agent-do/run", {
+      new Request("http://agent-do/script/run", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          ...(body.userId ? { "x-naelao-user-id": body.userId } : {}),
+          ...(body.callerRole ? { "x-naelao-role": body.callerRole } : {}),
+        },
         body: JSON.stringify({
           goal: body.goal,
           sessionId: body.sessionId,
           spaceId: body.spaceId,
+          agentId: body.agentId ?? "naelao-agent",
           tenantId: body.tenantId,
-          systemPrompt: body.systemPrompt,
-          tools: body.tools,
-          kbContext: body.kbContext,
           apiKey: c.env.ANTHROPIC_API_KEY ?? "",
           model: body.model,
-          allowedDomains: [],
           // Go-live audit A-1/A-2: previously dropped here — see AgentTaskWorkflow.ts's own
           // comment for the full chain this closes.
           userId: body.userId,
           projectId: body.projectId,
-          callerRole: body.callerRole,
         }),
       })
     );
-    const result = await doResponse.json<{ final_answer?: string; error?: string }>();
-    return c.json(result, doResponse.status as 200 | 201 | 400 | 500);
+    const rawResult = await doResponse.json<unknown>();
+    const result = doResponse.ok ? normalizeScriptRunResult(rawResult, body.taskId) : rawResult;
+    return c.json(result, doResponse.status as 200 | 201 | 400 | 402 | 403 | 404 | 422 | 500 | 503);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return c.json({ error: message }, 500);

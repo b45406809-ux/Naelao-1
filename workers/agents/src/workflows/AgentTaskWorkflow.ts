@@ -20,12 +20,13 @@ export interface AgentTaskParams {
   sessionId: string;
   tenantId: string;
   goal: string;
-  systemPrompt: string;
-  tools: unknown[];
-  kbContext: string;
+  // A-2 cutover: /agent/run now dispatches to the script-native engine, which resolves its own
+  // system prompt/tools/skills from the agent's R2 config by agentId — systemPrompt/tools/
+  // kbContext (the SpaceType/D1-driven ReAct config) are gone.
+  agentId?: string;
   model: string;
   taskDoName: string;  // DO name for TaskDO stub
-  // Go-live audit A-1/A-2: carried through to /internal/tasks/:taskId/run so handleRun can
+  // Go-live audit A-1/A-2: carried through to /internal/tasks/:taskId/run so enforceRunGates can
   // resolve the F-36 clamp / project wallet gate / product_end_user credit gate — previously
   // dropped entirely, leaving the async chat path completely unmetered.
   userId?: string;
@@ -79,9 +80,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
             sessionId: p.sessionId,
             tenantId: p.tenantId,
             goal: p.goal,
-            systemPrompt: p.systemPrompt,
-            tools: p.tools,
-            kbContext: p.kbContext,
+            agentId: p.agentId,
             model: p.model,
             userId: p.userId,
             projectId: p.projectId,
@@ -95,8 +94,14 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
         throw new Error(`Agent run failed (${resp.status}): ${text}`);
       }
 
-      const body = await resp.json<{ final_answer?: string; error?: string }>();
-      return body;
+      // A-2 cutover bugfix: /internal/tasks/:taskId/run's response is normalized by
+      // normalizeScriptRunResult (agents worker index.ts), which carries BOTH finalAnswer
+      // (camelCase) and final_answer (snake_case) precisely because this call site used to read
+      // only `final_answer` off a response that actually carried `finalAnswer` — a real,
+      // previously-undetected bug (the key was always undefined at runtime, so every
+      // TaskDO-completed async run silently stored an empty result). Read both defensively.
+      const body = await resp.json<{ finalAnswer?: string; final_answer?: string; error?: string }>();
+      return { final_answer: body.finalAnswer ?? body.final_answer, error: body.error };
     });
 
     // ── Step 3: Update task with result ───────────────────────────────────────

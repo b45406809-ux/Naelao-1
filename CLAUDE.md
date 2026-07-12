@@ -1295,6 +1295,36 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     single-currency-reject chosen over building out real multi-currency wallets) and both
     credit/debit always write the literal `'USD'` ledger column rather than trusting the
     request body. 1735/1735 tests pass (2 new), `pnpm turbo run typecheck` clean (75 tasks).
+47. **A-2 (item 46's deferred item) is now DONE — dispatch cutover only, per explicit user
+    direction to implement despite the go-live-window caution.** `/agent/run` (both the async
+    Workflow-dispatch branch and the sync branch, plus `/internal/tasks/:taskId/run`) now calls
+    the script-native `handleScriptRun` (`.../script/run`) instead of the legacy ReAct
+    `handleRun` (`.../run`). Traced the full chain first rather than swapping blindly: ReAct's
+    entire hardcoded tool surface (`http_get`, a never-implemented `search_web` stub,
+    `calculate`, `search_kb`) is a strict subset of what script-native's `web-search`/
+    `knowledge-base`/`code-exec` prebuilts already cover (no capability loss); `agent_definition_id`
+    (used by @mention dispatch) is the composite `${spaceId}:${agentId}` row id and needs the
+    space prefix stripped to become script-native's bare `agentId`; the response shapes are
+    genuinely different (`handleRun`: `{runId, status, finalAnswer, reactSteps}`;
+    `handleScriptRun`: a `LoopResult` with the answer nested at `result.result.output`) — a new
+    `normalizeScriptRunResult()` helper in `workers/agents/src/index.ts` translates the latter
+    back into the former's shape so mention-run's parser, the async Workflow→TaskDO chain, and
+    apps/shell/apps/portal's polling need ZERO changes. Found and fixed a **separate,
+    pre-existing bug** on the exact path being touched: `AgentTaskWorkflow.ts`'s step 3 read
+    `body.final_answer` (snake_case) off a response that actually carried `finalAnswer`
+    (camelCase) — always `undefined` at runtime, so a TaskDO-completed async run likely stored
+    an empty result in production; now reads `finalAnswer ?? final_answer` defensively.
+    **Deliberately NOT done: physically deleting `handleRun`/`runReActLoop`.** Their
+    `agent_runs` SQLite table is shared load-bearing infrastructure for `handleGetRun`/
+    `handleCancelRun`/the DO's `alarm()`-based stale-run sweep — none of which
+    `handleScriptRun` populates. Deleting the ReAct code without first redesigning what backs
+    status-polling/cancellation for the `Prefer: respond-sync` fallback path would strand or
+    break that machinery; that redesign is separable, deferred work, tracked (not urgent, since
+    nothing dispatches to `handleRun` anymore) in `docs/AUDIT_TODO.md`'s A-2 entry. New
+    end-to-end test `tests/unit/agent-run-script-native-dispatch.test.ts` (5 tests) drives the
+    REAL `/agent/run` route against a stubbed DO returning a realistic `LoopResult`, not just the
+    normalization function in isolation. 1740/1740 tests pass (5 new), `pnpm turbo run typecheck`
+    clean (75 tasks).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
