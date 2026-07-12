@@ -50,17 +50,22 @@ service = "naelao-agents"
 binding = "SPACES_WORKER"
 service = "naelao-spaces"
 
-# Wallet Connect: vaults the builder's own LS API key + per-connection webhook secret
-# (AES-256-GCM in the credentials worker — never D1 plaintext).
-# Additional Wallet Connect secrets (set via `wrangler secret put`, per environment):
-#   STRIPE_PLATFORM_SECRET_KEY    — Naelao's ONE Stripe platform key (Connect Express accounts
-#                                   + direct-charge checkouts only; platform billing stays LS)
-#   STRIPE_CONNECT_WEBHOOK_SECRET — whsec_... of the Connect webhook → /v1/webhooks/stripe
+# Whop sub-merchant wallets: vaults payout destination details (AES-256-GCM in the credentials
+# worker — never D1 plaintext).
+# Additional secrets (set via `wrangler secret put`, per environment):
+#   WHOP_PLATFORM_API_KEY — Naelao's ONE Whop master Platform account API key (sub-merchant
+#                           provisioning, balance reads, checkouts, withdrawals)
+#   WHOP_WEBHOOK_SECRET   — signing secret of the Whop webhook → /v1/webhooks/whop
 # And a per-environment var:
-#   PUBLIC_WEBHOOK_BASE_URL       — public base URL for auto-created LS wallet webhooks
+#   PUBLIC_WEBHOOK_BASE_URL — public base URL for the one-time payout approval email link
 [[services]]
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
+
+# Sends the one-time payout approval email.
+[[services]]
+binding = "NOTIFICATIONS_WORKER"
+service = "naelao-notifications"
 
 [vars]
 ENVIRONMENT = "development"
@@ -82,6 +87,10 @@ service = "naelao-spaces"
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
 
+[[env.staging.services]]
+binding = "NOTIFICATIONS_WORKER"
+service = "naelao-notifications"
+
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
 vars = { ENVIRONMENT = "production" }
@@ -97,3 +106,7 @@ service = "naelao-spaces"
 [[env.production.services]]
 binding = "CREDENTIALS_WORKER"
 service = "naelao-credentials"
+
+[[env.production.services]]
+binding = "NOTIFICATIONS_WORKER"
+service = "naelao-notifications"

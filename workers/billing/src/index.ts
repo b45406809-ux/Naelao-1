@@ -15,9 +15,7 @@ import { Hono } from "hono";
 import { checkQuota, recordUsageEvent, getUsageSummary } from "./quota.js";
 import { handleLemonSqueezyWebhook } from "./lemon-squeezy.js";
 import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
-import { registerWalletConnectionRoutes } from "./wallet-connections.js";
-import { handleStripeConnectWebhook, handleWalletLsWebhook } from "./wallet-webhooks.js";
-import { routeWalletCheckout, WalletCheckoutUnavailableError } from "./wallet-checkout.js";
+import { registerWhopWalletRoutes, handleWhopWebhook, handlePayoutApproval, routeWhopWalletCheckout, getSubMerchant } from "./whop-wallet.js";
 
 export interface BillingEnv {
   ENVIRONMENT: string;
@@ -42,20 +40,24 @@ export interface BillingEnv {
   AGENTS_WORKER?: Fetcher;
   // Service binding to spaces worker — seat purchases activate the member in SpaceDO
   SPACES_WORKER?: Fetcher;
-  // ── Wallet Connect (payment_connections — builder-owned payment accounts) ──
-  /** Service binding to credentials worker — vaults the builder's own LS API key +
-   *  per-connection webhook secret, AES-256-GCM encrypted (never D1 plaintext). */
+  // ── Whop sub-merchant wallets (business-bank-account rail) ──
+  /** Service binding to credentials worker — vaults payout destination details, AES-256-GCM
+   *  encrypted (never D1 plaintext). */
   CREDENTIALS_WORKER?: Fetcher;
-  /** Naelao's ONE Stripe platform integration key (sk_...) — universal-tools doctrine, like
-   *  COMPOSIO_API_KEY. Used ONLY to create/read Express connected accounts and their checkouts;
-   *  never platform billing custody (item 45 stands). Optional — wallet Stripe routes degrade
-   *  honestly (stripe_not_configured) when unset. */
-  STRIPE_PLATFORM_SECRET_KEY?: string;
-  /** Signing secret (whsec_...) for the platform's Connect webhook endpoint. */
-  STRIPE_CONNECT_WEBHOOK_SECRET?: string;
-  /** Public base URL webhooks are reachable at (e.g. https://api.naelao.com) — used to
-   *  auto-create the per-connection LS webhook. Optional: the connection still activates
-   *  without it, surfaced as webhook_created:false. */
+  /** Service binding to notifications worker — sends the one-time payout approval email. */
+  NOTIFICATIONS_WORKER?: Fetcher;
+  /** Naelao's ONE Whop master Platform account API key — universal-tools doctrine, like
+   *  COMPOSIO_API_KEY/TOGETHER_API_KEY. Used to auto-provision a sub-merchant company per
+   *  business, read balances, create checkouts, and issue withdrawals. Never platform billing
+   *  custody (item 45 stands — Lemon Squeezy is still the only PLATFORM provider); this is the
+   *  per-business revenue-custody rail. Optional — wallet routes degrade honestly
+   *  (status='error'/503) when unset. */
+  WHOP_PLATFORM_API_KEY?: string;
+  /** Whop webhook signing secret for the platform's sub-merchant webhook endpoint. */
+  WHOP_WEBHOOK_SECRET?: string;
+  /** Public base URL webhooks are reachable at (e.g. https://api.naelao.com) — used to build the
+   *  one-time payout approval link sent by email. Optional: the payout request still exists in
+   *  the dashboard/shell without it, just with no emailed link. */
   PUBLIC_WEBHOOK_BASE_URL?: string;
 }
 
@@ -458,30 +460,36 @@ app.post("/internal/commerce/checkout", async (c) => {
   // order. Zero for a top-level space with no parent builder.
   const builderFeeBps = await resolveBuilderFeeBps(c.env, body.space_id);
 
-  // Wallet Connect: a space with an ACTIVE payment connection checks out on the BUILDER's OWN
-  // account (Stripe direct charge with application fee / their LS store), never Naelao's store.
-  // No connection → null → the existing Naelao-store path below runs byte-identically. A broken
-  // rail fails CLOSED (503) rather than falling back — falling back would settle the builder's
-  // revenue into the wrong custody, the exact thing this feature exists to prevent.
-  try {
-    const walletCheckout = await routeWalletCheckout(c.env, {
-      spaceId: body.space_id,
-      product,
-      ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
-      feeBps,
-      builderFeeBps,
-    });
-    if (walletCheckout) {
-      return c.json({
-        checkout_url: walletCheckout.checkout_url,
-        product: { id: product.id, name: product.name, price_cents: product.price_cents, currency: product.currency },
-        fee_bps: feeBps, builder_fee_bps: builderFeeBps,
-        rail: walletCheckout.rail,
+  // Whop sub-merchant wallet: every business gets one auto-provisioned; once it's ACTIVE, a
+  // Naelao-store product sale settles directly into the business's own Whop wallet (with
+  // Naelao's platform fee auto-split) instead of Naelao's LS store. Still provisioning (not yet
+  // active) → null → the existing Naelao-store path below runs byte-identically, so a brand-new
+  // business can sell within its own store immediately, provisioning lag never blocks a sale.
+  // Once ACTIVE, a broken rail fails CLOSED (503) rather than silently falling back — falling
+  // back would settle the business's revenue into the wrong custody.
+  const wallet = await getSubMerchant(c.env.PLATFORM_DB, body.space_id);
+  if (wallet && wallet.status === "active") {
+    try {
+      const whopCheckout = await routeWhopWalletCheckout(c.env, {
+        spaceId: body.space_id,
+        productName: product.name,
+        amountCents: product.price_cents,
+        currency: product.currency,
+        ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+        feeBps,
+        metadata: { product_id: product.id },
       });
+      if (whopCheckout) {
+        return c.json({
+          checkout_url: whopCheckout.checkout_url,
+          product: { id: product.id, name: product.name, price_cents: product.price_cents, currency: product.currency },
+          fee_bps: feeBps, builder_fee_bps: builderFeeBps,
+          rail: "whop",
+        });
+      }
+    } catch (err) {
+      return c.json({ error_code: "whop_checkout_failed", message: (err as Error).message }, 503);
     }
-  } catch (err) {
-    const code = err instanceof WalletCheckoutUnavailableError ? err.errorCode : "wallet_checkout_failed";
-    return c.json({ error_code: code, message: (err as Error).message }, 503);
   }
 
   // Without LS credentials (local/dev) return a deterministic placeholder so the flow is
@@ -946,24 +954,22 @@ app.post("/webhooks/lemon-squeezy", async (c) => {
   });
 });
 
-// ── POST /webhooks/stripe ─────────────────────────────────────────────────────
-// Wallet Connect: the platform's ONE Stripe Connect webhook endpoint (unauthenticated — the
-// Stripe-Signature HMAC is the auth, same posture as /webhooks/lemon-squeezy above). Events
-// carry the connected account they happened on; dispatch resolves the payment_connections row
-// and forces the space from it, never from payload metadata.
-app.post("/webhooks/stripe", async (c) => handleStripeConnectWebhook(c.req.raw, c.env));
+// ── POST /webhooks/whop ────────────────────────────────────────────────────────
+// The platform's ONE Whop sub-merchant webhook endpoint (unauthenticated — the Whop-Signature
+// HMAC is the auth, same posture as /webhooks/lemon-squeezy above). Events carry the
+// sub-merchant company they happened on; dispatch resolves the whop_sub_merchants row and
+// forces the space from it, never from payload metadata.
+app.post("/webhooks/whop", async (c) => handleWhopWebhook(c.req.raw, c.env));
 
-// ── POST /webhooks/lemon-squeezy/wallet/:connectionId ────────────────────────
-// Wallet Connect: per-connection webhook auto-created on the BUILDER's OWN LS store, verified
-// with that connection's vault-held signing secret (never LEMON_SQUEEZY_WEBHOOK_SECRET, which
-// belongs to Naelao's store). Registered on a deeper static-prefix path than the platform
-// webhook above so the two can never shadow each other.
-app.post("/webhooks/lemon-squeezy/wallet/:connectionId", async (c) =>
-  handleWalletLsWebhook(c.req.raw, c.env, c.req.param("connectionId"))
+// ── GET /webhooks/whop-wallet/payouts/:id/approve?token= ──────────────────────
+// Public, unauthenticated — the single-use token IS the auth (business_invites/password-reset
+// precedent). Executes the first payout to a new destination once the owner clicks the link.
+app.get("/webhooks/whop-wallet/payouts/:id/approve", async (c) =>
+  handlePayoutApproval(c.env, c.req.param("id"), c.req.query("token") ?? "")
 );
 
-// ── Wallet Connect (payment_connections) — builder-owned payment accounts ────
-registerWalletConnectionRoutes(app);
+// ── Whop sub-merchant wallet — the business-bank-account rail ────────────────
+registerWhopWalletRoutes(app);
 
 // ── Error handler ─────────────────────────────────────────────────────────────
 app.onError((err, c) => errorResponse(err, c.get("requestId") ?? "unknown"));

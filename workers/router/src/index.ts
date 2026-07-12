@@ -291,11 +291,11 @@ app.all("/v1/webhooks/lemon-squeezy", async (c) => {
   );
 });
 
-// ── Wallet Connect webhook ingress (unauthenticated; provider HMAC signatures are the auth) ──
-// Same posture as the platform LS webhook above: /v1/webhooks/stripe is the platform's ONE
-// Stripe Connect endpoint (verified against STRIPE_CONNECT_WEBHOOK_SECRET in the billing
-// worker); /v1/webhooks/lemon-squeezy/wallet/:connectionId is the per-connection webhook
-// auto-created on a builder's OWN LS store, verified with that connection's vault-held secret.
+// ── Whop wallet webhook ingress (unauthenticated; Whop-Signature HMAC is the auth) ──
+// Same posture as the platform LS webhook above: /v1/webhooks/whop is the platform's ONE Whop
+// sub-merchant webhook endpoint (verified against WHOP_WEBHOOK_SECRET in the billing worker);
+// /v1/webhooks/whop-wallet/payouts/:id/approve is the single-use payout-approval link (the token
+// itself is the auth, same precedent as business_invites/password-reset links).
 const proxyBillingWebhook = async (c: { env: Env; req: { url: string; method: string; raw: Request } }) => {
   if (!c.env.BILLING_WORKER) return new Response(JSON.stringify({ error_code: "billing_unavailable", message: "Billing worker not configured" }), { status: 503, headers: { "content-type": "application/json" } });
   const u = new URL(c.req.url);
@@ -304,8 +304,8 @@ const proxyBillingWebhook = async (c: { env: Env; req: { url: string; method: st
     new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body, duplex: "half" } as RequestInit)
   );
 };
-app.all("/v1/webhooks/stripe", proxyBillingWebhook);
-app.all("/v1/webhooks/lemon-squeezy/wallet/:connectionId", proxyBillingWebhook);
+app.all("/v1/webhooks/whop", proxyBillingWebhook);
+app.all("/v1/webhooks/whop-wallet/payouts/:id/approve", proxyBillingWebhook);
 
 // Security audit follow-up: the authenticated `api` group's rate limiter (G-AX12, below) only
 // covers routes registered AFTER it — every route in this unauthenticated block runs before
@@ -509,11 +509,11 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // pricing/products routes above (identity here, authorization there).
   /^\/spaces\/([^/]+)\/local-grants(\/|$)/,
   /^\/spaces\/([^/]+)\/local-tunnel\/connect-token$/,
-  // Wallet Connect (§A1.29): a business owner connecting THEIR OWN payment account (Stripe
-  // Connect Express / BYO Lemon Squeezy store) to their business — additionally gated by
-  // requireBusinessMembership(admin) on the spaces worker exactly like the routes above
-  // (identity here, authorization there).
-  /^\/spaces\/([^/]+)\/payment-connection(\/(stripe|lemon-squeezy))?$/,
+  // Whop business wallet: every business's auto-provisioned sub-merchant wallet — additionally
+  // gated by requireBusinessMembership on the spaces worker exactly like the routes above
+  // (identity here, authorization there; balance/transactions are member-level, destinations/
+  // payouts are admin-level).
+  /^\/spaces\/([^/]+)\/business-wallet\/(balance|transactions|destinations|payouts)$/,
   // WS-2 (Space Assistant surface): the Status/Crons panels — additionally gated by
   // resolveEndUserBusinessRole on the spaces worker exactly like the routes above.
   /^\/spaces\/([^/]+)\/assistant-policy$/,
@@ -1029,13 +1029,15 @@ const proxyBilling = async (c: { env: Env; get: (k: "claims") => NaelaoJwtClaims
 api.all("/billing/subscription", proxyBilling);
 api.all("/billing/checkout", proxyBilling);
 api.all("/billing/portal", proxyBilling);
-// Wallet Connect (payment_connections): the builder's OWN payment account (Stripe Connect
-// Express / BYO Lemon Squeezy store). Same explicit-not-blanket rule as above. The billing
+// Whop business wallet (dashboard's own direct path — builder JWT, not the shell's
+// business-membership wrapper above). Same explicit-not-blanket rule as above. The billing
 // worker's own requireInternalHmac gate verifies the token proxyTo mints from validated JWT
-// claims, and its guard() additionally enforces owner/admin role + space-tenant ownership.
-api.all("/billing/wallet/connection", proxyBilling);
-api.all("/billing/wallet/connect/stripe", proxyBilling);
-api.all("/billing/wallet/connect/lemon-squeezy", proxyBilling);
+// claims, and its guard() additionally enforces owner/admin role (where required) + space-tenant
+// ownership.
+api.all("/billing/whop-wallet/balance", proxyBilling);
+api.all("/billing/whop-wallet/transactions", proxyBilling);
+api.all("/billing/whop-wallet/destinations", proxyBilling);
+api.all("/billing/whop-wallet/payouts", proxyBilling);
 
 // Founder roadmap catalog (space types + templates, dev-only) → agents worker.
 // (/product/* and /business/* used to proxy here too, for the retired BusinessDO/ProductDO

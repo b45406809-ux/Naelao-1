@@ -1515,8 +1515,12 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     **With Phase 5 done, all 5 phases of this build (AutoRAG/Wiki, native web search, infra
     usage metering, real streaming + context-window UI, model switcher) are now BUILT.** Full
     plan: `docs/spec-appendix/A1-script-agents-and-space-assistants.md` §A1.24-A1.28.
-49. **Wallet Connect (builder-owned payment accounts) is BUILT — Stripe Connect Express + BYO
-    Lemon Squeezy, per-space `payment_connections` (migration 0063).** Item 45 stands untouched:
+49. **Wallet Connect (builder-owned payment accounts) — SUPERSEDED by item 50.** This entire
+    subsystem (StripeProvider, `payment_connections` application code, the dashboard/shell
+    Payments-account UI) has been REMOVED and replaced by the Whop autonomous sub-merchant
+    wallet model (item 50) — every business now gets an isolated wallet auto-provisioned by
+    default, no builder connect flow. Kept below as a historical record only; do not resurrect.
+    Item 45 stands untouched:
     platform billing custody is LS-only; Stripe returns EXCLUSIVELY as the per-space connected-
     account rail (`selectBillingProvider("stripe")` still throws). Custody model: Stripe connect
     creates a FRESH Express account (never an OAuth link to a possibly-personal one) with
@@ -1549,6 +1553,68 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     plus a `CREDENTIALS_WORKER` service binding. Full detail: appendix §A1.29. 1828/1828 tests
     (24 new in `wallet-connect.test.ts`), `pnpm turbo run typecheck` clean, dashboard + shell
     `next build` verified.
+50. **Whop autonomous business wallets — the business-bank-account rail — is BUILT, replacing
+    item 49 entirely.** Complete restructuring per explicit user direction: every business auto-
+    provisions an isolated Whop sub-merchant wallet at creation — no builder enrollment, no OAuth
+    consent, no personal bank/card details needed to start. The wallet IS the business's own bank
+    account: revenue in from Whop's own storefront/checkout and any connected 3rd-party platform
+    (Stripe for physical goods, Shopify, Gumroad, freelance marketplaces, Amazon, eBay, and more),
+    expenses out for the business's own costs, owner payouts on request — the explicit goal being
+    an assistant that can take a business from $0 to real revenue with zero owner money input.
+    Researched (not assumed) before building: Whop supports programmatic sub-merchant enrollment
+    (no per-business OAuth click) and a programmatic withdrawal API (241+ territories, bank/
+    crypto/Venmo/CashApp) — the same custody shape item 49's Stripe Connect rail had (Whop holds
+    the money and runs payout compliance; Naelao only provisions/reads/requests withdrawals), but
+    autonomous rather than one-extra-click. Whop's own fee is ~6-7% all-in; Naelao's cut rides on
+    top via a scheduled payment-split sweep, never per-transaction.
+    **Removed:** `StripeProvider` (`packages/billing-core/src/providers/stripe.ts`), `workers/
+    billing/src/{wallet-connections,wallet-checkout,wallet-webhooks}.ts`, `/webhooks/stripe`,
+    the Stripe/LS dashboard+shell UI. Migration 0063 stays in place, unused (D1 has no cheap
+    drop-and-forget). **Built:** `packages/billing-core/src/providers/whop.ts` (sub-merchant
+    provisioning, balance/status reads, split-fee checkout, programmatic withdrawal, webhook
+    verify/parse — standalone functions, not forced into `BillingProvider`, same precedent
+    Stripe's own Connect helpers set); migration `0064_whop_sub_merchants.sql`
+    (`whop_sub_merchants`, `wallet_transactions`, `payout_destinations`, `payout_requests`);
+    `workers/billing/src/whop-wallet.ts` (idempotent provisioning that never throws to its
+    caller, live-synced balance reads, HMAC-gated CRUD, and the safety-critical payout-approval
+    state machine — a destination's FIRST payout always creates a `pending_approval` row + a
+    single-use emailed link, the actual Whop withdrawal API is never called until the owner
+    clicks it; once verified, later payouts to that destination execute directly, still logged).
+    Checkout routing: an ACTIVE business wallet gets Naelao-store product sales settled directly
+    into it (platform fee auto-split); still-provisioning falls through to the Naelao-store path
+    byte-identically so a brand-new business can sell immediately. Auto-provisioning wired into
+    both `POST /spaces` and `POST /builder/products` (owner email resolved from `users`/
+    `orgs.owner_id`, wrapped in try/catch so a lookup failure in an unusual deployment never
+    turns a successful space creation into a 500 — caught by 3 pre-existing tests breaking on
+    the first draft). **Deliberately NOT wired** for end-user-created businesses
+    (`business-create.ts`): that owner is a `ProductUserDO` end user with no `users` table row;
+    resolving their email needs a cross-DO round trip this file doesn't have — a real, tracked
+    gap, not silently dropped. New prebuilt `business-wallet.ts` (distinct from the pre-existing
+    `wallet` prebuilt, which is a different concept — a Naelao-held cost ledger; see that file's
+    header) with `business_wallet.balance/history/list_destinations/add_destination/
+    request_payout/list_payouts`, reserved via a new `api.whop.com` entry in
+    `reserved-capabilities.ts`'s denylist (Whop is now a special case, not the Model-A read-only
+    carve-out Gumroad/etc. get — the pre-existing read-only `connector-whop` MCP shim is
+    unaffected). New project kind `business_wallet` in `BUSINESS_FEATURE_KIND_REGISTRY`. Both
+    the generic Space Assistant and the Launchpad business-builder assistant profiles gained a
+    "Business Wallet" instructions section (what it is, how revenue arrives, the payout-approval
+    rule) plus the read-only ops added to the guided-mode auto-approved allowlist. Three new
+    `@naelao/events` types (`business_wallet.revenue_received/.payout_requested/
+    .payout_completed`) fired through SpaceDO's ALREADY-EXISTING generic external-event ingress
+    (`/internal/spaces/:spaceId/events/fire` — no new firing mechanism needed). UI: dashboard
+    `PaymentsAccountCard` rewritten read-mostly (balance/activity/destinations/payout history —
+    the assistant runs the wallet day-to-day); shell business-detail page's old Stripe/LS block
+    replaced with the equivalent, same `requireBusinessMembership` gating precedent.
+    **Deliberately NOT built:** per-template bootstrap auto-creation of a `business_wallet`
+    PROJECT (the wallet DATA is unconditionally auto-provisioned regardless — the project is
+    only an optional UI "place"; `autoProvisionable` is an unconsumed field for every sibling
+    kind platform-wide too, not a gap specific to this pass); a dedicated wallet-health heartbeat
+    (subsumed by the assistant's own continuous existence + the new revenue-received event).
+    1818/1818 tests pass (13 new in `whop-wallet.test.ts` — provisioning idempotency, cross-
+    business isolation, webhook idempotent recording, the full payout-approval state machine,
+    insufficient-balance rejection, secret hygiene; `reserved-capabilities.test.ts` updated for
+    Whop's new reserved status), `pnpm turbo run typecheck` clean (75 tasks), dashboard + shell
+    both verified via `next build`. Full detail: appendix §A1.30.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
@@ -1571,9 +1637,13 @@ appendixes are authoritative** and override the early framing. Always confirm ag
 - LLM: Cloudflare AI Gateway is the LLM path — the gateway HOLDS the Anthropic provider key
   (Authenticated Gateway / BYOK via `NAELAO_AIG_TOKEN`), so no `ANTHROPIC_API_KEY` lives on any
   worker (item 45). Claude is primary with a gateway-driven fallback chain.
-- Lemon Squeezy is the ONLY billing provider (Stripe removed — item 45). Builder platform plans,
-  product/seat/credit-pack/business-subscription checkouts, and every money-in webhook run through
-  one Naelao LS store.
+- Lemon Squeezy is the ONLY PLATFORM billing provider (Stripe removed — item 45). Builder platform
+  plans, product/seat/credit-pack/business-subscription checkouts, and every Naelao-custody
+  money-in webhook run through one Naelao LS store.
+- Whop is the business-bank-account rail (item 50, replacing item 49's Stripe/LS Wallet Connect):
+  every business auto-provisions an isolated Whop sub-merchant wallet at creation — no builder
+  action. This is BUSINESS revenue custody, a different thing from Naelao's own platform billing
+  above.
 - Next.js on CF Pages (builder dashboard)
 
 ## DO SQLite Pattern — CRITICAL
@@ -1611,9 +1681,9 @@ DO hibernation kills ALL in-memory state — always persist to SQLite.
 - `tests/` — integration, e2e, contract, isolation, load tests
 
 ## Git
-**Active branch: `claude/audit-roadmap-eu1uic`** — work here; do NOT push to any other branch
+**Active branch: `claude/bold-bell-vistq6`** — work here; do NOT push to any other branch
 without explicit permission. Commit after every working subsystem; push after every commit.
-(Older branches `...-8vkakf`, `...-713ruz`, `...-6kb300` are superseded.)
+(Older branches `...-eu1uic`, `...-8vkakf`, `...-713ruz`, `...-6kb300` are superseded.)
 
 ## Build Progress
 - [x] Phase 0: Scaffold (root workspace, packages, workers structure)

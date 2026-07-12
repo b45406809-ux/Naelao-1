@@ -1,0 +1,274 @@
+/**
+ * Whop platform-managed sub-merchant wallets — the business-bank-account rail that REPLACES the
+ * Stripe/LS Wallet Connect rail entirely (see git history for the removed
+ * wallet-connections.ts/wallet-checkout.ts/wallet-webhooks.ts — that was opt-in, builder-driven,
+ * two-provider BYO custody; this is default, autonomous, one-provider platform custody).
+ *
+ * Model: Naelao holds ONE master Whop Platform account (`WHOP_PLATFORM_API_KEY`). Every business
+ * created on Naelao (Launchpad or otherwise) auto-provisions an isolated Whop "company"
+ * (sub-merchant) the moment it's created — no builder enrollment flow, no OAuth consent screen,
+ * no bank/KYC details Naelao ever sees. Whop is the regulated payment facilitator that actually
+ * custodies funds and runs KYC on payout destinations (bank/crypto/Venmo/CashApp, 241+
+ * territories) — Naelao's integration surface is provisioning, balance/status reads, and
+ * programmatic withdrawal requests only. This is the same custody boundary the removed Stripe
+ * Connect rail had (Naelao never holds the money, never has debit capability), just mandatory
+ * and automatic instead of opt-in.
+ *
+ * Fee model: Whop's own all-in cut (~6-7%: 2.7%+$0.30 card processing, +3% platform, +1-2%
+ * payout) is deducted by Whop itself before funds reach the sub-merchant balance. Naelao's own
+ * additional cut is collected via `transferPlatformFee` (a payment-split transfer out of the
+ * sub-merchant's Whop balance into the platform's own Whop wallet), run on a schedule by the
+ * billing worker — never per-transaction, to bound API call volume at scale.
+ *
+ * Endpoint shapes below follow Whop's documented "Platforms" API as of this build
+ * (https://docs.whop.com/developer/platforms/enroll-sub-merchants,
+ *  https://docs.whop.com/developer/platforms/collect-payments-for-connected-accounts). Whop's
+ * public API evolves — verify field/path names against current docs before this handles real
+ * production traffic, the same "verify before production" precedent already established by
+ * `workers/connector-whop`'s own header comment and the `revenue-tracker` prebuilt elsewhere in
+ * this repo for exactly this kind of live-API assumption.
+ */
+
+const WHOP_API = "https://api.whop.com";
+
+async function whopRequest<T>(
+  apiKey: string,
+  method: "GET" | "POST" | "DELETE" | "PATCH",
+  path: string,
+  body?: Record<string, unknown>
+): Promise<T> {
+  const resp = await fetch(`${WHOP_API}${path}`, {
+    method,
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  const text = await resp.text();
+  let json: unknown;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = { raw: text };
+  }
+  if (!resp.ok) {
+    const detail = typeof json === "object" && json !== null ? JSON.stringify(json) : text;
+    throw new Error(`Whop ${method} ${path} failed: ${resp.status} ${detail}`.slice(0, 500));
+  }
+  return json as T;
+}
+
+export interface WhopSubMerchant {
+  company_id: string;
+  status: "pending" | "active" | "error";
+}
+
+/**
+ * Auto-provision an isolated Whop company (sub-merchant) for one Naelao business. No consent
+ * screen, no OAuth — the Platforms enrollment API creates the company directly under the
+ * platform account; it starts empty and is funded entirely by that business's own future sales.
+ */
+export async function createSubMerchant(
+  masterApiKey: string,
+  params: { tenantId: string; businessId: string; ownerEmail: string; businessName: string }
+): Promise<WhopSubMerchant> {
+  const result = await whopRequest<{ id?: string; status?: string }>(
+    masterApiKey,
+    "POST",
+    "/v5/platforms/sub_merchants",
+    {
+      name: params.businessName,
+      owner_email: params.ownerEmail,
+      metadata: { naelao_tenant_id: params.tenantId, naelao_business_id: params.businessId },
+    }
+  );
+  if (!result.id) throw new Error("Whop sub-merchant creation returned no company id");
+  return { company_id: result.id, status: (result.status as WhopSubMerchant["status"]) ?? "pending" };
+}
+
+export interface WhopCompanyStatus {
+  company_id: string;
+  balance_cents: number;
+  currency: string;
+  status: "pending" | "active" | "error";
+  payouts_enabled: boolean;
+}
+
+/** Live balance/status read for a sub-merchant company. */
+export async function getCompanyStatus(masterApiKey: string, companyId: string): Promise<WhopCompanyStatus> {
+  const result = await whopRequest<{
+    id: string;
+    balance?: number;
+    balance_cents?: number;
+    currency?: string;
+    status?: string;
+    payouts_enabled?: boolean;
+  }>(masterApiKey, "GET", `/v5/platforms/sub_merchants/${encodeURIComponent(companyId)}`);
+  const cents =
+    typeof result.balance_cents === "number"
+      ? result.balance_cents
+      : typeof result.balance === "number"
+        ? Math.round(result.balance * 100)
+        : 0;
+  return {
+    company_id: result.id,
+    balance_cents: cents,
+    currency: (result.currency ?? "usd").toUpperCase(),
+    status: (result.status as WhopCompanyStatus["status"]) ?? "pending",
+    payouts_enabled: result.payouts_enabled === true,
+  };
+}
+
+export interface WhopCheckoutParams {
+  companyId: string;
+  productName: string;
+  amountCents: number;
+  currency?: string;
+  customerEmail?: string;
+  successUrl?: string;
+  /** Naelao's platform cut, auto-split off this checkout via Whop's payment-splits mechanism
+   *  (mirrors Stripe Connect's application_fee_amount) — settles to the platform's own Whop
+   *  wallet at charge time, never a manual sweep. */
+  platformFeeCents?: number;
+  metadata?: Record<string, string>;
+}
+
+/** A checkout that settles directly into the business's own Whop sub-merchant balance. */
+export async function createSubMerchantCheckout(
+  masterApiKey: string,
+  params: WhopCheckoutParams
+): Promise<{ checkout_url: string }> {
+  const result = await whopRequest<{ checkout_url?: string; url?: string }>(
+    masterApiKey,
+    "POST",
+    `/v5/platforms/sub_merchants/${encodeURIComponent(params.companyId)}/checkout_links`,
+    {
+      product_name: params.productName,
+      amount: params.amountCents,
+      currency: (params.currency ?? "usd").toLowerCase(),
+      ...(params.customerEmail ? { customer_email: params.customerEmail } : {}),
+      ...(params.successUrl ? { success_url: params.successUrl } : {}),
+      ...(params.platformFeeCents && params.platformFeeCents > 0
+        ? { platform_fee: params.platformFeeCents }
+        : {}),
+      metadata: params.metadata ?? {},
+    }
+  );
+  const url = result.checkout_url ?? result.url;
+  if (!url) throw new Error("Whop checkout link returned no url");
+  return { checkout_url: url };
+}
+
+export interface WhopWithdrawal {
+  withdrawal_id: string;
+  status: string;
+}
+
+/** Programmatic payout (the autonomous "revenue out" call) — Whop routes funds to a destination
+ *  (bank/crypto/Venmo/CashApp) it already verified when the destination was added. */
+export async function createWithdrawal(
+  masterApiKey: string,
+  companyId: string,
+  params: { destinationId: string; amountCents: number }
+): Promise<WhopWithdrawal> {
+  const result = await whopRequest<{ id?: string; status?: string }>(
+    masterApiKey,
+    "POST",
+    `/v5/platforms/sub_merchants/${encodeURIComponent(companyId)}/withdrawals`,
+    { destination_id: params.destinationId, amount: params.amountCents }
+  );
+  if (!result.id) throw new Error("Whop withdrawal returned no id");
+  return { withdrawal_id: result.id, status: result.status ?? "pending" };
+}
+
+/** Transfer Naelao's own platform cut out of a sub-merchant's balance into the platform's own
+ *  Whop wallet — run on a schedule (billing worker cron), not per-transaction. */
+export async function transferPlatformFee(
+  masterApiKey: string,
+  companyId: string,
+  amountCents: number
+): Promise<{ transfer_id: string }> {
+  const result = await whopRequest<{ id?: string }>(
+    masterApiKey,
+    "POST",
+    `/v5/platforms/sub_merchants/${encodeURIComponent(companyId)}/transfers`,
+    { amount: amountCents, destination: "platform" }
+  );
+  if (!result.id) throw new Error("Whop platform-fee transfer returned no id");
+  return { transfer_id: result.id };
+}
+
+// ── Webhooks ─────────────────────────────────────────────────────────────────────────────────
+
+function timingSafeEqualHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+async function hmacSha256Hex(secret: string, payload: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+  return [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Whop-Signature header verification (HMAC-SHA256 of the raw body, hex-encoded). */
+export async function verifyWhopWebhook(rawBody: string, headers: Headers, webhookSecret: string): Promise<boolean> {
+  const header = headers.get("Whop-Signature") ?? headers.get("whop-signature");
+  if (!header || !webhookSecret) return false;
+  const expected = await hmacSha256Hex(webhookSecret, rawBody);
+  return timingSafeEqualHex(expected, header.toLowerCase());
+}
+
+export interface WhopWalletEvent {
+  type: "revenue_received" | "payout_completed" | "payout_failed" | "unknown";
+  companyId: string;
+  amountCents: number;
+  currency: string;
+  providerEventId: string | null;
+  raw: Record<string, unknown>;
+}
+
+const EVENT_MAP: Record<string, WhopWalletEvent["type"]> = {
+  "payment.succeeded": "revenue_received",
+  "order.completed": "revenue_received",
+  "withdrawal.completed": "payout_completed",
+  "withdrawal.failed": "payout_failed",
+};
+
+/** Parse a verified Whop webhook body into a normalized wallet event. Unmapped event types
+ *  return `type: "unknown"` rather than throwing — the caller skips (200, no retry) rather than
+ *  erroring on an event this build doesn't need to react to yet. */
+export function parseWhopWalletEvent(rawBody: string): WhopWalletEvent {
+  const event = JSON.parse(rawBody) as {
+    id?: string;
+    type?: string;
+    data?: {
+      id?: string;
+      company_id?: string;
+      final_amount?: number;
+      amount?: number;
+      currency?: string;
+    };
+  };
+  const type = EVENT_MAP[event.type ?? ""] ?? "unknown";
+  const data = event.data ?? {};
+  const amountCents = Math.round(Number(data.final_amount ?? data.amount ?? 0)) || 0;
+  return {
+    type,
+    companyId: String(data.company_id ?? ""),
+    amountCents,
+    currency: (data.currency ?? "usd").toUpperCase(),
+    providerEventId: event.id ?? null,
+    raw: event as Record<string, unknown>,
+  };
+}

@@ -225,5 +225,13 @@ export async function createBusinessForEndUser(
     });
   }
 
+  // Every business auto-provisions a Whop sub-merchant wallet. Deliberately NOT wired here yet:
+  // unlike the builder-created paths (createSpaceRecord's callers, which resolve a real email
+  // from the platform `users` table), this business's owner is a ProductUserDO end user — there
+  // is no D1 row with their email, and resolving it needs a ProductUserDO round trip this file
+  // doesn't have wired (business-create.ts is deliberately kept dependency-free of index.ts's own
+  // DO-stub helpers). Documented gap, not silently dropped — tracked as a real follow-up rather
+  // than fabricating a placeholder email Whop would send real payout-approval mail to.
+
   return { ok: true, tenantId: childTenantId, spaceId, status: initialStatus, parentTenantId };
 }

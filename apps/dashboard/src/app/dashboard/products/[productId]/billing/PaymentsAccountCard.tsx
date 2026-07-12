@@ -1,51 +1,62 @@
 "use client";
 
 /**
- * Wallet Connect — the product's OWN payment account. Two rails:
- *  - Stripe: "Connect with Stripe" redirects to Stripe-HOSTED onboarding (a fresh, isolated
- *    Express business account — never the builder's personal account; Naelao never sees bank
- *    details). On return we poll status: the connection activates only when Stripe reports
- *    charges_enabled.
- *  - Lemon Squeezy: guided BYO (LS has no OAuth) — paste an API key from their own dedicated
- *    LS store, pick the store, done. The key is stored encrypted in the credentials vault.
+ * Business Wallet — every business auto-provisions an isolated Whop sub-merchant wallet the
+ * moment it's created (no builder action, no OAuth, no personal bank/card details). Revenue from
+ * Whop's own storefront/checkout and connected 3rd-party platforms settles here automatically;
+ * this card is read-mostly (balance, recent activity, payout destinations/history) since the
+ * assistant runs the wallet day-to-day — a builder mainly watches it and adds a payout
+ * destination when they actually want to be paid.
  */
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  connectLemonSqueezyWallet,
-  connectStripeWallet,
-  disconnectWallet,
-  getPaymentConnection,
+  getBusinessWalletBalance,
+  getBusinessWalletTransactions,
+  getPayoutDestinations,
+  addPayoutDestination,
+  getPayoutRequests,
 } from "@/lib/api";
-import type { LsStoreOption, PaymentConnection } from "@/lib/api";
+import type { BusinessWalletBalance, WalletTransaction, PayoutDestination, PayoutRequest } from "@/lib/api";
 
-const STATUS_CHIP: Record<PaymentConnection["status"], { label: string; className: string }> = {
-  pending: { label: "Pending onboarding", className: "bg-amber-50 text-amber-700 border-amber-200" },
+const STATUS_CHIP: Record<BusinessWalletBalance["status"], { label: string; className: string }> = {
   active: { label: "Active", className: "bg-green-50 text-green-700 border-green-200" },
+  pending: { label: "Provisioning", className: "bg-amber-50 text-amber-700 border-amber-200" },
   error: { label: "Needs attention", className: "bg-red-50 text-red-700 border-red-200" },
-  disabled: { label: "Disconnected", className: "bg-gray-50 text-gray-500 border-gray-200" },
+  not_provisioned: { label: "Not provisioned yet", className: "bg-gray-50 text-gray-500 border-gray-200" },
 };
 
+function centsToDisplay(cents: number | undefined, currency = "USD"): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2 }).format((cents ?? 0) / 100);
+}
+
 export default function PaymentsAccountCard({ spaceId }: { spaceId: string }) {
-  const [connection, setConnection] = useState<PaymentConnection | null>(null);
+  const [balance, setBalance] = useState<BusinessWalletBalance | null>(null);
+  const [transactions, setTransactions] = useState<WalletTransaction[]>([]);
+  const [destinations, setDestinations] = useState<PayoutDestination[]>([]);
+  const [payouts, setPayouts] = useState<PayoutRequest[]>([]);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // LS guided flow state
-  const [lsOpen, setLsOpen] = useState(false);
-  const [lsApiKey, setLsApiKey] = useState("");
-  const [lsStores, setLsStores] = useState<LsStoreOption[] | null>(null);
-  const [lsStoreId, setLsStoreId] = useState("");
-
-  // Disconnect confirm
-  const [confirmDisconnect, setConfirmDisconnect] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [destType, setDestType] = useState<PayoutDestination["type"]>("bank");
+  const [destLabel, setDestLabel] = useState("");
+  const [destDetails, setDestDetails] = useState("");
 
   const refresh = useCallback(async () => {
     try {
-      setConnection(await getPaymentConnection(spaceId));
+      const [b, t, d, p] = await Promise.all([
+        getBusinessWalletBalance(spaceId),
+        getBusinessWalletTransactions(spaceId, 20),
+        getPayoutDestinations(spaceId),
+        getPayoutRequests(spaceId),
+      ]);
+      setBalance(b);
+      setTransactions(t);
+      setDestinations(d);
+      setPayouts(p);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load payment connection");
+      setError(err instanceof Error ? err.message : "Failed to load wallet");
     } finally {
       setLoading(false);
     }
@@ -55,66 +66,24 @@ export default function PaymentsAccountCard({ spaceId }: { spaceId: string }) {
     void refresh();
   }, [refresh]);
 
-  // While Stripe onboarding is pending, the GET route live-polls Stripe and flips the
-  // connection active on charges_enabled — re-fetch every 5s so a builder returning from the
-  // hosted flow sees the status flip without a manual reload.
-  useEffect(() => {
-    if (connection?.provider !== "stripe" || connection.status !== "pending") return;
-    const timer = setInterval(() => void refresh(), 5000);
-    return () => clearInterval(timer);
-  }, [connection, refresh]);
-
-  async function handleConnectStripe() {
+  async function handleAddDestination() {
+    if (!destLabel) return;
     setBusy(true);
     setError(null);
     try {
-      const { onboarding_url } = await connectStripeWallet(spaceId, window.location.href);
-      window.location.href = onboarding_url;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Stripe connect failed");
-      setBusy(false);
-    }
-  }
-
-  async function handleLsSubmit() {
-    setBusy(true);
-    setError(null);
-    try {
-      if (!lsStores) {
-        // Step 1 — verify the key, get the store list (nothing persisted yet).
-        const res = await connectLemonSqueezyWallet(spaceId, lsApiKey);
-        const stores = res.stores ?? [];
-        const first = stores[0];
-        if (!first) {
-          setError("This API key has no stores — create a dedicated store in Lemon Squeezy first");
-        } else {
-          setLsStores(stores);
-          setLsStoreId(first.id);
-        }
-      } else {
-        // Step 2 — finalize with the chosen store.
-        await connectLemonSqueezyWallet(spaceId, lsApiKey, lsStoreId);
-        setLsOpen(false);
-        setLsApiKey("");
-        setLsStores(null);
-        await refresh();
+      let details: Record<string, unknown>;
+      try {
+        details = destDetails ? (JSON.parse(destDetails) as Record<string, unknown>) : {};
+      } catch {
+        details = { raw: destDetails };
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Lemon Squeezy connect failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handleDisconnect() {
-    setBusy(true);
-    setError(null);
-    try {
-      await disconnectWallet(spaceId);
-      setConfirmDisconnect(false);
+      await addPayoutDestination(spaceId, { type: destType, label: destLabel, details });
+      setAddOpen(false);
+      setDestLabel("");
+      setDestDetails("");
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Disconnect failed");
+      setError(err instanceof Error ? err.message : "Failed to add payout destination");
     } finally {
       setBusy(false);
     }
@@ -122,176 +91,136 @@ export default function PaymentsAccountCard({ spaceId }: { spaceId: string }) {
 
   if (loading) return null;
 
-  const chip = connection ? STATUS_CHIP[connection.status] : null;
+  const chip = balance ? STATUS_CHIP[balance.status] : null;
+  const currency = balance?.currency ?? "USD";
 
   return (
     <div>
-      <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Payments account</h2>
+      <h2 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Business wallet</h2>
       <div className="rounded-xl border border-gray-200 bg-white p-5 space-y-4">
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-2 text-sm">{error}</div>
         )}
 
-        {connection ? (
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <span className="font-semibold text-gray-900">
-                {connection.provider === "stripe" ? "Stripe" : "Lemon Squeezy"}
-                {connection.details.store_name ? ` — ${connection.details.store_name}` : ""}
-              </span>
-              {chip && (
-                <span className={`text-xs font-medium border rounded-full px-2.5 py-0.5 ${chip.className}`}>
-                  {chip.label}
-                </span>
-              )}
-            </div>
-            <p className="text-sm text-gray-500">
-              {connection.provider === "stripe"
-                ? connection.status === "active"
-                  ? "Sales are charged directly on your own Stripe business account; Stripe pays out to your bank. Naelao's platform fee is collected automatically per sale."
-                  : "Finish Stripe's hosted onboarding to start accepting payments. This page updates automatically once Stripe verifies your details."
-                : "Sales check out on your own Lemon Squeezy store — revenue settles with Lemon Squeezy directly to you. Naelao's platform fee is invoiced separately."}
-            </p>
-            {connection.provider === "lemon_squeezy" && !connection.details.webhook_created && (
-              <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                Order-sync webhook could not be created on your store — orders will not appear in
-                Naelao until you disconnect and reconnect.
-              </p>
-            )}
-            <div className="flex gap-3">
-              {connection.provider === "stripe" && connection.status === "pending" && (
-                <button
-                  onClick={() => void handleConnectStripe()}
-                  disabled={busy}
-                  className="text-sm font-medium bg-brand-600 hover:bg-brand-700 text-white rounded-lg px-4 py-2 disabled:opacity-50"
-                >
-                  Resume Stripe onboarding
-                </button>
-              )}
-              {!confirmDisconnect ? (
-                <button
-                  onClick={() => setConfirmDisconnect(true)}
-                  disabled={busy}
-                  className="text-sm font-medium text-red-600 hover:text-red-700 border border-red-200 rounded-lg px-4 py-2 disabled:opacity-50"
-                >
-                  Disconnect
-                </button>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-gray-600">New sales fall back to Naelao&apos;s checkout. Disconnect?</span>
-                  <button
-                    onClick={() => void handleDisconnect()}
-                    disabled={busy}
-                    className="text-sm font-medium bg-red-600 hover:bg-red-700 text-white rounded-lg px-3 py-1.5 disabled:opacity-50"
-                  >
-                    Yes, disconnect
-                  </button>
-                  <button
-                    onClick={() => setConfirmDisconnect(false)}
-                    disabled={busy}
-                    className="text-sm text-gray-500 hover:text-gray-700 px-2 py-1.5"
-                  >
-                    Cancel
-                  </button>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs text-gray-500 mb-1">Wallet balance</p>
+            <p className="text-2xl font-bold text-gray-900">{centsToDisplay(balance?.balance_cents, currency)}</p>
+          </div>
+          {chip && (
+            <span className={`text-xs font-medium border rounded-full px-2.5 py-0.5 ${chip.className}`}>
+              {chip.label}
+            </span>
+          )}
+        </div>
+        <p className="text-sm text-gray-500">
+          This business&apos;s own Whop sub-merchant wallet — revenue from Whop&apos;s own storefront/checkout
+          and any connected 3rd-party platform settles here automatically. Naelao never holds this
+          money; Whop custodies it and handles payout compliance.
+        </p>
+
+        {transactions.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Recent activity</p>
+            <div className="divide-y divide-gray-100 border border-gray-100 rounded-lg overflow-hidden">
+              {transactions.slice(0, 8).map((t, i) => (
+                <div key={i} className="flex items-center justify-between px-3 py-2 text-sm">
+                  <span className="text-gray-700">{t.description ?? t.type}</span>
+                  <span className={t.amount_cents >= 0 ? "text-green-700 font-medium" : "text-gray-600"}>
+                    {t.amount_cents >= 0 ? "+" : ""}
+                    {centsToDisplay(t.amount_cents, t.currency)}
+                  </span>
                 </div>
-              )}
+              ))}
             </div>
           </div>
-        ) : (
-          <div className="space-y-4">
-            <p className="text-sm text-gray-500">
-              Connect your own payment account so product revenue settles directly with you — a
-              fresh, isolated business account, never your personal one. Without a connection,
-              sales run through Naelao&apos;s checkout and settle to your product wallet.
-            </p>
-            <div className="grid sm:grid-cols-2 gap-4">
-              <div className="rounded-lg border border-gray-200 p-4 space-y-2">
-                <p className="font-semibold text-gray-900">Stripe</p>
-                <p className="text-xs text-gray-500">
-                  Creates a new Stripe business account for this product. Stripe collects your
-                  details on their own hosted page — Naelao never sees them.
-                </p>
+        )}
+
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Payout destinations</p>
+            {!addOpen && (
+              <button
+                onClick={() => setAddOpen(true)}
+                className="text-xs font-medium text-brand-600 hover:text-brand-700"
+              >
+                + Add destination
+              </button>
+            )}
+          </div>
+          {destinations.length === 0 && !addOpen && (
+            <p className="text-sm text-gray-400">No payout destination on file yet.</p>
+          )}
+          {destinations.map((d) => (
+            <div key={d.id} className="flex items-center justify-between text-sm py-1.5">
+              <span className="text-gray-700">{d.label} ({d.type})</span>
+              <span className={`text-xs ${d.status === "verified" ? "text-green-600" : "text-amber-600"}`}>{d.status}</span>
+            </div>
+          ))}
+          {addOpen && (
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3 mt-2">
+              <label className="block text-sm font-medium text-gray-700">
+                Type
+                <select
+                  value={destType}
+                  onChange={(e) => setDestType(e.target.value as PayoutDestination["type"])}
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm bg-white"
+                >
+                  <option value="bank">Bank</option>
+                  <option value="crypto">Crypto</option>
+                  <option value="venmo">Venmo</option>
+                  <option value="cashapp">CashApp</option>
+                </select>
+              </label>
+              <label className="block text-sm font-medium text-gray-700">
+                Label
+                <input
+                  value={destLabel}
+                  onChange={(e) => setDestLabel(e.target.value)}
+                  placeholder="e.g. Chase checking ...1234"
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="block text-sm font-medium text-gray-700">
+                Details (routing/account number, wallet address, handle — stored encrypted)
+                <textarea
+                  value={destDetails}
+                  onChange={(e) => setDestDetails(e.target.value)}
+                  rows={2}
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+              </label>
+              <div className="flex gap-2">
                 <button
-                  onClick={() => void handleConnectStripe()}
-                  disabled={busy}
+                  onClick={() => void handleAddDestination()}
+                  disabled={busy || !destLabel}
                   className="text-sm font-medium bg-brand-600 hover:bg-brand-700 text-white rounded-lg px-4 py-2 disabled:opacity-50"
                 >
-                  Connect with Stripe
+                  Save destination
                 </button>
-              </div>
-              <div className="rounded-lg border border-gray-200 p-4 space-y-2">
-                <p className="font-semibold text-gray-900">Lemon Squeezy</p>
-                <p className="text-xs text-gray-500">
-                  Bring your own dedicated Lemon Squeezy store — paste an API key, pick the
-                  store. The key is stored encrypted.
-                </p>
                 <button
-                  onClick={() => setLsOpen(true)}
+                  onClick={() => setAddOpen(false)}
                   disabled={busy}
-                  className="text-sm font-medium border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-lg px-4 py-2 disabled:opacity-50"
+                  className="text-sm text-gray-500 hover:text-gray-700 px-3 py-2"
                 >
-                  Connect Lemon Squeezy
+                  Cancel
                 </button>
               </div>
             </div>
+          )}
+        </div>
 
-            {lsOpen && (
-              <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 space-y-3">
-                {!lsStores ? (
-                  <>
-                    <label className="block text-sm font-medium text-gray-700">
-                      Lemon Squeezy API key
-                      <input
-                        type="password"
-                        value={lsApiKey}
-                        onChange={(e) => setLsApiKey(e.target.value)}
-                        placeholder="lsq_api_..."
-                        className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                      />
-                    </label>
-                    <p className="text-xs text-gray-500">
-                      Create one in your Lemon Squeezy dashboard → Settings → API. Use a store
-                      dedicated to this product, not a personal one.
-                    </p>
-                  </>
-                ) : (
-                  <label className="block text-sm font-medium text-gray-700">
-                    Pick the store to connect
-                    <select
-                      value={lsStoreId}
-                      onChange={(e) => setLsStoreId(e.target.value)}
-                      className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm bg-white"
-                    >
-                      {lsStores.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                )}
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => void handleLsSubmit()}
-                    disabled={busy || (!lsStores && !lsApiKey)}
-                    className="text-sm font-medium bg-brand-600 hover:bg-brand-700 text-white rounded-lg px-4 py-2 disabled:opacity-50"
-                  >
-                    {lsStores ? "Connect store" : "Verify key"}
-                  </button>
-                  <button
-                    onClick={() => {
-                      setLsOpen(false);
-                      setLsStores(null);
-                      setLsApiKey("");
-                    }}
-                    disabled={busy}
-                    className="text-sm text-gray-500 hover:text-gray-700 px-3 py-2"
-                  >
-                    Cancel
-                  </button>
+        {payouts.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Payout history</p>
+            <div className="divide-y divide-gray-100 border border-gray-100 rounded-lg overflow-hidden">
+              {payouts.slice(0, 5).map((p) => (
+                <div key={p.id} className="flex items-center justify-between px-3 py-2 text-sm">
+                  <span className="text-gray-700">{centsToDisplay(p.amount_cents, currency)}</span>
+                  <span className="text-xs text-gray-500">{p.status}</span>
                 </div>
-              </div>
-            )}
+              ))}
+            </div>
           </div>
         )}
       </div>

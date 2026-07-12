@@ -1,7 +1,11 @@
 /**
  * Provider-agnostic billing (original spec, Appendix H "Billing Provider Strategy",
- * byte ~2261k). Lemon Squeezy is the PRIMARY provider; Stripe is a future addition. Both
- * implement BillingProvider so the rest of the platform never branches on provider.
+ * byte ~2261k). Lemon Squeezy is the ONLY platform billing provider (item 45). Stripe Connect
+ * (the former Wallet Connect rail) has been removed entirely and replaced by the Whop
+ * sub-merchant wallet model (`./whop.ts`) — Whop is not a `BillingProvider` (its checkout/
+ * withdrawal shape doesn't fit this interface; see `./whop.ts`'s own standalone functions,
+ * mirroring the precedent Stripe Connect's account-lifecycle helpers set: "not on
+ * BillingProvider").
  *
  * See CLAUDE.md CURRENT DIRECTION #9.
  */
@@ -18,7 +22,7 @@ export interface NormalizedBillingEvent {
     | "subscription.resumed"
     | "subscription.expired"
     | "refund.issued";
-  provider: "lemon_squeezy" | "stripe";
+  provider: "lemon_squeezy";
   spaceId: string;
   customerId: string;
   subscriptionId: string | null;
@@ -53,9 +57,9 @@ export interface CheckoutParams {
   customPriceCents?: number;
 }
 
-/** The single interface every billing provider implements. */
+/** The single interface every platform billing provider implements. */
 export interface BillingProvider {
-  readonly name: "lemon_squeezy" | "stripe";
+  readonly name: "lemon_squeezy";
   verifyWebhook(rawBody: string, headers: Headers): Promise<boolean>;
   parseWebhookEvent(rawBody: string): NormalizedBillingEvent;
   createCheckout(params: CheckoutParams): Promise<{ url: string }>;
@@ -65,12 +69,9 @@ export interface BillingProvider {
 
 /** Env shape a provider needs (subset of the billing worker env). */
 export interface BillingProviderEnv {
-  BILLING_PROVIDER?: "lemon_squeezy" | "stripe";
+  BILLING_PROVIDER?: "lemon_squeezy";
   // Lemon Squeezy
   LEMON_SQUEEZY_API_KEY?: string;
   LEMON_SQUEEZY_WEBHOOK_SECRET?: string;
   LEMON_SQUEEZY_STORE_ID?: string;
-  // Stripe (future)
-  STRIPE_SECRET_KEY?: string;
-  STRIPE_WEBHOOK_SECRET?: string;
 }

@@ -34,9 +34,17 @@
  * key, which is a worse outcome for the builder than just using `commerce.checkout`. This file
  * exists to catch the honest/careless case early with a clear error, not to be an airtight
  * sandbox. It is also intentionally NOT trying to stop Model A (the connector/automation-layer
- * platforms — Whop, Gumroad, etc.): those are read-mostly, the CONNECTED PLATFORM processes the
+ * platforms — Gumroad, etc.): those are read-mostly, the CONNECTED PLATFORM processes the
  * payment on the builder's own account, and Naelao is paid for the labor, not a cut of that
  * sale — by design, not a gap in this guard (see `connectors/catalogue.ts`'s "MODEL A" note).
+ *
+ * Whop is a SPECIAL CASE, not Model A: it's now ALSO the reserved business-wallet payment rail
+ * (every business's auto-provisioned sub-merchant wallet, `business-wallet.ts`), so
+ * `api.whop.com` IS in the denylist below — a user-authored script may still read Whop data via
+ * the read-only `connector-whop` MCP shim (list_memberships/list_payments/etc., unaffected by
+ * this host check, which only fires against code/URLs a user script embeds directly), but it may
+ * never construct its own fetch() to Whop's sub-merchant/withdrawal endpoints to move money
+ * outside the reserved `business-wallet`/`payout` prebuilt ops.
  */
 
 /** Capabilities only the Naelao prebuilt catalogue may provide. Money-in + payouts. */
@@ -81,6 +89,9 @@ const EXTERNAL_PAYMENT_HOSTS: readonly string[] = [
   // Naelao's own processor — reserved to the prebuilt commerce op:
   "api.lemonsqueezy.com",
   "lemonsqueezy.com",
+  // Reserved to the business-wallet/payout prebuilt scripts (see module header) — a business's
+  // sub-merchant wallet money movement, not the read-only connector-whop MCP shim.
+  "api.whop.com",
 ];
 
 /** SDK / package identifiers that pull in an external payment processor. */

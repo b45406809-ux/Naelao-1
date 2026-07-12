@@ -51,8 +51,8 @@ export default function ProductBillingPage() {
 
   return (
     <div className="space-y-6">
-      {/* Wallet Connect: the product's OWN payment account (a NaelaoProduct IS a space, so the
-          product id is the space id the wallet routes expect). */}
+      {/* Business Wallet: the product's own auto-provisioned Whop sub-merchant wallet (a
+          NaelaoProduct IS a space, so the product id is the space id the wallet routes expect). */}
       <PaymentsAccountCard spaceId={params.productId} />
 
       <div>

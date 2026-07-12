@@ -63,6 +63,16 @@ export const BUSINESS_FEATURE_KIND_REGISTRY: readonly BusinessFeatureKind[] = [
     uiPanel: "wallet-ledger",
   },
   {
+    kind: "business_wallet",
+    label: "Business Wallet",
+    description: "The business's OWN bank account — a Whop sub-merchant wallet auto-provisioned at business creation. Real revenue in from Whop's storefront/checkout and connected 3rd-party platforms, real payouts out to the owner. A different concept from 'wallet' above (which pays for Naelao's own metered costs) — see business-wallet.ts's header.",
+    singleton: true,
+    minCreationRole: "admin",
+    autoProvisionable: true,
+    prebuiltScripts: ["business-wallet"],
+    uiPanel: "business-wallet",
+  },
+  {
     kind: "storefront",
     label: "Storefront",
     description: "A product catalog + orders selling direct through Naelao's own checkout. For a business with no existing commerce platform (a whop-seller operates Whop's storefront via connector instead).",

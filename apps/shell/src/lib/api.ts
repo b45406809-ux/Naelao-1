@@ -756,59 +756,72 @@ export async function deleteKbDocument(spaceId: string, docId: string, session: 
   await apiFetch(`/v1/spaces/${spaceId}/kb/documents/${encodeURIComponent(docId)}`, { method: "DELETE", session });
 }
 
-// ── Wallet Connect (§A1.29): the business's OWN payment account ─────────────────────────────
-// A business owner connects a fresh Stripe Connect Express account (Stripe-hosted onboarding —
-// Naelao never sees bank details) or their own dedicated Lemon Squeezy store. Admin-only on
-// every verb (enforced by requireBusinessMembership on the spaces worker).
+// ── Business Wallet (Whop sub-merchant model): the business's OWN bank account ────────────────
+// Every business auto-provisions an isolated Whop sub-merchant wallet the moment it's created —
+// no owner action, no OAuth, no personal bank/card details. Balance/history are member-visible;
+// managing payout destinations and requesting a payout is admin-only (enforced by
+// requireBusinessMembership on the spaces worker).
 
-export interface PaymentConnection {
-  id: string;
-  provider: "stripe" | "lemon_squeezy";
-  status: "pending" | "active" | "disabled" | "error";
-  provider_account_id: string | null;
-  details: {
-    charges_enabled: boolean;
-    payouts_enabled: boolean;
-    details_submitted: boolean;
-    store_name: string | null;
-    webhook_created: boolean;
-  };
+export interface WhopWalletBalance {
+  status: "pending" | "active" | "error" | "not_provisioned";
+  balance_cents?: number;
+  currency?: string;
+  last_synced_at?: string | null;
+}
+
+export interface WhopWalletTransaction {
+  type: "revenue" | "expense" | "payout" | "fee_debit";
+  amount_cents: number;
+  currency: string;
+  description: string | null;
+  external_ref: string | null;
   created_at: string;
-  updated_at: string;
 }
 
-export async function getPaymentConnection(spaceId: string, session: SessionCredentials): Promise<PaymentConnection | null> {
-  const res = await apiFetch<{ connection: PaymentConnection | null }>(`/v1/spaces/${spaceId}/payment-connection`, { session });
-  return res.connection;
+export interface PayoutDestination {
+  id: string;
+  type: "bank" | "crypto" | "venmo" | "cashapp";
+  label: string;
+  status: "pending" | "verified" | "error";
+  is_default: number;
+  created_at: string;
 }
 
-export async function connectStripePayments(
+export async function getBusinessWalletBalance(spaceId: string, session: SessionCredentials): Promise<WhopWalletBalance> {
+  const res = await apiFetch<{ wallet: WhopWalletBalance | null; status?: string }>(`/v1/spaces/${spaceId}/business-wallet/balance`, { session });
+  return res.wallet ?? { status: (res.status as WhopWalletBalance["status"]) ?? "not_provisioned" };
+}
+
+export async function getBusinessWalletTransactions(spaceId: string, session: SessionCredentials, limit = 20): Promise<WhopWalletTransaction[]> {
+  const res = await apiFetch<{ transactions: WhopWalletTransaction[] }>(`/v1/spaces/${spaceId}/business-wallet/transactions?limit=${limit}`, { session });
+  return res.transactions ?? [];
+}
+
+export async function getPayoutDestinations(spaceId: string, session: SessionCredentials): Promise<PayoutDestination[]> {
+  const res = await apiFetch<{ destinations: PayoutDestination[] }>(`/v1/spaces/${spaceId}/business-wallet/destinations`, { session });
+  return res.destinations ?? [];
+}
+
+export async function addPayoutDestination(
   spaceId: string,
   session: SessionCredentials,
-  returnUrl: string
-): Promise<{ onboarding_url: string }> {
-  return apiFetch(`/v1/spaces/${spaceId}/payment-connection/stripe`, {
+  params: { type: PayoutDestination["type"]; label: string; details: Record<string, unknown> }
+): Promise<{ destination: PayoutDestination }> {
+  return apiFetch(`/v1/spaces/${spaceId}/business-wallet/destinations`, {
     method: "POST",
-    body: JSON.stringify({ return_url: returnUrl }),
+    body: JSON.stringify(params),
     session,
   });
 }
 
-/** Without storeId: verifies the key, returns the store list (nothing persisted). With storeId:
- *  vaults the key, auto-creates the order-sync webhook on their store, activates. */
-export async function connectLemonSqueezyPayments(
+export async function requestPayout(
   spaceId: string,
   session: SessionCredentials,
-  apiKey: string,
-  storeId?: string
-): Promise<{ stores?: Array<{ id: string; name: string }>; connection?: PaymentConnection }> {
-  return apiFetch(`/v1/spaces/${spaceId}/payment-connection/lemon-squeezy`, {
+  params: { destination_id: string; amount_cents: number; note?: string }
+): Promise<{ payout: { id: string; status: string } }> {
+  return apiFetch(`/v1/spaces/${spaceId}/business-wallet/payouts`, {
     method: "POST",
-    body: JSON.stringify({ api_key: apiKey, ...(storeId ? { store_id: storeId } : {}) }),
+    body: JSON.stringify(params),
     session,
   });
-}
-
-export async function disconnectPayments(spaceId: string, session: SessionCredentials): Promise<void> {
-  await apiFetch(`/v1/spaces/${spaceId}/payment-connection`, { method: "DELETE", session });
 }

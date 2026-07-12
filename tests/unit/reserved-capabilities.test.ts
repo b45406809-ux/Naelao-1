@@ -88,10 +88,19 @@ describe("reserved-capability guard (income-wallet protection)", () => {
       expect(isReservedPaymentHost("https://foo.stripe.com/x")).toBe(true);
     });
 
-    it("allows a legitimate platform connector (Whop, Beehiiv, Cal.com)", () => {
-      expect(isReservedPaymentHost("https://api.whop.com/graphql")).toBe(false);
+    it("allows a legitimate read-only platform connector (Beehiiv, Cal.com)", () => {
       expect(isReservedPaymentHost("https://api.beehiiv.com/v2")).toBe(false);
       expect(isReservedPaymentHost("https://api.cal.com")).toBe(false);
+    });
+
+    // Whop is a SPECIAL CASE (not Model A): it's now ALSO the reserved business-wallet payment
+    // rail (every business's auto-provisioned sub-merchant wallet), so a user-authored script
+    // may not construct its own fetch() to Whop directly — the read-only connector-whop MCP shim
+    // (list_memberships/list_payments/etc.) is unaffected, since this host check only fires
+    // against code/URLs a user script embeds itself, not the platform's own MCP shim.
+    it("blocks Whop directly (now the reserved business-wallet payment rail)", () => {
+      expect(isReservedPaymentHost("https://api.whop.com/graphql")).toBe(true);
+      expect(isReservedPaymentHost("https://api.whop.com/v2")).toBe(true);
     });
 
     it("blocks calling a money-in tool name", () => {
@@ -121,8 +130,9 @@ describe("reserved-capability guard (income-wallet protection)", () => {
     });
 
     it("does not misclassify a normal versioned hostname-like string as an IP literal", () => {
-      // Sanity: a legitimate connector host must not accidentally trip the IP-literal check.
-      expect(isReservedPaymentHost("https://api.whop.com/v2")).toBe(false);
+      // Sanity: a legitimate read-only connector host must not accidentally trip the IP-literal
+      // check (Whop itself is deliberately reserved now — see the dedicated test above).
+      expect(isReservedPaymentHost("https://api.beehiiv.com/v2")).toBe(false);
     });
   });
 });

@@ -1,7 +1,7 @@
 # Naelao — Every API Key, Secret & Env Var Needed for Launchpad Go-Live
 
 Grounded in the actual code (each worker's `Env` interface + `validateEnv()` + wrangler.toml),
-not memory. Last verified against the repo at the go-live audit (CLAUDE.md item 44).
+not memory. Last verified against the repo at the Whop autonomous-wallet rebuild (CLAUDE.md item 50).
 
 **Three facts up front:**
 
@@ -49,7 +49,10 @@ that worker's directory. For local dev, create `workers/<name>/.dev.vars` (gitig
 > token. If neither the gateway token nor a key is set, LLM calls fail honestly (`no_llm_credentials`).
 
 > **No Stripe.** `validateEnv` on the billing worker requires only `PLATFORM_SECRET`. The four
-> `STRIPE_*` secrets are gone; `/webhooks/stripe` is removed.
+> `STRIPE_*` secrets are gone; `/webhooks/stripe` is removed. Wallet Connect (the Stripe/LS
+> per-business connected-account rail) is also gone entirely — every business's OWN revenue
+> custody now runs through the Whop sub-merchant wallet model (`WHOP_PLATFORM_API_KEY` below),
+> auto-provisioned at business creation, no builder action required.
 
 ## Tier 2 — Cloudflare-side setup (same account, extra provisioning)
 
@@ -72,9 +75,9 @@ that worker's directory. For local dev, create `workers/<name>/.dev.vars` (gitig
 | `CF_API_TOKEN` (agents) | agents | Workers AI fallback provider through the AI Gateway Universal Endpoint. Anthropic-only without it. |
 | `EVAL_LLM_KEY` + `EVAL_LLM_URL` | eval | Any OpenAI-compatible endpoint used as the eval judge. Eval suites only. |
 | `APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_PRIVATE_KEY_BASE64`, `APNS_BUNDLE_ID`, `APNS_HOST` | notifications | Apple Developer account → Keys → APNs auth key (.p8, base64 it). Only for iOS push; email/webhooks work without. |
-| `STRIPE_PLATFORM_SECRET_KEY` | billing | [dashboard.stripe.com](https://dashboard.stripe.com) → Developers → API keys (`sk_...`), with Connect enabled on the account. Wallet Connect's Stripe rail (§A1.29): creates Express connected accounts + direct-charge checkouts ONLY — platform billing stays Lemon Squeezy (item 45). Stripe wallet connect returns `stripe_not_configured` until set; a space with an already-ACTIVE Stripe connection fails CLOSED on checkout rather than falling back to Naelao's store. |
-| `STRIPE_CONNECT_WEBHOOK_SECRET` | billing | Stripe Dashboard → Webhooks → add a **Connect** endpoint pointed at `/v1/webhooks/stripe` (listen to events on connected accounts: `checkout.session.completed`, `charge.refunded`, subscription events) → signing secret (`whsec_...`). Without it, Connect events 503 and orders don't sync. |
-| `PUBLIC_WEBHOOK_BASE_URL` (var, not secret) | billing | Public base URL webhooks are reachable at (e.g. `https://api.naelao.com`). Used to auto-create per-connection Lemon Squeezy webhooks on a builder's OWN store; a connection still activates without it, surfaced as `webhook_created:false`. |
+| `WHOP_PLATFORM_API_KEY` | billing | [dev.whop.com](https://dev.whop.com) → your Whop Platform account → API keys. Naelao's ONE master Whop Platform key (universal-tools doctrine, like `COMPOSIO_API_KEY`) — auto-provisions an isolated sub-merchant company per business, reads balances, creates checkouts, issues withdrawals. Without it, every business's wallet stays `status: "error"` (never fabricates a company id). |
+| `WHOP_WEBHOOK_SECRET` | billing | Whop dashboard → your Platform account → Webhooks → add an endpoint pointed at `/v1/webhooks/whop` → signing secret. Without it, `/webhooks/whop` returns `whop_not_configured` and revenue events never sync. |
+| `PUBLIC_WEBHOOK_BASE_URL` (var, not secret) | billing | Public base URL webhooks are reachable at (e.g. `https://api.naelao.com`). Used to build the one-time payout-approval email link (`/v1/webhooks/whop-wallet/payouts/:id/approve`); a payout request still exists in the dashboard/shell without it, just with no emailed link. |
 
 ## NOT env vars — per-builder credentials entered in-product
 
@@ -83,11 +86,12 @@ flows. Never platform secrets:
 
 - **WhatsApp** (Meta Cloud API token + app secret for `X-Hub-Signature-256`), **Slack** signing
   secret, **Discord** public key, inbound **email** — via `POST /channels/:channel/connect`.
-- **Whop / Gumroad** keys (`revenue-tracker`, connector catalogue's `WHOP_API_KEY`
-  `credential_name`), any BYO MCP server auth — via space credentials.
-- **Wallet Connect Lemon Squeezy** (§A1.29): the builder's own LS store API key + the generated
-  per-connection webhook signing secret — vault-encrypted via the connect flow
-  (`POST /billing/wallet/connect/lemon-squeezy`), only credential NAMES in D1.
+- **Gumroad** keys (connector catalogue), any BYO MCP server auth — via space credentials. (A
+  business's OWN Whop connection for Autopilot/CRM reads is separate from the platform-managed
+  business-wallet rail above — see `whop-tool-lifecycle`.)
+- **Payout destinations** (bank/crypto/Venmo/CashApp account details a business owner adds for
+  their own wallet's payouts) — vault-encrypted via `POST /billing/whop-wallet/destinations`,
+  only credential NAMES in D1, never the platform's own key.
 
 ## Plain config vars (wrangler `[vars]`, not secrets)
 
