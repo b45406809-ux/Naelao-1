@@ -80,6 +80,12 @@ export interface UniversalProvider {
 export function inferProvider(model: string): string {
   if (model.startsWith("@cf/")) return "workers-ai";
   if (model.startsWith("gpt-") || model.startsWith("o1-") || model.startsWith("o3-")) return "openai";
+  // Zhipu/GLM via a Custom Provider added in the CF AI Gateway dashboard (BYOK — the key never
+  // touches a worker secret). "zai" must match the slug you name that custom provider when
+  // configuring it; rename this constant if you pick a different slug. Falls through to the
+  // generic OpenAI-compatible branch in buildProviderEntry (Zhipu's API is OpenAI-shaped), so no
+  // further code change is needed once the provider exists in the gateway.
+  if (model.startsWith("glm-")) return "zai";
   return "anthropic";
 }
 

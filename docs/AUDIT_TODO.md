@@ -1498,3 +1498,53 @@ first real business on free-tier resources before opening the platform to other 
   only authorizes the management/proxy calls to those providers' own APIs — it grants no access
   to another tenant's connected account or credentials. Confirms the universal-tools doctrine
   (item 42/56) is genuinely safe for multi-tenant use, not just a documented intent.
+
+- [ ] **AI-5 (design gap, confirmed against HEAD): connectors have NO per-collaborator or
+  per-project scoping today — every Composio/Pipedream/OAuth connection is one shared
+  space-wide credential, with no path to a personal per-user connection even though the
+  generic credential hierarchy that would support it already exists.** Prompted by: "what about
+  a business/space that has more than one user — is there a global space connection AND a
+  per-user connection to the whole space, without leaking out a collaborator, and at the
+  project level?"
+  Traced both halves of the actual mechanism:
+  - `workers/credentials/src/index.ts`'s `resolveCredential(db, spaceId, tenantId, name,
+    actingUserId)` is a GENERIC 3-tier hierarchy (item 18): an `is_override` space-level row
+    always wins → then a `scope='user'` row for the specific `actingUserId` → then a
+    `scope='space'` fallback. This already supports a personal, per-collaborator credential for
+    ANY credential name, including a connector — the mechanism exists.
+  - But `workers/mcp-hub/src/index.ts`'s `buildAuthHeaders(server, env, agentId)` — the function
+    that actually resolves a connector's credential at tool-call time — takes NO `actingUserId`
+    parameter at all, only `agentId` (read from `x-naelao-agent-id`). Its only caller context is
+    `c.req.header("x-naelao-agent-id")`; no acting-user identity is threaded through anywhere in
+    the connector call path. Combined with item 55's fix (which forced connector storage to
+    ALWAYS write `scope='space'`, precisely BECAUSE mcp-hub's resolution had no user-scope
+    context to read a `scope='user'` row back with), the result is: **there is no per-user
+    connector connection today, by construction, not by a scoping bug** — one Twitter/LinkedIn/
+    Whop/etc. connection is shared by every collaborator and every agent in the space. This is
+    the CORRECT model for "the business's own official account" (there should only be one
+    business Twitter account), but is NOT sufficient if a collaborator wants to connect THEIR
+    OWN personal account for use within the shared space without other collaborators being able
+    to use it, post as them, or even see that it's connected.
+  - **Project-level scoping is also absent**: every mcp-hub route (`/v1/spaces/:spaceId/
+    mcp-servers*`) keys purely by `spaceId` — there is no `projectId` column or filter anywhere
+    in the connector registry. A business with multiple projects (e.g. managing several
+    sub-brands or client accounts as separate projects within one space) cannot have
+    project-scoped connectors — every project's agents share the exact same space-wide
+    connector set.
+  - **What a real fix needs** (not built, scoping only): (a) an explicit `scope: 'space' |
+    'user'` (and optionally `project_id`) choice at connect time, surfaced in the shell's
+    "Connect Apps" panel — a collaborator explicitly chooses "connect for the whole business"
+    vs. "connect just for me"; (b) `mcp-hub`'s server-registration row needs an owning
+    `user_id`/`project_id` column (nullable = space-wide, matching today's default) so a lookup
+    can prefer/require the right row; (c) `buildAuthHeaders` and every call site need an
+    `actingUserId` (and where relevant `projectId`) threaded through from the reasoning loop's
+    already-resolved caller identity (the same identity `NaelaoAgentDO` already has for F-36's
+    assistant permission clamp — reuse, not a new identity concept); (d) the credential
+    RESOLUTION side already works (`resolveCredential` supports this) — the gap is entirely in
+    mcp-hub's connector-registry schema and its call sites never carrying a user/project scope.
+  - **Leak risk if built carelessly**: a per-user connector row must be resolvable ONLY when the
+    acting user matches — the exact same "verified claims, never a client-supplied field"
+    discipline every other per-user check in this codebase already follows (e.g. `GET
+    /spaces/:spaceId/sessions` deriving `end_user_id` only from verified claims, never a query
+    param). A naive implementation that let a caller pass `?user_id=` to select whose connection
+    to use would immediately leak one collaborator's personal account to another.

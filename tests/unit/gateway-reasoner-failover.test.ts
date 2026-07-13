@@ -64,6 +64,11 @@ describe("inferProvider", () => {
   it("defaults unknown models to anthropic", () => {
     expect(inferProvider("some-future-model")).toBe("anthropic");
   });
+
+  it("maps glm- models to the zai Custom Provider slug", () => {
+    expect(inferProvider("glm-5.2")).toBe("zai");
+    expect(inferProvider("glm-4.6")).toBe("zai");
+  });
 });
 
 // ── normalizeUniversalResponse unit tests ─────────────────────────────────────
@@ -184,6 +189,22 @@ describe("buildUniversalBody", () => {
   it("no fallbacks → single provider (unchanged)", () => {
     const body = JSON.parse(buildUniversalBody({ ...baseOpts, fallbacks: [] }));
     expect(body.providers).toHaveLength(1);
+  });
+
+  it("builds an OpenAI-compatible 'zai' provider entry for a glm- model (Custom Provider)", () => {
+    const body = JSON.parse(buildUniversalBody({
+      ...baseOpts,
+      apiKey: "zai-key",
+      cfApiToken: undefined,
+      query: { ...baseOpts.query, model: "glm-5.2" },
+    }));
+    expect(body.providers).toHaveLength(1);
+    expect(body.providers[0].provider).toBe("zai");
+    expect(body.providers[0].endpoint).toBe("chat/completions");
+    expect(body.providers[0].headers["Authorization"]).toBe("Bearer zai-key");
+    expect(body.providers[0].query.model).toBe("glm-5.2");
+    // No x-api-key/anthropic-version leakage from the anthropic branch.
+    expect(body.providers[0].headers["x-api-key"]).toBeUndefined();
   });
 });
 
