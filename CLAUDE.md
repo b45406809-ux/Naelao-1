@@ -1726,6 +1726,34 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     is actually issued. **Not done:** an equivalent OAuth button on the dashboard's own
     `/dashboard/spaces/[spaceId]/connectors` console (still manual-key-only) — the shell's
     per-business flow was this pass's target.
+54. **Same-Whop-account-across-multiple-businesses is now detected and flagged — a follow-up to
+    item 53's BYO connector, prompted by a direct architectural question: does connecting Whop via
+    OAuth give each business its own isolated wallet, or can one real Whop account get silently
+    shared across businesses?** Answer: the invite-gated Platforms/connected-accounts wallet rail
+    (items 50-51, `business-wallet.ts`) DOES give every business a truly isolated Whop sub-merchant
+    — that's unaffected. But the BYO "Connect with Whop" OAuth path (item 53, the one actually live
+    today) has no such isolation: it's just an API credential onto the builder's own existing Whop
+    account, so nothing stopped the same account being connected to two "different" businesses
+    under one tenant, commingling their revenue/data with zero signal to the builder. Of the three
+    options discussed (silently detect+warn, hard-block, or build a full attribution layer), went
+    with detect+warn — a hard block would incorrectly forbid a legitimate case (a builder
+    intentionally sharing one Whop account across related businesses), and a full attribution layer
+    is real scope creep for what is fundamentally a soft UX signal, not a security boundary (unlike
+    the sub-merchant rail, there IS no platform-enforced isolation to defend here).
+    Added `openid` to the Whop OAuth scopes + a new `userinfo_url` field on `ConnectorOAuthSpec`
+    (`catalogue.ts`) so the callback can resolve the connecting account's stable OIDC `sub` via
+    `fetchOAuthIdentity()` (`connectors/oauth.ts`) — best-effort, never blocks the connection on a
+    lookup failure. New `linkOAuthAccountAndCheckDuplicate()` maintains a KV-backed
+    `{tenantId, platform, subject} → [spaceId...]` registry (`AGENT_CACHE`, no TTL — a UX signal,
+    not a security boundary, so KV's ~60s eventual consistency is a non-issue here) and reports any
+    OTHER space under the tenant already linked to the same account. The OAuth callback threads this
+    into the success redirect as `?{platform}_oauth_warning=account_already_connected&
+    {platform}_oauth_warning_space={otherSpaceId}` — the connection still completes either way.
+    Shell surfaces it as a heads-up toast, not an error banner, on the business detail page.
+    1839/1839 tests pass (5 new in `whop-oauth-connect.test.ts` — no warning on first connect, a
+    warning that doesn't block the second business's connection, no warning reconnecting the same
+    account to the same business, and the identity-lookup-itself-failing case never blocking the
+    connection), `pnpm turbo run typecheck` clean (75 tasks), shell verified via `next build`.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
