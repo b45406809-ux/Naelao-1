@@ -1548,3 +1548,90 @@ first real business on free-tier resources before opening the platform to other 
     /spaces/:spaceId/sessions` deriving `end_user_id` only from verified claims, never a query
     param). A naive implementation that let a caller pass `?user_id=` to select whose connection
     to use would immediately leak one collaborator's personal account to another.
+
+- [ ] **AI-6 (requested, not yet built): migrate `connectors/composio.ts`'s hand-rolled REST
+  calls onto Composio's official TypeScript SDK (`@composio/core`, or the smaller
+  `@composio/slim` if the full SDK pulls unwanted deps into a Worker bundle).** User preference,
+  explicit: "i prefer the composio sdk." Today's `composio.ts` calls `backend.composio.dev/api/v3`
+  directly via `fetch()` with a defensive multi-field-name `pick()` parser (its own header
+  documents this was because the raw REST response shape wasn't verified against a live key at
+  build time). The official SDK (`@composio/core`, confirmed installable via npm/yarn/pnpm,
+  requires Node 18+) exposes typed methods (e.g. `composio.connectedAccounts.link(...)`) that
+  would remove the guesswork entirely — real field names, real status enum, no defensive `pick()`
+  needed. **Before swapping:** confirm the SDK is CF-Workers-bundle-safe (no Node-only APIs the
+  Workers runtime doesn't polyfill — `@composio/slim` is the safer bet for a Worker, per its own
+  npm description as a smaller-footprint variant of the same API) — the hand-rolled `fetch()`
+  version was deliberately chosen to avoid an unverified bundle-compatibility risk in a
+  Cloudflare Worker, not out of a preference for raw REST. Scope: replace `startComposioLink`/
+  `getComposioConnectionStatus` internals only — the ticket-issuing/consuming flow, the
+  `/provider-connect/*` routes, and every test in `composio-connector-connect.test.ts` are
+  provider-implementation-agnostic and should need zero changes. Verify bundle size/compat with
+  `pnpm turbo run typecheck` + an actual `wrangler deploy --dry-run` (or bundle-check CI step)
+  before committing to the swap, not just a local Node test run.
+
+- [ ] **AI-7 (user-directed pivot, blocked on one open question before building): platform
+  billing (builder subscriptions) needs a Lemon Squeezy replacement — LS store activation failed
+  because its onboarding requires a Stripe-linked payout path and Stripe is unavailable in the
+  user's country.** This is a pivot from CLAUDE.md item 45's "Lemon Squeezy is the ONLY billing
+  provider" doctrine, for the PLATFORM-billing rail specifically (builder Growth/Business plan
+  checkout — `/billing/checkout`/`/billing/portal`/the LS webhook in `workers/billing`). It does
+  NOT affect the business-wallet rail (items 50-55, already Whop-based) or the BYO Whop connector
+  (items 52-54) — those are unrelated subsystems that already work.
+  **Researched, not assumed:** Whop's own plan/checkout API genuinely supports recurring
+  ('renewal') subscription billing with a full lifecycle (renewals, dunning, cancellations,
+  self-serve billing portal) — structurally capable of replacing what LS did for platform plans.
+  BUT Whop's own Terms of Service states payment/payout access requires completing "identity
+  verification and compliance checks required by third party identity verification services AND
+  financial partners" — and a Whop blog post states non-US creators from Stripe-restricted
+  countries "cannot directly access Whop's full seller capabilities" without a US LLC + US-linked
+  Stripe account. **Whether this specific restriction applies to a NORMAL Whop seller signup (as
+  opposed to the invite-gated Platforms/connected-accounts API items 50-51 already use for
+  business wallets) could not be confirmed from public sources** — search results conflated
+  Stripe's own KYC documentation with Whop's terms, and Whop's public docs don't clearly separate
+  "normal seller onboarding" requirements from the specific Stripe-linked path the blog post
+  describes. **Before building:** confirm whether the user can actually create/already has a
+  normal Whop company/seller account for Naelao itself (distinct from the sub-merchant wallet
+  rail's invite-gated API) — if that account creation itself fails the same way LS did, the pivot
+  needs a different provider entirely, not a code change.
+  **If confirmed viable, the build is:** a `WhopPlatformBillingProvider`-shaped set of routes
+  parallel to what LS's `/billing/checkout`+`/billing/portal`+webhook do today (see item 45's
+  `recordPlatformPlanSubscription` for the LS-side precedent to mirror) — Naelao creates Growth/
+  Business `renewal` Plans via Whop's Plan API, checkout links point at those plans, and a new
+  Whop webhook branch (membership/subscription lifecycle events — NOT the same webhook path as
+  `whop-wallet.ts`'s `payment.success`/`withdrawal.*` business-wallet events, a genuinely
+  different event family) updates `orgs.plan_tier` + invalidates the quota KV cache the same way
+  the existing LS handler does. `LEMON_SQUEEZY_GROWTH_VARIANT_ID`/`BUSINESS_VARIANT_ID` get a
+  Whop-plan-id counterpart; `docs/DEPLOYMENT_SECRETS.md`'s LS platform-plan row needs a Whop
+  equivalent added, not replaced (LS code stays, in case the user later has an LS-compatible
+  region/entity, matching the "D1 has no cheap drop-and-forget" precedent already used elsewhere
+  in this codebase for deprecated-but-not-deleted subsystems).
+
+- [ ] **AI-8 (user question, answered — do not build as scoped): Pipedream's custom-code-step
+  capability is real but is NOT a safe or sufficient substitute for the CF Tier 2-5 execution
+  ladder ($5 Workers Paid plan) — keep Pipedream as a connector, not a code-execution backend.**
+  Researched (not assumed): Pipedream workflows genuinely support custom Node.js/Python/Go/Bash
+  steps with npm/pip package access, and `client.workflows.invokeForExternalUser()` genuinely
+  scopes which end-user's connected-account credentials a given run resolves via
+  `external_user_id` — this credential-isolation half is real and already what `connectors/
+  pipedream.ts` (item 57) correctly relies on for the Notion connector. Two reasons this does not
+  extend to "use Pipedream instead of Worker Loaders/Containers for Tier 2-5":
+  (1) **Trust-model mismatch.** A Pipedream workflow's code steps are pre-authored once (in the
+  Pipedream UI or via their workflow-management API) — they are not an arbitrary
+  `run(code, tier)` API the way `env.codeRunner.run()` is. Making Pipedream serve that role would
+  require ONE workflow whose code step dynamically evals a `code` string passed in at trigger
+  time — technically buildable, but Pipedream's own security docs put responsibility for securing
+  a workflow's code on the account owner; there's no documented guarantee (unlike CF's V8
+  isolates/gVisor containers, which are specifically engineered and marketed for running
+  untrusted multi-tenant code) that Pipedream's own code-step execution is safe to run
+  arbitrary, agent-generated code originating from many DIFFERENT Naelao tenants side by side.
+  (2) **Free-tier compute ceiling makes it a non-starter past a toy scale.** Confirmed via
+  Pipedream's own pricing/limits docs: the free plan is 100 credits/month (1 credit = 30s @
+  256MB — about 50 minutes of total compute per month, PLATFORM-WIDE, not per business), capped
+  at 3 active workflows and 3 connected accounts, with a 30s default HTTP-trigger timeout (750s
+  hard cap even on paid tiers). This cannot serve as the real Tier 2-5 backend for more than a
+  single bootstrapping business's lightest automations.
+  **Recommendation given to the user:** keep Pipedream (and Composio) exactly as already built —
+  a connector for capabilities that map to a fixed, pre-authored pipeline (post to X, generate
+  an image, sync Notion) — and treat the CF Workers Paid plan's flat $5/month as the real Tier
+  2-5 unlock once the first bootstrap business has any real revenue, rather than building a
+  parallel, less-isolated, more resource-constrained execution path to defer a $5/month cost.
