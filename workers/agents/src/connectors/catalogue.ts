@@ -28,7 +28,11 @@ export type ConnectorCategory =
   | "freelance"
   | "social"
   | "voice"
-  | "support";
+  | "support"
+  | "content_gen"
+  | "crm"
+  | "ads"
+  | "email";
 
 export interface ConnectorOperation {
   /** The MCP tool name the agent calls via script.run("mcp.call", { server, tool, params }). */
@@ -79,6 +83,23 @@ export interface ConnectorOAuthSpec {
   userinfo_url?: string;
 }
 
+/**
+ * Composio "click Install" hosted-connect support (composio.ts). Naelao holds ONE platform
+ * Composio API key (mcp-hub's COMPOSIO_API_KEY, universal-tools doctrine — CLAUDE.md item 42);
+ * a connector marked with this field never needs the builder to paste an API key at all — they
+ * click Connect, authenticate on Composio's own hosted page for the real app (Twitter, HubSpot,
+ * Google Ads, …), and mcp-hub reaches it afterward via the resulting connected-account reference.
+ * `auth_config_id_env` is an env var NAME (never a value in code) holding the Composio "Auth
+ * Config" id pre-created once in the Composio dashboard for this app; when unset the connect
+ * flow degrades honestly (`provider_not_configured`), never silently falling back to manual key
+ * entry.
+ */
+export interface ConnectorComposioSpec {
+  /** Composio's toolkit/app slug (informational — the real routing is via auth_config_id). */
+  toolkit_slug: string;
+  auth_config_id_env: string;
+}
+
 export interface ConnectorDefinition {
   id: string;
   name: string;
@@ -93,13 +114,21 @@ export interface ConnectorDefinition {
   /** Present when this connector ALSO supports a "Connect with X" OAuth redirect, as an
    *  alternative to pasting `auth.credential_name`'s API key by hand. */
   oauth?: ConnectorOAuthSpec;
+  /** Present when this connector is reached via Composio's hosted click-to-install flow instead
+   *  of a bespoke OAuth app or a manual API key. Mutually exclusive with `oauth` in practice
+   *  (not enforced) — a connector picks whichever mechanism its real platform actually supports. */
+  composio?: ConnectorComposioSpec;
   /**
-   * Canonical MCP endpoint for the platform's shim (Naelao-hosted or a hosted gateway like
-   * Composio/Pipedream). The connect flow may override per deploy via env. Absent for
-   * coming-soon entries.
+   * Canonical MCP endpoint for the platform's shim (Naelao-hosted, or the platform's own hosted
+   * MCP server e.g. Higgsfield's). Absent for coming-soon entries AND for composio-routed
+   * connectors (the provider resolves the endpoint — mirrors mcp-hub's own registration rule
+   * that `url` is optional for provider-routed connectors).
    */
   mcp_endpoint?: string;
-  /** The wrapper surface — the operations the agent expects (also discoverable via mcp.list_tools). */
+  /** The wrapper surface — the operations the agent expects (also discoverable via mcp.list_tools).
+   *  For a composio-routed connector these are illustrative (Composio exposes the live tool list
+   *  per app; the agent discovers the real names via mcp.list_tools after connecting), not a
+   *  contract enforced against the provider. */
   operations?: ConnectorOperation[];
 }
 
@@ -171,6 +200,81 @@ const GUMROAD: ConnectorDefinition = {
   ],
 };
 
+/**
+ * Higgsfield — image/video generation (G-3). Unlike the social connectors below, Higgsfield
+ * ships its OWN hosted MCP server (mcp.higgsfield.ai/mcp, launched 2026-04-30) that the builder's
+ * OWN Higgsfield account key unlocks directly — no Composio mediation needed, so this fits the
+ * existing "direct" bearer-auth pattern (same shape as Whop/Gumroad) rather than the new
+ * `composio` field. 30+ models reachable through it (Kling, Veo, Sora, Seedream, …); exact tool
+ * names are discoverable via mcp.list_tools on first connect (not hand-verified against a live
+ * key in this pass — see composio.ts's header for the same "confirm once real access exists"
+ * precedent applied here to Higgsfield's own API instead).
+ */
+const HIGGSFIELD: ConnectorDefinition = {
+  id: "higgsfield",
+  name: "Higgsfield",
+  category: "content_gen",
+  status: "available",
+  summary:
+    "AI image and video generation — 30+ models (Kling, Veo, Sora, Seedream and more) through one " +
+    "hosted MCP server. Generate product shots, social video, and talking-head clips for the business.",
+  docs_url: "https://higgsfield.ai/mcp",
+  auth: { type: "bearer", credential_name: "HIGGSFIELD_API_KEY" },
+  mcp_endpoint: "https://mcp.higgsfield.ai/mcp",
+  operations: [
+    { name: "generate_image", description: "Generate an image from a text prompt (choose a model).", kind: "write" },
+    { name: "generate_video", description: "Generate a short video from a text prompt or image.", kind: "write" },
+    { name: "list_models", description: "List the image/video models available on this account's plan.", kind: "read" },
+  ],
+};
+
+/** Composio-routed social connectors (G-1) — the builder clicks Connect, authenticates on the
+ *  real platform via Composio's own hosted page, done. No API key ever entered by hand. */
+function composioSocial(
+  id: string,
+  name: string,
+  toolkit_slug: string,
+  auth_config_id_env: string,
+  summary: string,
+  operations: ConnectorOperation[]
+): ConnectorDefinition {
+  return {
+    id,
+    name,
+    category: "social",
+    status: "available",
+    summary,
+    auth: { type: "none", credential_name: "" },
+    composio: { toolkit_slug, auth_config_id_env },
+    operations,
+  };
+}
+
+const POST_OP: ConnectorOperation = { name: "create_post", description: "Publish a post/tweet/update.", kind: "write" };
+const SCHEDULE_OP: ConnectorOperation = { name: "schedule_post", description: "Schedule a post for later.", kind: "write" };
+const ANALYTICS_OP: ConnectorOperation = { name: "get_analytics", description: "Read post/account performance metrics.", kind: "read" };
+
+const TWITTER: ConnectorDefinition = composioSocial(
+  "twitter", "X (Twitter)", "twitter", "COMPOSIO_TWITTER_AUTH_CONFIG_ID",
+  "Post and schedule to X/Twitter, read engagement metrics — connected via Composio's hosted auth.",
+  [POST_OP, SCHEDULE_OP, ANALYTICS_OP, { name: "list_mentions", description: "List recent mentions/replies.", kind: "read" }]
+);
+const LINKEDIN: ConnectorDefinition = composioSocial(
+  "linkedin", "LinkedIn", "linkedin", "COMPOSIO_LINKEDIN_AUTH_CONFIG_ID",
+  "Post company/personal updates and read engagement on LinkedIn — connected via Composio's hosted auth.",
+  [POST_OP, ANALYTICS_OP]
+);
+const INSTAGRAM: ConnectorDefinition = composioSocial(
+  "instagram", "Instagram", "instagram", "COMPOSIO_INSTAGRAM_AUTH_CONFIG_ID",
+  "Publish posts, carousels and stories, read insights — connected via Composio's hosted auth.",
+  [POST_OP, SCHEDULE_OP, ANALYTICS_OP]
+);
+const TIKTOK: ConnectorDefinition = composioSocial(
+  "tiktok", "TikTok", "tiktok", "COMPOSIO_TIKTOK_AUTH_CONFIG_ID",
+  "Publish videos, schedule uploads, read analytics and comments — connected via Composio's hosted auth.",
+  [POST_OP, SCHEDULE_OP, ANALYTICS_OP, { name: "list_comments", description: "List comments on a video.", kind: "read" }]
+);
+
 /** Coming-soon placeholders — UI greys these out. Authored as data so flipping one on is trivial. */
 function comingSoon(
   id: string,
@@ -183,9 +287,36 @@ function comingSoon(
   return { id, name, category, status: "coming_soon", summary, auth: { type: "bearer", credential_name }, ...(docs_url ? { docs_url } : {}) };
 }
 
+/** Coming-soon Composio-routed placeholder — no builder credential at all once flipped on, just
+ *  an `auth_config_id_env` to provision. Kept `coming_soon` until that Auth Config exists. */
+function comingSoonComposio(
+  id: string,
+  name: string,
+  category: ConnectorCategory,
+  toolkit_slug: string,
+  auth_config_id_env: string,
+  summary: string
+): ConnectorDefinition {
+  return {
+    id, name, category, status: "coming_soon", summary,
+    auth: { type: "none", credential_name: "" },
+    composio: { toolkit_slug, auth_config_id_env },
+  };
+}
+
 export const CONNECTOR_CATALOGUE: ConnectorDefinition[] = [
   WHOP,
   GUMROAD,
+  HIGGSFIELD,
+  TWITTER,
+  LINKEDIN,
+  INSTAGRAM,
+  TIKTOK,
+  // CRM / ads / advanced email — Composio-routed, data-only until an Auth Config is provisioned.
+  comingSoonComposio("hubspot", "HubSpot", "crm", "hubspot", "COMPOSIO_HUBSPOT_AUTH_CONFIG_ID", "CRM/lead pipeline — deals, contacts, pipeline stages."),
+  comingSoonComposio("google-ads", "Google Ads", "ads", "googleads", "COMPOSIO_GOOGLE_ADS_AUTH_CONFIG_ID", "Campaign performance, budgets, ad group management."),
+  comingSoonComposio("meta-ads", "Meta Ads", "ads", "facebook_ads", "COMPOSIO_META_ADS_AUTH_CONFIG_ID", "Meta (Facebook/Instagram) ad campaign management."),
+  comingSoonComposio("agentmail", "AgentMail", "email", "agent_mail", "COMPOSIO_AGENTMAIL_AUTH_CONFIG_ID", "Dedicated agent-managed inbox — beyond the built-in business-email default."),
   // Course / product platforms
   comingSoon("stan-store", "Stan Store", "course_product", "Link-in-bio storefront, courses and bookings.", "STAN_API_KEY"),
   comingSoon("teachable", "Teachable", "course_product", "Online courses and coaching.", "TEACHABLE_API_KEY"),
@@ -249,7 +380,10 @@ export function validateConnectorCatalogue(cat: ConnectorDefinition[] = CONNECTO
     if (seen.has(c.id)) throw new Error(`Connector catalogue: duplicate id '${c.id}'`);
     seen.add(c.id);
     if (c.status === "available") {
-      if (!c.mcp_endpoint) throw new Error(`Connector '${c.id}' is available but has no mcp_endpoint`);
+      // Composio/Pipedream-routed connectors have no mcp_endpoint of their own — the provider
+      // resolves it (mirrors mcp-hub's own POST /mcp-servers rule that `url` is optional for
+      // provider-routed connectors).
+      if (!c.composio && !c.mcp_endpoint) throw new Error(`Connector '${c.id}' is available but has no mcp_endpoint`);
       if (!c.operations || c.operations.length === 0) throw new Error(`Connector '${c.id}' is available but declares no operations`);
       for (const op of c.operations) {
         if (MONEY_IN_OP.test(op.name)) {

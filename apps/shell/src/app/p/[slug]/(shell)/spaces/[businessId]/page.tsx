@@ -31,6 +31,7 @@ import {
   getConnectorStatus,
   connectPlatform,
   startOAuthConnect,
+  startProviderConnect,
   type BusinessMember,
   type Business,
   type PricingPlan,
@@ -101,6 +102,31 @@ export default function BusinessDetailPage() {
   const [whopKeyOpen, setWhopKeyOpen] = React.useState(false);
   const [whopKey, setWhopKey] = React.useState("");
   const [connectBusy, setConnectBusy] = React.useState(false);
+  // Growth-layer "Connect Apps" panel (G-1/G-3): every OTHER available connector besides Whop
+  // (which has its own dedicated card above). manualKeyOpenFor tracks which connector's inline
+  // key-paste form is open; dismissedApps is a client-only "skip for now" per the onboarding ask
+  // ("or can skip and do later") — not persisted server-side, just this browser.
+  const [appBusy, setAppBusy] = React.useState<string | null>(null);
+  const [manualKeyOpenFor, setManualKeyOpenFor] = React.useState<string | null>(null);
+  const [manualKeyValue, setManualKeyValue] = React.useState("");
+  const [dismissedApps, setDismissedApps] = React.useState<Set<string>>(new Set());
+
+  React.useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(`naelao:dismissed-connectors:${params.businessId}`);
+      if (raw) setDismissedApps(new Set(JSON.parse(raw) as string[]));
+    } catch { /* best-effort */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function dismissApp(id: string) {
+    const next = new Set(dismissedApps);
+    next.add(id);
+    setDismissedApps(next);
+    try {
+      window.localStorage.setItem(`naelao:dismissed-connectors:${params.businessId}`, JSON.stringify([...next]));
+    } catch { /* best-effort */ }
+  }
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -273,6 +299,82 @@ export default function BusinessDetailPage() {
       setConnectBusy(false);
     }
   }
+
+  // Growth-layer "click Install" connect (G-1/G-3): branches on how the connector reaches the
+  // real app — a Composio-hosted redirect, a bespoke OAuth redirect (mirrors handleConnectWhopOAuth
+  // above), or the inline manual-key form (opened via setManualKeyOpenFor).
+  async function handleConnectApp(connector: ConnectorInfo) {
+    if (!creds) return;
+    if (connector.composio) {
+      setAppBusy(connector.id);
+      try {
+        const { connect_url } = await startProviderConnect(params.businessId, creds, connector.id, window.location.href);
+        window.location.href = connect_url;
+      } catch (err) {
+        show(err instanceof Error ? err.message : `Failed to start the ${connector.name} connection`);
+        setAppBusy(null);
+      }
+      return;
+    }
+    if (connector.oauth) {
+      setAppBusy(connector.id);
+      try {
+        const { authorize_url } = await startOAuthConnect(params.businessId, creds, connector.id, window.location.href);
+        window.location.href = authorize_url;
+      } catch (err) {
+        show(err instanceof Error ? err.message : `Failed to start the ${connector.name} connection`);
+        setAppBusy(null);
+      }
+      return;
+    }
+    setManualKeyOpenFor(connector.id);
+    setManualKeyValue("");
+  }
+
+  async function handleManualAppConnect(platform: string) {
+    if (!creds || !manualKeyValue.trim()) return;
+    setAppBusy(platform);
+    try {
+      await connectPlatform(params.businessId, creds, platform, manualKeyValue.trim());
+      setManualKeyOpenFor(null);
+      setManualKeyValue("");
+      await refresh();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to connect");
+    } finally {
+      setAppBusy(null);
+    }
+  }
+
+  // Land back here after ANY connector's redirect (Whop's own OAuth, or a growth-layer app's
+  // Composio/OAuth redirect) — every flow sets `${platform}_connected=1` or `${platform}_oauth_
+  // error=` on return, so this scans every known connector id rather than hardcoding one.
+  React.useEffect(() => {
+    const params2 = new URLSearchParams(window.location.search);
+    let touched = false;
+    // "whop" is handled by its own dedicated effect below (it has extra duplicate-account-warning
+    // handling) — skip it here so the two effects don't double-toast/double-clean the same params.
+    for (const c of connectors.filter((x) => x.id !== "whop")) {
+      const connectedKey = `${c.id}_connected`;
+      const errorKey = `${c.id}_oauth_error`;
+      if (params2.get(connectedKey)) {
+        show(`${c.name} connected.`);
+        params2.delete(connectedKey);
+        touched = true;
+      }
+      if (params2.get(errorKey)) {
+        show(`${c.name} connection failed: ${params2.get(errorKey)}`);
+        params2.delete(errorKey);
+        touched = true;
+      }
+    }
+    if (touched) {
+      const clean = `${window.location.pathname}${params2.toString() ? `?${params2}` : ""}`;
+      window.history.replaceState({}, "", clean);
+      void refresh();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectors.length]);
 
   // Land back here after the OAuth redirect — clean the marker out of the URL either way so a
   // reload doesn't re-trigger the toast, and refresh so the newly-connected status shows up.
@@ -520,6 +622,82 @@ export default function BusinessDetailPage() {
                   </button>
                 </div>
               )}
+            </div>
+          </>
+        );
+      })()}
+
+      {/* Growth-layer "Connect Apps" (G-1/G-3): a real click-to-install experience, same idea as
+          adding a connector in Claude or ChatGPT — most of what a business needs beyond the
+          wallet/email is a real third-party app reached over MCP, not a Naelao-built feature. Whop
+          has its own dedicated card above; this covers everything else in the catalogue that's
+          actually live (Higgsfield for image/video, X/LinkedIn/Instagram/TikTok for social).
+          "Skip for now" is a client-only dismissal (this ask explicitly allows skipping) — the
+          panel disappears once every recommended app is either connected or dismissed. */}
+      {canManage && (() => {
+        const appConnectors = connectors.filter((c) => c.status === "available" && c.id !== "whop");
+        const visible = appConnectors.filter((c) => !c.connected && !dismissedApps.has(c.id));
+        if (appConnectors.length === 0 || visible.length === 0) return null;
+        return (
+          <>
+            <div className="section-label">Connect Apps</div>
+            <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
+              Connect real apps so the assistant can actually post, generate, and sync on this
+              business&rsquo;s behalf — no API keys to hunt down for most of these, just click
+              Connect and sign in. Skip any of these for now; the assistant will ask again when it
+              actually needs one.
+            </p>
+            <div className="settings-block">
+              {visible.map((c) => (
+                <React.Fragment key={c.id}>
+                  <div className="settings-row">
+                    <div>
+                      <div className="settings-row-label">{c.name}</div>
+                      <div className="settings-row-sub">{c.summary}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      {manualKeyOpenFor !== c.id && (
+                        <>
+                          <Button onClick={() => handleConnectApp(c)} disabled={appBusy === c.id}>
+                            {appBusy === c.id ? "Connecting…" : "Connect"}
+                          </Button>
+                          <button
+                            className="btn btn-secondary"
+                            type="button"
+                            onClick={() => dismissApp(c.id)}
+                            disabled={appBusy === c.id}
+                            style={{ fontSize: 12 }}
+                          >
+                            Skip for now
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  {manualKeyOpenFor === c.id && (
+                    <div style={{ padding: "0 12px 12px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+                      <FormInput
+                        type="password"
+                        placeholder={`${c.name} API key`}
+                        value={manualKeyValue}
+                        onChange={(e) => setManualKeyValue(e.target.value)}
+                        style={{ flex: 1, minWidth: 220 }}
+                      />
+                      <Button onClick={() => handleManualAppConnect(c.id)} disabled={appBusy === c.id || !manualKeyValue.trim()}>
+                        {appBusy === c.id ? "Connecting…" : "Connect"}
+                      </Button>
+                      <button
+                        className="btn btn-secondary"
+                        type="button"
+                        onClick={() => { setManualKeyOpenFor(null); setManualKeyValue(""); }}
+                        disabled={appBusy === c.id}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </React.Fragment>
+              ))}
             </div>
           </>
         );

@@ -20,9 +20,36 @@ describe("connector catalogue", () => {
     expect(whop?.auth.credential_name).toBe("WHOP_API_KEY");
   });
 
-  it("availableConnectors() returns Whop + Gumroad in this build", () => {
+  it("availableConnectors() returns Whop + Gumroad + the growth-layer connectors in this build", () => {
     const avail = availableConnectors().map((c) => c.id).sort();
-    expect(avail).toEqual(["gumroad", "whop"]);
+    expect(avail).toEqual(["gumroad", "higgsfield", "instagram", "linkedin", "tiktok", "twitter", "whop"]);
+  });
+
+  it("Composio-routed social connectors have no mcp_endpoint of their own (the provider resolves it) and no builder credential", () => {
+    for (const id of ["twitter", "linkedin", "instagram", "tiktok"]) {
+      const c = getConnector(id);
+      expect(c?.status).toBe("available");
+      expect(c?.mcp_endpoint).toBeUndefined();
+      expect(c?.composio?.auth_config_id_env).toBeTruthy();
+      expect(c?.auth.type).toBe("none");
+      expect((c?.operations ?? []).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("Higgsfield is a direct (non-Composio) connector with its own hosted MCP endpoint", () => {
+    const c = getConnector("higgsfield");
+    expect(c?.status).toBe("available");
+    expect(c?.mcp_endpoint).toBe("https://mcp.higgsfield.ai/mcp");
+    expect(c?.composio).toBeUndefined();
+    expect(c?.auth.credential_name).toBe("HIGGSFIELD_API_KEY");
+  });
+
+  it("coming_soon Composio placeholders (CRM/ads/advanced-email) resolve and carry a toolkit slug", () => {
+    for (const id of ["hubspot", "google-ads", "meta-ads", "agentmail"]) {
+      const c = getConnector(id);
+      expect(c?.status).toBe("coming_soon");
+      expect(c?.composio?.toolkit_slug).toBeTruthy();
+    }
   });
 
   it("the rest of the creator-economy platforms are coming_soon", () => {

@@ -25,6 +25,7 @@
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
 import { isReservedPaymentHost, isReservedToolName } from "../reserved-capabilities.js";
+import { getConnector } from "../../connectors/catalogue.js";
 import { mintInternalToken } from "@naelao/http";
 
 interface HubServer {
@@ -77,13 +78,39 @@ export async function hubFetch(
   return json;
 }
 
-/** Resolve a server reference (name OR id) to its registry id. */
+/**
+ * Resolve a server reference (name OR id) to its registry id.
+ *
+ * Growth-layer "click Install" onboarding: when the reference matches a KNOWN catalogue
+ * connector (e.g. an agent tries `mcp.call({server:"twitter", ...})` before the business has
+ * connected Twitter) the error carries `needs_connector`/`connector_id`/`connector_name` fields
+ * (same pattern as this file's existing `reserved` flag on a reserved-capability error) so the
+ * reasoning loop's own answer can tell the human exactly which app to connect, by name, instead
+ * of a bare "server not found." A ref that matches NO catalogue entry at all (a typo, or a
+ * template the agent invented) gets the old plain error — there's nothing to prompt-install.
+ */
 export async function resolveServerId(ctx: PrebuiltOpContext, ref: string): Promise<string> {
   const listed = (await hubFetch(ctx, "/mcp-servers", { method: "GET" })) as { data?: HubServer[] };
   const servers = listed.data ?? [];
   const match = servers.find((s) => s.id === ref) ?? servers.find((s) => s.name === ref);
-  if (!match) throw new Error(`mcp-connector: no registered server named '${ref}'`);
-  return match.id;
+  if (match) return match.id;
+
+  const catalogued = getConnector(ref);
+  if (catalogued) {
+    const err = new Error(
+      catalogued.status === "available"
+        ? `'${catalogued.name}' is not connected yet for this business. Ask the business owner/admin ` +
+          `to connect it from the Connectors panel (Business detail → Connect Apps), then try again.`
+        : `'${catalogued.name}' is coming soon and cannot be connected yet.`
+    );
+    const meta = err as unknown as Record<string, unknown>;
+    meta["needsConnector"] = catalogued.status === "available";
+    meta["connectorId"] = catalogued.id;
+    meta["connectorName"] = catalogued.name;
+    meta["connectorStatus"] = catalogued.status;
+    throw err;
+  }
+  throw new Error(`mcp-connector: no registered server named '${ref}'`);
 }
 
 export const mcpConnector: PrebuiltScript = {

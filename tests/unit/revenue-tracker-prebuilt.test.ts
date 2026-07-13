@@ -178,8 +178,11 @@ describe("revenue-tracker prebuilt — revenue.track_whop", () => {
     expect(hubCalls.filter((c) => /tools\/call$/.test(c.url))).toHaveLength(5);
   });
 
-  it("throws a clear error when no 'whop' MCP server is registered for this business", async () => {
+  it("throws a clear, click-to-connect error when no 'whop' MCP server is registered for this business", async () => {
+    // mcp-connector's resolveServerId now names the exact catalogued connector to connect
+    // (growth-layer click-Install onboarding) instead of a bare "no registered server" — Whop is
+    // in the catalogue, so this is the friendlier, connector-aware message.
     const { env } = makeEnv({ servers: [] });
-    await expect(revenueTracker.operations["revenue.track_whop"]!({}, { env, run: noopRun })).rejects.toThrow(/no registered server/i);
+    await expect(revenueTracker.operations["revenue.track_whop"]!({}, { env, run: noopRun })).rejects.toThrow(/not connected yet|Connect Apps/i);
   });
 });

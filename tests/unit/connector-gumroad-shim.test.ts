@@ -11,7 +11,8 @@ describe("Gumroad MCP shim (connector #2)", () => {
     expect(g?.status).toBe("available");
     expect(g?.mcp_endpoint).toContain("gumroad");
     expect((g?.operations ?? []).length).toBeGreaterThan(0);
-    expect(availableConnectors().map((c) => c.id).sort()).toEqual(["gumroad", "whop"]);
+    expect(availableConnectors().map((c) => c.id)).toContain("gumroad");
+    expect(availableConnectors().map((c) => c.id)).toContain("whop");
   });
 
   it("exposes the expected read tools and no money-in tool", () => {

@@ -93,24 +93,30 @@ Already at parity or ahead (not gaps, listed for contrast):
   memory, nightly consolidation."
 - Scheduled/cron jobs + channel heartbeats — matches "daily autonomous cycles."
 
-- [ ] **G-1 (marketing, highest priority — both competitors lead with this, we have zero
-  connectors for it).** Social posting (X/Twitter, Instagram, LinkedIn, TikTok) — no connector
-  exists; the catalogue's `"social"` category has no entry at `status: "available"`. Felix's
-  skill list literally includes "X/Twitter posting" and "Instagram carousels." Needs: a new
-  connector definition per platform (OAuth where the platform supports it, same pattern as
-  item 53's Whop OAuth2+PKCE) + a `social` prebuilt (`social.post`, `social.schedule`,
-  `social.list_posts`).
+- [x] **G-1 (marketing, highest priority) — BUILT (CLAUDE.md item 56).** X/Twitter, LinkedIn,
+  Instagram, TikTok are now `available` connectors, Composio-routed (a real Composio "Connect
+  Link" hosted flow — click Install, authenticate on the real app's own page, done — rather than
+  a bespoke OAuth app per platform, so the same mechanism cheaply extends to more apps later) plus
+  a seeded `social-post` skill. The onboarding (template-recommended connectors + a shell "Connect
+  Apps" panel) and runtime "prompt to install" behavior (`mcp-connector`'s `needs_connector`
+  signal, naming the exact app) are built generically — this is the reusable mechanism G-2/G-8
+  will plug into, not a one-off. Not yet LIVE: needs a real `COMPOSIO_API_KEY` + per-app Auth
+  Configs provisioned in the Composio dashboard; the code degrades honestly
+  (`provider_not_configured`) until then. Pipedream's equivalent hosted-connect flow was
+  deliberately NOT built this pass (mcp-hub already tool-call-proxies to a Pipedream connection
+  once one exists; nothing initiates one yet) — Composio alone covers every app this pass needed.
 
 - [ ] **G-2 (marketing).** Paid ads (Meta Ads, Google Ads) — spend management tied to the
-  business wallet so the agent can set budget/targets against real revenue. No connector or
-  prebuilt exists.
+  business wallet so the agent can set budget/targets against real revenue. The connector
+  catalogue now HAS `coming_soon` Composio-routed entries for both (`google-ads`, `meta-ads`,
+  item 56) — flipping them `available` reuses the same click-Install mechanism G-1 built; what's
+  still missing is the wallet-budget-linking logic itself, not the connector layer.
 
-- [ ] **G-3 (marketing/content).** Image/video generation — no prebuilt at all (confirmed
-  empty in `script-engine/prebuilt/`). Felix does blog hero images, talking-head videos,
-  Instagram carousels. CF Workers AI has image models already reachable via the `AI` binding
-  other prebuilts use (`web-search`, `knowledge-base`) — a `content-gen` prebuilt wrapping
-  those (plus a BYO/platform-key text-to-video provider for talking-head video, same
-  universal-tools-doctrine pattern as `web-search`'s Tavily key) would close this.
+- [x] **G-3 (marketing/content) — BUILT (CLAUDE.md item 56).** Image/video generation: Higgsfield
+  is now an `available` connector (its own hosted MCP server, 30+ models incl. Kling/Veo/Sora —
+  simpler than the originally-sketched CF-Workers-AI-image + separate video-provider design, since
+  Higgsfield already bundles both) plus seeded `content-generate-image`/`content-generate-video`
+  skills. Same onboarding/prompt-to-install mechanism as G-1.
 
 - [ ] **G-4 (marketing).** Cold outbound at general availability. Compliant multi-channel cold
   outreach already exists (item 43 BF.3) but is scoped to exactly one template
@@ -142,7 +148,10 @@ Already at parity or ahead (not gaps, listed for contrast):
   ordinary threads but no deal/lead/pipeline-stage primitive an agent can query and update
   (e.g. `crm.create_lead`, `crm.update_stage`, `crm.list_pipeline`). Would likely live as a new
   SpaceDO table (project-scoped, same pattern as `project_spend`/`container_slots`) plus a
-  `crm` prebuilt.
+  `crm` prebuilt. The catalogue now has a `coming_soon` Composio-routed `hubspot` entry (item 56)
+  for businesses that already run a real CRM — flip it on with the same click-Install mechanism as
+  G-1 for that case; a NATIVE Naelao-owned pipeline primitive (this item's original scope) is
+  still a separate, unbuilt piece for businesses with no existing CRM.
 
 - [ ] **G-9 (identity/domain).** Domain registration — the existing CF-for-SaaS flow (item 16,
   Phase H) assumes the builder already owns a domain and only handles DNS/DCV pointing.
@@ -163,10 +172,13 @@ Not pursuing (lower priority, flagged not dropped):
   search results (both stop at wallet + payments, not legal registration), so it's likely not
   worth chasing ahead of G-1..G-8.
 
-Recommended sequencing when this gets picked up: **G-1 (social posting) + G-3 (image
-generation)** first — highest leverage, both competitors lead with marketing and we have
-nothing; **G-6 (voice-note updates)** as a cheap high-charm add-on once G-1/G-3 land; the rest
-in roughly the numbered order above.
+Recommended sequencing: **G-1 (social posting) + G-3 (image generation) are now BUILT** (CLAUDE.md
+item 56, 2026-07-13) via the new Composio "click Install" connect mechanism. Next up per the
+original sequencing: **G-6 (voice-note updates)** as a cheap high-charm add-on (reuses the
+existing `notifications` prebuilt, no telephony/STT needed), then the rest in roughly the
+numbered order above — G-2/G-8 now have a head start since their catalogue entries + connect
+mechanism already exist (item 56), leaving only their own domain logic (ad-spend/wallet linking,
+a native CRM pipeline primitive) unbuilt.
 
 Sources (web search, 2026-07-13): [Polsia — AI That Runs Your Company While You Sleep](https://polsia.com/),
 [How Polsia builds and runs companies with AI agents](https://timfrin.substack.com/p/how-polsia-builds-and-runs-companies),

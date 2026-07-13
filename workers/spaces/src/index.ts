@@ -1420,6 +1420,22 @@ app.post("/spaces/:spaceId/connectors/oauth-start", async (c) => {
   });
 });
 
+// Composio "click Install" hosted-connect flow (G-1/G-3 growth layer) — same admin-only gate and
+// platform-in-body shape as oauth-start above (same router-corruption reasoning: never a dynamic
+// :platform URL segment on a spaces-worker route). Returns {connect_url}; the frontend does a real
+// browser navigation to it (see composio.ts's header).
+app.use("/spaces/:spaceId/connectors/provider-connect-start", requireBusinessMembership({ POST: "admin" }));
+app.post("/spaces/:spaceId/connectors/provider-connect-start", async (c) => {
+  const body = await c.req.json<{ platform?: string; return_url?: string }>().catch(() => ({}) as Record<string, never>);
+  const platform = body.platform ?? "";
+  if (!platform) return c.json({ error_code: "bad_request", message: "platform is required" }, 400);
+  if (!body.return_url) return c.json({ error_code: "bad_request", message: "return_url is required" }, 400);
+  return proxyConnectorsToAgents(c, `/connectors/${encodeURIComponent(platform)}/provider-connect/start`, "POST", {
+    space_id: c.req.param("spaceId"),
+    return_url: body.return_url,
+  });
+});
+
 app.post("/spaces/:spaceId/business-wallet/payouts", async (c) => {
   const body = await c.req.json<{ destination_id?: string; amount_cents?: number; note?: string }>().catch(() => ({}) as Record<string, never>);
   const identity = getCallerIdentity(c);

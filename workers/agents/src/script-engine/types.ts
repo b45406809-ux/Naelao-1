@@ -147,6 +147,13 @@ export interface ScriptRunResult {
    *  Absent for pure script execution, where tokens_used is already 0. */
   input_tokens?: number;
   output_tokens?: number;
+  /** Growth-layer "click Install" onboarding (mcp-connector.ts's resolveServerId): set when the
+   *  op failed because a KNOWN catalogue connector isn't connected for this space yet — lets the
+   *  reasoning loop's answer name the exact app to install instead of a bare "not found" error,
+   *  and gives a future UI a structured signal to render a Connect action from (not just prose). */
+  needs_connector?: boolean;
+  connector_id?: string;
+  connector_name?: string;
 }
 
 /** A candidate returned by script.find. */

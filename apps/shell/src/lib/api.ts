@@ -842,6 +842,8 @@ export interface ConnectorInfo {
   status: "available" | "coming_soon";
   summary: string;
   connected?: boolean;
+  oauth?: unknown;
+  composio?: unknown;
 }
 
 export async function getConnectorStatus(spaceId: string, session: SessionCredentials): Promise<ConnectorInfo[]> {
@@ -874,6 +876,22 @@ export async function startOAuthConnect(
   returnUrl: string
 ): Promise<{ authorize_url: string }> {
   return apiFetch(`/v1/spaces/${spaceId}/connectors/oauth-start`, {
+    method: "POST",
+    body: JSON.stringify({ platform, return_url: returnUrl }),
+    session,
+  });
+}
+
+/** Composio "click Install" hosted-connect flow (G-1/G-3 growth layer) — same real-browser-
+ *  navigation contract as startOAuthConnect above (no credential in the URL, only an opaque
+ *  single-use ticket); the caller does `window.location.href = connect_url` itself. */
+export async function startProviderConnect(
+  spaceId: string,
+  session: SessionCredentials,
+  platform: string,
+  returnUrl: string
+): Promise<{ connect_url: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/connectors/provider-connect-start`, {
     method: "POST",
     body: JSON.stringify({ platform, return_url: returnUrl }),
     session,

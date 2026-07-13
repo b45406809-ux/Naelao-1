@@ -35,6 +35,12 @@ import {
   fetchOAuthIdentity,
   linkOAuthAccountAndCheckDuplicate,
 } from "./connectors/oauth.js";
+import {
+  startComposioLink,
+  getComposioConnectionStatus,
+  consumeProviderConnectTicket,
+  providerTicketKey,
+} from "./connectors/composio.js";
 import { isChannelType, getAdapter, type ChannelType } from "./launchpad/channels.js";
 import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
 
@@ -134,6 +140,11 @@ export interface AgentsEnv {
    *  route degrades honestly when unset (a redirect_uri must be an exact match, so a guess would
    *  silently fail at Whop's end instead). */
   PUBLIC_AGENTS_URL?: string;
+  /** Universal-tools doctrine (CLAUDE.md item 42) — Naelao holds ONE Composio API key so a
+   *  `composio`-routed connector's "click Install" flow (composio.ts) needs zero builder
+   *  configuration to INITIATE the hosted-auth redirect. mcp-hub holds its own copy of this same
+   *  secret for the tool-call proxy side; this copy is only used to start/poll the connection. */
+  COMPOSIO_API_KEY?: string;
   /** §A1.27: already bound in wrangler.toml (naelao-billing); added here so the context-usage
    *  endpoint can read the day/week/month llm_tokens summary. */
   BILLING_WORKER?: Fetcher;
@@ -1767,6 +1778,134 @@ app.get("/connectors/:platform/oauth/callback", async (c) => {
       successUrl.searchParams.set(`${platform}_oauth_warning`, "account_already_connected");
       successUrl.searchParams.set(`${platform}_oauth_warning_space`, duplicateOfSpaceId);
     }
+    return c.redirect(successUrl.toString(), 302);
+  } catch (err) {
+    return failRedirect((err as Error).message.slice(0, 200));
+  }
+});
+
+// POST /connectors/:platform/provider-connect/start — the Composio "click Install" flow (G-1/G-3
+// growth-layer work): unlike /oauth/start (a bespoke per-platform OAuth app), this connector's
+// entire OAuth dance is hosted BY Composio — the builder authenticates on Composio's own page for
+// the real app (Twitter, HubSpot, …), no API key ever entered by hand. Authenticated (this call
+// itself is a plain fetch, not a page navigation).
+app.post("/connectors/:platform/provider-connect/start", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const { userId } = getCallerIdentity(c);
+  const platform = c.req.param("platform");
+  const connector = getConnector(platform);
+  if (!connector) throw notFound("Connector");
+  if (!connector.composio) {
+    return c.json({ error_code: "provider_connect_not_supported", message: `${connector.name} has no Composio connect flow` }, 400);
+  }
+  if (connector.status !== "available") {
+    return c.json({ error_code: "coming_soon", message: `${connector.name} is coming soon` }, 409);
+  }
+  const apiKey = c.env.COMPOSIO_API_KEY;
+  const authConfigId = (c.env as unknown as Record<string, string | undefined>)[connector.composio.auth_config_id_env];
+  if (!apiKey || !authConfigId || !c.env.PUBLIC_AGENTS_URL) {
+    return c.json({ error_code: "provider_not_configured", message: `${connector.name} is not configured on this platform yet` }, 503);
+  }
+
+  interface StartBody { space_id: string; return_url: string }
+  const body = await c.req.json<StartBody>().catch(() => ({ space_id: "", return_url: "" } as StartBody));
+  if (!body.space_id) throw badRequest("space_id is required");
+  if (!body.return_url) throw badRequest("return_url is required");
+
+  // The ticket id doubles as Composio's `callback_url` query param — Composio redirects the
+  // browser back here with no other state of its own attached, so the ticket is how we know
+  // which space/tenant/return_url this connection belongs to (same precedent as oauth.ts).
+  const ticketPlaceholder = crypto.randomUUID();
+  const callbackUrl = `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/connectors/${encodeURIComponent(platform)}/provider-connect/callback?ticket=${ticketPlaceholder}`;
+
+  let link: { redirect_url: string; connection_id: string };
+  try {
+    link = await startComposioLink({ apiKey, spaceId: body.space_id, authConfigId, callbackUrl });
+  } catch (err) {
+    return c.json({ error_code: "provider_connect_failed", message: (err as Error).message }, 502);
+  }
+
+  // Re-issue under the SAME id used in the callback URL above (issueProviderConnectTicket mints
+  // its own random id — pass ticketPlaceholder explicitly isn't supported, so store keyed by it
+  // directly to keep the callback URL and the KV key in lockstep).
+  await c.env.AGENT_CACHE.put(
+    providerTicketKey(ticketPlaceholder),
+    JSON.stringify({
+      spaceId: body.space_id, tenantId, userId, returnUrl: body.return_url, platform, connectionId: link.connection_id,
+    }),
+    { expirationTtl: 600 }
+  );
+
+  return c.json({ connect_url: link.redirect_url });
+});
+
+// GET /connectors/:platform/provider-connect/callback — PUBLIC/unauthenticated (Composio redirects
+// the raw browser here with no Naelao auth attached; the single-use `ticket` query param IS the
+// auth). Polls the REAL connection status (never trusts the redirect alone — see composio.ts's
+// header) before registering the connector, so a user who bails out mid-consent doesn't leave a
+// server row claiming success.
+app.get("/connectors/:platform/provider-connect/callback", async (c) => {
+  const platform = c.req.param("platform");
+  const connector = getConnector(platform);
+  const ticketId = c.req.query("ticket");
+  if (!connector?.composio) return c.text("Unknown connector", 404);
+
+  const ticket = ticketId ? await consumeProviderConnectTicket(c.env.AGENT_CACHE, ticketId) : null;
+  if (!ticket || ticket.platform !== platform) {
+    return c.text("This connection link has expired or was already used. Go back and try connecting again.", 400);
+  }
+  const failRedirect = (reason: string) => {
+    const u = new URL(ticket.returnUrl);
+    u.searchParams.set(`${platform}_oauth_error`, reason);
+    return c.redirect(u.toString(), 302);
+  };
+
+  const apiKey = c.env.COMPOSIO_API_KEY;
+  if (!apiKey) return failRedirect("provider_not_configured");
+
+  try {
+    const status = await getComposioConnectionStatus(apiKey, ticket.connectionId);
+    if (status !== "ACTIVE") return failRedirect(`connection_${status.toLowerCase()}`);
+
+    if (!c.env.MCP_HUB) return failRedirect("connectors_unavailable");
+    const mcpInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, ticket.tenantId);
+    const listResp = await c.env.MCP_HUB.fetch(
+      new Request(`http://mcp-hub/v1/spaces/${ticket.spaceId}/mcp-servers`, {
+        headers: { "x-naelao-tenant-id": ticket.tenantId, "x-naelao-internal-token": mcpInternalToken },
+      })
+    );
+    let serverId: string | null = null;
+    if (listResp.ok) {
+      const { data } = await listResp.json<{ data?: Array<{ id: string; name: string }> }>();
+      serverId = (data ?? []).find((s) => s.name === connector.id)?.id ?? null;
+    }
+    const upsertBody = {
+      name: connector.id,
+      auth_type: "none" as const,
+      connector_provider: "composio" as const,
+      provider_connection_id: ticket.connectionId,
+    };
+    if (!serverId) {
+      const regResp = await c.env.MCP_HUB.fetch(
+        new Request(`http://mcp-hub/v1/spaces/${ticket.spaceId}/mcp-servers`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-naelao-tenant-id": ticket.tenantId, "x-naelao-internal-token": mcpInternalToken },
+          body: JSON.stringify(upsertBody),
+        })
+      );
+      if (!regResp.ok) return failRedirect("register_failed");
+    } else {
+      await c.env.MCP_HUB.fetch(
+        new Request(`http://mcp-hub/v1/spaces/${ticket.spaceId}/mcp-servers/${serverId}`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json", "x-naelao-tenant-id": ticket.tenantId, "x-naelao-internal-token": mcpInternalToken },
+          body: JSON.stringify({ enabled: true }),
+        })
+      );
+    }
+
+    const successUrl = new URL(ticket.returnUrl);
+    successUrl.searchParams.set(`${platform}_connected`, "1");
     return c.redirect(successUrl.toString(), 302);
   } catch (err) {
     return failRedirect((err as Error).message.slice(0, 200));

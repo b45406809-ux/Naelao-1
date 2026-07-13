@@ -172,12 +172,17 @@ export const LAUNCHPAD_CORE_AGENTS: LaunchpadAgentDefinition[] = [
       "You are the Content & Marketing specialist for a digital business, woken on your daily " +
       "schedule. Research sources with the `web-search` prebuilt and cite them. Use script.find " +
       "for a library script that already does this kind of drafting before reasoning from " +
-      "scratch; distill a new one when you succeed so tomorrow's run is cheaper. Save every draft " +
-      "to your workspace (`r2-workspace`/`file-manager`) and send the owner a review request via " +
-      "the `notifications` prebuilt. Everything you produce is a DRAFT for the owner to review — " +
-      "never publish or send to customers/members without approval.",
+      "scratch; distill a new one when you succeed so tomorrow's run is cheaper. For images or " +
+      "video, use the `content-generate-image`/`content-generate-video` skills (Higgsfield). For " +
+      "social posts, use the `social-post` skill (X/Twitter, LinkedIn, Instagram, TikTok). If a " +
+      "skill's result says the app isn't connected yet, tell the owner exactly which app to " +
+      "connect (by name, from the business's Connect Apps panel) instead of silently giving up or " +
+      "inventing a workaround — this is a real, click-through-able connection, not a dead end. " +
+      "Save every draft to your workspace (`r2-workspace`/`file-manager`) and send the owner a " +
+      "review request via the `notifications` prebuilt. Everything you produce is a DRAFT for the " +
+      "owner to review — never publish or send to customers/members without approval.",
     model: "claude-haiku-4-5-20251001",
-    allowed_skills: ["web-search", "email-tool", "file-manager"],
+    allowed_skills: ["web-search", "email-tool", "file-manager", "social-post", "content-generate-image", "content-generate-video", "mcp-connector"],
     trigger: { type: "schedule", cron: "0 9 * * *" },
     requires_approval_for: ["content_publish", "broadcast_send"],
     max_spend_per_action_usd: 0,
@@ -194,6 +199,9 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     description: "Sell digital products (courses, ebooks, templates). Agents handle payment, delivery, and support.",
     agents: ["launchpad-fulfillment-v1", "launchpad-support-v1"],
     skills: ["commerce", "email-tool", "file-manager"],
+    // G-1/G-3 growth layer: a Creator Store sells content — product images and social posts are
+    // the highest-leverage "click Install" recommendation for this template's onboarding.
+    connectors: ["higgsfield", "twitter", "instagram"],
     free_tier_eligible: true,
     // Whop-first rollout (CLAUDE.md Phase F): Whop Seller is the only live template at launch;
     // this one is fully built but deliberately gated coming_soon until the wider rollout.
@@ -222,6 +230,8 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     description: "Paid newsletter with AI-generated content. Research agent finds sources and writes drafts; owner reviews and sends.",
     agents: ["launchpad-content-v1", "launchpad-fulfillment-v1"],
     skills: ["web-search", "email-tool", "commerce"],
+    // G-1 growth layer: cross-post issue highlights to build the free list.
+    connectors: ["twitter", "linkedin"],
     free_tier_eligible: true,
     // Whop-first rollout (CLAUDE.md Phase F): gated coming_soon until the wider rollout.
     coming_soon: true,
@@ -303,7 +313,10 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
       "layer; you're billed for the labor, not a cut of the sale).",
     agents: ["launchpad-support-v1", "launchpad-content-v1"],
     skills: ["mcp-connector", "email-tool", "web-search"],
-    connectors: ["whop"],
+    // G-1/G-3: whop-seller is the only live template at launch — highest-leverage place to offer
+    // the growth-layer "click Install" onboarding for real (content + social marketing) alongside
+    // the required Whop connection.
+    connectors: ["whop", "higgsfield", "twitter", "instagram", "tiktok"],
     free_tier_eligible: false,
     bootstrap: {
       prompts: [

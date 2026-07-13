@@ -33,6 +33,7 @@ import {
 } from "../../agents/src/script-engine/index.js";
 import { SkillLibrary } from "../../agents/src/script-engine/skill-library.js";
 import { seedScalingSkills } from "../../agents/src/launchpad/scaling-skills.js";
+import { seedGrowthSkills } from "../../agents/src/launchpad/growth-skills.js";
 import { inheritTemplateSkills } from "../../agents/src/script-engine/federation.js";
 import type { AgentConfig } from "../../agents/src/script-engine/index.js";
 import type { NaelaoSpaceTypeManifestV2 } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
@@ -149,6 +150,17 @@ export async function installLaunchpadAgents(
     if (seeded.length > 0) console.log(`[provisioner] seeded ${seeded.length} scaling skill(s) into ${spaceId}`);
   } catch (err) {
     console.warn(`[provisioner] scaling-skill seed failed for ${spaceId}:`, (err as Error).message);
+  }
+
+  // Growth-layer skills (social posting, image/video generation) — same idempotent/best-effort
+  // seed as the scaling skills above, just a separate try/catch so one failing set never blocks
+  // the other.
+  try {
+    const spaceLib = new SkillLibrary(env.SCRIPTS_R2, spaceId);
+    const seeded = await seedGrowthSkills(spaceLib);
+    if (seeded.length > 0) console.log(`[provisioner] seeded ${seeded.length} growth skill(s) into ${spaceId}`);
+  } catch (err) {
+    console.warn(`[provisioner] growth-skill seed failed for ${spaceId}:`, (err as Error).message);
   }
 }
 

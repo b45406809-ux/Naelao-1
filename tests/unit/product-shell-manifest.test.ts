@@ -221,7 +221,7 @@ describe("GET /spaces/:spaceId/shell/manifest", () => {
     const body = await res.json() as { template_catalog: Array<{ id: string }> };
     // G-BF08: free_tier_eligible now flows through the catalogue projection so the shell's
     // create-business dialog can grey ineligible templates for free-plan products.
-    expect(body.template_catalog).toEqual([{ id: "whop-seller", name: "Whop Seller", coming_soon: false, free_tier_eligible: false }]);
+    expect(body.template_catalog).toEqual([{ id: "whop-seller", name: "Whop Seller", coming_soon: false, free_tier_eligible: false, connectors: ["whop"] }]);
   });
 
   it("KV-caches the catalog fetch — a second call does not re-hit the agents worker", async () => {

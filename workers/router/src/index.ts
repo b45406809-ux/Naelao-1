@@ -275,6 +275,17 @@ app.all("/v1/connectors/:platform/oauth/callback", async (c) => {
   );
 });
 
+// ── Public Composio "click Install" connect callback (unauthenticated; the single-use `ticket`
+// query param is the auth) ── same posture/registration as the OAuth callback above — Composio
+// redirects the raw browser here with no Naelao credential attached.
+app.all("/v1/connectors/:platform/provider-connect/callback", async (c) => {
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.AGENTS_WORKER.fetch(
+    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+  );
+});
+
 // ── Public multi-channel ingress (unauthenticated; the channel's own signature is the auth) ──
 // Slack/Discord/inbound-email providers can't carry a JWT either — same pattern as connectors
 // above, registered before the authenticated api group. The agents worker verifies the
@@ -532,6 +543,9 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/connectors\/status$/,
   /^\/spaces\/([^/]+)\/connectors\/connect$/,
   /^\/spaces\/([^/]+)\/connectors\/oauth-start$/,
+  // Composio "click Install" hosted-connect flow (G-1/G-3 growth layer): same admin-level write
+  // gate as connect/oauth-start above (requireBusinessMembership on the spaces worker).
+  /^\/spaces\/([^/]+)\/connectors\/provider-connect-start$/,
   // WS-2 (Space Assistant surface): the Status/Crons panels — additionally gated by
   // resolveEndUserBusinessRole on the spaces worker exactly like the routes above.
   /^\/spaces\/([^/]+)\/assistant-policy$/,

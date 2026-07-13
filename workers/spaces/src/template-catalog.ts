@@ -12,6 +12,11 @@ export interface TemplateCatalogEntry {
   name: string;
   coming_soon: boolean;
   free_tier_eligible: boolean;
+  /** Connector catalogue ids (catalogue.ts) this template's onboarding recommends connecting —
+   *  e.g. creator-store recommends higgsfield + social platforms for marketing. Empty means "no
+   *  specific recommendation," not "connect nothing" — the shell still shows the full catalogue
+   *  elsewhere; this only drives the onboarding "Recommended apps" panel. */
+  connectors: string[];
 }
 
 export interface TemplateCatalogEnv {
@@ -19,9 +24,10 @@ export interface TemplateCatalogEnv {
   AGENTS_WORKER?: Fetcher;
 }
 
-// v2: entry shape gained free_tier_eligible — a stale v1 cache entry would make every template
-// look ineligible to the gate for up to an hour after deploy, so the key is bumped instead.
-const CATALOG_CACHE_KEY = "launchpad-template-catalog:v2";
+// v3: entry shape gained connectors (v2 gained free_tier_eligible) — a stale cache entry from an
+// older shape would make the onboarding "Recommended apps" panel silently show nothing for up to
+// an hour after deploy, so the key is bumped again rather than reusing v2.
+const CATALOG_CACHE_KEY = "launchpad-template-catalog:v3";
 
 /**
  * Load the catalogue, or null when it is genuinely UNAVAILABLE (no AGENTS_WORKER binding, or
@@ -41,12 +47,15 @@ export async function loadTemplateCatalogOrNull(env: TemplateCatalogEnv): Promis
     return null;
   }
   if (!resp.ok) return null;
-  const body = await resp.json<{ templates: Array<{ id: string; name: string; coming_soon?: boolean; free_tier_eligible?: boolean }> }>();
+  const body = await resp.json<{
+    templates: Array<{ id: string; name: string; coming_soon?: boolean; free_tier_eligible?: boolean; connectors?: string[] }>;
+  }>();
   const catalog: TemplateCatalogEntry[] = body.templates.map((t) => ({
     id: t.id,
     name: t.name,
     coming_soon: t.coming_soon ?? false,
     free_tier_eligible: t.free_tier_eligible ?? false,
+    connectors: t.connectors ?? [],
   }));
   if (env.NAELAO_CONFIG_KV) {
     await env.NAELAO_CONFIG_KV.put(CATALOG_CACHE_KEY, JSON.stringify(catalog), { expirationTtl: 3600 });

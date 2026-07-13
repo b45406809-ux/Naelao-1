@@ -1827,6 +1827,57 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     permissive stubs) plus 20 new/hardened cases across `whop-wallet.test.ts` and
     `whop-oauth-connect.test.ts`. 1852/1852 tests pass (24 new), `pnpm turbo run typecheck` clean
     (75 tasks).
+56. **Growth-layer "click Install" connectors (AUDIT_TODO.md G-1/G-3) are now BUILT — the core
+    Composio hosted-connect mechanism plus real social + image/video-gen connectors, not just
+    catalogue placeholders.** Direction: most of what a business needs beyond the wallet/email is
+    a real third-party app reached over MCP, installed the way Claude/ChatGPT bundle connectors —
+    click Connect, authenticate on the real app's own page, done. Researched Composio's current
+    API before building (its `initiate()` flow is deprecated as of 2026-07-03 in favor of hosted
+    "Connect Link"): new `workers/agents/src/connectors/composio.ts` (`startComposioLink`/
+    `getComposioConnectionStatus`, defensive multi-field response parsing since the exact v3 REST
+    shape isn't verified against a live key in this pass — same "confirm once real access exists"
+    precedent as Whop's KYC field-name handling, item 51) plus new
+    `POST /connectors/:platform/provider-connect/start` and
+    `GET /connectors/:platform/provider-connect/callback` routes on the agents worker, mirroring
+    the existing Whop OAuth2+PKCE flow's ticket-based security model (opaque single-use ticket in
+    the callback URL, never a credential) but simpler since Composio hosts the entire OAuth dance
+    itself — the callback POLLS Composio's real connection status before registering the MCP
+    server (never trusts the redirect alone), so a bailed-out consent flow never gets silently
+    marked connected. New `ConnectorDefinition.composio` field (`catalogue.ts`) plus 5 new
+    `available` connectors: **Higgsfield** (image/video gen — a `direct` bearer-auth connector
+    like Whop/Gumroad, since Higgsfield ships its OWN hosted MCP server, no Composio needed) and
+    **X/Twitter, LinkedIn, Instagram, TikTok** (Composio-routed social posting/scheduling/
+    analytics) — plus `coming_soon` Composio placeholders for HubSpot (CRM), Google Ads, Meta Ads,
+    and AgentMail (an advanced agent-dedicated inbox, distinct from the built-in `business-email`
+    default). Growth skills (`workers/agents/src/launchpad/growth-skills.ts`, same seeded-
+    stored-script pattern as `scaling-skills.ts`): `social-post`, `content-generate-image`,
+    `content-generate-video` — thin wrappers over `mcp.call`, seeded into every Launchpad space at
+    provision time. **Onboarding + runtime "prompt to install" (the actual UX ask, not just the
+    plumbing):** `LaunchpadTemplate.connectors` (already existed, only `whop-seller` used it)
+    projects through `shell/manifest.template_catalog` end-to-end; three templates
+    (`creator-store`, `newsletter-business`, `whop-seller`) now recommend real connectors. A new
+    "Connect Apps" panel on the shell's business detail page renders every available connector
+    with a real Connect button (branches on Composio-hosted / bespoke-OAuth / manual-key) and a
+    client-only "Skip for now" (explicitly allowed per the ask; not a server-side gate).
+    `mcp-connector.ts`'s `resolveServerId` now returns a `needs_connector`-flagged error (mirrors
+    the existing `reserved` flag pattern) naming the EXACT catalogued app to connect instead of a
+    bare "not found" when an agent calls an unregistered-but-known connector — threaded through as
+    real `ScriptRunResult` fields (`needs_connector`/`connector_id`/`connector_name`), not just
+    buried in message text, so both the model's own answer and a future UI can act on it. Both
+    Space Assistant profiles (`profiles.ts`) gained instructions telling the assistant to name the
+    exact app and point the owner at the Connect Apps panel rather than silently giving up.
+    Router: new unauthenticated `/v1/connectors/:platform/provider-connect/callback` (same posture
+    as the OAuth callback — the ticket IS the auth) + a new end-user allowlist entry for
+    `/spaces/:id/connectors/provider-connect-start` (admin-gated via `requireBusinessMembership`
+    on the spaces worker, same precedent as `connect`/`oauth-start`). 1866/1866 tests pass (34
+    new), `pnpm turbo run typecheck` clean (75 tasks), `apps/shell` verified via `next build`.
+    **Not done this pass (tracked in `docs/AUDIT_TODO.md`, not silently dropped):** Pipedream's
+    own hosted-connect flow (mcp-hub already tool-call-proxies to a Pipedream connection once one
+    exists, but nothing initiates one — Composio alone already covers every app named in this
+    pass); the remaining G-2/G-5/G-7/G-8/G-9/G-10 gaps (paid ads spend management, voice calling,
+    site monitoring, a CRM data primitive, domain registration, a skill marketplace); and an
+    actual live `COMPOSIO_API_KEY` + per-app Auth Configs, without which every provider-connect
+    flow degrades honestly to `provider_not_configured`.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

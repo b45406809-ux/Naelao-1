@@ -231,12 +231,21 @@ export class ScriptToolSurface {
           ...(usage?.output_tokens !== undefined ? { output_tokens: usage.output_tokens } : {}),
         };
       } catch (err) {
+        // Growth-layer "click Install" onboarding (mcp-connector.ts's resolveServerId): a thrown
+        // Error can carry needsConnector/connectorId/connectorName metadata (same precedent as
+        // reserved-capabilities.ts's `reserved` flag) — surfaced as real result fields so the
+        // reasoning loop's answer, and any future UI, sees a structured signal rather than only
+        // free text buried in the error message.
+        const meta = err as unknown as Record<string, unknown>;
         return {
           ok: false,
           error: err instanceof Error ? err.message : String(err),
           tier: prebuilt.prebuilt.requires_tier,
           duration_ms: Date.now() - started,
           tokens_used: 0,
+          ...(typeof meta["needsConnector"] === "boolean" ? { needs_connector: meta["needsConnector"] as boolean } : {}),
+          ...(typeof meta["connectorId"] === "string" ? { connector_id: meta["connectorId"] as string } : {}),
+          ...(typeof meta["connectorName"] === "string" ? { connector_name: meta["connectorName"] as string } : {}),
         };
       }
     }
