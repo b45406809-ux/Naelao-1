@@ -13,9 +13,10 @@ import {
 // every other money path. stripe.ts is deleted; /webhooks/stripe removed.
 import { Hono } from "hono";
 import { checkQuota, recordUsageEvent, getUsageSummary } from "./quota.js";
-import { handleLemonSqueezyWebhook } from "./lemon-squeezy.js";
+import { handleLemonSqueezyWebhook, recordPlatformPlanSubscription } from "./lemon-squeezy.js";
 import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
 import { registerWhopWalletRoutes, handleWhopWebhook, renderPayoutApprovalPage, confirmPayoutApproval, routeWhopWalletCheckout, getSubMerchant } from "./whop-wallet.js";
+import { createBusinessWhopOAuthCheckout } from "./whop-oauth-billing.js";
 
 export interface BillingEnv {
   ENVIRONMENT: string;
@@ -59,6 +60,28 @@ export interface BillingEnv {
    *  one-time payout approval link sent by email. Optional: the payout request still exists in
    *  the dashboard/shell without it, just with no emailed link. */
   PUBLIC_WEBHOOK_BASE_URL?: string;
+  // ── Whop as a second PLATFORM billing provider (AUDIT_TODO.md AI-7), tried before Lemon
+  // Squeezy — added because LS's own onboarding requires a Stripe-linked payout path unavailable
+  // in some sellers' countries. Naelao's OWN normal Whop seller/company account (NOT the
+  // invite-gated Platforms API WHOP_PLATFORM_API_KEY uses above — a completely different Whop
+  // relationship, see whop-platform-plan.ts's header). ──
+  /** Naelao's own Whop company API key (a normal seller key, like any Whop creator has — no
+   *  invite needed). Optional — /billing/checkout falls through to Lemon Squeezy, then the dev
+   *  placeholder, when unset. */
+  WHOP_API_KEY?: string;
+  /** Plan ids for Naelao's own Growth/Business platform plans, created once in Naelao's Whop
+   *  company dashboard (like LEMON_SQUEEZY_*_VARIANT_ID). */
+  WHOP_GROWTH_PLAN_ID?: string;
+  WHOP_BUSINESS_PLAN_ID?: string;
+  /** Naelao's OWN company's webhook signing secret — deliberately separate from
+   *  WHOP_WEBHOOK_SECRET above (that one verifies a BUSINESS's sub-merchant company's webhook;
+   *  this verifies Naelao's own company's webhook — two different Whop companies, two different
+   *  secrets, never interchangeable). */
+  WHOP_PLATFORM_PLAN_WEBHOOK_SECRET?: string;
+  // Whop OAuth-delegated checkout (end-user subscriptions/credit-packs settling into a
+  // BUSINESS's own connected Whop company, via the "Connect with Whop" OAuth flow,
+  // whop-oauth-billing.ts) reuses the CREDENTIALS_WORKER + AGENTS_WORKER bindings already
+  // declared above — no new binding needed.
 }
 
 /**
@@ -191,12 +214,33 @@ app.post("/billing/checkout", async (c) => {
       ? c.env.LEMON_SQUEEZY_GROWTH_VARIANT_ID
       : c.env.LEMON_SQUEEZY_BUSINESS_VARIANT_ID;
 
-  // The buyer email prefills the LS checkout (same lookup the Stripe path used to do).
+  // The buyer email prefills the checkout (same lookup the Stripe path used to do).
   const owner = await c.env.PLATFORM_DB.prepare(
     "SELECT u.email FROM users u JOIN orgs o ON o.id = u.org_id WHERE u.id = ? LIMIT 1"
   )
     .bind(userId)
     .first<{ email: string }>();
+
+  // Try Whop first (AUDIT_TODO.md AI-7 pivot — Naelao's own normal Whop seller account, not the
+  // invite-gated Platforms API). Falls through to Lemon Squeezy, then the dev placeholder, when
+  // Naelao's own Whop plan ids aren't configured.
+  const whopPlanId = body.plan === "growth" ? c.env.WHOP_GROWTH_PLAN_ID : c.env.WHOP_BUSINESS_PLAN_ID;
+  if (c.env.WHOP_API_KEY && whopPlanId) {
+    const { createWhopPlatformPlanCheckout } = await import("@naelao/billing-core");
+    try {
+      const { checkout_url } = await createWhopPlatformPlanCheckout(c.env.WHOP_API_KEY, {
+        planId: whopPlanId,
+        ...(owner?.email ? { customerEmail: owner.email } : {}),
+        redirectUrl: body.success_url,
+        // metadata.kind="platform_plan" is what routes the resulting webhook to
+        // recordPlatformPlanSubscription — same contract the LS path below uses.
+        metadata: { kind: "platform_plan", org_id: orgId, plan: body.plan },
+      });
+      return c.json({ checkout_url, plan: body.plan, provider: "whop" });
+    } catch (err) {
+      console.warn(`[billing/checkout] Whop platform-plan checkout failed, falling back to LS: ${(err as Error).message}`);
+    }
+  }
 
   // Without LS credentials or a provisioned plan variant (local/dev) return a deterministic
   // placeholder so the flow is testable end-to-end — the exact convention every other checkout
@@ -229,7 +273,10 @@ app.post("/billing/checkout", async (c) => {
 });
 
 // ── POST /billing/portal ──────────────────────────────────────────────────────
-// Lemon Squeezy's hosted customer portal (subscription management / cancel / update card).
+// Lemon Squeezy's hosted customer portal (subscription management / cancel / update card), OR
+// Whop's fixed self-serve orders page when the org's active subscription is Whop-backed — Whop
+// has no API-mintable per-customer portal session (see whop-platform-plan.ts's header), so this
+// branch just returns that fixed URL rather than a personalized one.
 app.post("/billing/portal", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!orgId)
@@ -239,10 +286,15 @@ app.post("/billing/portal", async (c) => {
     );
 
   const sub = await c.env.PLATFORM_DB.prepare(
-    "SELECT ls_customer_id FROM subscriptions WHERE org_id = ?"
+    "SELECT ls_customer_id, whop_customer_id FROM subscriptions WHERE org_id = ?"
   )
     .bind(orgId)
-    .first<{ ls_customer_id: string | null }>();
+    .first<{ ls_customer_id: string | null; whop_customer_id: string | null }>();
+
+  if (sub?.whop_customer_id && !sub?.ls_customer_id) {
+    const { WHOP_CUSTOMER_ORDERS_URL } = await import("@naelao/billing-core");
+    return c.json({ portal_url: WHOP_CUSTOMER_ORDERS_URL, provider: "whop" });
+  }
 
   const customerId = sub?.ls_customer_id;
   if (!customerId) {
@@ -654,6 +706,31 @@ app.post("/internal/business-subscriptions/checkout", async (c) => {
 
   const feeBps = parseInt(c.env.LAUNCHPAD_FEE_BPS ?? "500", 10);
 
+  // Try the business's own connected Whop account first (AUDIT_TODO.md AI-7 pivot) — settles
+  // 100% into that business's own Whop balance; Naelao's cut is NOT auto-split here (no
+  // Platforms-API payment-split on a normal OAuth token) and instead reaches the ledger via the
+  // existing revenue-tracker prebuilt's periodic list_payments poll, exactly like any other Whop
+  // sale on that account. Falls through to Lemon Squeezy, then the dev placeholder, when the
+  // business has no Whop OAuth connection.
+  const whopCheckout = await createBusinessWhopOAuthCheckout(c.env, {
+    spaceId: body.business_space_id,
+    tenantId: spaceRow.tenant_id,
+    title: plan.name,
+    priceCents: plan.priceCents,
+    billingModel: "renewal",
+    billingPeriodDays: plan.interval === "year" ? 365 : 30,
+    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+    metadata: { kind: "business_subscription", plan_id: plan.id, product_space_id: catalog.product_space_id },
+  });
+  if (whopCheckout) {
+    return c.json({
+      checkout_url: whopCheckout.checkout_url,
+      plan: { id: plan.id, name: plan.name, price_cents: plan.priceCents, interval: plan.interval },
+      fee_bps: feeBps,
+      provider: "whop",
+    });
+  }
+
   if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !plan.lsVariantId) {
     return c.json({
       checkout_url: `https://checkout.naelao.com/dev/business-subscription/${body.business_space_id}/${plan.id}`,
@@ -716,6 +793,28 @@ app.post("/internal/credit-packs/checkout", async (c) => {
   if (!pack) return c.json({ error_code: "not_found", message: "Credit pack not found" }, 404);
 
   const feeBps = parseInt(c.env.LAUNCHPAD_FEE_BPS ?? "500", 10);
+
+  // Try the business's own connected Whop account first — same rationale as
+  // business-subscriptions/checkout above. A credit pack is a one-time purchase (billingModel
+  // "one_time"); mints a fresh Whop plan per purchase (documented v1 simplification, see
+  // whop-oauth-checkout.ts's header).
+  const whopCheckout = await createBusinessWhopOAuthCheckout(c.env, {
+    spaceId: body.business_space_id,
+    tenantId: spaceRow.tenant_id,
+    title: pack.name,
+    priceCents: pack.priceCents,
+    billingModel: "one_time",
+    ...(body.customer_email ? { customerEmail: body.customer_email } : {}),
+    metadata: { kind: "credit_pack", pack_id: pack.id, credits: String(pack.credits), end_user_id: body.end_user_id, product_space_id: catalog.product_space_id },
+  });
+  if (whopCheckout) {
+    return c.json({
+      checkout_url: whopCheckout.checkout_url,
+      pack: { id: pack.id, name: pack.name, credits: pack.credits, price_cents: pack.priceCents },
+      fee_bps: feeBps,
+      provider: "whop",
+    });
+  }
 
   if (!c.env.LEMON_SQUEEZY_API_KEY || !c.env.LEMON_SQUEEZY_STORE_ID || !pack.lsVariantId) {
     return c.json({
@@ -960,6 +1059,39 @@ app.post("/webhooks/lemon-squeezy", async (c) => {
 // sub-merchant company they happened on; dispatch resolves the whop_sub_merchants row and
 // forces the space from it, never from payload metadata.
 app.post("/webhooks/whop", async (c) => handleWhopWebhook(c.req.raw, c.env));
+
+// ── POST /webhooks/whop-platform-plan ──────────────────────────────────────────
+// Naelao's OWN Whop company's webhook (builder Growth/Business platform plans, AUDIT_TODO.md
+// AI-7) — a DIFFERENT Whop company/secret than /webhooks/whop above (that one is per-BUSINESS
+// sub-merchant events). Unauthenticated route; the Whop-Signature HMAC (verified against
+// WHOP_PLATFORM_PLAN_WEBHOOK_SECRET) is the auth, same posture as every other webhook here.
+app.post("/webhooks/whop-platform-plan", async (c) => {
+  if (!c.env.AGENTS_WORKER) {
+    // Matches /webhooks/lemon-squeezy's own precedent — no agents worker bound (local dev
+    // without full stack) still returns 200 rather than erroring Whop into a retry storm.
+    return c.json({ ok: true, skipped: true, reason: "AGENTS_WORKER not bound" });
+  }
+  const rawBody = await c.req.text();
+  const { verifyWhopPlatformPlanWebhook, parseWhopPlatformPlanEvent } = await import("@naelao/billing-core");
+  if (!c.env.WHOP_PLATFORM_PLAN_WEBHOOK_SECRET || !(await verifyWhopPlatformPlanWebhook(rawBody, c.req.raw.headers, c.env.WHOP_PLATFORM_PLAN_WEBHOOK_SECRET))) {
+    return c.json({ error_code: "invalid_signature", message: "Whop-Signature verification failed" }, 401);
+  }
+  let event;
+  try {
+    event = parseWhopPlatformPlanEvent(rawBody);
+  } catch (err) {
+    console.warn(`[billing/whop-platform-plan] failed to parse event body: ${(err as Error).message}`);
+    return c.json({ ok: true, skipped: true, reason: "unparseable body" });
+  }
+  const handled = await recordPlatformPlanSubscription(event, {
+    PLATFORM_DB: c.env.PLATFORM_DB,
+    PLATFORM_SECRET: c.env.PLATFORM_SECRET,
+    AGENTS_WORKER: c.env.AGENTS_WORKER,
+    ...(c.env.SPACES_WORKER ? { SPACES_WORKER: c.env.SPACES_WORKER } : {}),
+    QUOTA_CACHE: c.env.QUOTA_CACHE,
+  });
+  return c.json({ ok: true, handled });
+});
 
 // ── GET /webhooks/whop-wallet/payouts/:id/approve?token= ──────────────────────
 // Public, unauthenticated — the single-use token IS the auth (business_invites/password-reset

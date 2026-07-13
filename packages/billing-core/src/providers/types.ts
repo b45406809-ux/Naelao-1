@@ -22,7 +22,12 @@ export interface NormalizedBillingEvent {
     | "subscription.resumed"
     | "subscription.expired"
     | "refund.issued";
-  provider: "lemon_squeezy";
+  /** "whop" is used ONLY for the platform-plan checkout (`./whop-platform-plan.ts`) — a Whop
+   *  event routed through the SAME provider-agnostic downstream logic (recordPlatformPlanSubscription)
+   *  LS events already use. Whop is still not a `BillingProvider` (see this file's own header on
+   *  why `./whop.ts`'s sub-merchant shape doesn't fit that interface) — this is a narrower reuse of
+   *  just the normalized-event shape, not a claim that Whop implements `BillingProvider`. */
+  provider: "lemon_squeezy" | "whop";
   spaceId: string;
   customerId: string;
   subscriptionId: string | null;

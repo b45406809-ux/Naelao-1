@@ -171,7 +171,18 @@ const WHOP: ConnectorDefinition = {
     token_url: "https://api.whop.com/oauth/token",
     // `openid` is required for the userinfo lookup below (same-account-multiple-businesses
     // detection); `profile` isn't needed since only the stable `sub` is used, not the name/avatar.
-    scopes: ["openid", "read_memberships", "read_payments"],
+    // checkout_configuration:create/plan:create/access_pass:create+update/
+    // checkout_configuration:basic:read (added for the end-user billing pivot) let the connected
+    // business's OWN Whop company create plans + checkout links for its own end-user
+    // subscriptions/credit-packs (workers/billing/src/whop-oauth-billing.ts) — a genuinely new
+    // money-in capability beyond the original read-only connect, so an ALREADY-connected business
+    // must re-consent once for the widened scope (OAuth doesn't retroactively grant new scopes to
+    // an existing token).
+    scopes: [
+      "openid", "read_memberships", "read_payments",
+      "checkout_configuration:create", "checkout_configuration:basic:read",
+      "plan:create", "access_pass:create", "access_pass:update",
+    ],
     client_id_env: "WHOP_OAUTH_CLIENT_ID",
     client_secret_env: "WHOP_OAUTH_CLIENT_SECRET",
     credential_name: "WHOP_OAUTH_TOKENS",

@@ -1915,6 +1915,80 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     defensively tries a small set of plausible field/status names and fails closed on anything it
     doesn't recognize.
 
+58. **Whop added as a second PLATFORM billing provider (AUDIT_TODO.md AI-7), replacing Lemon
+    Squeezy as the FIRST-TRIED provider for builder platform plans and end-user subscriptions/
+    credit-packs — LS stays as the fallback, item 45 is not reverted.** Trigger: the operator
+    couldn't activate a Lemon Squeezy store because LS's own onboarding requires a Stripe-linked
+    payout path unavailable in their country. Two genuinely different Whop relationships were
+    built, neither the same as the invite-gated Platforms API (items 50-51, business-wallet
+    sub-merchants) or the read-only "Connect with Whop" OAuth connector (item 53):
+    - **Platform-plan checkout** (`packages/billing-core/src/providers/whop-platform-plan.ts`):
+      Naelao's OWN normal Whop seller/company account (`WHOP_API_KEY` — no invite needed, the
+      same relationship any Whop creator has) sells the builder Growth/Business plans directly.
+      `/billing/checkout` tries Whop first, falls back to LS, then the dev placeholder;
+      `/billing/portal` returns Whop's fixed self-serve orders page (`whop.com/orders/` — Whop
+      has no API-mintable per-customer portal session the way Stripe/LS do) when the org's
+      subscription is Whop-backed. New `POST /webhooks/whop-platform-plan` (Naelao's OWN
+      company's webhook, a DIFFERENT secret than the sub-merchant wallet's `WHOP_WEBHOOK_SECRET`)
+      parses `membership.went_valid`/`went_invalid`/`payment.succeeded` into the SAME
+      `NormalizedBillingEvent` shape LS already produces — `NormalizedBillingEvent.provider`
+      widened to `"lemon_squeezy" | "whop"` and `recordPlatformPlanSubscription` (unchanged
+      logic) now branches only on which id-columns to write (migration 0067 adds
+      `subscriptions.whop_customer_id`/`whop_subscription_id`, `ls_*` columns untouched — same
+      "no cheap DROP COLUMN" precedent 0062 set for Stripe→LS).
+    - **End-user OAuth-delegated checkout** (`whop-oauth-checkout.ts` + `workers/billing/src/
+      whop-oauth-billing.ts`): `/internal/business-subscriptions/checkout` and `/internal/
+      credit-packs/checkout` now try the BUSINESS's own connected Whop company first (via the
+      existing "Connect with Whop" OAuth token, vaulted under `WHOP_OAUTH_TOKENS`) before falling
+      back to LS. Settles 100% into that business's own Whop balance — there's no payment-split
+      primitive on a normal OAuth token, so Naelao's cut is NOT auto-split at checkout; it
+      reaches the ledger via the EXISTING revenue-tracker prebuilt's periodic `list_payments`
+      poll of that same account (a checkout created here is indistinguishable from any other
+      sale on the business's Whop company), needing no new fee-tracking mechanism. Required
+      widening the OAuth app's scopes (`checkout_configuration:create`, `plan:create`,
+      `access_pass:create`/`update`, `checkout_configuration:basic:read` — Whop's real
+      per-endpoint scope requirements, confirmed via Whop's own docs) — an already-connected
+      business must reconnect once, since OAuth doesn't retroactively grant new scopes to an
+      existing token. Credential resolution + proactive refresh in the billing worker mirrors
+      mcp-hub's `resolveOAuthAccessToken` exactly (same short-lived HMAC credential-token scheme,
+      same "refresh via agents worker, fall back to the stale token on a transient failure"
+      posture) — duplicated rather than shared, matching this codebase's own mcp-hub/credentials
+      precedent of each holding its own copy of `generateCredentialToken`. Mints a fresh Whop
+      access_pass+plan+checkout_configuration per checkout call (documented v1 simplification,
+      not a caching gap — a business's Whop account absorbs the minor tidiness cost, not a real
+      one, exactly like revenue-tracker's own documented pagination cap).
+    - **Also resolved in the same pass:** the operator's own admin org needs no billing code at
+      all — `EntitlementsChecker.getTenantTier()` already reads `orgs.plan_tier` directly and the
+      dashboard's Settings page already hides the entire upgrade/checkout prompt at
+      `plan_tier === 'enterprise'` (`{planTier !== "enterprise" && (...)}`), so a single
+      `UPDATE orgs SET plan_tier = 'enterprise' WHERE id = ?` is the complete fix — no new
+      "billing_exempt" flag needed for a one-org exemption when the tier system already covers it.
+    - **Composio SDK migration** (user preference, logged not yet built): AUDIT_TODO.md AI-6 —
+      swap `connectors/composio.ts`'s hand-rolled `fetch()` calls for the official `@composio/
+      core`/`@composio/slim` SDK, contingent on confirming CF-Workers-bundle compatibility first
+      (the hand-rolled version was a deliberate choice to avoid that unverified risk, not
+      laziness).
+    - **Pipedream-as-Tier-2-5-replacement — investigated, NOT adopted** (AUDIT_TODO.md AI-8):
+      Pipedream's per-user connected-account isolation (`external_user_id`) is real and already
+      correctly used by the Notion connector, but its custom-code steps are pre-authored
+      pipelines, not an on-demand `run(code, tier)` API — using it as a general code-execution
+      backend would mean evaluating arbitrary, multi-tenant agent-generated code inside an
+      execution model Pipedream doesn't document or market as a safe untrusted-code sandbox the
+      way CF's V8 isolates/gVisor containers are. Its free tier (100 credits/month ≈ 50 minutes of
+      compute platform-wide, 3 workflows, 3 connected accounts) also can't carry real load. Kept
+      as a connector only; the CF Workers Paid plan's flat $5/month remains the real Tier 2-5
+      unlock once the first bootstrap business has revenue.
+    1904/1904 tests pass (22 new: `whop-oauth-checkout.test.ts`,
+    `whop-platform-plan-billing.test.ts`, `whop-oauth-business-billing.test.ts`),
+    `pnpm turbo run typecheck` clean (75 tasks). **Not done:** an actual live Whop OAuth
+    app/company + real Growth/Business plans provisioned — the code degrades honestly
+    (falls through to LS, then the dev placeholder) until `WHOP_API_KEY`/
+    `WHOP_GROWTH_PLAN_ID`/`WHOP_BUSINESS_PLAN_ID`/`WHOP_PLATFORM_PLAN_WEBHOOK_SECRET` are set (see
+    `docs/DEPLOYMENT_SECRETS.md`); exact Whop plan/checkout-configuration field names are Whop's
+    documented REST conventions, not confirmed against a live company in this pass (same
+    "confirm once real access exists" precedent every other Whop integration point in this repo
+    already carries).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
@@ -1936,9 +2010,10 @@ appendixes are authoritative** and override the early framing. Always confirm ag
 - LLM: Cloudflare AI Gateway is the LLM path — the gateway HOLDS the Anthropic provider key
   (Authenticated Gateway / BYOK via `NAELAO_AIG_TOKEN`), so no `ANTHROPIC_API_KEY` lives on any
   worker (item 45). Claude is primary with a gateway-driven fallback chain.
-- Lemon Squeezy is the ONLY PLATFORM billing provider (Stripe removed — item 45). Builder platform
-  plans, product/seat/credit-pack/business-subscription checkouts, and every Naelao-custody
-  money-in webhook run through one Naelao LS store.
+- PLATFORM billing (Stripe removed — item 45): Naelao's own normal Whop seller account is tried
+  FIRST for builder platform plans (item 58), Lemon Squeezy is the fallback. End-user
+  subscriptions/credit-packs try the business's own connected Whop company (OAuth-delegated,
+  item 58) first, then LS, then a dev placeholder.
 - Whop is the business-bank-account rail (item 50, replacing item 49's Stripe/LS Wallet Connect):
   every business auto-provisions an isolated Whop sub-merchant wallet at creation — no builder
   action. This is BUSINESS revenue custody, a different thing from Naelao's own platform billing

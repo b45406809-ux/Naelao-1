@@ -33,6 +33,20 @@ export type {
   WhopWithdrawal,
   WhopWalletEvent,
 } from "./whop.js";
+export {
+  createOrGetAccessPass,
+  createWhopOAuthPlan,
+  createWhopOAuthCheckoutLink,
+  createWhopOAuthCheckout,
+} from "./whop-oauth-checkout.js";
+export type { WhopOAuthPlanParams, WhopOAuthCheckoutParams } from "./whop-oauth-checkout.js";
+export {
+  createWhopPlatformPlanCheckout,
+  WHOP_CUSTOMER_ORDERS_URL,
+  verifyWhopPlatformPlanWebhook,
+  parseWhopPlatformPlanEvent,
+} from "./whop-platform-plan.js";
+export type { WhopPlatformPlanCheckoutParams } from "./whop-platform-plan.js";
 
 /** Resolve the active PLATFORM billing provider from env (always Lemon Squeezy — item 45). */
 export function selectBillingProvider(env: BillingProviderEnv): BillingProvider {

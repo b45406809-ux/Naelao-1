@@ -133,6 +133,7 @@ async function loadDb() {
     m("0050_webhook_idempotency.sql"),
     m("0052_webhook_idempotency_event_type.sql"),
     m("0062_subscriptions_lemon_squeezy.sql"),
+    m("0067_subscriptions_whop_platform_plan.sql"),
   ]);
   await fakeDb.prepare("INSERT INTO orgs (id, name, owner_id, plan_tier) VALUES (?, 'Test Org', 'user-1', 'free')")
     .bind(ORG_ID).run();

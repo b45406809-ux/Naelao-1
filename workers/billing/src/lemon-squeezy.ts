@@ -463,6 +463,11 @@ function mapSubscriptionStatus(event: NormalizedBillingEvent): string {
  *     (free-tier template gating, space/seat quotas). The old Stripe webhook only ever wrote
  *     `subscriptions`, so a paid upgrade never actually unlocked entitlements — a real,
  *     previously-undetected bug this cutover closes, not just relocates.
+ *
+ * `event.provider` picks WHICH id-columns get written (ls_* vs whop_*, migration 0067) — Whop was
+ * added as a second platform provider tried before LS (AUDIT_TODO.md AI-7); the other provider's
+ * columns are left untouched (COALESCE), so an org that switched provider keeps its historical id
+ * from the one it's no longer on rather than clobbering it with NULL.
  */
 export async function recordPlatformPlanSubscription(
   event: NormalizedBillingEvent,
@@ -479,22 +484,27 @@ export async function recordPlatformPlanSubscription(
   // end (LS's own grace semantics); expired drops the org back to free. past_due keeps the tier
   // (dunning may still recover the payment) but surfaces the status.
   const planTier = status === "expired" ? "free" : plan;
+  const isWhop = event.provider === "whop";
 
   await env.PLATFORM_DB.prepare(
     `INSERT INTO subscriptions
        (id, org_id, plan_tier, status, ls_customer_id, ls_subscription_id,
-        current_period_end, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        whop_customer_id, whop_subscription_id, current_period_end, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
      ON CONFLICT(org_id) DO UPDATE SET
        plan_tier          = excluded.plan_tier,
        status             = excluded.status,
-       ls_customer_id     = COALESCE(excluded.ls_customer_id, subscriptions.ls_customer_id),
-       ls_subscription_id = COALESCE(excluded.ls_subscription_id, subscriptions.ls_subscription_id),
+       ls_customer_id       = COALESCE(excluded.ls_customer_id, subscriptions.ls_customer_id),
+       ls_subscription_id   = COALESCE(excluded.ls_subscription_id, subscriptions.ls_subscription_id),
+       whop_customer_id     = COALESCE(excluded.whop_customer_id, subscriptions.whop_customer_id),
+       whop_subscription_id = COALESCE(excluded.whop_subscription_id, subscriptions.whop_subscription_id),
        current_period_end = excluded.current_period_end,
        updated_at         = datetime('now')`
   ).bind(
     crypto.randomUUID(), orgId, planTier, status,
-    event.customerId ?? null, event.subscriptionId ?? null, event.currentPeriodEnd ?? null
+    isWhop ? null : (event.customerId ?? null), isWhop ? null : (event.subscriptionId ?? null),
+    isWhop ? (event.customerId ?? null) : null, isWhop ? (event.subscriptionId ?? null) : null,
+    event.currentPeriodEnd ?? null
   ).run();
 
   await env.PLATFORM_DB.prepare(
