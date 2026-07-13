@@ -1430,3 +1430,71 @@ thread erasure design, debit idempotency TOCTOU)
   Only the secret is a deploy-time concern.
 - Rate limiter bucket cleanup: `RateLimitDO` reschedules 10-minute idle-cleanup alarm 
   on every check (no unbounded growth).
+
+## AI/LLM provider flexibility + growth-layer mechanism ideas (2026-07-13, session discussion, not bugs)
+
+Surfaced while discussing the first production Cloudflare deployment (Worker Loaders/Containers
+need the $5 Workers Paid plan; Workflows don't) and the user's plan to bootstrap Launchpad's
+first real business on free-tier resources before opening the platform to other builders.
+
+- [ ] **AI-1 (build, small): `inferProvider()` defaults any unrecognized model name to
+  "anthropic" — needs a branch for GLM/Zhipu (and any future non-`@cf/`/non-`gpt-` model) so
+  it routes through the existing generic OpenAI-compatible branch instead.** Evidence:
+  `workers/agents/src/shared/ai-client.ts`'s `inferProvider()` only special-cases `@cf/*` →
+  `workers-ai` and `gpt-`/`o1-`/`o3-` → `openai`; everything else falls through to `anthropic`,
+  which builds an Anthropic-Messages-API-shaped request (`x-api-key`, `anthropic-version`,
+  `messages` endpoint). A model configured as a Custom Provider in the CF AI Gateway dashboard
+  (e.g. Zhipu/GLM's own OpenAI-compatible endpoint, BYOK key stored gateway-side, never in a
+  worker secret) would be silently sent in the WRONG shape today. Fix: recognize a `glm-`/`zai/`
+  prefix (or whatever slug the user picks when adding the custom provider in the CF dashboard)
+  and route it through the already-existing generic "OpenAI and OpenAI-compatible providers"
+  branch (`buildProviderEntry`'s fallthrough case) — this is a 2-line routing fix, NOT a
+  credential; the API key stays entirely in the CF dashboard's BYOK store either way.
+  **No fix needed at all** for Cloudflare's own hosted `@cf/zai-org/glm-5.2` (Workers AI
+  catalog) — that already routes correctly via the existing `workers-ai` branch; only needs
+  adding to Phase 5's `ALLOWED_MODELS` allowlist (`workers/spaces/src/do/SpaceTypeRegistryDO.ts`)
+  to be selectable from the dashboard's Model card.
+
+- [ ] **AI-2 (design decision, deferred): per-product/per-space BYOK LLM key override.**
+  User wants a product builder to optionally add their OWN LLM provider key, scoped to their
+  deployed Space, overriding Naelao's platform default (which stays available as the fallback,
+  billed through the existing credit system). Architecturally feasible — CF AI Gateway already
+  supports multiple named/aliased provider keys per gateway — but real new work, not a toggle:
+  (a) a vaulting UI (reuse the `space_credentials` scope='space' pattern already built for
+  connectors, not a new mechanism); (b) alias-selection threaded through `ai-client.ts`'s
+  provider-entry building (today `apiKey` is either empty — gateway-stored default — or a
+  request-supplied value; a per-space override needs to resolve to a specific gateway alias
+  or a real key fetched from the vault at call time); (c) the unresolved billing question this
+  needs answered before building: does a builder using their own key still pay Naelao anything
+  per run (infra credits only, per item 48 Phase 3's `infra_credits` metering — which already
+  exists and is independent of LLM token cost) or literally nothing? Recommend deferring until
+  after the first Launchpad business is running — doesn't block getting to revenue.
+
+- [ ] **AI-3 (design confirmation, not a gap): Dynamic Workflows do NOT substitute for Worker
+  Loaders/Containers — they solve a different problem (durability), not code isolation.**
+  Traced `execution-ladder.ts`'s `runStoredScript`: a script tagged `runtime:"workflow"`
+  dispatches to `env.workflowRunner` INSTEAD of `env.codeRunner`, but per CLAUDE.md item 33 the
+  actual `ScriptRunWorkflow` step re-resolves the script by name through `fireScriptDirectly` →
+  the SAME `ScriptToolSurface.run()` → `runStoredScript` path — which still needs `env.codeRunner`
+  (Worker Loader for Tier 2-3, browser proxy for Tier 4, container DO for Tier 5) the moment it
+  actually executes a Tier 2-4 script's code. Workflows give a long-running/cron script
+  durability (survives restarts, retries, no isolate held open) — they do not provide an
+  alternative sandboxing mechanism for untrusted dynamic code, and Cloudflare Workflow steps are
+  ordinary pre-deployed Worker code, not a place to `eval()` arbitrary agent-authored JS safely.
+  Bottom line for the free-plan bootstrap: Tier 1 (R2 scripts + prebuilt ops, including all MCP
+  connector calls) and Workflows both work today with no upgrade; Tier 2-5 (arbitrary dynamic
+  code / containers) genuinely need the $5 Workers Paid plan — there is no legitimate way around
+  this using Workflows. A first bootstrap business should stick to Tier 1 + prebuilt ops (which
+  is what the built Launchpad templates already use) until upgrading.
+
+- [ ] **AI-4 (confirmed correct, no fix needed): Composio/Pipedream connectors are
+  Naelao-API-keyed but per-tenant isolated, verified against actual code, not assumed.**
+  `connectors/composio.ts` creates every connected account under
+  `user_id: naelao-space:${spaceId}`; `connectors/pipedream.ts`'s Connect token is scoped to
+  `externalUserId: naelao-space:${spaceId}` — one connected account per Naelao space, never
+  shared. `mcp-hub`'s tool-call/registration routes additionally bind
+  `WHERE ... space_id = ? AND tenant_id = ?` before resolving any connector row, so even the
+  lookup itself cannot cross a tenant boundary. Naelao's platform Composio/Pipedream API key
+  only authorizes the management/proxy calls to those providers' own APIs — it grants no access
+  to another tenant's connected account or credentials. Confirms the universal-tools doctrine
+  (item 42/56) is genuinely safe for multi-tenant use, not just a documented intent.
