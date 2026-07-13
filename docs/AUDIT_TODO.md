@@ -72,6 +72,108 @@ Each item: evidence, failure scenario, fix. Status: `[ ]` open, `[x]` fixed.
   explicit `currency:"USD"` credit is unaffected. 1735/1735 tests pass (2 new),
   `pnpm turbo run typecheck` clean (75 tasks).
 
+## Competitive gap analysis — Polsia / Felix (OpenClaw) comparison (2026-07-13, deferred product roadmap, NOT bugs)
+
+Prompted by: "for polsia ai / Felix (openclaw) ... what needs to be there to make user
+experience better." Business wallet (item 50-52) and business email (`business-email`
+prebuilt + email channel) are already built — these items are what's still missing to match
+or beat the two most visible "AI that runs your whole business" competitors. Grounded via
+live web search (2026-07-13), not assumed — see sources at bottom. Checked the actual
+`workers/agents/src/script-engine/prebuilt/` directory and `connectors/catalogue.ts` before
+listing anything below as a gap (only `whop` and `gumroad` are `status: "available"` today;
+everything else, including the `"social"`/`"voice"` connector categories, is unimplemented or
+`coming_soon`) — nothing here is guessed.
+
+Already at parity or ahead (not gaps, listed for contrast):
+- Sub-agent orchestration with named personas (`@mention` multi-agent threads, item T) —
+  matches Felix's Iris (support) / Remy (sales) pattern.
+- Cross-business shared learning (item 43 Business Network, BF.4) — matches Polsia's
+  "cross-company learning system" almost verbatim.
+- Nightly memory consolidation (Memory OS Fabric, item U) — matches Felix's "three-layer
+  memory, nightly consolidation."
+- Scheduled/cron jobs + channel heartbeats — matches "daily autonomous cycles."
+
+- [ ] **G-1 (marketing, highest priority — both competitors lead with this, we have zero
+  connectors for it).** Social posting (X/Twitter, Instagram, LinkedIn, TikTok) — no connector
+  exists; the catalogue's `"social"` category has no entry at `status: "available"`. Felix's
+  skill list literally includes "X/Twitter posting" and "Instagram carousels." Needs: a new
+  connector definition per platform (OAuth where the platform supports it, same pattern as
+  item 53's Whop OAuth2+PKCE) + a `social` prebuilt (`social.post`, `social.schedule`,
+  `social.list_posts`).
+
+- [ ] **G-2 (marketing).** Paid ads (Meta Ads, Google Ads) — spend management tied to the
+  business wallet so the agent can set budget/targets against real revenue. No connector or
+  prebuilt exists.
+
+- [ ] **G-3 (marketing/content).** Image/video generation — no prebuilt at all (confirmed
+  empty in `script-engine/prebuilt/`). Felix does blog hero images, talking-head videos,
+  Instagram carousels. CF Workers AI has image models already reachable via the `AI` binding
+  other prebuilts use (`web-search`, `knowledge-base`) — a `content-gen` prebuilt wrapping
+  those (plus a BYO/platform-key text-to-video provider for talking-head video, same
+  universal-tools-doctrine pattern as `web-search`'s Tavily key) would close this.
+
+- [ ] **G-4 (marketing).** Cold outbound at general availability. Compliant multi-channel cold
+  outreach already exists (item 43 BF.3) but is scoped to exactly one template
+  (`freelance-web-studio`) — both competitors treat outbound sales as a core capability for
+  every business, not a single-template feature. Generalize the existing outreach mechanism
+  (HITL batches, hard caps, STOP/opt-out already built) out of that one template into a
+  reusable prebuilt any template can wire in.
+
+- [ ] **G-5 (voice, real differentiator for competitors).** AI phone calls — Felix does
+  outbound sales/support calls and inbound. No voice prebuilt or connector exists. Needs a
+  `voice` prebuilt (`voice.call`, `voice.list_calls`) backed by a telephony provider
+  (Twilio-shaped) + TTS/STT, platform-keyed per the universal-tools doctrine (item 42) since
+  telephony minutes are a metered platform cost, not a BYO builder credential.
+
+- [ ] **G-6 (voice, cheap/high-charm).** Voice-note founder updates — Felix sends Nat voice
+  notes instead of text digests for the nightly/morning update. Cheap relative to G-5: TTS
+  over the existing notification channel infrastructure (`notifications` prebuilt already
+  delivers to email/Slack/Discord/WhatsApp), no telephony/STT needed. Good candidate to build
+  before full G-5 voice-calling.
+
+- [ ] **G-7 (ops).** Site/uptime health monitoring — Felix has this as a named skill; Launchpad
+  has the Revenue sidebar (item 41, G-4a) but nothing that pings the business's own storefront/
+  site and alerts on downtime. A `site-monitor` prebuilt (`site_monitor.check`,
+  `site_monitor.list_incidents`) + a scheduled job template, reusing the existing
+  `scheduled_jobs`/event-trigger machinery (items 15, 20) rather than a new dispatch mechanism.
+
+- [ ] **G-8 (ops).** CRM / lead-pipeline data model — Felix's Remy "handles sales leads"
+  against structured state, not just chat threads. We have `agent_activity_log` (item 40) and
+  ordinary threads but no deal/lead/pipeline-stage primitive an agent can query and update
+  (e.g. `crm.create_lead`, `crm.update_stage`, `crm.list_pipeline`). Would likely live as a new
+  SpaceDO table (project-scoped, same pattern as `project_spend`/`container_slots`) plus a
+  `crm` prebuilt.
+
+- [ ] **G-9 (identity/domain).** Domain registration — the existing CF-for-SaaS flow (item 16,
+  Phase H) assumes the builder already owns a domain and only handles DNS/DCV pointing.
+  Neither competitor's feature list (per the search results) mentions autonomous domain
+  purchase, but it's a natural pairing with "business wallet + business email" for a truly
+  zero-to-launched business. Cloudflare Registrar API could close this — lower priority than
+  G-1..G-6, listed for completeness.
+
+- [ ] **G-10 (monetization, distinct from a UX gap — a revenue opportunity for Naelao itself).**
+  Skill marketplace between businesses — Felix has "Claw Mart" (an operator can sell a skill
+  their agent built to other operators). We have a Business Network that shares distilled
+  learnings for free (item 43 BF.4) but the paid version (BF.5, "private-playbook bidding
+  exchange") is explicitly deferred in the spec. This is a real platform revenue line, not
+  just parity — worth scoping as its own phase rather than folding into a marketing-gap pass.
+
+Not pursuing (lower priority, flagged not dropped):
+- Actual LLC/EIN legal-entity formation — neither Polsia nor Felix appears to do this per the
+  search results (both stop at wallet + payments, not legal registration), so it's likely not
+  worth chasing ahead of G-1..G-8.
+
+Recommended sequencing when this gets picked up: **G-1 (social posting) + G-3 (image
+generation)** first — highest leverage, both competitors lead with marketing and we have
+nothing; **G-6 (voice-note updates)** as a cheap high-charm add-on once G-1/G-3 land; the rest
+in roughly the numbered order above.
+
+Sources (web search, 2026-07-13): [Polsia — AI That Runs Your Company While You Sleep](https://polsia.com/),
+[How Polsia builds and runs companies with AI agents](https://timfrin.substack.com/p/how-polsia-builds-and-runs-companies),
+[Polsia: How a Solo Founder Hit $1M ARR in 30 Days With AI Agents](https://www.contextstudios.ai/blog/polsia-how-a-solo-founder-hit-1m-arr-in-30-days-with-ai-agents),
+[Full Tutorial: Use OpenClaw to Build a Business That Runs Itself | Nat Eliason](https://creatoreconomy.so/p/use-openclaw-to-build-a-business-that-runs-itself-nat-eliason),
+[Building Autonomous AI Businesses with OpenClaw and Felix: A Case Study](https://lunanotes.io/summary/building-autonomous-ai-businesses-with-openclaw-and-felix-a-case-study)
+
 ## Tier 1 — Launch blockers
 
 - [x] **F-17: `apps/shell` fails typecheck → `next build` fails → the Product Shell cannot
