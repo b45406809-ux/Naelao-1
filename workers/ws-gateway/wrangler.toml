@@ -1,7 +1,7 @@
 name = "naelao-ws-gateway"
 main = "src/index.ts"
 compatibility_date = "2024-12-01"
-compatibility_flags = ["nodejs_compat", "web_socket_pair_creator"]
+compatibility_flags = ["nodejs_compat"]
 
 [[durable_objects.bindings]]
 name = "WS_HUB"
@@ -9,7 +9,7 @@ class_name = "WsHubDO"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["WsHubDO"]
+new_sqlite_classes = ["WsHubDO"]
 
 [vars]
 ENVIRONMENT = "development"

@@ -14,12 +14,12 @@ dataset = "naelao_analytics"
 
 [[kv_namespaces]]
 binding = "METRICS_CACHE"
-id = "REPLACE_WITH_KV_ID"
+id = "6e38f2bdab314df480fc82d0f2c2adbb"
 
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
-database_id = "PLACEHOLDER_D1_ID"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [vars]
 ENVIRONMENT = "development"

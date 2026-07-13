@@ -14,7 +14,7 @@ crons = ["0 3 * * *"]
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
-database_id = "PLACEHOLDER_D1_ID"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [[r2_buckets]]
 binding = "KB_BUCKET"

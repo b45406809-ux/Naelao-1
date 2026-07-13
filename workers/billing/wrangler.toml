@@ -12,11 +12,11 @@ workers_dev = false
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
-database_id = "REPLACE_WITH_DB_ID"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [[kv_namespaces]]
 binding = "QUOTA_CACHE"
-id = "REPLACE_WITH_KV_ID"
+id = "0b8cfd9b3d4c4aa5a7b14c343aeab8fe"
 
 [[queues.producers]]
 binding = "BILLING_EVENTS"

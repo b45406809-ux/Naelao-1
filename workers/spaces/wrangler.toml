@@ -32,7 +32,7 @@ class_name = "LockDO"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["SpaceDO"]
+new_sqlite_classes = ["SpaceDO"]
 
 [[durable_objects.bindings]]
 name = "FEATURE_FLAG_DO"
@@ -61,32 +61,32 @@ class_name = "ProductUserDO"
 
 [[migrations]]
 tag = "v2"
-new_classes = ["LockDO"]
+new_sqlite_classes = ["LockDO"]
 
 [[migrations]]
 tag = "v3"
-new_classes = ["FeatureFlagDO"]
+new_sqlite_classes = ["FeatureFlagDO"]
 
 [[migrations]]
 tag = "v4"
-new_classes = ["TransactionCoordinatorDO"]
+new_sqlite_classes = ["TransactionCoordinatorDO"]
 
 [[migrations]]
 tag = "v5"
-new_classes = ["SpaceTypeRegistryDO"]
+new_sqlite_classes = ["SpaceTypeRegistryDO"]
 
 [[migrations]]
 tag = "v6"
-new_classes = ["BuilderAccountDO"]
+new_sqlite_classes = ["BuilderAccountDO"]
 
 [[migrations]]
 tag = "v7"
-new_classes = ["ProductUserDO"]
+new_sqlite_classes = ["ProductUserDO"]
 
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
-database_id = "PLACEHOLDER_D1_ID"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [[r2_buckets]]
 binding = "EXPORTS_BUCKET"
@@ -102,7 +102,7 @@ bucket_name = "naelao-agent-scripts"
 # KV for caching SpaceType manifests (TTL 1h — provisioner reads this before hitting the DO)
 [[kv_namespaces]]
 binding = "NAELAO_CONFIG_KV"
-id = "REPLACE_WITH_KV_ID"
+id = "2816ec20283b4ecd8c5b43e3ebe18b77"
 
 # Producer to the provisioning queue — on space creation we enqueue a space_provision
 # message; naelao-provisioner consumes it and installs the SpaceType's agents.

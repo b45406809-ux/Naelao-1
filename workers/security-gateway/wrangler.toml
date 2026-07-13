@@ -15,12 +15,12 @@ script_name = "naelao-security-gateway"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["RateLimiterDO"]
+new_sqlite_classes = ["RateLimiterDO"]
 
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
-database_id = "REPLACE_WITH_DB_ID"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [vars]
 ENVIRONMENT = "development"

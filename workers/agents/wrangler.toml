@@ -34,31 +34,31 @@ class_name = "ConcurrencyDO"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["NaelaoAgentDO"]
+new_sqlite_classes = ["NaelaoAgentDO"]
 
 [[migrations]]
 tag = "v2"
-new_classes = ["HITLApprovalDO"]
+new_sqlite_classes = ["HITLApprovalDO"]
 
 [[migrations]]
 tag = "v3"
-new_classes = ["TaskDO"]
+new_sqlite_classes = ["TaskDO"]
 
 [[migrations]]
 tag = "v4"
-new_classes = ["ProductDO", "BusinessDO"]
+new_sqlite_classes = ["ProductDO", "BusinessDO"]
 
 [[migrations]]
 tag = "v5"
-new_classes = ["ToolSandboxDO"]
+new_sqlite_classes = ["ToolSandboxDO"]
 
 [[migrations]]
 tag = "v6"
-new_classes = ["ConcurrencyDO"]
+new_sqlite_classes = ["ConcurrencyDO"]
 
 [[migrations]]
 tag = "v7"
-new_classes = ["LocalTunnelDO"]
+new_sqlite_classes = ["LocalTunnelDO"]
 
 # BusinessDO/ProductDO retired (legacy Whop-niche runtime, superseded by SpaceDO +
 # NaelaoAgentDO + the script engine) — deleted_classes tells Cloudflare to decommission the
@@ -119,7 +119,7 @@ binding = "AGENT_SCRIPT_WORKFLOW"
 
 [[kv_namespaces]]
 binding = "AGENT_CACHE"
-id = "REPLACE_WITH_KV_ID"
+id = "8564eeacd7b44efb88f71f39366ec4be"
 
 [[analytics_engine_datasets]]
 binding = "ANALYTICS"

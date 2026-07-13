@@ -20,7 +20,7 @@ binding = "AI"
 
 [[kv_namespaces]]
 binding = "KB_CACHE"
-id = "REPLACE_WITH_KV_ID"
+id = "bd6fe7b9c8eb40c8922c85249888add7"
 
 [[r2_buckets]]
 binding = "KB_BUCKET"
@@ -36,12 +36,12 @@ index_name = "naelao-semantic-cache"
 
 [[kv_namespaces]]
 binding = "SEMANTIC_CACHE_KV"
-id = "REPLACE_WITH_SEMANTIC_CACHE_KV_ID"
+id = "10ca4ecaba3e40deaf7e7cb53ed7c5cf"
 
 [[d1_databases]]
 binding = "PLATFORM_DB"
 database_name = "naelao-platform"
-database_id = "PLACEHOLDER_D1_ID"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
 [vars]
 ENVIRONMENT = "development"
