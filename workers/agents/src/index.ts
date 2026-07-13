@@ -32,6 +32,8 @@ import {
   refreshTokens,
   issueOAuthTicket,
   consumeOAuthTicket,
+  fetchOAuthIdentity,
+  linkOAuthAccountAndCheckDuplicate,
 } from "./connectors/oauth.js";
 import { isChannelType, getAdapter } from "./launchpad/channels.js";
 import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
@@ -1660,6 +1662,21 @@ app.get("/connectors/:platform/oauth/callback", async (c) => {
       clientId, clientSecret, code, codeVerifier: ticket.verifier, redirectUri,
     });
 
+    // Soft duplicate-account detection (never blocking — see oauth.ts's
+    // linkOAuthAccountAndCheckDuplicate header for why this can't be a hard gate): if the SAME
+    // real Whop account just got connected to a DIFFERENT business under this tenant, surface a
+    // warning on the redirect so the builder can decide whether that's intentional.
+    let duplicateOfSpaceId: string | null = null;
+    if (connector.oauth.userinfo_url) {
+      const subject = await fetchOAuthIdentity(connector.oauth.userinfo_url, tokens.access_token);
+      if (subject) {
+        const { otherSpaceId } = await linkOAuthAccountAndCheckDuplicate(
+          c.env.AGENT_CACHE, ticket.tenantId, platform, subject, ticket.spaceId
+        );
+        duplicateOfSpaceId = otherSpaceId;
+      }
+    }
+
     if (!c.env.CREDENTIALS_WORKER || !c.env.MCP_HUB) return failRedirect("connectors_unavailable");
     const credInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, ticket.tenantId);
     const credResp = await c.env.CREDENTIALS_WORKER.fetch(
@@ -1720,6 +1737,10 @@ app.get("/connectors/:platform/oauth/callback", async (c) => {
 
     const successUrl = new URL(ticket.returnUrl);
     successUrl.searchParams.set(`${platform}_connected`, "1");
+    if (duplicateOfSpaceId) {
+      successUrl.searchParams.set(`${platform}_oauth_warning`, "account_already_connected");
+      successUrl.searchParams.set(`${platform}_oauth_warning_space`, duplicateOfSpaceId);
+    }
     return c.redirect(successUrl.toString(), 302);
   } catch (err) {
     return failRedirect((err as Error).message.slice(0, 200));

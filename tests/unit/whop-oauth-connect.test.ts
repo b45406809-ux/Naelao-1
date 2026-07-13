@@ -96,12 +96,17 @@ afterEach(() => {
   fetchOverride = null;
 });
 
-function mockWhopTokenEndpoint(respond: (body: URLSearchParams) => unknown) {
+function mockWhopTokenEndpoint(respond: (body: URLSearchParams) => unknown, userinfoSub?: string | null) {
   fetchOverride = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : (input as Request).url;
     if (url === "https://api.whop.com/oauth/token") {
       const body = new URLSearchParams(init?.body as string);
       return Response.json(respond(body));
+    }
+    if (url === "https://api.whop.com/oauth/userinfo") {
+      if (userinfoSub === undefined) return new Response("boom", { status: 500 });
+      if (userinfoSub === null) return Response.json({});
+      return Response.json({ sub: userinfoSub });
     }
     return realFetch(input as never, init);
   }) as typeof globalThis.fetch;
@@ -202,6 +207,65 @@ describe("GET /connectors/whop/oauth/callback", () => {
 
     const second = await app.fetch(new Request(`https://agents.naelao.com/connectors/whop/oauth/callback?code=c2&state=${state}`), env as never);
     expect(second.status).toBe(400);
+  });
+
+  it("no warning on a first-time connect for an account never seen before", async () => {
+    const env = makeEnv();
+    mockWhopTokenEndpoint(() => ({ access_token: "at_1", refresh_token: "rt_1", expires_in: 3600 }), "whop-user-1");
+    const startRes = await startReq(env, "space-a");
+    const state = new URL((await startRes.json<{ authorize_url: string }>()).authorize_url).searchParams.get("state")!;
+    const res = await app.fetch(new Request(`https://agents.naelao.com/connectors/whop/oauth/callback?code=c1&state=${state}`), env as never);
+    expect(res.status).toBe(302);
+    const location = res.headers.get("location")!;
+    expect(location).toContain("whop_connected=1");
+    expect(location).not.toContain("whop_oauth_warning");
+  });
+
+  it("warns (but does not block) when the same Whop account connects to a second business", async () => {
+    const env = makeEnv();
+    mockWhopTokenEndpoint(() => ({ access_token: "at_1", refresh_token: "rt_1", expires_in: 3600 }), "whop-user-shared");
+
+    const firstStart = await startReq(env, "space-a");
+    const firstState = new URL((await firstStart.json<{ authorize_url: string }>()).authorize_url).searchParams.get("state")!;
+    const firstCb = await app.fetch(new Request(`https://agents.naelao.com/connectors/whop/oauth/callback?code=c1&state=${firstState}`), env as never);
+    expect(firstCb.status).toBe(302);
+    expect(firstCb.headers.get("location")).not.toContain("whop_oauth_warning");
+
+    const secondStart = await startReq(env, "space-b");
+    const secondState = new URL((await secondStart.json<{ authorize_url: string }>()).authorize_url).searchParams.get("state")!;
+    const secondCb = await app.fetch(new Request(`https://agents.naelao.com/connectors/whop/oauth/callback?code=c2&state=${secondState}`), env as never);
+    // Never blocked — the connection still succeeds.
+    expect(secondCb.status).toBe(302);
+    const location = secondCb.headers.get("location")!;
+    expect(location).toContain("whop_connected=1");
+    expect(location).toContain("whop_oauth_warning=account_already_connected");
+    expect(location).toContain("whop_oauth_warning_space=space-a");
+  });
+
+  it("no warning when reconnecting the same account to the same business again", async () => {
+    const env = makeEnv();
+    mockWhopTokenEndpoint(() => ({ access_token: "at_1", refresh_token: "rt_1", expires_in: 3600 }), "whop-user-same");
+
+    const firstStart = await startReq(env, "space-a");
+    const firstState = new URL((await firstStart.json<{ authorize_url: string }>()).authorize_url).searchParams.get("state")!;
+    await app.fetch(new Request(`https://agents.naelao.com/connectors/whop/oauth/callback?code=c1&state=${firstState}`), env as never);
+
+    const secondStart = await startReq(env, "space-a");
+    const secondState = new URL((await secondStart.json<{ authorize_url: string }>()).authorize_url).searchParams.get("state")!;
+    const secondCb = await app.fetch(new Request(`https://agents.naelao.com/connectors/whop/oauth/callback?code=c2&state=${secondState}`), env as never);
+    expect(secondCb.status).toBe(302);
+    expect(secondCb.headers.get("location")).not.toContain("whop_oauth_warning");
+  });
+
+  it("never fails the connection when the userinfo identity lookup itself errors", async () => {
+    const env = makeEnv();
+    // userinfoSub left undefined by default -> mockWhopTokenEndpoint's userinfo branch 500s.
+    mockWhopTokenEndpoint(() => ({ access_token: "at_1", refresh_token: "rt_1", expires_in: 3600 }));
+    const startRes = await startReq(env);
+    const state = new URL((await startRes.json<{ authorize_url: string }>()).authorize_url).searchParams.get("state")!;
+    const res = await app.fetch(new Request(`https://agents.naelao.com/connectors/whop/oauth/callback?code=c1&state=${state}`), env as never);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toContain("whop_connected=1");
   });
 
   it("an error= query param from Whop redirects back with the error, not a 500", async () => {

@@ -70,6 +70,13 @@ export interface ConnectorOAuthSpec {
   /** The credential name the resolved {access_token, refresh_token, expires_at} JSON blob is
    *  vaulted under — mcp-hub's buildAuthHeaders recognizes this shape via auth_type "oauth2". */
   credential_name: string;
+  /** Optional OpenID Connect userinfo endpoint (requires an `openid` scope above). When present,
+   *  the callback resolves the connecting account's stable `sub` and uses it to detect the same
+   *  real-world account being connected to more than one business under this tenant — a soft,
+   *  best-effort warning (never a hard block: a builder may legitimately share one account across
+   *  related businesses), since a BYO "Connect with X" account has no platform-enforced isolation
+   *  the way the Whop sub-merchant wallet rail (business-wallet.ts) does. */
+  userinfo_url?: string;
 }
 
 export interface ConnectorDefinition {
@@ -116,10 +123,13 @@ const WHOP: ConnectorDefinition = {
   oauth: {
     authorize_url: "https://api.whop.com/oauth/authorize",
     token_url: "https://api.whop.com/oauth/token",
-    scopes: ["read_memberships", "read_payments"],
+    // `openid` is required for the userinfo lookup below (same-account-multiple-businesses
+    // detection); `profile` isn't needed since only the stable `sub` is used, not the name/avatar.
+    scopes: ["openid", "read_memberships", "read_payments"],
     client_id_env: "WHOP_OAUTH_CLIENT_ID",
     client_secret_env: "WHOP_OAUTH_CLIENT_SECRET",
     credential_name: "WHOP_OAUTH_TOKENS",
+    userinfo_url: "https://api.whop.com/oauth/userinfo",
   },
   mcp_endpoint: "https://mcp.naelao.com/connectors/whop",
   webhook: {

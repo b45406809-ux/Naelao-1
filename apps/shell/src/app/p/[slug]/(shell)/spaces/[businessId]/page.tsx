@@ -280,11 +280,21 @@ export default function BusinessDetailPage() {
     const params2 = new URLSearchParams(window.location.search);
     const connected = params2.get("whop_connected");
     const error = params2.get("whop_oauth_error");
+    const warning = params2.get("whop_oauth_warning");
     if (!connected && !error) return;
-    if (connected) show("Whop account connected.");
+    if (connected && warning === "account_already_connected") {
+      // Non-blocking: the same real Whop account is already connected to another business under
+      // this account. Surfaced as a heads-up, not an error — revenue/data may be commingled if
+      // that wasn't intentional, but sharing one account across related businesses is valid too.
+      show("Whop account connected — heads up, this same Whop account is already connected to another one of your businesses.");
+    } else if (connected) {
+      show("Whop account connected.");
+    }
     if (error) show(`Whop connection failed: ${error}`);
     params2.delete("whop_connected");
     params2.delete("whop_oauth_error");
+    params2.delete("whop_oauth_warning");
+    params2.delete("whop_oauth_warning_space");
     const clean = `${window.location.pathname}${params2.toString() ? `?${params2}` : ""}`;
     window.history.replaceState({}, "", clean);
     void refresh();

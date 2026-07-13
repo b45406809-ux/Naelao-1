@@ -136,6 +136,67 @@ export async function refreshTokens(params: {
   };
 }
 
+interface UserinfoResponse {
+  sub?: string;
+}
+
+/** Resolves the connecting account's stable OpenID Connect `sub` from a userinfo endpoint.
+ *  Best-effort: returns null on any non-2xx response or malformed body rather than throwing — a
+ *  failed identity lookup must never block the underlying connection from completing. */
+export async function fetchOAuthIdentity(userinfoUrl: string, accessToken: string): Promise<string | null> {
+  try {
+    const resp = await fetch(userinfoUrl, { headers: { authorization: `Bearer ${accessToken}` } });
+    if (!resp.ok) return null;
+    const json = await resp.json<UserinfoResponse>();
+    return json.sub ?? null;
+  } catch {
+    return null;
+  }
+}
+
+interface OAuthAccountLink {
+  spaceId: string;
+  connectedAt: number;
+}
+
+function oauthAccountKey(tenantId: string, platform: string, subject: string): string {
+  return `connector-oauth-account:${tenantId}:${platform}:${subject}`;
+}
+
+/**
+ * Records `spaceId` against the real-world account `subject` (e.g. a Whop user's OIDC `sub`) and
+ * reports any OTHER space under this tenant already linked to the same account — a soft signal
+ * that two "different" businesses may in fact be reading/reporting on the same underlying
+ * account, useful for warning a builder, never for blocking the connection (no server-enforced
+ * isolation exists for a BYO account the way it does for the platform-provisioned wallet rail).
+ * KV-backed (eventual consistency, no TTL — this is a best-effort UX signal, not a security
+ * boundary, so the ~60s propagation window CLAUDE.md warns about for rate limiting doesn't apply).
+ */
+export async function linkOAuthAccountAndCheckDuplicate(
+  kv: KVNamespace,
+  tenantId: string,
+  platform: string,
+  subject: string,
+  spaceId: string
+): Promise<{ otherSpaceId: string | null }> {
+  const key = oauthAccountKey(tenantId, platform, subject);
+  const raw = await kv.get(key);
+  let links: OAuthAccountLink[] = [];
+  if (raw) {
+    try {
+      links = JSON.parse(raw) as OAuthAccountLink[];
+    } catch {
+      links = [];
+    }
+  }
+  const other = links.find((l) => l.spaceId !== spaceId) ?? null;
+  if (!links.some((l) => l.spaceId === spaceId)) {
+    links.push({ spaceId, connectedAt: Date.now() });
+    await kv.put(key, JSON.stringify(links));
+  }
+  return { otherSpaceId: other?.spaceId ?? null };
+}
+
 export interface OAuthTicket {
   verifier: string;
   spaceId: string;
