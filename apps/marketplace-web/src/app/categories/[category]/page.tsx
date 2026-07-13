@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 // G-M06: Category browsing page — filtered view of marketplace by category
 
 import { useParams } from "next/navigation";

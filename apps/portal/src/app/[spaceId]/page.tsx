@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 // G-A01..A07, G-P-SSE, G-P-FB, G-P-I18N
 // SSE streaming replaces polling; polling is the fallback if EventSource unavailable.
 // Thumbs-up / thumbs-down per assistant message.

@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 import * as React from "react";
 import Link from "next/link";
 import { Button, Badge, Card, CardTitle, CardDesc, Modal, FormInput, Toggle, useToast, Toast } from "@naelao/ui";

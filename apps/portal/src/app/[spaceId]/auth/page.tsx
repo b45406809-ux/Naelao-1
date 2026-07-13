@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 // G-P-AUTH: Magic link authentication landing page.
 // Reads ?token= from the URL, verifies it, stores the auth token, and redirects.
 

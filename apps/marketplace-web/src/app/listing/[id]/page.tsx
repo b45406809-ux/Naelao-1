@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 // G-M07..M10: Listing detail — preview config, reviews, "Use this template" fork button
 
 import { useEffect, useState } from "react";

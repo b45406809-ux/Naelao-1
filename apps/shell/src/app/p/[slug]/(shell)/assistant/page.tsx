@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 // The always-on Space Assistant surface (spec A1.3/A1.16.7, launchpad-6 mockup). Every panel
 // below is a READ-ONLY consumer of an already-built backend — no write routes are added to the
 // end-user allowlist. Multi-assistant switching (the mockup's tab bar) is deliberately NOT built

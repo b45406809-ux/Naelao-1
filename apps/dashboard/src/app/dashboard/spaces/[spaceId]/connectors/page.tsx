@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 // Connectors console — the external-platform connector layer ("Whop first, everything else
 // coming soon"). Reads the Naelao-authored connector catalogue and lets a builder connect a
 // platform by storing its API key (encrypted vault) + registering it as an MCP server. The

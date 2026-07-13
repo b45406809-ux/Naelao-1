@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 import * as React from "react";
 import { useParams } from "next/navigation";
 import { Button, Badge, Modal, FormInput, FormSelect, useToast, Toast } from "@naelao/ui";

@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 import { Chat } from "@/components/Chat";
 import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";

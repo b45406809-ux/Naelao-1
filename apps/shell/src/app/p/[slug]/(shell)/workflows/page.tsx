@@ -1,3 +1,5 @@
+export const runtime = "edge";
+
 import { ComingSoon } from "@/components/ComingSoon";
 
 export default function WorkflowsPage() {

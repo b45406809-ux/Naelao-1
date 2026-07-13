@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 // First-run onboarding wizard. The provisioner records onboarding state on the space
 // (config_json.onboarding) from the template's bootstrap; this renders it: credential prompts
 // connect platforms (vault + MCP register), preference prompts become space preferences, and the

@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { getApiBase, getAuthHeader } from "@/lib/api";

@@ -1,5 +1,7 @@
 'use client';
 
+export const runtime = "edge";
+
 import { useParams } from "next/navigation";
 import { useState, useEffect, useRef } from "react";
 import { startSession, sendMessage, pollRun, getMessages } from "@/lib/api";

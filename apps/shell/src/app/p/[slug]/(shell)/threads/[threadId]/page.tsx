@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 // A thread's own chat surface. Threads (structural browse, SpaceDO `threads` table) and chat
 // sessions (SpaceDO `sessions` table, the message-history transport) are separate tables with no
 // server-side link yet — this page's `sessionKey={threadId}` keeps each thread's chat session

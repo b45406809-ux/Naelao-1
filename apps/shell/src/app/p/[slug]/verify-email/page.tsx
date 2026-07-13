@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 // Security audit follow-up: signup's free-credit grant is deferred until email verification
 // closes, but the shell previously gave a legitimate user NO visible path to complete it — the
 // verification email itself only ever carried a raw token, not a link, and there was no page to
