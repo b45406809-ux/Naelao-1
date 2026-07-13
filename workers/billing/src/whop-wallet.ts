@@ -65,23 +65,33 @@ export async function getSubMerchant(db: D1Database, spaceId: string): Promise<W
 }
 
 /**
- * Auto-provision a business's Whop sub-merchant wallet. Idempotent: a space already provisioned
- * (any status) is left untouched — this is called once, fire-and-forget, right after the space
- * row is created. Never throws to the caller (business creation must never fail over this);
- * errors are recorded as a `status='error'` row so the assistant can see and retry.
+ * Auto-provision a business's Whop sub-merchant wallet. Idempotent for any NON-error row (a
+ * space already actively provisioned is left untouched) — but a prior `status='error'` row (a
+ * transient Whop outage, or provisioning attempted before WHOP_PLATFORM_API_KEY was configured)
+ * is retried in place rather than treated as permanently done: the original idempotency check
+ * here (`if (existing) return` for ANY status) contradicted this file's own header/migration
+ * 0064's comment promising the assistant could "see and retry" — it silently left a business
+ * walletless forever. Never throws to the caller (business creation must never fail over this);
+ * a failure is still recorded as `status='error'` so the NEXT call can retry again.
  */
 export async function provisionSubMerchant(
   env: BillingEnv,
   params: { tenantId: string; spaceId: string; ownerEmail: string; businessName: string }
 ): Promise<void> {
   const existing = await getSubMerchant(env.PLATFORM_DB, params.spaceId);
-  if (existing) return;
+  if (existing && existing.status !== "error") return;
 
   if (!env.WHOP_PLATFORM_API_KEY) {
-    await env.PLATFORM_DB.prepare(
-      `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status)
-       VALUES (?, ?, ?, '', ?, 'error')`
-    ).bind(crypto.randomUUID(), params.tenantId, params.spaceId, params.ownerEmail).run();
+    if (existing) {
+      await env.PLATFORM_DB.prepare(
+        `UPDATE whop_sub_merchants SET status = 'error', updated_at = datetime('now') WHERE id = ?`
+      ).bind(existing.id).run();
+    } else {
+      await env.PLATFORM_DB.prepare(
+        `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status)
+         VALUES (?, ?, ?, '', ?, 'error')`
+      ).bind(crypto.randomUUID(), params.tenantId, params.spaceId, params.ownerEmail).run();
+    }
     return;
   }
 
@@ -92,19 +102,31 @@ export async function provisionSubMerchant(
       ownerEmail: params.ownerEmail,
       businessName: params.businessName,
     });
-    await env.PLATFORM_DB.prepare(
-      `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status, onboarding_url)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).bind(crypto.randomUUID(), params.tenantId, params.spaceId, sub.company_id, params.ownerEmail, sub.status, sub.onboarding_url ?? null).run();
+    if (existing) {
+      await env.PLATFORM_DB.prepare(
+        `UPDATE whop_sub_merchants SET company_id = ?, status = ?, onboarding_url = ?, updated_at = datetime('now') WHERE id = ?`
+      ).bind(sub.company_id, sub.status, sub.onboarding_url ?? null, existing.id).run();
+    } else {
+      await env.PLATFORM_DB.prepare(
+        `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status, onboarding_url)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      ).bind(crypto.randomUUID(), params.tenantId, params.spaceId, sub.company_id, params.ownerEmail, sub.status, sub.onboarding_url ?? null).run();
+    }
     if (sub.status === "awaiting_kyc") {
       await notifyOwnerOnboardingRequired(env, { tenantId: params.tenantId, spaceId: params.spaceId, ownerEmail: params.ownerEmail, onboardingUrl: sub.onboarding_url ?? null });
     }
   } catch (err) {
     console.error(`[billing/whop-wallet] sub-merchant provisioning failed for space ${params.spaceId}:`, (err as Error).message);
-    await env.PLATFORM_DB.prepare(
-      `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status)
-       VALUES (?, ?, ?, '', ?, 'error')`
-    ).bind(crypto.randomUUID(), params.tenantId, params.spaceId, params.ownerEmail).run();
+    if (existing) {
+      await env.PLATFORM_DB.prepare(
+        `UPDATE whop_sub_merchants SET status = 'error', updated_at = datetime('now') WHERE id = ?`
+      ).bind(existing.id).run();
+    } else {
+      await env.PLATFORM_DB.prepare(
+        `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status)
+         VALUES (?, ?, ?, '', ?, 'error')`
+      ).bind(crypto.randomUUID(), params.tenantId, params.spaceId, params.ownerEmail).run();
+    }
   }
 }
 
@@ -131,6 +153,22 @@ async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function htmlPage(body: string, status: number): Response {
+  return new Response(`<!doctype html><html><head><meta charset="utf-8"><title>Payout approval</title></head><body style="font-family:sans-serif;max-width:32rem;margin:3rem auto;padding:0 1rem">${body}</body></html>`, {
+    status,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
+// A single-use payout approval link is only ever valid for this long — matches the codebase's
+// own business_invites/password-reset-token precedent (this file's original version had no
+// expiry at all, so a leaked or forwarded email would let a money-moving link work forever).
+const PAYOUT_APPROVAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 async function storeVaultCredential(
   env: BillingEnv,
@@ -183,7 +221,7 @@ async function fireWalletEvent(
   }
 }
 
-async function sendApprovalEmail(env: BillingEnv, params: { tenantId: string; spaceId: string; ownerEmail: string; approveUrl: string; amountCents: number; currency: string }): Promise<void> {
+async function sendApprovalEmail(env: BillingEnv, params: { tenantId: string; spaceId: string; ownerEmail: string; approveUrl: string; amountCents: number; currency: string; destinationLabel: string; destinationType: string }): Promise<void> {
   if (!env.NOTIFICATIONS_WORKER) return;
   try {
     await env.NOTIFICATIONS_WORKER.fetch(
@@ -195,7 +233,12 @@ async function sendApprovalEmail(env: BillingEnv, params: { tenantId: string; sp
           space_id: params.spaceId,
           to: params.ownerEmail,
           subject: "Approve your business wallet payout",
-          body: `Your business's assistant requested a payout of ${(params.amountCents / 100).toFixed(2)} ${params.currency}. Approve it here: ${params.approveUrl}\n\nThis link works once. Future payouts to this same destination will not need approval again.`,
+          // Names the destination explicitly (not just the amount) so the owner can sanity-check
+          // WHAT they're approving — a prompt-injected agent that added an attacker-controlled
+          // destination is far easier to catch when the email says exactly where the money is
+          // going. Also states the link expires and requires an actual click (never auto-approved
+          // by an email scanner prefetching this GET link).
+          body: `Your business's assistant requested a payout of ${(params.amountCents / 100).toFixed(2)} ${params.currency} to: ${params.destinationLabel} (${params.destinationType}).\n\nIf this looks right, review and approve it here: ${params.approveUrl}\n\nThis link expires in 7 days and works once. Future payouts to this same destination will not need approval again — if you did NOT expect this, do not approve it and contact support.`,
         }),
       })
     );
@@ -374,8 +417,8 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
     const spaceId = body.space_id!;
 
     const destination = await c.env.PLATFORM_DB.prepare(
-      "SELECT id, status, label FROM payout_destinations WHERE id = ? AND space_id = ?"
-    ).bind(body.destination_id, spaceId).first<{ id: string; status: string; label: string }>();
+      "SELECT id, status, label, type FROM payout_destinations WHERE id = ? AND space_id = ?"
+    ).bind(body.destination_id, spaceId).first<{ id: string; status: string; label: string; type: string }>();
     if (!destination) return c.json({ error_code: "not_found", message: "Payout destination not found" }, 404);
 
     const wallet = await getSubMerchant(c.env.PLATFORM_DB, spaceId);
@@ -426,11 +469,17 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
     // First payout to this destination — require owner approval via a single-use emailed link.
     const approvalToken = randomHex(32);
     const approvalTokenHash = await sha256Hex(approvalToken);
+    const expiresAt = new Date(Date.now() + PAYOUT_APPROVAL_TTL_MS).toISOString();
     await c.env.PLATFORM_DB.prepare(
-      `INSERT INTO payout_requests (id, space_id, destination_id, amount_cents, note, status, approval_token_hash, requested_by)
-       VALUES (?, ?, ?, ?, ?, 'pending_approval', ?, ?)`
-    ).bind(requestId, spaceId, destination.id, body.amount_cents, body.note ?? null, approvalTokenHash, body.requested_by ?? null).run();
+      `INSERT INTO payout_requests (id, space_id, destination_id, amount_cents, note, status, approval_token_hash, requested_by, expires_at)
+       VALUES (?, ?, ?, ?, ?, 'pending_approval', ?, ?, ?)`
+    ).bind(requestId, spaceId, destination.id, body.amount_cents, body.note ?? null, approvalTokenHash, body.requested_by ?? null, expiresAt).run();
 
+    // Honest reporting: if the approval email can't be sent (deployment has no
+    // PUBLIC_WEBHOOK_BASE_URL configured yet), the request still exists but nothing will ever
+    // notify the owner — the caller (dashboard/shell) needs to know so it can surface an
+    // in-product approval affordance instead of silently waiting on an email that never sends.
+    let emailSent = false;
     if (c.env.PUBLIC_WEBHOOK_BASE_URL) {
       const approveUrl = `${c.env.PUBLIC_WEBHOOK_BASE_URL.replace(/\/$/, "")}/v1/webhooks/whop-wallet/payouts/${requestId}/approve?token=${approvalToken}`;
       await sendApprovalEmail(c.env, {
@@ -440,14 +489,17 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
         approveUrl,
         amountCents: body.amount_cents,
         currency: synced.currency,
+        destinationLabel: destination.label,
+        destinationType: destination.type,
       });
+      emailSent = true;
     }
     await fireWalletEvent(c.env, {
       tenantId: g.tenantId, spaceId, type: "business_wallet.payout_requested",
       payload: { amount_cents: body.amount_cents, destination_id: destination.id },
     });
 
-    return c.json({ payout: { id: requestId, status: "pending_approval" } }, 201);
+    return c.json({ payout: { id: requestId, status: "pending_approval", email_sent: emailSent } }, 201);
   });
 
   // ── GET /billing/whop-wallet/payouts?space_id= ────────────────────────────────────────────────
@@ -462,28 +514,100 @@ export function registerWhopWalletRoutes(app: Hono<{ Bindings: BillingEnv }>): v
   });
 }
 
-/**
- * Public, unauthenticated approval-link handler — GET /v1/webhooks/whop-wallet/payouts/:id/approve.
- * The single-use token IS the auth (mirrors business_invites/password-reset-token precedent).
- * On approval: marks the destination 'verified' (so FUTURE payouts skip this step) and executes
- * the withdrawal immediately.
- */
-export async function handlePayoutApproval(env: BillingEnv, requestId: string, token: string): Promise<Response> {
-  if (!token) return new Response("Missing approval token", { status: 400 });
-  const tokenHash = await sha256Hex(token);
+interface PayoutApprovalLookup {
+  id: string;
+  space_id: string;
+  destination_id: string;
+  amount_cents: number;
+  status: string;
+  approval_token_hash: string | null;
+  expires_at: string | null;
+}
 
+/** Validates the token/status/expiry for an approval link WITHOUT mutating anything. Shared by
+ *  the safe GET render and the POST executor so both apply the exact same checks. */
+async function checkPayoutApproval(
+  env: BillingEnv,
+  requestId: string,
+  token: string
+): Promise<{ ok: true; request: PayoutApprovalLookup } | { ok: false; response: Response }> {
+  if (!token) return { ok: false, response: new Response("Missing approval token", { status: 400 }) };
+  const tokenHash = await sha256Hex(token);
   const request = await env.PLATFORM_DB.prepare(
-    "SELECT id, space_id, destination_id, amount_cents, status, approval_token_hash FROM payout_requests WHERE id = ?"
-  ).bind(requestId).first<{ id: string; space_id: string; destination_id: string; amount_cents: number; status: string; approval_token_hash: string | null }>();
+    "SELECT id, space_id, destination_id, amount_cents, status, approval_token_hash, expires_at FROM payout_requests WHERE id = ?"
+  ).bind(requestId).first<PayoutApprovalLookup>();
   if (!request || request.status !== "pending_approval" || !request.approval_token_hash) {
-    return new Response("This payout request is no longer pending approval.", { status: 410 });
+    return { ok: false, response: new Response("This payout request is no longer pending approval.", { status: 410 }) };
   }
   if (request.approval_token_hash !== tokenHash) {
-    return new Response("Invalid approval token.", { status: 401 });
+    return { ok: false, response: new Response("Invalid approval token.", { status: 401 }) };
+  }
+  if (request.expires_at && new Date(request.expires_at).getTime() < Date.now()) {
+    return { ok: false, response: new Response("This approval link has expired. Ask your assistant to request the payout again.", { status: 410 }) };
+  }
+  return { ok: true, request };
+}
+
+/**
+ * Public, unauthenticated approval-link handler — GET /v1/webhooks/whop-wallet/payouts/:id/approve.
+ * SAFE: renders a confirmation page only, no side effects, so an email client/scanner prefetching
+ * this GET link (Outlook SafeLinks, Mimecast, etc. — a real, documented risk for money-moving GET
+ * links) can never trigger a payout. The owner must actually submit the form below, which POSTs
+ * to confirmPayoutApproval — a browser only does that on a real click, never on prefetch.
+ */
+export async function renderPayoutApprovalPage(env: BillingEnv, requestId: string, token: string): Promise<Response> {
+  const check = await checkPayoutApproval(env, requestId, token);
+  if (!check.ok) return htmlPage(`<p>${escapeHtml(await check.response.text())}</p>`, check.response.status);
+  const { request } = check;
+
+  const destination = await env.PLATFORM_DB.prepare(
+    "SELECT label, type FROM payout_destinations WHERE id = ?"
+  ).bind(request.destination_id).first<{ label: string; type: string }>();
+  const wallet = await getSubMerchant(env.PLATFORM_DB, request.space_id);
+  const amount = (request.amount_cents / 100).toFixed(2);
+  const currency = wallet?.currency ?? "USD";
+
+  return htmlPage(
+    `<h1>Approve payout</h1>
+     <p><strong>Amount:</strong> ${escapeHtml(amount)} ${escapeHtml(currency)}</p>
+     <p><strong>Destination:</strong> ${escapeHtml(destination?.label ?? "unknown")} (${escapeHtml(destination?.type ?? "unknown")})</p>
+     <p>If this looks right, click below to send it. This cannot be undone.</p>
+     <form method="POST" action="/webhooks/whop-wallet/payouts/${encodeURIComponent(requestId)}/approve">
+       <input type="hidden" name="token" value="${escapeHtml(token)}" />
+       <button type="submit" style="padding:0.75rem 1.5rem;font-size:1rem">Approve and send payout</button>
+     </form>
+     <p style="color:#666;font-size:0.85rem">Didn't expect this? Close this page — nothing happens until you click the button above.</p>`,
+    200
+  );
+}
+
+/**
+ * POST /v1/webhooks/whop-wallet/payouts/:id/approve — the ONLY handler that actually moves
+ * money. The single-use token IS the auth (mirrors business_invites/password-reset-token
+ * precedent). Uses a conditional UPDATE (`WHERE status = 'pending_approval'`) as the sole
+ * decision of "who gets to execute this" — two concurrent submissions (a double form-post, or a
+ * race with a redelivered request) can only ever have ONE succeed; the loser sees 410 rather
+ * than re-executing a withdrawal that's already in flight. On success: marks the destination
+ * 'verified' (so FUTURE payouts skip this step — reverted by the webhook handler below if this
+ * specific withdrawal later fails) and executes the withdrawal immediately.
+ */
+export async function confirmPayoutApproval(env: BillingEnv, requestId: string, token: string): Promise<Response> {
+  const check = await checkPayoutApproval(env, requestId, token);
+  if (!check.ok) return check.response;
+  const { request } = check;
+
+  // Atomic status flip — see the function header. `meta.changes !== 1` means someone else (or an
+  // earlier attempt) already claimed this request.
+  const flip = await env.PLATFORM_DB.prepare(
+    "UPDATE payout_requests SET status = 'approved', updated_at = datetime('now') WHERE id = ? AND status = 'pending_approval'"
+  ).bind(request.id).run();
+  if (flip.meta.changes !== 1) {
+    return new Response("This payout request is no longer pending approval.", { status: 410 });
   }
 
   const wallet = await getSubMerchant(env.PLATFORM_DB, request.space_id);
   if (!wallet || !wallet.company_id) {
+    await env.PLATFORM_DB.prepare("UPDATE payout_requests SET status = 'failed', updated_at = datetime('now') WHERE id = ?").bind(request.id).run();
     return new Response("Wallet unavailable.", { status: 503 });
   }
 
@@ -504,7 +628,7 @@ export async function handlePayoutApproval(env: BillingEnv, requestId: string, t
       tenantId: wallet.tenant_id, spaceId: request.space_id, type: "business_wallet.payout_completed",
       payload: { amount_cents: request.amount_cents, withdrawal_id: withdrawal.withdrawal_id },
     });
-    return new Response("Payout approved and sent. You can close this page.", { status: 200 });
+    return htmlPage("<p>Payout approved and sent. You can close this page.</p>", 200);
   } catch (err) {
     await env.PLATFORM_DB.prepare("UPDATE payout_requests SET status = 'failed', updated_at = datetime('now') WHERE id = ?").bind(request.id).run();
     return new Response(`Payout failed: ${(err as Error).message}`, { status: 502 });
@@ -560,29 +684,86 @@ export async function handleWhopWebhook(request: Request, env: BillingEnv): Prom
     return Response.json({ ok: true, skipped: true });
   }
 
-  const wallet = await env.PLATFORM_DB.prepare("SELECT space_id, tenant_id FROM whop_sub_merchants WHERE company_id = ?")
+  const wallet = await env.PLATFORM_DB.prepare("SELECT space_id, tenant_id, currency FROM whop_sub_merchants WHERE company_id = ?")
     .bind(event.companyId)
-    .first<{ space_id: string; tenant_id: string }>();
+    .first<{ space_id: string; tenant_id: string; currency: string }>();
   if (!wallet) {
     console.warn(`[billing/whop-wallet] event for unknown company ${event.companyId}`);
     return Response.json({ ok: true, skipped: true });
   }
 
-  const txType = event.type === "revenue_received" ? "revenue" : event.type === "payout_completed" ? "payout" : "expense";
-  await env.PLATFORM_DB.prepare(
-    `INSERT OR IGNORE INTO wallet_transactions (id, space_id, type, amount_cents, currency, description, external_ref, provider_event_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(
-    crypto.randomUUID(), wallet.space_id, txType,
-    event.type === "revenue_received" ? event.amountCents : -event.amountCents,
-    event.currency, `Whop ${event.type}`, event.providerEventId, event.providerEventId
-  ).run();
-
   if (event.type === "revenue_received") {
-    await fireWalletEvent(env, {
-      tenantId: wallet.tenant_id, spaceId: wallet.space_id, type: "business_wallet.revenue_received",
-      payload: { amount_cents: event.amountCents, currency: event.currency },
-    });
+    const inserted = await env.PLATFORM_DB.prepare(
+      `INSERT OR IGNORE INTO wallet_transactions (id, space_id, type, amount_cents, currency, description, external_ref, provider_event_id)
+       VALUES (?, ?, 'revenue', ?, ?, ?, ?, ?)`
+    ).bind(crypto.randomUUID(), wallet.space_id, event.amountCents, event.currency, `Whop ${event.type}`, event.providerEventId, event.providerEventId).run();
+    // Whop delivers at-least-once — a redelivery must not re-fire business_wallet.revenue_received
+    // (duplicate no-code trigger reactions, duplicate thank-you emails). Only fire when this
+    // delivery actually inserted a NEW row; `inserted.meta.changes === 0` means the idempotency
+    // index already had this provider_event_id and INSERT OR IGNORE was a no-op.
+    if (inserted.meta.changes > 0) {
+      await fireWalletEvent(env, {
+        tenantId: wallet.tenant_id, spaceId: wallet.space_id, type: "business_wallet.revenue_received",
+        payload: { amount_cents: event.amountCents, currency: event.currency },
+      });
+    }
+    return Response.json({ ok: true, event_type: event.type, space_id: wallet.space_id });
+  }
+
+  if (event.type === "payout_completed" || event.type === "payout_failed") {
+    // Reconcile against the payout_requests row Naelao itself created when the withdrawal was
+    // initiated (request_payout / the approval flow) — matched by Whop's own withdrawal id
+    // (event.externalId), which is exactly what got stored on whop_withdrawal_id at execution
+    // time. Never blindly append a second ledger row for a payout already recorded there — that
+    // would double-count every completed payout (once at execution, once again here).
+    const matched = event.externalId
+      ? await env.PLATFORM_DB.prepare(
+          "SELECT id, destination_id, amount_cents, status FROM payout_requests WHERE whop_withdrawal_id = ? AND space_id = ?"
+        ).bind(event.externalId, wallet.space_id).first<{ id: string; destination_id: string; amount_cents: number; status: string }>()
+      : null;
+
+    if (event.type === "payout_completed") {
+      if (!matched) {
+        // A withdrawal we didn't initiate through this flow (shouldn't normally happen, but
+        // record it rather than silently losing it — idempotent via provider_event_id).
+        await env.PLATFORM_DB.prepare(
+          `INSERT OR IGNORE INTO wallet_transactions (id, space_id, type, amount_cents, currency, description, external_ref, provider_event_id)
+           VALUES (?, ?, 'payout', ?, ?, ?, ?, ?)`
+        ).bind(crypto.randomUUID(), wallet.space_id, -event.amountCents, event.currency, "Whop payout_completed (unmatched)", event.externalId, event.providerEventId).run();
+      }
+      // Matched: already recorded (status='executed' + ledger row) at execution time — this
+      // webhook only confirms it. Idempotent no-op, including on redelivery.
+      return Response.json({ ok: true, event_type: event.type, space_id: wallet.space_id });
+    }
+
+    // payout_failed — the withdrawal.failed case. `matched.status !== 'failed'` is itself the
+    // idempotency guard (a redelivery sees status already 'failed' and does nothing further).
+    if (matched && matched.status !== "failed") {
+      await env.PLATFORM_DB.batch([
+        env.PLATFORM_DB.prepare("UPDATE payout_requests SET status = 'failed', updated_at = datetime('now') WHERE id = ?").bind(matched.id),
+        // Reverse the debit recorded at execution time — the money never actually left the
+        // wallet. This was previously recorded as a NEGATIVE 'expense' transaction (wrong
+        // direction entirely — a failed payout returning funds showed as money spent).
+        env.PLATFORM_DB.prepare(
+          `INSERT INTO wallet_transactions (id, space_id, type, amount_cents, currency, description, external_ref, provider_event_id)
+           VALUES (?, ?, 'payout', ?, ?, ?, ?, ?)`
+        ).bind(crypto.randomUUID(), wallet.space_id, matched.amount_cents, event.currency, "Payout reversal — withdrawal failed", event.externalId, event.providerEventId),
+      ]);
+      // If no OTHER payout to this destination has ever actually completed, it was never really
+      // verified — the approval flow marks a destination 'verified' optimistically the moment
+      // Whop ACCEPTS a withdrawal request, before knowing whether it succeeds. Revert it so the
+      // next payout requires owner approval again instead of silently skipping straight to
+      // execution against a destination with a 0% success rate.
+      const otherSuccess = await env.PLATFORM_DB.prepare(
+        "SELECT 1 FROM payout_requests WHERE destination_id = ? AND status = 'executed' LIMIT 1"
+      ).bind(matched.destination_id).first();
+      if (!otherSuccess) {
+        await env.PLATFORM_DB.prepare(
+          "UPDATE payout_destinations SET status = 'pending' WHERE id = ? AND status = 'verified'"
+        ).bind(matched.destination_id).run();
+      }
+    }
+    return Response.json({ ok: true, event_type: event.type, space_id: wallet.space_id });
   }
 
   return Response.json({ ok: true, event_type: event.type, space_id: wallet.space_id });

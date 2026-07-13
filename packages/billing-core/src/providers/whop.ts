@@ -279,7 +279,14 @@ export interface WhopWalletEvent {
   companyId: string;
   amountCents: number;
   currency: string;
+  /** The webhook envelope's own event id — dedupe key for wallet_transactions.provider_event_id. */
   providerEventId: string | null;
+  /** `data.id` — for withdrawal.completed/withdrawal.failed this is Whop's own withdrawal id, the
+   *  same value `createWithdrawal` returns as `withdrawal_id` and that gets stored on
+   *  `payout_requests.whop_withdrawal_id` at execution time. Lets the webhook handler reconcile
+   *  against the request WE initiated instead of blindly appending a second ledger entry for a
+   *  payout that's already recorded. Null for revenue events (no withdrawal involved). */
+  externalId: string | null;
   raw: Record<string, unknown>;
 }
 
@@ -314,6 +321,7 @@ export function parseWhopWalletEvent(rawBody: string): WhopWalletEvent {
     amountCents,
     currency: (data.currency ?? "usd").toUpperCase(),
     providerEventId: event.id ?? null,
+    externalId: data.id ?? null,
     raw: event as Record<string, unknown>,
   };
 }

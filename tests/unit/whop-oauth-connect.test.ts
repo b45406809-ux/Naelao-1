@@ -34,16 +34,30 @@ class FakeKv {
 }
 
 function makeEnv(overrides: Partial<AgentsEnv> = {}): AgentsEnv & {
-  __credentialCalls: Array<{ name: string; value: string }>;
+  __credentialCalls: Array<{ name: string; value: string; scope?: string; url: string; hasUserId: boolean }>;
   __mcpServers: Array<{ id: string; name: string; auth_type: string; auth_secret_name: string | null }>;
 } {
-  const credentialCalls: Array<{ name: string; value: string }> = [];
+  const credentialCalls: Array<{ name: string; value: string; scope?: string; url: string; hasUserId: boolean }> = [];
   const mcpServers: Array<{ id: string; name: string; auth_type: string; auth_secret_name: string | null }> = [];
 
+  // Mirrors the REAL credentials worker's contract (workers/credentials/src/index.ts) closely
+  // enough to catch regressions: requires x-naelao-user-id (400s without it, matching the real
+  // worker) and the exact "/spaces/:spaceId/credentials" path (no /v1 prefix — only the internal
+  // plaintext-resolution route has one). A looser stub here previously let three real bugs (wrong
+  // path, missing header, missing scope) ship silently — see storeConnectorCredential's header in
+  // workers/agents/src/index.ts.
   const credentialsWorker = {
     async fetch(reqInput: Request) {
-      const body = await reqInput.json<{ name: string; value: string }>().catch(() => ({ name: "", value: "" }));
-      credentialCalls.push(body);
+      const url = new URL(reqInput.url);
+      if (!/^\/spaces\/[^/]+\/credentials$/.test(url.pathname)) {
+        return new Response(`not found: ${url.pathname}`, { status: 404 });
+      }
+      const hasUserId = Boolean(reqInput.headers.get("x-naelao-user-id"));
+      if (!hasUserId) {
+        return new Response("x-naelao-user-id header is required", { status: 400 });
+      }
+      const body = await reqInput.json<{ name: string; value: string; scope?: string }>().catch(() => ({ name: "", value: "" }));
+      credentialCalls.push({ ...body, url: url.pathname, hasUserId });
       return Response.json({ id: "cred-1", name: body.name }, { status: 201 });
     },
   };
@@ -189,6 +203,11 @@ describe("GET /connectors/whop/oauth/callback", () => {
     const stored = JSON.parse(env.__credentialCalls[0]!.value) as { access_token: string; refresh_token: string };
     expect(stored.access_token).toBe("at_1");
     expect(stored.refresh_token).toBe("rt_1");
+    // Regression guard: must be scope='space' — mcp-hub's buildAuthHeaders resolves credentials
+    // with no acting user context at all, so a scope='user' row (the credentials worker's
+    // default when omitted) could never be read back, silently bricking every OAuth connection.
+    expect(env.__credentialCalls[0]!.scope).toBe("space");
+    expect(env.__credentialCalls[0]!.hasUserId).toBe(true);
 
     expect(env.__mcpServers.length).toBe(1);
     expect(env.__mcpServers[0]!.name).toBe("whop");
@@ -316,6 +335,27 @@ describe("POST /internal/connectors/oauth/refresh", () => {
     expect(j.access_token).toBe("at_new");
     expect(env.__credentialCalls[0]!.name).toBe("WHOP_OAUTH_TOKENS");
     expect(JSON.parse(env.__credentialCalls[0]!.value).access_token).toBe("at_new");
+    expect(env.__credentialCalls[0]!.scope).toBe("space");
+    expect(env.__credentialCalls[0]!.hasUserId).toBe(true);
+  });
+
+  it("surfaces a credential_store_failed error (rather than silently succeeding) when the persist call fails — Whop rotates refresh tokens on every use, so a lost persist would permanently brick the connection", async () => {
+    const env = makeEnv({
+      CREDENTIALS_WORKER: { async fetch() { return new Response("vault down", { status: 500 }); } } as unknown as Fetcher,
+    });
+    mockWhopTokenEndpoint(() => ({ access_token: "at_new", refresh_token: "rt_new", expires_in: 3600 }));
+    const token = await mintInternalToken(SECRET, "tenant-a");
+    const res = await app.fetch(
+      new Request("https://agents.naelao.com/internal/connectors/oauth/refresh", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token },
+        body: JSON.stringify({ space_id: "space-a", platform: "whop", refresh_token: "rt_old" }),
+      }),
+      env as never
+    );
+    expect(res.status).toBe(502);
+    const j = await res.json<{ error_code: string }>();
+    expect(j.error_code).toBe("credential_store_failed");
   });
 });
 

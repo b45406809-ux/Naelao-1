@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createFakeD1 } from "../stubs/d1-sqlite.js";
 import billingWorker from "../../workers/billing/src/index.js";
-import { handlePayoutApproval, provisionSubMerchant, getSubMerchant } from "../../workers/billing/src/whop-wallet.js";
+import { renderPayoutApprovalPage, confirmPayoutApproval, provisionSubMerchant, getSubMerchant } from "../../workers/billing/src/whop-wallet.js";
 import type { BillingEnv } from "../../workers/billing/src/index.js";
 import { verifyWhopWebhook } from "../../packages/billing-core/src/providers/whop.js";
 import { mintInternalToken } from "@naelao/http";
@@ -27,6 +27,7 @@ const MIGRATIONS = [
   SPACES_SQL,
   readFileSync(join(__dirname, "../../infra/migrations/0064_whop_sub_merchants.sql"), "utf8"),
   readFileSync(join(__dirname, "../../infra/migrations/0065_whop_kyc_onboarding.sql"), "utf8"),
+  readFileSync(join(__dirname, "../../infra/migrations/0066_payout_request_expiry.sql"), "utf8"),
 ];
 
 function makeDb() {
@@ -177,6 +178,42 @@ describe("provisionSubMerchant", () => {
     const row = await getSubMerchant(db as unknown as D1Database, "space-a");
     expect(row?.status).toBe("active");
     expect(row?.onboarding_url).toBeNull();
+  });
+
+  it("retries a prior status='error' row in place instead of leaving the business walletless forever", async () => {
+    const db = makeDb();
+    // First attempt: no platform key configured yet — records status='error'.
+    const env1 = makeEnv(db, { WHOP_PLATFORM_API_KEY: undefined });
+    await provisionSubMerchant(env1, { tenantId: "tenant-a", spaceId: "space-a", ownerEmail: "a@example.com", businessName: "Biz A" });
+    const errored = await getSubMerchant(db as unknown as D1Database, "space-a");
+    expect(errored?.status).toBe("error");
+
+    // Second attempt (e.g. a later retry once the key is configured) — must succeed in place,
+    // not be silently skipped by the idempotency check.
+    restoreFetch = mockWhopFetch([
+      { match: /\/v5\/platforms\/sub_merchants$/, method: "POST", respond: () => Response.json({ id: "co_new", status: "active" }) },
+    ]).restore;
+    const env2 = makeEnv(db);
+    await provisionSubMerchant(env2, { tenantId: "tenant-a", spaceId: "space-a", ownerEmail: "a@example.com", businessName: "Biz A" });
+
+    const { results } = await db.prepare("SELECT * FROM whop_sub_merchants WHERE space_id = 'space-a'").all();
+    expect(results?.length).toBe(1); // updated in place, never a second row
+    const row = await getSubMerchant(db as unknown as D1Database, "space-a");
+    expect(row?.status).toBe("active");
+    expect(row?.company_id).toBe("co_new");
+  });
+
+  it("does NOT retry a row that is already active/pending/awaiting_kyc", async () => {
+    const db = makeDb();
+    restoreFetch = mockWhopFetch([
+      { match: /\/v5\/platforms\/sub_merchants$/, method: "POST", respond: () => Response.json({ id: "co_first", status: "active" }) },
+    ]).restore;
+    const env = makeEnv(db);
+    await provisionSubMerchant(env, { tenantId: "tenant-a", spaceId: "space-a", ownerEmail: "a@example.com", businessName: "Biz A" });
+    await provisionSubMerchant(env, { tenantId: "tenant-a", spaceId: "space-a", ownerEmail: "a@example.com", businessName: "Biz A" });
+
+    const row = await getSubMerchant(db as unknown as D1Database, "space-a");
+    expect(row?.company_id).toBe("co_first"); // unchanged — the second call was a true no-op
   });
 });
 
@@ -383,7 +420,19 @@ describe("payout approval gating (safety invariant #5)", () => {
     expect(row?.status).toBe("pending"); // unchanged — only approval flips it to verified
   });
 
-  it("the one-time approval link executes the withdrawal and marks the destination verified", async () => {
+  async function seedPendingApprovalRequest(db: ReturnType<typeof makeDb>, opts: { expiresAt?: string | null } = {}) {
+    const tokenHash = await (async () => {
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("plaintext-token"));
+      return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    })();
+    const expiresAt = opts.expiresAt === undefined ? new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() : opts.expiresAt;
+    await db.prepare(
+      `INSERT INTO payout_requests (id, space_id, destination_id, amount_cents, status, approval_token_hash, expires_at)
+       VALUES ('req-1', 'space-a', 'dest-1', 2000, 'pending_approval', ?, ?)`
+    ).bind(tokenHash, expiresAt).run();
+  }
+
+  it("the GET approval page never executes a withdrawal (safe against email-scanner prefetch)", async () => {
     const db = makeDb();
     await seedActiveWallet(db);
     await db.prepare(
@@ -395,26 +444,44 @@ describe("payout approval gating (safety invariant #5)", () => {
     ]);
     restoreFetch = restore;
     const env = makeEnv(db);
+    await seedPendingApprovalRequest(db);
 
-    // Create the pending_approval request directly (bypassing the email step for the test).
-    const tokenHash = await (async () => {
-      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("plaintext-token"));
-      return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
-    })();
+    const page = await renderPayoutApprovalPage(env, "req-1", "plaintext-token");
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain("Chase checking");
+    expect(html).toContain('method="POST"');
+    // The GET render must NEVER call Whop's withdrawal API or change any status.
+    expect(calls.length).toBe(0);
+    const request = await db.prepare("SELECT status FROM payout_requests WHERE id = 'req-1'").first<{ status: string }>();
+    expect(request?.status).toBe("pending_approval");
+  });
+
+  it("the POST confirm executes the withdrawal and marks the destination verified", async () => {
+    const db = makeDb();
+    await seedActiveWallet(db);
     await db.prepare(
-      `INSERT INTO payout_requests (id, space_id, destination_id, amount_cents, status, approval_token_hash)
-       VALUES ('req-1', 'space-a', 'dest-1', 2000, 'pending_approval', ?)`
-    ).bind(tokenHash).run();
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
+       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending')`
+    ).run();
+    const { calls, restore } = mockWhopFetch([
+      { match: /\/withdrawals$/, method: "POST", respond: () => Response.json({ id: "wd_1", status: "processing" }) },
+    ]);
+    restoreFetch = restore;
+    const env = makeEnv(db);
+    await seedPendingApprovalRequest(db);
 
-    // Wrong token is rejected.
-    const badResp = await handlePayoutApproval(env, "req-1", "wrong-token");
+    // Wrong token is rejected, no side effect.
+    const badResp = await confirmPayoutApproval(env, "req-1", "wrong-token");
     expect(badResp.status).toBe(401);
     expect(calls.length).toBe(0);
 
     // Correct token executes.
-    const okResp = await handlePayoutApproval(env, "req-1", "plaintext-token");
+    const okResp = await confirmPayoutApproval(env, "req-1", "plaintext-token");
     expect(okResp.status).toBe(200);
     expect(calls.some((c) => /\/withdrawals$/.test(c.url))).toBe(true);
+    // Exactly one withdrawal call — never a double-execute.
+    expect(calls.filter((c) => /\/withdrawals$/.test(c.url)).length).toBe(1);
 
     const request = await db.prepare("SELECT status, whop_withdrawal_id FROM payout_requests WHERE id = 'req-1'").first<{ status: string; whop_withdrawal_id: string }>();
     expect(request?.status).toBe("executed");
@@ -422,9 +489,56 @@ describe("payout approval gating (safety invariant #5)", () => {
     const dest = await db.prepare("SELECT status FROM payout_destinations WHERE id = 'dest-1'").first<{ status: string }>();
     expect(dest?.status).toBe("verified");
 
-    // Re-using the same token a second time must fail (single-use).
-    const secondTry = await handlePayoutApproval(env, "req-1", "plaintext-token");
+    // Re-using the same token a second time (e.g. a double form-submit or a race) must fail —
+    // the atomic conditional UPDATE means only the first submission can ever claim it.
+    const secondTry = await confirmPayoutApproval(env, "req-1", "plaintext-token");
     expect(secondTry.status).toBe(410);
+    expect(calls.filter((c) => /\/withdrawals$/.test(c.url)).length).toBe(1);
+  });
+
+  it("rejects an expired approval link without executing anything", async () => {
+    const db = makeDb();
+    await seedActiveWallet(db);
+    await db.prepare(
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
+       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending')`
+    ).run();
+    const { calls, restore } = mockWhopFetch([
+      { match: /\/withdrawals$/, method: "POST", respond: () => Response.json({ id: "wd_1", status: "processing" }) },
+    ]);
+    restoreFetch = restore;
+    const env = makeEnv(db);
+    await seedPendingApprovalRequest(db, { expiresAt: new Date(Date.now() - 1000).toISOString() });
+
+    const resp = await confirmPayoutApproval(env, "req-1", "plaintext-token");
+    expect(resp.status).toBe(410);
+    expect(calls.length).toBe(0);
+    const request = await db.prepare("SELECT status FROM payout_requests WHERE id = 'req-1'").first<{ status: string }>();
+    expect(request?.status).toBe("pending_approval");
+  });
+
+  it("a payout request created via the API carries a 7-day expiry", async () => {
+    const db = makeDb();
+    await seedActiveWallet(db);
+    await db.prepare(
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
+       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', 'pending')`
+    ).run();
+    const env = makeEnv(db);
+
+    const res = await billingWorker.fetch(
+      await walletReq("/billing/whop-wallet/payouts", {
+        method: "POST",
+        body: { space_id: "space-a", destination_id: "dest-1", amount_cents: 2000 },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(201);
+    const row = await db.prepare("SELECT expires_at FROM payout_requests WHERE space_id = 'space-a'").first<{ expires_at: string | null }>();
+    expect(row?.expires_at).toBeTruthy();
+    const daysOut = (new Date(row!.expires_at!).getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+    expect(daysOut).toBeGreaterThan(6.9);
+    expect(daysOut).toBeLessThan(7.1);
   });
 
   it("a payout to an already-verified destination executes directly (no second approval needed)", async () => {
@@ -477,6 +591,106 @@ describe("payout approval gating (safety invariant #5)", () => {
     );
     expect(res.status).toBe(409);
     expect(calls.some((c) => /\/withdrawals$/.test(c.url))).toBe(false);
+  });
+});
+
+// ── 5b. Withdrawal webhook reconciliation: no double-counting, correct reversal on failure ────
+
+describe("withdrawal.completed / withdrawal.failed webhook reconciliation", () => {
+  async function seedExecutedPayout(db: ReturnType<typeof makeDb>, opts: { destStatus?: string } = {}) {
+    await db.prepare(
+      `INSERT INTO whop_sub_merchants (id, tenant_id, space_id, company_id, owner_email, status, balance_cents, currency)
+       VALUES ('sm-a', 'tenant-a', 'space-a', 'co_a', 'a@example.com', 'active', 8000, 'USD')`
+    ).run();
+    await db.prepare(
+      `INSERT INTO payout_destinations (id, space_id, type, label, credential_name, status)
+       VALUES ('dest-1', 'space-a', 'bank', 'Chase checking', 'cred-1', ?)`
+    ).bind(opts.destStatus ?? "verified").run();
+    await db.prepare(
+      `INSERT INTO payout_requests (id, space_id, destination_id, amount_cents, status, whop_withdrawal_id)
+       VALUES ('req-1', 'space-a', 'dest-1', 2000, 'executed', 'wd_1')`
+    ).run();
+    // The debit recorded synchronously at execution time (mirrors confirmPayoutApproval's own insert).
+    await db.prepare(
+      `INSERT INTO wallet_transactions (id, space_id, type, amount_cents, currency, description, external_ref)
+       VALUES ('tx-exec', 'space-a', 'payout', -2000, 'USD', 'Approved payout', 'wd_1')`
+    ).run();
+  }
+
+  async function postWithdrawalEvent(env: BillingEnv, type: string, withdrawalId: string, eventId: string) {
+    const body = JSON.stringify({ id: eventId, type, data: { id: withdrawalId, company_id: "co_a", amount: 2000, currency: "usd" } });
+    const sig = await whopSign("whop-webhook-secret", body);
+    return billingWorker.fetch(
+      new Request("https://billing.naelao.com/webhooks/whop", { method: "POST", headers: { "whop-signature": sig }, body }),
+      env as never, execCtx
+    );
+  }
+
+  it("withdrawal.completed for an already-recorded payout does NOT double-count the ledger", async () => {
+    const db = makeDb();
+    await seedExecutedPayout(db);
+    const env = makeEnv(db);
+
+    const res = await postWithdrawalEvent(env, "withdrawal.completed", "wd_1", "evt_wc_1");
+    expect(res.status).toBe(200);
+
+    const { results } = await db.prepare("SELECT * FROM wallet_transactions WHERE space_id = 'space-a'").all();
+    // Still exactly the one row recorded at execution time — the webhook only confirms it.
+    expect(results?.length).toBe(1);
+  });
+
+  it("withdrawal.failed reverses the debit and reverts the destination to 'pending' when it was never actually successful", async () => {
+    const db = makeDb();
+    await seedExecutedPayout(db);
+    const env = makeEnv(db);
+
+    const res = await postWithdrawalEvent(env, "withdrawal.failed", "wd_1", "evt_wf_1");
+    expect(res.status).toBe(200);
+
+    const request = await db.prepare("SELECT status FROM payout_requests WHERE id = 'req-1'").first<{ status: string }>();
+    expect(request?.status).toBe("failed");
+
+    const { results } = await db.prepare("SELECT type, amount_cents FROM wallet_transactions WHERE space_id = 'space-a'").all();
+    expect(results?.length).toBe(2);
+    // Execution debit (-2000) fully offset by a positive reversal (+2000) — order isn't
+    // guaranteed (both rows can share the same second-resolution created_at), so check the sum
+    // and that a positive reversal row exists rather than depending on row order.
+    const amounts = (results as { amount_cents: number }[]).map((r) => r.amount_cents).sort((a, b) => a - b);
+    expect(amounts).toEqual([-2000, 2000]);
+
+    // The status flip from 'executed' → 'failed' means the destination's only payout never
+    // actually succeeded — reverted so the next payout requires approval again.
+    const dest = await db.prepare("SELECT status FROM payout_destinations WHERE id = 'dest-1'").first<{ status: string }>();
+    expect(dest?.status).toBe("pending");
+  });
+
+  it("withdrawal.failed does NOT revert the destination if another payout to it already succeeded", async () => {
+    const db = makeDb();
+    await seedExecutedPayout(db);
+    // A second, earlier payout to the SAME destination that already succeeded.
+    await db.prepare(
+      `INSERT INTO payout_requests (id, space_id, destination_id, amount_cents, status, whop_withdrawal_id)
+       VALUES ('req-0', 'space-a', 'dest-1', 1000, 'executed', 'wd_0')`
+    ).run();
+    const env = makeEnv(db);
+
+    await postWithdrawalEvent(env, "withdrawal.failed", "wd_1", "evt_wf_2");
+
+    const dest = await db.prepare("SELECT status FROM payout_destinations WHERE id = 'dest-1'").first<{ status: string }>();
+    expect(dest?.status).toBe("verified");
+  });
+
+  it("withdrawal.failed redelivery is idempotent — reversal is recorded exactly once", async () => {
+    const db = makeDb();
+    await seedExecutedPayout(db);
+    const env = makeEnv(db);
+
+    await postWithdrawalEvent(env, "withdrawal.failed", "wd_1", "evt_wf_3");
+    await postWithdrawalEvent(env, "withdrawal.failed", "wd_1", "evt_wf_3_retry");
+
+    const { results } = await db.prepare("SELECT * FROM wallet_transactions WHERE space_id = 'space-a'").all();
+    // Execution debit + exactly ONE reversal, even though the failed event was delivered twice.
+    expect(results?.length).toBe(2);
   });
 });
 

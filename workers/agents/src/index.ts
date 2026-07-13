@@ -35,7 +35,7 @@ import {
   fetchOAuthIdentity,
   linkOAuthAccountAndCheckDuplicate,
 } from "./connectors/oauth.js";
-import { isChannelType, getAdapter } from "./launchpad/channels.js";
+import { isChannelType, getAdapter, type ChannelType } from "./launchpad/channels.js";
 import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
 
 function safeParse(s: string): unknown {
@@ -1490,6 +1490,43 @@ app.get("/connectors/status", async (c) => {
   });
 });
 
+/**
+ * Vault a connector/channel credential (API key or OAuth token blob) at SPACE scope.
+ *
+ * This must always be scope='space', never the credentials-worker default of scope='user':
+ * mcp-hub's buildAuthHeaders (and the webhook-secret lookup below) resolve credentials with no
+ * actingUserId at all — resolveCredential() skips the user tier entirely when actingUserId is
+ * null, so a credential stored at scope='user' can NEVER be read back by the code that's
+ * supposed to use it. It also requires x-naelao-user-id (the credentials worker 400s without
+ * one) and, since scope='space' requires a privileged role, x-naelao-role: admin — connecting a
+ * platform integration is inherently an admin-level action on behalf of the whole space, not a
+ * personal credential of the connecting user.
+ */
+async function storeConnectorCredential(
+  env: Pick<AgentsEnv, "CREDENTIALS_WORKER" | "PLATFORM_SECRET">,
+  params: { tenantId: string; spaceId: string; userId: string; name: string; value: string; description: string }
+): Promise<Response> {
+  const internalToken = await mintInternalToken(env.PLATFORM_SECRET, params.tenantId);
+  return env.CREDENTIALS_WORKER!.fetch(
+    new Request(`http://credentials/spaces/${params.spaceId}/credentials`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": params.tenantId,
+        "x-naelao-user-id": params.userId || "connector-system",
+        "x-naelao-role": "admin",
+        "x-naelao-internal-token": internalToken,
+      },
+      body: JSON.stringify({
+        name: params.name,
+        value: params.value,
+        scope: "space",
+        description: params.description,
+      }),
+    })
+  );
+}
+
 // POST /connectors/:platform/connect — store the builder's API key in the vault and register
 // the platform as an MCP server. The agent then reaches it via script.run("mcp.call", …). The
 // key is stored under the connector's credential_name; the hub resolves it at call time, so the
@@ -1516,25 +1553,19 @@ app.post("/connectors/:platform/connect", async (c) => {
   if (connector.auth.type !== "none") {
     // B1/B3 fix: credentials worker's public CRUD routes now require a verified internal
     // token (requireInternalHmac) since this call bypasses the router (direct service
-    // binding). Also fixes a pre-existing path bug: the credentials worker registers this
+    // binding). Also fixes two pre-existing bugs: the credentials worker registers this
     // route WITHOUT a /v1 prefix (only its internal plaintext-resolution route has one) —
-    // the old "/v1/spaces/..." path here would have 404'd against the real worker.
-    const credInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
-    const credResp = await c.env.CREDENTIALS_WORKER.fetch(
-      new Request(`http://credentials/spaces/${body.space_id}/credentials`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-naelao-tenant-id": tenantId,
-          "x-naelao-internal-token": credInternalToken,
-        },
-        body: JSON.stringify({
-          name: connector.auth.credential_name,
-          value: body.api_key,
-          description: `${connector.name} API key (connector)`,
-        }),
-      })
-    );
+    // the old "/v1/spaces/..." path here would have 404'd against the real worker — and it
+    // requires x-naelao-user-id unconditionally (400s without it) plus scope='space' (see
+    // storeConnectorCredential's header — mcp-hub can never resolve a scope='user' row).
+    const credResp = await storeConnectorCredential(c.env, {
+      tenantId,
+      spaceId: body.space_id,
+      userId,
+      name: connector.auth.credential_name,
+      value: body.api_key,
+      description: `${connector.name} API key (connector)`,
+    });
     if (!credResp.ok && credResp.status !== 409) {
       const msg = await credResp.text();
       return c.json({ error_code: "credential_store_failed", message: msg }, 502);
@@ -1678,23 +1709,18 @@ app.get("/connectors/:platform/oauth/callback", async (c) => {
     }
 
     if (!c.env.CREDENTIALS_WORKER || !c.env.MCP_HUB) return failRedirect("connectors_unavailable");
-    const credInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, ticket.tenantId);
-    const credResp = await c.env.CREDENTIALS_WORKER.fetch(
-      new Request(`http://credentials/spaces/${ticket.spaceId}/credentials`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-naelao-tenant-id": ticket.tenantId,
-          "x-naelao-user-id": ticket.userId,
-          "x-naelao-internal-token": credInternalToken,
-        },
-        body: JSON.stringify({
-          name: connector.oauth.credential_name,
-          value: JSON.stringify(tokens),
-          description: `${connector.name} OAuth tokens (connector)`,
-        }),
-      })
-    );
+    // Must be scope='space' (see storeConnectorCredential's header) — this used to omit scope
+    // entirely, which the credentials worker defaults to scope='user', a row mcp-hub's
+    // actingUserId-less resolveCredential() call can never find. Without this fix every OAuth
+    // connect "succeeded" but left the connector permanently unusable.
+    const credResp = await storeConnectorCredential(c.env, {
+      tenantId: ticket.tenantId,
+      spaceId: ticket.spaceId,
+      userId: ticket.userId,
+      name: connector.oauth.credential_name,
+      value: JSON.stringify(tokens),
+      description: `${connector.name} OAuth tokens (connector)`,
+    });
     if (!credResp.ok && credResp.status !== 409) return failRedirect("credential_store_failed");
 
     const mcpInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, ticket.tenantId);
@@ -1765,22 +1791,26 @@ app.post("/internal/connectors/oauth/refresh", async (c) => {
   try {
     const tokens = await refreshTokens({ tokenUrl: connector.oauth.token_url, clientId, clientSecret, refreshToken: body.refresh_token });
     if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "credentials_unavailable" }, 503);
-    const credInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
-    await c.env.CREDENTIALS_WORKER.fetch(
-      new Request(`http://credentials/spaces/${body.space_id}/credentials`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-naelao-tenant-id": tenantId,
-          // mcp-hub triggers this refresh on mcp_servers' own schedule, with no end-user request
-          // in flight to attribute it to — mcp_servers doesn't track who originally connected it.
-          // A synthetic system identity is more honest than guessing a stale real user id.
-          "x-naelao-user-id": "system:oauth-refresh",
-          "x-naelao-internal-token": credInternalToken,
-        },
-        body: JSON.stringify({ name: connector.oauth.credential_name, value: JSON.stringify(tokens), description: `${connector.name} OAuth tokens (connector)` }),
-      })
-    );
+    // Whop rotates the refresh token on every use — if this persist fails, the OLD refresh
+    // token (already invalidated by Whop) is the only one left in the vault, permanently
+    // bricking the connection. Must not silently discard the persist result the way this used
+    // to (fire-and-forget with no ok check) — surface the failure so the caller (mcp-hub) keeps
+    // using the still-valid access token via its own stale-fallback rather than treating this as
+    // a clean refresh.
+    const credResp = await storeConnectorCredential(c.env, {
+      tenantId,
+      spaceId: body.space_id,
+      // mcp-hub triggers this refresh on mcp_servers' own schedule, with no end-user request
+      // in flight to attribute it to — mcp_servers doesn't track who originally connected it.
+      // A synthetic system identity is more honest than guessing a stale real user id.
+      userId: "system:oauth-refresh",
+      name: connector.oauth.credential_name,
+      value: JSON.stringify(tokens),
+      description: `${connector.name} OAuth tokens (connector)`,
+    });
+    if (!credResp.ok && credResp.status !== 409) {
+      return c.json({ error_code: "credential_store_failed", message: await credResp.text() }, 502);
+    }
     return c.json({ access_token: tokens.access_token, expires_at: tokens.expires_at });
   } catch (err) {
     return c.json({ error_code: "refresh_failed", message: (err as Error).message }, 502);
@@ -1851,7 +1881,7 @@ app.post("/connectors/:platform/webhook/:spaceId", async (c) => {
 
 // The per-space credential name a channel's signing secret/public key is stored under
 // (collected by the channel-connect flow, resolved through the same vault as connectors).
-const CHANNEL_SECRET_CREDENTIAL: Record<string, string> = {
+const CHANNEL_SECRET_CREDENTIAL: Record<ChannelType, string> = {
   slack: "SLACK_SIGNING_SECRET",
   discord: "DISCORD_PUBLIC_KEY",
   email: "EMAIL_SIGNING_SECRET",
@@ -1864,6 +1894,7 @@ const CHANNEL_SECRET_CREDENTIAL: Record<string, string> = {
 // provider's console: https://<router>/v1/channels/:channel/inbound/:spaceId.
 app.post("/channels/:channel/connect", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
+  const { userId } = getCallerIdentity(c);
   const channel = c.req.param("channel");
   if (!isChannelType(channel)) throw notFound("Channel");
   if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
@@ -1873,17 +1904,19 @@ app.post("/channels/:channel/connect", async (c) => {
   if (!body.space_id) throw badRequest("space_id is required");
   if (!body.secret) throw badRequest("secret is required (signing secret / public key)");
 
-  const credResp = await c.env.CREDENTIALS_WORKER.fetch(
-    new Request(`http://credentials/v1/spaces/${body.space_id}/credentials`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
-      body: JSON.stringify({
-        name: CHANNEL_SECRET_CREDENTIAL[channel],
-        value: body.secret,
-        description: `${channel} channel signing secret`,
-      }),
-    })
-  );
+  // Fixes two pre-existing bugs that made this 502 on every real call: the credentials worker's
+  // CRUD route has NO /v1 prefix (only its internal plaintext-resolution route does — the old
+  // "/v1/spaces/..." path here 404'd), and it requires x-naelao-user-id unconditionally plus
+  // scope='space' (see storeConnectorCredential's header) so the webhook-secret lookup below
+  // (which resolves with no actingUserId) can actually find the row it just wrote.
+  const credResp = await storeConnectorCredential(c.env, {
+    tenantId,
+    spaceId: body.space_id,
+    userId,
+    name: CHANNEL_SECRET_CREDENTIAL[channel],
+    value: body.secret,
+    description: `${channel} channel signing secret`,
+  });
   if (!credResp.ok && credResp.status !== 409) {
     return c.json({ error_code: "credential_store_failed", message: await credResp.text() }, 502);
   }

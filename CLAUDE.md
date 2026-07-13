@@ -1755,6 +1755,79 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     account to the same business, and the identity-lookup-itself-failing case never blocking the
     connection), `pnpm turbo run typecheck` clean (75 tasks), shell verified via `next build`.
 
+55. **A full audit of the business-wallet subsystem (items 50-54) found and FIXED eight real bugs
+    — three made connectors/channels non-functional against the real credentials worker, five
+    were in the Whop payout/webhook path.** Traced every code path end-to-end (not from memory)
+    rather than trusting the prior passes' own "1839/1839 tests pass" claim — the credentials-
+    worker stubs those tests used accepted any POST unconditionally, so none of them could have
+    caught a wrong path or a missing header.
+    - **Connector/channel credential vaulting was silently broken on all three write paths**
+      (manual `/connectors/:platform/connect`, the OAuth callback, the OAuth refresh route): all
+      three omitted `scope` when storing a credential, which the credentials worker defaults to
+      `scope='user'` — but mcp-hub's `buildAuthHeaders` (and the webhook-secret lookup) resolve
+      credentials with NO acting-user context at all, and `resolveCredential()` skips the
+      user-scope tier entirely when `actingUserId` is null. A `scope='user'` row can therefore
+      never be read back by the code meant to use it — every "successful" connect silently left
+      the connector unusable. The manual connect route also omitted `x-naelao-user-id` (the real
+      credentials worker 400s without one — masked because the test stub didn't check). Fixed
+      with one shared `storeConnectorCredential()` helper (`workers/agents/src/index.ts`) used by
+      all three call sites, always `scope='space'` + `x-naelao-role: admin` — matches the pattern
+      `whop-wallet.ts`'s own `storeVaultCredential` already got right. The OAuth refresh route
+      also silently discarded its persist-response `ok` check; since Whop rotates the refresh
+      token on every use, a lost persist would have permanently bricked the connection — now
+      surfaces `credential_store_failed` instead.
+    - **`POST /channels/:channel/connect` posted to `/v1/spaces/:spaceId/credentials`** — a path
+      that doesn't exist (only the credentials worker's internal plaintext-resolution route
+      carries a `/v1` prefix; the CRUD route doesn't) — plus the same missing-user-id/missing-
+      scope bugs above. Every channel (Slack/Discord/email/WhatsApp) connect 502'd against a real
+      deployment. Fixed via the same shared helper.
+    - **Payout approval executed real money movement from a bare GET** — a documented risk class
+      (Outlook SafeLinks/Mimecast prefetch GET links) that could trigger a payout before a human
+      ever saw the email, and a read-then-write race let two concurrent hits (a scanner + the
+      real click) both execute the same withdrawal twice. Split into `renderPayoutApprovalPage`
+      (GET, side-effect-free, renders a confirm page naming the amount AND destination) and
+      `confirmPayoutApproval` (POST-only, reached exclusively by a real form submit), gated by an
+      atomic `UPDATE ... WHERE status='pending_approval'` — `meta.changes !== 1` means someone
+      else already claimed it, so a race can only ever execute once.
+    - **The approval link never expired.** Added `payout_requests.expires_at` (migration 0066,
+      7-day TTL matching `business_invites`/password-reset-token precedent) — a leaked or
+      forwarded email no longer works forever.
+    - **`provisionSubMerchant`'s idempotency check treated ANY existing row — including
+      `status='error'`— as done**, contradicting this file's own header/migration 0064's comment
+      promising a retry. A transient Whop outage (or provisioning attempted before
+      `WHOP_PLATFORM_API_KEY` was configured) permanently stranded a business walletless. Now
+      retries (updates in place) when `existing.status === 'error'`, no-ops otherwise.
+    - **The Whop webhook fired `business_wallet.revenue_received` unconditionally**, even when
+      `INSERT OR IGNORE` deduped a redelivered event to a no-op — Whop delivers at-least-once, so
+      a redelivery would double-fire any no-code trigger wired to it (duplicate thank-you emails,
+      duplicate assistant reactions). Now checked against `meta.changes`.
+    - **`withdrawal.completed`/`withdrawal.failed` events were recorded blind, double-counting
+      every completed payout** (once at execution time, once again from the webhook) **and
+      recording a failed withdrawal as a NEGATIVE 'expense' transaction** (backwards — a failed
+      payout returns funds, it doesn't spend them). `WhopWalletEvent` gained `externalId` (Whop's
+      own withdrawal id, `data.id`) so the webhook handler reconciles against the
+      `payout_requests` row already created at execution time instead of blindly appending a
+      second ledger row; `withdrawal.failed` now flips that row to `'failed'` and inserts a
+      correctly-signed positive reversal, idempotent via the request's own status.
+    - **A destination flipped to `'verified'` the moment Whop ACCEPTED a withdrawal, before
+      knowing whether it actually succeeded** — if it later failed, the destination stayed
+      verified despite a 0% success rate, so the NEXT payout would skip approval entirely. The
+      `withdrawal.failed` handler above now reverts the destination to `'pending'` when no OTHER
+      payout to it has ever completed.
+    - One prior-audit claim (a router route allegedly missing a `/` before `:platform`) was
+      checked against the actual code and found to be already correct — not fixed because it
+      wasn't broken; flagging findings without re-verifying against current source is exactly the
+      mistake this pass was trying to avoid repeating.
+    Also fixed a stale-build trap while testing: `packages/billing-core` resolves via its
+    compiled `dist/` (not the TS source) for every consumer — `WhopWalletEvent`'s new field was
+    invisible to `workers/billing` until `dist/` was rebuilt (`npx tsc` in that package); anyone
+    editing `packages/*` and seeing "impossible" test failures should suspect this first.
+    New dedicated test file `connector-channel-vault-write.test.ts` (a credentials-worker stub
+    that actually mirrors the real worker's path/header/scope contract, unlike the pre-existing
+    permissive stubs) plus 20 new/hardened cases across `whop-wallet.test.ts` and
+    `whop-oauth-connect.test.ts`. 1852/1852 tests pass (24 new), `pnpm turbo run typecheck` clean
+    (75 tasks).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

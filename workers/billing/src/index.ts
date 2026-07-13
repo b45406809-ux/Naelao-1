@@ -15,7 +15,7 @@ import { Hono } from "hono";
 import { checkQuota, recordUsageEvent, getUsageSummary } from "./quota.js";
 import { handleLemonSqueezyWebhook } from "./lemon-squeezy.js";
 import { createLsProductVariant, lsProductsConfig } from "./ls-products.js";
-import { registerWhopWalletRoutes, handleWhopWebhook, handlePayoutApproval, routeWhopWalletCheckout, getSubMerchant } from "./whop-wallet.js";
+import { registerWhopWalletRoutes, handleWhopWebhook, renderPayoutApprovalPage, confirmPayoutApproval, routeWhopWalletCheckout, getSubMerchant } from "./whop-wallet.js";
 
 export interface BillingEnv {
   ENVIRONMENT: string;
@@ -963,10 +963,29 @@ app.post("/webhooks/whop", async (c) => handleWhopWebhook(c.req.raw, c.env));
 
 // ── GET /webhooks/whop-wallet/payouts/:id/approve?token= ──────────────────────
 // Public, unauthenticated — the single-use token IS the auth (business_invites/password-reset
-// precedent). Executes the first payout to a new destination once the owner clicks the link.
+// precedent). SAFE: renders a confirmation page only (no side effects), so an email scanner
+// prefetching this link can never trigger a payout. The page's form POSTs to the same path.
 app.get("/webhooks/whop-wallet/payouts/:id/approve", async (c) =>
-  handlePayoutApproval(c.env, c.req.param("id"), c.req.query("token") ?? "")
+  renderPayoutApprovalPage(c.env, c.req.param("id"), c.req.query("token") ?? "")
 );
+
+// ── POST /webhooks/whop-wallet/payouts/:id/approve ─────────────────────────────
+// The only handler that actually executes a withdrawal — only reached via a real form
+// submission (the GET page above), never a prefetch. Accepts the token from either the form
+// body or the query string (a direct API-style POST, e.g. from a future in-dashboard "approve"
+// button, can pass it as a query param instead of a form-encoded body).
+app.post("/webhooks/whop-wallet/payouts/:id/approve", async (c) => {
+  let token = c.req.query("token") ?? "";
+  if (!token) {
+    try {
+      const form = await c.req.parseBody();
+      if (typeof form["token"] === "string") token = form["token"];
+    } catch {
+      // No parseable body — fall through with an empty token (checkPayoutApproval 400s on it).
+    }
+  }
+  return confirmPayoutApproval(c.env, c.req.param("id"), token);
+});
 
 // ── Whop sub-merchant wallet — the business-bank-account rail ────────────────
 registerWhopWalletRoutes(app);
