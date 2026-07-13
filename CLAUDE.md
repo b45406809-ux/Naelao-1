@@ -1878,6 +1878,42 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     site monitoring, a CRM data primitive, domain registration, a skill marketplace); and an
     actual live `COMPOSIO_API_KEY` + per-app Auth Configs, without which every provider-connect
     flow degrades honestly to `provider_not_configured`.
+57. **MCP connect fixes: Composio's REVOKED status + connected_account_id preference, and
+    Pipedream Connect built as the second hosted provider (item 56's own deferred item) — closing
+    the "mcp-hub already proxies Pipedream tool calls but the auth model was never verified"
+    gap.** Verified against Pipedream's own docs (not assumed): its REST API, including Connect,
+    is OAuth `client_credentials`-ONLY — there is no static-API-key path the way Composio has one.
+    The prior `PIPEDREAM_API_KEY` (both in mcp-hub's `resolveProviderApiKey` and in the
+    then-nonexistent connect flow) was therefore never going to work against a real Pipedream
+    project. Fixed at the root: `PIPEDREAM_CLIENT_ID`/`PIPEDREAM_CLIENT_SECRET` (workspace OAuth
+    client) exchanged for a short-lived access token — mcp-hub does this itself for the tool-call
+    proxy (`getPipedreamAccessToken`, module-scoped cache, mirrors the same pattern in
+    `workers/agents/src/connectors/pipedream.ts`), and the agents worker does it to start/poll a
+    connection. New `ConnectorPipedreamSpec` (`catalogue.ts`) — unlike Composio, Pipedream's
+    managed auth needs no pre-created per-app "Auth Config," just an app slug — and a real
+    available connector, **Notion**, proves the mechanism end-to-end (new `productivity`
+    category). `/connectors/:platform/provider-connect/{start,callback}` now branch on
+    `connector.composio` vs `connector.pipedream`, sharing one extracted MCP-server-upsert helper
+    so the two providers can't drift. Pipedream's `success_redirect_uri` param (confirmed via its
+    docs) plays the same role Composio's `callback_url` does — the hosted Connect Link redirects
+    the browser back to OUR callback, which polls `GET .../accounts?external_user_id=&app=` for a
+    REAL healthy connected account (fails closed on an unrecognized/unhealthy row) before
+    registering — same "never trust the redirect alone" rule as Composio/Stripe Connect. Also
+    fixed, independent of Pipedream: Composio's connection-status poll now maps `REVOKED` (a real,
+    distinct status — the end user disconnected the app after it was once active) to its own
+    `connection_revoked` reason instead of falling into the generic `UNKNOWN` bucket, and
+    `startComposioLink`'s field-parsing now prefers `connected_account_id` (confirmed top-level
+    snake_case per Composio's own SDK source) ahead of the other defensive fallback names.
+    1880/1880 tests pass (30 new: Composio REVOKED + field-preference cases, a full
+    `pipedream-connector-connect.test.ts` mirroring the Composio suite, mcp-hub's OAuth-exchange
+    auth model, a catalogue snapshot update), `pnpm turbo run typecheck` clean (75 tasks).
+    **Not done:** an actual live Pipedream OAuth client + project — the code degrades honestly
+    (`provider_not_configured`) until `PIPEDREAM_CLIENT_ID`/`PIPEDREAM_CLIENT_SECRET`/
+    `PIPEDREAM_PROJECT_ID` are set (see `docs/DEPLOYMENT_SECRETS.md`); the exact JSON field names
+    of Pipedream's `/accounts` listing response are unverified against a live project (same
+    "confirm once real access exists" precedent as Composio's own header) — the status check
+    defensively tries a small set of plausible field/status names and fails closed on anything it
+    doesn't recognize.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

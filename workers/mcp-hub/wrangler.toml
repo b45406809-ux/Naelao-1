@@ -16,7 +16,10 @@ workers_dev = false
 #                        BYO space-credential model, which stays for a builder's OWN provider
 #                        project. Optional: unset → provider-routed calls without a BYO
 #                        credential return provider_not_configured.
-#   PIPEDREAM_API_KEY  — same doctrine, Pipedream Connect.
+#   PIPEDREAM_CLIENT_ID / PIPEDREAM_CLIENT_SECRET — same doctrine, Pipedream Connect. Unlike
+#                        Composio, Pipedream's REST API is OAuth client_credentials-only (no
+#                        static API key) — this worker exchanges these for a short-lived access
+#                        token itself (see getPipedreamAccessToken in src/index.ts).
 
 [[d1_databases]]
 binding = "PLATFORM_DB"
@@ -38,9 +41,12 @@ service = "naelao-agents"
 
 [vars]
 ENVIRONMENT = "development"
+# "development" or "production" — sent as x-pd-environment on every Pipedream Connect call.
+# Remember the wrangler vars-replacement trap (item 41): repeated per env block below, not merged.
+PIPEDREAM_ENVIRONMENT = "development"
 
 [env.staging]
-vars = { ENVIRONMENT = "staging" }
+vars = { ENVIRONMENT = "staging", PIPEDREAM_ENVIRONMENT = "development" }
 
 [[env.staging.services]]
 binding = "CREDENTIALS_WORKER"
@@ -51,7 +57,7 @@ binding = "AGENTS_WORKER"
 service = "naelao-agents"
 
 [env.production]
-vars = { ENVIRONMENT = "production" }
+vars = { ENVIRONMENT = "production", PIPEDREAM_ENVIRONMENT = "production" }
 
 [[env.production.services]]
 binding = "CREDENTIALS_WORKER"

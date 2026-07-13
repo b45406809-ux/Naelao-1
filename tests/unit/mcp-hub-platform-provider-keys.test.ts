@@ -15,7 +15,8 @@ import { createFakeD1 } from "../stubs/d1-sqlite.js";
 
 const PLATFORM_SECRET = "test-platform-secret";
 const PLATFORM_COMPOSIO_KEY = "naelao-platform-composio-key";
-const PLATFORM_PIPEDREAM_KEY = "naelao-platform-pipedream-key";
+const PIPEDREAM_CLIENT_ID = "pd_client_test";
+const PIPEDREAM_CLIENT_SECRET = "pd_secret_test";
 const execCtx = { waitUntil() {}, passThroughOnException() {} } as unknown as ExecutionContext;
 
 const MIGRATIONS = [
@@ -90,10 +91,15 @@ async function listTools(env: ReturnType<typeof makeEnv>, serverId: string) {
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
 
-/** Capture outbound provider requests; respond with a benign provider payload. */
+/** Capture outbound provider requests; respond with a benign provider payload. The Pipedream
+ *  OAuth token endpoint is special-cased since resolveProviderApiKey now exchanges client
+ *  credentials for a real access token before making the actual provider call. */
 function mockProviderFetch(capture: { url?: string; headers?: Record<string, string> }) {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url === "https://api.pipedream.com/v1/oauth/token") {
+      return Response.json({ access_token: "pd-derived-access-token", token_type: "Bearer", expires_in: 3600 });
+    }
     capture.url = url;
     const h: Record<string, string> = {};
     new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).forEach((v, k) => { h[k] = v; });
@@ -115,16 +121,37 @@ describe("mcp-hub — platform-provided provider keys (G-BF02)", () => {
     expect(capture.headers?.["x-api-key"]).toBe(PLATFORM_COMPOSIO_KEY);
   });
 
-  it("injects the platform Pipedream key for pipedream-routed connectors", async () => {
+  it("exchanges the platform Pipedream OAuth client for a live access token, never a static key", async () => {
     const capture: { url?: string; headers?: Record<string, string> } = {};
     mockProviderFetch(capture);
-    const env = makeEnv({ PIPEDREAM_API_KEY: PLATFORM_PIPEDREAM_KEY });
+    const env = makeEnv({ PIPEDREAM_CLIENT_ID, PIPEDREAM_CLIENT_SECRET });
     await seedProviderServer(env, { id: "srv-pd", provider: "pipedream" });
 
     const res = await callTool(env, "srv-pd");
     expect(res.status).toBe(200);
     expect(capture.url).toContain("api.pipedream.com");
-    expect(capture.headers?.["authorization"]).toBe(`Bearer ${PLATFORM_PIPEDREAM_KEY}`);
+    // The Bearer token is the OAuth-derived access token, not PIPEDREAM_CLIENT_SECRET itself —
+    // Pipedream's REST API is client_credentials-only, verified against its own docs.
+    expect(capture.headers?.["authorization"]).toBe("Bearer pd-derived-access-token");
+    expect(capture.headers?.["authorization"]).not.toContain(PIPEDREAM_CLIENT_SECRET);
+  });
+
+  it("degrades honestly (502 provider_auth_failed) when the Pipedream token exchange itself fails", async () => {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url === "https://api.pipedream.com/v1/oauth/token") return new Response("unauthorized", { status: 401 });
+      return Response.json({ data: {} });
+    }) as typeof fetch;
+    // A distinct client id forces a fresh (uncached) token exchange — the module-scoped
+    // access-token cache is keyed by client_id, and the previous test legitimately warmed the
+    // cache for PIPEDREAM_CLIENT_ID.
+    const env = makeEnv({ PIPEDREAM_CLIENT_ID: "pd_client_test_broken", PIPEDREAM_CLIENT_SECRET });
+    await seedProviderServer(env, { id: "srv-pd-broken", provider: "pipedream" });
+
+    const res = await callTool(env, "srv-pd-broken");
+    expect(res.status).toBe(502);
+    const body = await res.json() as { error_code: string };
+    expect(body.error_code).toBe("provider_auth_failed");
   });
 
   it("BYO credential WINS over the platform key when the connector names one", async () => {

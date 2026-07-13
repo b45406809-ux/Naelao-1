@@ -72,7 +72,10 @@ export async function startComposioLink(params: {
   }
   const data = (json["data"] as Record<string, unknown> | undefined) ?? json;
   const redirectUrl = pick(data, "redirect_url", "redirectUrl");
-  const connectionId = pick(data, "id", "connection_id", "connectedAccountId", "connected_account_id");
+  // Composio's own SDK source (composio/core/models/connected_accounts.py) confirms the real REST
+  // response carries `connected_account_id` (snake_case, top-level) — preferred first; the other
+  // names stay as defensive fallbacks in case a future API version reshapes this.
+  const connectionId = pick(data, "connected_account_id", "connectedAccountId", "id", "connection_id");
   if (!redirectUrl || !connectionId) {
     throw new Error(
       "Composio connect-link response did not include a redirect_url/id — unexpected response shape, confirm against live API"
@@ -81,7 +84,7 @@ export async function startComposioLink(params: {
   return { redirect_url: redirectUrl, connection_id: connectionId };
 }
 
-export type ComposioConnectionStatus = "ACTIVE" | "INITIATED" | "FAILED" | "EXPIRED" | "UNKNOWN";
+export type ComposioConnectionStatus = "ACTIVE" | "INITIATED" | "FAILED" | "EXPIRED" | "REVOKED" | "UNKNOWN";
 
 /** Polls the connection's real status rather than trusting the callback redirect alone — the
  *  return redirect proves the browser came back, not that the connection actually activated
@@ -99,6 +102,10 @@ export async function getComposioConnectionStatus(apiKey: string, connectionId: 
   if (status === "INITIATED" || status === "PENDING" || status === "INITIALIZING") return "INITIATED";
   if (status === "FAILED" || status === "ERROR") return "FAILED";
   if (status === "EXPIRED") return "EXPIRED";
+  // REVOKED is a real, distinct Composio status (the end user disconnected the app on the
+  // provider's side after it was once active) — surfaced as its own reason to the builder
+  // (`connection_revoked`) rather than being lumped into the generic UNKNOWN/FAILED buckets.
+  if (status === "REVOKED") return "REVOKED";
   return "UNKNOWN";
 }
 

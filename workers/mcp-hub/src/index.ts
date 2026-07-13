@@ -16,7 +16,15 @@ export interface Env {
    *  never leaves this worker. Optional: when unset and a connector has no BYO credential, calls
    *  degrade honestly with `provider_not_configured`. */
   COMPOSIO_API_KEY?: string;
-  PIPEDREAM_API_KEY?: string;
+  /** VERIFIED (2026-07, against Pipedream's own docs): Pipedream's REST API is OAuth
+   *  client_credentials-only — there is no "simple API key" the way Composio has one. Naelao's
+   *  ONE Pipedream OAuth client id/secret (workers/agents/src/connectors/pipedream.ts holds the
+   *  canonical implementation of the token exchange this worker mirrors below — kept in sync by
+   *  hand, same precedent as the reserved-capability lists above). */
+  PIPEDREAM_CLIENT_ID?: string;
+  PIPEDREAM_CLIENT_SECRET?: string;
+  /** "development" or "production", required on every Pipedream Connect call. Defaults below. */
+  PIPEDREAM_ENVIRONMENT?: string;
   /** OAuth2 connectors ("Connect with Whop" etc.): buildAuthHeaders proactively refreshes a
    *  near-expiry access token by calling this internal endpoint — only the agents worker holds
    *  the connector's OAuth client secret, so refresh logic lives there, not here. */
@@ -141,20 +149,52 @@ async function composioListTools(
   return { tools: data.items ?? [] };
 }
 
+// Module-scoped OAuth access-token cache — mirrors connectors/pipedream.ts's own cache (a soft
+// optimization only; a cold isolate simply refetches, never relied on for correctness).
+const pipedreamTokenCache = new Map<string, { accessToken: string; expiresAt: number }>();
+
+/** Exchanges Naelao's platform Pipedream OAuth client for a short-lived (1hr) access token —
+ *  Pipedream's REST API accepts NOTHING else, confirmed against their own docs (no static API
+ *  key path exists, unlike Composio's x-api-key). Never throws to its caller; a failed exchange
+ *  degrades to the same provider_not_configured/credential_error path a missing key already
+ *  takes. */
+async function getPipedreamAccessToken(clientId: string, clientSecret: string): Promise<string | null> {
+  const cached = pipedreamTokenCache.get(clientId);
+  if (cached && cached.expiresAt > Date.now() + 30_000) return cached.accessToken;
+  try {
+    const resp = await fetch("https://api.pipedream.com/v1/oauth/token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ grant_type: "client_credentials", client_id: clientId, client_secret: clientSecret }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!resp.ok) return null;
+    const json = await resp.json<{ access_token?: string; expires_in?: number }>();
+    if (!json.access_token) return null;
+    pipedreamTokenCache.set(clientId, { accessToken: json.access_token, expiresAt: Date.now() + (json.expires_in ?? 3600) * 1000 });
+    return json.access_token;
+  } catch {
+    return null;
+  }
+}
+
 async function pipedreamToolCall(
   connectionId: string,
   actionName: string,
   input: Record<string, unknown>,
-  apiKey: string
+  accessToken: string,
+  environment: string
 ): Promise<ProviderToolCallResult> {
-  // Pipedream Connect execute-action endpoint. `apiKey` here is a Pipedream project OAuth token.
+  // Pipedream Connect execute-action endpoint. `accessToken` is a real OAuth access token
+  // (client_credentials-derived), never a static key — see getPipedreamAccessToken above.
   const resp = await fetch(
     `https://api.pipedream.com/v1/connect/actions/${encodeURIComponent(actionName)}/run`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${apiKey}`,
+        "Authorization": `Bearer ${accessToken}`,
+        "x-pd-environment": environment,
         "x-pd-end-user-id": connectionId,
       },
       body: JSON.stringify({ inputs: input }),
@@ -172,12 +212,13 @@ async function pipedreamToolCall(
 
 async function pipedreamListTools(
   connectionId: string,
-  apiKey: string
+  accessToken: string,
+  environment: string
 ): Promise<{ tools: unknown[] }> {
   const resp = await fetch(
     `https://api.pipedream.com/v1/connect/components/actions?end_user_id=${encodeURIComponent(connectionId)}`,
     {
-      headers: { "Authorization": `Bearer ${apiKey}` },
+      headers: { "Authorization": `Bearer ${accessToken}`, "x-pd-environment": environment },
       signal: AbortSignal.timeout(15_000),
     }
   );
@@ -348,11 +389,21 @@ async function resolveProviderApiKey(server: McpServer, env: Env, agentId: strin
     return { ok: true, apiKey, source: "byo" };
   }
 
-  const platformKey = server.connector_provider === "composio" ? env.COMPOSIO_API_KEY : env.PIPEDREAM_API_KEY;
-  if (platformKey) return { ok: true, apiKey: platformKey, source: "platform" };
+  if (server.connector_provider === "composio") {
+    if (env.COMPOSIO_API_KEY) return { ok: true, apiKey: env.COMPOSIO_API_KEY, source: "platform" };
+  } else if (env.PIPEDREAM_CLIENT_ID && env.PIPEDREAM_CLIENT_SECRET) {
+    // Pipedream has no static platform key — resolve to a live OAuth access token instead
+    // (client_credentials-only per its own docs; see getPipedreamAccessToken above).
+    const accessToken = await getPipedreamAccessToken(env.PIPEDREAM_CLIENT_ID, env.PIPEDREAM_CLIENT_SECRET);
+    if (accessToken) return { ok: true, apiKey: accessToken, source: "platform" };
+    return {
+      ok: false, status: 502, errorCode: "provider_auth_failed",
+      message: "Pipedream OAuth token exchange failed (check PIPEDREAM_CLIENT_ID/PIPEDREAM_CLIENT_SECRET)",
+    };
+  }
   return {
     ok: false, status: 503, errorCode: "provider_not_configured",
-    message: `${server.connector_provider} connectors are not configured on this platform (no platform API key set) and this connector has no credential of its own`,
+    message: `${server.connector_provider} connectors are not configured on this platform (no platform credentials set) and this connector has no credential of its own`,
   };
 }
 
@@ -517,7 +568,7 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
     if (server.connector_provider === "composio") {
       return c.json(await composioListTools(server.provider_connection_id, keyRes.apiKey));
     }
-    return c.json(await pipedreamListTools(server.provider_connection_id, keyRes.apiKey));
+    return c.json(await pipedreamListTools(server.provider_connection_id, keyRes.apiKey, c.env.PIPEDREAM_ENVIRONMENT ?? "development"));
   }
 
   // S0.5: re-validate at CALL TIME, not just registration — a hostname that resolved to a
@@ -619,7 +670,7 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
     if (server.connector_provider === "composio") {
       providerResult = await composioToolCall(server.provider_connection_id, body.tool_name, body.input, keyRes.apiKey);
     } else {
-      providerResult = await pipedreamToolCall(server.provider_connection_id, body.tool_name, body.input, keyRes.apiKey);
+      providerResult = await pipedreamToolCall(server.provider_connection_id, body.tool_name, body.input, keyRes.apiKey, c.env.PIPEDREAM_ENVIRONMENT ?? "development");
     }
     if (providerResult.error) {
       return c.json({ error_code: "upstream_error", message: providerResult.error }, 502);

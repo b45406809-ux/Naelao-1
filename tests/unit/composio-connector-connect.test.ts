@@ -217,6 +217,52 @@ describe("GET /connectors/:platform/provider-connect/callback", () => {
     expect(res.headers.get("location")).toContain("twitter_oauth_error=connection_failed");
     expect(env.__mcpServers.length).toBe(0);
   });
+
+  it("REVOKED is surfaced as its own distinct reason, not lumped into FAILED/UNKNOWN", async () => {
+    // A real, distinct Composio status: the end user disconnected the app on Composio's/the
+    // target app's own side after the connection was once active. Must never silently register.
+    const env = makeEnv();
+    mockComposio({ connectionStatus: "REVOKED" });
+    const startRes = await startReq(env);
+    const kv = env.AGENT_CACHE as unknown as FakeKv;
+    const ticketKey = [...(kv as unknown as { store: Map<string, string> }).store.keys()].find((k) => k.startsWith("connector-provider-ticket:"));
+    void (await startRes.json());
+
+    const res = await app.fetch(
+      new Request(`https://agents.naelao.com/connectors/twitter/provider-connect/callback?ticket=${ticketKey!.replace("connector-provider-ticket:", "")}`),
+      env as never
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toContain("twitter_oauth_error=connection_revoked");
+    expect(env.__mcpServers.length).toBe(0);
+  });
+
+  it("prefers connected_account_id over other field names when parsing the link response", async () => {
+    const env = makeEnv();
+    mockComposio({
+      linkBody: {
+        // Real Composio SDK shape (composio/core/models/connected_accounts.py): snake_case,
+        // top-level. Also include a decoy `id` to prove the preference order — if pick() picked
+        // this instead, the callback's status poll (keyed on conn_abc123 in mockComposio) would
+        // 404/UNKNOWN and registration would never happen.
+        redirect_url: "https://backend.composio.dev/consent/xyz",
+        connected_account_id: "conn_abc123",
+        id: "decoy-id-that-must-not-be-used",
+      },
+      connectionStatus: "ACTIVE",
+    });
+    const startRes = await startReq(env);
+    expect(startRes.status).toBe(200);
+    const kv = env.AGENT_CACHE as unknown as FakeKv;
+    const ticketKey = [...(kv as unknown as { store: Map<string, string> }).store.keys()].find((k) => k.startsWith("connector-provider-ticket:"));
+    const res = await app.fetch(
+      new Request(`https://agents.naelao.com/connectors/twitter/provider-connect/callback?ticket=${ticketKey!.replace("connector-provider-ticket:", "")}`),
+      env as never
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toContain("twitter_connected=1");
+    expect(env.__mcpServers[0]!.provider_connection_id).toBe("conn_abc123");
+  });
 });
 
 describe("mcp-connector resolveServerId — needs_connector signal (click-Install onboarding)", () => {

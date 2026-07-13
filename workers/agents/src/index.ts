@@ -41,6 +41,7 @@ import {
   consumeProviderConnectTicket,
   providerTicketKey,
 } from "./connectors/composio.js";
+import { startPipedreamConnect, getPipedreamAccountStatus } from "./connectors/pipedream.js";
 import { isChannelType, getAdapter, type ChannelType } from "./launchpad/channels.js";
 import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
 
@@ -145,6 +146,18 @@ export interface AgentsEnv {
    *  configuration to INITIATE the hosted-auth redirect. mcp-hub holds its own copy of this same
    *  secret for the tool-call proxy side; this copy is only used to start/poll the connection. */
   COMPOSIO_API_KEY?: string;
+  /** Same universal-tools doctrine, second hosted-connect provider (Pipedream Connect). Unlike
+   *  Composio's single API key, Pipedream's REST API is OAuth client_credentials-only (VERIFIED
+   *  against Pipedream's own docs — pipedream.ts's header) — Naelao's ONE Pipedream OAuth client
+   *  id/secret + project id, used only to start/poll the connection (mcp-hub holds its own copy
+   *  for the tool-call proxy side). Optional: the pipedream-routed connect flow degrades to an
+   *  honest `provider_not_configured` when any of the three is unset. */
+  PIPEDREAM_CLIENT_ID?: string;
+  PIPEDREAM_CLIENT_SECRET?: string;
+  PIPEDREAM_PROJECT_ID?: string;
+  /** "development" or "production" — Pipedream's Connect API requires this on every call via the
+   *  x-pd-environment header. Defaults to "development" when unset. */
+  PIPEDREAM_ENVIRONMENT?: string;
   /** §A1.27: already bound in wrangler.toml (naelao-billing); added here so the context-usage
    *  endpoint can read the day/week/month llm_tokens summary. */
   BILLING_WORKER?: Fetcher;
@@ -1784,27 +1797,71 @@ app.get("/connectors/:platform/oauth/callback", async (c) => {
   }
 });
 
-// POST /connectors/:platform/provider-connect/start — the Composio "click Install" flow (G-1/G-3
-// growth-layer work): unlike /oauth/start (a bespoke per-platform OAuth app), this connector's
-// entire OAuth dance is hosted BY Composio — the builder authenticates on Composio's own page for
-// the real app (Twitter, HubSpot, …), no API key ever entered by hand. Authenticated (this call
-// itself is a plain fetch, not a page navigation).
+// Shared by both hosted-connect providers' callback routes: register-or-enable the MCP server
+// row once the provider's connection is confirmed ACTIVE. Extracted so Composio and Pipedream
+// (identical upsert shape, only `connector_provider` differs) can't drift apart.
+async function upsertProviderMcpServer(
+  env: AgentsEnv,
+  ticket: { spaceId: string; tenantId: string; connectionId: string },
+  connectorId: string,
+  provider: "composio" | "pipedream"
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (!env.MCP_HUB) return { ok: false, reason: "connectors_unavailable" };
+  const mcpInternalToken = await mintInternalToken(env.PLATFORM_SECRET, ticket.tenantId);
+  const listResp = await env.MCP_HUB.fetch(
+    new Request(`http://mcp-hub/v1/spaces/${ticket.spaceId}/mcp-servers`, {
+      headers: { "x-naelao-tenant-id": ticket.tenantId, "x-naelao-internal-token": mcpInternalToken },
+    })
+  );
+  let serverId: string | null = null;
+  if (listResp.ok) {
+    const { data } = await listResp.json<{ data?: Array<{ id: string; name: string }> }>();
+    serverId = (data ?? []).find((s) => s.name === connectorId)?.id ?? null;
+  }
+  const upsertBody = {
+    name: connectorId,
+    auth_type: "none" as const,
+    connector_provider: provider,
+    provider_connection_id: ticket.connectionId,
+  };
+  if (!serverId) {
+    const regResp = await env.MCP_HUB.fetch(
+      new Request(`http://mcp-hub/v1/spaces/${ticket.spaceId}/mcp-servers`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": ticket.tenantId, "x-naelao-internal-token": mcpInternalToken },
+        body: JSON.stringify(upsertBody),
+      })
+    );
+    if (!regResp.ok) return { ok: false, reason: "register_failed" };
+  } else {
+    await env.MCP_HUB.fetch(
+      new Request(`http://mcp-hub/v1/spaces/${ticket.spaceId}/mcp-servers/${serverId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": ticket.tenantId, "x-naelao-internal-token": mcpInternalToken },
+        body: JSON.stringify({ enabled: true }),
+      })
+    );
+  }
+  return { ok: true };
+}
+
+// POST /connectors/:platform/provider-connect/start — the hosted "click Install" flow (G-1/G-3
+// growth-layer work): unlike /oauth/start (a bespoke per-platform OAuth app), the connector's
+// entire OAuth dance is hosted by a THIRD PARTY (Composio or Pipedream) — the builder
+// authenticates on that provider's own consent page for the real app, no API key ever entered by
+// hand. Branches on which hosted provider the connector declares (mutually exclusive in
+// practice). Authenticated (this call itself is a plain fetch, not a page navigation).
 app.post("/connectors/:platform/provider-connect/start", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const { userId } = getCallerIdentity(c);
   const platform = c.req.param("platform");
   const connector = getConnector(platform);
   if (!connector) throw notFound("Connector");
-  if (!connector.composio) {
-    return c.json({ error_code: "provider_connect_not_supported", message: `${connector.name} has no Composio connect flow` }, 400);
+  if (!connector.composio && !connector.pipedream) {
+    return c.json({ error_code: "provider_connect_not_supported", message: `${connector.name} has no hosted connect flow` }, 400);
   }
   if (connector.status !== "available") {
     return c.json({ error_code: "coming_soon", message: `${connector.name} is coming soon` }, 409);
-  }
-  const apiKey = c.env.COMPOSIO_API_KEY;
-  const authConfigId = (c.env as unknown as Record<string, string | undefined>)[connector.composio.auth_config_id_env];
-  if (!apiKey || !authConfigId || !c.env.PUBLIC_AGENTS_URL) {
-    return c.json({ error_code: "provider_not_configured", message: `${connector.name} is not configured on this platform yet` }, 503);
   }
 
   interface StartBody { space_id: string; return_url: string }
@@ -1812,17 +1869,53 @@ app.post("/connectors/:platform/provider-connect/start", async (c) => {
   if (!body.space_id) throw badRequest("space_id is required");
   if (!body.return_url) throw badRequest("return_url is required");
 
-  // The ticket id doubles as Composio's `callback_url` query param — Composio redirects the
-  // browser back here with no other state of its own attached, so the ticket is how we know
-  // which space/tenant/return_url this connection belongs to (same precedent as oauth.ts).
+  if (!c.env.PUBLIC_AGENTS_URL) {
+    return c.json({ error_code: "provider_not_configured", message: `${connector.name} is not configured on this platform yet` }, 503);
+  }
+  // The ticket id doubles as the provider's redirect-back query param — the provider returns the
+  // browser here with no other state of its own attached, so the ticket is how we know which
+  // space/tenant/return_url this connection belongs to (same precedent as oauth.ts).
   const ticketPlaceholder = crypto.randomUUID();
   const callbackUrl = `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/connectors/${encodeURIComponent(platform)}/provider-connect/callback?ticket=${ticketPlaceholder}`;
 
-  let link: { redirect_url: string; connection_id: string };
-  try {
-    link = await startComposioLink({ apiKey, spaceId: body.space_id, authConfigId, callbackUrl });
-  } catch (err) {
-    return c.json({ error_code: "provider_connect_failed", message: (err as Error).message }, 502);
+  let connectUrl: string;
+  let connectionId: string;
+  if (connector.composio) {
+    const apiKey = c.env.COMPOSIO_API_KEY;
+    const authConfigId = (c.env as unknown as Record<string, string | undefined>)[connector.composio.auth_config_id_env];
+    if (!apiKey || !authConfigId) {
+      return c.json({ error_code: "provider_not_configured", message: `${connector.name} is not configured on this platform yet` }, 503);
+    }
+    try {
+      const link = await startComposioLink({ apiKey, spaceId: body.space_id, authConfigId, callbackUrl });
+      connectUrl = link.redirect_url;
+      connectionId = link.connection_id;
+    } catch (err) {
+      return c.json({ error_code: "provider_connect_failed", message: (err as Error).message }, 502);
+    }
+  } else {
+    const clientId = c.env.PIPEDREAM_CLIENT_ID;
+    const clientSecret = c.env.PIPEDREAM_CLIENT_SECRET;
+    const projectId = c.env.PIPEDREAM_PROJECT_ID;
+    if (!clientId || !clientSecret || !projectId) {
+      return c.json({ error_code: "provider_not_configured", message: `${connector.name} is not configured on this platform yet` }, 503);
+    }
+    // One Pipedream Connect account per Naelao space (mirrors Composio's naelao-space:{spaceId}
+    // user_id convention) — this doubles as provider_connection_id since Pipedream's own tool-call
+    // proxy addresses connections by external_user_id, not a separate opaque connection id.
+    const externalUserId = `naelao-space:${body.space_id}`;
+    try {
+      const link = await startPipedreamConnect({
+        clientId, clientSecret, projectId,
+        environment: c.env.PIPEDREAM_ENVIRONMENT ?? "development",
+        externalUserId, appSlug: connector.pipedream!.app_slug,
+        successRedirectUri: callbackUrl,
+      });
+      connectUrl = link.connect_url;
+      connectionId = externalUserId;
+    } catch (err) {
+      return c.json({ error_code: "provider_connect_failed", message: (err as Error).message }, 502);
+    }
   }
 
   // Re-issue under the SAME id used in the callback URL above (issueProviderConnectTicket mints
@@ -1831,24 +1924,24 @@ app.post("/connectors/:platform/provider-connect/start", async (c) => {
   await c.env.AGENT_CACHE.put(
     providerTicketKey(ticketPlaceholder),
     JSON.stringify({
-      spaceId: body.space_id, tenantId, userId, returnUrl: body.return_url, platform, connectionId: link.connection_id,
+      spaceId: body.space_id, tenantId, userId, returnUrl: body.return_url, platform, connectionId,
     }),
     { expirationTtl: 600 }
   );
 
-  return c.json({ connect_url: link.redirect_url });
+  return c.json({ connect_url: connectUrl });
 });
 
-// GET /connectors/:platform/provider-connect/callback — PUBLIC/unauthenticated (Composio redirects
-// the raw browser here with no Naelao auth attached; the single-use `ticket` query param IS the
-// auth). Polls the REAL connection status (never trusts the redirect alone — see composio.ts's
-// header) before registering the connector, so a user who bails out mid-consent doesn't leave a
-// server row claiming success.
+// GET /connectors/:platform/provider-connect/callback — PUBLIC/unauthenticated (the provider
+// redirects the raw browser here with no Naelao auth attached; the single-use `ticket` query
+// param IS the auth). Polls the REAL connection status (never trusts the redirect alone — see
+// composio.ts's/pipedream.ts's headers) before registering the connector, so a user who bails out
+// mid-consent doesn't leave a server row claiming success.
 app.get("/connectors/:platform/provider-connect/callback", async (c) => {
   const platform = c.req.param("platform");
   const connector = getConnector(platform);
   const ticketId = c.req.query("ticket");
-  if (!connector?.composio) return c.text("Unknown connector", 404);
+  if (!connector || (!connector.composio && !connector.pipedream)) return c.text("Unknown connector", 404);
 
   const ticket = ticketId ? await consumeProviderConnectTicket(c.env.AGENT_CACHE, ticketId) : null;
   if (!ticket || ticket.platform !== platform) {
@@ -1860,49 +1953,30 @@ app.get("/connectors/:platform/provider-connect/callback", async (c) => {
     return c.redirect(u.toString(), 302);
   };
 
-  const apiKey = c.env.COMPOSIO_API_KEY;
-  if (!apiKey) return failRedirect("provider_not_configured");
-
   try {
-    const status = await getComposioConnectionStatus(apiKey, ticket.connectionId);
-    if (status !== "ACTIVE") return failRedirect(`connection_${status.toLowerCase()}`);
-
-    if (!c.env.MCP_HUB) return failRedirect("connectors_unavailable");
-    const mcpInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, ticket.tenantId);
-    const listResp = await c.env.MCP_HUB.fetch(
-      new Request(`http://mcp-hub/v1/spaces/${ticket.spaceId}/mcp-servers`, {
-        headers: { "x-naelao-tenant-id": ticket.tenantId, "x-naelao-internal-token": mcpInternalToken },
-      })
-    );
-    let serverId: string | null = null;
-    if (listResp.ok) {
-      const { data } = await listResp.json<{ data?: Array<{ id: string; name: string }> }>();
-      serverId = (data ?? []).find((s) => s.name === connector.id)?.id ?? null;
-    }
-    const upsertBody = {
-      name: connector.id,
-      auth_type: "none" as const,
-      connector_provider: "composio" as const,
-      provider_connection_id: ticket.connectionId,
-    };
-    if (!serverId) {
-      const regResp = await c.env.MCP_HUB.fetch(
-        new Request(`http://mcp-hub/v1/spaces/${ticket.spaceId}/mcp-servers`, {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-naelao-tenant-id": ticket.tenantId, "x-naelao-internal-token": mcpInternalToken },
-          body: JSON.stringify(upsertBody),
-        })
-      );
-      if (!regResp.ok) return failRedirect("register_failed");
+    let provider: "composio" | "pipedream";
+    if (connector.composio) {
+      const apiKey = c.env.COMPOSIO_API_KEY;
+      if (!apiKey) return failRedirect("provider_not_configured");
+      const status = await getComposioConnectionStatus(apiKey, ticket.connectionId);
+      if (status !== "ACTIVE") return failRedirect(`connection_${status.toLowerCase()}`);
+      provider = "composio";
     } else {
-      await c.env.MCP_HUB.fetch(
-        new Request(`http://mcp-hub/v1/spaces/${ticket.spaceId}/mcp-servers/${serverId}`, {
-          method: "PATCH",
-          headers: { "content-type": "application/json", "x-naelao-tenant-id": ticket.tenantId, "x-naelao-internal-token": mcpInternalToken },
-          body: JSON.stringify({ enabled: true }),
-        })
-      );
+      const clientId = c.env.PIPEDREAM_CLIENT_ID;
+      const clientSecret = c.env.PIPEDREAM_CLIENT_SECRET;
+      const projectId = c.env.PIPEDREAM_PROJECT_ID;
+      if (!clientId || !clientSecret || !projectId) return failRedirect("provider_not_configured");
+      const status = await getPipedreamAccountStatus({
+        clientId, clientSecret, projectId,
+        environment: c.env.PIPEDREAM_ENVIRONMENT ?? "development",
+        externalUserId: ticket.connectionId, appSlug: connector.pipedream!.app_slug,
+      });
+      if (status !== "ACTIVE") return failRedirect(`connection_${status.toLowerCase()}`);
+      provider = "pipedream";
     }
+
+    const upserted = await upsertProviderMcpServer(c.env, ticket, connector.id, provider);
+    if (!upserted.ok) return failRedirect(upserted.reason);
 
     const successUrl = new URL(ticket.returnUrl);
     successUrl.searchParams.set(`${platform}_connected`, "1");

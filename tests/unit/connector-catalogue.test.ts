@@ -22,7 +22,17 @@ describe("connector catalogue", () => {
 
   it("availableConnectors() returns Whop + Gumroad + the growth-layer connectors in this build", () => {
     const avail = availableConnectors().map((c) => c.id).sort();
-    expect(avail).toEqual(["gumroad", "higgsfield", "instagram", "linkedin", "tiktok", "twitter", "whop"]);
+    expect(avail).toEqual(["gumroad", "higgsfield", "instagram", "linkedin", "notion", "tiktok", "twitter", "whop"]);
+  });
+
+  it("Notion is a Pipedream-routed connector (the second hosted-connect provider) with no mcp_endpoint or builder credential", () => {
+    const c = getConnector("notion");
+    expect(c?.status).toBe("available");
+    expect(c?.mcp_endpoint).toBeUndefined();
+    expect(c?.composio).toBeUndefined();
+    expect(c?.pipedream?.app_slug).toBe("notion");
+    expect(c?.auth.type).toBe("none");
+    expect((c?.operations ?? []).length).toBeGreaterThan(0);
   });
 
   it("Composio-routed social connectors have no mcp_endpoint of their own (the provider resolves it) and no builder credential", () => {

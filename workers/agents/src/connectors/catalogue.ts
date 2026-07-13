@@ -32,7 +32,8 @@ export type ConnectorCategory =
   | "content_gen"
   | "crm"
   | "ads"
-  | "email";
+  | "email"
+  | "productivity";
 
 export interface ConnectorOperation {
   /** The MCP tool name the agent calls via script.run("mcp.call", { server, tool, params }). */
@@ -100,6 +101,19 @@ export interface ConnectorComposioSpec {
   auth_config_id_env: string;
 }
 
+/**
+ * Pipedream Connect hosted-connect support (pipedream.ts) — the second hosted "click Install"
+ * provider behind the SAME /provider-connect/* routes and shell UI as Composio. Naelao holds ONE
+ * platform Pipedream OAuth client (PIPEDREAM_CLIENT_ID/CLIENT_SECRET, universal-tools doctrine);
+ * unlike Composio, Pipedream needs no pre-created per-app "Auth Config" for managed auth — the
+ * connector only needs to name the app's Pipedream slug. Mutually exclusive with `composio` in
+ * practice (not enforced) — a connector picks whichever hosted provider actually lists the app.
+ */
+export interface ConnectorPipedreamSpec {
+  /** Pipedream's app slug (e.g. "notion", "airtable") — passed as the Connect Link's `?app=`. */
+  app_slug: string;
+}
+
 export interface ConnectorDefinition {
   id: string;
   name: string;
@@ -118,17 +132,20 @@ export interface ConnectorDefinition {
    *  of a bespoke OAuth app or a manual API key. Mutually exclusive with `oauth` in practice
    *  (not enforced) — a connector picks whichever mechanism its real platform actually supports. */
   composio?: ConnectorComposioSpec;
+  /** Present when this connector is reached via Pipedream's hosted click-to-install flow. See
+   *  ConnectorPipedreamSpec's header. */
+  pipedream?: ConnectorPipedreamSpec;
   /**
    * Canonical MCP endpoint for the platform's shim (Naelao-hosted, or the platform's own hosted
-   * MCP server e.g. Higgsfield's). Absent for coming-soon entries AND for composio-routed
-   * connectors (the provider resolves the endpoint — mirrors mcp-hub's own registration rule
-   * that `url` is optional for provider-routed connectors).
+   * MCP server e.g. Higgsfield's). Absent for coming-soon entries AND for composio/pipedream-
+   * routed connectors (the provider resolves the endpoint — mirrors mcp-hub's own registration
+   * rule that `url` is optional for provider-routed connectors).
    */
   mcp_endpoint?: string;
   /** The wrapper surface — the operations the agent expects (also discoverable via mcp.list_tools).
-   *  For a composio-routed connector these are illustrative (Composio exposes the live tool list
-   *  per app; the agent discovers the real names via mcp.list_tools after connecting), not a
-   *  contract enforced against the provider. */
+   *  For a composio/pipedream-routed connector these are illustrative (the provider exposes the
+   *  live tool list per app; the agent discovers the real names via mcp.list_tools after
+   *  connecting), not a contract enforced against the provider. */
   operations?: ConnectorOperation[];
 }
 
@@ -275,6 +292,30 @@ const TIKTOK: ConnectorDefinition = composioSocial(
   [POST_OP, SCHEDULE_OP, ANALYTICS_OP, { name: "list_comments", description: "List comments on a video.", kind: "read" }]
 );
 
+/**
+ * Notion — the first Pipedream-routed connector (the composioSocial helper above is Composio-
+ * specific; Notion is reached through Pipedream's managed auth instead, proving the second
+ * hosted-provider mechanism end-to-end). No API key ever entered by hand — click Connect,
+ * authenticate on Notion's own consent page via Pipedream's hosted Connect Link, done.
+ */
+const NOTION: ConnectorDefinition = {
+  id: "notion",
+  name: "Notion",
+  category: "productivity",
+  status: "available",
+  summary:
+    "Read and write Notion pages and databases — connected via Pipedream's hosted auth. Useful for " +
+    "a knowledge base, content calendar, or internal docs the assistant keeps up to date.",
+  auth: { type: "none", credential_name: "" },
+  pipedream: { app_slug: "notion" },
+  operations: [
+    { name: "list_databases", description: "List databases the connected account can access.", kind: "read" },
+    { name: "query_database", description: "Query rows/pages in a database.", kind: "read" },
+    { name: "create_page", description: "Create a new page in a database.", kind: "write" },
+    { name: "update_page", description: "Update an existing page's properties or content.", kind: "write" },
+  ],
+};
+
 /** Coming-soon placeholders — UI greys these out. Authored as data so flipping one on is trivial. */
 function comingSoon(
   id: string,
@@ -312,6 +353,7 @@ export const CONNECTOR_CATALOGUE: ConnectorDefinition[] = [
   LINKEDIN,
   INSTAGRAM,
   TIKTOK,
+  NOTION,
   // CRM / ads / advanced email — Composio-routed, data-only until an Auth Config is provisioned.
   comingSoonComposio("hubspot", "HubSpot", "crm", "hubspot", "COMPOSIO_HUBSPOT_AUTH_CONFIG_ID", "CRM/lead pipeline — deals, contacts, pipeline stages."),
   comingSoonComposio("google-ads", "Google Ads", "ads", "googleads", "COMPOSIO_GOOGLE_ADS_AUTH_CONFIG_ID", "Campaign performance, budgets, ad group management."),
@@ -383,7 +425,7 @@ export function validateConnectorCatalogue(cat: ConnectorDefinition[] = CONNECTO
       // Composio/Pipedream-routed connectors have no mcp_endpoint of their own — the provider
       // resolves it (mirrors mcp-hub's own POST /mcp-servers rule that `url` is optional for
       // provider-routed connectors).
-      if (!c.composio && !c.mcp_endpoint) throw new Error(`Connector '${c.id}' is available but has no mcp_endpoint`);
+      if (!c.composio && !c.pipedream && !c.mcp_endpoint) throw new Error(`Connector '${c.id}' is available but has no mcp_endpoint`);
       if (!c.operations || c.operations.length === 0) throw new Error(`Connector '${c.id}' is available but declares no operations`);
       for (const op of c.operations) {
         if (MONEY_IN_OP.test(op.name)) {
