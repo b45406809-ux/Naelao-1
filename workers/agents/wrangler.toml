@@ -194,7 +194,8 @@ service = "naelao-ws-gateway"
 [vars]
 ENVIRONMENT = "development"
 # CF AI Gateway — every LLM call routes through this (spec §15).
-# Override with real values via `wrangler secret put` in production.
+# The real account id + gateway name (dash.cloudflare.com → account id in the URL/sidebar;
+# AI → AI Gateway → the gateway's own id).
 NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3"
 NAELAO_GATEWAY_ID = "naelao-gateway"
 # CF API token for the Universal Endpoint's Workers AI fallback provider (cross-provider failover,
@@ -218,8 +219,7 @@ binding = "AI"
 # entirely. NAELAO_ACCOUNT_ID/NAELAO_GATEWAY_ID must be repeated here or every LLM call in
 # staging silently falls back to the direct Anthropic API (resolveAnthropicUrl treats a missing
 # accountId the same as "placeholder") — the CF AI Gateway wiring in shared/ai-client.ts would
-# never actually activate. Override NAELAO_ACCOUNT_ID with the real Cloudflare account id via
-# `wrangler secret put NAELAO_ACCOUNT_ID --env staging` once a real gateway exists.
+# never actually activate.
 vars = { ENVIRONMENT = "staging", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway" }
 # CF_API_TOKEN is a secret (not a var) — set via `wrangler secret put CF_API_TOKEN --env staging`
 
@@ -248,9 +248,7 @@ binding = "BROWSER_WORKER"
 service = "naelao-browser"
 
 [env.production]
-# See [env.staging]'s comment above — same wrangler vars-replacement gotcha. Override
-# NAELAO_ACCOUNT_ID with the real Cloudflare account id via
-# `wrangler secret put NAELAO_ACCOUNT_ID --env production` once a real gateway exists.
+# See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
 vars = { ENVIRONMENT = "production", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway" }
 # CF_API_TOKEN is a secret (not a var) — set via `wrangler secret put CF_API_TOKEN --env production`
 
