@@ -1693,12 +1693,24 @@ first real business on free-tier resources before opening the platform to other 
   `agent.session_budget_warning` through the existing `event_triggers` machinery, 100% refuses
   the run and reuses the HITL approval mechanism (no new gate engine) — never silent. Full
   detail: CLAUDE.md item 60, appendix §A1.32. 1946/1946 tests pass, typecheck clean (76 tasks).
-- [ ] **HX3-HX5 (Harness Excellence Program, tracked follow-up, NOT done this pass):** HX3 (a
-  live-agent eval harness + golden benchmark datasets — the precondition for HX4), HX4
+- [x] **HX3 (live-agent eval harness) — FIXED/BUILT.** `workers/eval` never actually invoked an
+  agent (only judged a case's raw `input` text) and bypassed the CF AI Gateway vendor cutover
+  (item 45, hardcoded direct `api.anthropic.com` call) — both real, previously-undetected gaps.
+  New `mode: "agent"` dispatches a real `/agent/run` per case (Prefer: respond-sync, internal
+  token, same auth pattern as every other internal caller) and judges the agent's actual answer;
+  the judge itself now routes through `@naelao/llm-gateway`'s `callLlm` (CF AI Gateway) instead of
+  a raw fetch. Judge scores `correctness` + `semantic_validity` separately, overall score is the
+  MIN of the two (anti-reward-hacking — a keyword-stuffed non-answer can't average to a pass).
+  3 golden datasets (`tests/eval-datasets/*.jsonl`: tool-use/policy, multi-step web+file,
+  commerce/business-ops — 17 cases). `infra/scripts/run-eval-suite.mjs` benchmark runner with a
+  regression-threshold exit code (manual dispatch, not wired into CI — no live deployment to
+  target yet). Full detail: CLAUDE.md item 61, appendix §A1.33. 1953/1953 tests pass (7 new),
+  typecheck clean (76 tasks).
+- [ ] **HX4-HX5 (Harness Excellence Program, tracked follow-up, NOT done this pass):** HX4
   (SkillOpt-Lite-style validation-gated skill self-evolution: mine HX1's failure traces per
   skill, propose a patch via the existing `script.update`, validation-gate it against HX3's eval
   cases, keep only if it scores ≥ the old version else `rollback()`), HX5 (skill supply-chain
   hardening — tamper-evident provenance, import/inherit-time reserved-capability + red-flag
   scanning — ahead of any future skill marketplace). Build order is a strict chain HX1→HX2→
   HX3→HX4 (each phase's input is the prior phase's output); HX5 is independent. Full plan: the
-  session's plan file / CLAUDE.md item 60 / appendix §A1.32.
+  session's plan file / CLAUDE.md item 61 / appendix §A1.33.

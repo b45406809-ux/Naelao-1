@@ -824,6 +824,9 @@ importers:
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
+      '@naelao/llm-gateway':
+        specifier: workspace:*
+        version: link:../../packages/llm-gateway
       '@naelao/types':
         specifier: workspace:*
         version: link:../../packages/types

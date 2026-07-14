@@ -2059,6 +2059,44 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     §A1.32. **Not done this pass:** HX3 (live-agent eval harness + golden benchmark datasets, the
     precondition for HX4), HX4 (SkillOpt-style validation-gated skill self-evolution), HX5
     (skill supply-chain hardening).
+61. **Harness Excellence Phase HX3 (live-agent eval harness) is now BUILT.** `workers/eval`
+    (G-Q03) had two real, previously-undetected gaps confirmed by reading the deployed code: it
+    only ever judged a case's raw `input` text as if it WERE the agent's answer — never actually
+    invoking an agent, so it could never catch a real reasoning-loop/tool/skill regression — and
+    its judge called `api.anthropic.com` directly with a hardcoded model, bypassing the CF AI
+    Gateway vendor cutover (item 45) every other LLM call site already went through; this worker
+    was the one spot that pass missed. New `mode: "agent"` on `POST /v1/evals/:id/run` (default
+    stays `"text"`, byte-identical to prior behavior) dispatches a REAL
+    `POST /spaces/:space_id/sessions/:session_id/agent/run` per case — `mintInternalToken` +
+    `x-naelao-tenant-id` + `Prefer: respond-sync` (the same escape hatch Phase Q's async-by-
+    default dispatch documents) — then judges the agent's actual final answer, never the raw case
+    text. A failed agent run is recorded as `score: 0` with `agent_error` and never reaches the
+    judge. The judge itself now routes through `@naelao/llm-gateway`'s `callLlm` (new
+    `NAELAO_ACCOUNT_ID`/`NAELAO_GATEWAY_ID`/`NAELAO_AIG_TOKEN` wrangler.toml vars/secret, repeated
+    in `[env.staging]`/`[env.production]` per the documented vars-replacement gotcha), falling
+    back to a direct Anthropic call via the now-optional `EVAL_LLM_KEY` only when the gateway
+    isn't configured. Per the plan's own research finding (~20% of "solved" SWE-bench entries are
+    reward-hacked), the judge now scores `correctness` and `semantic_validity` as separate
+    subscores and takes their MIN as the overall score — a keyword-stuffed non-answer that scores
+    high on correctness but doesn't actually address the task can't average out to a pass. Three
+    golden datasets (`tests/eval-datasets/*.jsonl`, 17 cases total, `EvalCase[]`-shaped so they
+    load straight into `POST /v1/evals`): `tool-use-policy.jsonl` (verify-before-acting, refusal,
+    real search grounding), `multi-step-web-file.jsonl` (multi-source synthesis, KB/file
+    grounding), `commerce-business-ops.jsonl` (the platform's own domain, where no public
+    benchmark exists — payout-approval, `awaiting_kyc`, `free_tier_eligible` gating, STOP/opt-out,
+    session-budget non-bypass, cross-business Whop-account detection). New
+    `infra/scripts/run-eval-suite.mjs` (dependency-free Node, manual dispatch only — costs real
+    tokens, not wired into CI) finds-or-creates a suite via the real `/evals` API, runs it in
+    `mode=agent`, and exits non-zero on a regression beyond `--threshold` versus the suite's own
+    last stored result — the regression gate the plan called for, not yet pointed at a live
+    deployment (none exists yet — see the live-access discussion earlier in this session).
+    1953/1953 tests pass (7 new: `eval-worker-agent-mode.test.ts` drives the real Hono app
+    end-to-end — suite creation, unchanged text-mode behavior, agent-mode's exact request shape
+    to `AGENTS_WORKER`, a failed run never reaching the judge, `agent_definition_id` passthrough,
+    the MIN-of-subscores scoring, and the judge's CF AI Gateway URL/header routing), `pnpm turbo
+    run typecheck` clean (76 tasks). Full detail: appendix §A1.33. **Not done this pass:** HX4
+    (SkillOpt-Lite-style validation-gated skill self-evolution), HX5 (skill supply-chain
+    hardening).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

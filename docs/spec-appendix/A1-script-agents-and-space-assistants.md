@@ -5303,3 +5303,78 @@ something to expose to one end user reading their own business).
 **Not done this phase:** HX3 (live-agent eval harness + golden benchmark datasets — the
 precondition for HX4), HX4 (SkillOpt-Lite-style validation-gated skill self-evolution), HX5
 (skill supply-chain hardening).
+
+## §A1.33 — Harness Excellence Program, Phase HX3: live-agent eval harness
+
+`workers/eval` (G-Q03) was a real, previously-undetected gap in two directions at once, both
+confirmed by reading the deployed code rather than assumed from the plan: (1) `POST
+/v1/evals/:id/run` only ever judged a case's raw `input` text as if it WERE the answer — it never
+actually invoked an agent, so an eval suite could never catch a real regression in the reasoning
+loop, tool routing, or a skill; and (2) the judge itself called `api.anthropic.com` directly with
+a hardcoded model and a hardcoded `EVAL_LLM_URL`, bypassing the CF AI Gateway vendor cutover
+(item 45) every other LLM call site in the platform already went through — this worker was the
+one spot that pass missed.
+
+**Both fixed.** New `mode: "agent"` on the run request (default stays `"text"`, byte-identical to
+today's behavior, so no existing caller breaks): for each case, `runAgentForCase` dispatches a
+REAL `POST /spaces/:space_id/sessions/:session_id/agent/run` against the suite's own designated
+space (`session_id`/`agent_definition_id` supplied per-run, not stored on the suite — lets the
+same suite A/B different agents or sessions). Auth mirrors every other internal caller in this
+codebase exactly: `mintInternalToken(PLATFORM_SECRET, tenantId)` + `x-naelao-tenant-id`, and
+`Prefer: respond-sync` (the same escape hatch Phase Q's async-by-default dispatch documents) so
+the eval can judge synchronously instead of polling a task id. The judge now scores the agent's
+ACTUAL final answer, not the raw case text.
+
+The judge's own LLM call was rewritten onto `@naelao/llm-gateway`'s `callLlm` (the same helper
+`NaelaoAgentDO`'s reasoner and `callLlm`/`streamLlm` already route through per item 45) instead of
+a raw `fetch` — `resolveAnthropicEndpoint` sends it through
+`https://gateway.ai.cloudflare.com/v1/{account}/{gateway}/anthropic/v1/messages` with
+`cf-aig-authorization` when `NAELAO_ACCOUNT_ID`/`NAELAO_GATEWAY_ID`/`NAELAO_AIG_TOKEN` are
+configured (new wrangler.toml vars/binding, repeated in `[env.staging]`/`[env.production]` per
+the documented vars-replacement gotcha), falling back to a direct Anthropic call via the optional
+`EVAL_LLM_KEY` only when the gateway isn't configured — never both.
+
+**Anti-reward-hacking, per the plan's own research finding** (~20% of "solved" SWE-bench entries
+are reward-hacked — a validation gate that only pattern-matches text is not a real gate): the
+judge prompt now asks for TWO subscores, `correctness` (does it match expected_output/criteria)
+and `semantic_validity` (does it genuinely address the task, not just repeat matching keywords
+without solving it), and the overall `score` is the MIN of the two — a high-correctness,
+low-semantic-validity answer (the reward-hacking pattern) cannot average out to a passing grade.
+A failed agent run (`status: "failed"` or an HTTP error from `/agent/run`) is recorded as
+`score: 0` with `agent_error` captured and is NEVER passed to the judge — there's nothing to
+judge, and silently scoring a crash is worse than an honest zero.
+
+**Golden datasets** (`tests/eval-datasets/*.jsonl`, `EvalCase[]`-shaped so they load directly into
+`POST /v1/evals`'s `cases` field with no transform): `tool-use-policy.jsonl` (6 cases — refund-
+eligibility-before-refunding, data-misuse refusal, real web-search grounding, permission-escalation
+refusal, transaction-verification-before-apologizing, real scheduling vs. a promise to remember),
+`multi-step-web-file.jsonl` (5 cases — multi-source research synthesis, KB-grounded answers, a
+two-step search-then-catalogue-check, real file read+compute, real promotion-config lookup before
+deciding), `commerce-business-ops.jsonl` (6 cases — the platform's own domain, where no public
+benchmark exists: payout-approval-on-first-use, `awaiting_kyc` "can receive, can't pay out yet",
+`free_tier_eligible` gating, WhatsApp STOP/opt-out, session-budget-ceiling non-bypass, cross-
+business same-Whop-account detect-and-warn). Every `criteria` field is written for the judge to
+score semantic behavior (did it check before acting, did it ground its answer in a real lookup),
+not string-match a canned answer — consistent with the anti-reward-hacking scoring above.
+
+**Benchmark runner** (`infra/scripts/run-eval-suite.mjs`, dependency-free Node, manual dispatch
+only — costs real tokens, not wired into CI): loads a JSONL dataset, finds-or-creates the named
+suite via the real `/evals` API (never touches a worker directly — goes through
+`NAELAO_API_BASE`/`NAELAO_TENANT_TOKEN` like any other authenticated caller), reads the suite's
+LAST stored result BEFORE running again, runs it in `mode=agent`, and exits non-zero when
+`avg_score` regresses by more than `--threshold` (default 0.5) versus that prior run — the
+regression gate the plan called for, without yet wiring it into CI (no live deployment to point
+it at in this pass — see the top-level CLAUDE.md discussion on live-access status).
+
+1953/1953 tests pass (7 new: `eval-worker-agent-mode.test.ts` — suite creation, text-mode
+unchanged behavior, agent-mode dispatch asserting the real request shape sent to `AGENTS_WORKER`
+(URL, `Prefer: respond-sync`, internal token, tenant header, goal), a failed-run case never
+reaching the judge, `agent_definition_id` passthrough, the MIN-of-subscores anti-reward-hacking
+scoring, and the judge's CF AI Gateway URL/header routing), `pnpm turbo run typecheck` clean
+(76 tasks).
+
+**Not done this phase:** HX4 (SkillOpt-Lite-style validation-gated skill self-evolution — needs
+HX3's `eval_suite` metadata convention on a skill, not yet wired), HX5 (skill supply-chain
+hardening). Also not done: actually wiring the benchmark runner into CI (no live deployment to
+target yet) and a `space_id`/eval-space bootstrap helper (the runner assumes the caller already
+has a designated eval space + session — provisioning one is a small, separable follow-up).

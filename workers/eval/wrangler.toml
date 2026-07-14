@@ -13,15 +13,37 @@ binding = "PLATFORM_DB"
 database_name = "naelao-platform"
 database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
 
+# §A1 Harness Excellence Phase HX3 — needed so mode="agent" eval runs can dispatch a real
+# /agent/run per case instead of only ever judging the raw case input text.
+[[services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
+
 [vars]
 ENVIRONMENT = "development"
-EVAL_LLM_URL = "https://api.anthropic.com/v1"
+# §A1 Harness Excellence Phase HX3: this worker previously called api.anthropic.com directly
+# with a hardcoded EVAL_LLM_URL, bypassing the CF AI Gateway vendor cutover (item 45) every other
+# LLM call site in the platform already went through. NAELAO_ACCOUNT_ID/GATEWAY_ID route the judge
+# call through the gateway (same account/gateway as every other worker); NAELAO_AIG_TOKEN is a
+# secret (`wrangler secret put NAELAO_AIG_TOKEN`) that lets the gateway hold the Anthropic key
+# itself, so no EVAL_LLM_KEY is required once it's set.
+NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3"
+NAELAO_GATEWAY_ID = "naelao-gateway"
 
 [env.staging]
 # wrangler does NOT merge [env.X].vars with the top-level [vars] block — it replaces it
-# entirely, so EVAL_LLM_URL must be repeated here or it's undefined in staging.
-vars = { ENVIRONMENT = "staging", EVAL_LLM_URL = "https://api.anthropic.com/v1" }
+# entirely, so these must be repeated here or judge calls silently fall back to a direct
+# Anthropic call in staging (the same gotcha every other worker's wrangler.toml documents).
+vars = { ENVIRONMENT = "staging", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway" }
+
+[[env.staging.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
 
 [env.production]
 # See [env.staging]'s comment above — same wrangler vars-replacement gotcha.
-vars = { ENVIRONMENT = "production", EVAL_LLM_URL = "https://api.anthropic.com/v1" }
+vars = { ENVIRONMENT = "production", NAELAO_ACCOUNT_ID = "12e352dbea64627949c5e808c1ea92c3", NAELAO_GATEWAY_ID = "naelao-gateway" }
+
+[[env.production.services]]
+binding = "AGENTS_WORKER"
+service = "naelao-agents"
