@@ -1657,12 +1657,21 @@ first real business on free-tier resources before opening the platform to other 
   whop`, `/v1/webhooks/whop-platform-plan`, and `/v1/webhooks/lemon-squeezy` all returned generic
   500s before the fix and their real, correct business-logic responses (`whop_not_configured`,
   `invalid_signature`, etc.) after it. Redeployed `naelao-router`, `naelao-billing`,
-  `naelao-spaces`, and `naelao-security-gateway` (the four workers with a confirmed direct
-  passthrough call site) with the fixed `@naelao/http`. **Not yet redeployed: `naelao-agents`** —
-  blocked on the Cloudflare account being on the free Workers plan (its `wrangler.toml`
-  unconditionally declares a `Worker Loader`/Dynamic Workers binding, which 10195s with "you must
-  switch to a paid plan" on any deploy attempt, confirmed via both wrangler 3 and 4). The other
-  ~20 workers that import `requestId` from `@naelao/http` but don't do direct response passthrough
-  aren't currently exposed to this specific trigger condition, but should still be redeployed with
-  the fixed package on their next normal deploy so the landmine can't reappear if a future change
-  adds a passthrough route to any of them.
+  `naelao-spaces`, `naelao-security-gateway`, and (after the free-plan workaround below)
+  `naelao-agents` — all five workers with a confirmed direct passthrough call site now carry the
+  fixed `@naelao/http`. The other ~20 workers that import `requestId` but don't do direct response
+  passthrough aren't currently exposed to this specific trigger condition, but should still be
+  redeployed with the fixed package on their next normal deploy so the landmine can't reappear if
+  a future change adds a passthrough route to any of them.
+  **`naelao-agents` deploy was separately blocked** on the Cloudflare account being on the free
+  Workers plan — its `wrangler.toml` unconditionally declared a `Worker Loader`/Dynamic Workers
+  binding (`[[worker_loaders]] binding = "LOADER"`, for script-engine Tiers 2-4), which 10195s with
+  "you must switch to a paid plan" on any deploy attempt regardless of whether Tier 2-4 is ever
+  actually invoked. Fixed by commenting out the binding declaration (2 lines) — `code-runner.ts`
+  already degrades Tiers 2-4 to "unavailable" when the binding is absent, identical to how it
+  behaves today with the binding declared-but-unusable on the free plan, so this is a zero-
+  behavior-change toggle: uncomment the two lines and redeploy the moment the account upgrades to
+  the $5/mo Workers Paid plan (the bootstrap plan's own stated "enable Worker Loaders later" step).
+  Also needed `wrangler@4` (not the repo's pinned 3.114.17, which doesn't parse this worker's
+  `[[containers]]` array-of-tables syntax) with `--containers-rollout=none` (no Docker available
+  in this sandbox to build the container image; the container itself is untouched by this deploy).

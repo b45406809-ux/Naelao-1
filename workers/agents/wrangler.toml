@@ -101,8 +101,14 @@ index_name = "naelao-agent-memory"
 # execution Tiers 2-4 (script-engine/code-runner.ts). Not yet in @cloudflare/workers-types;
 # typed locally there. Optional — Tiers 2-4 degrade to "unavailable" without it (Tier 1 R2
 # ops always work; Tier 5 container is unaffected).
-[[worker_loaders]]
-binding = "LOADER"
+# TEMPORARILY DISABLED: this binding requires the CF Workers PAID plan (account is on free tier
+# as of this bootstrap phase) — deploying with it declared fails outright (error 10195), which
+# was blocking even unrelated fixes from reaching this worker at all. Re-enable (uncomment) the
+# moment the account upgrades to the $5/mo plan; the code already degrades to "unavailable"
+# identically whether the binding is absent or present-but-unusable, so this is a zero-behavior-
+# change toggle, not a functionality cut.
+# [[worker_loaders]]
+# binding = "LOADER"
 
 [[workflows]]
 name = "AgentTaskWorkflow"
