@@ -50,7 +50,6 @@ export class HITLApprovalDO extends DurableObject {
 
   private ensureInit(): void {
     if (this.initialized) return;
-    this.ctx.storage.sql.exec("PRAGMA journal_mode=WAL");
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS approvals (
         id                 TEXT PRIMARY KEY,

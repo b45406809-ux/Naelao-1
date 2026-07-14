@@ -35,7 +35,12 @@ export class RateLimitDO extends DurableObject {
 
   private ensureInit(): void {
     if (this.initialized) return;
-    this.ctx.storage.sql.exec("PRAGMA journal_mode=WAL");
+    // Do NOT run PRAGMA journal_mode=WAL here — Cloudflare's SQLite-backed DO storage manages
+    // its own journal mode and rejects this PRAGMA with "not authorized: SQLITE_AUTH", throwing
+    // on every single call to this DO in production (confirmed via a live wrangler tail session
+    // against a real deployment; the test suite's SQLite shim doesn't enforce this restriction,
+    // so it was never caught by the ~1900 passing unit tests). CLAUDE.md's own DO SQLite Pattern
+    // section used to instruct setting this — it does not apply to Cloudflare's real runtime.
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS buckets (
         key           TEXT PRIMARY KEY,

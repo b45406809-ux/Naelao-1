@@ -94,11 +94,13 @@ const MIGRATIONS: Migration[] = [
   {
     version: 1,
     description: "initial schema",
+    // Do NOT run PRAGMA journal_mode/synchronous/cache_size here — Cloudflare's SQLite-backed DO
+    // storage manages its own engine settings and rejects these with "not authorized:
+    // SQLITE_AUTH", throwing on every call to this DO in production (confirmed via a live
+    // wrangler tail session; the test suite's SQLite shim doesn't enforce this restriction, so
+    // it was never caught by the unit tests). CLAUDE.md's own DO SQLite Pattern section used to
+    // instruct setting WAL mode — it does not apply to Cloudflare's real runtime.
     up: `
-      PRAGMA journal_mode=WAL;
-      PRAGMA synchronous=NORMAL;
-      PRAGMA cache_size=-32768;
-
       CREATE TABLE IF NOT EXISTS sessions (
         id          TEXT PRIMARY KEY,
         space_id    TEXT NOT NULL,

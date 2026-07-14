@@ -56,9 +56,10 @@ const MIGRATIONS: Migration[] = [
   {
     version: 1,
     description: "initial schema",
+    // Do NOT run PRAGMA journal_mode here — Cloudflare's SQLite-backed DO storage manages its
+    // own journal mode and rejects this PRAGMA with "not authorized: SQLITE_AUTH" (confirmed via
+    // a live wrangler tail session against a real deployment; see SpaceDO.ts's identical fix).
     up: `
-      PRAGMA journal_mode=WAL;
-
       CREATE TABLE IF NOT EXISTS session_state (
         session_id     TEXT PRIMARY KEY,
         token_hash     TEXT NOT NULL,

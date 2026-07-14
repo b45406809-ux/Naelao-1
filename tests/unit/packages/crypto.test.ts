@@ -12,7 +12,10 @@ describe("PBKDF2 password hashing (G-B02)", () => {
     const result = await hashPassword("hunter2");
     expect(result.hash).toBeTruthy();
     expect(result.salt).toBeTruthy();
-    expect(result.iterations).toBe(600_000);
+    // Cloudflare Workers' WebCrypto PBKDF2 caps iterations at 100,000 (a real deployment throws
+    // NotSupportedError above that, confirmed via a live wrangler tail session) — 600k was never
+    // actually deployable.
+    expect(result.iterations).toBe(100_000);
     expect(result.hash).not.toBe(result.salt);
   });
 

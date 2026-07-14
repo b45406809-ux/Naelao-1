@@ -22,8 +22,6 @@ export class RateLimiterDO extends DurableObject {
 
   private ensureInit(): void {
     if (this.initialized) return;
-    // WAL mode for better concurrent read performance
-    this.ctx.storage.sql.exec("PRAGMA journal_mode=WAL");
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS hits (
         ts INTEGER NOT NULL

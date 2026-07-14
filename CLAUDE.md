@@ -2097,6 +2097,60 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     run typecheck` clean (76 tasks). Full detail: appendix §A1.33. **Not done this pass:** HX4
     (SkillOpt-Lite-style validation-gated skill self-evolution), HX5 (skill supply-chain
     hardening).
+62. **First real end-to-end signup on the live deployment found and fixed two genuine,
+    platform-wide, previously-undetected production bugs — neither caught by ~1900 passing unit
+    tests because the test suite's fakes don't enforce the same restrictions as the real
+    Cloudflare runtime.** Diagnosed live via `wrangler tail` against the actual deployed
+    `naelao-router`/`naelao-auth` workers (the user supplied a real CF API token for this
+    purpose), not from memory or static reading.
+    - **Every Durable Object's init routine ran a PRAGMA Cloudflare's real SQLite-backed DO
+      storage rejects outright.** `ensureInit()`/migration-`up` blocks across ~12 DO classes
+      (`RateLimitDO`, `RateLimiterDO`, `NaelaoAgentDO`, `TaskDO`, `HITLApprovalDO`, `SpaceDO`,
+      `BuilderAccountDO`, `SpaceTypeRegistryDO`, `FeatureFlagDO`, `ProductUserDO`,
+      `TransactionCoordinatorDO`, `LockDO`) ran `PRAGMA journal_mode=WAL` (plus `synchronous`/
+      `cache_size` in a couple of spots) — this codebase's own established "DO SQLite Pattern"
+      convention. A live tail session against the deployed router caught the real exception:
+      `Error: not authorized: SQLITE_AUTH` thrown inside `RateLimitDO.ensureInit`, which the
+      pre-auth rate limiter's fail-closed design (item 39) correctly turned into an immediate
+      429 on literally the first request ever — meaning every DO on the entire platform would
+      throw this same error on first use in production. The Node-based `node:sqlite` test shim
+      doesn't enforce Cloudflare's restricted PRAGMA authorizer, so 1953 passing tests never
+      caught it. Fixed by removing every PRAGMA statement from DO init across all 12 files —
+      Cloudflare's own SQLite storage manages journal/sync/cache behavior itself; the codebase's
+      CLAUDE.md instruction to set WAL mode was simply wrong for the real runtime and is
+      corrected above.
+    - **PBKDF2 password hashing used 600,000 iterations — 6x Cloudflare Workers' WebCrypto
+      ceiling of 100,000.** After the DO fix cleared the 429, `/v1/auth/register` still 500'd;
+      a second live tail session on `naelao-auth` caught the real cause:
+      `NotSupportedError: Pbkdf2 failed: iteration counts above 100000 are not supported
+      (requested 600000)`. Two independent implementations shared this bug — `@naelao/crypto`'s
+      `hashPassword` (used by product end-user auth) and `workers/auth`'s own duplicated
+      `hashPassword` (the builder's own account, G-B02) — both hardcoded `600_000`. Node's
+      `crypto.subtle` has no such cap, so this was invisible to every unit test that hashes a
+      password. Fixed both to `100_000` (the platform's real ceiling, not a deliberate security
+      tradeoff); `verifyPassword` reads the iteration count from the stored hash in both
+      implementations, so this is backward-compatible with any hash stored under a different
+      count (moot here — no password had ever been successfully hashed and stored before this
+      fix, since register always 500'd).
+    - Both fixes were deployed live (`naelao-router`, `naelao-agents`, `naelao-spaces`,
+      `naelao-security-gateway`, `naelao-auth`) and verified against the real infrastructure:
+      `POST /v1/auth/register` → `201` with a real JWT; `POST /v1/auth/login` → `200`; the new
+      user row confirmed present in the live D1 database via a direct query. This is the
+      platform's first-ever confirmed real signup. Also rebuilt+redeployed `apps/dashboard` to
+      CF Pages production (`--branch=main`) with `NEXT_PUBLIC_API_URL` actually set (it had never
+      been set on any prior manual deploy, silently falling back to `http://localhost:8787` per
+      `apps/dashboard/src/lib/api.ts`'s own fallback default — the literal cause of the
+      originally-reported "fetch failed") — `naelao-dashboard.pages.dev` now resolves for the
+      first time (every prior deploy had only ever landed as a preview, never promoted to
+      production, since no deploy before this one used a branch matching the Pages project's
+      configured production branch).
+    1953/1953 tests pass (1 assertion updated for the new iteration count), `pnpm turbo run
+    typecheck` clean (76 tasks). **Not done this pass:** an equivalent redeploy of the other ~28
+    workers with these same two fixes baked in (only the 5 on the direct signup path were
+    redeployed) — every other DO-backed worker (billing, knowledge, notifications, etc.) still
+    runs the pre-fix code in production and will throw the identical `SQLITE_AUTH` error the
+    moment any of ITS Durable Objects are first used; redeploying the full platform is the
+    natural next step, not done here to keep this diagnostic pass scoped to the reported bug.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
@@ -2136,7 +2190,13 @@ this.ctx.storage.sql.exec("SELECT * FROM t WHERE id = ?", id);
 // WRONG — named params do not exist in DO SQLite
 this.ctx.storage.sql.exec("SELECT * FROM t WHERE id = :id", { id });
 ```
-WAL mode: `PRAGMA journal_mode=WAL` at DO init. 10GB limit per DO.
+**Never run PRAGMA statements at DO init** (`journal_mode`, `synchronous`, `cache_size`, etc.) —
+Cloudflare's real SQLite-backed DO storage rejects them with `not authorized: SQLITE_AUTH`,
+throwing on the DO's very first call in production (confirmed live via `wrangler tail` — item 62
+below). The test suite's SQLite shim does not enforce this restriction, so this was baked into
+every one of the platform's ~12 DO classes and never caught by ~1900 passing unit tests. This
+line used to say the opposite ("WAL mode: `PRAGMA journal_mode=WAL` at DO init") — that guidance
+was wrong; do not reintroduce it. 10GB limit per DO.
 DO hibernation kills ALL in-memory state — always persist to SQLite.
 
 ## Key CF Invariants

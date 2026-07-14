@@ -1,18 +1,23 @@
 // PBKDF2 password hashing, AES-256-GCM envelope encryption, DEK management
 // Uses Web Crypto API — available in both CF Workers and Node.js 18+
 
-const PBKDF2_ITERATIONS = 600_000;
+// Cloudflare Workers' WebCrypto PBKDF2 implementation caps iterations at 100,000 — a real
+// deployment throws "NotSupportedError: Pbkdf2 failed: iteration counts above 100000 are not
+// supported" at 600,000 (confirmed via a live wrangler tail session; Node's crypto has no such
+// cap, so this never surfaced in unit tests). 100,000 is the platform's real ceiling, not a
+// deliberate security tradeoff — still within OWASP's historical PBKDF2-SHA256 guidance.
+const PBKDF2_ITERATIONS = 100_000;
 const PBKDF2_SALT_BYTES = 32;
 const AES_KEY_LENGTH = 256;
 const IV_BYTES = 12; // 96-bit IV for AES-GCM
 
-// ── Password hashing (PBKDF2, SHA-256, 600k iterations) ─────────────────────
+// ── Password hashing (PBKDF2, SHA-256, 100k iterations — the CF Workers WebCrypto ceiling) ──
 
 export interface HashedPassword {
   hash: string;       // hex-encoded 32-byte derived key
   salt: string;       // hex-encoded 32-byte random salt
   iterations: number; // PBKDF2_ITERATIONS
-  algorithm: "pbkdf2-sha256-600k";
+  algorithm: "pbkdf2-sha256-100k";
 }
 
 export async function hashPassword(password: string): Promise<HashedPassword> {
@@ -33,7 +38,7 @@ export async function hashPassword(password: string): Promise<HashedPassword> {
     hash: bufToHex(new Uint8Array(derivedBits)),
     salt: bufToHex(saltBytes),
     iterations: PBKDF2_ITERATIONS,
-    algorithm: "pbkdf2-sha256-600k",
+    algorithm: "pbkdf2-sha256-100k",
   };
 }
 

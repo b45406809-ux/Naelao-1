@@ -24,7 +24,12 @@ function validateEnv(env: AuthEnv): void {
   }
 }
 
-// G-B02: PBKDF2 password helpers (600,000 iterations, SHA-256, 32-byte salt)
+// G-B02: PBKDF2 password helpers (100,000 iterations, SHA-256, 32-byte salt). Cloudflare
+// Workers' WebCrypto PBKDF2 implementation caps iterations at 100,000 — a real deployment threw
+// "NotSupportedError: Pbkdf2 failed: iteration counts above 100000 are not supported" at 600,000
+// (confirmed via a live wrangler tail session on this exact worker; Node's crypto has no such
+// cap, so this never surfaced in unit tests). verifyPassword reads the count from the stored
+// hash, so this is backward-compatible with any hash stored under a different count.
 
 interface PasswordHash {
   hash: string;
@@ -34,7 +39,7 @@ interface PasswordHash {
 
 async function hashPassword(password: string): Promise<string> {
   const saltBytes = crypto.getRandomValues(new Uint8Array(32));
-  const iterations = 600_000;
+  const iterations = 100_000;
   const enc = new TextEncoder();
 
   const keyMaterial = await crypto.subtle.importKey(

@@ -908,9 +908,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private ensureInit(): void {
     if (this.initialized) return;
 
-    this.ctx.storage.sql.exec("PRAGMA journal_mode=WAL");
-    this.ctx.storage.sql.exec("PRAGMA synchronous=NORMAL");
-    this.ctx.storage.sql.exec("PRAGMA cache_size=-16384");
+    // Do NOT run PRAGMA statements here (journal_mode/synchronous/cache_size) — Cloudflare's
+    // SQLite-backed DO storage manages its own engine settings and rejects these with "not
+    // authorized: SQLITE_AUTH", throwing on every call to this DO in production (confirmed via a
+    // live wrangler tail session against a real deployment; see RateLimitDO.ts's identical fix —
+    // this was the root cause of the platform-wide "fetch failed" signup failure).
 
     // Core agent runs
     this.ctx.storage.sql.exec(`
