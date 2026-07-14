@@ -13,7 +13,20 @@ export const requestId = createMiddleware(async (c, next) => {
   const id = c.req.header("x-request-id") ?? crypto.randomUUID();
   c.set("requestId", id);
   await next();
-  c.res.headers.set("x-request-id", id);
+  // Routes that return a service-binding fetch() response directly through (proxyTo and
+  // everything built on it, across every worker using this shared middleware) hand back a
+  // Response whose headers the Workers runtime treats as immutable once the body starts
+  // streaming. Mutating c.res.headers in place then throws "Can't modify immutable headers",
+  // turning every proxied route's own successful response into a generic 500 — a genuine,
+  // previously-undetected bug that only surfaces once a real end-to-end call hits a deployed
+  // worker (nothing in this monorepo's test suite exercises workerd's actual immutable-headers
+  // semantics). `new Response(body, otherResponse)` does NOT reliably yield a fresh, mutable
+  // Headers instance either — it can still link back to the same immutable object — so build a
+  // genuinely new `Headers()` and copy entries into it explicitly.
+  const freshHeaders = new Headers();
+  for (const [k, v] of c.res.headers.entries()) freshHeaders.append(k, v);
+  freshHeaders.set("x-request-id", id);
+  c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers: freshHeaders });
 });
 
 // Hono context variable types

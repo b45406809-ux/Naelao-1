@@ -1635,3 +1635,34 @@ first real business on free-tier resources before opening the platform to other 
   an image, sync Notion) — and treat the CF Workers Paid plan's flat $5/month as the real Tier
   2-5 unlock once the first bootstrap business has any real revenue, rather than building a
   parallel, less-isolated, more resource-constrained execution path to defer a $5/month cost.
+
+- [x] **AI-9 (FIXED, platform-wide production bug — found while wiring the first real Whop
+  webhook end-to-end against the live deployed account): every proxied route across the platform
+  was returning HTTP 500 in production, masking the real response with a generic "internal_error"
+  — first live end-to-end exercise of any router route ever caught this.** Traced with real
+  `wrangler tail` output (not guessed): `TypeError: Can't modify immutable headers.` A Response
+  object returned directly from a cross-Worker service-binding `fetch()` call (the `proxyTo`/
+  `proxyBillingWebhook` pattern used by nearly every route in `naelao-router`, plus the same
+  passthrough pattern independently present in `agents`/`spaces`/`security-gateway`) has headers
+  the Workers runtime treats as immutable once the body starts streaming. TWO separate pieces of
+  middleware were mutating `c.res.headers` in place after `await next()`: `naelao-router`'s own
+  CORS middleware (`workers/router/src/index.ts`) and — the more load-bearing one, since it's
+  shared by every worker in the monorepo — `requestId` in `@naelao/http`
+  (`packages/http/src/middleware.ts`), which sits INSIDE the CORS middleware's own `next()` call,
+  so its throw fired first regardless of the CORS fix. `new Response(body, otherResponse)` does
+  NOT reliably yield a fresh mutable `Headers` either (it can still link back to the same
+  immutable object) — both fixed by explicitly building a genuinely new `Headers()` and copying
+  entries into it before setting anything. Verified against the REAL deployed account (not just
+  unit tests, which never exercise workerd's actual immutable-headers semantics): `/v1/webhooks/
+  whop`, `/v1/webhooks/whop-platform-plan`, and `/v1/webhooks/lemon-squeezy` all returned generic
+  500s before the fix and their real, correct business-logic responses (`whop_not_configured`,
+  `invalid_signature`, etc.) after it. Redeployed `naelao-router`, `naelao-billing`,
+  `naelao-spaces`, and `naelao-security-gateway` (the four workers with a confirmed direct
+  passthrough call site) with the fixed `@naelao/http`. **Not yet redeployed: `naelao-agents`** —
+  blocked on the Cloudflare account being on the free Workers plan (its `wrangler.toml`
+  unconditionally declares a `Worker Loader`/Dynamic Workers binding, which 10195s with "you must
+  switch to a paid plan" on any deploy attempt, confirmed via both wrangler 3 and 4). The other
+  ~20 workers that import `requestId` from `@naelao/http` but don't do direct response passthrough
+  aren't currently exposed to this specific trigger condition, but should still be redeployed with
+  the fixed package on their next normal deploy so the landmine can't reappear if a future change
+  adds a passthrough route to any of them.

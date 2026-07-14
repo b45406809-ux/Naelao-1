@@ -202,9 +202,22 @@ app.use("*", async (c, next) => {
     });
   }
   await next();
+  // Routes that proxy a service-binding fetch() response directly through (proxyTo,
+  // proxyBillingWebhook, and every route built on them — i.e. most of this router) return a
+  // Response whose headers the Workers runtime treats as immutable once the body has started
+  // streaming back to the client. Mutating c.res.headers in place then throws "Can't modify
+  // immutable headers", turning every proxied route's own successful response into a generic 500
+  // from app.onError — a genuine, previously-undetected bug affecting nearly every route in this
+  // file, only surfaced once a real end-to-end call hit the deployed router.
+  // `new Response(body, otherResponse)` does NOT reliably give a fresh, mutable Headers instance
+  // in workerd (it links back to the same immutable object) — build a genuinely new `Headers()`
+  // and copy entries into it explicitly instead of trusting the Response constructor to clone.
+  const freshHeaders = new Headers();
+  for (const [k, v] of c.res.headers.entries()) freshHeaders.append(k, v);
   // F-6: same reason — the response's ACAO reflects the request Origin, so mark it Vary: Origin.
-  c.res.headers.append("Vary", "Origin");
-  if (allowed) c.res.headers.set("Access-Control-Allow-Origin", allowed);
+  freshHeaders.append("Vary", "Origin");
+  if (allowed) freshHeaders.set("Access-Control-Allow-Origin", allowed);
+  c.res = new Response(c.res.body, { status: c.res.status, statusText: c.res.statusText, headers: freshHeaders });
   return;
 });
 app.use("*", requestId);
@@ -329,6 +342,13 @@ const proxyBillingWebhook = async (c: { env: Env; req: { url: string; method: st
 };
 app.all("/v1/webhooks/whop", proxyBillingWebhook);
 app.all("/v1/webhooks/whop-wallet/payouts/:id/approve", proxyBillingWebhook);
+
+// ── Whop platform-plan webhook ingress (unauthenticated; Whop-Signature HMAC is the auth) ──
+// Naelao's OWN normal Whop seller company's webhook (builder Growth/Business plans) — a
+// DIFFERENT Whop company/secret than /v1/webhooks/whop above (that one is the per-business
+// sub-merchant wallet webhook). Was missing entirely until now — the billing worker's own
+// /webhooks/whop-platform-plan route existed with no router path ever proxying to it.
+app.all("/v1/webhooks/whop-platform-plan", proxyBillingWebhook);
 
 // Security audit follow-up: the authenticated `api` group's rate limiter (G-AX12, below) only
 // covers routes registered AFTER it — every route in this unauthenticated block runs before
