@@ -7,7 +7,10 @@ on:
     branches: [main]
 
 env:
-  NODE_VERSION: "20"
+  # node:sqlite (used by tests/unit/helpers/sqlite-do-shim.ts + stubs/d1-sqlite.ts to run DO
+  # SQLite tests against a real in-memory engine) is only a Node builtin from 22.5+ — Node 20
+  # doesn't have it at all. Every test job was failing ERR_UNKNOWN_BUILTIN_MODULE under Node 20.
+  NODE_VERSION: "22"
   PNPM_VERSION: "9"
 
 jobs:
@@ -26,6 +29,13 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Workspace packages (e.g. @naelao/client-sdk, @naelao/billing-core) resolve via their
+      # compiled dist/ (package.json main/types), which isn't committed. `pnpm --recursive`
+      # bypasses turbo's `dependsOn: ["^build"]` graph entirely, so a clean checkout fails to
+      # resolve any package that depends on another workspace package's build output.
+      - name: Build workspace packages
+        run: pnpm turbo run build
 
       - name: Typecheck all packages
         run: pnpm --recursive --parallel typecheck
@@ -46,6 +56,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build workspace packages
+        run: pnpm turbo run build
+
       - name: Run tests
         run: pnpm --filter "@naelao/tests" test
 
@@ -65,5 +78,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # --if-present must precede the script name or pnpm forwards it as a literal arg to the
+      # underlying command (e.g. `next lint --if-present`, which next's CLI rejects).
       - name: Lint (if configured)
-        run: pnpm --recursive --parallel lint --if-present
+        run: pnpm --recursive --parallel --if-present lint

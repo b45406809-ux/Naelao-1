@@ -6,7 +6,9 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
 
 env:
-  NODE_VERSION: "20"
+  # node:sqlite is a Node builtin only from 22.5+ (see ci.yml's own note) — required by the
+  # DO SQLite test helpers.
+  NODE_VERSION: "22"
   PNPM_VERSION: "9"
 
 jobs:
@@ -25,6 +27,10 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # `pnpm --recursive` bypasses turbo's build-dependency graph (see ci.yml) — build first.
+      - name: Build workspace packages
+        run: pnpm turbo run build
 
       - name: Full typecheck
         run: pnpm --recursive --parallel typecheck

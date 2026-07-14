@@ -8,7 +8,7 @@ on:
       - "apps/widget/**"
 
 env:
-  NODE_VERSION: "20"
+  NODE_VERSION: "22"
   PNPM_VERSION: "9"
   # Workers must stay under 8MB compressed (10MB CF limit, 8MB CI budget)
   WORKER_BUNDLE_LIMIT_KB: 8192
