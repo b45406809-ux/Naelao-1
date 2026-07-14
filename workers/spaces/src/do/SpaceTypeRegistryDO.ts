@@ -417,6 +417,17 @@ export interface SpaceTypeProductConfig {
     model?: string;
   };
 
+  /** §A1 Harness Excellence Phase HX2: session token-budget guard. Same config_json-override
+   *  convention as modelConfig above — a builder opts in per product, nothing platform-wide.
+   *  `sessionCreditCeiling` unset or <=0 disables the guard entirely (existing behavior,
+   *  unchanged). When set, a session that crosses it fires an `agent.session_budget_warning`
+   *  event at 80% (once per spending cycle) and, at 100%, refuses further runs until a human
+   *  approves continuing via the existing HITL approval mechanism — never silent. See
+   *  NaelaoAgentDO.enforceRunGates' session-budget branch for the enforcement. */
+  limits?: {
+    sessionCreditCeiling?: number;
+  };
+
   /** Legal & support config — builder-defined, surfaced in the product shell so end users know
    *  how to get help, and so a builder can point to their own ToS/privacy policy instead of (or
    *  in addition to) Naelao's platform defaults. All fields are optional (reasonable fallbacks

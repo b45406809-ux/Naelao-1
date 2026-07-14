@@ -2045,6 +2045,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       context?: Record<string, unknown>;
       apiKey?: string;
       model?: string;
+      // §A1 Harness Excellence Phase HX2: resolved by the caller (index.ts) from
+      // productConfig.limits.sessionCreditCeiling — this DO has no PLATFORM_DB binding.
+      sessionCreditCeiling?: number;
     }>();
 
     // Also accept spaceId / agentId / tenantId from internal request headers (set by billing/triggers)
@@ -2112,7 +2115,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // wallet gate, product_end_user pre-run credit check) is shared with the legacy ReAct
     // `handleRun` path via `enforceRunGates` — see that method's own doc for why both runtimes
     // must call the identical gate logic rather than each carrying their own copy.
-    const gate = await this.enforceRunGates({ spaceId, tenantId, projectId, userId, callerRole });
+    const gate = await this.enforceRunGates({
+      spaceId, tenantId, projectId, userId, callerRole,
+      sessionId, agentId, runId, sessionCreditCeiling: body.sessionCreditCeiling,
+    });
     if (!gate.ok) return gate.response;
     const { hasSpendCap, walletProjectId } = gate;
     if (gate.effectiveRole !== undefined) {
@@ -2214,6 +2220,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         notes: result.notes,
         tier: result.result?.tier,
         durationMs: result.result?.duration_ms,
+        sessionId, sessionCreditCeiling: body.sessionCreditCeiling,
       });
 
       // Layer 4 (Fabric) auto-consolidation (spec: "runs LLM-driven session extraction
@@ -2653,15 +2660,30 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    */
   private async enforceRunGates(opts: {
     spaceId: string; tenantId: string; projectId?: string | undefined; userId?: string | undefined; callerRole?: string | undefined;
+    /** §A1 Harness Excellence Phase HX2: session token-budget guard — sessionId/agentId/runId
+     *  are needed to open (and describe) a HITL approval when the ceiling is hit; ceiling itself
+     *  comes from productConfig.limits.sessionCreditCeiling, resolved by the caller (index.ts —
+     *  this DO has no PLATFORM_DB binding). Unset/<=0 disables the guard entirely. */
+    sessionId?: string | undefined; agentId?: string | undefined; runId?: string | undefined; sessionCreditCeiling?: number | undefined;
   }): Promise<
     | { ok: true; hasSpendCap: boolean; walletProjectId: string | null; effectiveRole?: AssistantEffectiveRole | undefined; maxTier?: ExecutionTier | undefined }
     | { ok: false; response: Response }
   > {
-    const { spaceId, tenantId, projectId, userId, callerRole } = opts;
+    const { spaceId, tenantId, projectId, userId, callerRole, sessionId, agentId, runId, sessionCreditCeiling } = opts;
     let hasSpendCap = false;
     let walletProjectId: string | null = null;
     let effectiveRole: AssistantEffectiveRole | undefined;
     let maxTier: ExecutionTier | undefined;
+
+    // §A1 Harness Excellence Phase HX2: session token-budget guard — checked first, ahead of
+    // every payer-specific gate below, since it's a session-scoped ceiling independent of who's
+    // paying. Never silent: crossing 100% always surfaces a clear error_code + approval_id
+    // rather than a generic refusal, and the 80% warning fires through the same no-code
+    // event_triggers machinery every other structural event already uses.
+    if (sessionId && typeof sessionCreditCeiling === "number" && sessionCreditCeiling > 0 && this.env.SPACES_WORKER) {
+      const budgetGate = await this.checkSessionBudget(spaceId, tenantId, sessionId, agentId ?? "naelao-agent", runId ?? sessionId, sessionCreditCeiling);
+      if (!budgetGate.ok) return { ok: false, response: budgetGate.response };
+    }
 
     if (projectId) {
       // F-36 enforcement: a project-scoped run made ON BEHALF OF a specific user is clamped to
@@ -2851,6 +2873,119 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   /**
+   * §A1 Harness Excellence Phase HX2: the session token-budget guard's actual gate. Reuses the
+   * HITL approval mechanism (no new gate engine, per the plan's explicit direction) by keying
+   * approval rows on `run_id: sessionId` + `tool_name: 'session_budget_continue'` — a stable
+   * identity that lets this method find an already-open or already-resolved request for THIS
+   * session without needing a new column anywhere (SpaceDO's session_spend table only ever
+   * stores the running tally, never an approval id — see its own migration comment). Fails
+   * CLOSED at 100% (never silently lets a run through when the check itself can't be completed
+   * confidently) but the 80% warning is best-effort only, matching every other observability
+   * side-effect in this file.
+   */
+  private async checkSessionBudget(
+    spaceId: string, tenantId: string, sessionId: string, agentId: string, runId: string, ceiling: number
+  ): Promise<{ ok: true } | { ok: false; response: Response }> {
+    const spendRes = await this.env.SPACES_WORKER!.fetch(new Request(
+      `http://spaces-worker/internal/spaces/${spaceId}/session-spend/${sessionId}`,
+      { headers: await this.internalHeaders(tenantId) }
+    ));
+    const spend = spendRes.ok
+      ? await spendRes.json<{ credits_used: number; warned_80: boolean }>()
+      : { credits_used: 0, warned_80: false };
+
+    if (spend.credits_used < ceiling) {
+      // Under ceiling — fire the 80% warning at most once per spending cycle.
+      if (spend.credits_used >= ceiling * 0.8 && !spend.warned_80) {
+        try {
+          await this.env.SPACES_WORKER!.fetch(new Request(
+            `http://spaces-worker/internal/spaces/${spaceId}/session-spend/${sessionId}`,
+            { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "mark_warned" }) }
+          ));
+          await this.env.SPACES_WORKER!.fetch(new Request(
+            `http://spaces-worker/internal/spaces/${spaceId}/events/fire`,
+            {
+              method: "POST",
+              headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+              body: JSON.stringify({
+                type: "agent.session_budget_warning", space_id: spaceId, thread_id: sessionId,
+                payload: { credits_used: spend.credits_used, ceiling },
+              }),
+            }
+          ));
+        } catch {
+          /* best-effort — a missed warning must never block the run itself */
+        }
+      }
+      return { ok: true };
+    }
+
+    // At or past ceiling: look for an existing request for this session before opening a new
+    // one (a second concurrent run on the same session must not spawn duplicate approvals).
+    if (!this.env.HITL_APPROVAL_DO) {
+      // No HITL support configured — fail CLOSED (the whole point of a ceiling is that it's
+      // never silently bypassed just because the approval mechanism isn't wired up).
+      return {
+        ok: false,
+        response: Response.json(
+          { error: "session credit budget reached and no approval mechanism is configured", error_code: "session_budget_ceiling" },
+          { status: 402 }
+        ),
+      };
+    }
+    const hitlStub = this.env.HITL_APPROVAL_DO.get(this.env.HITL_APPROVAL_DO.idFromName(`hitl:${spaceId}`));
+    const listResp = await hitlStub.fetch(new Request(`http://hitl/requests?run_id=${encodeURIComponent(sessionId)}`));
+    const { approvals } = await listResp.json<{ approvals: { id: string; tool_name: string; status: string }[] }>();
+    const existing = approvals.find((a) => a.tool_name === "session_budget_continue");
+
+    if (existing?.status === "approved") {
+      // A human already approved continuing — reset the tally for a fresh spending cycle and
+      // let this run proceed. The NEXT time the (same) ceiling is crossed, this branch won't
+      // find an approved row anymore (a fresh one gets created below), so approval is required
+      // again rather than permanently disabling the guard.
+      await this.env.SPACES_WORKER!.fetch(new Request(
+        `http://spaces-worker/internal/spaces/${spaceId}/session-spend/${sessionId}`,
+        { method: "POST", headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }), body: JSON.stringify({ action: "continue" }) }
+      ));
+      return { ok: true };
+    }
+    if (existing?.status === "pending") {
+      return {
+        ok: false,
+        response: Response.json(
+          { error: "session credit budget reached — waiting for a human to approve continuing", error_code: "session_budget_pending_approval", approval_id: existing.id },
+          { status: 402 }
+        ),
+      };
+    }
+
+    // No pending/approved request (none yet, or a prior one was rejected/timed out) — open a
+    // fresh one. 24h TTL: a human deciding whether to let a conversation keep spending is not
+    // the 30s tool-call default this DO's in-loop gate uses.
+    const createResp = await hitlStub.fetch(new Request("http://hitl/requests", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        run_id: sessionId,
+        session_id: sessionId,
+        tool_name: "session_budget_continue",
+        tool_input: { ceiling, credits_used: spend.credits_used },
+        action_description: `This session has used its allotted credit budget (${spend.credits_used}/${ceiling} credits). Approve to keep the conversation going.`,
+        ttl_ms: 24 * 60 * 60 * 1000,
+      }),
+    }));
+    const { approval_id } = await createResp.json<{ approval_id: string }>();
+    void this.notifyApprovalRequested(spaceId, tenantId, agentId, approval_id, "session_budget_continue", `Session ${sessionId} reached its credit budget ceiling`);
+    return {
+      ok: false,
+      response: Response.json(
+        { error: "session credit budget reached — a human must approve continuing", error_code: "session_budget_ceiling", approval_id },
+        { status: 402 }
+      ),
+    };
+  }
+
+  /**
    * Go-live audit A-1/A-2: the post-run debit counterpart to enforceRunGates — shared by
    * handleScriptRun and handleRun so a run's real token cost always lands on the same payer the
    * pre-run gate checked (project wallet, end-user credit balance, or the builder's org quota).
@@ -2875,8 +3010,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     /** §A1.26: the executed script's tier + wall-clock duration, when known (script-native runs
      *  only — the legacy ReAct path has no equivalent concept and omits these). */
     tier?: number | string | undefined; durationMs?: number | undefined;
+    /** §A1 Harness Excellence Phase HX2: the session-budget guard's post-run counterpart to
+     *  enforceRunGates' pre-run check. Only posts the increment when a ceiling is actually
+     *  configured — a space that never opted in pays zero extra round-trip cost per run. */
+    sessionId?: string | undefined; sessionCreditCeiling?: number | undefined;
   }): Promise<void> {
-    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId, tokensUsed, inputTokens, outputTokens, model, notes, runId, tier, durationMs } = params;
+    const { spaceId, tenantId, projectId, userId, callerRole, hasSpendCap, walletProjectId, tokensUsed, inputTokens, outputTokens, model, notes, runId, tier, durationMs, sessionId, sessionCreditCeiling } = params;
 
     // §A1.26: infra-credit usage is recorded independent of whether this run used any LLM
     // tokens at all (a pure script execution — e.g. a scheduled workflow.run with no reasoning
@@ -2920,6 +3059,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const credits = inputTokens || outputTokens
       ? tokensToCredits(inputTokens, outputTokens, model ?? "claude-haiku-4-5-20251001")
       : tokensUsed;
+
+    // §A1 Harness Excellence Phase HX2: post-run tally increment — only when this space actually
+    // opted into the guard (sessionCreditCeiling set), so an unconfigured space pays zero extra
+    // cost per run. Best-effort: a missed increment under-counts by one run's worth of credits,
+    // never over-counts, and never fails an already-completed run.
+    if (sessionId && typeof sessionCreditCeiling === "number" && sessionCreditCeiling > 0 && this.env.SPACES_WORKER) {
+      try {
+        await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/internal/spaces/${spaceId}/session-spend/${sessionId}`,
+          {
+            method: "POST",
+            headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+            body: JSON.stringify({ action: "increment", credits, space_id: spaceId, project_id: projectId ?? null }),
+          }
+        ));
+      } catch {
+        /* best-effort — never fails an already-completed run over an observability side effect */
+      }
+    }
 
     if (projectId) {
       // F9: SpaceDO is now the authoritative tally (single writer across every thread on

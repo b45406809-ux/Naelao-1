@@ -33,6 +33,9 @@ export interface AgentTaskParams {
   userId?: string;
   projectId?: string;
   callerRole?: string;
+  // §A1 Harness Excellence Phase HX2: threaded through the same path as the fields above so the
+  // async dispatch path's session-budget gate matches the sync path's exactly.
+  sessionCreditCeiling?: number;
 }
 
 export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> {
@@ -87,6 +90,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
             userId: p.userId,
             projectId: p.projectId,
             callerRole: p.callerRole,
+            sessionCreditCeiling: p.sessionCreditCeiling,
           }),
         }
       );

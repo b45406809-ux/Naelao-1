@@ -1711,6 +1711,84 @@ app.get("/spaces/:spaceId/agent-activity", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// ── §A1 Harness Excellence Phase HX2: signals + session token-budget guard ──────
+// Explicit signals (agent-signals) and implicit signals (signal-events) are both builder-only
+// reads, same rationale/precedent as agent-activity just above (a cross-user audit/observability
+// view, not something to expose to one end user reading their own business). session-spend stays
+// entirely internal this pass — NaelaoAgentDO is the only reader/writer (the pre-run gate check
+// and the post-run tally increment); a builder/end-user-facing budget meter UI is a real,
+// deliberately deferred follow-up, not silently dropped.
+app.use("/spaces/:spaceId/agent-signals", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/spaces/:spaceId/agent-signals", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (getCallerIdentity(c).role === "product_end_user") {
+    return c.json({ error_code: "forbidden", message: "This is a builder-only view" }, 403);
+  }
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const qs = new URL(c.req.url).search;
+  const res = await forwardToSpaceDO(stub, `/agent-signals${qs}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.use("/internal/spaces/:spaceId/signal-events", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/spaces/:spaceId/signal-events", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/signal-events", "POST", c.req.raw.body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.use("/spaces/:spaceId/signal-events", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/spaces/:spaceId/signal-events", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (getCallerIdentity(c).role === "product_end_user") {
+    return c.json({ error_code: "forbidden", message: "This is a builder-only view" }, 403);
+  }
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const qs = new URL(c.req.url).search;
+  const res = await forwardToSpaceDO(stub, `/signal-events${qs}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// A single dynamic-segment shape (`:spaceId/session-spend/:sessionId`, GET+POST, never a
+// further static suffix) — deliberately NOT one route per action (increment/continue/
+// mark-warned as separate `/:sessionId/continue` etc. paths). The documented Hono RegExpRouter
+// route-table-scale bug (record-install's own comment, item 52's own reproduction) is triggered
+// by exactly that shape: a dynamic-segment-then-static-suffix route coexisting with a same-
+// method static sibling one segment shallower. POST's `action` field carries the operation
+// instead, matching the established remedy every prior instance of this bug converged on.
+app.use("/internal/spaces/:spaceId/session-spend/:sessionId", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/internal/spaces/:spaceId/session-spend/:sessionId", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const sessionId = c.req.param("sessionId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, `/session-spend/${sessionId}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+app.post("/internal/spaces/:spaceId/session-spend/:sessionId", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const sessionId = c.req.param("sessionId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const body = await c.req.json<{ action: "increment" | "continue" | "mark_warned"; credits?: number; space_id?: string; project_id?: string | null }>().catch(() => null);
+  if (!body?.action) return c.json({ error_code: "bad_request", message: "action is required" }, 400);
+  const doPath =
+    body.action === "continue" ? `/session-spend/${sessionId}/continue`
+    : body.action === "mark_warned" ? `/session-spend/${sessionId}/mark-warned`
+    : "/session-spend";
+  const doBody = body.action === "increment"
+    ? JSON.stringify({ session_id: sessionId, space_id: body.space_id ?? spaceId, project_id: body.project_id ?? null, credits: body.credits ?? 0 })
+    : undefined;
+  const res = await forwardToSpaceDO(stub, doPath, "POST", doBody);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // ── Agent API keys (§A1.17 Phase O) ──────────────────────────────────────────
 // "The same API a human can use, but attributed to the agent itself." Builder-only (owner/admin,
 // tenant-match via x-naelao-tenant-id — same authorization depth as member-billing/scheduled-jobs

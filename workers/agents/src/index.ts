@@ -12,7 +12,7 @@ import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
 import { contextWindowForModel } from "@naelao/billing-core";
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
-import { parseMentions, creatableFeatureKindsForRole, type MentionableAgent } from "@naelao/events";
+import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, type MentionableAgent } from "@naelao/events";
 import { NaelaoAgentDO } from "./do/NaelaoAgentDO.js";
 import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
@@ -454,9 +454,17 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // allowlist at the PATCH route that wrote it (workers/spaces/src/builder-routes.ts) — trusted
   // here without re-validating.
   let modelConfig: { model?: string } = {};
+  // §A1 Harness Excellence Phase HX2: same config_json-override read as modelConfig above —
+  // resolved once here (spaceRow is already fetched) rather than a second cross-worker round
+  // trip, and threaded into the DO call below so enforceRunGates can gate on it without needing
+  // its own PLATFORM_DB binding (NaelaoAgentDO has none — see item 47's own note on this).
+  let sessionCreditCeiling: number | undefined;
   try {
-    const cfg = JSON.parse(spaceRow.config_json || "{}") as { productConfig?: { modelConfig?: { model?: string } } };
+    const cfg = JSON.parse(spaceRow.config_json || "{}") as {
+      productConfig?: { modelConfig?: { model?: string }; limits?: { sessionCreditCeiling?: number } };
+    };
     modelConfig = cfg.productConfig?.modelConfig ?? {};
+    sessionCreditCeiling = cfg.productConfig?.limits?.sessionCreditCeiling;
   } catch {
     modelConfig = {};
   }
@@ -471,6 +479,28 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   const agentId = body.agent_definition_id?.startsWith(`${spaceId}:`)
     ? body.agent_definition_id.slice(spaceId.length + 1)
     : (body.agent_definition_id ?? "naelao-agent");
+
+  // §A1 Harness Excellence Phase HX2: implicit signals — cheap, regex-based frustration/
+  // agent-forgot detection on the incoming goal text, alongside the existing moderation checks
+  // above. Fire-and-forget via waitUntil: a signal is observability, never a gate, so it must
+  // never add latency to (or ever fail) the actual run.
+  const implicitSignals = detectImplicitSignals(body.goal);
+  if (implicitSignals.length > 0) {
+    c.executionCtx.waitUntil(
+      Promise.all(implicitSignals.map((signal) =>
+        mintInternalToken(c.env.PLATFORM_SECRET, tenantId).then((token) =>
+          c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/spaces/${spaceId}/signal-events`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token },
+            body: JSON.stringify({
+              space_id: spaceId, project_id: rawBody.project_id ?? null, thread_id: sessionId,
+              agent_id: agentId, signal_type: signal.signal_type, detail: signal.detail,
+            }),
+          }))
+        )
+      )).catch(() => { /* best-effort — never fails the run */ })
+    );
+  }
 
   // G-X04: Pre-run token quota check — reject if monthly limit exceeded
   // This prevents unbounded overspend from async billing lag
@@ -575,6 +605,8 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         userId,
         projectId: rawBody.project_id,
         callerRole,
+        // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
+        sessionCreditCeiling,
       },
     });
 
@@ -626,6 +658,8 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         projectId: rawBody.project_id,
         apiKey: c.env.ANTHROPIC_API_KEY ?? "",
         model: modelConfig.model ?? "claude-sonnet-4-6",
+        // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
+        sessionCreditCeiling,
       }),
     })
   );
@@ -1367,6 +1401,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
     userId?: string;
     projectId?: string;
     callerRole?: string;
+    sessionCreditCeiling?: number;
   }>();
   if (body.tenantId !== headerTenantId) {
     return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
@@ -1394,6 +1429,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           // comment for the full chain this closes.
           userId: body.userId,
           projectId: body.projectId,
+          sessionCreditCeiling: body.sessionCreditCeiling,
         }),
       })
     );

@@ -1683,13 +1683,22 @@ first real business on free-tier resources before opening the platform to other 
   `NaelaoAgentDO`, best-effort AE span mirror, and a builder-only
   `GET .../agent/runs/:runId/trace` endpoint. Full detail: CLAUDE.md item 59, appendix §A1.31.
   1914/1914 tests pass, typecheck clean (76 tasks).
-- [ ] **HX2-HX5 (Harness Excellence Program, tracked follow-up, NOT done this pass):** HX2
-  (explicit/implicit signals + a per-session token-budget guard — the fix for OpenClaw-style
-  unbounded-cost complaints), HX3 (a live-agent eval harness + golden benchmark datasets — the
-  precondition for HX4), HX4 (SkillOpt-Lite-style validation-gated skill self-evolution: mine
-  HX1's failure traces per skill, propose a patch via the existing `script.update`, validation-
-  gate it against HX3's eval cases, keep only if it scores ≥ the old version else `rollback()`),
-  HX5 (skill supply-chain hardening — tamper-evident provenance, import/inherit-time reserved-
-  capability + red-flag scanning — ahead of any future skill marketplace). Build order is a
-  strict chain HX1→HX2→HX3→HX4 (each phase's input is the prior phase's output); HX5 is
-  independent. Full plan: the session's plan file / CLAUDE.md item 59 / appendix §A1.31.
+- [x] **HX2 (Harness Excellence Program, signals + session token-budget guard) — FIXED/BUILT.**
+  Explicit signals (error rate, avg/total cost, regenerations) computed on read from the
+  already-existing `agent_activity_log` — no new ingestion. Implicit signals
+  (`detectImplicitSignals`, `@naelao/events`) are a regex-based user-frustration/agent-forgot
+  classifier wired into `/agent/run`, posting to a new `agent_signal_events` table. The session
+  token-budget guard (`SpaceTypeProductConfig.limits.sessionCreditCeiling`, new `session_spend`
+  table) is the actual fix for OpenClaw-style unbounded-cost complaints: 80% fires
+  `agent.session_budget_warning` through the existing `event_triggers` machinery, 100% refuses
+  the run and reuses the HITL approval mechanism (no new gate engine) — never silent. Full
+  detail: CLAUDE.md item 60, appendix §A1.32. 1946/1946 tests pass, typecheck clean (76 tasks).
+- [ ] **HX3-HX5 (Harness Excellence Program, tracked follow-up, NOT done this pass):** HX3 (a
+  live-agent eval harness + golden benchmark datasets — the precondition for HX4), HX4
+  (SkillOpt-Lite-style validation-gated skill self-evolution: mine HX1's failure traces per
+  skill, propose a patch via the existing `script.update`, validation-gate it against HX3's eval
+  cases, keep only if it scores ≥ the old version else `rollback()`), HX5 (skill supply-chain
+  hardening — tamper-evident provenance, import/inherit-time reserved-capability + red-flag
+  scanning — ahead of any future skill marketplace). Build order is a strict chain HX1→HX2→
+  HX3→HX4 (each phase's input is the prior phase's output); HX5 is independent. Full plan: the
+  session's plan file / CLAUDE.md item 60 / appendix §A1.32.

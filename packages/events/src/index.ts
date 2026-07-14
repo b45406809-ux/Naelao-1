@@ -277,6 +277,61 @@ export function parseMentions(text: string, roster: MentionableAgent[]): string[
   return matched;
 }
 
+// ── §A1 Harness Excellence Phase HX2: implicit signals (Raindrop-style "detect frustration/
+// forgetting from language, not just from error codes") ─────────────────────────────────────
+// Deliberately regex/keyword-based, not an LLM classifier (the plan's own explicit scoping:
+// "heuristics first; LLM tier later behind eval budget") — cheap enough to run on every
+// incoming goal with zero added LLM cost. "Regeneration" (repeated identical goal / rapid
+// retry) is intentionally NOT detected here — it's already computed as an EXPLICIT signal from
+// real run-history timestamps (agent_activity_log), and duplicating it as a text heuristic
+// here would just be a noisier version of a number the platform already has exactly.
+
+export interface ImplicitSignal {
+  signal_type: "user_frustration" | "agent_forgot";
+  detail: string;
+}
+
+const FRUSTRATION_PATTERNS: RegExp[] = [
+  /\bthat'?s (wrong|not right|not what i (asked|meant|wanted))\b/i,
+  /\bstill (wrong|broken|not working|doesn'?t work)\b/i,
+  /\bnot what i (asked|meant|wanted)\b/i,
+  /\b(try again|do it (again|properly|right)|this is (wrong|useless|frustrating))\b/i,
+  /\b(ugh|come on|seriously)\b.{0,20}\b(wrong|broken|not working)\b/i,
+];
+
+const AGENT_FORGOT_PATTERNS: RegExp[] = [
+  /\bi (already|just) (told|said|asked|mentioned)\b/i,
+  /\b(as i said|like i said|we (already )?discussed this) (before|earlier|already)?\b/i,
+  /\byou (forgot|keep forgetting)\b/i,
+  /\bwhy (are you|do you) asking (that|this) again\b/i,
+];
+
+/** Scans a single message's text (typically an agent run's `goal`) for cheap, regex-detectable
+ *  signs of user frustration or the agent appearing to have forgotten prior context. Returns
+ *  every distinct signal type that matched (never more than one row per type per call) — a
+ *  message can carry both, e.g. "that's wrong, I already told you the deadline." Pure function,
+ *  no I/O: the caller decides whether/where to persist a match (agent_signal_events). */
+export function detectImplicitSignals(text: string): ImplicitSignal[] {
+  const signals: ImplicitSignal[] = [];
+  if (!text) return signals;
+
+  for (const pattern of FRUSTRATION_PATTERNS) {
+    const match = text.match(pattern);
+    if (match) {
+      signals.push({ signal_type: "user_frustration", detail: match[0].slice(0, 200) });
+      break;
+    }
+  }
+  for (const pattern of AGENT_FORGOT_PATTERNS) {
+    const match = text.match(pattern);
+    if (match) {
+      signals.push({ signal_type: "agent_forgot", detail: match[0].slice(0, 200) });
+      break;
+    }
+  }
+  return signals;
+}
+
 // ── Time-based scheduling (spec §05 "cron-jobs.json — the assistant's schedule of recurring
 // tasks") — the no-code equivalent of "every day at 9am, run this script." Complements the
 // event-driven triggers above with a TIME-driven one. A lightweight, dependency-free 5-field

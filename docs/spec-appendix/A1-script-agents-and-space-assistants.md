@@ -5223,3 +5223,83 @@ signals + a per-session token-budget guard), HX3 (a live-agent eval harness + go
 datasets — the precondition for HX4), HX4 (SkillOpt-Lite-style validation-gated skill
 self-evolution), HX5 (skill supply-chain hardening ahead of any future marketplace). HX6 (MCP
 connector verification fixes) turned out to already be complete, landed earlier as item 57.
+
+## §A1.32 — Harness Excellence Program, Phase HX2: signals + session token-budget guard
+
+Built on HX1's trace layer per the plan's own build order (HX1 → HX2 → HX3 → HX4).
+
+**Explicit signals — no new ingestion.** `agent_activity_log` (item 40) already carries
+`event_type`/`tokens_used`/`cost_credits`/`created_at` for every run completion/failure and
+approval request — exactly what error rate and avg/total cost need. New `GET /spaces/:spaceId/
+agent-signals?project_id=&window_hours=` (SpaceDO's `computeAgentSignals`, builder-only, same
+gate as `agent-activity`) rolls it up on read: `runs_total/completed/failed`, `error_rate`,
+`avg_cost_credits`, `total_cost_credits`, `approvals_requested`. "Regenerations" (a proxy for the
+user hitting retry) is computed in application code — 2+ run events on the SAME thread within 5
+minutes — rather than a SQL window function, since the row counts here are always small and DO
+SQLite window-function support isn't otherwise relied on anywhere in this codebase.
+
+**Implicit signals.** New `detectImplicitSignals()` (`packages/events`) — regex/keyword-based
+(no LLM call, per the plan's own "heuristics first" scoping), detecting `user_frustration`
+("that's wrong", "still broken", ...) and `agent_forgot` ("I already told you", "as I said
+before", ...) markers in a run's goal text. Deliberately does NOT detect repeated-goal/
+regeneration patterns — that's already a real, more-precise EXPLICIT signal from actual
+timestamps above; duplicating it as a text heuristic would just be a noisier proxy of a number
+the platform already has exactly. Wired into `workers/agents/src/index.ts`'s `/agent/run` route
+right after `agentId` resolves, alongside the existing moderation checks — fire-and-forget via
+`waitUntil` to a new `agent_signal_events` table (SpaceDO migration v31), posted through
+`POST /internal/spaces/:spaceId/signal-events`; read via `GET /spaces/:spaceId/signal-events`
+(builder-only, same precedent).
+
+**Session token-budget guard — the actual differentiator vs. OpenClaw's "$300-500/mo, no
+warning" complaints.** New `SpaceTypeProductConfig.limits.sessionCreditCeiling` (config_json
+override, same convention as `modelConfig`/`pricingConfig` — never a manifest fork), resolved
+once in `index.ts` next to `modelConfig` (this DO has no `PLATFORM_DB` binding) and threaded
+through all three dispatch paths that reach `handleScriptRun` (the sync `/script/run` call, the
+async `AgentTaskWorkflow` params, and `/internal/tasks/:taskId/run`) so the guard applies
+identically to interactive and durable runs. New `session_spend` table (SpaceDO migration v31,
+same one as the signals table) holds only the running tally — the ceiling itself is never stored
+there, avoiding a split-brain against the config_json copy.
+
+`NaelaoAgentDO.enforceRunGates` gained a new `checkSessionBudget` branch, checked FIRST (ahead of
+every payer-specific gate) since it's session-scoped, not payer-scoped:
+- Under 80% of ceiling: run proceeds, no side effect.
+- 80-100%: run proceeds; fires `agent.session_budget_warning` through SpaceDO's already-existing
+  generic `/internal/events/fire` → `event_triggers` machinery (the SAME no-code mechanism every
+  other structural event uses — no new trigger type), and marks `warned_80` so it fires exactly
+  once per spending cycle.
+- At/past 100%: refuses the run (`402 session_budget_ceiling`) and reuses the HITL approval
+  mechanism (no new gate engine, per the plan's explicit direction) — a request is keyed on
+  `run_id: sessionId` + `tool_name: 'session_budget_continue'`, a stable identity that lets the
+  gate find an already-open or already-resolved request for THIS session without needing a new
+  column anywhere. A second concurrent run over the same ceiling finds the pending request and
+  returns its `approval_id` rather than opening a duplicate. Once a human approves, the gate
+  resets the tally (`POST .../session-spend/:sessionId/continue`) and lets the run through — the
+  NEXT time the same ceiling is crossed, a FRESH approval is required (approving once doesn't
+  permanently disable the guard). Fails CLOSED when `HITL_APPROVAL_DO` isn't configured — the
+  whole point of a ceiling is that it's never silently bypassed just because the approval
+  mechanism isn't wired up. `settleRunBilling` gained the post-run counterpart: an increment to
+  `session_spend`, but ONLY when a ceiling is actually configured, so a space that never opted in
+  pays zero extra round-trip cost per run.
+
+**Router-shape trap avoided, not hit.** The first draft of the session-spend wrapper routes used
+one path per action (`/session-spend/:sessionId`, `/session-spend/:sessionId/continue`,
+`/session-spend/:sessionId/mark-warned`) — exactly the dynamic-segment-then-static-suffix shape
+that has repeatedly triggered the documented Hono RegExpRouter route-table-scale corruption in
+this file (items 40, 52). Caught and fixed BEFORE running the suite (not after a mysterious
+failure this time): collapsed to a single `GET/POST /internal/spaces/:spaceId/session-spend/
+:sessionId` route, with POST's `action` field (`increment`/`continue`/`mark_warned`) carrying the
+operation instead of a URL segment — the established remedy every prior instance of this bug
+converged on. The DO-internal dispatcher (a plain regex if-chain, not Hono) has no such risk and
+keeps its own separate per-action paths.
+
+**Deliberately scoped out this pass:** a builder/end-user-facing session-spend read endpoint
+(budget-meter UI) — `session-spend` stays entirely internal; `agent-signals`/`signal-events` are
+builder-only reads, matching `agent-activity`'s own precedent (a cross-user audit view, not
+something to expose to one end user reading their own business).
+
+1946/1946 tests pass (32 new: `implicit-signals.test.ts`, `agent-signals-and-session-spend.test.ts`,
+`session-budget-guard.test.ts`), `pnpm turbo run typecheck` clean (76 tasks).
+
+**Not done this phase:** HX3 (live-agent eval harness + golden benchmark datasets — the
+precondition for HX4), HX4 (SkillOpt-Lite-style validation-gated skill self-evolution), HX5
+(skill supply-chain hardening).

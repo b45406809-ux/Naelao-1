@@ -873,6 +873,41 @@ const MIGRATIONS: Migration[] = [
       UPDATE external_revenue_snapshots SET billed_cents = revenue_cents WHERE billed = 1;
     `,
   },
+  {
+    // §A1 Harness Excellence Phase HX2: signals + session token-budget guard substrate.
+    // agent_signal_events is the IMPLICIT-signal counterpart to the already-existing
+    // agent_activity_log (which already carries everything needed for EXPLICIT signals —
+    // error rate / avg cost per run are computed on read from that table, no new storage).
+    // session_spend is the per-session cumulative credit meter the budget guard reads/writes;
+    // the ceiling itself is NOT stored here (would be a split-brain against
+    // productConfig.limits.sessionCreditCeiling, config_json's already-authoritative copy) —
+    // only the running tally.
+    version: 31,
+    description: "agent_signal_events (implicit signals) + session_spend (session token-budget guard)",
+    up: `
+      CREATE TABLE IF NOT EXISTS agent_signal_events (
+        id           TEXT PRIMARY KEY,
+        space_id     TEXT NOT NULL,
+        project_id   TEXT,
+        thread_id    TEXT,
+        agent_id     TEXT NOT NULL,
+        signal_type  TEXT NOT NULL,
+        detail       TEXT NOT NULL DEFAULT '',
+        created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_signal_events_space ON agent_signal_events(space_id, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS session_spend (
+        session_id   TEXT PRIMARY KEY,
+        space_id     TEXT NOT NULL,
+        project_id   TEXT,
+        credits_used INTEGER NOT NULL DEFAULT 0,
+        warned_80    INTEGER NOT NULL DEFAULT 0,
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_spend_space ON session_spend(space_id);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1265,6 +1300,43 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (method === "GET" && url.pathname === "/agent-activity") {
         return this.listAgentActivity(url.searchParams);
+      }
+      // ── §A1 Harness Excellence Phase HX2: signals + session token-budget guard ─
+      // GET /agent-signals?project_id=&window_hours= — explicit signals, computed on read from
+      // the already-existing agent_activity_log (no separate ingestion).
+      if (method === "GET" && url.pathname === "/agent-signals") {
+        return this.computeAgentSignals(url.searchParams);
+      }
+      // POST /signal-events — internal only (NaelaoAgentDO posts one row per detected implicit
+      // signal — user frustration / agent-forgot markers). Same await-not-bare-return rationale
+      // as recordAgentActivity above.
+      if (method === "POST" && url.pathname === "/signal-events") {
+        return await this.recordSignalEvent(request);
+      }
+      if (method === "GET" && url.pathname === "/signal-events") {
+        return this.listSignalEvents(url.searchParams);
+      }
+      // POST /session-spend — internal only: increments a session's cumulative credit tally.
+      if (method === "POST" && url.pathname === "/session-spend") {
+        return await this.incrementSessionSpend(request);
+      }
+      // GET /session-spend/:sessionId — read the current tally (zeroed default if none yet).
+      const sessionSpendMatch = url.pathname.match(/^\/session-spend\/([^/]+)$/);
+      if (method === "GET" && sessionSpendMatch?.[1]) {
+        return this.getSessionSpend(sessionSpendMatch[1]);
+      }
+      // POST /session-spend/:sessionId/continue — a human approved continuing past the ceiling;
+      // resets the tally so the next cycle starts fresh (see NaelaoAgentDO's gate for why a
+      // reset, not an ever-growing extension, is the right model here).
+      const sessionSpendContinueMatch = url.pathname.match(/^\/session-spend\/([^/]+)\/continue$/);
+      if (method === "POST" && sessionSpendContinueMatch?.[1]) {
+        return this.continueSessionSpend(sessionSpendContinueMatch[1]);
+      }
+      // POST /session-spend/:sessionId/mark-warned — idempotent single-fire flag so the 80%
+      // warning event only fires once per spending cycle, not on every run past the threshold.
+      const sessionSpendWarnMatch = url.pathname.match(/^\/session-spend\/([^/]+)\/mark-warned$/);
+      if (method === "POST" && sessionSpendWarnMatch?.[1]) {
+        return this.markSessionSpendWarned(sessionSpendWarnMatch[1]);
       }
       // ── Container Marketplace slots (§A1.17 Phase L) ───────────────────────────
       const containerSlotsMatch = url.pathname.match(/^\/projects\/([^/]+)\/container-slots$/);
@@ -2785,6 +2857,182 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           limit
         );
     return Response.json({ data: rows, count: rows.length });
+  }
+
+  // ── §A1 Harness Excellence Phase HX2: signals + session token-budget guard ─────
+  // GET /agent-signals?project_id=&window_hours= — explicit signals computed on read from
+  // agent_activity_log (item 40's cross-DO observability mirror). No new ingestion: error
+  // rate and avg/total cost are a straight rollup; "regenerations" (a proxy for the user
+  // hitting retry/regenerate) is computed in application code from ordered per-thread rows
+  // rather than a SQL window function, since DO SQLite's window-function support isn't
+  // something this codebase otherwise relies on and the row counts here are always small.
+  private computeAgentSignals(params: URLSearchParams): Response {
+    const projectId = params.get("project_id");
+    const windowHours = Math.min(Math.max(parseInt(params.get("window_hours") ?? "24", 10) || 24, 1), 24 * 30);
+    const since = `datetime('now', '-${windowHours} hours')`;
+
+    const rollup = projectId
+      ? queryAll<{ event_type: string; cnt: number; avg_cost: number | null; total_cost: number | null }>(
+          this.ctx.storage.sql as never,
+          `SELECT event_type, COUNT(*) as cnt, AVG(cost_credits) as avg_cost, SUM(cost_credits) as total_cost
+           FROM agent_activity_log WHERE project_id = ? AND created_at >= ${since} GROUP BY event_type`,
+          projectId
+        )
+      : queryAll<{ event_type: string; cnt: number; avg_cost: number | null; total_cost: number | null }>(
+          this.ctx.storage.sql as never,
+          `SELECT event_type, COUNT(*) as cnt, AVG(cost_credits) as avg_cost, SUM(cost_credits) as total_cost
+           FROM agent_activity_log WHERE created_at >= ${since} GROUP BY event_type`
+        );
+
+    const byType = new Map(rollup.map((r) => [r.event_type, r]));
+    const runsCompleted = byType.get("run_completed")?.cnt ?? 0;
+    const runsFailed = byType.get("run_failed")?.cnt ?? 0;
+    const runsTotal = runsCompleted + runsFailed;
+    const completedRow = byType.get("run_completed");
+
+    // Regeneration proxy: 2+ run_completed/run_failed events on the SAME thread within 5
+    // minutes of each other. Small result sets expected (bounded by the window above), so an
+    // in-memory pass over ordered rows is simpler and more portable than a SQL window function.
+    const threadRows = projectId
+      ? queryAll<{ thread_id: string | null; created_at: string }>(
+          this.ctx.storage.sql as never,
+          `SELECT thread_id, created_at FROM agent_activity_log
+           WHERE project_id = ? AND created_at >= ${since} AND event_type IN ('run_completed','run_failed')
+           ORDER BY thread_id, created_at ASC`,
+          projectId
+        )
+      : queryAll<{ thread_id: string | null; created_at: string }>(
+          this.ctx.storage.sql as never,
+          `SELECT thread_id, created_at FROM agent_activity_log
+           WHERE created_at >= ${since} AND event_type IN ('run_completed','run_failed')
+           ORDER BY thread_id, created_at ASC`
+        );
+    const REGEN_WINDOW_MS = 5 * 60 * 1000;
+    let regenerations = 0;
+    let prevThread: string | null = null;
+    let prevMs = 0;
+    for (const row of threadRows) {
+      if (!row.thread_id) continue;
+      const ms = Date.parse(row.created_at + "Z");
+      if (row.thread_id === prevThread && ms - prevMs <= REGEN_WINDOW_MS) regenerations++;
+      prevThread = row.thread_id;
+      prevMs = ms;
+    }
+
+    return Response.json({
+      window_hours: windowHours,
+      runs_total: runsTotal,
+      runs_completed: runsCompleted,
+      runs_failed: runsFailed,
+      error_rate: runsTotal > 0 ? runsFailed / runsTotal : 0,
+      avg_cost_credits: completedRow?.avg_cost ?? 0,
+      total_cost_credits: completedRow?.total_cost ?? 0,
+      approvals_requested: byType.get("approval_requested")?.cnt ?? 0,
+      regenerations,
+    });
+  }
+
+  // POST /signal-events — internal only (implicit signals: user-frustration / agent-forgot
+  // markers detected by @naelao/events' detectImplicitSignals against a run's goal text).
+  // Mirrors recordAgentActivity's shape/posture exactly — never blocks the caller's own run.
+  private async recordSignalEvent(request: Request): Promise<Response> {
+    const body = await request.json<{
+      space_id: string;
+      project_id?: string | null;
+      thread_id?: string | null;
+      agent_id: string;
+      signal_type: string;
+      detail?: string;
+    }>().catch(() => null);
+    if (!body?.space_id || !body.agent_id || !body.signal_type) {
+      return Response.json({ error_code: "bad_request", message: "space_id, agent_id, signal_type are required" }, { status: 400 });
+    }
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO agent_signal_events (id, space_id, project_id, thread_id, agent_id, signal_type, detail)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      crypto.randomUUID(), body.space_id, body.project_id ?? null, body.thread_id ?? null,
+      body.agent_id, body.signal_type, (body.detail ?? "").slice(0, 500)
+    );
+    return Response.json({ ok: true }, { status: 201 });
+  }
+
+  // GET /signal-events?project_id=&signal_type=&limit= — builder-facing paginated read.
+  private listSignalEvents(params: URLSearchParams): Response {
+    const projectId = params.get("project_id");
+    const signalType = params.get("signal_type");
+    const limit = Math.min(Math.max(parseInt(params.get("limit") ?? "50", 10) || 50, 1), 200);
+    const clauses: string[] = [];
+    const args: unknown[] = [];
+    if (projectId) { clauses.push("project_id = ?"); args.push(projectId); }
+    if (signalType) { clauses.push("signal_type = ?"); args.push(signalType); }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = queryAll(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM agent_signal_events ${where} ORDER BY created_at DESC LIMIT ?`,
+      ...args, limit
+    );
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  // POST /session-spend — internal only: increments a session's cumulative credit tally.
+  // Upsert rather than a blind INSERT since the same session accumulates across many runs.
+  private async incrementSessionSpend(request: Request): Promise<Response> {
+    const body = await request.json<{
+      session_id: string; space_id: string; project_id?: string | null; credits: number;
+    }>().catch(() => null);
+    if (!body?.session_id || !body.space_id || typeof body.credits !== "number") {
+      return Response.json({ error_code: "bad_request", message: "session_id, space_id, credits are required" }, { status: 400 });
+    }
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO session_spend (session_id, space_id, project_id, credits_used, updated_at)
+       VALUES (?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(session_id) DO UPDATE SET
+         credits_used = credits_used + excluded.credits_used,
+         updated_at = datetime('now')`,
+      body.session_id, body.space_id, body.project_id ?? null, Math.max(0, Math.round(body.credits))
+    );
+    return Response.json({ ok: true }, { status: 201 });
+  }
+
+  // GET /session-spend/:sessionId — read the current tally; a session with no rows yet (never
+  // ran, or the budget guard is off) reads as an honest zeroed default, not a 404.
+  private getSessionSpend(sessionId: string): Response {
+    const row = queryOne<{ session_id: string; space_id: string; project_id: string | null; credits_used: number; warned_80: number; updated_at: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT * FROM session_spend WHERE session_id = ?",
+      sessionId
+    );
+    if (!row) {
+      return Response.json({ session_id: sessionId, credits_used: 0, warned_80: false });
+    }
+    return Response.json({ session_id: row.session_id, credits_used: row.credits_used, warned_80: row.warned_80 === 1, updated_at: row.updated_at });
+  }
+
+  // POST /session-spend/:sessionId/continue — a human approved continuing past the ceiling.
+  // Resets the tally to 0 (a fresh spending cycle) rather than tracking an ever-growing
+  // "extensions" count — simpler mental model, and the next cycle re-crosses the SAME ceiling
+  // rather than a compounding one, so nothing needs the un-bounded-growth edge case guarded.
+  private continueSessionSpend(sessionId: string): Response {
+    // A no-op UPDATE (0 rows) when the session has no spend record yet is fine — there's
+    // nothing to reset. Never creates a placeholder row (which would need a fake space_id).
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE session_spend SET credits_used = 0, warned_80 = 0, updated_at = datetime('now') WHERE session_id = ?`,
+      sessionId
+    );
+    return Response.json({ ok: true });
+  }
+
+  // POST /session-spend/:sessionId/mark-warned — idempotent single-fire flag.
+  private markSessionSpendWarned(sessionId: string): Response {
+    execute(
+      this.ctx.storage.sql as never,
+      `UPDATE session_spend SET warned_80 = 1, updated_at = datetime('now') WHERE session_id = ?`,
+      sessionId
+    );
+    return Response.json({ ok: true });
   }
 
   // ── Launchpad Wallet (user-directed feature) ────────────────────────────────

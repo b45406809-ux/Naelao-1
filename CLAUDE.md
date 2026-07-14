@@ -2020,6 +2020,45 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     eval harness + golden benchmark datasets, the precondition for HX4), HX4 (SkillOpt-style
     validation-gated skill self-evolution), HX5 (skill supply-chain hardening ahead of any future
     marketplace, motivated by ClawHub's 341 malicious skills).
+60. **Harness Excellence Phase HX2 (signals + session token-budget guard) is now BUILT.**
+    Explicit signals need no new ingestion: `agent_activity_log` (item 40's cross-DO
+    observability mirror) already carries everything error rate / avg-total cost need — new
+    `GET /spaces/:spaceId/agent-signals?project_id=&window_hours=` (SpaceDO, builder-only, same
+    gate as `agent-activity`) rolls it up on read, plus a "regenerations" proxy (2+ run events on
+    the SAME thread within 5 minutes) computed in application code rather than a SQL window
+    function. Implicit signals: new `detectImplicitSignals()` (`packages/events`) — regex/
+    keyword-based `user_frustration`/`agent_forgot` detection (deliberately NOT a repeated-goal
+    check, which the explicit regeneration signal already covers more precisely from real
+    timestamps) — wired into `/agent/run` right after `agentId` resolves, fire-and-forget to a
+    new `agent_signal_events` table (SpaceDO migration v31). The session token-budget guard is
+    the real fix for OpenClaw-style "$300-500/mo, no warning" complaints: new
+    `SpaceTypeProductConfig.limits.sessionCreditCeiling` (config_json override, resolved once in
+    `index.ts` next to `modelConfig` since `NaelaoAgentDO` has no `PLATFORM_DB` binding, threaded
+    through all three dispatch paths — sync, async Workflow, and `/internal/tasks/:taskId/run` —
+    so interactive and durable runs are gated identically) plus a new `session_spend` tally table
+    (same migration). `enforceRunGates` gained a `checkSessionBudget` branch, checked FIRST
+    (session-scoped, ahead of every payer-specific gate): under 80% no-ops; 80-100% fires
+    `agent.session_budget_warning` through the ALREADY-EXISTING `/internal/events/fire` →
+    `event_triggers` machinery (no new trigger type) and marks a one-shot `warned_80` flag; at
+    100% refuses the run (`402 session_budget_ceiling`) and reuses the HITL approval mechanism —
+    no new gate engine, per the plan's explicit direction — keyed on `run_id: sessionId` +
+    `tool_name: 'session_budget_continue'` so a second concurrent run finds the SAME pending
+    request instead of opening a duplicate, and an approval resets the tally for a fresh spending
+    cycle rather than permanently disabling the guard. Fails CLOSED when `HITL_APPROVAL_DO` isn't
+    configured. `settleRunBilling` gained the matching post-run tally increment, but ONLY when a
+    ceiling is actually configured (zero added round-trip cost for spaces that never opt in). A
+    real router-shape trap was caught and avoided BEFORE it broke anything this time: the first
+    draft's session-spend wrapper routes used one path per action
+    (`/session-spend/:sessionId/continue` etc.) — exactly the dynamic-segment-then-static-suffix
+    shape that has repeatedly triggered the documented Hono RegExpRouter route-table-scale
+    corruption (items 40, 52) — collapsed to a single `GET/POST .../session-spend/:sessionId`
+    route with POST's `action` field carrying the operation instead. **Deliberately scoped out:**
+    a builder/end-user-facing session-spend read endpoint (budget-meter UI) — the new endpoints
+    stay internal-only or builder-only this pass, same precedent as `agent-activity`. 1946/1946
+    tests pass (32 new), `pnpm turbo run typecheck` clean (76 tasks). Full detail: appendix
+    §A1.32. **Not done this pass:** HX3 (live-agent eval harness + golden benchmark datasets, the
+    precondition for HX4), HX4 (SkillOpt-style validation-gated skill self-evolution), HX5
+    (skill supply-chain hardening).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
