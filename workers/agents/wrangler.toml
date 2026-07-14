@@ -71,7 +71,7 @@ deleted_classes = ["ProductDO", "BusinessDO"]
 # Tier-5 micro-tool build/test compute (WG-01). A Cloudflare Container attached to
 # ToolSandboxDO — the agent spins it up on demand to build + test the micro-tool's
 # code (Node, and Python for scripts that need it), and it sleeps when idle.
-[[containers]]
+[containers]
 class_name = "ToolSandboxDO"
 image = "./Dockerfile.toolsandbox"
 max_instances = 5
