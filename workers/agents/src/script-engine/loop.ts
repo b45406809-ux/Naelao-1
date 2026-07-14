@@ -19,7 +19,14 @@ import type {
   ScriptMetadata,
   EscalationLevel,
   HITLGateway,
+  TraceStep,
 } from "./types.js";
+
+/** LoopResult before the shared trace array is attached — see `finish()` in runScriptLoop. */
+type LoopResultCore = Omit<LoopResult, "trace">;
+
+/** Records one structured trace step. Bound to a specific run's `trace` array by closure. */
+type PushTrace = (step: Omit<TraceStep, "seq" | "ts">) => void;
 import { ScriptToolSurface } from "./tool-surface.js";
 import { runObserve } from "./observe.js";
 import { fingerprintSimilarity, isMatch, isPartial } from "./fingerprint.js";
@@ -222,15 +229,32 @@ export async function runScriptLoop(
   const runId = opts.runId ?? crypto.randomUUID();
   const sessionId = opts.sessionId ?? "unknown";
 
+  // Phase HX1: structured per-step trace, the persisted counterpart to `notes`. `finish()`
+  // attaches the accumulated `trace` array to whichever LoopResultCore a return site produces —
+  // every return in this function goes through it so no exit path is untraced.
+  const trace: TraceStep[] = [];
+  let traceSeq = 0;
+  const pushTrace: PushTrace = (step) => trace.push({ seq: traceSeq++, ts: Date.now(), ...step });
+  const finish = (r: LoopResultCore): LoopResult => ({ ...r, trace });
+
   // 1-2. OBSERVE + FINGERPRINT
+  const observeStart = Date.now();
   const snapshot = await runObserve(env, opts.startupObserve, opts.observeArgs ?? {});
   notes.push(`observed ${snapshot.type} fingerprint=${snapshot.fingerprint.slice(0, 12)}`);
+  pushTrace({ phase: "observe", detail: snapshot.type, duration_ms: Date.now() - observeStart });
   await reportProgress(opts, "observe", snapshot.type);
 
   // 3. FIND
+  const findStart = Date.now();
   const candidates = await tools.find(opts.goal, { snapshot, limit: 3 });
   const top = candidates[0];
   notes.push(`find: ${candidates.length} candidate(s)` + (top ? ` top=${top.name} conf=${top.confidence.toFixed(2)}` : ""));
+  pushTrace({
+    phase: "find",
+    name: top?.name,
+    detail: `${candidates.length} candidate(s)`,
+    duration_ms: Date.now() - findStart,
+  });
 
   // 4. GATE — choose escalation level.
   let level: EscalationLevel;
@@ -247,6 +271,7 @@ export async function runScriptLoop(
     level = "L4";
   }
   notes.push(`gate → ${level}`);
+  pushTrace({ phase: "gate", detail: level });
   await reportProgress(opts, "gate", level);
 
   // 5-7. EXECUTE / VERIFY / DISTILL per level.
@@ -256,15 +281,17 @@ export async function runScriptLoop(
       // HITL gate before execution
       const allowed = await hitlGate(top!.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes);
       if (!allowed) {
-        return { level, script_name: top!.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes };
+        return finish({ level, script_name: top!.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes });
       }
       const result = await tools.run(top!.name, params);
       notes.push(`L1 run ${top!.name}: ${result.ok ? "ok" : "fail"}`);
-      return { level, script_name: top!.name, result, notes };
+      pushTrace({ phase: "run", name: top!.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
+      return finish({ level, script_name: top!.name, result, notes });
     }
 
     case "L2": {
       // Cheap patch of a drifted script, then run the patched version.
+      const reasonStart = Date.now();
       const decision = await reasoner.decide({
         goal: opts.goal,
         level,
@@ -274,15 +301,17 @@ export async function runScriptLoop(
         repairTarget: { name: top!.name, failureReason: "fingerprint drift (partial match)" },
       });
       const usage = usageOf(reasoner);
+      pushTrace({ phase: "reason", name: top?.name, detail: decision.action, tokens: usage.input + usage.output, duration_ms: Date.now() - reasonStart });
       if (decision.action === "patch") {
         await tools.update(decision.name, { code: decision.code }, decision.reason);
         const params = paramsFor(top!, opts.goal);
         const allowed = await hitlGate(decision.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes);
         if (!allowed) {
-          return withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usage);
+          return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usage));
         }
         const result = await tools.run(decision.name, params);
         notes.push(`L2 patched ${decision.name}: ${result.ok ? "ok" : "fail"}`);
+        pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
         // Automatic rollback on immediate failure (spec §10.3).
         if (!result.ok) {
           const meta = await tools.skillLibrary.readMetadata(decision.name);
@@ -291,9 +320,9 @@ export async function runScriptLoop(
             notes.push(`L2 rollback ${decision.name} → v${meta.version - 1}`);
           }
         }
-        return withTokenUsage({ level, script_name: decision.name, result, distilled_script: decision.name, notes }, usage);
+        return finish(withTokenUsage({ level, script_name: decision.name, result, distilled_script: decision.name, notes }, usage));
       }
-      return withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes), usage);
+      return finish(withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes, pushTrace), usage));
     }
 
     case "L3":
@@ -310,6 +339,7 @@ export async function runScriptLoop(
           break;
         }
         await reportProgress(opts, "step", `${level} step ${step + 1}/${maxSteps}`);
+        const reasonStart = Date.now();
         const decision = await reasoner.decide({
           goal: opts.goal,
           level,
@@ -324,32 +354,40 @@ export async function runScriptLoop(
         usageAcc.input += stepUsage.input;
         usageAcc.output += stepUsage.output;
         lastDecision = decision;
+        pushTrace({
+          phase: "reason",
+          name: decision.action === "run" || decision.action === "patch" || decision.action === "distill" ? decision.name : undefined,
+          detail: decision.action,
+          tokens: stepUsage.input + stepUsage.output,
+          duration_ms: Date.now() - reasonStart,
+        });
 
         if (decision.action === "run") {
           // HITL gate before execution
           const allowed = await hitlGate(decision.name, decision.params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes);
           if (!allowed) {
-            return withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usageAcc);
+            return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usageAcc));
           }
           const result = await tools.run(decision.name, decision.params);
           notes.push(`${level} run ${decision.name}: ${result.ok ? "ok" : "fail"}`);
+          pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
           if (!result.ok) continue; // let the reasoner try another step
-          return withTokenUsage({ level, script_name: decision.name, result, notes }, usageAcc);
+          return finish(withTokenUsage({ level, script_name: decision.name, result, notes }, usageAcc));
         }
 
         if (decision.action === "distill" || decision.action === "patch") {
-          return withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes), usageAcc);
+          return finish(withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes, pushTrace), usageAcc));
         }
 
         if (decision.action === "answer" || decision.action === "give_up") {
-          return withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes), usageAcc);
+          return finish(withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes, pushTrace), usageAcc));
         }
       }
       notes.push(`${level} exhausted ${maxSteps} steps`);
-      return withTokenUsage(
-        await applyTerminalDecision(level, lastDecision ?? { action: "give_up", reason: "no decision" }, tools, opts.goal, notes),
+      return finish(withTokenUsage(
+        await applyTerminalDecision(level, lastDecision ?? { action: "give_up", reason: "no decision" }, tools, opts.goal, notes, pushTrace),
         usageAcc
-      );
+      ));
     }
   }
 }
@@ -365,7 +403,7 @@ function usageOf(reasoner: Reasoner): { input: number; output: number } {
  * input/output breakdown (not just the combined total) so the host can price it per-model —
  * input and output tokens are billed at different rates (spec §15 / billing-core pricing).
  */
-function withTokenUsage(loopResult: LoopResult, usage: { input: number; output: number }): LoopResult {
+function withTokenUsage(loopResult: LoopResultCore, usage: { input: number; output: number }): LoopResultCore {
   const total = usage.input + usage.output;
   if (!loopResult.result || total === 0) return loopResult;
   return {
@@ -392,8 +430,9 @@ async function applyTerminalDecision(
   decision: ReasonDecision,
   tools: ScriptToolSurface,
   goal: string,
-  notes: string[]
-): Promise<LoopResult> {
+  notes: string[],
+  pushTrace: PushTrace
+): Promise<LoopResultCore> {
   if (decision.action === "distill") {
     // DISTILL (spec §7): compile the successful trace into a reusable parameterized script.
     const exists = await tools.skillLibrary.exists(decision.name);
@@ -414,6 +453,7 @@ async function applyTerminalDecision(
     }
     const result = await tools.run(decision.name, decision.params);
     notes.push(`${level} distilled ${decision.name}: ${result.ok ? "ok" : "fail"}`);
+    pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: `distilled: ${result.error ?? "ok"}` });
     return { level, script_name: decision.name, result, distilled_script: decision.name, notes };
   }
 
@@ -421,6 +461,7 @@ async function applyTerminalDecision(
     await tools.update(decision.name, { code: decision.code }, decision.reason);
     const result = await tools.run(decision.name, {});
     notes.push(`${level} patched ${decision.name}`);
+    pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: `patched: ${result.error ?? "ok"}` });
     return { level, script_name: decision.name, result, distilled_script: decision.name, notes };
   }
 

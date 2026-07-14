@@ -5153,3 +5153,73 @@ shapes are per Whop's published guide, not exercised against a real registered a
 `WHOP_OAUTH_CLIENT_ID`/`WHOP_OAUTH_CLIENT_SECRET` are actually issued). **Not done:** an
 equivalent OAuth button on the dashboard's own `/dashboard/spaces/[spaceId]/connectors` console
 (still manual-key-only — this pass targeted the shell's per-business flow specifically).
+
+## §A1.31 — Harness Excellence Program, Phase HX1: agent trace layer
+
+Context: a harness-architecture comparison against Claude Code/OpenClaw/Hermes (full research in
+the session's plan file) found the single highest-leverage gap was self-inflicted — the
+script-native loop already computes per-phase timing/tier/token data at every OBSERVE/FIND/GATE/
+reason/`script.run` boundary, but discarded all of it into an ephemeral `notes: string[]` that
+never survives past the HTTP response body (at most a 5-line tail feeds Memory OS Fabric). The
+fully-built `packages/tracing` (Span/Tracer/ActiveSpan → Analytics Engine) had zero consumers
+anywhere in the repo. Every later phase (signals, live-agent eval, SkillOpt-style skill
+evolution) needs real per-step traces as its input — this phase builds that foundation.
+
+**`workers/agents/src/script-engine/types.ts`**: new `TraceStep` (`seq, phase, name?, tier?,
+duration_ms?, tokens?, ok?, detail?, ts`) and `LoopResult.trace: TraceStep[]` (required — every
+construction site updated, not left optional, so a future caller can't silently forget it).
+
+**`workers/agents/src/script-engine/loop.ts`** (`runScriptLoop`): a closure-local `pushTrace`
+records one step at OBSERVE, FIND, GATE, every `reasoner.decide()` call (L2's single call and
+each L3/L4 iteration — tokens from the same `usageOf(reasoner)` the loop already reads for
+billing), and every `tools.run()` call site (5 total: L1, L2's patch branch, L3/L4's run branch,
+and `applyTerminalDecision`'s distill/patch branches) — tier/duration_ms/tokens/ok/error read
+directly off the `ScriptRunResult` the engine already produces, no new instrumentation of
+`ScriptToolSurface` itself needed. `LoopResultCore = Omit<LoopResult, "trace">` lets
+`withTokenUsage`/`applyTerminalDecision` keep constructing plain result literals; a single
+`finish()` closure attaches the accumulated `trace` array at every one of runScriptLoop's ~10
+return sites, so no exit path (HITL rejection, exhausted steps, distill, give_up) is left
+untraced.
+
+**`workers/agents/src/do/NaelaoAgentDO.ts`**: new `run_traces` SQLite table (`ensureInit()`,
+`PRIMARY KEY (run_id, seq)` — script-native runs mint their own `runId` with no `agent_runs` row
+backing them, per the pre-existing gap that table only serves the legacy ReAct path, so this is
+the first persisted-by-id record of a script-native run's existence). `persistRunTrace(runId,
+tenantId, trace)` — unconditional SQLite insert (best-effort, swallows its own errors, same
+"observability must never fail the run" posture as `logAgentActivity`), plus a best-effort
+Analytics Engine mirror via `@naelao/tracing`'s `createTracer` when `env.ANALYTICS` is bound: one
+root span (`script_loop.run`, run_id/tenant_id/step-count attributes) and one child span per
+step (`script_loop.<phase>`, `parent_span_id` = root), `setError` on any `ok:false` step — degrades
+to SQLite-only, no AE calls at all, when `ANALYTICS` is unbound (the pre-existing optional-binding
+convention this file already uses twice elsewhere). Called from `handleScriptRun` right after
+`runScriptLoop` resolves, before billing settlement — runs even on a failed result, since a
+failed run's trace is exactly what a builder (or the later skill-evolution job) needs to
+diagnose it. New `readRunTrace(runId)` reads it back ordered by `seq`.
+
+**New DO-internal route** `GET /runs/:runId/trace` (returns `{run_id, trace}`, empty array for
+an unknown id — not an error, since "no trace yet" is a normal state for a run still in
+flight). **New builder-facing route** `GET /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/
+trace` (agents worker, `workers/agents/src/index.ts`) — same `requireVerifiedTenant` + space-
+ownership-check pattern as the existing sibling `.../runs/:runId` and `.../runs/:runId/cancel`
+routes, plus an explicit `product_end_user` role check returning 403 before the DO is ever
+reached (mirrors `agent-activity`'s existing "builder-only view" rationale — a trace can reveal
+script names/params/token spend an end user shouldn't see). No new router allowlist entry needed
+— the existing `/spaces/:spaceId/sessions/:sessionId/agent/*` wildcard proxy already covers it.
+
+`workers/agents/package.json` gained `@naelao/tracing` as a real dependency (previously
+unreferenced by any consumer in the monorepo).
+
+Tests: `tests/unit/script-engine.test.ts` (2 new — trace phase ordering/monotonic `seq` for an
+L1-shaped run, and a `reason` step per L3/L4 iteration with real token counts, including a
+failed intermediate `run` step); `tests/unit/run-trace-persistence.test.ts` (5 new — SQLite
+persist/read-back, the DO route including an unknown-runId empty-array response, persistence
+never throwing before `run_traces` exists, AE span-count verification via a spy dataset, and
+honest no-AE-calls-at-all degradation when unbound); `tests/unit/agent-run-trace-endpoint.test.ts`
+(3 new — DO-response passthrough, the `product_end_user` 403 gate never reaching the DO, and 404
+passthrough). 1914/1914 suite green (10 new), `pnpm turbo run typecheck` clean (76 tasks).
+
+**Not done this phase (tracked, next in the Harness Excellence Program):** HX2 (explicit/implicit
+signals + a per-session token-budget guard), HX3 (a live-agent eval harness + golden benchmark
+datasets — the precondition for HX4), HX4 (SkillOpt-Lite-style validation-gated skill
+self-evolution), HX5 (skill supply-chain hardening ahead of any future marketplace). HX6 (MCP
+connector verification fixes) turned out to already be complete, landed earlier as item 57.

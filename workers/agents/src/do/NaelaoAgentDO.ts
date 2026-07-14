@@ -21,7 +21,9 @@ import {
   loadAgentConfig,
   type ScriptEngineEnv,
   type ExecutionTier,
+  type TraceStep,
 } from "../script-engine/index.js";
+import { createTracer } from "@naelao/tracing";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
 import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../script-engine/assistant-access.js";
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
@@ -945,6 +947,27 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     `);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_wal_run ON run_wal(run_id, started_at)`);
 
+    // §A1 Phase HX1 — structured per-step trace for script-native runs (runScriptLoop's
+    // TraceStep[]). handleScriptRun mints its own runId with no `agent_runs` row backing it
+    // (that table is legacy-ReAct-only) — this table is the first persisted-by-id record of a
+    // script-native run's existence, one row per phase/script.run/reasoner-decision.
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS run_traces (
+        run_id      TEXT NOT NULL,
+        seq         INTEGER NOT NULL,
+        phase       TEXT NOT NULL,
+        name        TEXT,
+        tier        INTEGER,
+        duration_ms INTEGER,
+        tokens      INTEGER,
+        ok          INTEGER,
+        detail      TEXT,
+        ts          INTEGER NOT NULL,
+        PRIMARY KEY (run_id, seq)
+      )
+    `);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_run_traces_run ON run_traces(run_id)`);
+
     // Background fibers
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS fibers (
@@ -1247,6 +1270,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const cancelMatch = url.pathname.match(/^\/runs\/([^/]+)\/cancel$/);
       if (method === "POST" && cancelMatch?.[1]) {
         return this.handleCancelRun(cancelMatch[1]);
+      }
+
+      // GET /runs/:runId/trace — §A1 Phase HX1, the builder trace view's DO-local read side.
+      const traceMatch = url.pathname.match(/^\/runs\/([^/]+)\/trace$/);
+      if (method === "GET" && traceMatch?.[1]) {
+        return Response.json({ run_id: traceMatch[1], trace: this.readRunTrace(traceMatch[1]) });
       }
 
       return Response.json(
@@ -2167,6 +2196,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(onProgress ? { onProgress } : {}),
       });
 
+      // §A1 Phase HX1 — persist the structured trace this run just produced (see loop.ts's
+      // TraceStep[]). Never blocks/fails the run itself (persistRunTrace swallows its own
+      // errors) — this must run even when result.result.ok is false, since a failed run's
+      // trace is exactly what a builder (or a future skill-evolution job) needs to diagnose it.
+      this.persistRunTrace(runId, tenantId, result.trace);
+
       // Go-live audit A-1/A-2: shared with handleRun via settleRunBilling — see that method's
       // doc for why both runtimes must settle billing identically rather than each carrying
       // their own copy (the divergence that let handleRun run completely unmetered).
@@ -2371,6 +2406,91 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId),
       ...extra,
     };
+  }
+
+  /**
+   * §A1 Phase HX1 — persist a script-native run's structured trace (runScriptLoop's
+   * TraceStep[]) into this DO's own SQLite (`run_traces`), and best-effort mirror each step as
+   * an Analytics Engine span via @naelao/tracing when ANALYTICS is bound (one root span for the
+   * whole run, one child span per step — same fire-and-forget posture ActiveSpan.end() already
+   * has, so a slow/failed AE write never delays or fails the caller's run). SQLite persistence
+   * is unconditional (it's what the builder trace endpoint reads); AE is purely supplementary.
+   */
+  private persistRunTrace(runId: string, tenantId: string, trace: TraceStep[]): void {
+    if (trace.length === 0) return;
+    try {
+      for (const step of trace) {
+        this.ctx.storage.sql.exec(
+          `INSERT OR REPLACE INTO run_traces (run_id, seq, phase, name, tier, duration_ms, tokens, ok, detail, ts)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          runId,
+          step.seq,
+          step.phase,
+          step.name ?? null,
+          step.tier ?? null,
+          step.duration_ms ?? null,
+          step.tokens ?? null,
+          step.ok === undefined ? null : step.ok ? 1 : 0,
+          step.detail ?? null,
+          step.ts
+        );
+      }
+    } catch {
+      /* trace persistence is observability, never fails the run */
+    }
+
+    if (!this.env.ANALYTICS) return;
+    try {
+      const tracer = createTracer({ service: "agents-worker", dataset: this.env.ANALYTICS }, runId);
+      const root = tracer.startSpan("script_loop.run");
+      root.setAttribute("tenant_id", tenantId).setAttribute("run_id", runId).setAttribute("steps", trace.length);
+      for (const step of trace) {
+        const span = tracer.startSpan(`script_loop.${step.phase}`, root.spanId);
+        span.setAttribute("run_id", runId);
+        if (step.name) span.setAttribute("name", step.name);
+        if (step.tier !== undefined) span.setAttribute("tier", step.tier);
+        if (step.tokens !== undefined) span.setAttribute("tokens", step.tokens);
+        if (step.detail) span.setAttribute("detail", step.detail);
+        if (step.ok === false) span.setError(step.detail ?? "step failed");
+        span.end();
+      }
+      root.end();
+    } catch {
+      /* Analytics Engine is append-only best-effort — never block on failure */
+    }
+  }
+
+  /**
+   * §A1 Phase HX1 — read back a script-native run's persisted trace, ordered by step.
+   */
+  private readRunTrace(runId: string): TraceStep[] {
+    const rows = this.ctx.storage.sql
+      .exec(
+        `SELECT seq, phase, name, tier, duration_ms, tokens, ok, detail, ts FROM run_traces WHERE run_id = ? ORDER BY seq ASC`,
+        runId
+      )
+      .toArray() as Array<{
+      seq: number;
+      phase: string;
+      name: string | null;
+      tier: number | null;
+      duration_ms: number | null;
+      tokens: number | null;
+      ok: number | null;
+      detail: string | null;
+      ts: number;
+    }>;
+    return rows.map((r) => ({
+      seq: r.seq,
+      phase: r.phase,
+      name: r.name ?? undefined,
+      tier: r.tier ?? undefined,
+      duration_ms: r.duration_ms ?? undefined,
+      tokens: r.tokens ?? undefined,
+      ok: r.ok === null ? undefined : r.ok === 1,
+      detail: r.detail ?? undefined,
+      ts: r.ts,
+    }));
   }
 
   /**
@@ -3348,7 +3468,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           sessionId: msg.session_id,
         });
       } catch (err) {
-        result = { level: "L4", result: { ok: false, error: String(err), tier: 1, duration_ms: 0, tokens_used: 0 }, notes: [] };
+        result = { level: "L4", result: { ok: false, error: String(err), tier: 1, duration_ms: 0, tokens_used: 0 }, notes: [], trace: [] };
       }
 
       if (msg.project_id && result.result?.tokens_used) {

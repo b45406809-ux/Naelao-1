@@ -169,6 +169,28 @@ export interface FindCandidate {
 export type EscalationLevel = "L1" | "L2" | "L3" | "L4";
 
 /** Outcome of one OBSERVE→…→DISTILL pass. */
+/**
+ * One structured step of a run's execution — the persisted counterpart to `notes: string[]`
+ * (which stays as a human-readable log line, unchanged). Phase HX1: this is what makes a run's
+ * timing/tokens/tier/outcome queryable per-step (a builder trace view, and the input SkillOpt-
+ * style skill evolution mines for consensus failure attributes), instead of only living in the
+ * ephemeral response body.
+ */
+export interface TraceStep {
+  seq: number;
+  /** "observe" | "find" | "gate" | "reason" | "run" */
+  phase: string;
+  /** Script name, when the step concerns one (find top candidate, reason decision, run). */
+  name?: string | undefined;
+  tier?: number | undefined;
+  duration_ms?: number | undefined;
+  tokens?: number | undefined;
+  ok?: boolean | undefined;
+  detail?: string | undefined;
+  /** Date.now() at the moment the step was recorded. */
+  ts: number;
+}
+
 export interface LoopResult {
   level: EscalationLevel;
   script_name?: string;
@@ -176,6 +198,8 @@ export interface LoopResult {
   /** Set when a new/patched script was produced and queued for async compile. */
   distilled_script?: string;
   notes: string[];
+  /** Structured per-phase/per-script.run trace (Phase HX1) — same run, richer than `notes`. */
+  trace: TraceStep[];
 }
 
 // ── Engine bindings (dependency-injected so the engine is testable + DO-agnostic) ──────

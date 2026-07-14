@@ -1077,6 +1077,41 @@ app.post(
   }
 );
 
+// ── GET /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/trace ──────────
+// §A1 Phase HX1: the builder-facing structured trace view (script-native runs only — a
+// legacy-ReAct `handleRun` run has no run_traces rows, so this returns an empty array for one,
+// not an error). Builder-only, same rationale as agent-activity's own "builder-only view"
+// gate (workers/spaces/src/index.ts) — a trace can reveal script names/params/token spend a
+// product end user shouldn't see.
+
+app.get(
+  "/spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/trace",
+  async (c) => {
+    const tenantId = await requireVerifiedTenant(c);
+    if (getCallerIdentity(c).role === "product_end_user") {
+      return c.json({ error_code: "forbidden", message: "This is a builder-only view" }, 403);
+    }
+
+    const spaceId = c.req.param("spaceId");
+    const sessionId = c.req.param("sessionId");
+    const runId = c.req.param("runId");
+
+    // Validate space ownership
+    const space = await c.env.PLATFORM_DB.prepare(
+      "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
+    )
+      .bind(spaceId, tenantId)
+      .first<{ id: string }>();
+
+    if (!space) throw notFound("Space");
+
+    const stub = await getAgentDO(c.env, tenantId, sessionId, c.get("requestId"));
+    const doResponse = await stub.fetch(new Request(`http://agent-do/runs/${runId}/trace`));
+    const doBody = await doResponse.json<unknown>();
+    return c.json(doBody, doResponse.status as 200 | 404 | 500);
+  }
+);
+
 // ── GET /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/stream ─────────
 // G-AF08: SSE streaming for live agent run updates
 

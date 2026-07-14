@@ -1675,3 +1675,21 @@ first real business on free-tier resources before opening the platform to other 
   Also needed `wrangler@4` (not the repo's pinned 3.114.17, which doesn't parse this worker's
   `[[containers]]` array-of-tables syntax) with `--containers-rollout=none` (no Docker available
   in this sandbox to build the container image; the container itself is untouched by this deploy).
+
+- [x] **HX1 (Harness Excellence Program, agent trace layer) — FIXED/BUILT.** The script-native
+  loop computed real per-phase timing/tier/token data but discarded it into an ephemeral
+  `notes: string[]`; `packages/tracing` (Span/Tracer → Analytics Engine) had zero consumers
+  anywhere in the repo. New `TraceStep`/`LoopResult.trace`, `run_traces` SQLite table on
+  `NaelaoAgentDO`, best-effort AE span mirror, and a builder-only
+  `GET .../agent/runs/:runId/trace` endpoint. Full detail: CLAUDE.md item 59, appendix §A1.31.
+  1914/1914 tests pass, typecheck clean (76 tasks).
+- [ ] **HX2-HX5 (Harness Excellence Program, tracked follow-up, NOT done this pass):** HX2
+  (explicit/implicit signals + a per-session token-budget guard — the fix for OpenClaw-style
+  unbounded-cost complaints), HX3 (a live-agent eval harness + golden benchmark datasets — the
+  precondition for HX4), HX4 (SkillOpt-Lite-style validation-gated skill self-evolution: mine
+  HX1's failure traces per skill, propose a patch via the existing `script.update`, validation-
+  gate it against HX3's eval cases, keep only if it scores ≥ the old version else `rollback()`),
+  HX5 (skill supply-chain hardening — tamper-evident provenance, import/inherit-time reserved-
+  capability + red-flag scanning — ahead of any future skill marketplace). Build order is a
+  strict chain HX1→HX2→HX3→HX4 (each phase's input is the prior phase's output); HX5 is
+  independent. Full plan: the session's plan file / CLAUDE.md item 59 / appendix §A1.31.

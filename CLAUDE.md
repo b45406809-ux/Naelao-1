@@ -1989,6 +1989,38 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     "confirm once real access exists" precedent every other Whop integration point in this repo
     already carries).
 
+59. **Harness Excellence Program (a comparison against Claude Code/OpenClaw/Hermes-Nous +
+    SkillOpt-Lite research, phased HX1-HX6) is now IN PROGRESS — Phase HX1 (agent trace layer)
+    is BUILT.** Research verdict on SkillOpt-Lite (an offline Python skill-optimization toolkit,
+    arXiv:2607.03451): not a runtime dependency (wrong shape/language), but its three principles
+    — trajectory exploration, consensus failure-attribute mining, independent validation gating —
+    map directly onto our own skill library (versioned scripts, `stability_score`, rollback,
+    DISTILL already exist; what's missing is a real eval-gate and an automated improvement loop,
+    tracked as HX3→HX4). The harness comparison's single highest-leverage finding: the
+    script-native loop already computes per-phase timing/tier/token data at every boundary but
+    discarded it into an ephemeral `notes: string[]`, and the fully-built `packages/tracing`
+    (Span/Tracer/ActiveSpan → Analytics Engine) had zero consumers anywhere in the repo — every
+    later phase (signals, live-agent eval, skill self-evolution) needs real per-step traces as
+    input, so this had to land first. New `TraceStep`/`LoopResult.trace` (`script-engine/
+    types.ts`); `runScriptLoop` (`loop.ts`) records a step at OBSERVE/FIND/GATE, every
+    `reasoner.decide()` call, and every `tools.run()` call site (5 total), attached at all ~10
+    return sites via one `finish()` closure so no exit path is left untraced. `NaelaoAgentDO`
+    gained a `run_traces` SQLite table (script-native runs mint their own `runId` with no
+    `agent_runs` row backing them — this is the first persisted-by-id record of one) plus a
+    best-effort Analytics Engine mirror (one root span + one child span per step) when
+    `ANALYTICS` is bound, degrading to SQLite-only otherwise. New builder-facing
+    `GET /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/trace` (builder-only — a
+    `product_end_user` caller is refused before the DO is ever reached, same rationale as
+    `agent-activity`'s own gate). MCP connect verification (the plan's HX6) turned out to already
+    be fully built (item 57 — Composio REVOKED mapping + `connected_account_id` preference,
+    Pipedream Connect as the second hosted provider) — no new work needed there. 1914/1914 tests
+    pass (10 new), `pnpm turbo run typecheck` clean (76 tasks). Full detail: appendix §A1.31.
+    **Not done this pass:** HX2 (explicit/implicit signals + a per-session token-budget guard —
+    the actual fix for OpenClaw-style "$300-500/mo, no warning" complaints), HX3 (a live-agent
+    eval harness + golden benchmark datasets, the precondition for HX4), HX4 (SkillOpt-style
+    validation-gated skill self-evolution), HX5 (skill supply-chain hardening ahead of any future
+    marketplace, motivated by ClawHub's 341 malicious skills).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

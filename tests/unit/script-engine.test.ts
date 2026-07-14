@@ -296,6 +296,68 @@ describe("runScriptLoop — real per-token accounting (replaces the step-count-o
   });
 });
 
+describe("runScriptLoop — structured trace (§A1 Phase HX1, the persisted counterpart to notes)", () => {
+  it("records observe/find/gate/reason/run phases in order with real tier/tokens/ok", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const reasoner: Reasoner = {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "run", name: "write_file", params: { path: "out.txt", content: "done" } };
+      },
+    };
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
+      goal: "create the output file",
+      startupObserve: "observe_filesystem",
+    });
+    expect(result.result?.ok).toBe(true);
+    const phases = result.trace.map((t) => t.phase);
+    expect(phases[0]).toBe("observe");
+    expect(phases[1]).toBe("find");
+    expect(phases[2]).toBe("gate");
+    expect(phases).toContain("reason");
+    expect(phases).toContain("run");
+    // seq is monotonic and starts at 0
+    expect(result.trace.map((t) => t.seq)).toEqual(result.trace.map((_, i) => i));
+    const runStep = result.trace.find((t) => t.phase === "run")!;
+    expect(runStep.name).toBe("write_file");
+    expect(runStep.tier).toBe(1);
+    expect(runStep.ok).toBe(true);
+    expect(typeof runStep.duration_ms).toBe("number");
+    const reasonStep = result.trace.find((t) => t.phase === "reason")!;
+    expect(reasonStep.detail).toBe("run");
+  });
+
+  it("L3/L4 records a 'reason' step per reasoning iteration with token counts", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    let call = 0;
+    const reasoner: Reasoner & { lastUsage?: { input_tokens: number; output_tokens: number } } = {
+      lastUsage: undefined,
+      async decide(): Promise<ReasonDecision> {
+        call++;
+        if (call === 1) {
+          this.lastUsage = { input_tokens: 50, output_tokens: 10 };
+          return { action: "run", name: "does_not_exist", params: {} }; // fails -> loop retries
+        }
+        this.lastUsage = { input_tokens: 30, output_tokens: 5 };
+        return { action: "answer", text: "done" };
+      },
+    };
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
+      goal: "multi-step goal",
+      startupObserve: "observe_filesystem",
+    });
+    const reasonSteps = result.trace.filter((t) => t.phase === "reason");
+    expect(reasonSteps.length).toBe(2);
+    expect(reasonSteps[0]!.tokens).toBe(60);
+    expect(reasonSteps[1]!.tokens).toBe(35);
+    // The first reasoner decision's failed run is also traced.
+    const runSteps = result.trace.filter((t) => t.phase === "run");
+    expect(runSteps.length).toBe(1);
+    expect(runSteps[0]!.ok).toBe(false);
+  });
+});
+
 describe("runScriptLoop — approval modes (Space Assistant default-ask vs ordinary agent gate-listed)", () => {
   function makeHitlGateway(approved: boolean): { calls: string[]; gateway: import("../../workers/agents/src/script-engine/types.js").HITLGateway } {
     const calls: string[] = [];
