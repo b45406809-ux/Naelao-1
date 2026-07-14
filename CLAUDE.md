@@ -2223,6 +2223,24 @@ DO hibernation kills ALL in-memory state — always persist to SQLite.
 - `infra/` — Terraform IaC, migration scripts, dev tooling
 - `tests/` — integration, e2e, contract, isolation, load tests
 
+## Live Cloudflare Access (session-local, may or may not be present)
+A real Cloudflare API token + R2 S3 credentials for the account this platform is actually
+deployed to (account id `12e352dbea64627949c5e808c1ea92c3`) may be available at
+**`.cf-credentials.local`** (repo root, gitignored — never committed, never pasted into any
+file that gets committed). It is **session-local**: this environment's container is re-cloned
+from git each session, so the file only survives within one continuous session/container, not
+across a fresh one. If it's present, `source .cf-credentials.local` and use `$CF_API_TOKEN`/
+`$CF_ACCOUNT_ID` directly with `curl` against `https://api.cloudflare.com/client/v4/...` (Workers
+list/get/code, D1 query, KV, R2 bucket list, Pages projects, `workers/subdomain`, etc.) or export
+`CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` for `wrangler` CLI commands (`wrangler deploy`,
+`wrangler tail`, `wrangler pages deploy`) — this is how item 62's platform-wide `SQLITE_AUTH` and
+PBKDF2-iteration bugs were actually found and fixed: by deploying real code and tailing real
+worker logs against production, not by reading source alone. If the file is absent (a fresh
+session, or the user has since rotated/deleted it), do not ask for it unprompted — mention its
+absence only if the user asks about live testing, and let them decide whether to supply a new
+token. Never print its contents in a response, commit message, or PR body. The user owns
+rotation/revocation of these credentials in the Cloudflare dashboard directly.
+
 ## Git
 **Active branch: `claude/bold-bell-vistq6`** — work here; do NOT push to any other branch
 without explicit permission. Commit after every working subsystem; push after every commit.
