@@ -2,7 +2,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import type { NaelaoJwtClaims } from "@naelao/types";
-import { login as apiLogin } from "./api";
+import { login as apiLogin, register as apiRegister } from "./api";
 import {
   storeToken,
   clearToken,
@@ -17,6 +17,7 @@ export interface AuthContextValue {
   token: string | null;
   claims: NaelaoJwtClaims | null;
   login(email: string, password: string): Promise<void>;
+  register(email: string, password: string, orgName?: string): Promise<void>;
   logout(): void;
   isAuthenticated: boolean;
   /** False until localStorage has been read on mount. A hard reload of any nested route must
@@ -32,6 +33,7 @@ export const AuthContext = createContext<AuthContextValue>({
   token: null,
   claims: null,
   login: async () => {},
+  register: async () => {},
   logout: () => {},
   isAuthenticated: false,
   isHydrated: false,
@@ -82,6 +84,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     setClaims(decoded);
   }, []);
 
+  const register = useCallback(
+    async (email: string, password: string, orgName?: string) => {
+      const res = await apiRegister(email, password, orgName);
+      const decoded = decodeTokenClaims(res.token);
+      storeToken(res.token);
+      setToken(res.token);
+      setClaims(decoded);
+    },
+    []
+  );
+
   const logout = useCallback(() => {
     clearToken();
     setToken(null);
@@ -95,6 +108,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }): React
     token,
     claims,
     login,
+    register,
     logout,
     isAuthenticated: token !== null && claims !== null,
     isHydrated,
