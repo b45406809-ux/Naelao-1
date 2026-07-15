@@ -3,6 +3,12 @@
 ## What is Naelao
 A Cloudflare-native AI agent platform. Builders create SpaceTypes (blueprints) and configure Templates (no coding — builders select/configure only). End-users interact via Space shell. Designed for millions of builders and millions of Spaces.
 
+## Session working notes
+- This session is using the local `main` branch as the primary working branch. If a short-lived topic branch is needed, it should be created from `main`, and any commits made there should be merged or cherry-picked back into `main` before the work is considered complete.
+- Before branching off from `main`, check for any commits that may already exist on `main` from the user or from a prior session and sync them into the topic branch before continuing.
+- The shell already exposes `CLOUDFLARE_API_TOKEN` for Cloudflare API calls (for example via `curl` against the deployed Workers/D1/KV/Pages APIs). Do not print or commit the secret value.
+- Any substantive progress made in this session should be recorded here so the repo guidance stays current for follow-up work.
+
 ## ⭐ CURRENT DIRECTION — READ FIRST (supersedes older framing below)
 This is the active plan. If anything further down conflicts, this wins.
 
@@ -2242,9 +2248,13 @@ token. Never print its contents in a response, commit message, or PR body. The u
 rotation/revocation of these credentials in the Cloudflare dashboard directly.
 
 ## Git
-**Active branch: `claude/bold-bell-vistq6`** — work here; do NOT push to any other branch
-without explicit permission. Commit after every working subsystem; push after every commit.
-(Older branches `...-eu1uic`, `...-8vkakf`, `...-713ruz`, `...-6kb300` are superseded.)
+**Active branch: `main`** — this is the primary working branch for this session. Keep feature
+branches short-lived and merge or cherry-pick their commits back into `main` when the work is
+ready. Before creating a new branch, check `main` for any commits that may already exist there
+from the user or a prior session and sync them into the branch before continuing. Do not push to
+any other branch without explicit permission. Commit after every working subsystem; push after
+every commit. (Older branches `...-eu1uic`, `...-8vkakf`, `...-713ruz`, `...-6kb300` are
+superseded.)
 
 ## Build Progress
 - [x] Phase 0: Scaffold (root workspace, packages, workers structure)
