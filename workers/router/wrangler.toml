@@ -5,7 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "development"
-CORS_ALLOWLIST = "http://localhost:3000,http://localhost:3001,http://localhost:3100"
+CORS_ALLOWLIST = "http://localhost:3000,http://localhost:3001,http://localhost:3100,https://naelao-dashboard.pages.dev,https://naelao-portal.pages.dev,https://naelao-shell.pages.dev,https://naelao-marketplace.pages.dev"
 PRODUCT_SHELL_URL = "http://localhost:3100"
 
 [[d1_databases]]

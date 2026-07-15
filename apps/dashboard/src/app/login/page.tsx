@@ -3,13 +3,11 @@
 import { useState, FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-provider";
-import { storeToken } from "@/lib/auth";
-import { register as apiRegister } from "@/lib/api";
 
 type Tab = "signin" | "register";
 
 export default function LoginPage() {
-  const { login, isAuthenticated } = useAuth();
+  const { login, register, isAuthenticated } = useAuth();
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("signin");
   const [email, setEmail] = useState("");
@@ -43,9 +41,7 @@ export default function LoginPage() {
     setError(null);
     setLoading(true);
     try {
-      const res = await apiRegister(email, password, orgName || undefined);
-      storeToken(res.token);
-      // Trigger a page reload so AuthProvider picks up the new token
+      await register(email, password, orgName || undefined);
       router.replace("/dashboard");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Registration failed");
