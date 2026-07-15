@@ -139,14 +139,21 @@ export async function apiFetch<T>(
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
+// The auth worker wraps success payloads as `{ data: { token, user } }` (see workers/auth).
+// apiFetch returns the raw JSON, so unwrap `data` here — callers expect a bare AuthResponse.
+function unwrapAuth(res: { data: AuthResponse } | AuthResponse): AuthResponse {
+  return (res as { data?: AuthResponse }).data ?? (res as AuthResponse);
+}
+
 export async function login(
   email: string,
   password: string
 ): Promise<AuthResponse> {
-  return apiFetch<AuthResponse>("/auth/login", {
+  const res = await apiFetch<{ data: AuthResponse } | AuthResponse>("/auth/login", {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
+  return unwrapAuth(res);
 }
 
 export async function register(
@@ -154,10 +161,11 @@ export async function register(
   password: string,
   orgName?: string
 ): Promise<AuthResponse> {
-  return apiFetch<AuthResponse>("/auth/register", {
+  const res = await apiFetch<{ data: AuthResponse } | AuthResponse>("/auth/register", {
     method: "POST",
     body: JSON.stringify({ email, password, org_name: orgName }),
   });
+  return unwrapAuth(res);
 }
 
 // Launch-readiness audit follow-up: builders had no account-recovery path at all — a forgotten
