@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // Thread hierarchy (migration v13) — sub-agent runs and channel sessions mirror in as
 // ordinary subthreads (thread_kind + parent_thread_id), hidden from the default list unless
 // the project opts in via show_sub_threads or the caller passes include_sub_threads=true.
 
 function makeSpaceDO(): SpaceDO {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   const env = { PLATFORM_SECRET: "test-secret" };
   return new SpaceDO(ctx as never, env as never);
 }

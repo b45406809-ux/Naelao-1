@@ -2217,6 +2217,97 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     1954/1954 tests pass (1 new regression test), `pnpm turbo run typecheck` clean (76 tasks),
     fix live-verified against production via direct API calls (no browser session available in
     this environment).
+64. **Follow-up to item 63: the user reported a successfully-created product was unreachable —
+    traced to TWO further real, previously-undetected production bugs in space provisioning
+    itself (not the wizard), both now FIXED and live-verified end-to-end, plus the Product Shell
+    (`apps/shell`) promoted to production for the first time.**
+    - **Root cause: `applyMigrations` (`packages/db/src/migrate.ts`), shared by `SpaceDO` and
+      `ProductUserDO`, wrapped every migration in raw SQL `BEGIN EXCLUSIVE`/`COMMIT`/`ROLLBACK`.**
+      Item 62 fixed the PRAGMA/SQLITE_AUTH class of bug but missed this one: confirmed live via
+      `wrangler tail` that Cloudflare's real SQLite-backed DO storage rejects raw SQL transaction
+      control outright ("please use state.storage.transaction() or transactionSync() instead"),
+      throwing on `SpaceDO`/`ProductUserDO`'s very first call in production — meaning EVERY
+      provisioning attempt (agent-definitions registration, root-space registry seed) has always
+      failed, landing every new product in `status='error'` forever. The `node:sqlite` test shim
+      doesn't enforce this restriction (raw BEGIN/COMMIT works fine against it), so ~1954 passing
+      tests never caught it — same failure mode as item 62's PRAGMA bug. Fixed: `applyMigrations`
+      now takes the DO's `ctx.storage` (not just `.sql`) and wraps the whole migration block in
+      `storage.transactionSync(() => {...})`, the real API Cloudflare's own error message names.
+    - **A second, previously-masked bug surfaced the moment the first was fixed:** with the
+      transaction wrapper no longer throwing immediately, execution reached each migration's `up`
+      SQL for the first time ever in production — and a multi-statement `sql.exec(m.up)` call
+      (several `;`-separated CREATE TABLE/ALTER statements in one string, which Cloudflare's own
+      docs show working fine OUTSIDE a transaction) throws `"SQL code did not contain a
+      statement"` when that same call happens INSIDE a `transactionSync()` closure. Fixed by
+      splitting each migration's `up` into individual statements (a new `splitStatements()`,
+      comment- and string-literal-aware) and calling `sql.exec()` once per statement. That
+      splitter itself had a real bug on its first pass, caught by the FULL test suite (not live
+      traffic) before it ever redeployed: a SQL line comment containing a semicolon
+      (`-- JSON string[]; NULL = unrestricted`, from `SpaceDO`'s migration v19) was mistaken for a
+      statement boundary, producing a bogus standalone `"NULL = unrestricted"` fragment that threw
+      a real syntax error — fixed by making the splitter comment-aware (`--`/`/* */`), and by
+      dropping any resulting fragment that's comment-only (no real SQL content) rather than
+      handing `sql.exec()` an empty statement, which reproduces the exact same "did not contain a
+      statement" error for a different reason.
+    - **Test-suite fallout, fixed correctly rather than papered over:** `applyMigrations`'s new
+      signature needs `ctx.storage.transactionSync`, which the test DO-storage shim
+      (`tests/unit/helpers/sqlite-do-shim.ts`) didn't provide. Rather than stub it as a no-op
+      (weaker than production — real `transactionSync` rolls back atomically on a thrown
+      exception), the shim's `createDOStorage()` wraps a REAL `node:sqlite` transaction
+      (`BEGIN`/`COMMIT`/`ROLLBACK` against the in-memory test engine only, not passed through to
+      DO code) so a test double failure still rolls back exactly like production. `createDOSqlStorage()`
+      stays as a thinner back-compat export for callers that only ever needed `.sql`.
+      `fake-do-namespace.ts` (used by ~22 test files via `makeStatefulDoNamespace(SpaceDO)`/
+      `(ProductUserDO)`) and 15 more test files that hand-roll a `SpaceDO`/`ProductUserDO` `ctx`
+      directly were updated to `createDOStorage()`.
+    - **`apps/shell` (the Product Shell) had the exact same "preview-only, never promoted to
+      production" gap item 62 found and fixed for `apps/dashboard`** — confirmed via the Pages API
+      that both of its only two deployments were `environment: "preview"` from a topic branch, so
+      the bare `naelao-shell.pages.dev` domain 404'd. Rebuilt with `@cloudflare/next-on-pages` and
+      deployed to the `main` branch (`wrangler pages deploy --branch=main`) — this now resolves
+      for the first time. Hit the identical `NEXT_PUBLIC_API_URL` pitfall item 62 already
+      documented, with a new specific trap: exporting the env var in one shell command then
+      running `next-on-pages` in a SEPARATE command silently loses it, because `next-on-pages`
+      internally re-runs its own full `vercel build` (a second, independent Next.js build) that
+      doesn't inherit env vars from a prior, already-finished shell invocation — the fix must set
+      `NEXT_PUBLIC_API_URL` in the SAME command as the `next-on-pages` invocation itself, not a
+      preceding `next build`. Verified by grepping the compiled bundle for the literal baked-in
+      API origin before deploying, not just assuming the export worked.
+    - **Verified fully live, not just via curl:** created a real product through the wizard's
+      exact API shape, confirmed `status` reaches `active` (previously stuck at `error`/
+      `provisioning` forever), confirmed `GET /v1/products/by-slug/:slug` resolves it, and
+      confirmed the REAL production Product Shell URL
+      (`https://naelao-shell.pages.dev/p/{slug}`) renders the actual sign-in page for that
+      product — the first time any product has ever been reachable end-to-end on this platform.
+      Test product soft-deleted after verification.
+    - **The user's actual "Launchpad" product (product_slug `launchpad`, created before this fix)
+      is stuck in `status='error'` permanently** — the provisioner's rollback already ran and
+      cleaned up its partial state; there is no retry mechanism, only delete + recreate. Its
+      `product_slug` is NOT freed by a soft-delete (`DELETE` only sets `status='deleted'`, never
+      clears `product_slug`, and the DB's partial-unique index on `product_slug` doesn't care
+      about status) — reusing the exact slug `launchpad` needs that column cleared first, a real,
+      separate, narrow gap worth fixing in its own pass (a soft-delete should probably free the
+      slug) rather than folded into this one.
+    - **Not fixed this pass, flagged as a separate, real, lower-severity bug:** the dashboard
+      displays a product's domain as `{product_slug}.naelao.app`
+      (`apps/dashboard/.../products/new/steps/{Review,Domain}Step.tsx`,
+      `.../products/[productId]/{layout,domain/page}.tsx`) — a hardcoded client-side string
+      template with zero backing infrastructure. Confirmed via the Cloudflare API: **zero DNS
+      zones exist on this account at all** (`naelao.app`, `naelao.com`, or anything else), so this
+      domain can never resolve regardless of any other fix. It's also internally inconsistent with
+      the rest of the codebase, which assumes a single shared shell domain
+      (`app.naelao.com`/`naelao-shell.pages.dev` + `/p/{slug}` path routing, per
+      `PRODUCT_SHELL_URL` and the router's CORS allowlist) rather than a per-product subdomain —
+      and `workers/portal-router` (the one Worker that DOES do Host-header-based subdomain
+      resolution) targets `apps/portal`, not `apps/shell`, and its `PORTAL_DOMAINS` KV mapping is
+      never populated by product creation regardless. The real, reachable URL for now is
+      `https://naelao-shell.pages.dev/p/{product_slug}`; the dashboard's domain display should be
+      corrected to either show that, or a real custom domain once actual DNS/CF-for-SaaS wiring
+      for the Product Shell is built (a materially bigger, separate piece of work — the Domain tab
+      that exists today is the Launchpad STOREFRONT's custom-domain flow, item 16, a different,
+      optional, already-real feature).
+    1954/1954 tests pass, `pnpm turbo run typecheck` clean (76 tasks), fix live-verified end-to-end
+    against production (real product creation → active status → shell page render).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

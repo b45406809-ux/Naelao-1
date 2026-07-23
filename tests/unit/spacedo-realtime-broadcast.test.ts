@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // §A1.17 Phase V: confirms SpaceDO actually calls broadcastSpaceEvent (not just that the helper
 // itself works, covered in packages/realtime-broadcast.test.ts) from every mutation point this
@@ -20,7 +20,7 @@ function makeSpaceDO(): { doInstance: SpaceDO; calls: BroadcastCall[] } {
       return Response.json({ ok: true, sent: 1 });
     },
   };
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   const doInstance = new SpaceDO(ctx as never, { PLATFORM_SECRET: "test-secret", WS_GATEWAY } as never);
   return { doInstance, calls };
 }
@@ -99,7 +99,7 @@ describe("SpaceDO real-time broadcasts (§A1.17 Phase V)", () => {
   });
 
   it("mutations succeed normally (and never throw) when WS_GATEWAY is not bound at all", async () => {
-    const ctx = { storage: { sql: createDOSqlStorage() } };
+    const ctx = { storage: createDOStorage() };
     const doInstance = new SpaceDO(ctx as never, { PLATFORM_SECRET: "test-secret" } as never);
     const created = await call(doInstance, "/projects", "POST", { space_id: "space-1", name: "No Gateway", tenant_id: "tenant-1" });
     expect(created.status).toBe(201);

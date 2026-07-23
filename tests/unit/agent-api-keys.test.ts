@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // §A1.17 Phase O: agent API keys (nak_...) + the per-agent approval-policy fallback chain, both
 // implemented entirely inside SpaceDO (mirrors BuilderAccountDO's api_keys pattern — hash+prefix
@@ -8,7 +8,7 @@ import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 // lets a thread bubble say "Agent1" instead of every non-user message collapsing into 'assistant'.
 
 function makeSpaceDO(): SpaceDO {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   return new SpaceDO(ctx as never, { PLATFORM_SECRET: "test-secret" } as never);
 }
 

@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { ProductUserDO } from "../../workers/spaces/src/do/ProductUserDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // Three-Tier Platform Model, Phase 2 (docs/spec-appendix A1.17). ProductUserDO is the platform's
 // first persistent signed-in end-user identity: product-scoped sessions, a credit ledger, prefs,
 // notifications, and a GDPR Art. 20 export. One instance per (productId, endUserId).
 
 function makeDO() {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   return new ProductUserDO(ctx as never, {} as never);
 }
 

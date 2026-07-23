@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // Regression: removeMember used to run `DELETE FROM space_members WHERE user_id = ?` with no
 // space_id scoping. One SpaceDO can host more than one space row (a sub-space/department
@@ -8,7 +8,7 @@ import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 // just the one the caller meant to remove them from.
 
 function makeSpaceDO(): SpaceDO {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   return new SpaceDO(ctx as never, { PLATFORM_SECRET: "test-secret" } as never);
 }
 

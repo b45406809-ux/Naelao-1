@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // POST /internal/events/fire (new: A1.16.13's scheduled_job.disabled event) — lets a caller
 // OUTSIDE this DO (the agents worker's scheduled-jobs auto-disable) run an arbitrary event
@@ -16,7 +16,7 @@ function makeSpaceDO(agentsWorkerFetch?: (req: Request) => Promise<Response>): {
       return agentsWorkerFetch ? agentsWorkerFetch(req) : new Response(JSON.stringify({ result: "ok" }), { status: 200 });
     },
   };
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   const doInstance = new SpaceDO(ctx as never, { PLATFORM_SECRET: "test-secret", AGENTS_WORKER } as never);
   return { doInstance, calls };
 }

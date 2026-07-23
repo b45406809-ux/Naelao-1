@@ -1023,7 +1023,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
   private ensureInit(): void {
     if (this.initialized) return;
-    applyMigrations(this.ctx.storage.sql as never, MIGRATIONS);
+    applyMigrations(this.ctx.storage as never, MIGRATIONS);
     this.initialized = true;
   }
 

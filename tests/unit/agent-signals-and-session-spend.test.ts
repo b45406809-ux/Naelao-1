@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage } from "./helpers/sqlite-do-shim.js";
 
 // §A1 Harness Excellence Phase HX2: explicit signals (computed on read from the pre-existing
 // agent_activity_log), implicit signal events (a new table), and the session token-budget
 // guard's tally (session_spend) — all exercised directly against the DO's real fetch() router.
 
 function makeSpaceDO(env: Record<string, unknown> = {}): SpaceDO {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   return new SpaceDO(ctx as never, { PLATFORM_SECRET: "test-secret", ...env } as never);
 }
 

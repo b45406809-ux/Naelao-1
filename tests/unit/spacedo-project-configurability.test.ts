@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SpaceDO } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage, type DOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage, type DOSqlStorage } from "./helpers/sqlite-do-shim.js";
 
 // Templates ship pre-wired projects bound to whichever installed agent owns that project's
 // work (spec follow-up: "prebuilt projects, threads, agents ... that's what a template should
@@ -9,7 +9,7 @@ import { createDOSqlStorage, type DOSqlStorage } from "./helpers/sqlite-do-shim.
 // settable at creation, readable via GET/list, and freely reassignable/clearable via PATCH.
 
 function makeSpaceDO(): SpaceDO {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   return new SpaceDO(ctx as never, { PLATFORM_SECRET: "test-secret" } as never);
 }
 
@@ -198,8 +198,9 @@ describe("SpaceDO projects — max_threads + thread creation enforcement", () =>
   });
 
   it("archiving a thread frees a slot under the cap", async () => {
-    const sql = createDOSqlStorage();
-    const doInstance = new SpaceDO({ storage: { sql } } as never, { PLATFORM_SECRET: "test-secret" } as never);
+    const storage = createDOStorage();
+    const sql = storage.sql;
+    const doInstance = new SpaceDO({ storage } as never, { PLATFORM_SECRET: "test-secret" } as never);
     const project = await call(doInstance, "/projects", "POST", { space_id: "space1", name: "Orders", max_threads: 1 });
     const projectId = project.json.id;
 

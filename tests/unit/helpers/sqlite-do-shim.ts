@@ -19,9 +19,18 @@ export interface DOSqlStorage {
   exec<T = unknown>(query: string, ...params: unknown[]): { toArray(): T[]; rowsWritten: number };
 }
 
-export function createDOSqlStorage(): DOSqlStorage {
-  const db = new DatabaseSync(":memory:");
-  return {
+/** ctx.storage's JS transaction API — real Cloudflare DO SQLite storage requires
+ *  transactionSync()/transaction() instead of raw SQL BEGIN/COMMIT (see @naelao/db's
+ *  applyMigrations). node:sqlite has no such restriction, so this wraps the closure in a
+ *  real transaction against the same in-memory engine, which is a true test double —
+ *  a thrown exception rolls back exactly like the real API's own guarantee. */
+export interface DOStorage {
+  sql: DOSqlStorage;
+  transactionSync<T>(closure: () => T): T;
+}
+
+function buildStorage(db: InstanceType<typeof DatabaseSync>): DOStorage {
+  const sql: DOSqlStorage = {
     exec(query: string, ...params: unknown[]) {
       const trimmed = query.trim();
       // A SELECT always goes through a prepared statement, REGARDLESS of param count — a
@@ -34,13 +43,12 @@ export function createDOSqlStorage(): DOSqlStorage {
         return { toArray: () => db.prepare(trimmed).all(...(params as never[])) as never[], rowsWritten: 0 };
       }
       if (params.length === 0) {
-        // Multi-statement DDL/transaction control (BEGIN/COMMIT/CREATE TABLE; ...; ALTER ...),
-        // or a single non-SELECT statement with no placeholders (e.g. "DELETE FROM buckets").
-        // CF's DO SQLite tolerates `PRAGMA journal_mode`/`synchronous` changes inside an
-        // open transaction (DOs commonly set these right after `BEGIN EXCLUSIVE` in
-        // ensureInit); stock SQLite (and node:sqlite) rejects that with "Safety level may
-        // not be changed inside a transaction." Both pragmas are meaningless for a
-        // single-connection in-memory test database anyway — strip them.
+        // Multi-statement DDL (CREATE TABLE; ...; ALTER ...), or a single non-SELECT statement
+        // with no placeholders (e.g. "DELETE FROM buckets"). Real CF DO SQLite storage rejects
+        // PRAGMA journal_mode/synchronous changes and raw BEGIN/SAVEPOINT/COMMIT transaction
+        // control outright — production code must never send these (see CLAUDE.md's "DO SQLite
+        // Pattern" and @naelao/db's applyMigrations, which now uses transactionSync() below
+        // instead of raw SQL). Stripped here defensively in case a stray one shows up anyway.
         const stripped = trimmed.replace(/PRAGMA\s+(journal_mode|synchronous)\s*=\s*\w+\s*;?/gi, "");
         db.exec(stripped);
         return { toArray: () => [], rowsWritten: 0 };
@@ -50,4 +58,30 @@ export function createDOSqlStorage(): DOSqlStorage {
       return { toArray: () => [], rowsWritten: Number(result.changes ?? 0) };
     },
   };
+  return {
+    sql,
+    transactionSync<T>(closure: () => T): T {
+      db.exec("BEGIN");
+      try {
+        const result = closure();
+        db.exec("COMMIT");
+        return result;
+      } catch (err) {
+        db.exec("ROLLBACK");
+        throw err;
+      }
+    },
+  };
+}
+
+/** Back-compat: most call sites only ever needed `.sql` (ctx.storage.sql). Prefer
+ *  createDOStorage() for any DO whose ensureInit() calls applyMigrations (SpaceDO,
+ *  ProductUserDO) — it needs ctx.storage.transactionSync, not just ctx.storage.sql. */
+export function createDOSqlStorage(): DOSqlStorage {
+  return buildStorage(new DatabaseSync(":memory:")).sql;
+}
+
+/** Full ctx.storage double: { sql, transactionSync }, backed by one shared in-memory engine. */
+export function createDOStorage(): DOStorage {
+  return buildStorage(new DatabaseSync(":memory:"));
 }

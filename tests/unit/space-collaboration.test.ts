@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { SpaceDO, PRESENCE_PRUNE_CUTOFF_MS } from "../../workers/spaces/src/do/SpaceDO.js";
-import { createDOSqlStorage, type DOSqlStorage } from "./helpers/sqlite-do-shim.js";
+import { createDOStorage, type DOSqlStorage } from "./helpers/sqlite-do-shim.js";
 import { nameSimilarity, findPossibleDuplicateProjects, isPresenceFresh, PRESENCE_FRESHNESS_WINDOW_MS } from "@naelao/events";
 
 // Space collaboration (A1.8): "two members' assistants do not build two companies because
@@ -10,7 +10,7 @@ import { nameSimilarity, findPossibleDuplicateProjects, isPresenceFresh, PRESENC
 // on project creation, since exact-name idempotency already existed).
 
 function makeSpaceDO(env: Record<string, unknown> = {}): SpaceDO {
-  const ctx = { storage: { sql: createDOSqlStorage() } };
+  const ctx = { storage: createDOStorage() };
   return new SpaceDO(ctx as never, { PLATFORM_SECRET: "test-secret", ...env } as never);
 }
 
@@ -209,9 +209,9 @@ describe("SpaceDO — presence", () => {
   // active list" from "physically deleted," so they construct the DO with direct access to the
   // underlying SQL storage rather than using the shared `spaceDO`/`call` helpers above.
   function makeSpaceDOWithSql(): { doInstance: SpaceDO; sql: DOSqlStorage } {
-    const sql = createDOSqlStorage();
-    const doInstance = new SpaceDO({ storage: { sql } } as never, { PLATFORM_SECRET: "test-secret" } as never);
-    return { doInstance, sql };
+    const storage = createDOStorage();
+    const doInstance = new SpaceDO({ storage } as never, { PLATFORM_SECRET: "test-secret" } as never);
+    return { doInstance, sql: storage.sql };
   }
 
   function presenceRowCount(sql: DOSqlStorage, spaceId: string, userId: string): number {
