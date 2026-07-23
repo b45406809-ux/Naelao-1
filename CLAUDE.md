@@ -2308,6 +2308,50 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       optional, already-real feature).
     1954/1954 tests pass, `pnpm turbo run typecheck` clean (76 tasks), fix live-verified end-to-end
     against production (real product creation → active status → shell page render).
+65. **Follow-up to item 64, on the user's own real product (`launchpad`): three more reported
+    end-user-facing bugs, two real and now FIXED, one a live infra config gap now RESOLVED.**
+    - **Shell home page "An unexpected error occurred" on every load — FIXED.** Root cause:
+      `POST /spaces/:spaceId/sessions` (the generic session-CRUD proxy in
+      `workers/spaces/src/index.ts`) forwarded the client's request body verbatim to `SpaceDO`.
+      `SpaceDO.createSession()` reads `space_id`/`tenant_id` FROM that body — but the real caller
+      (`apps/shell`'s `startSession()`) always POSTs an EMPTY body, relying on the URL for
+      identity. Every real session-create therefore bound `NULL` into a `NOT NULL` column and
+      500'd — confirmed live via `wrangler tail` (`NOT NULL constraint failed: sessions.space_id`).
+      Fixed by injecting `space_id`/`tenant_id` into the body server-side before forwarding,
+      mirroring the identical pattern the `/threads` POST route already used for the same reason.
+      New regression test drives the exact empty-body request the real client sends. Deployed,
+      live-verified (fresh signup → session create → `201`), committed `1ba2cfc`.
+    - **"Verify email" not arriving — was a live config gap, not code: RESOLVED.** Traced via
+      `wrangler tail` on `naelao-notifications`: the verification email correctly attempts to
+      send via Resend, but `RESEND_API_KEY` had never been set as a Worker secret, so every send
+      502'd (silently, since `sendEmail()` in `product-end-user-routes.ts` is deliberately
+      best-effort and never blocks the caller's own response). Not a bug — this repo's Resend
+      integration (`workers/notifications`) was simply never provisioned with a real key. User
+      supplied one; set via `wrangler secret put RESEND_API_KEY --name naelao-notifications`.
+      Re-verified live: the same `/internal/notify` call that previously 502'd now returns `Ok`.
+      **Operational note for future sessions:** this key is a real, live secret now — do not
+      re-prompt for it or treat notification delivery as unconfigured going forward.
+    - **"Create Business" dialog stuck on "Creating…", nothing happens — investigated, root cause
+      was UX not a hang, now FIXED.** Reproduced live end-to-end (disposable test end user,
+      `POST .../businesses` with `template_ids:["whop-seller"]`): the backend responds in well
+      under a second with a clean `403 plan_upgrade_required` — `whop-seller` is deliberately
+      `free_tier_eligible: false` (G-BF08) and this account's org is on the free plan, so the
+      rejection is CORRECT platform behavior, not a bug. The actual defect: the dialog gave zero
+      warning a template requires a paid plan (no visual difference from a free one), then on
+      rejection showed the reason only as a 2.8s auto-dismissing toast — indistinguishable from a
+      silent hang once the button reverts to "Create". Fixed in `apps/shell`:
+      `ShellManifest.template_catalog`'s TS type was missing `free_tier_eligible` even though the
+      backend always sent it (`workers/spaces/src/template-catalog.ts`) — added it, and the
+      Create Business dialog now shows a "Requires plan upgrade" badge on any such template
+      up front, plus keeps the rejection message visible inline in the dialog (not just the
+      toast) until the user retries or closes it.
+    - Also fixed in passing: this session's `.cf-credentials.local` (session-local CF API token)
+      had been lost across a container boundary earlier in the session — re-supplied by the user
+      and re-written to that gitignored path; confirms the file really is only as durable as the
+      current container, exactly as documented above.
+    1955/1955 tests pass (1 new), `pnpm turbo run typecheck` clean (76 tasks), `apps/shell`
+    rebuilt and redeployed to `naelao-shell.pages.dev` production, fix live-verified by grepping
+    the actual deployed JS chunk for the new badge/error-handling code.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
