@@ -28,7 +28,7 @@ const SPACES_TABLE_SQL = `
     updated_at TEXT NOT NULL DEFAULT (datetime('now')), created_by TEXT
   );
   CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
-  CREATE TABLE spacetypes (id TEXT PRIMARY KEY, config_schema TEXT);
+  CREATE TABLE spacetypes (id TEXT PRIMARY KEY, schema_json TEXT);
 `;
 const NAELAO_PRODUCT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0044_naelao_product.sql"), "utf8");
 const BUILDER_DASHBOARD_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0045_builder_dashboard_api.sql"), "utf8");
@@ -128,12 +128,21 @@ describe("Product Creation Wizard — launch payload round-trips through POST /b
 });
 
 describe("Product Creation Wizard — GET /builder/space-types (the Space-Type Selection step's data source)", () => {
-  it("wraps SpaceTypeRegistryDO's real GET /types — an empty registry returns an empty, renderable list, not an error", async () => {
+  it("wraps SpaceTypeRegistryDO's real GET /types — always renders a list, never an error", async () => {
     const env = makeEnv();
     const res = await spacesWorker.fetch(req("/builder/space-types", { tenant: "tenant-1" }), env as never, execCtx);
     expect(res.status).toBe(200);
     const body = await res.json() as { types: unknown[] };
     expect(Array.isArray(body.types)).toBe(true);
+  });
+
+  it("self-heals a fresh/never-seeded registry instance with the built-in Launchpad SpaceType — regression test: a live deployment whose registry was never POSTed to /internal/space-types/seed used to render the wizard's Space-Type step with zero SpaceTypes, leaving only the Whop Seller Temple card visible and looking like a SpaceType itself", async () => {
+    const env = makeEnv();
+    // No /register call at all — a brand-new SpaceTypeRegistryDO instance, exactly like a
+    // fresh deploy whose one-time seed step was never (or no longer) run.
+    const res = await spacesWorker.fetch(req("/builder/space-types", { tenant: "tenant-1" }), env as never, execCtx);
+    const body = await res.json() as { types: Array<{ id: string; name: string }> };
+    expect(body.types.some((t) => t.id === "launchpad" && t.name === "Launchpad")).toBe(true);
   });
 
   it("lists a registered, approved, visible SpaceType (matches how the wizard renders 'start blank' cards)", async () => {

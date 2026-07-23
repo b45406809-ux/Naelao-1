@@ -7,6 +7,7 @@
  */
 
 import { DurableObject } from "cloudflare:workers";
+import { LAUNCHPAD_MANIFEST } from "../launchpad-manifest.js";
 
 // ── SpaceType Manifest v2 (spec §61) ─────────────────────────────────────────
 
@@ -515,6 +516,36 @@ export class SpaceTypeRegistryDO extends DurableObject {
       );
     `);
     this.initialized = true;
+
+    // Self-heal: this registry must always carry at least the built-in Naelao
+    // manifests. Seeding was originally a manual, easy-to-forget POST
+    // /internal/space-types/seed call at deploy time — if that was never run
+    // against a fresh/reset instance, every listing (GET /types, the builder
+    // wizard's SpaceType step, provisioning's own GET /type/:id) would silently
+    // return an empty catalogue rather than erroring, with no visible sign
+    // anything was wrong. Seed inline instead of depending on that step.
+    const existing = this.ctx.storage.sql.exec(`SELECT COUNT(*) AS n FROM space_types`).toArray() as unknown as { n: number }[];
+    if ((existing[0]?.n ?? 0) === 0) {
+      for (const manifest of [LAUNCHPAD_MANIFEST]) {
+        this.registerManifest(manifest, "naelao");
+      }
+    }
+  }
+
+  private registerManifest(manifest: NaelaoSpaceTypeManifestV2, authorId: string): void {
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO space_types
+         (id, name, description, author, current_version, manifest, status, visible, price_usd, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'approved', 1, ?, ?)`,
+      manifest.id, manifest.name, manifest.description, authorId,
+      manifest.version, JSON.stringify(manifest), manifest.marketplace.priceUsdPerMonth, now
+    );
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO versions (type_id, version, manifest, change_type, canary_pct, stable, published_at)
+       VALUES (?, ?, ?, 'minor', 100, 1, ?)`,
+      manifest.id, manifest.version, JSON.stringify(manifest), now
+    );
   }
 
   override async fetch(request: Request): Promise<Response> {
@@ -574,19 +605,7 @@ export class SpaceTypeRegistryDO extends DurableObject {
           { status: 400 }
         );
       }
-      const now = Date.now();
-      this.ctx.storage.sql.exec(
-        `INSERT OR REPLACE INTO space_types
-           (id, name, description, author, current_version, manifest, status, visible, price_usd, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'approved', 1, ?, ?)`,
-        m.id, m.name, m.description, body.authorId,
-        m.version, JSON.stringify(m), m.marketplace.priceUsdPerMonth, now
-      );
-      this.ctx.storage.sql.exec(
-        `INSERT OR REPLACE INTO versions (type_id, version, manifest, change_type, canary_pct, stable, published_at)
-         VALUES (?, ?, ?, 'minor', 100, 1, ?)`,
-        m.id, m.version, JSON.stringify(m), now
-      );
+      this.registerManifest(m, body.authorId);
       return Response.json({ accepted: true });
     }
 

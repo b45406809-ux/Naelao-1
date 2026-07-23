@@ -182,18 +182,23 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
   }
 
   if (params.configOverrides) {
-    const spaceTypeRow = await env.PLATFORM_DB.prepare("SELECT config_schema FROM spacetypes WHERE id = ?").bind(params.spacetypeId).first<{ config_schema: string | null }>();
-    if (spaceTypeRow?.config_schema) {
-      try {
-        const schema = JSON.parse(spaceTypeRow.config_schema) as Record<string, unknown>;
+    try {
+      // NOTE: the real migration (infra/migrations/0003_spaces.sql) names this column
+      // schema_json, never config_schema — a prior version of this query used the wrong
+      // name and threw a D1 "no such column" error on every call that reached here
+      // (i.e. every product-wizard launch, since the wizard always sets configOverrides),
+      // surfacing as a generic "An unexpected error occurred" 500 with no other symptom.
+      const spaceTypeRow = await env.PLATFORM_DB.prepare("SELECT schema_json FROM spacetypes WHERE id = ?").bind(params.spacetypeId).first<{ schema_json: string | null }>();
+      if (spaceTypeRow?.schema_json) {
+        const schema = JSON.parse(spaceTypeRow.schema_json) as Record<string, unknown>;
         const validationErrors = validateConfigSchema(params.configOverrides, schema);
         if (validationErrors.length > 0) {
           throw new SpaceCreationError(400, "config_validation_failed", "SpaceType config validation failed", validationErrors);
         }
-      } catch (err) {
-        if (err instanceof SpaceCreationError) throw err;
-        // Malformed schema stored in DB — skip validation, don't block creation.
       }
+    } catch (err) {
+      if (err instanceof SpaceCreationError) throw err;
+      // Missing/malformed schema, or a lookup failure — skip validation, don't block creation.
     }
   }
 

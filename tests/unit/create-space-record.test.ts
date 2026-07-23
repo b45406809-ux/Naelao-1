@@ -22,7 +22,7 @@ const SPACES_TABLE_SQL = `
   );
   CREATE UNIQUE INDEX idx_spaces_product_slug ON spaces(product_slug) WHERE product_slug IS NOT NULL;
   CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
-  CREATE TABLE spacetypes (id TEXT PRIMARY KEY, config_schema TEXT);
+  CREATE TABLE spacetypes (id TEXT PRIMARY KEY, schema_json TEXT);
 `;
 
 function makeDb() {
@@ -134,7 +134,7 @@ describe("createSpaceRecord — config schema validation (G-AV02)", () => {
   it("rejects overrides that fail the SpaceType's declared config_schema", async () => {
     const fakeDb = makeDb();
     fakeDb.db.exec(
-      `INSERT INTO spacetypes (id, config_schema) VALUES ('launchpad', '${JSON.stringify({
+      `INSERT INTO spacetypes (id, schema_json) VALUES ('launchpad', '${JSON.stringify({
         required: ["storefront_name"],
         properties: { storefront_name: { type: "string", minLength: 3 } },
       })}')`
@@ -147,7 +147,7 @@ describe("createSpaceRecord — config schema validation (G-AV02)", () => {
   it("accepts overrides that satisfy the schema", async () => {
     const fakeDb = makeDb();
     fakeDb.db.exec(
-      `INSERT INTO spacetypes (id, config_schema) VALUES ('launchpad', '${JSON.stringify({
+      `INSERT INTO spacetypes (id, schema_json) VALUES ('launchpad', '${JSON.stringify({
         required: ["storefront_name"],
         properties: { storefront_name: { type: "string", minLength: 3 } },
       })}')`

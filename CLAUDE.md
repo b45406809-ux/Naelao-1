@@ -2157,6 +2157,66 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     runs the pre-fix code in production and will throw the identical `SQLITE_AUTH` error the
     moment any of ITS Durable Objects are first used; redeploying the full platform is the
     natural next step, not done here to keep this diagnostic pass scoped to the reported bug.
+63. **Two real, previously-undetected bugs on the live Product Creation Wizard — reported by the
+    user against the deployed dashboard — found and FIXED: a wrong D1 column name that broke
+    EVERY wizard launch carrying `product_config` (step 6, "An unexpected error occurred"), and a
+    SpaceType registry that had silently never been seeded in production (step 2 showed only the
+    "Whop Seller" Temple card with no SpaceType section, reading as if Whop Seller were the
+    product type instead of a Temple within Launchpad).**
+    - **Wizard launch 500 (root cause):** `createSpaceRecord` (`workers/spaces/src/create-space.ts`)
+      queried `SELECT config_schema FROM spacetypes` — the real migration
+      (`infra/migrations/0003_spaces.sql`) names this column `schema_json`, never `config_schema`.
+      Since the wizard's `launch()` (`apps/dashboard/.../products/new/page.tsx`) always sends
+      `product_config` (hence `configOverrides` is always set), this D1 "no such column" error
+      threw on literally every wizard launch, uncaught, surfacing through the generic
+      `errorResponse` handler as exactly the reported "An unexpected error occurred" 500. Two test
+      files' hand-rolled fake `spacetypes` schema used the SAME wrong column name as the buggy
+      application code (`config_schema`), which is why ~1953 passing tests never caught it — the
+      same "test double diverges from the real migration" failure mode CLAUDE.md already
+      documents for the earlier `organizations`/`orgs` bug. Fixed: query `schema_json` (matching
+      the real migration); wrapped the whole lookup in the existing try/catch (defense in depth —
+      a missing/malformed schema must never block creation); fixed the fake schema in all 6 test
+      files that declared it (`create-space-record`, `product-wizard-api`,
+      `conversation-access-gate`, `model-switcher-config-resolution`,
+      `free-tier-template-gating`, `builder-dashboard-api`); the pre-existing "merges productConfig
+      overrides" test in `create-space-record.test.ts` already exercised exactly this path with no
+      `spacetypes` row present and now serves as a real regression test against the correct schema.
+    - **Step 2 showing Whop Seller as if it were a SpaceType (root cause):** the wizard's
+      SpaceType step correctly renders two separate sections — Temples (`GET /templates`, wraps
+      `LAUNCHPAD_TEMPLATES`) and real SpaceTypes (`GET /builder/space-types`, wraps
+      `SpaceTypeRegistryDO`'s `GET /types`) — and nothing in the code ever registered `whop-seller`
+      as a SpaceType; only `LAUNCHPAD_MANIFEST` (id `"launchpad"`) is ever seeded. But seeding was a
+      manual, easy-to-forget `POST /internal/space-types/seed` call with no automated invocation
+      anywhere (no CI step, no deploy hook) — confirmed live: `GET /v1/builder/space-types` against
+      production returned `{"types":[]}` before this fix. Since `GET /types` returns `200` even
+      with zero rows (not an error), and the wizard's "Or start blank" SpaceType section is gated
+      on `spaceTypes.length > 0`, an unseeded registry made that whole section silently vanish,
+      leaving only the single live Temple card ("Whop Seller") on the page — exactly the reported
+      symptom, with no error to signal anything was wrong. Fixed at the root so this can't silently
+      regress again: `SpaceTypeRegistryDO.ensureInit()` now self-heals — if `space_types` is empty
+      on any DO wake-up, it seeds the built-in Naelao manifests (`LAUNCHPAD_MANIFEST`) inline before
+      serving any request, covering `GET /types`, `GET /type/:id` (also used by provisioning), and
+      every other route this DO serves. Refactored the `/register` handler's INSERT logic into a
+      shared `registerManifest()` private method reused by both the manual endpoint and the
+      self-heal path so they can't drift. New regression test in `product-wizard-api.test.ts`
+      drives a brand-new, never-`/register`-ed `SpaceTypeRegistryDO` instance through the real
+      `GET /builder/space-types` route and asserts it now contains `launchpad` with no seed call —
+      reproducing the exact fresh-deploy/reset-instance scenario that shipped broken.
+    - **Verified against live production**, not just tests: deployed the fixed `naelao-spaces`
+      worker, then reproduced the wizard's exact flow end-to-end via `curl` against
+      `naelao-router` — registered a disposable test builder account, confirmed
+      `GET /v1/builder/space-types` now returns `{"types":[{"id":"launchpad","name":"Launchpad",...}]}`
+      (the registry self-healed on its very next live request, no manual seed action needed), and
+      confirmed `POST /v1/builder/products` with the wizard's exact `product_config` payload no
+      longer 500s — a blank-SpaceType launch (no template) returned a real `201`-equivalent
+      `{"status":"provisioning"}`, and a `whop-seller`-templated launch correctly reached the
+      intentional `free_tier_eligible: false` gate (`402 plan_upgrade_required`, a real, separate,
+      working business rule — not a bug) instead of dying earlier on the column-name 500. The
+      successful test product was soft-deleted after verification; the disposable test builder org
+      was left in place (harmless, same precedent as item 62's own real signup verification).
+    1954/1954 tests pass (1 new regression test), `pnpm turbo run typecheck` clean (76 tasks),
+    fix live-verified against production via direct API calls (no browser session available in
+    this environment).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

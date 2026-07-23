@@ -27,7 +27,7 @@ const SPACES_TABLE_SQL = `
     updated_at TEXT NOT NULL DEFAULT (datetime('now')), created_by TEXT
   );
   CREATE TABLE orgs (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '', plan_tier TEXT NOT NULL DEFAULT 'free');
-  CREATE TABLE spacetypes (id TEXT PRIMARY KEY, config_schema TEXT);
+  CREATE TABLE spacetypes (id TEXT PRIMARY KEY, schema_json TEXT);
 `;
 const NAELAO_PRODUCT_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0044_naelao_product.sql"), "utf8");
 const BUILDER_DASHBOARD_MIGRATION = readFileSync(join(__dirname, "../../infra/migrations/0045_builder_dashboard_api.sql"), "utf8");
