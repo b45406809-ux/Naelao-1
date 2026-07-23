@@ -542,16 +542,32 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
   }
   const doUrl = new URL(doPath + search, "http://space-do");
 
+  // SpaceDO.createSession() reads space_id/tenant_id from the JSON BODY (not the URL or
+  // headers — forwardToSpaceDO-style calls don't forward headers, and this DO instance has no
+  // other way to know its own space_id). Every client that calls POST /sessions (apps/shell's
+  // startSession()) sends an empty body ({}), so those fields were always undefined, binding
+  // NULL into a NOT NULL column and 500ing on every single session-create call — the literal
+  // cause of "An unexpected error occurred" on the shell's home page for every end user.
+  // Fixed by injecting them here, matching the exact pattern the /threads POST route below
+  // already uses for the same reason (SpaceDO needs tenant_id and has no other way to get it).
+  let doBody: BodyInit | null = c.req.raw.body;
+  let duplexInit: { duplex: "half" } | Record<string, never> = c.req.raw.body ? { duplex: "half" as const } : {};
+  if (c.req.method === "POST" && doPath === "/sessions") {
+    const parsedBody = await c.req.json().catch(() => ({}));
+    doBody = JSON.stringify({ ...parsedBody, space_id: spaceId, tenant_id: tenantId });
+    duplexInit = {};
+  }
+
   return stub.fetch(
     new Request(doUrl.toString(), {
       method: c.req.method,
       headers: c.req.raw.headers,
-      body: c.req.raw.body,
+      body: doBody,
       // Required by spec-compliant fetch implementations (e.g. Node's undici, used by this
       // repo's own test suite) whenever a streaming body is attached to a Request — omitting it
       // throws "duplex option is required" and was silently never hit before this Phase 6 pass
       // because this whole route was unreachable (see the routing-bug comment above).
-      ...(c.req.raw.body ? { duplex: "half" as const } : {}),
+      ...duplexInit,
     })
   );
 });

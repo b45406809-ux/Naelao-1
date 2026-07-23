@@ -329,6 +329,29 @@ describe("GET /spaces/:spaceId/sessions (list)", () => {
     return res.json() as Promise<{ id: string }>;
   }
 
+  it("creates a session from an EMPTY body — the exact request apps/shell's startSession() sends, regression test for the NOT NULL space_id crash", async () => {
+    // Unlike this file's own createSession() helper above (which always passes space_id/
+    // tenant_id explicitly and so never exercised the bug), the real client
+    // (apps/shell/src/lib/api.ts's startSession()) POSTs an empty body ({}) — SpaceDO.
+    // createSession() reads space_id/tenant_id FROM the body, so every real end-user session
+    // create bound NULL into a NOT NULL column and 500'd with "An unexpected error occurred"
+    // on literally the shell's home page, confirmed live via wrangler tail against production.
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/prod-1/sessions", {
+        method: "POST",
+        headers: await internalHeaders("tenant-1", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-a" }),
+        body: JSON.stringify({}),
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(201);
+    const body = await res.json() as { id: string; space_id: string };
+    expect(body.id).toBeTruthy();
+    expect(body.space_id).toBe("prod-1");
+  });
+
   it("a product end user's list is filtered to their own sessions only", async () => {
     const env = makeEnv();
     await seedSpace(env, "prod-1", "tenant-1");
