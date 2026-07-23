@@ -2352,6 +2352,65 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     1955/1955 tests pass (1 new), `pnpm turbo run typecheck` clean (76 tasks), `apps/shell`
     rebuilt and redeployed to `naelao-shell.pages.dev` production, fix live-verified by grepping
     the actual deployed JS chunk for the new badge/error-handling code.
+66. **Follow-up to item 65's own fix: a real bug it introduced ("Session not found" on Home/new
+    thread), plus a real UX/architecture direction from the user — the shell is now business-first
+    and sessions are created lazily. Both BUILT and live-verified.**
+    - **Root cause of "Session not found":** item 65's session-create fix injected `space_id`/
+      `tenant_id` into the empty body every real client sends, but NOT `end_user_id` — so every
+      end-user-created session landed with `end_user_id` NULL. `SpaceDO.getSession`/`getMessages`
+      both reject any read whose caller-derived `end_user_id` doesn't match the session's own
+      (S0.1 ownership check) — NULL never matches a real id, so the creator's own very next read
+      of their own brand-new session 404'd with "Session not found". Fixed in
+      `workers/spaces/src/index.ts`'s `/spaces/:spaceId/sessions*` proxy: `end_user_id` is now
+      derived from verified caller identity for a `product_end_user` role (never client-supplied,
+      same rule as every other identity field in this route). Live-verified: signup → create
+      session (empty body) → read it back → `200`, `end_user_id` populated correctly (previously
+      would have 404'd).
+    - **A second, independent bug found in the same investigation:** `apps/shell`'s `apiFetch`
+      threw a plain `Error` carrying only the backend's human-readable message ("Session not
+      found") — `Chat.tsx`'s own self-healing retry-on-404 logic checked
+      `msg.includes("404") || msg.includes("not_found")`, which could never match real prose and
+      meant a 404 (for ANY reason) always surfaced as a raw uncaught error instead of
+      self-healing. `apps/portal` has the identical bug (this code was "ported from" there) —
+      confirmed present, deliberately NOT fixed this pass (out of scope; flagged, not dropped).
+      Fixed in `apps/shell` with a real `ApiError extends Error` carrying `status`/`errorCode`;
+      `Chat.tsx` now checks `err instanceof ApiError && err.status === 404`.
+    - **Business-first shell (user-directed architecture change, not a bug fix):** hybrid/tenant
+      products (Launchpad) are now business-first — Home/Projects/Threads/Assistant/Agents/
+      Knowledge are meaningless at the product root, since every session/project/thread should
+      belong to a business. `ShellLayoutInner` (`layout.tsx`) redirects a user with zero
+      businesses to `/spaces?onboarding=1` (exempt: `spaces`/`settings`/`verify-email` — account-
+      level pages, not workspace pages) and auto-selects the user's first business as the active
+      space the moment one exists, both gated on a new `ActiveSpaceProvider.isHydrated` flag
+      (`active-space-context.tsx`) — without it, a child-before-parent effect race (the same
+      class of bug Phase D's dashboard fix documented) could fire before the persisted
+      active-space choice loads from sessionStorage and clobber it with a computed default. The
+      sidebar's "new thread"/"new project" buttons are hidden while parked on `/spaces` with zero
+      businesses (`canUseWorkspace`), and the space switcher's product-root ("Launchpad") entry
+      now routes to the business hub instead of activating the product root as a workspace — its
+      meta label changes to "Switch businesses" to make the intent explicit. "team" mode products
+      (the universal non-Launchpad Journey-1B shell, no businesses concept) are completely
+      unaffected — the product root stays the one and only workspace there, exactly as before.
+    - **Lazy session creation (user-directed, matches Claude's own "/new" behavior):** `Chat.tsx`
+      no longer creates a session just from mounting Home or a fresh thread — it only loads an
+      existing cached session's history if one exists; a session is minted for the first time
+      inside `handleSubmit`, on the actual first send. The composer stays enabled with no session
+      yet (previously gated on `!chatSessionId`). This also means opening Home/a new thread never
+      writes a session row purely from being viewed, consistent with the business-first "nothing
+      gets created until the user actually does something" rule above.
+    - New regression test drives the exact create-then-read sequence a real client does
+      (`product-shell-manifest.test.ts`) and asserts the read succeeds with the correct
+      `end_user_id`, not a 404.
+    1956/1956 tests pass (1 new), `pnpm turbo run typecheck` clean (76 tasks). Backend
+    (`naelao-spaces`) and `apps/shell` both deployed to production; live-verified via direct API
+    calls (signup → session create → session read, and the fresh manifest/my-businesses calls a
+    real zero-business account gets) and by confirming the deployed JS bundle contains the new
+    gating code. **Not verified via a live browser session this pass** — Playwright is available
+    in this environment but its bundled Chromium couldn't complete a TLS handshake through the
+    session's MITM proxy (`net::ERR_CONNECTION_RESET` on every navigation, independent of the
+    proxy itself working fine for plain `curl` requests) — not investigated further since the
+    API-level + bundle-content verification already gives high confidence; a future session with
+    working browser access should do a full click-through pass.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
