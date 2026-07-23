@@ -7,6 +7,7 @@
 
 import * as React from "react";
 import {
+  ApiError,
   getMessages,
   getStreamUrl,
   pollRun,
@@ -65,31 +66,40 @@ export function Chat({
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingContent]);
 
+  // Like Claude's own "new chat" — no session is minted just from landing here. A cached session
+  // id (an earlier message already sent in this browser tab) resumes its history; otherwise the
+  // composer sits empty and ready, and a session is only created lazily in handleSubmit on the
+  // first actual send. This also means Home/a fresh thread never writes a session row purely from
+  // being opened — matching the "nothing gets created until the user actually does something"
+  // rule the business-first gating in the shell layout depends on.
   React.useEffect(() => {
     let cancelled = false;
     async function init() {
       setInitializing(true);
       setError(null);
       try {
-        let sid = getChatSessionId(spaceId, sessionKey);
+        const sid = getChatSessionId(spaceId, sessionKey);
         if (!sid) {
-          const started = await startSession(spaceId, session);
-          sid = started.id;
-          storeChatSessionId(spaceId, sid, sessionKey);
+          if (!cancelled) {
+            setChatSessionId(null);
+            setMessages([]);
+          }
+          return;
         }
-        if (cancelled) return;
-        setChatSessionId(sid);
         try {
           const existing = await getMessages(spaceId, sid, session);
-          if (!cancelled) setMessages(existing);
+          if (!cancelled) {
+            setChatSessionId(sid);
+            setMessages(existing);
+          }
         } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (msg.includes("404") || msg.includes("not_found")) {
+          // A stale/invalid cached id (e.g. from a previous bug, or the session genuinely aged
+          // out) — drop it and land empty rather than surface a raw error; the next send mints a
+          // fresh one exactly like the first-ever visit would.
+          if (err instanceof ApiError && err.status === 404) {
             clearChatSessionId(spaceId, sessionKey);
-            const fresh = await startSession(spaceId, session);
-            storeChatSessionId(spaceId, fresh.id, sessionKey);
             if (!cancelled) {
-              setChatSessionId(fresh.id);
+              setChatSessionId(null);
               setMessages([]);
             }
           } else {
@@ -260,7 +270,7 @@ export function Chat({
 
   const handleSubmit = React.useCallback(async () => {
     const trimmed = input.trim();
-    if (!trimmed || isLoading || !chatSessionId) return;
+    if (!trimmed || isLoading) return;
     setInput("");
     setError(null);
     setIsLoading(true);
@@ -268,9 +278,19 @@ export function Chat({
     const optimistic: Message = { id: `optimistic_${Date.now()}`, role: "user", content: trimmed, created_at: new Date().toISOString() };
     setMessages((prev) => [...prev, optimistic]);
     try {
-      const { agentRunId } = await sendMessage(spaceId, chatSessionId, trimmed, session);
+      // Lazy session creation: the very first send in a fresh thread/Home mints the session here,
+      // not on mount — mirrors Claude's own "/new" behavior and means a session only ever exists
+      // once there's a real message to attach it to.
+      let sid = chatSessionId;
+      if (!sid) {
+        const started = await startSession(spaceId, session);
+        sid = started.id;
+        storeChatSessionId(spaceId, sid, sessionKey);
+        setChatSessionId(sid);
+      }
+      const { agentRunId } = await sendMessage(spaceId, sid, trimmed, session);
       storeActiveRunId(spaceId, agentRunId, sessionKey);
-      streamRun(chatSessionId, agentRunId);
+      streamRun(sid, agentRunId);
     } catch (err) {
       setIsLoading(false);
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
@@ -370,7 +390,7 @@ export function Chat({
                 className="msg-input"
                 placeholder="Message…"
                 value={input}
-                disabled={isLoading || !chatSessionId}
+                disabled={isLoading}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
@@ -380,7 +400,9 @@ export function Chat({
                 }}
                 rows={1}
               />
-              <button className="send-btn" type="button" disabled={isLoading || !input.trim() || !chatSessionId} onClick={() => void handleSubmit()}>
+              {/* No chatSessionId gate here — a fresh thread/Home has none yet by design
+                  (lazy creation), and the input must stay usable so the first send can mint one. */}
+              <button className="send-btn" type="button" disabled={isLoading || !input.trim()} onClick={() => void handleSubmit()}>
                 <svg viewBox="0 0 24 24" fill="none" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
                   <path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                 </svg>

@@ -352,6 +352,44 @@ describe("GET /spaces/:spaceId/sessions (list)", () => {
     expect(body.space_id).toBe("prod-1");
   });
 
+  it("a session created from an empty body is readable by its own creator afterwards — regression test for the 'Session not found' bug", async () => {
+    // The empty-body fix above stopped the 500 on create by injecting space_id/tenant_id — but a
+    // first version of that fix left end_user_id out of the injected fields entirely, so every
+    // end-user-created session landed with end_user_id NULL. getSession/getMessages both reject
+    // any read whose end_user_id (from verified caller claims, S0.1) doesn't match the session's
+    // own end_user_id — NULL never matches a real id, so the creator's own very next read of
+    // their own brand-new session 404'd with "Session not found", confirmed live on the shell's
+    // home page and new-thread pages. This drives the exact create-then-read sequence the real
+    // client does and asserts the read succeeds.
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    const headers = await internalHeaders("tenant-1", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "user-a" });
+    const createRes = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/prod-1/sessions", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({}),
+      }),
+      env as never, execCtx
+    );
+    expect(createRes.status).toBe(201);
+    const { id: sessionId } = await createRes.json() as { id: string };
+
+    const getRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${sessionId}`, { headers }),
+      env as never, execCtx
+    );
+    expect(getRes.status).toBe(200);
+    const session = await getRes.json() as { end_user_id: string | null };
+    expect(session.end_user_id).toBe("user-a");
+
+    const messagesRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${sessionId}/messages`, { headers }),
+      env as never, execCtx
+    );
+    expect(messagesRes.status).toBe(200);
+  });
+
   it("a product end user's list is filtered to their own sessions only", async () => {
     const env = makeEnv();
     await seedSpace(env, "prod-1", "tenant-1");

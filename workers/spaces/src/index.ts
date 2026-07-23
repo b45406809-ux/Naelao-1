@@ -554,7 +554,15 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
   let duplexInit: { duplex: "half" } | Record<string, never> = c.req.raw.body ? { duplex: "half" as const } : {};
   if (c.req.method === "POST" && doPath === "/sessions") {
     const parsedBody = await c.req.json().catch(() => ({}));
-    doBody = JSON.stringify({ ...parsedBody, space_id: spaceId, tenant_id: tenantId });
+    // A product_end_user's own real id (never client-supplied — same "identity from verified
+    // claims only" rule every other end_user_id use in this route already follows) so the
+    // session is actually owned by its creator. Without this, every end-user-created session
+    // landed with end_user_id NULL, which made getSession/getMessages' own ownership check
+    // ("session.end_user_id !== endUserId") reject EVERY subsequent read as "Session not found"
+    // — the space_id/tenant_id fix above stopped the 500 on create, but left every session
+    // permanently unreadable by the very user who just created it.
+    const endUserId = isProductEndUser ? callerId : (parsedBody as { end_user_id?: string }).end_user_id;
+    doBody = JSON.stringify({ ...parsedBody, space_id: spaceId, tenant_id: tenantId, end_user_id: endUserId ?? null });
     duplexInit = {};
   }
 

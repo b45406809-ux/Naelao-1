@@ -4,6 +4,7 @@ export const runtime = "edge";
 
 import * as React from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { Button, Badge, Card, CardTitle, CardDesc, Modal, FormInput, Toggle, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
@@ -102,9 +103,28 @@ export default function SpacesPage() {
   // already intersected server-side with the builder's business_templates narrowing) instead of a
   // hardcoded duplicate of LAUNCHPAD_TEMPLATES.
   const availableTemplates = manifest?.template_catalog ?? [];
+  // Set by the shell layout's business-first redirect (layout.tsx) when a hybrid/tenant user has
+  // zero businesses and tried to reach a workspace page (Home, Projects, ...) that only makes
+  // sense inside one — explains why they landed here instead of where they clicked.
+  const onboarding = useSearchParams().get("onboarding") === "1" && !loading && businesses.length === 0;
 
   return (
     <div className="page-view">
+      {onboarding && (
+        <div
+          style={{
+            padding: "12px 16px",
+            marginBottom: 16,
+            borderRadius: 10,
+            background: "var(--accent-soft, #eef2ff)",
+            border: "1px solid var(--accent, #5b52f0)",
+            fontSize: 13,
+          }}
+        >
+          Create your first business to get started — everything (chat, projects, threads) lives
+          inside a business, so there&rsquo;s nothing to do here until you make one.
+        </div>
+      )}
       <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
           <div className="page-title">Spaces</div>

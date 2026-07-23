@@ -11,6 +11,23 @@ export interface SessionCredentials {
   endUserId: string;
 }
 
+// Callers need to distinguish "not found" (self-healable — e.g. Chat.tsx recreating a stale
+// session) from other failures, but the backend's `message` field is human text ("Session not
+// found") with no reliable substring to match on — a prior version of this threw a plain Error
+// and callers guessed via `message.includes("404")`, which never actually matched and meant a
+// 404 always surfaced as a raw, un-recovered error instead of self-healing. Carrying the real
+// HTTP status lets callers check `err.status === 404` instead of parsing prose.
+export class ApiError extends Error {
+  status: number;
+  errorCode?: string | undefined;
+  constructor(message: string, status: number, errorCode?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.errorCode = errorCode;
+  }
+}
+
 async function apiFetch<T>(
   path: string,
   options: RequestInit & { session?: SessionCredentials } = {}
@@ -29,13 +46,15 @@ async function apiFetch<T>(
 
   if (!res.ok) {
     let message = `API error ${res.status}`;
+    let errorCode: string | undefined;
     try {
       const body = (await res.json()) as { message?: string; error_code?: string };
       message = body.message ?? body.error_code ?? message;
+      errorCode = body.error_code;
     } catch {
       // use default message
     }
-    throw new Error(message);
+    throw new ApiError(message, res.status, errorCode);
   }
   if (res.status === 204) return undefined as unknown as T;
   return res.json() as Promise<T>;
