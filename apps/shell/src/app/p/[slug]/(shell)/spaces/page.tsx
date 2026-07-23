@@ -25,6 +25,11 @@ export default function SpacesPage() {
   const [name, setName] = React.useState("");
   const [selectedTemplates, setSelectedTemplates] = React.useState<Set<string>>(new Set());
   const [creating, setCreating] = React.useState(false);
+  // A rejection here (e.g. plan_upgrade_required for a paid-only template) previously surfaced
+  // ONLY as a 2.8s auto-dismissing toast, easy to miss — leaving the dialog looking like it just
+  // silently did nothing. Keeping the message here too makes it stick until the user retries or
+  // closes the dialog.
+  const [createError, setCreateError] = React.useState<string | null>(null);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -64,6 +69,7 @@ export default function SpacesPage() {
     e.preventDefault();
     if (!creds || !name.trim()) return;
     setCreating(true);
+    setCreateError(null);
     try {
       const allowed = manifest?.allowed_child_space_types ?? ["launchpad"];
       const templateIds = Array.from(selectedTemplates).filter((id) => id !== CUSTOM_BUSINESS);
@@ -78,10 +84,17 @@ export default function SpacesPage() {
       show("Business created — provisioning may take a moment");
       await refresh();
     } catch (err) {
-      show(err instanceof Error ? err.message : "Failed to create business");
+      const message = err instanceof Error ? err.message : "Failed to create business";
+      setCreateError(message);
+      show(message);
     } finally {
       setCreating(false);
     }
+  }
+
+  function closeModal() {
+    setModalOpen(false);
+    setCreateError(null);
   }
 
   const canCreate = manifest?.membership_model === "tenant" || manifest?.membership_model === "hybrid";
@@ -131,11 +144,11 @@ export default function SpacesPage() {
 
       <Modal
         open={modalOpen}
-        onClose={() => setModalOpen(false)}
+        onClose={closeModal}
         title="Create a Business"
         footer={
           <>
-            <Button variant="secondary" type="button" onClick={() => setModalOpen(false)}>
+            <Button variant="secondary" type="button" onClick={closeModal}>
               Cancel
             </Button>
             <Button onClick={handleCreate} disabled={creating || !name.trim()}>
@@ -164,11 +177,21 @@ export default function SpacesPage() {
               <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
                 <Toggle on={selectedTemplates.has(t.id)} onChange={() => toggleTemplate(t.id)} label={t.name} />
                 {t.name}
+                {/* The backend rejects a non-free_tier_eligible template on the free plan
+                    (plan_upgrade_required) — previously this only surfaced as an easy-to-miss
+                    2.8s toast after a failed Create click, looking like the dialog just hung.
+                    Warning up front here means the user knows before they click. */}
+                {!t.free_tier_eligible && <Badge color="amber">Requires plan upgrade</Badge>}
               </label>
             )
           )}
           {selectedTemplates.has(CUSTOM_BUSINESS) && (
             <p style={{ fontSize: 12, color: "var(--text3)" }}>The assistant will help you design and set up this business.</p>
+          )}
+          {createError && (
+            <p style={{ fontSize: 12, color: "#dc2626" }} role="alert">
+              {createError}
+            </p>
           )}
         </form>
       </Modal>

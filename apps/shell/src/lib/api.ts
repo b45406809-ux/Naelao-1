@@ -86,8 +86,11 @@ export interface ShellManifest {
    *  SpaceType ships (not yet configured by the builder) — the shell falls back to the full list. */
   business_templates: string[];
   /** Phase F: the real, coming_soon-aware template catalog — render the create-business dialog
-   *  from this instead of a hardcoded copy of LAUNCHPAD_TEMPLATES. */
-  template_catalog: Array<{ id: string; name: string; coming_soon: boolean }>;
+   *  from this instead of a hardcoded copy of LAUNCHPAD_TEMPLATES. free_tier_eligible was already
+   *  sent by the backend (workers/spaces/src/template-catalog.ts) but missing from this type, so
+   *  the dialog had no way to warn a free-plan user before they hit the server-side
+   *  plan_upgrade_required rejection — see spaces/page.tsx's "Requires upgrade" badge. */
+  template_catalog: Array<{ id: string; name: string; coming_soon: boolean; free_tier_eligible: boolean }>;
   /** Legal & support config — builder-defined; drives the cookie consent banner and the
    *  support contact link on error screens. Absent fields: shell falls back to Naelao defaults. */
   legal: {
