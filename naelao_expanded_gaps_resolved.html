@@ -68831,5 +68831,399 @@ const tools = await script.run('mcp.list_tools', { server: 'github-app' });
 
 </section>
 
+<section id="appendix-bg">
+<h2>Appendix BG — Autonomous SaaS Operator SpaceType (18 items)</h2>
+
+<p><em>This appendix is a later addition and, per this document's running-log convention, overrides any earlier framing it conflicts with where the two disagree. It defines a new, standalone SpaceType — the Autonomous SaaS Operator — that lets a builder point Naelao at their OWN deployed software product and have a compartmentalized multi-agent swarm run that product's entire feedback&#8594;spec&#8594;code&#8594;QA&#8594;security&#8594;deploy flywheel with a human owner supervising, not typing. It is a sibling to Launchpad, not a mode of it, though Launchpad businesses that happen to include a software product (a SaaS micro-tool, an internal ops app) may install it as an add-on project kind — see BG.5. Market framing: as of this writing, competing tools are single-purpose islands (one agent for code generation, one for DevOps, one for PM work); nobody has consolidated the full loop into one operator. Implementation status per item is tracked in the repo's <span class="ic">CLAUDE.md</span> CURRENT DIRECTION and <span class="ic">docs/spec-appendix/</span>. As of this appendix's authoring, ZERO items below are built — this is a pure specification pass, not a status report.</em></p>
+
+<h3>BG.1 — The Four-Role Swarm and Why It Is Not One Agent</h3>
+
+<div id="G-BG01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG01 [HIGH] — Compartmentalized Roles, Not One Monolithic Agent</strong><br>
+    <em>The Gap:</em> A single agent asked to "handle the whole SaaS lifecycle" conflates four genuinely different jobs with different failure modes and different trust levels: deciding WHAT to build (product judgment), verifying it does not BREAK anything (adversarial-to-the-feature-not-the-user verification), WRITING the code (execution), and finding ways it could be EXPLOITED (adversarial-to-everyone verification). Collapsing these into one context window means a single bad decision at the "what to build" stage sails straight through to production with no independent check, because the same agent that proposed the feature is also the one grading its own homework.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Four <span class="ic">agent_definitions</span> rows per operator project — <span class="ic">pm-agent</span>, <span class="ic">sre-qa-agent</span>, <span class="ic">dev-agent</span>, <span class="ic">security-agent</span> — each its own R2 agent config (per CLAUDE.md ground rule #8: <span class="ic">agents.md</span>/<span class="ic">system-prompt.md</span>/<span class="ic">scripts.json</span>/<span class="ic">skills.json</span>) and, at runtime, its own <span class="ic">NaelaoAgentDO</span> instance with its own memory. No new orchestration primitive is needed to connect them — the platform already has everything required: <span class="ic">event_triggers</span> (G-forementioned, item 15 of CLAUDE.md) fire PM&#8594;Dev handoff on a "spec approved" event; sub-agent fan-out (<span class="ic">agent.spawn</span>, capped at 16 concurrent) lets Dev spawn parallel implementation workers for independent spec items; the Workflows tier (Phase J, item 33) gives the whole pipeline durability across a closed tab or a multi-hour QA run. The swarm is a graph of existing primitives, not a new engine.
+  </div>
+</div>
+
+<div id="G-BG02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG02 [HIGH] — The PM Agent Needs Real Feedback Ingress, Not Just a Prompt Box</strong><br>
+    <em>The Gap:</em> "Ask the model what to build" without real signal is guessing with extra steps. A PM agent is only as good as what reaches it: support tickets, community chatter, and behavioral signal (rage-clicks, abandoned flows, feature requests phrased three different ways by people who don't know the underlying cause is one shared bug).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Three feedback channels, each reusing existing infrastructure rather than inventing new ingress: (1) the existing multi-channel gateway (Slack/Discord/email/WhatsApp, item 11 of CLAUDE.md) already lets a customer-bot project ingest a support channel — an operator project subscribes its PM agent to the SAME channel catalogue, tagged <span class="ic">feedback_source</span> instead of <span class="ic">support_source</span>; (2) a new <span class="ic">product-analytics</span> prebuilt script reads the operator's OWN deployed product's event stream (via a builder-supplied read-only analytics connector — PostHog/Amplitude/Mixpanel MCP servers already fit the existing <span class="ic">mcp-connector</span> pattern, BYO-key per the universal-tools doctrine's own carve-out for a builder's own accounts, G-BF01); (3) a periodic <span class="ic">pm.mine_feedback</span> skill runs on a scheduled job (the existing <span class="ic">scheduled_jobs</span> primitive, item 20) that clusters raw feedback text by embedding similarity (Vectorize, the same primitive KB search and <span class="ic">script.find</span> already use) into named PATTERNS before it ever reaches the reasoning loop — "47 raw complaints" becomes "1 pattern: dashboard load time" as a distilled input, not a wall of text the model has to notice a pattern in itself.
+  </div>
+</div>
+
+<div id="G-BG03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG03 [HIGH] — Structured Spec Handoff, Not Free-Text Instructions Between Agents</strong><br>
+    <em>The Gap:</em> If the PM agent hands the Dev agent a paragraph of prose, ambiguity compounds at every step downstream — the Dev agent guesses at scope, the QA agent doesn't know what "correct" means for this feature, and there is no artifact a human owner can review before code gets written.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A new <span class="ic">operator_specs</span> table (SpaceDO migration) with a fixed schema — <span class="ic">problem_statement</span>, <span class="ic">evidence</span> (linked feedback pattern ids from G-BG02), <span class="ic">proposed_change</span>, <span class="ic">acceptance_criteria</span> (a checklist, not prose), <span class="ic">risk_level</span> (self-assessed by the PM agent: cosmetic / behavioral / data-model / security-sensitive), and <span class="ic">status</span> (draft &#8594; pending_owner_approval &#8594; approved &#8594; in_dev &#8594; in_qa &#8594; shipped &#8594; rolled_back). A spec above <span class="ic">risk_level: data-model</span> or <span class="ic">security-sensitive</span> ALWAYS routes through the existing HITL approval gate (the same <span class="ic">assistant_policy</span>/<span class="ic">HITLApprovalDO</span> mechanism already gating money-moving and destructive actions, items 14 and O) before <span class="ic">status</span> can advance past <span class="ic">pending_owner_approval</span> — cosmetic-risk specs may auto-advance under a guided or yolo policy exactly as any other approved action class does today. The Dev agent's only input is one <span class="ic">operator_specs</span> row, never a raw feedback dump.
+  </div>
+</div>
+
+<h3>BG.2 — The SRE/QA Agent and Dependency-Aware Regression</h3>
+
+<div id="G-BG04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG04 [HIGH] — No Dependency Graph Means No Way to Predict Blast Radius</strong><br>
+    <em>The Gap:</em> A feature that looks isolated to the Dev agent ("add a column to the orders table") can break three unrelated things (a report job, a webhook payload shape, a cached aggregate) if nothing maps what depends on what. Without a dependency graph, "run the regression suite" is the only lever, and it only catches what the suite happens to already cover.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A <span class="ic">codebase-index</span> skill (Tier 2, runs in the sandbox's own git checkout — see G-BG09) builds and incrementally maintains a lightweight symbol/import/schema dependency graph of the operator's registered repository, stored as structured rows (not prose) in a new <span class="ic">operator_dependency_graph</span> table, refreshed on every merged change rather than recomputed from scratch. Before the SRE/QA agent green-lights a spec, it runs <span class="ic">qa.blast_radius(changed_files)</span>, which walks the graph outward N hops and returns the concrete list of call sites, schema consumers, and existing tests that touch the changed surface — turning "generate and run regression tests" from a blind full-suite re-run into a targeted, explainable list the QA agent (and a human reviewing its verdict) can actually reason about.
+  </div>
+</div>
+
+<div id="G-BG05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG05 [HIGH] — Green-Light / Roll-Back Is a Real Gate, Not Advisory Text</strong><br>
+    <em>The Gap:</em> If the QA agent's verdict is just another chat message the Dev agent may or may not heed, there is no actual gate — the system's safety depends on the Dev agent choosing to listen, which is exactly the kind of trust a compartmentalized architecture is supposed to avoid needing.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Deploy is a distinct, structurally gated step, not a Dev-agent-initiated action: <span class="ic">operator_specs.status</span> can only move to <span class="ic">shipped</span> via a new <span class="ic">qa.approve_deploy</span> op that requires a fresh, non-stale (&lt;1 hour old) passing <span class="ic">operator_dependency_graph</span>-scoped test run recorded against the EXACT commit being deployed — verified server-side against the sandbox's own run record, never a self-reported "tests passed" string from the Dev or QA agent's own text output. A failing or stale check fails the deploy CLOSED, matching every other fail-closed gate already established in this platform (assistant policy, spend caps, credit checks).
+  </div>
+</div>
+
+<div id="G-BG06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG06 [MED] — Live Latency/Memory/Error-Rate Signal Feeding Back Into QA, Not Just Pre-Deploy Tests</strong><br>
+    <em>The Gap:</em> Pre-deploy tests catch what the tests anticipate. Real production degradation (memory creep, p99 latency drift, error-rate climbing after an hour of real traffic) needs a live signal, and nothing routes that signal back to the agent that could act on it.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A post-deploy <span class="ic">sre.watch</span> heartbeat (reuses the existing channel-heartbeat cron pattern, item 12/25) polls the operator's own deployed product's health endpoint plus, when the operator's target IS itself a Naelao-hosted product, the platform's OWN Analytics Engine (already recording per-run infra timing, item 48 Phase 3) for a 2-hour post-deploy window. A regression beyond a builder-configured threshold auto-drafts a rollback <span class="ic">operator_specs</span> row (risk_level always <span class="ic">data-model</span>-or-above, so it always needs owner approval before the rollback itself executes — reversing a deploy is not lower-stakes than making one) and pages the owner through the existing notification path (item 39's now-real <span class="ic">/internal/notify</span> route).
+  </div>
+</div>
+
+<h3>BG.3 — Wrong-Decision Observability (The Control Room)</h3>
+
+<div id="G-BG07" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG07 [HIGH] — Existing Traces Answer "What Happened," Not "Why Was This The Right Call"</strong><br>
+    <em>The Gap:</em> The platform already has per-run technical traces (<span class="ic">run_traces</span>, HX1, item 59) and a cross-thread activity mirror (<span class="ic">agent_activity_log</span>, item 40) — but both are technical/operational logs, not a product-decision audit trail. The single highest-severity failure mode of an autonomous SaaS operator is not a crash (that shows up in existing monitoring) — it is a technically flawless execution of the WRONG feature: correct code, wrong problem solved, and nothing today lets a human owner cheaply ask "why did it build this?" without re-reading raw agent transcripts.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A new <span class="ic">operator_decision_log</span> table, one row per <span class="ic">operator_specs</span> item that reaches <span class="ic">approved</span>, capturing: the evidence links (which feedback patterns from G-BG02 justified this), the PM agent's own stated reasoning (a short structured rationale field, not free chat log), the risk_level self-assessment, who/what approved it (owner, or an auto-approved-policy action id), and — critically — a POST-SHIP outcome field populated by a follow-up check (did the feedback pattern that motivated this actually reduce afterward, measured the same way G-BG02 measures it originally) so the log closes the loop rather than stopping at "we shipped it." A dashboard Control Room tab (mirrors the existing per-product tab pattern, item 30 Phase 5/D) renders this as a reviewable timeline — the actual product this appendix is describing when it says "observability for wrong decisions," distinct from and complementary to the existing technical trace/activity-log surfaces.
+  </div>
+</div>
+
+<div id="G-BG08" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG08 [MED] — One-Click Rationale Audit From Any Shipped Feature Back to Its Evidence</strong><br>
+    <em>The Gap:</em> Even with a decision log, if tracing "why does this button exist" back to "which three support tickets" takes a manual join across tables, owners won't actually use it under time pressure — exactly the population this feature exists to serve.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> <span class="ic">GET /spaces/:spaceId/projects/:projectId/operator/decisions/:specId</span> returns the fully joined view in one call — spec, evidence (with the original raw feedback text, not just pattern ids), the agent's rationale, approval trail, and outcome — the single-request shape the Control Room UI (G-BG07) and any future "explain this feature" chat query both consume.
+  </div>
+</div>
+
+<h3>BG.4 — Context Drift: A Live Codebase Needs Its Own Index, Not Just Conversational Memory</h3>
+
+<div id="G-BG09" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG09 [HIGH] — Memory OS and the KB Pipeline Are Not a Code Index</strong><br>
+    <em>The Gap:</em> Memory OS (episodic/semantic/fabric/wiki, items 12/47/AutoRAG-item-48) and the KB pipeline both index conversational history and uploaded documents — neither indexes a live, growing GIT REPOSITORY the way the Dev agent needs: symbol definitions, call graphs, and the actual current file tree, kept in sync as the Dev agent's own commits change it. Without this, every session either re-reads the whole repo (expensive, and eventually exceeds any context window as the operator's own product grows — the "context drift" failure mode) or works from stale assumptions.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A dedicated <span class="ic">code-index</span> prebuilt (distinct from <span class="ic">knowledge-base</span> — different content shape, different refresh cadence, different consumer) that maintains a per-project Vectorize namespace of code-chunk embeddings plus the structured dependency graph from G-BG04, both incrementally updated on every commit the Dev agent makes (a git post-commit hook implemented as a Tier-2 script, not a human-authored CI step) rather than batch-reindexed. <span class="ic">script.find</span>-style semantic lookup extends to <span class="ic">code.find(query)</span> so any of the four agents can ask "where is X handled" and get real, current file:line answers instead of guessing from an increasingly stale mental model — the direct fix for the "agents lose context when the codebase gets too large" failure mode named in the originating research.
+  </div>
+</div>
+
+<div id="G-BG10" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG10 [MED] — The Dev Agent Needs a Real Git Checkout, Not Just R2 Text Files</strong><br>
+    <em>The Gap:</em> Phase K/R's per-project workspace (items 34, 38-R) gives an agent R2-backed text persistence and a container's own local disk — neither is "a git repository with history, branches, and the ability to diff/revert" out of the box, and a SaaS operator without real version control is one bad autonomous edit away from an unrecoverable mess.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> An operator project's container image (the same Tier-5 container-marketplace mechanism from Phase L, item 36, now with its first real, non-<span class="ic">coming_soon</span> catalogue entry: <span class="ic">dev-sandbox</span>, a container with git + a language runtime preinstalled) clones the operator's registered repository on first use and the <span class="ic">workspace</span> prebuilt's copy/move ops (G-BG09's neighbor, Phase R) are joined by <span class="ic">workspace.git_commit</span>/<span class="ic">git_branch</span>/<span class="ic">git_diff</span> ops, so every Dev agent change is a real, revertable git commit against a real branch (never directly against the operator's default branch — the Dev agent always works on a per-spec feature branch, merged only after G-BG05's gate passes), not a set of file writes with no history.
+  </div>
+</div>
+
+<h3>BG.5 — The Security Agent and Adversarial Self-Testing</h3>
+
+<div id="G-BG11" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG11 [HIGH] — No SAST or Adversarial Testing Exists Anywhere in the Platform Today</strong><br>
+    <em>The Gap:</em> Confirmed against the current codebase: there is no static-application-security-testing integration, no dependency-vulnerability scan, and no adversarial "try to break this" pass anywhere in the build pipeline for ANY Naelao-hosted or Naelao-agent-authored code — including the platform's own script library (skills the Space Assistant itself distills and stores, item HX1/A1.31). AI-generated code has a documented, above-baseline defect rate; shipping it with zero adversarial check is a real, live risk today, not just a gap specific to this new SpaceType.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> The Security agent runs two passes before G-BG05's deploy gate can pass: (1) a SAST pass — a <span class="ic">security.static_scan</span> Tier-2/3 skill wrapping an off-the-shelf open-source scanner (Semgrep's community ruleset is a reasonable default — runs as a subprocess inside the Tier-5 <span class="ic">dev-sandbox</span> container from G-BG10, output parsed into structured findings, not prose) against the exact diff G-BG04's blast-radius already scoped; (2) a targeted adversarial pass — a <span class="ic">security.exploit_attempt</span> skill that, for any spec touching an auth boundary, input-handling path, or the payments/wallet surface (flagged automatically from the blast-radius call sites), spins up the changed code in an isolated sandbox and attempts a curated battery of known exploit classes (SQLi/XSS/SSRF/auth-bypass/IDOR patterns — the same vulnerability classes this very platform's own historical audit passes, items 21-29/39/55, found and fixed BY HAND; this is that same discipline automated). A finding at HIGH or above blocks deploy exactly like a QA failure; MED/LOW findings are recorded and surfaced in the Control Room (G-BG07) as a queued, non-blocking item.
+  </div>
+</div>
+
+<div id="G-BG12" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG12 [MED] — Skill-Library Findings Feed Back Into the Skill's Own Stability Score</strong><br>
+    <em>The Gap:</em> The platform's skill library already tracks a <span class="ic">stability_score</span> per skill (referenced in HX1/A1.31's SkillOpt-Lite comparison) — but nothing connects a security finding against code a skill generated back to that skill's own trust signal, so a systematically-flawed skill keeps getting reused at full trust.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Any HIGH-severity finding from G-BG11 traced back to a DISTILL-produced skill (via the skill's own version metadata already recorded at creation time) writes a negative signal into that skill's <span class="ic">stability_score</span> — the same mechanism HX4 (skill self-evolution, still not built, tracked separately) will eventually use for validation-gated skill promotion; this item wires the Security agent as one more legitimate signal SOURCE for that future mechanism, not a new scoring system of its own.
+  </div>
+</div>
+
+<h3>BG.6 — Sandboxed Self-Healing (The "Ultimate" Loop)</h3>
+
+<div id="G-BG13" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG13 [HIGH] — A Live Production Error Should Auto-Reproduce in a Sandbox, Not Wait for a Human to File It</strong><br>
+    <em>The Gap:</em> Today, a production error becomes a fix only via the PM/feedback path (G-BG02) — slow, and dependent on a human or a metrics threshold noticing. The single highest-leverage capability named in the originating research — catch a live error, feed its stack trace back to the Dev agent, hot-fix it in a sandbox, verify, redeploy — does not exist as a distinct fast path.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A <span class="ic">self_heal</span> fast lane, separate from the full PM-driven flywheel: an error-rate spike from G-BG06's SRE watch, OR a builder-supplied error-tracking webhook (Sentry-shaped — another BYO MCP connector, same precedent as G-BG02's analytics connector) auto-creates an <span class="ic">operator_specs</span> row with <span class="ic">risk_level: data-model</span> (self-healing fixes are NEVER auto-approved past owner review, regardless of how minor the diff looks — a fix touching production is never treated as low-stakes purely because it originated from an error rather than a feature request) and the ORIGINAL stack trace/repro steps as its evidence — skipping the PM agent's pattern-mining step entirely (the evidence already IS the spec) and going straight to Dev, who reproduces the failure in the <span class="ic">dev-sandbox</span> container BEFORE attempting a fix (a fix that "looks right" without a reproduced failing case first is exactly the reward-hacking failure mode HX3's eval judge (item 61) was built to catch — the same discipline applies here).
+  </div>
+</div>
+
+<div id="G-BG14" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG14 [MED] — Self-Heal Fixes Still Owe a Post-Mortem to the Decision Log</strong><br>
+    <em>The Gap:</em> A fast-lane fix that bypasses the PM agent's evidence-gathering step could otherwise leave a gap in G-BG07's Control Room — a shipped change with no linked rationale, undermining the exact observability this appendix exists to provide.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Every <span class="ic">self_heal</span>-originated spec still writes a full <span class="ic">operator_decision_log</span> row (G-BG07) — its "evidence" is simply the stack trace/repro instead of a mined feedback pattern, and its rationale field is auto-populated from the Dev agent's own repro-and-fix summary. No separate code path for the log; only the evidence source differs.
+  </div>
+</div>
+
+<h3>BG.7 — Fit With the Existing Platform, and What This SpaceType Deliberately Does Not Add</h3>
+
+<div id="G-BG15" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG15 [INFO] — New SpaceType, Reusing Every Existing Primitive It Can</strong><br>
+    <em>The Gap:</em> Without an explicit statement, a future build pass could mistakenly treat this as requiring a new agent runtime, a new orchestration engine, or a new billing model — none of which is true, and building any of them would duplicate load-bearing platform infrastructure per CLAUDE.md's own standing anti-split-brain rule.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix (a scoping statement, not a code change):</em> This is a new SpaceType manifest (<span class="ic">saas-operator</span>, registered in <span class="ic">SpaceTypeRegistryDO</span> exactly like <span class="ic">launchpad</span>) whose agent_definitions, event_triggers, scheduled_jobs, container images, and script/skill library are all instances of primitives that already exist. It uses the existing script-native <span class="ic">NaelaoAgentDO</span> engine (four instances, one per role) — not a new agent kernel; the existing sub-agent spawn/Workflows tier for orchestration — not a new scheduler; the existing HITL/assistant-policy gate for approvals — not a new permission model; the existing Container Marketplace mechanism (Phase L) for its sandbox — not a new sandboxing layer; and the existing credit/wallet billing surface for metering agent+infra cost — not a new billing model. The NEW surface area is entirely data/config: new tables (<span class="ic">operator_specs</span>, <span class="ic">operator_dependency_graph</span>, <span class="ic">operator_decision_log</span>), new prebuilt scripts/skills (<span class="ic">pm.mine_feedback</span>, <span class="ic">qa.blast_radius</span>, <span class="ic">qa.approve_deploy</span>, <span class="ic">code.find</span>, <span class="ic">security.static_scan</span>, <span class="ic">security.exploit_attempt</span>, <span class="ic">workspace.git_*</span>), and one new container catalogue entry (<span class="ic">dev-sandbox</span>).
+  </div>
+</div>
+
+<div id="G-BG16" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG16 [MED] — Available as a Launchpad Add-On, Not Only as a Standalone Product</strong><br>
+    <em>The Gap:</em> A Launchpad business that itself ships a small software product (a Whop-sold SaaS micro-tool, a niche internal ops app) would otherwise need a whole second Product just to get this loop, duplicating its wallet/members/billing context for no reason.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A new project kind, <span class="ic">saas_operator</span> (joins the existing <span class="ic">BUSINESS_FEATURE_KIND_REGISTRY</span> pattern already used for <span class="ic">business_wallet</span>, item 50), installable inside any Launchpad business exactly like the wallet is — same billing/credit context, same member roster, no separate Product needed. The standalone <span class="ic">saas-operator</span> SpaceType (G-BG15) remains the right choice for a builder whose ENTIRE product is a piece of software with no storefront/commerce surface at all.
+  </div>
+</div>
+
+<div id="G-BG17" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG17 [MED] — Owner Autonomy Dial, Reusing the Guided/Autonomous Toggle Precedent</strong><br>
+    <em>The Gap:</em> Different owners want different amounts of oversight, and inventing a bespoke autonomy model for this SpaceType specifically would fragment the platform's UX.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> The existing Guided/Autonomous <span class="ic">assistant_policy</span> toggle (item G, item 58's dashboard Agents tab precedent) governs the operator swarm identically to any other agent — "guided" auto-approves cosmetic-risk specs only, gates everything above; "autonomous" (never the default) auto-approves up through <span class="ic">behavioral</span>-risk specs but data-model/security-sensitive specs and ALL rollbacks remain hard-gated regardless of policy, per G-BG03/G-BG13's explicit carve-outs — the one place this SpaceType intentionally overrides what a policy CAN grant, because an unattended production data-model change or an unattended rollback is categorically higher-stakes than anything the existing policy model was designed to auto-approve.
+  </div>
+</div>
+
+<div id="G-BG18" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BG18 [LOW / SEQUENCING] — Build Order</strong><br>
+    <em>The Gap:</em> Building all four agent roles simultaneously before any one of them is proven risks the same "half-finished implementation" failure mode CLAUDE.md's own engineering rules warn against.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix (suggested sequencing, not a hard requirement):</em> G-BG09/G-BG10 (code index + real git checkout) first — nothing else in this appendix is trustworthy without them. Then G-BG01/G-BG03 (agent scaffolding + structured spec handoff) with a HUMAN standing in for the PM agent's feedback-mining step initially — prove the Dev/QA/Security loop end-to-end on human-authored specs before trusting G-BG02's automated feedback mining. Then G-BG04/G-BG05/G-BG11 (blast radius, deploy gate, SAST) together, since a deploy gate without a real regression signal or a security check is theater. G-BG02 (automated feedback mining), G-BG07/G-BG08 (Control Room), and G-BG13 (self-heal fast lane) follow once the core loop has run successfully on real specs. G-BG16 (Launchpad add-on packaging) is a thin wrapper, done last.
+  </div>
+</div>
+
+</section>
+
+
+<section id="appendix-bh">
+<h2>Appendix BH — Autonomous Venture Studio: Portfolio Governance &amp; Physical-Goods Businesses (10 items)</h2>
+
+<p><em>This appendix is a later addition and, per this document's running-log convention, overrides any earlier framing it conflicts with where the two disagree. It generalizes Launchpad's existing multi-business model (Phase C, item 30) from "a user who runs one or a few businesses they operate directly" into "a user who acts as an investor/founder across a PORTFOLIO of largely autonomous businesses" — the Autonomous Venture Studio (AVS) framing — and extends the business-kind taxonomy to include physical-goods businesses whose agents handle only the "soft" work (design, sourcing, manufacturer liaison, logistics coordination) and never physical execution, mirroring the Apple-designs/Foxconn-manufactures split. As of this appendix's authoring, ZERO items below are built — this is a pure specification pass. Implementation status per item is tracked in the repo's <span class="ic">CLAUDE.md</span> CURRENT DIRECTION and <span class="ic">docs/spec-appendix/</span>.</em></p>
+
+<h3>BH.1 — The Portfolio Layer: What Changes When a User Owns Many Businesses, Not One</h3>
+
+<div id="G-BH01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BH01 [HIGH] — No Portfolio-Level View Exists — Every Business Is Viewed in Isolation</strong><br>
+    <em>The Gap:</em> The existing shell (Phase C) lets a user switch between businesses one at a time, and the business-first redirect (a same-session change to <span class="ic">apps/shell</span>) now correctly routes a new user into a specific business before showing them anything. Neither gives an owner of MANY businesses a single view of the portfolio as a whole — aggregate revenue, aggregate wallet balance, which businesses are growing/flat/declining, and where attention is most needed right now. A VC does not read one portfolio company's dashboard at a time as their primary view; they read a portfolio view first and drill in second.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A new <span class="ic">GET /spaces/:productSpaceId/portfolio</span> route (spaces worker, gated exactly like <span class="ic">my-businesses</span> — identity-only at the router, real per-business membership check server-side) aggregates, per business the caller is a member of: wallet balance (from the existing <span class="ic">business_wallet</span> data, item 50), a revenue trend (reusing <span class="ic">agent_activity_log</span>/usage rollups where available, honestly nulled where not — matching the platform's own "never fabricate an aggregate" precedent from item 30 Phase 3/5), space_status, and a computed <span class="ic">attention_score</span> (a simple, explainable heuristic — days since last assistant activity, any pending HITL approval, any <span class="ic">agent.session_budget_warning</span> fired recently, per item 60 — never an opaque model-scored ranking). A new Portfolio view in <span class="ic">apps/shell</span> (default landing page for a user with 2+ businesses, ahead of the single-business switcher) renders this as a sortable grid, each card linking into that business's existing detail page.
+  </div>
+</div>
+
+<div id="G-BH02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BH02 [MED] — Capital Allocation Across Businesses Has No First-Class Concept</strong><br>
+    <em>The Gap:</em> Each business wallet (item 50) is fully isolated by design — correct for revenue custody, but it means an owner who wants to fund a new business from an existing one's profits, or set a shared marketing budget across three related businesses, has no platform-native way to do that; it becomes an off-platform manual transfer with zero record.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A new, OPT-IN <span class="ic">portfolio_allocations</span> ledger (a thin table, not a new wallet system) records an explicit, owner-approved transfer INTENT between two of the owner's own wallets — settlement still runs through each business's real Whop wallet payout/deposit primitives (G-BH's businesses never share a literal pooled wallet, preserving each business's own accounting and, if it is ever sold or spun out independently, a clean financial history) — the ledger is the audit trail and the UI affordance, not a new custody model. A capital-allocation request above a configurable threshold routes through the same HITL approval gate as any other money-moving action (item O's precedent).
+  </div>
+</div>
+
+<div id="G-BH03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BH03 [MED] — Cross-Business Resource Sharing (Agents, Skills, Learnings) Beyond the Read-Only Business Network</strong><br>
+    <em>The Gap:</em> The Business Network (Appendix BF, BF.4) already lets a business learn from OTHER builders' anonymized, banded metrics across the platform — a different thing from an OWNER's own several businesses sharing real, un-anonymized context with each other on purpose (e.g., "reuse the exact supplier-negotiation skill business A distilled, in business B, because I own both and there's no privacy boundary between my own ventures").
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A new <span class="ic">portfolio.share_skill(from_space_id, to_space_id, skill_name)</span> op, gated by verifying the caller has an owner/admin role on BOTH spaces (never a cross-tenant operation — this is explicitly narrower than the Business Network's platform-wide sharing, and reuses none of its anonymization machinery since there is nothing to anonymize between a user's own businesses), copies the skill's current published version into the target business's own skill library as a genuinely separate, independently-versioned fork (identical fork semantics to G-BF18's template forks) — never a live shared reference, so business B's own later edits can never silently affect business A.
+  </div>
+</div>
+
+<h3>BH.2 — Governance: What "The Human Just Owns The Equity" Actually Requires</h3>
+
+<div id="G-BH04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BH04 [HIGH] — "Just Own The Equity" Still Needs a Real Charter, or Autonomy Becomes Unaccountable Drift</strong><br>
+    <em>The Gap:</em> A business run end-to-end by an assistant without an explicit, ownerauthored charter of what it's FOR and what it must NEVER do will drift — not through malice, but through a series of individually-reasonable autonomous decisions that compound into a business the owner would not have chosen. The existing guided/autonomous policy toggle (item G) governs individual ACTIONS; nothing today governs the business's overall DIRECTION.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A new, owner-authored <span class="ic">business_charter</span> field (config_json override, same pattern as <span class="ic">pricingConfig</span>/<span class="ic">modelConfig</span> — never a parallel table) — a short structured statement of mission, hard constraints ("never discount below X%," "never contact a customer more than twice about the same issue," "never expand into a new product category without asking"), and a review cadence. The assistant's own recurring "revenue review" methodology (already part of the Launchpad assistant profile, item G) is extended to explicitly re-read the charter each cycle and flag, in the Control Room-style decision log this appendix's sibling BG.3 already established the pattern for, any decision it made that came close to (not just crossed) a stated constraint — surfacing drift before it becomes a violation, not just after.
+  </div>
+</div>
+
+<div id="G-BH05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BH05 [MED] — A Portfolio-Wide "Pause All" Circuit Breaker</strong><br>
+    <em>The Gap:</em> If an owner needs to halt autonomous activity across their whole portfolio at once (a personal emergency, a legal question, discovering one business's assistant made a bad call and wanting to freeze everything while they investigate), doing it business-by-business through the existing per-space <span class="ic">assistant_policy</span> PATCH is slow and error-prone under exactly the stress conditions that would motivate using it.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A new <span class="ic">POST /spaces/:productSpaceId/portfolio/pause-all</span> route flips every business the caller owns/admins to <span class="ic">assistant_policy.approval_mode = 'always_ask'</span> in one call (best-effort per-space, reporting which succeeded/failed, never partially silent) — a blunt, maximally conservative instrument by design; resuming any one business's prior policy is a deliberate, per-business action afterward, never automatic.
+  </div>
+</div>
+
+<h3>BH.3 — Physical-Goods Businesses: The Apple/Foxconn Split</h3>
+
+<div id="G-BH06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BH06 [HIGH] — Every Existing Business Kind Assumes a Purely Digital Product — There Is No "Soft-Work-Only" Model</strong><br>
+    <em>The Gap:</em> Launchpad's templates (Whop seller, creator store, newsletter, micro-SaaS, agency, coaching, customer service) all assume the deliverable is digital and the agent can execute the whole loop end-to-end. A physical-goods business is structurally different in exactly one way that matters: the agent must never be the one performing physical execution (manufacturing, packing, shipping) — it does the SOFT work (product design, spec sheets, sourcing/RFQ, manufacturer/supplier communication, quality-spec negotiation, logistics coordination) and hands physical execution to a real third party, the same split Apple keeps between its own design org and Foxconn.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> A new business kind, <span class="ic">physical_goods</span> (joins <span class="ic">BUSINESS_FEATURE_KIND_REGISTRY</span>, same precedent as <span class="ic">business_wallet</span>/<span class="ic">saas_operator</span>), with its own agent profile explicitly instructed on the hard boundary: it may design, spec, source, and negotiate, but every step that would require physical presence or physical action is a handoff to a named external party via a real API/messaging integration (G-BH07), never simulated or assumed complete. The profile's system prompt states the boundary as a HARD constraint, not a preference, mirroring how the customer-bot execution ceiling (item 11) is enforced structurally rather than left to good judgment.
+  </div>
+</div>
+
+<div id="G-BH07" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BH07 [HIGH] — Manufacturing/Fulfillment Connectors, Following the Same Universal-vs-BYO Doctrine as Every Other Connector</strong><br>
+    <em>The Gap:</em> A physical-goods business needs to reach real manufacturing/print-on-demand/dropship platforms — no such connector exists in the current catalogue (Appendix BF's connector work covers social, CRM, ads, and image/video generation, not physical production).
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> New catalogue entries following G-BF01's doctrine exactly — these are a BUSINESS's own external accounts (their Printful account, their Alibaba/1688 supplier relationships, their own freight forwarder), so BYO via Composio/Pipedream where those providers have listed apps, or a direct bespoke-OAuth connector (mirroring the Whop OAuth precedent, item 53) where they do not: <span class="ic">printful</span>/<span class="ic">printify</span> (print-on-demand — no manufacturer relationship-building needed, a good FIRST entry since it needs zero human-to-human negotiation), <span class="ic">alibaba-rfq</span> (request-for-quote messaging to real suppliers — explicitly a MESSAGING connector, not an ordering/payment one; any resulting purchase order is a HITL-gated approval per G-BH08, never auto-placed), and a generic <span class="ic">freight-forwarder</span> connector shape for logistics status/tracking. Sequencing note: print-on-demand ships an entire physical-goods business with zero net-new manufacturer-relationship risk; RFQ/sourcing to real factories is a materially higher-trust, later increment.
+  </div>
+</div>
+
+<div id="G-BH08" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BH08 [HIGH] — Purchase Orders and Supplier Commitments Are Always HITL-Gated, Regardless of Autonomy Policy</strong><br>
+    <em>The Gap:</em> Unlike a digital SKU (free to "restock" — it's a file), a physical purchase order commits real, often non-refundable capital to a supplier relationship the owner may not have personally vetted. Treating it as just another auto-approvable action under a "yolo"/autonomous policy is a materially different risk than anything the existing policy model was designed to auto-approve.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix:</em> Same carve-out pattern G-BG17 established for the SaaS Operator's data-model changes and rollbacks: any op that would place a purchase order or commit to a minimum order quantity ALWAYS routes through HITL approval, regardless of the business's own autonomy policy setting — encoded as a hard check in the <span class="ic">physical_goods</span> business kind's own gate logic (mirrors the pre-existing customer-bot spend-cap fail-closed pattern, item F9/26), not something a policy configuration can override.
+  </div>
+</div>
+
+<h3>BH.4 — What This Appendix Deliberately Does Not Claim</h3>
+
+<div id="G-BH09" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BH09 [INFO] — No New Custody Model, No New Agent Runtime</strong><br>
+    <em>The Gap:</em> Without an explicit statement, "Venture Studio" framing invites scope creep into inventing a new equity/cap-table product, a new payment rail, or a new agent kernel — none of which this appendix intends.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix (a scoping statement, not a code change):</em> This appendix is a VIEW and a GOVERNANCE layer over the existing multi-business model (Phase C) and existing wallet (item 50) — the Portfolio view (G-BH01) aggregates data that already exists; the capital-allocation ledger (G-BH02) is a thin audit trail over existing wallet settlement, never a new custody system; the charter (G-BH04) and pause-all breaker (G-BH05) are config/policy additions over the existing <span class="ic">assistant_policy</span> mechanism. Physical-goods businesses (BH.3) reuse the exact same agent runtime, connector pattern, and HITL gate every other business kind uses — the only genuinely new things are the connectors themselves (G-BH07) and one new hard-gated action class (G-BH08). "The human just owns the equity" is a product ASPIRATION for how autonomous a well-governed business can eventually run, not a claim that equity/cap-table tooling is being built here.
+  </div>
+</div>
+
+<div id="G-BH10" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BH10 [LOW / DEFERRED] — Third-Party Investors (Non-Owner Capital) Explicitly Out of Scope</strong><br>
+    <em>The Gap:</em> A literal "VC studio" eventually implies outside capital into a specific autonomous business — a securities-law-adjacent surface this platform has no business improvising into existence.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix (DEFERRED, explicitly):</em> Everything in BH.1/BH.2 assumes ONE owner's OWN capital across their OWN portfolio of businesses. Multi-investor cap tables, external capital raises, or anything resembling a securities offering are explicitly out of scope for this appendix and should not be inferred from the "Venture Studio" name — a future appendix would need real legal review before any such feature is specified, let alone built.
+  </div>
+</div>
+
+</section>
+
+
+<section id="appendix-bi">
+<h2>Appendix BI — The Personal Super-App Assistant (North-Star, Deferred) (6 items)</h2>
+
+<p><em>This appendix is a later addition and, per this document's running-log convention, overrides any earlier framing it conflicts with where the two disagree. It records a long-term product direction — a single personal assistant (closer to Siri-plus-WeChat than to a business dashboard) that manages a user's own life AND can spin up and delegate to autonomous business assistants (Appendix BH) on the user's behalf, funding its own operation from that business income, with a mini-app ecosystem and social layer riding on top. Everything in this appendix is EXPLICITLY DEFERRED — it is a capstone that only makes sense once the Autonomous SaaS Operator (Appendix BG) and Autonomous Venture Studio (Appendix BH) are real, proven products, not a near-term build target. It is recorded now so later phases build TOWARD this shape rather than away from it. Implementation status: ZERO items below are built, and none should be started before BG/BH have shipped and been used for real. Tracked in the repo's <span class="ic">CLAUDE.md</span> CURRENT DIRECTION and <span class="ic">docs/spec-appendix/</span>.</em></p>
+
+<h3>BI.1 — What This Is, and Why It Is Sequenced Last</h3>
+
+<div id="G-BI01" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BI01 [INFO / DEFERRED] — A Personal Assistant Is a Different Product Shape Than Launchpad, Not a Feature of It</strong><br>
+    <em>The Gap:</em> Every SpaceType built so far (Launchpad, the proposed SaaS Operator) is fundamentally BUSINESS-centric — the unit of value is a business, and a user interacts with one or several of them. A personal super-app assistant is USER-centric — the unit of value is the person's whole life, and businesses (via Appendix BH) are just one category of thing it can spin up and manage on the user's behalf, alongside scheduling, communication, and eventually the mini-app/social surface in BI.3.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix (DEFERRED — a scoping statement for a future phase):</em> When this is eventually built, it is its OWN SpaceType (<span class="ic">personal-assistant</span>, <span class="ic">membership_model: "team"</span>-shaped since there is exactly one real owner per instance, no business-switcher concept) with its own Product Shell skin — not a mode of Launchpad, and not a rename of the existing generic Space Assistant (item 20's <span class="ic">SPACE_ASSISTANT_PROFILE</span>), which is scoped to operate WITHIN one space, not across a person's whole life and portfolio. The reason to sequence it last is architectural honesty, not lack of ambition: it needs Appendix BH's portfolio/delegation primitives to already exist and be trustworthy before a personal assistant can responsibly spin one up on a user's behalf, and it needs Appendix BG's autonomous-build loop proven before "the assistant can build you a mini-app on request" (BI.3) is anything but a toy demo.
+  </div>
+</div>
+
+<div id="G-BI02" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BI02 [MED / DEFERRED] — The Assistant Spinning Up a Business Assistant on the User's Behalf Needs Its Own Explicit Consent Model</strong><br>
+    <em>The Gap:</em> "Spin up other autonomous assistants to run businesses for the user" implicitly means one agent (the personal assistant) creating and delegating to OTHER agents with real spend/data authority — a materially bigger trust grant than anything the platform's existing sub-agent fan-out (<span class="ic">agent.spawn</span>, capped at 16, item 12) was designed for, since those spawns are short-lived task delegates inside ONE run, not new standing businesses with their own wallets and ongoing autonomy.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix (DEFERRED):</em> A distinct <span class="ic">assistant.propose_venture(idea, rationale)</span> op that ALWAYS terminates in a HITL approval before any real business/wallet/agent-definition is created — the personal assistant may research, draft a business plan, and even simulate the numbers, but the actual "create this business and let its assistant run" step is never reachable without an explicit, informed user approval naming what's about to be created and what it will be allowed to do (the charter concept from G-BH04, populated up front rather than retrofitted). This is a strictly higher bar than any existing HITL gate in the platform, because the object being approved is a new standing agent with its own future autonomy, not a single action.
+  </div>
+</div>
+
+<h3>BI.2 — The Assistant Paying for Its Own Existence</h3>
+
+<div id="G-BI03" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BI03 [MED / DEFERRED] — "The System Pays for Itself" Needs a Real, Explicit Funding Route, Not a Vague Aspiration</strong><br>
+    <em>The Gap:</em> The idea that businesses spun up under BI.1/BI.2 could fund the user's own subscription/usage cost is appealing but, stated vaguely, invites an unsafe implementation — e.g., an assistant deciding on its own to redirect a business's revenue toward platform fees without being asked.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix (DEFERRED):</em> Reuses G-BH02's capital-allocation ledger exactly — a user may set up a standing, owner-approved allocation rule ("route N% of this business's net revenue to my own platform plan/credits") through the SAME explicit, auditable mechanism as any other cross-wallet transfer, never a silent default and never something the personal assistant enables for itself without that same approval flow. No new payment primitive; a policy on top of an existing one.
+  </div>
+</div>
+
+<h3>BI.3 — Mini-App Ecosystem and Social, Reusing the Existing Marketplace Rather Than Inventing a New One</h3>
+
+<div id="G-BI04" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BI04 [LOW / DEFERRED] — "Mini-Apps the Assistant Can Access on Your Behalf" Is Close to the Existing Marketplace/Connector Model, Not a New Concept</strong><br>
+    <em>The Gap:</em> The WeChat mini-app framing suggests inventing a whole new third-party app runtime — but the platform already has two adjacent, real mechanisms: a SpaceType/Template marketplace (item "Additional Infrastructure Built") for whole products, and the universal connector doctrine (Appendix BF) for reaching third-party services on a user's behalf. Treating "mini-apps" as a third, separate thing would fragment the platform for no product benefit.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix (DEFERRED):</em> A "mini-app" in this assistant's context is simply a CONNECTOR (Appendix BF's model, extended with a Composio/Pipedream/direct-OAuth catalogue entry per service) plus, where the assistant should be able to take a real ACTION on the user's behalf rather than just read data, a small set of scoped ops on that connector (mirroring how <span class="ic">business-wallet</span>/<span class="ic">business_wallet</span> already exposes a narrow op surface rather than raw API access). "Access on your behalf" for social media specifically reuses the social-posting connectors G-BF-era work already built (X/LinkedIn/Instagram/TikTok, item 56) — this appendix's contribution is only that a PERSONAL assistant, not a business one, is the caller, which changes nothing about the connector layer itself, only which agent profile holds the grant.
+  </div>
+</div>
+
+<div id="G-BI05" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BI05 [LOW / DEFERRED] — Social Features Are a Genuinely New Product Surface With Real Trust and Moderation Requirements</strong><br>
+    <em>The Gap:</em> Unlike a mini-app connector (BI.3, G-BI04), a first-party social layer where users interact with EACH OTHER (not just each user's own assistant) is a real, separate product with its own abuse/moderation/safety surface — nothing in this platform's current architecture (content moderation is currently scoped to agent input/output, item 41's moderation-blocking work) covers user-to-user content at all.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix (DEFERRED, and flagged as needing its own dedicated safety-design pass when picked up — not something to bolt onto an existing appendix):</em> Out of scope for detailed specification here. When picked up, it needs its own trust/safety appendix (moderation of user-generated content, reporting/blocking, rate limits distinct from the existing per-space ones) BEFORE any social feature ships, not after.
+  </div>
+</div>
+
+<h3>BI.4 — Explicit Non-Goals for Now</h3>
+
+<div id="G-BI06" style="margin-bottom:2rem;">
+  <div class="box-rd" style="background:#fff3cd;border-left:4px solid #e67e22;padding:1rem;border-radius:6px;margin-bottom:.5rem;">
+    <strong>G-BI06 [INFO] — This Appendix Is Explicitly Not an Instruction to Start Building</strong><br>
+    <em>The Gap:</em> Recording an ambitious north star alongside near-term-buildable appendixes (BG, BH) risks a future session picking BI up prematurely because it's the most exciting-sounding one, at the expense of the SaaS Operator and Venture Studio work it structurally depends on.
+  </div>
+  <div class="box-gr" style="background:#e8f5e9;border-left:4px solid #2e7d32;padding:1rem;border-radius:6px;">
+    <em>Required Fix (a scoping statement, not a code change):</em> Build order: Appendix BG (Autonomous SaaS Operator) and Appendix BH (Autonomous Venture Studio) first, each proven with real usage — ideally the user's own first autonomous Launchpad business (per this session's own immediate goal) generating real revenue — before ANY item in this appendix is started. This appendix exists so that decisions made in BG/BH (the charter concept, the HITL-consent model for spinning up new agents, the capital-allocation ledger) are already shaped with this eventual destination in mind, not so that BI itself gets built next.
+  </div>
+</div>
+
+</section>
+
+
 </body>
 </html>

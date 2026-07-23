@@ -1,6 +1,6 @@
 # Original Spec — Header Index (auto-generated)
 
-Source: naelao_expanded_gaps_resolved.html · 2720 headers.
+Source: naelao_expanded_gaps_resolved.html · 2738 headers.
 Regenerate: `python3 infra/gen-spec-index.py`.
 Read THIS file instead of grepping the 68k-line spec. Numbers are byte offsets.
 
@@ -2724,3 +2724,21 @@ Read THIS file instead of grepping the 68k-line spec. Numbers are byte offsets.
     - [6752078] BF.3 — Free Plan Simple-Business Program
     - [6762837] BF.4 — The Business Network
     - [6770613] BF.5 — Future Direction (Deferred)
+  - [6772648] Appendix BG — Autonomous SaaS Operator SpaceType (18 items)
+    - [6773917] BG.1 — The Four-Role Swarm and Why It Is Not One Agent
+    - [6780338] BG.2 — The SRE/QA Agent and Dependency-Aware Regression
+    - [6785103] BG.3 — Wrong-Decision Observability (The Control Room)
+    - [6788388] BG.4 — Context Drift: A Live Codebase Needs Its Own Index, Not Just Conversational Memory
+    - [6792044] BG.5 — The Security Agent and Adversarial Self-Testing
+    - [6795659] BG.6 — Sandboxed Self-Healing (The "Ultimate" Loop)
+    - [6798756] BG.7 — Fit With the Existing Platform, and What This SpaceType Deliberately Does Not Add
+  - [6805249] Appendix BH — Autonomous Venture Studio: Portfolio Governance & Physical-Goods Businesses (10 items)
+    - [6806349] BH.1 — The Portfolio Layer: What Changes When a User Owns Many Businesses, Not One
+    - [6811812] BH.2 — Governance: What "The Human Just Owns The Equity" Actually Requires
+    - [6815041] BH.3 — Physical-Goods Businesses: The Apple/Foxconn Split
+    - [6820279] BH.4 — What This Appendix Deliberately Does Not Claim
+  - [6823071] Appendix BI — The Personal Super-App Assistant (North-Star, Deferred) (6 items)
+    - [6824280] BI.1 — What This Is, and Why It Is Sequenced Last
+    - [6828054] BI.2 — The Assistant Paying for Its Own Existence
+    - [6829365] BI.3 — Mini-App Ecosystem and Social, Reusing the Existing Marketplace Rather Than Inventing a New One
+    - [6832619] BI.4 — Explicit Non-Goals for Now

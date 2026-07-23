@@ -2411,6 +2411,77 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     proxy itself working fine for plain `curl` requests) — not investigated further since the
     API-level + bundle-content verification already gives high confidence; a future session with
     working browser access should do a full click-through pass.
+67. **Three new canonical-spec appendixes added (BG, BH, BI) — pure specification, ZERO code
+    built this pass — recording the long-term direction the user wants Launchpad to grow into.**
+    Prompted by user-supplied research on (a) an "Autonomous SaaS Operator" multi-agent pattern,
+    (b) an "Autonomous Venture Studio" portfolio model plus Apple/Foxconn-style physical-goods
+    businesses, and (c) a WeChat/Siri-like personal super-app assistant. Each idea was filtered
+    against what's already built rather than transcribed as-is — the appendixes cite and reuse
+    existing primitives (script-native `NaelaoAgentDO`, sub-agent spawn, the Workflows tier,
+    HITL/`assistant_policy`, Container Marketplace, the universal-connector doctrine, the
+    business wallet, `BUSINESS_FEATURE_KIND_REGISTRY`) rather than inventing parallel systems,
+    per this file's own standing anti-split-brain rule.
+    - **Appendix BG — Autonomous SaaS Operator SpaceType** (`naelao_expanded_gaps_resolved.html`,
+      G-BG01–18): a new, standalone SpaceType (also installable as a Launchpad business project
+      kind, `saas_operator`) that runs a builder's OWN software product's feedback→spec→code→
+      QA→security→deploy loop via four compartmentalized `agent_definitions` (PM, SRE/QA, Dev,
+      Security) instead of one monolithic agent. Load-bearing pieces beyond the four-role split:
+      a structured `operator_specs` handoff (never free-text between agents) with a `risk_level`
+      that hard-gates data-model/security-sensitive changes through HITL regardless of autonomy
+      policy; a real dependency graph (`operator_dependency_graph`) so QA can compute blast
+      radius instead of blindly re-running the whole suite; a NEW `operator_decision_log` —
+      distinct from the already-built technical traces (`run_traces`/HX1, `agent_activity_log`)
+      — that answers "why was this the right call," closing the loop with a post-ship outcome
+      check; a dedicated code index (`code.find`, Vectorize-backed, incrementally updated per
+      commit) since Memory OS/KB indexing is document-shaped, not repo-shaped; a real git
+      checkout inside the Tier-5 container (the platform's first non-`coming_soon` Container
+      Marketplace image, `dev-sandbox`); and — the single gap confirmed to be real and present
+      platform-wide, not just for this SpaceType — NO SAST or adversarial exploit-testing exists
+      anywhere in the codebase today, so the Security agent role (`security.static_scan`,
+      `security.exploit_attempt`) is flagged HIGH priority independent of whether this SpaceType
+      itself gets built. A self-heal fast lane (error → auto-repro in sandbox → fix → verify →
+      redeploy) is scoped as its own item, always still owner-approved.
+    - **Appendix BH — Autonomous Venture Studio** (G-BH01–10): generalizes the existing
+      multi-business shell (Phase C) from "a user who runs a few businesses" into "a user who
+      holds a PORTFOLIO of largely autonomous businesses" — a portfolio aggregate view with an
+      explainable (never opaque-model-scored) attention heuristic; an opt-in capital-allocation
+      LEDGER between an owner's own business wallets that settles through each wallet's real
+      payout/deposit primitives rather than inventing pooled custody; an owner-authored
+      `business_charter` (mission + hard constraints) the assistant re-checks each recurring
+      revenue review, surfacing drift toward a constraint before it's crossed; and a portfolio-
+      wide "pause all" circuit breaker. Physical-goods businesses (`physical_goods` business
+      kind) get the explicit Apple/Foxconn split as a HARD constraint in the agent profile — the
+      agent does design/spec/sourcing/negotiation, never physical execution — reaching real
+      manufacturing/fulfillment platforms (Printful/Printify first, since it needs zero
+      manufacturer-relationship risk; Alibaba-style RFQ messaging later, purchase orders always
+      HITL-gated regardless of autonomy policy, the same hard-carve-out pattern as BG's
+      data-model gate). Explicitly out of scope and flagged DEFERRED: third-party/outside
+      investor capital — a securities-law-adjacent surface this pass correctly declined to
+      improvise into existence.
+    - **Appendix BI — The Personal Super-App Assistant** (G-BI01–06, North-Star/Deferred): the
+      WeChat/Siri-like personal assistant that manages a user's whole life and can spin up
+      Appendix-BH business assistants on their behalf, self-funding via an opt-in extension of
+      BH's own capital-allocation ledger, with a mini-app layer that's explicitly reframed as
+      "the existing connector doctrine, called by a personal rather than business agent" instead
+      of a new app runtime. Every item is marked DEFERRED with an explicit build-order statement:
+      this is recorded now so BG/BH's design choices (the charter concept, HITL-consent shape)
+      point toward this destination, not an instruction to start building it — it structurally
+      depends on BG and BH shipping and being proven with real usage first. First-party
+      user-to-user social (as opposed to the mini-app/connector layer) is flagged as needing its
+      own dedicated trust/safety pass before any spec, let alone code.
+    - `docs/SPEC_HEADER_INDEX.md` regenerated via `infra/gen-spec-index.py` (2738 headers, up
+      from 2720) — the existing generator picked up all three appendixes automatically, no
+      hand-editing needed.
+    **Not done this pass, by design:** no code, no migrations, no new routes — this was scoped
+    as pure specification per the user's explicit "don't write any code" instruction earlier in
+    the session, carried forward since no code request followed it. The user's own separate,
+    concrete question — "how much do I need for a first working autonomous business" — was
+    answered directly in chat (not written to the spec, since it's a status/config question
+    about the EXISTING built platform, not a new capability): live secrets
+    (CF AI Gateway/Anthropic key, a Whop account for the BYO connector, `RESEND_API_KEY` already
+    set), the org's own `plan_tier` for `free_tier_eligible:false` templates, fixing the
+    known-stuck `launchpad` product_slug (item 64's documented gap), and a manual click-through
+    QA pass — no new build items required to reach a first real transaction.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
