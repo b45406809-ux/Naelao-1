@@ -459,7 +459,11 @@ describe("runScriptLoop — approval modes (Space Assistant default-ask vs ordin
       approvalMode: "gate_unless_listed",
     });
     expect(result.result?.ok).toBe(false);
-    expect(result.result?.error).toMatch(/HITL rejected/);
+    // Names the action and why it didn't run. A bare "HITL rejected" couldn't distinguish a
+    // human declining from a policy fetch failing closed — an ambiguity that cost real debugging
+    // time during the live model-matrix run.
+    expect(result.result?.error).toMatch(/needed approval and was not approved/);
+    expect(result.result?.error).toContain("write_file");
   });
 
   it("YOLO (empty requiresApprovalFor, default gate_listed mode) never asks even with a gateway wired", async () => {

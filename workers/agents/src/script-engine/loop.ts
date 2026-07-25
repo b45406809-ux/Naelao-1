@@ -103,6 +103,16 @@ async function hitlGate(
   return false;
 }
 
+/** The user-facing reason a gated action didn't run.
+ *
+ * "HITL rejected" alone is genuinely ambiguous, and that ambiguity cost real debugging time: a
+ * failed assistant-policy fetch fails CLOSED (by design), so an infrastructure blip produces the
+ * exact same message as a human deliberately declining. Naming the action, and the fact that
+ * approval was required, at least tells the reader which of the two they're looking at. */
+function gateRejectedMessage(actionName: string): string {
+  return `'${actionName}' needed approval and was not approved (either declined, or no approver was reachable)`;
+}
+
 /** A decision the reasoning model returns when the library has no ready answer. */
 export type ReasonDecision =
   | { action: "run"; name: string; params: Record<string, unknown> }
@@ -291,7 +301,7 @@ export async function runScriptLoop(
       // HITL gate before execution
       const allowed = await hitlGate(top!.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes);
       if (!allowed) {
-        return finish({ level, script_name: top!.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes });
+        return finish({ level, script_name: top!.name, result: { ok: false, error: gateRejectedMessage(top!.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes });
       }
       const result = await tools.run(top!.name, params);
       notes.push(`L1 run ${top!.name}: ${result.ok ? "ok" : "fail"}`);
@@ -317,7 +327,7 @@ export async function runScriptLoop(
         const params = paramsFor(top!, opts.goal);
         const allowed = await hitlGate(decision.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes);
         if (!allowed) {
-          return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usage));
+          return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(decision.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usage));
         }
         const result = await tools.run(decision.name, params);
         notes.push(`L2 patched ${decision.name}: ${result.ok ? "ok" : "fail"}`);
@@ -402,7 +412,7 @@ export async function runScriptLoop(
           // HITL gate before execution
           const allowed = await hitlGate(decision.name, decision.params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes);
           if (!allowed) {
-            return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: "HITL rejected", tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usageAcc));
+            return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(decision.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usageAcc));
           }
           const result = await tools.run(decision.name, decision.params);
           notes.push(`${level} run ${decision.name}: ${result.ok ? "ok" : "fail"}`);

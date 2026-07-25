@@ -421,6 +421,34 @@ app.post("/billing/usage", async (c) => {
   return c.json({ recorded: true, id }, 201);
 });
 
+/**
+ * The org's plan tier, from the SAME authority everything else enforces against.
+ *
+ * `orgs.plan_tier` is what EntitlementsChecker.getTenantTier reads and what gates free-tier
+ * templates; `subscriptions.plan_tier` is written by the billing webhook. These two routes read
+ * only the latter, so an org whose tier was set on `orgs` alone — which is exactly what the docs
+ * tell an operator to do for their own account — kept getting free-tier quotas and hit a 100k
+ * token wall while showing as enterprise everywhere else. Item 45 fixed this same split-brain on
+ * the write side (the webhook now writes both); this fixes the read side that was still missed.
+ *
+ * orgs wins, subscriptions is the fallback, and an unknown org resolves to "free" — the most
+ * restrictive tier, failing closed, matching resolveOrgPlanTier's own posture.
+ */
+async function resolvePlanTier(db: D1Database, orgId: string): Promise<string> {
+  try {
+    const org = await db.prepare("SELECT plan_tier FROM orgs WHERE id = ?").bind(orgId).first<{ plan_tier: string }>();
+    if (org?.plan_tier) return org.plan_tier;
+  } catch {
+    // Fall through to the subscription row rather than failing the whole check.
+  }
+  try {
+    const sub = await db.prepare("SELECT plan_tier FROM subscriptions WHERE org_id = ?").bind(orgId).first<{ plan_tier: string }>();
+    return sub?.plan_tier ?? "free";
+  } catch {
+    return "free";
+  }
+}
+
 // ── GET /internal/usage/llm-tokens/check ─────────────────────────────────────
 // P0-3: NaelaoAgentDO's pre-run gate for a builder (owner/admin/editor/viewer) chatting with
 // their own Space Assistant (never a project-scoped run, never a signed-in product end user —
@@ -432,10 +460,7 @@ app.get("/internal/usage/llm-tokens/check", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
 
-  const sub = await c.env.PLATFORM_DB.prepare(
-    "SELECT plan_tier FROM subscriptions WHERE org_id = ?"
-  ).bind(orgId).first<{ plan_tier: string }>();
-  const planTier = sub?.plan_tier ?? "free";
+  const planTier = await resolvePlanTier(c.env.PLATFORM_DB, orgId);
 
   const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "llm_tokens", planTier);
   return c.json({ ...quota, plan_tier: planTier });
@@ -450,10 +475,7 @@ app.get("/internal/usage/infra-credits/check", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
 
-  const sub = await c.env.PLATFORM_DB.prepare(
-    "SELECT plan_tier FROM subscriptions WHERE org_id = ?"
-  ).bind(orgId).first<{ plan_tier: string }>();
-  const planTier = sub?.plan_tier ?? "free";
+  const planTier = await resolvePlanTier(c.env.PLATFORM_DB, orgId);
 
   const quota = await checkQuota(c.env.QUOTA_CACHE, c.env.PLATFORM_DB, orgId, "infra_credits", planTier);
   return c.json({ ...quota, plan_tier: planTier });
@@ -470,10 +492,7 @@ app.get("/internal/usage/llm-tokens/summary", async (c) => {
   const orgId = c.req.header("x-naelao-tenant-id") ?? "";
   if (!orgId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
 
-  const sub = await c.env.PLATFORM_DB.prepare(
-    "SELECT plan_tier FROM subscriptions WHERE org_id = ?"
-  ).bind(orgId).first<{ plan_tier: string }>();
-  const planTier = sub?.plan_tier ?? "free";
+  const planTier = await resolvePlanTier(c.env.PLATFORM_DB, orgId);
 
   const summary = await getUsageSummary(c.env.PLATFORM_DB, orgId, "llm_tokens", planTier);
   return c.json({ ...summary, plan_tier: planTier });
