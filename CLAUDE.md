@@ -2606,6 +2606,57 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     it. Getting this backwards produces `/v1/v1/...` → 401 → `notFound()` → every shell route 404s
     with a valid-looking build. 2030/2030 tests pass, `npx turbo run typecheck` clean (76 tasks).
 
+70. **The LLM eval matrix is now REAL — and running it found six production bugs, the largest of
+    which meant multi-step agent work had never once worked.** The harness (`workers/eval` in
+    `mode:"agent"`, driven by `infra/scripts/run-eval-suite.mjs --models`) dispatches a REAL
+    `/agent/run` per case through the live reasoning loop and judges the agent's actual answer.
+    Findings and the full ranked table live in **`docs/MODEL_EVAL_2026-07-25.md`** — read that
+    rather than duplicating numbers here, so they can't drift.
+    - **The loop returned on the FIRST successful tool call** (`script-engine/loop.ts`). At L3/L4
+      a successful `run` ended the run immediately, so the model never observed its own tool
+      output. Multi-step work was structurally impossible and users got a blank `finalAnswer`.
+      Live before the fix: "what is 2+2" worked, every tool-requiring request returned
+      `status: completed` with an empty answer. Now the observation is appended to `priorSteps`
+      (with a `stableStringify` repeat-call guard) and the loop continues; on exhaustion it fails
+      honestly naming the steps it ran rather than returning nothing. **Three script-engine tests
+      had been passing BECAUSE of this bug** — their fake reasoners only ever returned `run` and
+      never answered; made realistic.
+    - **The reasoner never saw prior steps.** `steps_so_far` (with a 2000-char observation cap)
+      added to the payload, plus instructions to read them and finish with `answer`.
+    - **A transient assistant-policy fetch failure turned the assistant off.** Failing closed is
+      right, but the closed state is `gate_unless_listed` with an EMPTY allowlist — gate
+      everything, no approver reachable — so under concurrent load every run died with what reads
+      as a refusal to work. Now cached 30s, distinguishing 5xx/network (transient → serve the
+      last verified policy) from 4xx (definitive → still fail closed), plus one retry for cold
+      reads. A revoked policy still takes effect once the window passes.
+    - **Quota split-brain.** `/internal/usage/{llm-tokens,infra-credits}/check` read
+      `subscriptions.plan_tier` while `EntitlementsChecker` reads `orgs.plan_tier` — an org set to
+      enterprise the way the docs instruct still hit the free tier's 100k wall (hit live at
+      111,510/100,000). New shared `resolvePlanTier()`.
+    - **The eval worker wrote columns that have never existed** (`eval_results (eval_suite_id,
+      results_json, avg_score, ...)`) so every run 500'd against real D1, and its routes were
+      registered under `/v1` (which `proxyTo` strips) with no router entry at all — it could never
+      have reached a real deployment. Its test used a fake DB that accepted anything; replaced
+      with `createFakeD1` over the REAL migrations. Same failure class as `config_schema`/
+      `schema_json`.
+    - **One slow model discarded an entire run.** The per-case dispatch carried an
+      `AbortSignal.timeout` nothing caught, so a slow model threw out of the case loop: opaque
+      HTTP 500, every already-scored case lost. A dispatch failure is now that case's result
+      (timeouts named as such); ceiling raised to 150s.
+    - **Judge hardening**, since a broken judge must never read as "every model failed": routed
+      through the AI REST API (it was Anthropic-only, unusable on this account — see item 68),
+      `max_tokens` 250→600 (it was truncating its own JSON), fenced-reply extraction, and judge
+      failures flagged and EXCLUDED from the average rather than scored 0.
+    - **Two matrix runs were discarded, not reported** — the first quota-blocked, the second
+      pre-fix. Both would have produced a plausible ranking that measured infrastructure.
+    - **A real product limitation the eval surfaced:** `worker_loaders` is commented out in
+      `workers/agents/wrangler.toml` (it needs the CF Workers PAID plan), so execution Tiers 2-4
+      are genuinely unavailable in production. Any case needing the agent to write and run code
+      is unwinnable — and it penalizes the models that correctly try to. Re-enable on upgrade.
+    - **Not done:** the top models have only been scored on `tool-use-policy.jsonl`;
+      `commerce-business-ops` and `multi-step-web-file` exist and the harness runs them in one
+      command, but a model choice should not be made off a single 6-case dataset.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
