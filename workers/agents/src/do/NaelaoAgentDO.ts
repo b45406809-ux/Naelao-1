@@ -2608,16 +2608,51 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    */
   private async fetchAssistantPolicy(spaceId: string, tenantId: string): Promise<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] } | null> {
     if (!this.env.SPACES_WORKER || !tenantId) return null;
+
+    // Short-lived in-DO cache. This fetch sits on the hot path of EVERY Space Assistant run, and
+    // a policy changes about as often as a person changes their mind about autonomy — roughly
+    // never, per run. Caching it removes a cross-worker round trip from every run and, more
+    // importantly, removes the failure mode that motivated this: under concurrent load against
+    // the same SpaceDO the call can fail, which fails CLOSED and kills the run. Observed for real
+    // while running the eval matrix — runs that worked fine when the space was idle came back
+    // "HITL rejected" while it was busy.
+    //
+    // 30s is deliberately short: a builder who flips autonomy off wants that to take effect
+    // promptly, and half a minute of staleness on a setting they just changed themself is the
+    // outer bound of acceptable. A cached value is never used to widen access after it expires.
+    const cached = this.assistantPolicyCache;
+    if (cached && cached.spaceId === spaceId && Date.now() - cached.at < 30_000) {
+      return cached.policy;
+    }
+
     try {
       const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/assistant-policy`, {
         headers: await this.internalHeaders(tenantId),
       }));
-      if (!resp.ok) return null;
-      return await resp.json<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] }>();
+      if (!resp.ok) {
+        // 5xx (and the network errors caught below) are transient — the server didn't answer, so
+        // a policy we verified moments ago is better evidence than "unknown". A 4xx IS an answer
+        // (no such space, not permitted); that one must fail closed rather than keep serving a
+        // policy the server is now declining to confirm.
+        if (resp.status >= 500 && cached && cached.spaceId === spaceId) return cached.policy;
+        return null;
+      }
+      const policy = await resp.json<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] }>();
+      this.assistantPolicyCache = { spaceId, policy, at: Date.now() };
+      return policy;
     } catch {
+      // A transient failure must not silently widen access, but neither should it discard a
+      // policy we successfully read moments ago: serving the recent value is both safer and more
+      // correct than falling back to "gate everything and reject", which reads to the user as
+      // the assistant refusing to work.
+      if (cached && cached.spaceId === spaceId) return cached.policy;
       return null;
     }
   }
+
+  /** Last successfully-read assistant policy — see fetchAssistantPolicy. In-memory only: DO
+   *  hibernation clears it, which just means the next run re-reads it. */
+  private assistantPolicyCache: { spaceId: string; policy: { approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] }; at: number } | undefined;
 
   /**
    * F-36 enforcement — resolve the clamp SpaceDO defines (`resolveAssistantEffectiveRole`:
