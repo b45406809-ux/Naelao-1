@@ -192,3 +192,52 @@ describe("Workers AI as a selectable model — pricing and context are real, not
     );
   });
 });
+
+// Real wire payloads captured from the live gateway during the model-matrix run. Keeping the
+// actual shapes here — rather than shapes we assume — is what caught the Workers AI
+// `response: null` case originally; these two providers differ again in ways worth pinning.
+describe("captured live payloads — the parser handles what these models actually send", () => {
+  it("@cf/openai/gpt-oss-120b: tool_calls alongside a populated `reasoning` field and null content", () => {
+    const r = normalizeUniversalResponse({
+      id: "id-1",
+      object: "chat.completion",
+      model: "@cf/openai/gpt-oss-120b",
+      choices: [{
+        finish_reason: "tool_calls",
+        index: 0,
+        message: {
+          annotations: null,
+          audio: null,
+          content: null,
+          function_call: null,
+          // This model emits its chain-of-thought in a sibling field. It must not be mistaken
+          // for the answer, and its presence must not stop the tool call being read.
+          reasoning: "User asks what is 2+2. Use the answer function.",
+          reasoning_content: "User asks what is 2+2.",
+          refusal: null,
+          role: "assistant",
+          tool_calls: [{ function: { arguments: '{"text": "4"}', name: "answer" }, id: "chatcmpl-tool-abc", type: "function" }],
+        },
+      }],
+    });
+    expect(r.toolCall).toEqual({ name: "answer", arguments: { text: "4" } });
+  });
+
+  it("@cf/meta/llama-3.3-70b: standard OpenAI tool_calls with a usage block carrying neurons", () => {
+    const r = normalizeUniversalResponse({
+      choices: [{
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: "call_1", type: "function", function: { name: "answer", arguments: '{"text":"The answer to 2+2 is 4."}' } }],
+          refusal: null,
+        },
+        finish_reason: "tool_calls",
+      }],
+      usage: { prompt_tokens: 153, completion_tokens: 32, total_tokens: 185, neurons: 10.63 },
+    });
+    expect(r.toolCall?.name).toBe("answer");
+    expect(r.usage).toEqual({ input_tokens: 153, output_tokens: 32 });
+  });
+});
