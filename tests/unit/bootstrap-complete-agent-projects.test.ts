@@ -46,7 +46,7 @@ function makeEnv(onboarding: OnboardingConfig): {
     return new Response("not found", { status: 404 });
   });
 
-  const dbRow = { config_json: JSON.stringify({ onboarding }) };
+  const dbRow = { config_json: JSON.stringify({ onboarding }), status: "active" };
   const env = {
     ANTHROPIC_API_KEY: "test-anthropic-key",
     PLATFORM_SECRET: SECRET,
@@ -57,7 +57,10 @@ function makeEnv(onboarding: OnboardingConfig): {
         const stmt = {
           bind() { return stmt; },
           async first() {
-            if (/SELECT config_json FROM spaces/.test(sql)) return dbRow;
+            // Match on the table, not the exact column list — this double previously hardcoded
+            // "SELECT config_json FROM spaces" and silently started 404ing the moment the real query
+            // selected one more column (the same brittle-test-double class as the schema_json bug).
+            if (/FROM spaces/.test(sql)) return dbRow;
             return null;
           },
           async run() { return { meta: { changes: 1 } }; },

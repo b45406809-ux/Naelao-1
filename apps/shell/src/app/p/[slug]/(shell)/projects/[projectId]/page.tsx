@@ -3,7 +3,7 @@
 export const runtime = "edge";
 
 import * as React from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { Button, Badge, FormInput, FormSelect, FormTextarea, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
@@ -27,6 +27,7 @@ import { ProjectKindPanel } from "@/components/ProjectKindPanel";
 
 export default function ProjectDetailPage() {
   const params = useParams<{ projectId: string }>();
+  const router = useRouter();
   const product = useProduct();
   const { activeSpaceId } = useActiveSpace();
   const { session } = useProductAuth();
@@ -103,8 +104,10 @@ export default function ProjectDetailPage() {
     if (!creds) return;
     setCreating(true);
     try {
-      await createThread(activeSpaceId, creds, { project_id: params.projectId, title: "New thread" });
-      await refresh();
+      const created = await createThread(activeSpaceId, creds, { project_id: params.projectId, title: "New thread" });
+      // Open it. Creating a thread and being left staring at the same list is a dead end — the
+      // point of making one is to start working in it.
+      router.push(`/p/${product.slug}/projects/${params.projectId}/threads/${created.id}`);
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to create thread");
     } finally {
@@ -261,7 +264,7 @@ export default function ProjectDetailPage() {
         <p style={{ color: "var(--text3)", fontSize: 13 }}>No threads yet.</p>
       ) : (
         threads.map((t) => (
-          <Link key={t.id} href={`/p/${product.slug}/threads/${t.id}`} style={{ textDecoration: "none" }}>
+          <Link key={t.id} href={`/p/${product.slug}/projects/${params.projectId}/threads/${t.id}`} style={{ textDecoration: "none" }}>
             <div className="workflow-item">
               <div className="workflow-icon">
                 <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="var(--accent)">

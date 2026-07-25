@@ -3,7 +3,7 @@
 export const runtime = "edge";
 
 import * as React from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { Button, Badge, Modal, FormInput, FormSelect, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
@@ -46,6 +46,8 @@ import {
   type WhopWalletBalance,
   type WhopWalletTransaction,
   type PayoutDestination,
+  getOnboarding,
+  type OnboardingState,
   type ConnectorInfo,
 } from "@/lib/api";
 
@@ -56,7 +58,8 @@ function centsToDisplay(cents: number): string {
 }
 
 export default function BusinessDetailPage() {
-  const params = useParams<{ businessId: string }>();
+  const params = useParams<{ slug: string; businessId: string }>();
+  const router = useRouter();
   const product = useProduct();
   const { session } = useProductAuth();
   const { toast, show } = useToast();
@@ -101,6 +104,7 @@ export default function BusinessDetailPage() {
   // Connect your OWN Whop account (BYO, no Naelao Platforms invite needed) — the working revenue
   // path today, while the business-wallet rail above waits on Whop Platforms access.
   const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
+  const [onboarding, setOnboarding] = React.useState<OnboardingState | null>(null);
   const [whopKeyOpen, setWhopKeyOpen] = React.useState(false);
   const [whopKey, setWhopKey] = React.useState("");
   const [connectBusy, setConnectBusy] = React.useState(false);
@@ -136,7 +140,7 @@ export default function BusinessDetailPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      const [mine, mem, pricing, manifest, grants, wal, whopBal, whopTx, destinations, conns] = await Promise.all([
+      const [mine, mem, pricing, manifest, grants, wal, whopBal, whopTx, destinations, conns, onboard] = await Promise.all([
         listMyBusinesses(product.space_id, creds),
         listBusinessMembers(params.businessId, creds),
         getPricing(params.businessId, creds).catch(() => ({ plans: [], credit_packs: [] })),
@@ -148,6 +152,8 @@ export default function BusinessDetailPage() {
         // Admin-only route — a plain member's 403 is expected, not an error.
         getPayoutDestinations(params.businessId, creds).catch(() => []),
         getConnectorStatus(params.businessId, creds).catch(() => []),
+        // Member-level read; a 403 here just means the caller lost membership mid-load.
+        getOnboarding(params.businessId, creds).catch(() => null),
       ]);
       setBusiness(mine.find((b) => b.id === params.businessId) ?? null);
       setMembers(mem);
@@ -159,6 +165,7 @@ export default function BusinessDetailPage() {
       setWhopTransactions(whopTx);
       setPayoutDestinations(destinations);
       setConnectors(conns);
+      setOnboarding(onboard);
       const commerce = manifest?.ui.sidebar_items.some((item) => item.id === "revenue") ?? false;
       setHasCommerce(commerce);
       if (commerce) {
@@ -480,6 +487,37 @@ export default function BusinessDetailPage() {
         </div>
         {canManage && <Button onClick={() => setInviteOpen(true)}>Invite</Button>}
       </div>
+
+      {/* Setup that was started but never finished is the difference between a business that
+          exists and one that actually runs: until it completes, the assistant has no account to
+          read and no way to reach its owner. Prominent and persistent, not a dismissible nudge. */}
+      {onboarding && onboarding.status !== "complete" && onboarding.prompts.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 16,
+            flexWrap: "wrap",
+            padding: "14px 16px",
+            marginBottom: 18,
+            borderRadius: 10,
+            background: "var(--accent-soft, #eef2ff)",
+            border: "1px solid var(--accent, #5b52f0)",
+            fontSize: 13,
+          }}
+        >
+          <span>
+            <strong>Finish setting up {business.name}.</strong>{" "}
+            {onboarding.prompts.filter((p) => !p.satisfied).length} step
+            {onboarding.prompts.filter((p) => !p.satisfied).length === 1 ? "" : "s"} left — your
+            assistant can&rsquo;t start running this business until it&rsquo;s done.
+          </span>
+          <Button onClick={() => router.push(`/p/${params.slug}/spaces/${params.businessId}/onboarding`)}>
+            Finish setup
+          </Button>
+        </div>
+      )}
 
       <div className="section-label">Members</div>
       <div className="settings-block">

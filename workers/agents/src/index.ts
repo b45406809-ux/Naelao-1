@@ -18,7 +18,7 @@ import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
 import { ToolSandboxDO } from "./do/ToolSandboxDO.js";
 import { LocalTunnelDO } from "./do/LocalTunnelDO.js";
-import { LAUNCHPAD_TEMPLATES, getLaunchpadTemplate } from "./launchpad/spacetype.js";
+import { LAUNCHPAD_TEMPLATES, LAUNCHPAD_CORE_AGENTS, getLaunchpadTemplate } from "./launchpad/spacetype.js";
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
 import { CONTAINER_IMAGE_CATALOGUE } from "./script-engine/container-catalogue.js";
 import { isCronDue } from "@naelao/events";
@@ -2518,7 +2518,177 @@ app.post("/spaces/:spaceId/channels/sessions/:sessionId/takeover", async (c) => 
   return stub.fetch(new Request(`http://agent-do/channels/sessions/${encodeURIComponent(sessionId)}/takeover`, { method: "POST" }));
 });
 
-// ── First-run bootstrap execution ─────────────────────────────────────────────
+// ── First-run bootstrap: state, answers, execution ───────────────────────────
+//
+// The provisioner records what a template's bootstrap NEEDS (config_json.onboarding) and runs the
+// structural half (projects + starter threads) at creation time. What remains — the questions only
+// a human can answer (connect your Whop account, where should I reach you, how much can I do on my
+// own) — is what these routes serve. The builder dashboard has always driven this via a space PATCH
+// + bootstrap/complete; the end-user shell reaches the same state through the spaces worker's
+// /spaces/:spaceId/onboarding wrapper, so both surfaces read and write ONE record, never two.
+
+/** A space's config_json + its onboarding sub-record, as one load. Throws 404 when the caller's
+ *  tenant doesn't own the space (the same ownership check every route in this file relies on). */
+async function loadSpaceOnboarding(
+  env: AgentsEnv,
+  spaceId: string,
+  tenantId: string
+): Promise<{ cfg: Record<string, unknown>; onboarding: OnboardingRecord; spaceStatus: string }> {
+  const row = await env.PLATFORM_DB.prepare(
+    "SELECT config_json, status FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(spaceId, tenantId).first<{ config_json: string | null; status: string | null }>();
+  if (!row) throw notFound("Space");
+  const cfg = (safeParse(row.config_json ?? "{}") as Record<string, unknown>) ?? {};
+  return {
+    cfg,
+    onboarding: (cfg["onboarding"] as OnboardingRecord | undefined) ?? {},
+    spaceStatus: row.status ?? "provisioning",
+  };
+}
+
+/** A project seed may be a plain string (a name-only, unbound reference project) or
+ *  { name, default_agent_id } — see spacetype.ts's TemplateProjectSeed. */
+type RawProjectSeed = string | { name: string; default_agent_id?: string };
+
+interface OnboardingRecord {
+  projects?: RawProjectSeed[];
+  setup_scripts?: string[];
+  status?: string;
+  template_ids?: string[];
+  template_id?: string;
+  projects_created?: string[];
+}
+
+/** The templates a space was built from. Reads template_ids, falling back to the older singular
+ *  template_id — both shapes exist in live records. */
+function onboardingTemplateIds(onboarding: OnboardingRecord): string[] {
+  return onboarding.template_ids ?? (onboarding.template_id ? [onboarding.template_id] : []);
+}
+
+/** Every bootstrap prompt across a space's templates, in template order. Deduped by prompt id so
+ *  a multi-template business isn't asked the same question (e.g. `autonomy`) once per template. */
+function promptsForTemplates(templateIds: string[]) {
+  const seen = new Set<string>();
+  const out: NonNullable<NonNullable<ReturnType<typeof getLaunchpadTemplate>>["bootstrap"]>["prompts"] = [];
+  for (const tid of templateIds) {
+    for (const p of getLaunchpadTemplate(tid)?.bootstrap?.prompts ?? []) {
+      if (seen.has(p.id)) continue;
+      seen.add(p.id);
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+/** Connector ids already registered as MCP servers for this space. Best-effort: an unreachable hub
+ *  resolves to "nothing connected" rather than throwing, matching /connectors/status's own posture. */
+async function connectedConnectorIds(env: AgentsEnv, spaceId: string, tenantId: string): Promise<Set<string>> {
+  const connected = new Set<string>();
+  if (!env.MCP_HUB) return connected;
+  try {
+    const resp = await env.MCP_HUB.fetch(
+      new Request(`http://mcp-hub/v1/spaces/${spaceId}/mcp-servers`, {
+        headers: {
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+        },
+      })
+    );
+    if (resp.ok) {
+      const { data } = await resp.json<{ data?: Array<{ name: string }> }>();
+      for (const s of data ?? []) connected.add(s.name);
+    }
+  } catch {
+    // Best-effort — treated as "not connected".
+  }
+  return connected;
+}
+
+/**
+ * Whether each prompt is actually satisfied. A connection/credential prompt is satisfied by a real
+ * registered connector, NOT by the presence of an answer string — an owner who pasted a key that
+ * failed to vault must not be told they're done. Everything else is satisfied by a non-empty answer.
+ */
+function promptSatisfied(
+  prompt: { id: string; type: string; connector?: string },
+  answers: Record<string, unknown>,
+  connected: Set<string>
+): boolean {
+  if (prompt.type === "connection" || prompt.type === "credential") {
+    return prompt.connector ? connected.has(prompt.connector) : false;
+  }
+  const a = answers[prompt.id];
+  return typeof a === "string" ? a.trim().length > 0 : a !== undefined && a !== null;
+}
+
+// GET /spaces/:spaceId/bootstrap — everything a setup wizard needs in ONE call: the template's
+// prompts, whatever's already been answered, and whether each is genuinely satisfied. The shell
+// renders straight from this rather than carrying its own copy of the template definitions (the
+// same reason Phase F replaced the hardcoded template list with shell/manifest's catalogue).
+app.get("/spaces/:spaceId/bootstrap", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const { cfg, onboarding, spaceStatus } = await loadSpaceOnboarding(c.env, spaceId, tenantId);
+
+  const templateIds = onboardingTemplateIds(onboarding);
+  const answers = (cfg["preferences"] as Record<string, unknown> | undefined) ?? {};
+  const connected = await connectedConnectorIds(c.env, spaceId, tenantId);
+  const prompts = promptsForTemplates(templateIds).map((p) => ({
+    ...p,
+    answer: p.type === "credential" || p.type === "connection" ? undefined : answers[p.id] ?? null,
+    satisfied: promptSatisfied(p, answers, connected),
+  }));
+
+  return c.json({
+    // "pending" is the pre-provisioner-run default for a record that predates the status field.
+    status: onboarding.status ?? "pending",
+    // A brand-new business is created before provisioning finishes, so a wizard opened straight
+    // after creation can legitimately find an empty onboarding record. Without this the UI can't
+    // tell "still provisioning, wait" apart from "nothing to configure" — two very different
+    // screens — so it's reported rather than guessed at.
+    space_status: spaceStatus,
+    template_ids: templateIds,
+    templates: templateIds.map((id) => {
+      const t = getLaunchpadTemplate(id);
+      return { id, name: t?.name ?? id, description: t?.description ?? null, connectors: t?.connectors ?? [] };
+    }),
+    prompts,
+    projects_created: onboarding.projects_created ?? [],
+    setup_scripts: onboarding.setup_scripts ?? [],
+  });
+});
+
+// POST /spaces/:spaceId/bootstrap/save — persist partial answers WITHOUT completing.
+// Load-bearing, not a convenience: connecting an app is an OAuth redirect that navigates the
+// browser away mid-wizard, so anything typed before that click has to already be on the server or
+// it's simply gone when the user comes back.
+app.post("/spaces/:spaceId/bootstrap/save", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const body = await c.req.json<{ answers?: Record<string, unknown> }>().catch(() => ({}) as { answers?: Record<string, unknown> });
+  const answers = body.answers ?? {};
+  const { cfg } = await loadSpaceOnboarding(c.env, spaceId, tenantId);
+  const merged = await persistOnboardingAnswers(c.env, spaceId, tenantId, cfg, answers);
+  return c.json({ ok: true, answers: merged });
+});
+
+/** Merge answers into config_json.preferences and write back. Returns the merged preferences.
+ *  Merge, never clobber — config_json also carries productConfig/template_id/onboarding. */
+async function persistOnboardingAnswers(
+  env: AgentsEnv,
+  spaceId: string,
+  tenantId: string,
+  cfg: Record<string, unknown>,
+  answers: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const merged = { ...((cfg["preferences"] as Record<string, unknown> | undefined) ?? {}), ...answers };
+  cfg["preferences"] = merged;
+  await env.PLATFORM_DB.prepare(
+    "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
+  ).bind(JSON.stringify(cfg), new Date().toISOString(), spaceId, tenantId).run();
+  return merged;
+}
+
 // POST /spaces/:spaceId/bootstrap/complete — finishes the onboarding the provisioner recorded:
 // creates the template's projects (each pre-bound to its default agent, per spacetype.ts's
 // TemplateProjectSeed) in the SpaceDO, seeds a starter thread in each bound project so the
@@ -2529,28 +2699,48 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId");
 
-  const row = await c.env.PLATFORM_DB.prepare(
-    "SELECT config_json FROM spaces WHERE id = ? AND tenant_id = ?"
-  ).bind(spaceId, tenantId).first<{ config_json: string | null }>();
-  if (!row) throw notFound("Space");
-  const cfg = (safeParse(row.config_json ?? "{}") as Record<string, unknown>) ?? {};
-  // A project seed may be a plain string (older/simple onboarding records, or a name-only
-  // unbound project) or { name, default_agent_id? } — normalize both to the object shape here
-  // so downstream code has one shape to deal with.
-  type RawProjectSeed = string | { name: string; default_agent_id?: string };
-  const onboarding = (cfg["onboarding"] as {
-    projects?: RawProjectSeed[];
-    setup_scripts?: string[];
-    status?: string;
-    template_ids?: string[];
-    template_id?: string;
-  } | undefined) ?? {};
+  const body = await c.req.json<{ answers?: Record<string, unknown> }>().catch(() => ({}) as { answers?: Record<string, unknown> });
+  const { cfg, onboarding } = await loadSpaceOnboarding(c.env, spaceId, tenantId);
+  // Normalize the seeds to one shape so downstream code has a single form to deal with.
   const projectSeeds = (onboarding.projects ?? []).map((p) => (typeof p === "string" ? { name: p } : p));
   // The templates this space was built from — needed for project_templates + first_contact, which
   // live on the SpaceType template rather than being copied into the onboarding record (they're
   // static template data; duplicating them into every space's config_json would fork the source
   // of truth the moment a template is edited).
-  const bootstrapTemplateIds = onboarding.template_ids ?? (onboarding.template_id ? [onboarding.template_id] : []);
+  const bootstrapTemplateIds = onboardingTemplateIds(onboarding);
+  const alreadyComplete = onboarding.status === "complete";
+
+  // Accept the wizard's answers here too, so a single-request "finish setup" works — the shell
+  // sends them with the final call rather than needing a separate save first. The dashboard's own
+  // wizard PATCHes the space directly before calling this and sends nothing, which still works:
+  // an absent `answers` merges nothing and leaves existing preferences untouched.
+  const answers = body.answers ?? {};
+  if (Object.keys(answers).length > 0) {
+    await persistOnboardingAnswers(c.env, spaceId, tenantId, cfg, answers);
+  }
+
+  // Refuse to "complete" setup that isn't actually done. Without this, an owner who skipped the
+  // Whop connection would get a first-contact message from an assistant with nothing to read —
+  // worse than no message at all, because it looks like the product works and doesn't. Skipped for
+  // an already-complete space so re-running this endpoint (a retry, or a template that later
+  // gained a prompt) can never strand a business that finished setup under the old definition.
+  if (!alreadyComplete) {
+    const connected = await connectedConnectorIds(c.env, spaceId, tenantId);
+    const currentAnswers = (cfg["preferences"] as Record<string, unknown> | undefined) ?? {};
+    const missing = promptsForTemplates(bootstrapTemplateIds)
+      .filter((p) => p.required && !promptSatisfied(p, currentAnswers, connected))
+      .map((p) => p.id);
+    if (missing.length > 0) {
+      return c.json(
+        {
+          error_code: "onboarding_incomplete",
+          message: `Setup isn't finished yet: ${missing.join(", ")}`,
+          missing,
+        },
+        400
+      );
+    }
+  }
 
   // 1. Create the template's projects (idempotent — SpaceDO has UNIQUE(space_id, name)) via the
   //    SpaceDO, each with its default_agent_id, then seed a starter thread in any project that
@@ -2621,7 +2811,6 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
   //    work already underway. Fired once, only on the transition INTO complete, so a re-run of
   //    this endpoint (a retry, or a builder revisiting onboarding) never re-introduces the owner
   //    to their own business.
-  const alreadyComplete = onboarding.status === "complete";
   const firstContactGoal = bootstrapTemplateIds
     .map((tid) => getLaunchpadTemplate(tid)?.bootstrap?.first_contact?.goal)
     .find((g): g is string => Boolean(g));
@@ -2711,6 +2900,22 @@ app.get("/templates", async (c) => {
       coming_soon: t.coming_soon ?? false,
       ...(t.bootstrap ? { bootstrap: t.bootstrap } : {}),
     })),
+  });
+});
+
+// GET /catalog/shell — the browse-only catalogues the end-user Discover page renders: what a
+// business is preconfigured WITH (project presets) and WHO runs it (the core agents). Static
+// product data, deliberately projected: an agent's system_prompt is its actual behavior spec and
+// never leaves the worker, only its id/name/description do.
+app.get("/catalog/shell", (c) => {
+  return c.json({
+    project_templates: PROJECT_TEMPLATES.map((t) => ({
+      id: t.id,
+      name: t.name,
+      description: t.description,
+      kind: t.kind,
+    })),
+    agents: LAUNCHPAD_CORE_AGENTS.map((a) => ({ id: a.id, name: a.name, description: a.description })),
   });
 });
 

@@ -12,7 +12,7 @@ import { createSpaceRecord, SpaceCreationError, provisionBusinessWallet } from "
 import type { ProvisionMessage } from "./create-space.js";
 import { requireBusinessMembership, requireBusinessMembershipForWallet, resolveEndUserBusinessRole } from "./business-auth.js";
 import { createBusinessForEndUser } from "./business-create.js";
-import { loadTemplateCatalog } from "./template-catalog.js";
+import { loadTemplateCatalog, loadShellCatalog } from "./template-catalog.js";
 import { registerBusinessRoutes } from "./business-routes.js";
 
 export { SpaceDO } from "./do/SpaceDO.js";
@@ -1384,7 +1384,9 @@ app.use("/spaces/:spaceId/connectors/*", requireInternalHmac((c) => (c as unknow
 app.use("/spaces/:spaceId/connectors/status", requireBusinessMembership({ GET: "member" }));
 app.use("/spaces/:spaceId/connectors/connect", requireBusinessMembership({ POST: "admin" }));
 
-async function proxyConnectorsToAgents(
+// Generic authenticated proxy to the agents worker (connectors, and the onboarding wizard's
+// bootstrap routes) — mints a real internal token for the space's OWNING tenant.
+async function proxyToAgentsWorker(
   c: { env: Env; req: { header: (n: string) => string | undefined } },
   path: string,
   method: "GET" | "POST",
@@ -1416,14 +1418,14 @@ async function proxyConnectorsToAgents(
 }
 
 app.get("/spaces/:spaceId/connectors/status", async (c) =>
-  proxyConnectorsToAgents(c, `/connectors/status?space_id=${encodeURIComponent(c.req.param("spaceId"))}`, "GET")
+  proxyToAgentsWorker(c, `/connectors/status?space_id=${encodeURIComponent(c.req.param("spaceId"))}`, "GET")
 );
 
 app.post("/spaces/:spaceId/connectors/connect", async (c) => {
   const body = await c.req.json<{ platform?: string; api_key?: string }>().catch(() => ({}) as Record<string, never>);
   const platform = body.platform ?? "";
   if (!platform) return c.json({ error_code: "bad_request", message: "platform is required" }, 400);
-  return proxyConnectorsToAgents(c, `/connectors/${encodeURIComponent(platform)}/connect`, "POST", {
+  return proxyToAgentsWorker(c, `/connectors/${encodeURIComponent(platform)}/connect`, "POST", {
     space_id: c.req.param("spaceId"),
     api_key: body.api_key,
   });
@@ -1438,7 +1440,7 @@ app.post("/spaces/:spaceId/connectors/oauth-start", async (c) => {
   const platform = body.platform ?? "";
   if (!platform) return c.json({ error_code: "bad_request", message: "platform is required" }, 400);
   if (!body.return_url) return c.json({ error_code: "bad_request", message: "return_url is required" }, 400);
-  return proxyConnectorsToAgents(c, `/connectors/${encodeURIComponent(platform)}/oauth/start`, "POST", {
+  return proxyToAgentsWorker(c, `/connectors/${encodeURIComponent(platform)}/oauth/start`, "POST", {
     space_id: c.req.param("spaceId"),
     return_url: body.return_url,
   });
@@ -1454,10 +1456,40 @@ app.post("/spaces/:spaceId/connectors/provider-connect-start", async (c) => {
   const platform = body.platform ?? "";
   if (!platform) return c.json({ error_code: "bad_request", message: "platform is required" }, 400);
   if (!body.return_url) return c.json({ error_code: "bad_request", message: "return_url is required" }, 400);
-  return proxyConnectorsToAgents(c, `/connectors/${encodeURIComponent(platform)}/provider-connect/start`, "POST", {
+  return proxyToAgentsWorker(c, `/connectors/${encodeURIComponent(platform)}/provider-connect/start`, "POST", {
     space_id: c.req.param("spaceId"),
     return_url: body.return_url,
   });
+});
+
+// ── Business setup wizard (first-run onboarding) ─────────────────────────────
+// The end user's own path into the bootstrap the builder dashboard has always driven. Same
+// two-gate pattern as connectors/local-grants above: identity at the router, real per-business
+// authorization here — reading the checklist is member-level, but answering it (connecting the
+// business's Whop account, choosing how autonomous the assistant is) changes how the business
+// operates and is admin-only.
+//
+// ONE route, with POST's `action` carrying the operation, instead of the natural
+// /onboarding/save + /onboarding/complete pair: a dynamic segment followed by a static suffix is
+// the exact shape that has repeatedly triggered this file's documented Hono RegExpRouter
+// route-table-scale corruption (silently 404ing UNRELATED routes elsewhere in the app — see the
+// record-install and connectors comments above).
+app.use("/spaces/:spaceId/onboarding", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/onboarding", requireBusinessMembership({ GET: "member", POST: "admin" }));
+
+app.get("/spaces/:spaceId/onboarding", async (c) =>
+  proxyToAgentsWorker(c, `/spaces/${encodeURIComponent(c.req.param("spaceId"))}/bootstrap`, "GET")
+);
+
+app.post("/spaces/:spaceId/onboarding", async (c) => {
+  const body = await c.req.json<{ action?: string; answers?: Record<string, unknown> }>().catch(() => ({}) as Record<string, never>);
+  const spaceId = encodeURIComponent(c.req.param("spaceId"));
+  const action = body.action ?? "save";
+  if (action !== "save" && action !== "complete") {
+    return c.json({ error_code: "bad_request", message: "action must be 'save' or 'complete'" }, 400);
+  }
+  const path = action === "complete" ? `/spaces/${spaceId}/bootstrap/complete` : `/spaces/${spaceId}/bootstrap/save`;
+  return proxyToAgentsWorker(c, path, "POST", { answers: body.answers ?? {} });
 });
 
 app.post("/spaces/:spaceId/business-wallet/payouts", async (c) => {
@@ -3241,6 +3273,9 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
   // matching business_templates' existing "not configured yet" semantics below.
   const templateCatalog =
     businessTemplates.length > 0 ? fullCatalog.filter((t) => businessTemplates.includes(t.id)) : fullCatalog;
+  // Browse-only: what a business comes preconfigured with and who runs it. Same "render from the
+  // real catalogue, never a client-side copy" rule as template_catalog above.
+  const shellCatalog = await loadShellCatalog(c.env);
 
   return c.json({
     space_id: space.id,
@@ -3282,6 +3317,11 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
     // Phase F (§A1.17): the real, coming_soon-aware template catalog (id/name only) — the shell's
     // create-business dialog renders straight from this instead of a hardcoded duplicate list.
     template_catalog: templateCatalog,
+    // The Discover page's informational catalogues — the project presets a business is set up
+    // with, and the core agents that run it. Static product data (an agent's system_prompt is
+    // never included), safe pre-login exactly like template_catalog.
+    project_template_catalog: shellCatalog.project_templates,
+    agent_catalog: shellCatalog.agents,
     // Legal & support — safe to surface pre-login (ToS/Privacy must be readable before signup).
     // cookiePolicy drives the consent banner; supportContact gives stuck users a path to a human.
     // Unset fields: shell falls back to Naelao's own platform links (naelao.com/legal/*).

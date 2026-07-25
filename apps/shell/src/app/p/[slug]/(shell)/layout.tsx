@@ -19,19 +19,18 @@ import {
   getShellManifest,
   getMe,
   listProjects,
-  listThreads,
-  createThread,
+  listSessions,
   listMyBusinesses,
   type ShellManifest,
   type ProductUserMe,
   type Project,
-  type ThreadSummary,
+  type SessionSummary,
   type Business,
 } from "@/lib/api";
 
 const DEFAULT_PRIMARY_NAV: SidebarNavEntry[] = [
   { key: "home", icon: "home", label: "Home" },
-  { key: "spaces", icon: "spaces", label: "Spaces" },
+  { key: "spaces", icon: "spaces", label: "Discover" },
   { key: "assistant", icon: "assistant", label: "Assistant" },
   { key: "projects", icon: "projects", label: "Projects" },
 ];
@@ -64,7 +63,7 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   const [manifest, setManifest] = React.useState<ShellManifest | null>(null);
   const [me, setMe] = React.useState<ProductUserMe | null>(null);
   const [projects, setProjects] = React.useState<Project[]>([]);
-  const [threads, setThreads] = React.useState<ThreadSummary[]>([]);
+  const [sessions, setSessions] = React.useState<SessionSummary[]>([]);
   const [businesses, setBusinesses] = React.useState<Business[]>([]);
   // Distinct from businesses.length === 0 (the empty initial state before the list has even been
   // fetched) — the business-first gate and default-business auto-select below both need to know
@@ -111,7 +110,9 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
     }).catch(() => show("Couldn't load workspace"));
     getMe(activeSpaceId, creds).then(setMe).catch(() => {});
     listProjects(activeSpaceId, creds).then(setProjects).catch(() => {});
-    listThreads(activeSpaceId, creds).then((all) => setThreads(all.slice(0, 3))).catch(() => {});
+    // The sidebar's recent list is assistant SESSIONS (what Home starts), not structural project
+    // threads — those belong to a project and are reached through /projects/:id.
+    listSessions(activeSpaceId, creds, 5).then(setSessions).catch(() => {});
     // The switcher's own entry list is always the product-root's businesses, regardless of which
     // one is currently active — deliberately NOT activeSpaceId.
     listMyBusinesses(product.space_id, creds)
@@ -152,14 +153,10 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
     setActiveSpace(businesses[0]!.id, businesses[0]!.name);
   }, [activeSpaceHydrated, businessesLoaded, requiresBusiness, businesses, activeSpaceId, product.space_id, setActiveSpace]);
 
-  async function handleNewThread() {
-    if (!creds) return;
-    try {
-      const created = await createThread(activeSpaceId, creds, { title: "New thread" });
-      router.push(`/p/${product.slug}/threads/${created.id}`);
-    } catch {
-      show("Failed to create thread");
-    }
+  // "New session" doesn't create anything — Home IS the new-session surface, and a session is
+  // only minted on a real first message (lazy creation). Navigating there is the whole action.
+  function handleNewSession() {
+    router.push(`/p/${product.slug}`);
   }
 
   if (!isHydrated || !isAuthenticated) {
@@ -173,7 +170,10 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   const hidden = new Set(manifest?.ui.hidden_core_items ?? []);
   const primaryNav = DEFAULT_PRIMARY_NAV.filter((item) => !hidden.has(item.key));
   const moreNav = DEFAULT_MORE_NAV.filter((item) => !hidden.has(item.key));
-  const activeKey = pathname?.split("/").filter(Boolean)[2] ?? "home";
+  const rawKey = pathname?.split("/").filter(Boolean)[2] ?? "home";
+  // Sessions are Home's own flow (Home starts them, the sidebar lists them), so reading one keeps
+  // Home lit rather than leaving no nav item selected at all.
+  const activeKey = rawKey === "sessions" ? "home" : rawKey;
   // Belt-and-suspenders alongside the redirect gate above: while a business-first user still has
   // zero businesses, they're parked on /spaces (the one page the gate exempts) — the sidebar's own
   // "new thread"/"new project" buttons must not offer to create either against the product root
@@ -199,11 +199,11 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
         projects={projects.map((p) => ({ id: p.id, label: p.name }))}
         onOpenProject={(id) => router.push(`/p/${product.slug}/projects/${id}`)}
         {...(canUseWorkspace
-          ? { onNewThread: handleNewThread, onNewProject: () => router.push(`/p/${product.slug}/projects`) }
+          ? { onNewThread: handleNewSession, onNewProject: () => router.push(`/p/${product.slug}/projects`) }
           : {})}
-        threads={threads.map((t) => ({ id: t.id, label: t.title ?? "Untitled thread" }))}
-        onOpenThread={(id) => router.push(`/p/${product.slug}/threads/${id}`)}
-        onMoreThreads={() => router.push(`/p/${product.slug}/threads`)}
+        threads={sessions.map((s) => ({ id: s.id, label: s.title ?? "Untitled conversation" }))}
+        onOpenThread={(id) => router.push(`/p/${product.slug}/sessions/${id}`)}
+        onMoreThreads={() => router.push(`/p/${product.slug}/sessions`)}
         spaceSwitcher={{
           current: currentEntry,
           entries: [

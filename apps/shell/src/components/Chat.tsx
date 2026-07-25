@@ -38,6 +38,8 @@ export function Chat({
   sessionKey = "home",
   title = "New thread",
   supportContact,
+  sessionId,
+  initialMessage,
 }: {
   spaceId: string;
   session: SessionCredentials;
@@ -45,8 +47,15 @@ export function Chat({
   title?: string;
   /** Support URL/mailto shown when an error indicates a credits/billing problem. */
   supportContact?: string | null;
+  /** An explicit, already-created session (the /sessions/:id route). When given, this is the
+   *  session — the sessionStorage cache is bypassed entirely, so opening a specific conversation
+   *  by URL can never resurrect a different one the tab happened to have cached. */
+  sessionId?: string;
+  /** Sent once, automatically, on mount. Home mints a session from the user's opening line and
+   *  hands it over here rather than duplicating the whole chat surface on the landing page. */
+  initialMessage?: string;
 }) {
-  const [chatSessionId, setChatSessionId] = React.useState<string | null>(null);
+  const [chatSessionId, setChatSessionId] = React.useState<string | null>(sessionId ?? null);
   const [messages, setMessages] = React.useState<Message[]>([]);
   const [input, setInput] = React.useState("");
   const [isLoading, setIsLoading] = React.useState(false);
@@ -78,7 +87,7 @@ export function Chat({
       setInitializing(true);
       setError(null);
       try {
-        const sid = getChatSessionId(spaceId, sessionKey);
+        const sid = sessionId ?? getChatSessionId(spaceId, sessionKey);
         if (!sid) {
           if (!cancelled) {
             setChatSessionId(null);
@@ -96,7 +105,7 @@ export function Chat({
           // A stale/invalid cached id (e.g. from a previous bug, or the session genuinely aged
           // out) — drop it and land empty rather than surface a raw error; the next send mints a
           // fresh one exactly like the first-ever visit would.
-          if (err instanceof ApiError && err.status === 404) {
+          if (err instanceof ApiError && err.status === 404 && !sessionId) {
             clearChatSessionId(spaceId, sessionKey);
             if (!cancelled) {
               setChatSessionId(null);
@@ -116,7 +125,7 @@ export function Chat({
     return () => {
       cancelled = true;
     };
-  }, [spaceId, sessionKey, session]);
+  }, [spaceId, sessionKey, session, sessionId]);
 
   React.useEffect(() => {
     return () => {
@@ -268,10 +277,9 @@ export function Chat({
     // streamRun/session identity happens to change.
   }, [chatSessionId, spaceId, sessionKey]);
 
-  const handleSubmit = React.useCallback(async () => {
-    const trimmed = input.trim();
+  const send = React.useCallback(async (text: string) => {
+    const trimmed = text.trim();
     if (!trimmed || isLoading) return;
-    setInput("");
     setError(null);
     setIsLoading(true);
     setStreamingContent("");
@@ -296,7 +304,27 @@ export function Chat({
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       setError(err instanceof Error ? err.message : "Failed to send message");
     }
-  }, [input, isLoading, chatSessionId, spaceId, sessionKey, session, streamRun]);
+  }, [isLoading, chatSessionId, spaceId, sessionKey, session, streamRun]);
+
+  const handleSubmit = React.useCallback(async () => {
+    const trimmed = input.trim();
+    if (!trimmed) return;
+    setInput("");
+    await send(trimmed);
+  }, [input, send]);
+
+  // Home hands its opening line over here rather than duplicating the chat surface on the landing
+  // page. Guarded by a ref, not just the empty-history check: React 18 StrictMode double-invokes
+  // effects in development, and "send the user's first message twice" is not a dev-only annoyance
+  // — it would bill two real agent runs.
+  const initialSentRef = React.useRef(false);
+  React.useEffect(() => {
+    if (!initialMessage || initializing || initialSentRef.current) return;
+    if (messages.length > 0) return;
+    initialSentRef.current = true;
+    void send(initialMessage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires once when the surface is ready.
+  }, [initialMessage, initializing]);
 
   if (initializing) {
     return (

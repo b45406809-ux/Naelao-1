@@ -116,3 +116,41 @@ export async function checkFreeTierTemplateEligibility(
     message: `Not available on the free plan: ${blocked.join(", ")}. Upgrade your plan or choose a free-eligible template.`,
   };
 }
+
+// ── Browse-only shell catalogues (Discover page) ─────────────────────────────
+// What a business comes preconfigured WITH (project presets) and WHO runs it (the core agents).
+// Static product data, same KV-cached-projection pattern as the template catalogue above — the
+// shell renders these rather than carrying its own hardcoded copy that silently drifts.
+
+export interface ShellCatalog {
+  project_templates: Array<{ id: string; name: string; description: string; kind: string }>;
+  agents: Array<{ id: string; name: string; description: string }>;
+}
+
+const SHELL_CATALOG_CACHE_KEY = "launchpad-shell-catalog:v1";
+
+/** Unavailable (no binding, failed fetch) degrades to empty lists — this drives an informational
+ *  panel, never an access decision, so a missing catalogue must never fail a manifest read. */
+export async function loadShellCatalog(env: TemplateCatalogEnv): Promise<ShellCatalog> {
+  const empty: ShellCatalog = { project_templates: [], agents: [] };
+  const cached = env.NAELAO_CONFIG_KV
+    ? ((await env.NAELAO_CONFIG_KV.get(SHELL_CATALOG_CACHE_KEY, "json")) as ShellCatalog | null)
+    : null;
+  if (cached) return cached;
+  if (!env.AGENTS_WORKER) return empty;
+  try {
+    const resp = await env.AGENTS_WORKER.fetch(new Request("http://agents-worker/catalog/shell"));
+    if (!resp.ok) return empty;
+    const body = await resp.json<Partial<ShellCatalog>>();
+    const catalog: ShellCatalog = {
+      project_templates: body.project_templates ?? [],
+      agents: body.agents ?? [],
+    };
+    if (env.NAELAO_CONFIG_KV) {
+      await env.NAELAO_CONFIG_KV.put(SHELL_CATALOG_CACHE_KEY, JSON.stringify(catalog), { expirationTtl: 3600 });
+    }
+    return catalog;
+  } catch {
+    return empty;
+  }
+}

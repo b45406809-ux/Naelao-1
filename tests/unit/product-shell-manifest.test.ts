@@ -76,13 +76,26 @@ const FAKE_TEMPLATES = [
   { id: "micro-saas", name: "Micro-SaaS", description: "d", free_tier_eligible: false, connectors: [], coming_soon: true },
 ];
 
+const FAKE_PROJECT_TEMPLATES = [
+  { id: "discord-community-bot", name: "Discord Community Bot", description: "d", kind: "customer_bot" },
+];
+const FAKE_AGENTS = [{ id: "launchpad-support-v1", name: "Support Agent", description: "d" }];
+
 function makeEnv(opts: { withAgentsWorker?: boolean; templateFetchCalls?: number[] } = {}) {
   const fakeDb = createFakeD1([SPACES_TABLE_SQL, BUILDER_DASHBOARD_MIGRATION, CREDENTIALS_MIGRATION, EMAIL_VERIFICATION_MIGRATION]);
   const kvStore = new Map<string, string>();
   kvStore.set("space-type-manifest:launchpad", JSON.stringify(FAKE_MANIFEST));
+  // Routes by path like the real agents worker: the manifest handler now fetches TWO catalogues
+  // (GET /templates for business templates, GET /catalog/shell for the Discover page's project
+  // presets + agents). A stub that answered every path with the template payload would let a
+  // wrong-path regression pass silently, and would make templateFetchCalls count both.
   const agentsWorker = opts.withAgentsWorker
     ? {
-        fetch: async () => {
+        fetch: async (req: Request) => {
+          const path = new URL(req.url).pathname;
+          if (path === "/catalog/shell") {
+            return new Response(JSON.stringify({ project_templates: FAKE_PROJECT_TEMPLATES, agents: FAKE_AGENTS }), { status: 200 });
+          }
           if (opts.templateFetchCalls) opts.templateFetchCalls.push(1);
           return new Response(JSON.stringify({ templates: FAKE_TEMPLATES }), { status: 200 });
         },

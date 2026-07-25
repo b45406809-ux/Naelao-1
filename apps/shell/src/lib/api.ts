@@ -110,6 +110,11 @@ export interface ShellManifest {
    *  the dialog had no way to warn a free-plan user before they hit the server-side
    *  plan_upgrade_required rejection — see spaces/page.tsx's "Requires upgrade" badge. */
   template_catalog: Array<{ id: string; name: string; coming_soon: boolean; free_tier_eligible: boolean }>;
+  /** Browse-only: the project presets a business is configured with, and the core agents that
+   *  run it. Static product data — an agent's system_prompt is never included. Absent on an older
+   *  backend, so both are optional and default to empty. */
+  project_template_catalog?: Array<{ id: string; name: string; description: string; kind: string }>;
+  agent_catalog?: Array<{ id: string; name: string; description: string }>;
   /** Legal & support config — builder-defined; drives the cookie consent banner and the
    *  support contact link on error screens. Absent fields: shell falls back to Naelao defaults. */
   legal: {
@@ -188,9 +193,48 @@ export interface AgentRun {
   error?: string;
 }
 
-/** POST /v1/spaces/:spaceId/sessions — start a new chat session. */
-export async function startSession(spaceId: string, session: SessionCredentials): Promise<{ id: string; space_id: string }> {
-  return apiFetch(`/v1/spaces/${spaceId}/sessions`, { method: "POST", body: JSON.stringify({}), session });
+/** POST /v1/spaces/:spaceId/sessions — start a new chat session.
+ *  `title` rides in the session's own metadata (SpaceDO has no title column) so the recent-
+ *  sessions list can label a conversation without an N+1 fetch of every session's first message. */
+export async function startSession(
+  spaceId: string,
+  session: SessionCredentials,
+  title?: string
+): Promise<{ id: string; space_id: string }> {
+  const body = title ? { metadata: { title } } : {};
+  return apiFetch(`/v1/spaces/${spaceId}/sessions`, { method: "POST", body: JSON.stringify(body), session });
+}
+
+export interface SessionSummary {
+  id: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  /** Derived from metadata.title (set at creation from the opening message). */
+  title: string | null;
+}
+
+/** GET /v1/spaces/:spaceId/sessions — the signed-in user's own recent conversations. The
+ *  end_user_id filter is applied SERVER-side from verified claims; a client-supplied one is
+ *  ignored, so this can only ever return the caller's own sessions. */
+export async function listSessions(
+  spaceId: string,
+  session: SessionCredentials,
+  limit = 20
+): Promise<SessionSummary[]> {
+  const res = await apiFetch<{ data?: Array<{ id: string; status: string; created_at: string; updated_at: string; metadata?: string }> }>(
+    `/v1/spaces/${spaceId}/sessions?limit=${limit}`,
+    { session }
+  );
+  return (res.data ?? []).map((row) => {
+    let title: string | null = null;
+    try {
+      title = (JSON.parse(row.metadata ?? "{}") as { title?: string }).title ?? null;
+    } catch {
+      // A session whose metadata isn't valid JSON still belongs in the list, just unlabeled.
+    }
+    return { id: row.id, status: row.status, created_at: row.created_at, updated_at: row.updated_at, title };
+  });
 }
 
 export async function getMessages(spaceId: string, sessionId: string, session: SessionCredentials): Promise<Message[]> {
@@ -916,6 +960,72 @@ export async function startProviderConnect(
   return apiFetch(`/v1/spaces/${spaceId}/connectors/provider-connect-start`, {
     method: "POST",
     body: JSON.stringify({ platform, return_url: returnUrl }),
+    session,
+  });
+}
+
+// ── First-run business setup wizard ──────────────────────────────────────────
+// One route on the spaces worker (GET reads, POST's `action` saves or completes) wrapping the
+// agents worker's real bootstrap machinery. Deliberately not a client-side script: the prompt set
+// belongs to the SpaceType template, so the wizard renders whatever the template defines rather
+// than carrying a copy that silently drifts the moment a template is edited.
+
+export interface OnboardingPrompt {
+  id: string;
+  type: "connection" | "credential" | "channel" | "choice" | "text" | "boolean";
+  question: string;
+  help?: string;
+  options?: string[];
+  connector?: string;
+  required?: boolean;
+  /** Never populated for credential/connection prompts — the server doesn't echo secrets back. */
+  answer?: string | null;
+  /** A connection prompt is satisfied by a REAL registered connector, not by a stored string. */
+  satisfied: boolean;
+}
+
+export interface OnboardingState {
+  status: "pending" | "awaiting_setup" | "complete";
+  /** The SPACE's own status. A business is created before provisioning finishes, so an empty
+   *  prompt list means "still provisioning, wait" while this is not yet "active" — and genuinely
+   *  "nothing to configure" (a Custom business) once it is. */
+  space_status: string;
+  template_ids: string[];
+  templates: Array<{ id: string; name: string; description: string | null; connectors: string[] }>;
+  prompts: OnboardingPrompt[];
+  projects_created: string[];
+  setup_scripts: string[];
+}
+
+export async function getOnboarding(spaceId: string, session: SessionCredentials): Promise<OnboardingState> {
+  return apiFetch<OnboardingState>(`/v1/spaces/${spaceId}/onboarding`, { session });
+}
+
+/** Persist answers WITHOUT completing. Load-bearing before any connect click: that's a real
+ *  browser navigation away from the wizard, so unsaved answers would simply be gone on return. */
+export async function saveOnboarding(
+  spaceId: string,
+  session: SessionCredentials,
+  answers: Record<string, string>
+): Promise<{ ok: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/onboarding`, {
+    method: "POST",
+    body: JSON.stringify({ action: "save", answers }),
+    session,
+  });
+}
+
+/** Finish setup: creates the template's project presets, runs its setup scripts, and wakes the
+ *  assistant to introduce itself on the channel just chosen. Rejects with `onboarding_incomplete`
+ *  (carrying `missing`) while a required prompt is unmet. */
+export async function completeOnboarding(
+  spaceId: string,
+  session: SessionCredentials,
+  answers: Record<string, string>
+): Promise<{ ok: boolean; projects_created: string[]; first_contact_sent: boolean }> {
+  return apiFetch(`/v1/spaces/${spaceId}/onboarding`, {
+    method: "POST",
+    body: JSON.stringify({ action: "complete", answers }),
     session,
   });
 }

@@ -566,6 +566,10 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // Composio "click Install" hosted-connect flow (G-1/G-3 growth layer): same admin-level write
   // gate as connect/oauth-start above (requireBusinessMembership on the spaces worker).
   /^\/spaces\/([^/]+)\/connectors\/provider-connect-start$/,
+  // First-run business setup wizard — the end user's own path into the template bootstrap the
+  // builder dashboard has always driven. Additionally gated by requireBusinessMembership on the
+  // spaces worker (member GET / admin POST), same identity-here-authorization-there split.
+  /^\/spaces\/([^/]+)\/onboarding$/,
   // WS-2 (Space Assistant surface): the Status/Crons panels — additionally gated by
   // resolveEndUserBusinessRole on the spaces worker exactly like the routes above.
   /^\/spaces\/([^/]+)\/assistant-policy$/,
