@@ -578,7 +578,7 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // The Memory/Channels/Sub-agents/Files panels — additionally gated by
   // requireEndUserBusinessMembership on the agents worker (same floor, different worker since
   // these routes live there).
-  /^\/spaces\/([^/]+)\/assistant\/(memory|channels|sub-agents|files)$/,
+  /^\/spaces\/([^/]+)\/assistant\/(memory|channels|sub-agents|files|capabilities)$/,
 ];
 
 /** Resolve productId from the path if it matches an end-user-reachable route pattern. Strips the

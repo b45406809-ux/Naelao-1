@@ -45,6 +45,7 @@ import { startPipedreamConnect, getPipedreamAccountStatus } from "./connectors/p
 import { isChannelType, getAdapter, type ChannelType } from "./launchpad/channels.js";
 import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
 import { seedTemplateProjects } from "./launchpad/bootstrap.js";
+import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -2514,6 +2515,49 @@ app.get("/spaces/:spaceId/assistant/files", async (c) => {
     .filter((o) => !o.key.endsWith("/.keep"))
     .map((o) => ({ path: o.key.slice(prefix.length), size: o.size, uploaded: o.uploaded.toISOString() }));
   return c.json({ data: files, count: files.length });
+});
+
+// GET /spaces/:spaceId/assistant/capabilities — what this assistant can actually do: the
+// prebuilt scripts always available to it, plus the space's own learned skill library.
+//
+// Read-only and metadata-only by design: names, descriptions and tiers, never a script's SOURCE.
+// A space's distilled scripts are the operator's own accumulated work, and the end-user shell is
+// a different population from the builder — the builder's dashboard is where authoring belongs.
+app.get("/spaces/:spaceId/assistant/capabilities", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  await requireVerifiedTenant(c);
+  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+
+  const prebuilts = Object.values(PREBUILT_SCRIPTS).map((s) => ({
+    name: s.name,
+    description: s.description,
+    domain: s.domain,
+    requires_tier: s.requires_tier,
+    operations: Object.keys(s.operations),
+    source: "prebuilt" as const,
+  }));
+
+  // The learned library lives in R2 as `spaces/{id}/scripts/{name}/SCRIPT.md`; list the
+  // directory rather than reading every file, so this stays one cheap call regardless of size.
+  let skills: Array<{ name: string; source: "learned" }> = [];
+  if (c.env.SCRIPTS_R2) {
+    try {
+      const prefix = `spaces/${spaceId}/scripts/`;
+      const listed = await c.env.SCRIPTS_R2.list({ prefix, limit: 500 });
+      const names = new Set<string>();
+      for (const o of listed.objects) {
+        const rest = o.key.slice(prefix.length);
+        const name = rest.split("/")[0];
+        if (name) names.add(name);
+      }
+      skills = [...names].sort().map((name) => ({ name, source: "learned" as const }));
+    } catch {
+      // A storage hiccup must not blank the whole panel — the prebuilt list is still true.
+      skills = [];
+    }
+  }
+
+  return c.json({ prebuilts, skills, prebuilt_count: prebuilts.length, skill_count: skills.length });
 });
 
 // Admin hands a thread back to the bot (or takes it over themselves) — the human-takeover

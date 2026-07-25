@@ -525,6 +525,36 @@ export async function listAssistantFiles(spaceId: string, session: SessionCreden
   return res.data;
 }
 
+export interface PrebuiltCapability {
+  name: string;
+  description: string;
+  domain: string;
+  requires_tier: number;
+  operations: string[];
+  source: "prebuilt";
+}
+
+export interface LearnedSkill {
+  name: string;
+  source: "learned";
+}
+
+export interface AssistantCapabilities {
+  prebuilts: PrebuiltCapability[];
+  skills: LearnedSkill[];
+  prebuilt_count: number;
+  skill_count: number;
+}
+
+/** What the assistant can actually do — built-in scripts plus the space's own learned skills.
+ *  Metadata only; script source is deliberately not exposed to the end-user shell. */
+export async function getAssistantCapabilities(
+  spaceId: string,
+  session: SessionCredentials
+): Promise<AssistantCapabilities> {
+  return apiFetch<AssistantCapabilities>(`/v1/spaces/${spaceId}/assistant/capabilities`, { session });
+}
+
 // ── Businesses (Phase C — reseller-mode end users create/switch/invite into their own
 // businesses) ─────────────────────────────────────────────────────────────────
 

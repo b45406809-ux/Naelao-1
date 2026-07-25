@@ -28,8 +28,9 @@ import {
   type Business,
 } from "@/lib/api";
 
+// No "Home" entry: starting a conversation is what the "new session" button does, and having
+// both a button and a nav item pointing at the same surface just made the sidebar ambiguous.
 const DEFAULT_PRIMARY_NAV: SidebarNavEntry[] = [
-  { key: "home", icon: "home", label: "Home" },
   { key: "spaces", icon: "spaces", label: "Discover" },
   { key: "assistant", icon: "assistant", label: "Assistant" },
   { key: "projects", icon: "projects", label: "Projects" },
@@ -137,7 +138,7 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
     if (!requiresBusiness) return;
     if (businesses.length > 0) return;
     const segments = pathname?.split("/").filter(Boolean) ?? [];
-    const key = segments[2] ?? "home";
+    const key = segments[2] ?? "new";
     if (key === "spaces" || key === "settings" || key === "verify-email") return;
     router.replace(`/p/${product.slug}/spaces?onboarding=1`);
   }, [isHydrated, isAuthenticated, activeSpaceHydrated, manifest, businessesLoaded, requiresBusiness, businesses.length, pathname, product.slug, router]);
@@ -153,10 +154,10 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
     setActiveSpace(businesses[0]!.id, businesses[0]!.name);
   }, [activeSpaceHydrated, businessesLoaded, requiresBusiness, businesses, activeSpaceId, product.space_id, setActiveSpace]);
 
-  // "New session" doesn't create anything — Home IS the new-session surface, and a session is
+  // "New session" doesn't create anything — /new IS the new-session surface, and a session is
   // only minted on a real first message (lazy creation). Navigating there is the whole action.
   function handleNewSession() {
-    router.push(`/p/${product.slug}`);
+    router.push(`/p/${product.slug}/new`);
   }
 
   if (!isHydrated || !isAuthenticated) {
@@ -170,10 +171,11 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   const hidden = new Set(manifest?.ui.hidden_core_items ?? []);
   const primaryNav = DEFAULT_PRIMARY_NAV.filter((item) => !hidden.has(item.key));
   const moreNav = DEFAULT_MORE_NAV.filter((item) => !hidden.has(item.key));
-  const rawKey = pathname?.split("/").filter(Boolean)[2] ?? "home";
-  // Sessions are Home's own flow (Home starts them, the sidebar lists them), so reading one keeps
-  // Home lit rather than leaving no nav item selected at all.
-  const activeKey = rawKey === "sessions" ? "home" : rawKey;
+  const rawKey = pathname?.split("/").filter(Boolean)[2] ?? "new";
+  // /new and /sessions are the conversation flow, which deliberately has no nav item of its own
+  // (the "new session" button and the recent list below it are its entry points), so neither
+  // should light up a nav entry.
+  const activeKey = rawKey === "sessions" ? "new" : rawKey;
   // Belt-and-suspenders alongside the redirect gate above: while a business-first user still has
   // zero businesses, they're parked on /spaces (the one page the gate exempts) — the sidebar's own
   // "new thread"/"new project" buttons must not offer to create either against the product root
@@ -193,7 +195,7 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
       <Sidebar
         brandName={manifest?.space_name ?? product.product_name}
         activeKey={activeKey}
-        onNavigate={(key) => router.push(key === "home" ? `/p/${product.slug}` : `/p/${product.slug}/${key}`)}
+        onNavigate={(key) => router.push(`/p/${product.slug}/${key}`)}
         primaryNav={primaryNav}
         moreNav={moreNav}
         projects={projects.map((p) => ({ id: p.id, label: p.name }))}
