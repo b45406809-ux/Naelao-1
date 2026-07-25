@@ -160,7 +160,10 @@ export default function DiscoverPage() {
         <p style={{ color: "var(--text3)", fontSize: 13 }}>
           {canCreate
             ? "Nothing here yet — pick a template below and your assistant takes it from there."
-            : "This product doesn't support customer-created businesses."}
+            // Not "this product doesn't support customer-created businesses": that is how the
+            // platform describes itself to itself, not something an end user should have to
+            // decode. Say what it means for them.
+            : "You don't run any businesses here yet. Your workspace lives in this product directly."}
         </p>
       ) : (
         <div className="grid-3">
