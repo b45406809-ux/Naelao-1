@@ -126,6 +126,30 @@ describe("assistant policy — a transient failure doesn't turn the assistant of
     expect(await readPolicy(agentDO)).toBeNull();
   });
 
+  it("retries a cold read once, so one blip doesn't gate the whole conversation", async () => {
+    // A DO reading the policy for the FIRST time has no cache to fall back on — a single failed
+    // request would gate every action for that entire run. Seen intermittently during the live
+    // matrix, where a minority of runs gated actions the policy plainly allows.
+    const { agentDO, state } = await makeDO();
+    state.failPolicy = true;
+    const originalFetch = state.policyCalls;
+    // Recover on the second attempt.
+    const spaces = (agentDO as unknown as { env: { SPACES_WORKER: Fetcher } }).env.SPACES_WORKER;
+    const realFetch = spaces.fetch.bind(spaces);
+    let n = 0;
+    (spaces as { fetch: typeof realFetch }).fetch = async (input: RequestInfo) => {
+      n++;
+      if (n === 1) return new Response("boom", { status: 503 });
+      state.failPolicy = false;
+      return realFetch(input as Request);
+    };
+
+    const policy = await readPolicy(agentDO);
+    expect(policy?.approval_mode).toBe("yolo");
+    expect(n).toBe(2);
+    expect(state.policyCalls).toBeGreaterThan(originalFetch);
+  });
+
   it("picks up a real policy change once the cache window passes", async () => {
     const { agentDO, state } = await makeDO();
     expect((await readPolicy(agentDO))?.approval_mode).toBe("yolo");

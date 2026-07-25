@@ -2625,6 +2625,26 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return cached.policy;
     }
 
+    // One retry before giving up. The cache above covers a DO that has read the policy at least
+    // once, but a COLD instance whose very first read fails has nothing to fall back on and would
+    // gate every action for the whole run. A single retry turns that from "the assistant is
+    // broken for this conversation" into a few hundred milliseconds — observed intermittently
+    // during the live matrix, where a minority of runs gated actions the policy plainly allows.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const policy = await this.readAssistantPolicyOnce(spaceId, tenantId, cached);
+      if (policy !== undefined) return policy;
+    }
+    return cached && cached.spaceId === spaceId ? cached.policy : null;
+  }
+
+  /** One attempt at reading the policy. `undefined` means "transient failure, worth retrying";
+   *  `null` is a definitive no. */
+  private async readAssistantPolicyOnce(
+    spaceId: string,
+    tenantId: string,
+    cached: { spaceId: string; policy: { approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] }; at: number } | undefined
+  ): Promise<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] } | null | undefined> {
+    if (!this.env.SPACES_WORKER) return null;
     try {
       const resp = await this.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/assistant-policy`, {
         headers: await this.internalHeaders(tenantId),
@@ -2634,7 +2654,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // a policy we verified moments ago is better evidence than "unknown". A 4xx IS an answer
         // (no such space, not permitted); that one must fail closed rather than keep serving a
         // policy the server is now declining to confirm.
-        if (resp.status >= 500 && cached && cached.spaceId === spaceId) return cached.policy;
+        if (resp.status >= 500) {
+          // Transient: prefer a policy we already verified, otherwise signal "retry".
+          return cached && cached.spaceId === spaceId ? cached.policy : undefined;
+        }
         return null;
       }
       const policy = await resp.json<{ approval_mode: "always_ask" | "yolo"; auto_approved_actions: string[] }>();
@@ -2646,7 +2669,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // correct than falling back to "gate everything and reject", which reads to the user as
       // the assistant refusing to work.
       if (cached && cached.spaceId === spaceId) return cached.policy;
-      return null;
+      return undefined;
     }
   }
 
