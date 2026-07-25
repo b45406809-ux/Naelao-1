@@ -98,7 +98,7 @@ export function Sidebar({
       {onNewThread && (
         <button className="new-chat-btn" onClick={onNewThread} type="button">
           <PlusIcon />
-          <span className="sidebar-text">New Thread</span>
+          <span className="sidebar-text">New Session</span>
         </button>
       )}
 
@@ -204,12 +204,12 @@ export function Sidebar({
                 height={10}
                 style={{ transition: "transform 0.2s", transform: threadsOpen ? "rotate(90deg)" : "none" }}
               />
-              Threads
+              Sessions
             </span>
             {onNewThread && (
               <button
                 className="section-add"
-                title="New thread"
+                title="New session"
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -226,7 +226,7 @@ export function Sidebar({
                 <HistoryItem key={t.id} icon="threads" label={t.label} onClick={() => onOpenThread?.(t.id)} />
               ))}
               {onMoreThreads && (
-                <HistoryItem icon="threads" label="… more threads" muted onClick={onMoreThreads} />
+                <HistoryItem icon="threads" label="… more sessions" muted onClick={onMoreThreads} />
               )}
             </div>
           )}

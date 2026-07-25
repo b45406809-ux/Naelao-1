@@ -48,11 +48,11 @@ export default function ThreadsPage() {
     <div className="page-view">
       <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <div className="page-title">Threads</div>
+          <div className="page-title">Sessions</div>
           <div className="page-subtitle">Every conversation across this business.</div>
         </div>
         <Button onClick={handleNewThread} disabled={creating}>
-          {creating ? "Creating…" : "New Thread"}
+          {creating ? "Creating…" : "New Session"}
         </Button>
       </div>
 
