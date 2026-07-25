@@ -2280,14 +2280,20 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       (`https://naelao-shell.pages.dev/p/{slug}`) renders the actual sign-in page for that
       product — the first time any product has ever been reachable end-to-end on this platform.
       Test product soft-deleted after verification.
-    - **The user's actual "Launchpad" product (product_slug `launchpad`, created before this fix)
-      is stuck in `status='error'` permanently** — the provisioner's rollback already ran and
-      cleaned up its partial state; there is no retry mechanism, only delete + recreate. Its
-      `product_slug` is NOT freed by a soft-delete (`DELETE` only sets `status='deleted'`, never
-      clears `product_slug`, and the DB's partial-unique index on `product_slug` doesn't care
-      about status) — reusing the exact slug `launchpad` needs that column cleared first, a real,
-      separate, narrow gap worth fixing in its own pass (a soft-delete should probably free the
-      slug) rather than folded into this one.
+    - **CORRECTION (verified live 2026-07-25, two sessions later): the user's actual "Launchpad"
+      product is NOT stuck.** This paragraph originally claimed `product_slug` `launchpad` was
+      permanently stuck in `status='error'` with no retry path. A direct D1 query against the
+      live `naelao-platform` database (`SELECT status FROM spaces WHERE product_slug =
+      'launchpad'`) now shows `status: 'active'`, `created_at`/`updated_at` both `2026-07-23`
+      (the same day this item was written) — meaning provisioning actually succeeded shortly
+      after creation, and the "permanently stuck" claim was wrong at the time (a stale read, or
+      written before an async provisioning step finished), not a real bug that later got fixed
+      silently. Items 65 and 66 in this file already relied on this same space being active
+      (they tested real session/business creation against it) without flagging the
+      contradiction — a reminder to verify a documented "known bug" against live state before
+      repeating it, the same discipline item 41's costly false-lead paragraph already argued
+      for. The `product_slug`-not-freed-by-soft-delete observation two sentences below may still
+      be real (unverified either way) but is independent of this correction.
     - **Not fixed this pass, flagged as a separate, real, lower-severity bug:** the dashboard
       displays a product's domain as `{product_slug}.naelao.app`
       (`apps/dashboard/.../products/new/steps/{Review,Domain}Step.tsx`,
