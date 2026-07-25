@@ -18,7 +18,7 @@ import { HITLApprovalDO } from "./do/HITLApprovalDO.js";
 import { TaskDO } from "./do/TaskDO.js";
 import { ToolSandboxDO } from "./do/ToolSandboxDO.js";
 import { LocalTunnelDO } from "./do/LocalTunnelDO.js";
-import { LAUNCHPAD_TEMPLATES } from "./launchpad/spacetype.js";
+import { LAUNCHPAD_TEMPLATES, getLaunchpadTemplate } from "./launchpad/spacetype.js";
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
 import { CONTAINER_IMAGE_CATALOGUE } from "./script-engine/container-catalogue.js";
 import { isCronDue } from "@naelao/events";
@@ -44,6 +44,7 @@ import {
 import { startPipedreamConnect, getPipedreamAccountStatus } from "./connectors/pipedream.js";
 import { isChannelType, getAdapter, type ChannelType } from "./launchpad/channels.js";
 import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
+import { seedTemplateProjects } from "./launchpad/bootstrap.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -2241,37 +2242,49 @@ app.get("/project-templates", (c) => {
 // jobs. For a customer_bot template, the builder still has to call /channels/:channel/connect
 // with this project's id to actually wire a live number/server — template application only
 // sets up the Naelao-side config.
-app.post("/spaces/:spaceId/projects/from-template", async (c) => {
-  const spaceId = c.req.param("spaceId");
-  const tenantId = await requireVerifiedTenant(c);
-
-  type FromTemplateBody = { template_id: string; name?: string };
-  const body = await c.req.json<FromTemplateBody>().catch(() => ({ template_id: "" }) as FromTemplateBody);
-  const template = getProjectTemplate(body.template_id);
-  if (!template) throw notFound("Project template");
+/**
+ * Apply one project-template preset to a space: create the project, configure it (kind, ceiling,
+ * spend cap, channel), and seed its rules + scheduled jobs. Extracted from the route handler so a
+ * SpaceType template's own `bootstrap.project_templates` can stamp the same presets during
+ * onboarding without re-implementing (and drifting from) this sequence.
+ *
+ * Returns the created project id, or an { error } describing which step failed — callers decide
+ * whether that's fatal (the explicit route: yes, surface it) or best-effort (bootstrap: no, one
+ * preset failing must never block the rest of onboarding).
+ */
+async function applyProjectTemplate(
+  env: AgentsEnv,
+  spaceId: string,
+  tenantId: string,
+  templateId: string,
+  name?: string
+): Promise<{ projectId: string } | { error: string; status: number }> {
+  const template = getProjectTemplate(templateId);
+  if (!template) return { error: "unknown project template", status: 404 };
 
   // 1. Create the project (agent binding set at creation so it's consistent from the start —
   //    createProject validates default_agent_id is a member of allowed_agent_ids when both
   //    are set, same as a builder setting them by hand).
-  const internalToken1213 = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
-  const createResp = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
+  const internalToken = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
+  const headers = { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": internalToken };
+  const createResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
     method: "POST",
-    headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": internalToken1213 },
+    headers,
     body: JSON.stringify({
-      name: body.name ?? template.name,
+      name: name ?? template.name,
       description: template.description,
       ...(template.default_agent_id ? { default_agent_id: template.default_agent_id } : {}),
       ...(template.allowed_agent_ids && template.allowed_agent_ids.length > 0 ? { allowed_agent_ids: template.allowed_agent_ids } : {}),
     }),
   }));
-  if (!createResp.ok) return c.json({ error_code: "project_create_failed", message: await createResp.text() }, 502);
+  if (!createResp.ok) return { error: await createResp.text(), status: 502 };
   const project = await createResp.json<{ id: string; name: string }>();
 
   // 2. Configure the rest (kind, execution ceiling, spend cap, thread cap, suggested channel —
   //    only customer_bot templates set channel_config).
-  const configResp = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}`, {
+  const configResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}`, {
     method: "PATCH",
-    headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": internalToken1213 },
+    headers,
     body: JSON.stringify({
       kind: template.kind,
       execution_ceiling: template.execution_ceiling,
@@ -2282,35 +2295,48 @@ app.post("/spaces/:spaceId/projects/from-template", async (c) => {
         : {}),
     }),
   }));
-  if (!configResp.ok) return c.json({ error_code: "project_config_failed", message: await configResp.text() }, 502);
+  if (!configResp.ok) return { error: await configResp.text(), status: 502 };
 
   // 3. Seed the starter rules (customer_bot's reactive no-code triggers — STOP/opt-out,
   //    human-takeover, canned replies).
   for (const rule of template.rules ?? []) {
-    await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}/rules`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": internalToken1213 },
-      body: JSON.stringify(rule),
+    await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}/rules`, {
+      method: "POST", headers, body: JSON.stringify(rule),
     }));
   }
 
   // 4. Seed the scheduled jobs (workspace templates' schedule/observation-driven work — e.g.
   //    a weekly community digest). Scoped to this project via project_id.
   for (const job of template.scheduled_jobs ?? []) {
-    await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/scheduled-jobs`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": internalToken1213 },
-      body: JSON.stringify({ ...job, project_id: project.id }),
+    await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/scheduled-jobs`, {
+      method: "POST", headers, body: JSON.stringify({ ...job, project_id: project.id }),
     }));
   }
 
+  return { projectId: project.id };
+}
+
+app.post("/spaces/:spaceId/projects/from-template", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = await requireVerifiedTenant(c);
+
+  type FromTemplateBody = { template_id: string; name?: string };
+  const body = await c.req.json<FromTemplateBody>().catch(() => ({ template_id: "" }) as FromTemplateBody);
+  const template = getProjectTemplate(body.template_id);
+  if (!template) throw notFound("Project template");
+
+  const result = await applyProjectTemplate(c.env, spaceId, tenantId, body.template_id, body.name);
+  if ("error" in result) {
+    return c.json({ error_code: "project_template_failed", message: result.error }, result.status as 404 | 502);
+  }
+
   return c.json({
-    project_id: project.id,
+    project_id: result.projectId,
     template_id: template.id,
     kind: template.kind,
     ...(template.suggested_channel ? { suggested_channel: template.suggested_channel } : {}),
     ...(template.kind === "customer_bot" && template.suggested_channel
-      ? { next_step: `POST /channels/${template.suggested_channel}/connect { space_id, secret, project_id: "${project.id}" }` }
+      ? { next_step: `POST /channels/${template.suggested_channel}/connect { space_id, secret, project_id: "${result.projectId}" }` }
       : {}),
   }, 201);
 });
@@ -2522,41 +2548,55 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
   // unbound project) or { name, default_agent_id? } — normalize both to the object shape here
   // so downstream code has one shape to deal with.
   type RawProjectSeed = string | { name: string; default_agent_id?: string };
-  const onboarding = (cfg["onboarding"] as { projects?: RawProjectSeed[]; setup_scripts?: string[]; status?: string } | undefined) ?? {};
+  const onboarding = (cfg["onboarding"] as {
+    projects?: RawProjectSeed[];
+    setup_scripts?: string[];
+    status?: string;
+    template_ids?: string[];
+    template_id?: string;
+  } | undefined) ?? {};
   const projectSeeds = (onboarding.projects ?? []).map((p) => (typeof p === "string" ? { name: p } : p));
+  // The templates this space was built from — needed for project_templates + first_contact, which
+  // live on the SpaceType template rather than being copied into the onboarding record (they're
+  // static template data; duplicating them into every space's config_json would fork the source
+  // of truth the moment a template is edited).
+  const bootstrapTemplateIds = onboarding.template_ids ?? (onboarding.template_id ? [onboarding.template_id] : []);
 
-  // 1. Create the template's projects (idempotent on name) via the SpaceDO, each with its
-  //    default_agent_id, then seed a starter thread in any project that has one — a project
-  //    with no default agent (e.g. a reference project like "Products") gets no thread, since
-  //    nothing runs there automatically.
-  const createdProjects: string[] = [];
+  // 1. Create the template's projects (idempotent — SpaceDO has UNIQUE(space_id, name)) via the
+  //    SpaceDO, each with its default_agent_id, then seed a starter thread in any project that
+  //    has one. Shares seedTemplateProjects with the PROVISIONER, which now runs this same
+  //    structural pass at creation time for every path (including the end-user shell, which
+  //    never reaches this endpoint) — one implementation so the two can't drift.
   const bootstrapInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
-  for (const seed of projectSeeds) {
-    try {
-      const r = await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": bootstrapInternalToken },
-        body: JSON.stringify({ name: seed.name, ...(seed.default_agent_id ? { default_agent_id: seed.default_agent_id } : {}) }),
-      }));
-      if (!r.ok) continue;
-      createdProjects.push(seed.name);
+  const createdProjects = await seedTemplateProjects(
+    {
+      postToSpaces: async (path, body) =>
+        c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": bootstrapInternalToken },
+          body: JSON.stringify(body),
+        })),
+    },
+    spaceId,
+    tenantId,
+    projectSeeds
+  );
 
-      if (seed.default_agent_id) {
-        const project = await r.json<{ id?: string }>().catch(() => ({}) as { id?: string });
-        if (project.id) {
-          try {
-            await c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/threads`, {
-              method: "POST",
-              headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": bootstrapInternalToken },
-              body: JSON.stringify({ space_id: spaceId, tenant_id: tenantId, project_id: project.id, title: seed.name }),
-            }));
-          } catch (err) {
-            console.warn(`[bootstrap] starter thread create failed (${seed.name}) for ${spaceId}:`, (err as Error).message);
-          }
-        }
+  // 1b. Stamp the template's project-template presets (a customer_bot preset arrives with its own
+  //     execution ceiling, spend cap and STOP/human-takeover rules already wired — exactly what an
+  //     owner should never have to assemble by hand). Best-effort: one preset failing must never
+  //     block the rest of onboarding. Skipped when a project of that name already exists, since
+  //     applyProjectTemplate's create step hits SpaceDO's UNIQUE(space_id, name) and returns an
+  //     error rather than duplicating.
+  const appliedProjectTemplates: string[] = [];
+  for (const tid of bootstrapTemplateIds) {
+    for (const presetId of getLaunchpadTemplate(tid)?.bootstrap?.project_templates ?? []) {
+      try {
+        const result = await applyProjectTemplate(c.env, spaceId, tenantId, presetId);
+        if ("projectId" in result) appliedProjectTemplates.push(presetId);
+      } catch (err) {
+        console.warn(`[bootstrap] project template '${presetId}' failed for ${spaceId}:`, (err as Error).message);
       }
-    } catch (err) {
-      console.warn(`[bootstrap] project create failed (${seed.name}) for ${spaceId}:`, (err as Error).message);
     }
   }
 
@@ -2582,13 +2622,58 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
     }
   }
 
-  // 3. Mark onboarding complete (merge, don't clobber).
+  // 3. FIRST CONTACT — the assistant proactively reaches the owner on the channel they just
+  //    configured, with a real plan and whatever needs approval. This is what separates a
+  //    configured space from a business that has actually started: the owner shouldn't have to
+  //    open the app and ask "so what now?". The assistant composes the message itself (after
+  //    actually reading the connected account) rather than sending canned text, and respects the
+  //    owner's own autonomy setting — under "ask me first" the plan arrives as proposals, not as
+  //    work already underway. Fired once, only on the transition INTO complete, so a re-run of
+  //    this endpoint (a retry, or a builder revisiting onboarding) never re-introduces the owner
+  //    to their own business.
+  const alreadyComplete = onboarding.status === "complete";
+  const firstContactGoal = bootstrapTemplateIds
+    .map((tid) => getLaunchpadTemplate(tid)?.bootstrap?.first_contact?.goal)
+    .find((g): g is string => Boolean(g));
+  let firstContactSent = false;
+  if (!alreadyComplete && firstContactGoal) {
+    try {
+      const stub = await getAgentDOForSpace(c.env, tenantId, spaceId, "naelao-agent", c.get("requestId"));
+      await stub.fetch(new Request("http://agent-do/script/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          goal: firstContactGoal,
+          spaceId, agentId: "naelao-agent", tenantId,
+          sessionId: `first-contact-${Date.now()}`,
+          context: {
+            trigger: "first_contact",
+            projects: createdProjects,
+            project_templates: appliedProjectTemplates,
+            preferences: cfg["preferences"] ?? {},
+          },
+          apiKey: c.env.ANTHROPIC_API_KEY ?? "",
+        }),
+      }));
+      firstContactSent = true;
+    } catch (err) {
+      console.warn(`[bootstrap] first-contact wake failed for ${spaceId}:`, (err as Error).message);
+    }
+  }
+
+  // 4. Mark onboarding complete (merge, don't clobber).
   cfg["onboarding"] = { ...onboarding, status: "complete" };
   await c.env.PLATFORM_DB.prepare(
     "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
   ).bind(JSON.stringify(cfg), new Date().toISOString(), spaceId, tenantId).run();
 
-  return c.json({ ok: true, projects_created: createdProjects, setup_scripts: setupScripts });
+  return c.json({
+    ok: true,
+    projects_created: createdProjects,
+    project_templates_applied: appliedProjectTemplates,
+    setup_scripts: setupScripts,
+    first_contact_sent: firstContactSent,
+  });
 });
 
 // ── Federated template learning (A1.9) — promote / inherit shared skills ──────

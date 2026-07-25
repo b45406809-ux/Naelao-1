@@ -34,6 +34,7 @@ import {
 import { SkillLibrary } from "../../agents/src/script-engine/skill-library.js";
 import { seedScalingSkills } from "../../agents/src/launchpad/scaling-skills.js";
 import { seedGrowthSkills } from "../../agents/src/launchpad/growth-skills.js";
+import { seedTemplateProjects, normalizeProjectSeeds } from "../../agents/src/launchpad/bootstrap.js";
 import { inheritTemplateSkills } from "../../agents/src/script-engine/federation.js";
 import type { AgentConfig } from "../../agents/src/script-engine/index.js";
 import type { NaelaoSpaceTypeManifestV2 } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
@@ -314,10 +315,18 @@ interface OnboardingState {
   /** Phase C (§A1.17): every template this business was built from; template_id stays the
    *  first entry for back-compat readers of the singular field. */
   template_ids?: string[];
-  status: "pending" | "complete";
+  /** "awaiting_setup" = the structural bootstrap (projects + starter threads) already ran at
+   *  provision time, but this template still has credential/preference prompts or setup scripts
+   *  that genuinely need a connected account first. "complete" = nothing further is required.
+   *  "pending" is the legacy value (structural work not yet done) — still read by
+   *  bootstrap/complete so spaces provisioned before this change still finish correctly. */
+  status: "pending" | "awaiting_setup" | "complete";
   projects: OnboardingProject[];
   setup_scripts: string[];
   created_at: string;
+  /** Names actually created by the provisioner's structural pass — lets the onboarding UI and
+   *  bootstrap/complete tell "already seeded" apart from "never ran". */
+  projects_created?: string[];
 }
 
 /** Merge bootstrap (projects + setup_scripts) across multiple templates. Projects dedupe by
@@ -667,13 +676,57 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
 
       const { projects, setup_scripts } = mergeTemplatesBootstrap(effectiveTemplateIds);
       if (projects.length > 0 || setup_scripts.length > 0) {
+        // Run the STRUCTURAL half of the bootstrap right here, for every creation path. This
+        // used to be recorded-but-never-executed unless the BUILDER dashboard's onboarding page
+        // explicitly called bootstrap/complete — so an end user creating a business through
+        // apps/shell got zero of the template's projects (confirmed live in production before
+        // this fix: a real whop-seller business went 'active' with only the auto-provisioned
+        // "Wallet" project). Best-effort by design: a template's projects failing to seed must
+        // never roll back an otherwise-successful provision.
+        let projectsCreated: string[] = [];
+        try {
+          projectsCreated = await seedTemplateProjects(
+            {
+              postToSpaces: async (path, body) =>
+                env.SPACES_WORKER.fetch(
+                  new Request(`http://spaces-worker${path}`, {
+                    method: "POST",
+                    headers: {
+                      "content-type": "application/json",
+                      "x-naelao-tenant-id": tenantId,
+                      "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+                    },
+                    body: JSON.stringify(body),
+                  })
+                ),
+            },
+            spaceId,
+            tenantId,
+            normalizeProjectSeeds(projects)
+          );
+          if (projectsCreated.length > 0) {
+            console.log(`[provisioner] seeded ${projectsCreated.length} template project(s) into ${spaceId}`);
+          }
+        } catch (err) {
+          console.warn(`[provisioner] template project seeding failed for ${spaceId}:`, (err as Error).message);
+        }
+
+        // Anything still genuinely outstanding (setup scripts that need a connected account,
+        // credential/preference prompts) keeps onboarding open; otherwise it is already done and
+        // must not leave a permanent "finish setup" prompt hanging over a complete space.
+        const promptsOutstanding = effectiveTemplateIds.some(
+          (tid) => (getLaunchpadTemplate(tid)?.bootstrap?.prompts ?? []).length > 0
+        );
+        const needsSetup = setup_scripts.length > 0 || promptsOutstanding;
+
         await mergeOnboarding(env, spaceId, tenantId, {
           template_id: effectiveTemplateIds[0]!,
           template_ids: effectiveTemplateIds,
-          status: "pending",
+          status: needsSetup ? "awaiting_setup" : "complete",
           projects,
           setup_scripts,
           created_at: now,
+          projects_created: projectsCreated,
         });
       }
       provisioned.push("bootstrap");

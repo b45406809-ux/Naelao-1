@@ -45,13 +45,40 @@ export interface LaunchpadAgentDefinition {
  */
 export interface OnboardingPrompt {
   id: string;
-  type: "credential" | "choice" | "text" | "boolean";
+  /**
+   * - "connection" — the app's own click-through connect flow (OAuth, or a provider-hosted link).
+   *   ALWAYS prefer this over "credential" for any connector that has one: a non-technical owner
+   *   should never be asked to find and paste an API key when "Connect with Whop" exists.
+   * - "credential" — a raw key/secret pasted into the vault. Only for connectors with no connect
+   *   flow at all, or as an explicit fallback beside a "connection" prompt for the same connector.
+   * - "channel" — pick + configure the channel the assistant reaches the owner on (approvals,
+   *   plans, escalations). Distinct from a connector: this is how the BUSINESS talks to its OWNER,
+   *   not how it talks to an external platform.
+   * - "choice"/"text"/"boolean" — plain preferences stored on the space for agents to read.
+   */
+  type: "connection" | "credential" | "channel" | "choice" | "text" | "boolean";
   question: string;
-  /** For type "credential": the connector id whose key/secret is being collected. */
+  /** Extra context shown under the question — what this unlocks, in plain language. Written for
+   *  a non-technical owner, never for a developer. */
+  help?: string;
+  /** For type "credential"/"connection": the connector id being connected. */
   connector?: string;
   /** For type "choice": the options offered. */
   options?: string[];
   required?: boolean;
+}
+
+/**
+ * What the assistant does the moment onboarding finishes — the "it contacts you and tells you the
+ * plan" behavior. This is the difference between a configured space and a business that has
+ * actually started: the owner should hear from their assistant on the channel they just picked,
+ * with a concrete plan and whatever needs their approval, without having to open the app and ask.
+ */
+export interface TemplateFirstContact {
+  /** The goal handed to the Space Assistant on its very first proactive run. Written as an
+   *  instruction to the assistant, not as text shown to the owner — the assistant composes the
+   *  actual message itself so it can reference what it really found in the connected account. */
+  goal: string;
 }
 
 /**
@@ -85,6 +112,13 @@ export interface TemplateBootstrap {
   projects?: Array<string | TemplateProjectSeed>;
   /** Prebuilt script ops the assistant runs on start to finish setup. */
   setup_scripts?: string[];
+  /** Project templates (project-templates.ts ids) stamped into the space at bootstrap — the
+   *  pre-configured project presets a template ships, distinct from `projects` (which are plain
+   *  named thread-groups). A customer_bot preset arrives with its own execution ceiling, spend
+   *  cap, and STOP/opt-out rules already wired. */
+  project_templates?: string[];
+  /** What the assistant proactively does once onboarding completes. */
+  first_contact?: TemplateFirstContact;
 }
 
 /** A Launchpad template: a pre-wired digital-business model the owner can pick. */
@@ -320,10 +354,57 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
     free_tier_eligible: false,
     bootstrap: {
       prompts: [
-        { id: "whop_api_key", type: "credential", connector: "whop", question: "Connect your Whop account (API key).", required: true },
-        { id: "whop_webhook_secret", type: "credential", connector: "whop", question: "Paste your Whop webhook signing secret so we receive order/member events.", required: true },
-        { id: "reply_tone", type: "choice", question: "What tone should the support agent use?", options: ["Friendly", "Professional", "Playful"], required: false },
-        { id: "auto_reply", type: "boolean", question: "Let the agent auto-reply to common member questions (you review the rest)?", required: false },
+        // "Connect with Whop" is a real OAuth2+PKCE click-through (connectors/oauth.ts) — a
+        // non-technical owner must never be told to go find an API key when this exists. The
+        // pasted-key prompt stays ONLY as an explicit fallback, marked optional, for someone
+        // whose Whop account can't complete OAuth.
+        {
+          id: "whop_connection",
+          type: "connection",
+          connector: "whop",
+          question: "Connect your Whop account.",
+          help: "Opens Whop and asks you to approve access. Your assistant then reads your products, members and orders so it can answer questions and spot what needs attention. Whop keeps handling all payments.",
+          required: true,
+        },
+        {
+          id: "whop_api_key",
+          type: "credential",
+          connector: "whop",
+          question: "Prefer to paste an API key instead?",
+          help: "Optional — only needed if the Connect button above doesn't work for your account.",
+          required: false,
+        },
+        // How the BUSINESS reaches its OWNER. This is what makes the assistant proactive rather
+        // than something you have to remember to open — approvals, plans and escalations all
+        // arrive here.
+        {
+          id: "owner_channel",
+          type: "channel",
+          question: "Where should your assistant reach you?",
+          help: "It will message you here with what it's planning, anything that needs your approval, and anything it can't handle on its own. You can change this any time.",
+          options: ["email", "slack", "discord", "whatsapp"],
+          required: true,
+        },
+        {
+          id: "autonomy",
+          type: "choice",
+          question: "How much should your assistant do on its own?",
+          help: "You can change this later. Most people start with 'Ask me first' and loosen it once they trust it.",
+          options: [
+            "Ask me first — approve everything before it happens",
+            "Handle routine work, ask about anything that costs money or reaches a customer",
+            "Full autonomy — only ask when genuinely stuck",
+          ],
+          required: true,
+        },
+        { id: "reply_tone", type: "choice", question: "What tone should replies to your members use?", options: ["Friendly", "Professional", "Playful"], required: false },
+        {
+          id: "business_goal",
+          type: "text",
+          question: "What do you most want to grow right now?",
+          help: "In your own words — e.g. 'more members', 'fewer refunds', 'less time answering the same questions'. Your assistant plans around this.",
+          required: false,
+        },
       ],
       // "Members" is a reference/data project (roster the agent reads, nothing runs there
       // automatically); "Support" and "Content" are bound to the agents that own that work.
@@ -332,7 +413,19 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
         { name: "Support", default_agent_id: "launchpad-support-v1" },
         { name: "Content", default_agent_id: "launchpad-content-v1" },
       ],
+      // A Whop business lives in Discord — a preconfigured community bot project (its own
+      // execution ceiling, spend cap and human-takeover rules already wired) is exactly the kind
+      // of thing an owner should never have to assemble by hand.
+      project_templates: ["discord-community-bot"],
       setup_scripts: ["mcp.list_tools"],
+      first_contact: {
+        goal:
+          "Onboarding for this Whop business just completed. Introduce yourself to the owner on their chosen channel and give them a real, specific first plan — not a generic greeting. " +
+          "First, actually look: use the connected Whop account (mcp-connector) to read their products, members and recent orders, and check which apps are still unconnected. " +
+          "Then send ONE short message that covers: what you found (real numbers, not placeholders), the 2-3 highest-leverage things you propose doing first and why, anything you need from them (an app to connect, a decision to make), and how they approve or change any of it. " +
+          "Respect their configured autonomy setting: if they chose 'Ask me first', present the plan as proposals awaiting approval rather than things already underway. " +
+          "Be honest about what you cannot see or do yet rather than overstating. Keep it short enough to read on a phone.",
+      },
     },
   },
   // Customer-service template — a support desk on autopilot. Same engine; the Support agent +
@@ -434,6 +527,27 @@ export function validateLaunchpadSpaceType(st: LaunchpadSpaceType = LAUNCHPAD_SP
         throw new Error(
           `Launchpad template '${t.id}' project '${p.name}' defaults to agent '${p.default_agent_id}', which is not in this template's own agents list`
         );
+      }
+    }
+
+    // A connect/credential prompt must name a connector the template actually wires — otherwise
+    // onboarding renders a Connect button for an app the space was never set up to reach.
+    const wiredConnectors = new Set(t.connectors ?? []);
+    for (const p of t.bootstrap?.prompts ?? []) {
+      if (p.type !== "connection" && p.type !== "credential") continue;
+      if (!p.connector) {
+        throw new Error(`Launchpad template '${t.id}' prompt '${p.id}' is type '${p.type}' but names no connector`);
+      }
+      if (!wiredConnectors.has(p.connector)) {
+        throw new Error(
+          `Launchpad template '${t.id}' prompt '${p.id}' connects '${p.connector}', which is not in this template's own connectors list`
+        );
+      }
+    }
+    // A choice prompt with no options is an unanswerable question.
+    for (const p of t.bootstrap?.prompts ?? []) {
+      if ((p.type === "choice" || p.type === "channel") && (p.options ?? []).length === 0) {
+        throw new Error(`Launchpad template '${t.id}' prompt '${p.id}' is type '${p.type}' but offers no options`);
       }
     }
   }
