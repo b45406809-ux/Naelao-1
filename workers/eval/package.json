@@ -10,9 +10,10 @@
     "deploy:production": "wrangler deploy --env production"
   },
   "dependencies": {
-    "@naelao/types": "workspace:*",
+    "@naelao/billing-core": "workspace:*",
     "@naelao/http": "workspace:*",
     "@naelao/llm-gateway": "workspace:*",
+    "@naelao/types": "workspace:*",
     "hono": "^4.6.0"
   },
   "devDependencies": {

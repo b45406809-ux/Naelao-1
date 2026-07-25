@@ -20,6 +20,7 @@ import type {
   EscalationLevel,
   HITLGateway,
   TraceStep,
+  ScriptRunResult,
 } from "./types.js";
 
 /** LoopResult before the shared trace array is attached — see `finish()` in runScriptLoop. */
@@ -131,6 +132,15 @@ export interface Reasoner {
     availableOperations: string[];
     /** Set on L2/L3 — the script being repaired and why it drifted. */
     repairTarget?: { name: string; failureReason: string };
+    /**
+     * What this run has already done and what came back, oldest first.
+     *
+     * Without this the model is blind to its own tool output: it could only ever fire one call
+     * and never react to the result, which makes "look this up, then decide" — the shape of most
+     * real work — impossible. Passing observations back is what turns a single dispatch into an
+     * actual agent loop.
+     */
+    priorSteps?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
   }): Promise<ReasonDecision>;
   /** Token usage from the most recently completed decide() call, when the backing LLM
    *  client reports it. Optional — reasoners that can't report it (e.g. test fakes) leave
@@ -331,6 +341,13 @@ export async function runScriptLoop(
       const maxSteps = opts.maxSteps ?? 6;
       let lastDecision: ReasonDecision | null = null;
       const usageAcc = { input: 0, output: 0 };
+      // What this run has already done, fed back into every subsequent decide() call.
+      const priorSteps: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }> = [];
+      // The most recent SUCCESSFUL tool result, kept so an agent that runs out of steps without
+      // ever composing an answer still returns the work it actually did rather than "gave up".
+      let lastGoodRun: { name: string; result: ScriptRunResult } | null = null;
+      /** `name:params` of every call already attempted this run — see the repeat guard below. */
+      const attemptedCalls = new Set<string>();
       for (let step = 0; step < maxSteps; step++) {
         // Real per-token budget ceiling (sub-agent budgets — spec: enforce actual reasoner
         // spend, not a step-count proxy). Never starts a step it can't afford.
@@ -349,6 +366,7 @@ export async function runScriptLoop(
           ...(level === "L3" && top
             ? { repairTarget: { name: top.name, failureReason: "stale / re-derive" } }
             : {}),
+          ...(priorSteps.length > 0 ? { priorSteps } : {}),
         });
         const stepUsage = usageOf(reasoner);
         usageAcc.input += stepUsage.input;
@@ -363,6 +381,24 @@ export async function runScriptLoop(
         });
 
         if (decision.action === "run") {
+          // Now that a successful run no longer ends the loop, a model that ignores its own
+          // observations could burn every remaining step re-running the identical call. Serving
+          // the result it already has costs nothing, keeps the observation accurate, and bounds
+          // the damage — while a call with DIFFERENT params is still allowed through, since
+          // re-running an op with new arguments is ordinary work, not a pathology.
+          const callKey = `${decision.name}:${stableStringify(decision.params)}`;
+          if (attemptedCalls.has(callKey)) {
+            notes.push(`${level} skipped repeat call ${decision.name} (already run this task)`);
+            priorSteps.push({
+              name: decision.name,
+              params: decision.params,
+              ok: true,
+              output: "(already run in this task — see the earlier step's result)",
+            });
+            continue;
+          }
+          attemptedCalls.add(callKey);
+
           // HITL gate before execution
           const allowed = await hitlGate(decision.name, decision.params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes);
           if (!allowed) {
@@ -371,8 +407,20 @@ export async function runScriptLoop(
           const result = await tools.run(decision.name, decision.params);
           notes.push(`${level} run ${decision.name}: ${result.ok ? "ok" : "fail"}`);
           pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
-          if (!result.ok) continue; // let the reasoner try another step
-          return finish(withTokenUsage({ level, script_name: decision.name, result, notes }, usageAcc));
+          // Record what happened and KEEP GOING. This used to `return` on the first successful
+          // tool call, handing the tool's raw result back as the run's answer — so the model never
+          // observed its own output, could never chain two calls, and a user asking "look up the
+          // order, then follow the refund policy" got whatever the lookup happened to return
+          // (frequently an empty string). Only `answer`/`give_up` end a run now; a tool call is a
+          // step within it, which is what the OBSERVE→…→VERIFY loop always described.
+          priorSteps.push({
+            name: decision.name,
+            params: decision.params,
+            ok: result.ok,
+            ...(result.ok ? { output: result.output } : { error: result.error ?? "failed" }),
+          });
+          if (result.ok) lastGoodRun = { name: decision.name, result };
+          continue;
         }
 
         if (decision.action === "distill" || decision.action === "patch") {
@@ -384,12 +432,45 @@ export async function runScriptLoop(
         }
       }
       notes.push(`${level} exhausted ${maxSteps} steps`);
+      // Ran out of steps without ever composing an answer.
+      //
+      // This FAILS, always — even when tool calls succeeded along the way. Returning a raw tool
+      // payload as "the answer" is the exact conflation this change set exists to fix: there is
+      // no reliable way to tell a receipt (`{written: true}`) from a result worth reading
+      // (`{content: "..."}`), and guessing wrong means the user gets `ok` plus a blank or a JSON
+      // dump. The work that DID succeed is named in the error rather than discarded, so nothing
+      // is hidden — but "the agent never answered you" is reported as what it is.
+      if (lastGoodRun) {
+        const ran = priorSteps.filter((p) => p.ok).map((p) => p.name).join(", ");
+        notes.push(`${level} ran ${priorSteps.length} step(s) but never composed an answer`);
+        return finish(withTokenUsage({
+          level,
+          script_name: lastGoodRun.name,
+          result: {
+            ok: false,
+            error: `Ran ${priorSteps.length} step(s) without reaching an answer (completed: ${ran || "none"})`,
+            tier: 1 as const,
+            duration_ms: 0,
+            tokens_used: 0,
+          },
+          notes,
+        }, usageAcc));
+      }
       return finish(withTokenUsage(
         await applyTerminalDecision(level, lastDecision ?? { action: "give_up", reason: "no decision" }, tools, opts.goal, notes, pushTrace),
         usageAcc
       ));
     }
   }
+}
+
+/** Key-order-independent JSON, so {a:1,b:2} and {b:2,a:1} are recognized as the same call —
+ *  a model re-emitting identical arguments in a different order is still a repeat. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value ?? null);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
 }
 
 /** Reads the reasoner's most recently reported usage; zeros when unreported. */

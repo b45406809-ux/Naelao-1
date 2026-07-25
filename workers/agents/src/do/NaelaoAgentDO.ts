@@ -2050,6 +2050,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // §A1 Harness Excellence Phase HX2: resolved by the caller (index.ts) from
       // productConfig.limits.sessionCreditCeiling — this DO has no PLATFORM_DB binding.
       sessionCreditCeiling?: number;
+      /** The id the caller already handed to its client, so the persisted trace is reachable
+       *  through GET .../runs/:runId/trace. Optional — direct callers omit it. */
+      runId?: string;
     }>();
 
     // Also accept spaceId / agentId / tenantId from internal request headers (set by billing/triggers)
@@ -2068,7 +2071,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // caller could spoof at the script-args level (this is a header the router sets from verified
     // claims for every proxied request, same trust boundary as x-naelao-tenant-id above).
     const callerRole = request.headers.get("x-naelao-role") ?? undefined;
-    const runId = crypto.randomUUID();
+    // Prefer the caller's own run id. /agent/run generates one, returns it to the client, and
+    // exposes GET .../runs/:runId/trace — but it never sent it here, so the trace was persisted
+    // under a DIFFERENT, internal-only id and that endpoint could never find anything. Falling
+    // back to a fresh id keeps direct callers (channel heartbeats, triggers) working unchanged.
+    const runId = body.runId ?? crypto.randomUUID();
 
     if (!body.goal || !spaceId) {
       return Response.json({ error: "goal and spaceId are required" }, { status: 400 });

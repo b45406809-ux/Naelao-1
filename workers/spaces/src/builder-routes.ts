@@ -5,6 +5,7 @@
 // instance (matching this file's existing convention of one flat app — cf-saas.ts is pure logic
 // with no routes; this is the first split-out file that DOES register routes, so it takes `app`
 // rather than mounting a sub-app, to avoid a circular import with index.ts's own Env type: this
+import { ALLOWED_MODELS, isAllowedModel } from "@naelao/billing-core";
 // file declares its own minimal structural Env shape instead of importing index.ts's Env).
 //
 // AUTH: every /builder/* route accepts EITHER of two callers, resolved by resolveBuilderAuth():
@@ -60,19 +61,6 @@ interface SpaceRow {
 }
 
 const ALLOWED_STATUSES = ["draft", "active", "paused", "suspended", "deleted"] as const;
-
-// §A1.28: the model switcher's curated allowlist — matches packages/billing-core's known model
-// set (computeTokenCostMicro/MODEL_CONTEXT_WINDOWS) so a chosen model is always priced/windowed
-// correctly rather than silently falling back to a default for an unrecognized string.
-const ALLOWED_MODELS = [
-  "claude-haiku-4-5-20251001",
-  "claude-sonnet-4-6",
-  "claude-opus-4-8",
-  // CF Workers AI — the free-tier option (10k neurons/day per account before it bills). Verified
-  // to return correct structured tool calls against the reasoner's real action space, which is
-  // what makes it usable as an agent model at all and not just a chat model.
-  "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
-] as const;
 
 async function sha256Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
@@ -302,9 +290,10 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     }
     // §A1.28 (model switcher): a curated allowlist, not an arbitrary caller-supplied string — cost
     // predictability, and it keeps this in sync with what contextWindowForModel/tokensToCredits
-    // (packages/billing-core) actually know how to price.
+    // actually know how to price. The list itself now lives in packages/billing-core alongside
+    // those tables, so this and the agents worker's own run-time model override can never drift.
     const model = body.product_config?.modelConfig?.model;
-    if (model && !ALLOWED_MODELS.includes(model as (typeof ALLOWED_MODELS)[number])) {
+    if (model && !isAllowedModel(model)) {
       return c.json({ error_code: "bad_request", message: `modelConfig.model must be one of ${ALLOWED_MODELS.join(", ")}` }, 400);
     }
 

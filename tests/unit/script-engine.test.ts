@@ -163,9 +163,15 @@ describe("runScriptLoop — L1 execution + L4 distill (spec §2/§5)", () => {
     // loop runs it. We model the distilled script as a prebuilt call by having the loop
     // run the distilled NAME — but since stored-code execution needs a runner, we instead
     // have the reasoner choose `run` of an existing prebuilt op (valid L4 outcome).
+    // Runs the tool, THEN answers — a realistic turn. (These tests used to use a reasoner that
+    // only ever returned `run` and never answered; they passed because the loop wrongly ended on
+    // the first successful tool call. A run that never composes an answer now fails, correctly.)
+    let step = 0;
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
-        return { action: "run", name: "write_file", params: { path: "out.txt", content: "done" } };
+        return step++ === 0
+          ? { action: "run", name: "write_file", params: { path: "out.txt", content: "done" } }
+          : { action: "answer", text: "Wrote out.txt." };
       },
     };
     const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
@@ -300,9 +306,15 @@ describe("runScriptLoop — structured trace (§A1 Phase HX1, the persisted coun
   it("records observe/find/gate/reason/run phases in order with real tier/tokens/ok", async () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    // Runs the tool, THEN answers — a realistic turn. (These tests used to use a reasoner that
+    // only ever returned `run` and never answered; they passed because the loop wrongly ended on
+    // the first successful tool call. A run that never composes an answer now fails, correctly.)
+    let step = 0;
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
-        return { action: "run", name: "write_file", params: { path: "out.txt", content: "done" } };
+        return step++ === 0
+          ? { action: "run", name: "write_file", params: { path: "out.txt", content: "done" } }
+          : { action: "answer", text: "Wrote out.txt." };
       },
     };
     const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
@@ -395,9 +407,12 @@ describe("runScriptLoop — approval modes (Space Assistant default-ask vs ordin
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
     const { calls, gateway } = makeHitlGateway(true);
     env.hitlGateway = gateway;
+    let step = 0;
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
-        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        return step++ === 0
+          ? { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } }
+          : { action: "answer", text: "Wrote a.txt." };
       },
     };
     // "write_file" is NOT in the auto-approved list -> gate_unless_listed asks first.

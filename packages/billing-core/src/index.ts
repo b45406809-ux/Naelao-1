@@ -147,12 +147,66 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "claude-sonnet-4-6": 200_000,
   "claude-haiku-4-5-20251001": 200_000,
   "claude-opus-4-8": 200_000,
-  // CF Workers AI. 24k is this model's REAL published window (confirmed against the account's own
-  // /ai/models/search API, not assumed from Llama 3.3's native 128k — Workers AI serves it with a
-  // much smaller window). Materially below the Claude models', so context accounting and the
-  // shell's context meter must not silently treat it as equivalent.
+  // CF Workers AI — every window below is the model's REAL served window, read from the account's
+  // own /ai/models/search API rather than the model's nominal upstream figure. Llama 3.3 is the
+  // clearest reason not to assume: Workers AI serves it at 24k against a native 128k. Context
+  // accounting and the shell's context meter must never treat these as interchangeable.
   "@cf/meta/llama-3.3-70b-instruct-fp8-fast": 24_000,
+  "@cf/qwen/qwen3-30b-a3b-fp8": 32_768,
+  "@cf/openai/gpt-oss-120b": 128_000,
+  "@cf/openai/gpt-oss-20b": 128_000,
+  "@cf/mistralai/mistral-small-3.1-24b-instruct": 128_000,
+  "@cf/ibm-granite/granite-4.0-h-micro": 131_000,
+  "@cf/meta/llama-4-scout-17b-16e-instruct": 131_000,
+  "@cf/zai-org/glm-4.7-flash": 131_072,
+  "@cf/nvidia/nemotron-3-120b-a12b": 256_000,
+  "@cf/google/gemma-4-26b-a4b-it": 256_000,
+  "@cf/zai-org/glm-5.2": 262_144,
+  "@cf/moonshotai/kimi-k2.6": 262_144,
+  "@cf/moonshotai/kimi-k2.7-code": 262_144,
 };
+
+/**
+ * The models a builder may select, and the ONLY models an eval or a run may name.
+ *
+ * Two properties are load-bearing and both were verified against the account's live
+ * /ai/models/search rather than assumed:
+ *  - every `@cf/...` entry advertises `function_calling: true`. The reasoner's entire action
+ *    space is declared as provider tools (script-engine/reasoner.ts), so a model without tool
+ *    calling degrades to the prose-JSON fallback and is materially less reliable — it does not
+ *    belong on a list a builder can pick from.
+ *  - the list is CURATED, not free text: cost has to stay predictable, and every entry needs a
+ *    real context window above for accounting to work.
+ *
+ * Claude ids are retained for accounts whose AI Gateway actually has Anthropic wired; on an
+ * account without it (which is the case today — see CLAUDE.md item 68) they simply never resolve,
+ * and the Workers AI entries are the real choice set.
+ */
+export const ALLOWED_MODELS = [
+  "claude-haiku-4-5-20251001",
+  "claude-sonnet-4-6",
+  "claude-opus-4-8",
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+  "@cf/meta/llama-4-scout-17b-16e-instruct",
+  "@cf/openai/gpt-oss-120b",
+  "@cf/openai/gpt-oss-20b",
+  "@cf/qwen/qwen3-30b-a3b-fp8",
+  "@cf/mistralai/mistral-small-3.1-24b-instruct",
+  "@cf/ibm-granite/granite-4.0-h-micro",
+  "@cf/google/gemma-4-26b-a4b-it",
+  "@cf/zai-org/glm-4.7-flash",
+  "@cf/zai-org/glm-5.2",
+  "@cf/nvidia/nemotron-3-120b-a12b",
+  "@cf/moonshotai/kimi-k2.6",
+  "@cf/moonshotai/kimi-k2.7-code",
+] as const;
+
+export type AllowedModel = (typeof ALLOWED_MODELS)[number];
+
+/** Whether a model string is one a builder may select / a run may name. */
+export function isAllowedModel(model: string): model is AllowedModel {
+  return (ALLOWED_MODELS as readonly string[]).includes(model);
+}
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 /** Context window size for a model, falling back to a documented default for an unknown model

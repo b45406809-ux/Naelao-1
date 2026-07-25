@@ -9,7 +9,7 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
-import { contextWindowForModel } from "@naelao/billing-core";
+import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS } from "@naelao/billing-core";
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, type MentionableAgent } from "@naelao/events";
@@ -360,7 +360,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.param("sessionId");
 
-  const rawBody = await c.req.json<{ goal?: string; agent_definition_id?: string; project_id?: string }>();
+  const rawBody = await c.req.json<{ goal?: string; agent_definition_id?: string; project_id?: string; model?: string }>();
   const resolvedGoal = await resolveRunGoal(c.env, tenantId, spaceId, sessionId, rawBody.goal);
   if (!resolvedGoal) {
     throw badRequest("goal is required and must be a string (or the session must already have a user message)");
@@ -444,6 +444,16 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // worth the round trip. `productConfig.modelConfig.model` was validated against a curated
   // allowlist at the PATCH route that wrote it (workers/spaces/src/builder-routes.ts) — trusted
   // here without re-validating.
+  // A per-run model override, validated against the SAME curated allowlist the builder's PATCH
+  // route uses (now shared from packages/billing-core so the two can't drift). This exists so an
+  // eval suite can score one golden dataset across several candidate models without mutating the
+  // space's stored configuration between runs — which would be both racy and a real change to a
+  // live product. Rejected rather than ignored on an unknown string: silently running a different
+  // model than the caller named would make every number the eval produces a lie.
+  if (rawBody.model && !isAllowedModel(rawBody.model)) {
+    throw badRequest(`model must be one of ${ALLOWED_MODELS.join(", ")}`);
+  }
+
   let modelConfig: { model?: string } = {};
   // §A1 Harness Excellence Phase HX2: same config_json-override read as modelConfig above —
   // resolved once here (spaceRow is already fetched) rather than a second cross-worker round
@@ -589,7 +599,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         // A-2 cutover: the script-native engine resolves its own system prompt/tools from the
         // agent's R2 config by agentId — systemPrompt/tools/kbContext are no longer meaningful.
         agentId,
-        model: modelConfig.model ?? "claude-sonnet-4-6",
+        model: rawBody.model ?? modelConfig.model ?? "claude-sonnet-4-6",
         taskDoName,
         // Go-live audit A-1/A-2: threaded through to /internal/tasks/:taskId/run's own
         // http://agent-do/script/run call — see that route's own comment.
@@ -648,9 +658,13 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         userId,
         projectId: rawBody.project_id,
         apiKey: c.env.ANTHROPIC_API_KEY ?? "",
-        model: modelConfig.model ?? "claude-sonnet-4-6",
+        model: rawBody.model ?? modelConfig.model ?? "claude-sonnet-4-6",
         // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
         sessionCreditCeiling,
+        // The id returned to the client below. Without sending it, the DO minted its own and
+        // persisted the run trace under that instead — so GET .../runs/:runId/trace (HX1's
+        // builder-facing observability) could never find a trace for any id a caller actually had.
+        runId: scriptRunId,
       }),
     })
   );

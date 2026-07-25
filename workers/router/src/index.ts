@@ -20,6 +20,7 @@ export interface Env {
   RATE_LIMIT_DO: DurableObjectNamespace;
   SPACES_WORKER: Fetcher;
   KNOWLEDGE_WORKER: Fetcher;
+  EVAL_WORKER: Fetcher;
   AGENTS_WORKER: Fetcher;
   AUTH_WORKER: Fetcher;
   CREDENTIALS_WORKER: Fetcher;
@@ -952,6 +953,17 @@ async function proxyTo(
     duplex: "half",
   } as RequestInit));
 }
+
+// Eval suites (G-Q03 / §A1 Harness Excellence HX3) → eval worker.
+//
+// Builder-only, tenant-scoped: every query in that worker filters on the tenant_id proxyTo sets
+// from verified claims, and the worker itself is workers_dev=false so this is its only ingress.
+// It had NO router route at all until now — meaning the benchmark runner
+// (infra/scripts/run-eval-suite.mjs) had never actually been able to reach a deployment, and the
+// worker's own routes were registered under /v1 (which proxyTo strips), so they could not have
+// matched even if a route had existed. Both fixed together.
+api.all("/evals", async (c) => proxyTo(c.env.EVAL_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
+api.all("/evals/*", async (c) => proxyTo(c.env.EVAL_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET));
 
 // Knowledge (KB) → knowledge worker
 // S0.1: For product_end_user callers, verify business membership first.

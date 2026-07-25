@@ -821,6 +821,9 @@ importers:
 
   workers/eval:
     dependencies:
+      '@naelao/billing-core':
+        specifier: workspace:*
+        version: link:../../packages/billing-core
       '@naelao/http':
         specifier: workspace:*
         version: link:../../packages/http
@@ -1121,6 +1124,9 @@ importers:
 
   workers/spaces:
     dependencies:
+      '@naelao/billing-core':
+        specifier: workspace:*
+        version: link:../../packages/billing-core
       '@naelao/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto

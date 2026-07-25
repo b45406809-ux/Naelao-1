@@ -50,6 +50,10 @@ binding = "KNOWLEDGE_WORKER"
 service = "naelao-knowledge"
 
 [[services]]
+binding = "EVAL_WORKER"
+service = "naelao-eval"
+
+[[services]]
 binding = "AGENTS_WORKER"
 service = "naelao-agents"
 
