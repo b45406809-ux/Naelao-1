@@ -389,6 +389,18 @@ export interface LlmCallerGateway {
     input_tokens: number;
     output_tokens: number;
   }>;
+  /**
+   * A plain single-turn completion, for prebuilts that do their own small LLM work rather than
+   * reasoning (today: project-journal compaction condensing old activity into an archive).
+   * Optional — a caller without it degrades to that op's non-LLM fallback rather than failing,
+   * matching how every other optional gateway in this file behaves.
+   */
+  complete?(args: { model: string; prompt: string; maxTokens?: number | undefined }): Promise<{
+    text: string;
+    tokens_used: number;
+    input_tokens: number;
+    output_tokens: number;
+  }>;
 }
 
 /**

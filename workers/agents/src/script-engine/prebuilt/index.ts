@@ -30,6 +30,7 @@ import { codeExec } from "./code-exec.js";
 import { memory } from "./memory.js";
 import { fabric } from "./fabric.js";
 import { wiki } from "./wiki.js";
+import { projectJournal } from "./project-journal.js";
 import { lock } from "./lock.js";
 import { workspaceAdmin } from "./workspace-admin.js";
 import { localMachine } from "./local-machine.js";
@@ -82,6 +83,10 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // Memory OS Layer 4 (Fabric) + Layer 6 (LLM Wiki) — cross-session consolidation + curated vault.
   [fabric.name]: fabric,
   [wiki.name]: wiki,
+  // The project's shared state file — what the goal is, what is done, what is left. Read on
+  // demand (never injected per call) so an assistant can answer "where is this project at"
+  // without walking every thread in it.
+  [projectJournal.name]: projectJournal,
   // Generic named-lock primitive — the building block for script-composed concurrency
   // strategies (e.g. CSV row locking), not a bespoke locking mechanism per use case.
   [lock.name]: lock,
@@ -141,6 +146,7 @@ export {
   memory,
   fabric,
   wiki,
+  projectJournal,
   lock,
   workspaceAdmin,
   localMachine,

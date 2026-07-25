@@ -1461,6 +1461,31 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             output_tokens: response.usage.output_tokens,
           };
         },
+        // Plain completion for prebuilts doing their own small LLM work (project-journal
+        // compaction). Same gateway, same billing path as any other call — nothing here is a
+        // free side-channel.
+        complete: async ({ model, prompt, maxTokens }) => {
+          const response = await callLlm(
+            anthropicKey,
+            {
+              model,
+              messages: [{ role: "user", content: prompt }],
+              max_tokens: maxTokens ?? 512,
+            },
+            undefined,
+            gatewayConfig
+          );
+          const text = response.content
+            .filter((b) => b.type === "text")
+            .map((b) => b.text ?? "")
+            .join("\n");
+          return {
+            text,
+            tokens_used: response.usage.input_tokens + response.usage.output_tokens,
+            input_tokens: response.usage.input_tokens,
+            output_tokens: response.usage.output_tokens,
+          };
+        },
       };
     }
     if (this.env.KNOWLEDGE_WORKER) env.knowledgeWorker = this.env.KNOWLEDGE_WORKER;
