@@ -197,6 +197,19 @@ service = "naelao-browser"
 binding = "WS_GATEWAY"
 service = "naelao-ws-gateway"
 
+# PLATFORM_DB — this worker's src/index.ts declares `PLATFORM_DB: D1Database` on AgentsEnv and
+# uses it in 31 places (agent/run's model + space lookup, bootstrap/complete, channel inbound,
+# connector webhooks, template resolution...), but this binding was MISSING from wrangler.toml
+# entirely, so `c.env.PLATFORM_DB` was undefined on the live worker and every one of those routes
+# threw "Cannot read properties of undefined (reading 'prepare')". TypeScript cannot catch this:
+# wrangler.toml is never typechecked against the Env interface. It went unnoticed because a
+# separate PLATFORM_SECRET mismatch made every router-proxied request 401 before it could reach
+# any of this code.
+[[d1_databases]]
+binding = "PLATFORM_DB"
+database_name = "naelao-platform"
+database_id = "f29714eb-28bd-4c76-895d-eb186e92a88f"
+
 [vars]
 ENVIRONMENT = "development"
 # CF AI Gateway — every LLM call routes through this (spec §15).

@@ -22,6 +22,8 @@ import {
   type AIClientContext,
   type GatewayOpts,
   type FailoverModel,
+  type ToolSpec,
+  type ToolCall,
 } from "../shared/ai-client.js";
 
 export interface ReasonerDeps {
@@ -49,6 +51,134 @@ function extractJson(text: string): unknown {
   const end = raw.lastIndexOf("}");
   if (start === -1 || end === -1) throw new Error("no JSON object in reasoner output");
   return JSON.parse(raw.slice(start, end + 1));
+}
+
+/**
+ * The reasoner's action space, declared as real provider tools rather than described in prose and
+ * regex-extracted from the reply. This is the same five actions DECISION_INSTRUCTIONS documents —
+ * the schema is now enforced by the provider's own constrained decoding instead of by hoping the
+ * model formats its prose correctly. Published production numbers put prompted-JSON parsing at
+ * roughly 70-85% action success against 95-99% for native tool calling, and the gap widens on the
+ * small/cheap models a free-tier business runs on, which is precisely where we need it to hold.
+ *
+ * DECISION_INSTRUCTIONS stays as the system prompt: it carries the POLICY (prefer an existing
+ * script, only distill something genuinely new, treat goal text as untrusted data) that a schema
+ * can't express. The tools carry the SHAPE.
+ */
+const DECISION_TOOLS: ToolSpec[] = [
+  {
+    name: "run",
+    description: "Run an existing prebuilt operation or library script. Prefer this whenever one fits the goal.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The prebuilt op or library script name to run." },
+        params: { type: "object", description: "Arguments for that op/script." },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "distill",
+    description: "Save a NEW reusable script then run it. Only when the capability is genuinely new and expressible as a small parameterized script.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Name for the new script." },
+        code: { type: "string", description: "TypeScript source for the new script." },
+        metadata: {
+          type: "object",
+          properties: {
+            description: { type: "string" },
+            domain: { type: "string" },
+            requires_tier: { type: "number", description: "Execution ladder tier 1-5." },
+          },
+          required: ["description"],
+        },
+        params: { type: "object", description: "Arguments to run it with immediately." },
+      },
+      required: ["name", "code"],
+    },
+  },
+  {
+    name: "patch",
+    description: "Repair an existing library script that has drifted or failed.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The existing script to repair." },
+        code: { type: "string", description: "The corrected TypeScript source." },
+        reason: { type: "string", description: "What was wrong and what this fixes." },
+      },
+      required: ["name", "code"],
+    },
+  },
+  {
+    name: "answer",
+    description: "Answer the goal directly, when no tool or script is needed.",
+    parameters: {
+      type: "object",
+      properties: { text: { type: "string", description: "The final answer." } },
+      required: ["text"],
+    },
+  },
+  {
+    name: "give_up",
+    description: "Stop honestly, when the goal cannot be progressed safely. Never guess instead of using this.",
+    parameters: {
+      type: "object",
+      properties: { reason: { type: "string", description: "Why this cannot proceed." } },
+      required: ["reason"],
+    },
+  },
+];
+
+const DECISION_ACTIONS = new Set(DECISION_TOOLS.map((t) => t.name));
+
+/**
+ * Turn a provider tool call into a ReasonDecision, validating that the action is one we declared
+ * and that its load-bearing fields are actually present. A tool call naming an action we never
+ * offered, or missing the field that action needs to do anything, is rejected here rather than
+ * flowing into the loop as a half-formed decision — the loop's own error path then surfaces a real
+ * reason instead of failing obscurely later.
+ */
+function decisionFromToolCall(call: ToolCall): ReasonDecision | null {
+  if (!DECISION_ACTIONS.has(call.name)) return null;
+  const a = call.arguments;
+  const str = (k: string): string | undefined => (typeof a[k] === "string" ? (a[k] as string) : undefined);
+
+  switch (call.name) {
+    case "run": {
+      const name = str("name");
+      if (!name) return null;
+      return { action: "run", name, params: (a["params"] as Record<string, unknown>) ?? {} } as ReasonDecision;
+    }
+    case "distill": {
+      const name = str("name");
+      const code = str("code");
+      if (!name || !code) return null;
+      return {
+        action: "distill", name, code,
+        metadata: (a["metadata"] as Record<string, unknown>) ?? {},
+        params: (a["params"] as Record<string, unknown>) ?? {},
+      } as ReasonDecision;
+    }
+    case "patch": {
+      const name = str("name");
+      const code = str("code");
+      if (!name || !code) return null;
+      return { action: "patch", name, code, reason: str("reason") ?? "" } as ReasonDecision;
+    }
+    case "answer": {
+      const text = str("text");
+      if (!text) return null;
+      return { action: "answer", text } as ReasonDecision;
+    }
+    case "give_up":
+      return { action: "give_up", reason: str("reason") ?? "no reason given" } as ReasonDecision;
+    default:
+      return null;
+  }
 }
 
 /** A Reasoner backed by CF AI Gateway's Universal Endpoint. Provider is inferred from the
@@ -101,6 +231,7 @@ export class GatewayReasoner implements Reasoner {
           gatewayOpts: this.deps.gateway,
           ctx: { ...this.deps.ctx, skipCache: true },
           query,
+          tools: DECISION_TOOLS,
           ...(this.deps.fallbacks && this.deps.fallbacks.length > 0 ? { fallbacks: this.deps.fallbacks } : {}),
         }),
       });
@@ -108,14 +239,38 @@ export class GatewayReasoner implements Reasoner {
       return { action: "give_up", reason: `reasoner gateway network error: ${err instanceof Error ? err.message : String(err)}` };
     }
     if (!resp.ok) {
-      return { action: "give_up", reason: `reasoner gateway error ${resp.status}` };
+      // Include the gateway's own explanation. A bare status code is close to undebuggable in
+      // production: an upstream 400 can mean a bad model name, an unsupported field, or a
+      // provider-side schema complaint, and they need completely different fixes. The body is the
+      // provider's error text (never our credentials — those travel in request headers), and it's
+      // truncated so a large upstream error can't bloat a stored run record.
+      const detail = await resp.text().catch(() => "");
+      return {
+        action: "give_up",
+        reason: `reasoner gateway error ${resp.status}${detail ? `: ${detail.slice(0, 400)}` : ""}`,
+      };
     }
     const data = await resp.json();
-    const { text, usage } = normalizeUniversalResponse(data);
+    const { text, usage, toolCall } = normalizeUniversalResponse(data);
     if (usage) this.lastUsage = usage;
+
+    // Preferred path: a real, schema-constrained tool call.
+    if (toolCall) {
+      const decision = decisionFromToolCall(toolCall);
+      if (decision) return decision;
+      // A tool call we can't use (unknown action, or missing a required field) is a genuine
+      // reasoner failure — but the model may ALSO have emitted usable prose alongside it, so fall
+      // through to the text parse rather than giving up while an answer is sitting right there.
+    }
+
+    // Fallback: models/providers that ignore the tool declaration and reply in prose anyway. This
+    // is the pre-tool-calling behavior, kept so adding tools can only ever ADD reliability.
     try {
       return extractJson(text) as ReasonDecision;
     } catch (err) {
+      if (toolCall) {
+        return { action: "give_up", reason: `reasoner returned an unusable tool call '${toolCall.name}' (missing required fields) and no parseable text` };
+      }
       return { action: "give_up", reason: `unparseable reasoner output: ${err instanceof Error ? err.message : String(err)}` };
     }
   }

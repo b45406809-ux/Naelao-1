@@ -64,7 +64,15 @@ const ALLOWED_STATUSES = ["draft", "active", "paused", "suspended", "deleted"] a
 // §A1.28: the model switcher's curated allowlist — matches packages/billing-core's known model
 // set (computeTokenCostMicro/MODEL_CONTEXT_WINDOWS) so a chosen model is always priced/windowed
 // correctly rather than silently falling back to a default for an unrecognized string.
-const ALLOWED_MODELS = ["claude-haiku-4-5-20251001", "claude-sonnet-4-6", "claude-opus-4-8"] as const;
+const ALLOWED_MODELS = [
+  "claude-haiku-4-5-20251001",
+  "claude-sonnet-4-6",
+  "claude-opus-4-8",
+  // CF Workers AI — the free-tier option (10k neurons/day per account before it bills). Verified
+  // to return correct structured tool calls against the reasoner's real action space, which is
+  // what makes it usable as an agent model at all and not just a chat model.
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+] as const;
 
 async function sha256Hex(input: string): Promise<string> {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));

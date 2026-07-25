@@ -147,6 +147,11 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "claude-sonnet-4-6": 200_000,
   "claude-haiku-4-5-20251001": 200_000,
   "claude-opus-4-8": 200_000,
+  // CF Workers AI. 24k is this model's REAL published window (confirmed against the account's own
+  // /ai/models/search API, not assumed from Llama 3.3's native 128k — Workers AI serves it with a
+  // much smaller window). Materially below the Claude models', so context accounting and the
+  // shell's context meter must not silently treat it as equivalent.
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast": 24_000,
 };
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
@@ -167,6 +172,14 @@ export function computeTokenCostMicro(
     "claude-sonnet-4-6": { input: 3.0, output: 15.0 },      // per 1M tokens in USD
     "claude-haiku-4-5-20251001": { input: 0.25, output: 1.25 },
     "claude-opus-4-8": { input: 15.0, output: 75.0 },
+    // CF Workers AI bills in "neurons", not tokens, so this is DERIVED rather than published as
+    // a per-token price: three real calls against this account solved neurons = 0.026668*input +
+    // 0.204805*output exactly (the fit reproduces a held-out third measurement to 4 decimal
+    // places), converted at Cloudflare's own $0.011 per 1,000 neurons. Recheck if Cloudflare
+    // changes neuron pricing or this model's neuron cost. Note the shape differs from the Claude
+    // models: cheaper input than Haiku, but pricier output — a long-answer workload is NOT
+    // automatically cheaper here.
+    "@cf/meta/llama-3.3-70b-instruct-fp8-fast": { input: 0.293, output: 2.253 },
   };
   const p = pricing[model] ?? { input: 3.0, output: 15.0 };
   const costUsd = (inputTokens / 1_000_000) * p.input + (outputTokens / 1_000_000) * p.output;

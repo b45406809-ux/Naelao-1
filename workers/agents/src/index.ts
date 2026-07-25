@@ -199,12 +199,6 @@ interface SpaceRow {
   config_json: string;
 }
 
-interface SpaceTypeRow {
-  id: string;
-  name: string;
-  system_prompt_template: string;
-  tools_config: string;
-}
 
 // ── Hono app ──────────────────────────────────────────────────────────────────
 
@@ -431,19 +425,15 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     throw badRequest(`Space is ${spaceRow.status}, cannot run agent`);
   }
 
-  // Fetch space type from D1 — kept for existence validation only now (A-2 cutover: the
-  // ReAct-era system_prompt_template/tools_config are dead once /agent/run dispatches to the
-  // script-native engine, which loads the agent's OWN system prompt/tools from its real R2
-  // config — see agentId resolution below).
-  const spaceTypeRow = await c.env.PLATFORM_DB.prepare(
-    "SELECT * FROM spacetypes WHERE id = ?"
-  )
-    .bind(spaceRow.spacetype_id)
-    .first<SpaceTypeRow>();
-
-  if (!spaceTypeRow) {
-    throw notFound("SpaceType");
-  }
+  // NO SpaceType lookup here. There used to be a `SELECT * FROM spacetypes WHERE id = ?` whose
+  // result was fetched and then ONLY null-checked — its ReAct-era columns
+  // (system_prompt_template/tools_config) went dead in the A-2 cutover, since the script-native
+  // engine loads each agent's own system prompt/tools from its real R2 config. That left a pure
+  // existence gate against the D1 `spacetypes` table, which nothing populates: the authoritative
+  // registry is SpaceTypeRegistryDO (see its own self-healing seed). So the gate could only ever
+  // 404, and did — every single agent run in production failed with "SpaceType not found" once
+  // the auth and D1-binding bugs above stopped masking it. The space's own existence and tenant
+  // ownership are already validated by the spaceRow query above, which is the check that matters.
 
   // §A1.28 (model switcher): `spacetypes.model_config` was a dead D1 column — no migration ever
   // created it, so this always parsed to `{}`. The real, live source of a builder's model choice

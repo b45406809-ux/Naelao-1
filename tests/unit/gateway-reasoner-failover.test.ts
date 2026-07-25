@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { GatewayReasoner } from "../../workers/agents/src/script-engine/reasoner.js";
-import { normalizeUniversalResponse, buildUniversalBody, inferProvider } from "../../workers/agents/src/shared/ai-client.js";
+import { normalizeUniversalResponse, buildUniversalBody } from "../../workers/agents/src/shared/ai-client.js";
 import type { ObserveSnapshot } from "../../workers/agents/src/script-engine/types.js";
 
 // CF AI Gateway Universal Endpoint — model-driven provider routing (spec §15).
@@ -44,34 +44,9 @@ afterEach(() => {
 
 // ── inferProvider unit tests ──────────────────────────────────────────────────
 
-describe("inferProvider", () => {
-  it("maps @cf/ models to workers-ai", () => {
-    expect(inferProvider("@cf/meta/llama-3.1-8b-instruct")).toBe("workers-ai");
-    expect(inferProvider("@cf/baai/bge-base-en-v1.5")).toBe("workers-ai");
-  });
-
-  it("maps claude models to anthropic", () => {
-    expect(inferProvider("claude-haiku-4-5-20251001")).toBe("anthropic");
-    expect(inferProvider("claude-sonnet-5")).toBe("anthropic");
-  });
-
-  it("maps gpt-/o1-/o3- models to openai", () => {
-    expect(inferProvider("gpt-4o")).toBe("openai");
-    expect(inferProvider("o1-mini")).toBe("openai");
-    expect(inferProvider("o3-mini")).toBe("openai");
-  });
-
-  it("defaults unknown models to anthropic", () => {
-    expect(inferProvider("some-future-model")).toBe("anthropic");
-  });
-
-  it("maps glm- models to the zai Custom Provider slug", () => {
-    expect(inferProvider("glm-5.2")).toBe("zai");
-    expect(inferProvider("glm-4.6")).toBe("zai");
-  });
-});
-
-// ── normalizeUniversalResponse unit tests ─────────────────────────────────────
+// inferProvider is GONE. The AI REST API (2026-05-21 migration) takes one flat OpenAI-shaped
+// body and selects the provider from the model string alone, so there is no per-provider request
+// translation left to infer anything for.
 
 describe("normalizeUniversalResponse", () => {
   it("extracts text + usage from Anthropic-format response", () => {
@@ -110,108 +85,61 @@ describe("normalizeUniversalResponse", () => {
 
 // ── buildUniversalBody unit tests ─────────────────────────────────────────────
 
-describe("buildUniversalBody", () => {
-  const baseOpts = {
-    apiKey: "sk-ant-test",
-    gatewayOpts: { accountId: "acc-1", gatewayId: "gw-1" },
-    ctx: { spaceId: "space-1" },
-    query: { model: "claude-haiku-4-5-20251001", max_tokens: 1500, system: "sys", messages: [{ role: "user", content: "hi" }] },
+describe("buildUniversalBody — AI REST API shape", () => {
+  const base = {
+    apiKey: "k",
+    gatewayOpts: { accountId: "acc", gatewayId: "gw" },
+    ctx: { spaceId: "s1" },
   };
 
-  it("builds a single Anthropic provider entry for a claude model", () => {
-    const body = JSON.parse(buildUniversalBody({ ...baseOpts, cfApiToken: undefined }));
-    expect(body.providers).toHaveLength(1);
-    expect(body.providers[0].provider).toBe("anthropic");
-    expect(body.providers[0].endpoint).toBe("messages");
-    expect(body.providers[0].headers["x-api-key"]).toBe("sk-ant-test");
-  });
-
-  it("builds a single Workers AI provider entry for a @cf/ model", () => {
+  it("emits one flat body, never the old ordered providers array", () => {
     const body = JSON.parse(buildUniversalBody({
-      ...baseOpts,
-      cfApiToken: "cf-token-123",
-      query: { ...baseOpts.query, model: "@cf/meta/llama-3.1-8b-instruct" },
+      ...base,
+      query: { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", max_tokens: 100, system: "sys", messages: [{ role: "user", content: "hi" }] },
     }));
-    expect(body.providers).toHaveLength(1);
-    expect(body.providers[0].provider).toBe("workers-ai");
-    expect(body.providers[0].headers["Authorization"]).toBe("Bearer cf-token-123");
+    expect(body.providers).toBeUndefined();
+    expect(body.model).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+    expect(body.messages).toEqual([
+      { role: "system", content: "sys" },
+      { role: "user", content: "hi" },
+    ]);
   });
 
-  it("Workers AI query prepends system message to the messages array", () => {
+  it("passes the model string through untouched — it alone selects the provider", () => {
+    for (const model of ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "anthropic/claude-sonnet-4", "openai/gpt-4.1"]) {
+      const body = JSON.parse(buildUniversalBody({
+        ...base,
+        query: { model, max_tokens: 10, system: "s", messages: [] },
+      }));
+      expect(body.model).toBe(model);
+    }
+  });
+
+  it("declares tools in the OpenAI function shape and forces a call", () => {
     const body = JSON.parse(buildUniversalBody({
-      ...baseOpts,
-      cfApiToken: "tok",
-      query: { ...baseOpts.query, model: "@cf/meta/llama-3.1-8b-instruct" },
+      ...base,
+      query: { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", max_tokens: 10, system: "s", messages: [] },
+      tools: [{ name: "answer", description: "Answer", parameters: { type: "object", properties: {} } }],
     }));
-    const msgs = body.providers[0].query.messages as Array<{ role: string; content: string }>;
-    expect(msgs[0]).toEqual({ role: "system", content: "sys" });
-    expect(msgs[1]).toEqual({ role: "user", content: "hi" });
+    expect(body.tools[0]).toMatchObject({ type: "function", function: { name: "answer" } });
+    expect(body.tool_choice).toBe("required");
   });
 
-  it("builds a single OpenAI provider entry for a gpt- model", () => {
+  it("fallbacks no longer ride in the body — the endpoint takes ONE model", () => {
+    // Cross-provider failover moved to gateway-level configuration. The parameter is still
+    // accepted so no call site silently changes meaning, but it must not appear on the wire.
     const body = JSON.parse(buildUniversalBody({
-      ...baseOpts,
-      cfApiToken: undefined,
-      query: { ...baseOpts.query, model: "gpt-4o" },
+      ...base,
+      query: { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", max_tokens: 10, system: "s", messages: [] },
+      fallbacks: [{ model: "anthropic/claude-sonnet-4", apiKey: "k2" }],
     }));
-    expect(body.providers).toHaveLength(1);
-    expect(body.providers[0].provider).toBe("openai");
-    expect(body.providers[0].headers["Authorization"]).toBe("Bearer sk-ant-test");
-  });
-
-  it("cfApiToken has no effect on provider count for non-workers-ai models", () => {
-    const without = JSON.parse(buildUniversalBody({ ...baseOpts, cfApiToken: undefined }));
-    const withTok = JSON.parse(buildUniversalBody({ ...baseOpts, cfApiToken: "cf-tok" }));
-    expect(without.providers).toHaveLength(1);
-    expect(withTok.providers).toHaveLength(1);
-    expect(withTok.providers[0].provider).toBe("anthropic");
-  });
-
-  // F-12: cross-provider failover — an ORDERED providers array the gateway tries in turn.
-  it("appends fallback provider entries in order (Anthropic primary → cheaper Anthropic → OpenAI)", () => {
-    const body = JSON.parse(buildUniversalBody({
-      ...baseOpts,
-      fallbacks: [
-        { model: "claude-sonnet-5", apiKey: "sk-ant-test" }, // dupe of primary → skipped
-        { model: "claude-opus-4-8", apiKey: "sk-ant-2" },
-        { model: "gpt-4o", apiKey: "sk-openai" },
-      ],
-      query: { ...baseOpts.query, model: "claude-sonnet-5" },
-    }));
-    expect(body.providers).toHaveLength(3); // primary + 2 (the primary-dupe fallback is dropped)
-    expect(body.providers[0].provider).toBe("anthropic");
-    expect(body.providers[1].provider).toBe("anthropic");
-    expect(body.providers[1].query.model).toBe("claude-opus-4-8");
-    expect(body.providers[2].provider).toBe("openai");
-    expect(body.providers[2].headers["Authorization"]).toBe("Bearer sk-openai");
-  });
-
-  it("no fallbacks → single provider (unchanged)", () => {
-    const body = JSON.parse(buildUniversalBody({ ...baseOpts, fallbacks: [] }));
-    expect(body.providers).toHaveLength(1);
-  });
-
-  it("builds an OpenAI-compatible 'zai' provider entry for a glm- model (Custom Provider)", () => {
-    const body = JSON.parse(buildUniversalBody({
-      ...baseOpts,
-      apiKey: "zai-key",
-      cfApiToken: undefined,
-      query: { ...baseOpts.query, model: "glm-5.2" },
-    }));
-    expect(body.providers).toHaveLength(1);
-    expect(body.providers[0].provider).toBe("zai");
-    expect(body.providers[0].endpoint).toBe("chat/completions");
-    expect(body.providers[0].headers["Authorization"]).toBe("Bearer zai-key");
-    expect(body.providers[0].query.model).toBe("glm-5.2");
-    // No x-api-key/anthropic-version leakage from the anthropic branch.
-    expect(body.providers[0].headers["x-api-key"]).toBeUndefined();
+    expect(body.providers).toBeUndefined();
+    expect(JSON.stringify(body)).not.toContain("claude-sonnet-4");
   });
 });
 
-// ── GatewayReasoner integration tests ────────────────────────────────────────
-
-describe("GatewayReasoner — Universal Endpoint (always)", () => {
-  it("always uses the Universal Endpoint URL (no /anthropic/ suffix regardless of model)", async () => {
+describe("GatewayReasoner — AI REST API endpoint", () => {
+  it("posts to the account's /ai/v1/chat/completions endpoint regardless of model", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(anthropicGatewayResponse());
     const reasoner = new GatewayReasoner({
       apiKey: "key",
@@ -220,12 +148,13 @@ describe("GatewayReasoner — Universal Endpoint (always)", () => {
     });
     await reasoner.decide(DECIDE_INPUT);
     const calledUrl = String(fetchSpy.mock.calls[0]![0] as string);
-    expect(calledUrl).toMatch(/\/v1\/real-account\/gw$/);
-    expect(calledUrl).not.toContain("/anthropic/");
+    expect(calledUrl).toBe("https://api.cloudflare.com/client/v4/accounts/real-account/ai/v1/chat/completions");
+    // The dead gateway.ai.cloudflare.com host returns 401 now — it must never be used again.
+    expect(calledUrl).not.toContain("gateway.ai.cloudflare.com");
     fetchSpy.mockRestore();
   });
 
-  it("sends a single provider entry for a claude model", async () => {
+  it("sends a flat body with the model, not a providers array", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(anthropicGatewayResponse());
     const reasoner = new GatewayReasoner({
       apiKey: "key",
@@ -234,9 +163,9 @@ describe("GatewayReasoner — Universal Endpoint (always)", () => {
     });
     await reasoner.decide(DECIDE_INPUT);
     const bodyStr = (fetchSpy.mock.calls[0]![1] as RequestInit).body as string;
-    const body = JSON.parse(bodyStr) as { providers: Array<{ provider: string }> };
-    expect(body.providers).toHaveLength(1);
-    expect(body.providers[0]!.provider).toBe("anthropic");
+    const body = JSON.parse(bodyStr) as { providers?: unknown; model: string };
+    expect(body.providers).toBeUndefined();
+    expect(typeof body.model).toBe("string");
     fetchSpy.mockRestore();
   });
 
@@ -277,14 +206,17 @@ describe("GatewayReasoner — Universal Endpoint (always)", () => {
   });
 
   it("gives up when the gateway returns a non-2xx (all providers failed in gateway)", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 503 }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("upstream unavailable", { status: 503 }));
     const reasoner = new GatewayReasoner({
       apiKey: "key",
       gateway: { accountId: "acc", gatewayId: "gw" },
       ctx: { spaceId: "s1" },
     });
     const decision = await reasoner.decide(DECIDE_INPUT);
-    expect(decision).toEqual({ action: "give_up", reason: "reasoner gateway error 503" });
+    // The gateway's own explanation is included — a bare status code is nearly undebuggable.
+    expect(decision).toMatchObject({ action: "give_up" });
+    expect((decision as { reason: string }).reason).toContain("503");
+    expect((decision as { reason: string }).reason).toContain("upstream unavailable");
   });
 
   it("gives up on a network error to the gateway", async () => {
