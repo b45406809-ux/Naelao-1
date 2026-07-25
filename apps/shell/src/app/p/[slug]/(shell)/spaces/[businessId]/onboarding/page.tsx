@@ -18,8 +18,10 @@ import { useParams, useRouter } from "next/navigation";
 import { Button, Badge, FormInput, FormTextarea, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
+import { useActiveSpace } from "@/lib/active-space-context";
 import {
   getOnboarding,
+  listMyBusinesses,
   saveOnboarding,
   completeOnboarding,
   startOAuthConnect,
@@ -43,6 +45,7 @@ export default function BusinessOnboardingPage() {
   const router = useRouter();
   const product = useProduct();
   const { session } = useProductAuth();
+  const { setActiveSpace } = useActiveSpace();
   const { toast, show } = useToast();
 
   const [state, setState] = React.useState<OnboardingState | null>(null);
@@ -57,6 +60,20 @@ export default function BusinessOnboardingPage() {
   const [provisioning, setProvisioning] = React.useState(false);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
+
+  // Being walked through setting up one business while the sidebar names a different one is
+  // disorienting — arriving here makes this business the active one, matching what the switcher
+  // would do if you'd picked it yourself.
+  React.useEffect(() => {
+    if (!creds) return;
+    void listMyBusinesses(product.space_id, creds)
+      .then((all) => {
+        const mine = all.find((b) => b.id === params.businessId);
+        if (mine) setActiveSpace(mine.id, mine.name);
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.businessId, session, product.space_id]);
 
   const refresh = React.useCallback(async () => {
     if (!creds) return null;

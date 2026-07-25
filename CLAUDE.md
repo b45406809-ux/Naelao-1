@@ -2489,6 +2489,123 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     known-stuck `launchpad` product_slug (item 64's documented gap), and a manual click-through
     QA pass — no new build items required to reach a first real transaction.
 
+68. **Whop-seller template populated + the template bootstrap made to actually RUN + native tool
+    calling — and three stacked production-blocking bugs found in the process that meant the agent
+    had NEVER successfully run in production.** Live-reproduced first: a real whop-seller business
+    reached `status='active'` carrying only the auto-provisioned "Wallet" project (Members/Support/
+    Content never existed) with onboarding stuck at `"pending"` forever, because the provisioner
+    only RECORDED the bootstrap and the sole executor was the builder dashboard's onboarding page
+    — a surface an end user creating a business through `apps/shell` never touches. Fixed by
+    splitting the bootstrap: the STRUCTURAL half (projects + starter threads, needs no credentials)
+    now runs at provision time for every path via a new shared `workers/agents/src/launchpad/
+    bootstrap.ts` (`seedTemplateProjects`/`normalizeProjectSeeds`) that the provisioner and
+    `bootstrap/complete` both call so they can't drift; the SETUP half (setup scripts, project-
+    template presets, first contact) stays behind onboarding since it genuinely needs the connected
+    account. `whop-seller` itself went from a stub to a real template: OAuth-first `whop_connection`
+    (required) with the pasted-key prompt demoted to an explicitly optional fallback, an
+    `owner_channel` picker, an `autonomy` choice, `project_templates: ["discord-community-bot"]`,
+    and a `first_contact.goal` instructing the assistant to actually READ the connected Whop account
+    via mcp-connector before proposing anything, respecting the owner's autonomy setting.
+    `OnboardingPrompt` gained `help` (plain-language, non-technical) and `type: "connection"|
+    "channel"|"boolean"`; `validateLaunchpadSpaceType` now enforces that connect/credential prompts
+    name a real connector and that choice/channel prompts offer options.
+    **Native tool calling:** the reasoner's five actions (`run`/`distill`/`patch`/`answer`/
+    `give_up`) are now declared as real provider tools (`DECISION_TOOLS`, `tool_choice:"required"`)
+    and read back via `decisionFromToolCall`, with the prose-JSON parse kept ONLY as a fallback so
+    this is strictly additive — published figures put prompted-JSON action success at ~70-85% vs
+    ~95-99% for native tool calling, and the gap is widest on exactly the small/cheap models a
+    free-tier business runs on.
+    **The three production-blocking bugs, each hiding the next:** (1) `naelao-agents` held a
+    different `PLATFORM_SECRET` than the router, so EVERY agents-worker route 401'd while
+    spaces-worker routes worked fine — rotated across all 28 workers with the user's approval
+    (destructive: `getDOName` derives every DO name from this secret, so rotation orphans DO
+    state; the product root's SpaceDO was empty so nothing meaningful was lost). (2) `workers/
+    agents` declares `PLATFORM_DB: D1Database` and uses it in 31 places but its `wrangler.toml`
+    had NO `[[d1_databases]]` block at all — TypeScript cannot catch this, so a new
+    `wrangler-binding-parity.test.ts` parses every worker's `wrangler.toml` against its `Env`
+    interface (verified to fail when the fix is reverted). (3) A vestigial `SELECT * FROM
+    spacetypes` gate in `/agent/run` that could only ever 404, since `SpaceTypeRegistryDO` is
+    authoritative and that D1 table is empty — removed.
+    **Cloudflare migrated AI Gateway to a new REST API on 2026-05-21** and the old Universal
+    Endpoint is dead (confirmed live: 401 / "Invalid provider" code 2008). `shared/ai-client.ts`
+    rewritten for `POST https://api.cloudflare.com/client/v4/accounts/{id}/ai/v1/chat/completions`
+    — flat OpenAI-shaped body, CF API token auth, `cf-aig-gateway-id` routing, model string alone
+    selecting the provider — which also deleted all the per-provider translation code
+    (`buildProviderEntry`/`inferProvider`/`toolsForProvider`). **No Claude models are available on
+    this account's gateway** (`?search=claude` → 0 results), so Workers AI is not the cheap option,
+    it's the only one: `@cf/meta/llama-3.3-70b-instruct-fp8-fast` added to `ALLOWED_MODELS` with a
+    REAL 24k context window (from `/ai/models/search`, not Llama's nominal 128k) and pricing
+    derived from three measured calls (solved `neurons = 0.026668*input + 0.204805*output`,
+    reproduces a held-out measurement exactly). **First successful agent run this platform has ever
+    had**, verified live end to end. Also: `infra/scripts/shell-screenshot.mjs` (real authenticated
+    E2E screenshots via CF Browser Rendering, since Playwright's bundled Chromium can't complete a
+    TLS handshake through this sandbox's MITM proxy — and disabling TLS verification is forbidden).
+    2006/2006 tests pass. **Operational note:** `CF_API_TOKEN` is now set as a Worker secret on
+    `naelao-agents` because the new API requires it — worth replacing with a scoped token (AI
+    Gateway permission only) when the pasted one is rotated.
+69. **End-user business onboarding (the gap item 68 left open) + the shell reorganised around
+    sessions.** Item 68 made the structural bootstrap run everywhere, but the SETUP half was still
+    reachable only from the builder dashboard — so an end-user-created business never got its
+    project-template presets and never got the assistant's proactive first contact.
+    **Backend:** `GET /spaces/:id/bootstrap` (the template's real prompts + what's answered + a
+    per-prompt `satisfied`), `POST .../bootstrap/save` (partial answers), and `bootstrap/complete`
+    extended to accept answers inline. Two rules make this honest rather than decorative: a
+    `connection`/`credential` prompt is satisfied by a REALLY-registered connector (checked against
+    mcp-hub), never by a stored answer string — so a key that failed to vault can't look like
+    success; and completion REFUSES (`400 onboarding_incomplete`, naming the missing ids) while a
+    required prompt is unmet, since an assistant introducing itself with no account to read is
+    worse than no message at all. That validation is skipped for an ALREADY-complete space, so a
+    template that later gains a prompt can never strand a business that finished setup under the
+    old definition. Credential answers are never echoed back to the client.
+    **Spaces worker:** ONE `GET/POST /spaces/:spaceId/onboarding` wrapper with POST's `action`
+    carrying save-vs-complete — deliberately not the natural `/onboarding/save` + `/onboarding/
+    complete` pair, which is the dynamic-segment-then-static-suffix shape that has repeatedly
+    triggered this file's documented Hono RegExpRouter corruption (items 40, 52) — gated by
+    `requireBusinessMembership({GET:"member", POST:"admin"})`: reading the checklist and connecting
+    the business's payment account are different privileges. Router allowlists the path for
+    identity only, same split as every sibling business route. `proxyConnectorsToAgents` renamed
+    `proxyToAgentsWorker` now that it serves a non-connector purpose.
+    **Shell wizard:** one question per screen (the audience has never configured software), saving
+    every answer server-side as it goes — load-bearing, not a nicety, because connecting an app is
+    a real browser navigation away from the page; it resumes at the first gap on return, folds the
+    "paste a key instead" fallback INTO the connect step rather than showing it as a confusing
+    extra question, and polls while `space_status !== 'active'` rather than claiming there's
+    nothing to configure (a business is created before provisioning finishes — hence the new
+    `space_status` field, so the UI can tell "still building" from "nothing to do"). Creating a
+    business now lands there; unfinished setup is surfaced on both the business page and Home.
+    **Shell reorganisation (step 3):** Home is a start-here page (compose → Enter → land in a new
+    session, claude.com/new-style) instead of a chat window bolted to the product root; sessions
+    are titled from their opening line (SpaceDO has no title column — it rides in `metadata`) so
+    recent lists are readable without an N+1 fetch. The sidebar's recent list is assistant SESSIONS,
+    not structural threads, backed by new `/sessions` + `/sessions/[sessionId]` routes; `Chat`
+    gained an explicit `sessionId` (bypassing the sessionStorage cache so opening a conversation by
+    URL can't resurrect a different one) and an `initialMessage` (ref-guarded against React 18
+    StrictMode's double-invoke, which would otherwise bill two real agent runs). Project threads
+    moved under `/projects/:id/threads/:id` and creating one now opens it. Spaces became
+    **Discover**: your businesses, the templates you could start next, and — via two new
+    browse-only manifest catalogues (`project_template_catalog`, `agent_catalog`, fed by a new
+    `GET /catalog/shell` that projects id/name/description and never an agent's `system_prompt`) —
+    what those templates actually give you.
+    **Verified live end to end on production**, not just in tests: business created → provisioning
+    polled → checklist returned the real 6 prompts → answers saved → completion correctly REFUSED
+    with `missing:["whop_connection"]` → connector connected → completion returned
+    `project_templates_applied:["discord-community-bot"]` and `first_contact_sent:true` → re-run
+    returned `first_contact_sent:false` → the business really contains Wallet/Members/Support/
+    Content/Discord Community Bot → a different end user of the same product got 403 on both verbs.
+    Screenshots confirm the new Home, Discover, and both wizard steps render correctly signed in.
+    **Two brittle test doubles fixed in passing** (one hardcoded a query's exact column list and
+    started 404ing when the real query selected one more column; one answered every agents-worker
+    path with the same payload) — the same "test double diverges from the real contract" class
+    CLAUDE.md already documents for `config_schema`/`schema_json`. **A real flaw in
+    `shell-screenshot.mjs` fixed too**: it `reload()`ed after injecting the session, but the
+    unauthenticated first load has already bounced to `/login` by then, so it silently
+    screenshotted the wrong page — it now navigates to the requested URL explicitly.
+    **Deployment gotcha worth remembering (cost a broken deploy):** `apps/shell`'s API client
+    already includes `/v1` in every path, so `NEXT_PUBLIC_API_URL` must be the BARE router origin.
+    `apps/dashboard` is the opposite (item 41) — its client omits `/v1`, so its env var must carry
+    it. Getting this backwards produces `/v1/v1/...` → 401 → `notFound()` → every shell route 404s
+    with a valid-looking build. 2030/2030 tests pass, `npx turbo run typecheck` clean (76 tasks).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

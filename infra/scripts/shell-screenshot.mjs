@@ -11,7 +11,8 @@
 // product-end-user API first (POST /v1/spaces/:spaceId/end-users/{signup,login}), then pass the
 // resulting session as --session-space/--session-json — this injects it into localStorage under
 // the exact key apps/shell/src/lib/productAccount.ts reads (`naelao_product_session:{spaceId}`)
-// via the REST API's `addScriptTag`, then reloads before the screenshot is taken.
+// via the REST API's `addScriptTag`, then navigates back to the requested URL (NOT reload —
+// the unauthenticated first load has usually already bounced to /login by then).
 //
 // Usage:
 //   source .cf-credentials.local
@@ -55,9 +56,13 @@ async function main() {
     const fs = await import("node:fs");
     const session = JSON.parse(fs.readFileSync(args["session-json"], "utf8"));
     const key = `naelao_product_session:${args["session-space"]}`;
+    // Navigate to the target URL explicitly rather than reload(). The first (unauthenticated)
+    // load of any shell page redirects to /login, so by the time this script runs the browser is
+    // usually no longer ON the requested page — reload() would then re-render /login (which,
+    // now authenticated, bounces to Home), silently screenshotting the wrong page.
     const js = `
       localStorage.setItem(${JSON.stringify(key)}, ${JSON.stringify(JSON.stringify(session))});
-      setTimeout(function() { window.location.reload(); }, 200);
+      setTimeout(function() { window.location.href = ${JSON.stringify(args.url)}; }, 200);
     `;
     body.addScriptTag = [{ content: js }];
     body.waitForTimeout = Number(args.wait ?? 5000); // extra time for the reload + re-mount
