@@ -92,6 +92,13 @@ const DEFAULT_JUDGE_MODEL = "claude-haiku-4-5-20251001";
  *  The continuous score stays the primary signal — this only feeds the coarse counters. */
 const PASS_THRESHOLD = 7;
 
+/** How long one agent run may take before the eval gives up on that case.
+ *  Deliberately generous: a multi-step L3/L4 run on a slow model legitimately takes far longer
+ *  than a chat completion, and timing one out early records a capability failure that never
+ *  happened. Measured per-case latencies during the model matrix ranged from ~5s to ~24s, but a
+ *  model that emits a long reasoning preamble before every tool call sits well above that. */
+const AGENT_RUN_TIMEOUT_MS = 150_000;
+
 /** Pull the first JSON object out of a reply. Smaller open models frequently wrap their JSON in
  *  a markdown fence or a sentence of preamble even when told not to; treating that as a judge
  *  failure would throw away a perfectly good verdict. */
@@ -210,38 +217,54 @@ async function runAgentForCase(
     return { answer: "", runId: null, error: "AGENTS_WORKER binding not configured", latency_ms: 0 };
   }
   const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
-  const resp = await env.AGENTS_WORKER.fetch(
-    new Request(`http://agents-worker/spaces/${spaceId}/sessions/${sessionId}/agent/run`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-naelao-tenant-id": tenantId,
-        "x-naelao-internal-token": token,
-        "prefer": "respond-sync",
-      },
-      body: JSON.stringify({
-        goal: evalCase.input,
-        ...(agentDefinitionId ? { agent_definition_id: agentDefinitionId } : {}),
-        // Per-run override, validated against the shared allowlist on the agents worker. This is
-        // what lets one golden dataset be scored across candidate models without mutating the
-        // space's stored configuration between runs.
-        ...(model ? { model } : {}),
-      }),
-      signal: AbortSignal.timeout(60_000),
-    })
-  );
+  // A dispatch failure — a timeout above all — is THIS CASE's result, never the whole suite's.
+  // Without this guard the AbortSignal below throws out of the per-case loop, so one slow model
+  // 500s the entire run and discards every other case that already scored. Observed live: a model
+  // that emits a long reasoning preamble exceeded the timeout and the run returned an opaque 500
+  // with no results at all, which reads as "the harness is broken" rather than "this model is slow".
+  try {
+    const resp = await env.AGENTS_WORKER.fetch(
+      new Request(`http://agents-worker/spaces/${spaceId}/sessions/${sessionId}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": token,
+          "prefer": "respond-sync",
+        },
+        body: JSON.stringify({
+          goal: evalCase.input,
+          ...(agentDefinitionId ? { agent_definition_id: agentDefinitionId } : {}),
+          // Per-run override, validated against the shared allowlist on the agents worker. This is
+          // what lets one golden dataset be scored across candidate models without mutating the
+          // space's stored configuration between runs.
+          ...(model ? { model } : {}),
+        }),
+        signal: AbortSignal.timeout(AGENT_RUN_TIMEOUT_MS),
+      })
+    );
 
-  if (!resp.ok) {
-    const errText = await resp.text().catch(() => "");
-    return { answer: "", runId: null, error: `agent/run HTTP ${resp.status}: ${errText.slice(0, 500)}`, latency_ms: Date.now() - startedAt };
-  }
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      return { answer: "", runId: null, error: `agent/run HTTP ${resp.status}: ${errText.slice(0, 500)}`, latency_ms: Date.now() - startedAt };
+    }
 
-  const body = await resp.json<{ finalAnswer?: string | null; final_answer?: string | null; runId?: string; status?: string; error?: string }>();
-  if (body.status === "failed" || body.error) {
-    return { answer: "", runId: body.runId ?? null, error: body.error ?? "agent run failed", latency_ms: Date.now() - startedAt };
+    const body = await resp.json<{ finalAnswer?: string | null; final_answer?: string | null; runId?: string; status?: string; error?: string }>();
+    if (body.status === "failed" || body.error) {
+      return { answer: "", runId: body.runId ?? null, error: body.error ?? "agent run failed", latency_ms: Date.now() - startedAt };
+    }
+    const answer = body.finalAnswer ?? body.final_answer ?? "";
+    return { answer, runId: body.runId ?? null, latency_ms: Date.now() - startedAt };
+  } catch (err: unknown) {
+    const elapsed = Date.now() - startedAt;
+    // Name the timeout explicitly: "slow model" and "broken dispatch" are different findings and a
+    // bare "TimeoutError" in a results table would not distinguish them.
+    const isTimeout = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+    const message = isTimeout
+      ? `agent/run exceeded ${AGENT_RUN_TIMEOUT_MS}ms`
+      : err instanceof Error ? err.message : String(err);
+    return { answer: "", runId: null, error: message, latency_ms: elapsed };
   }
-  const answer = body.finalAnswer ?? body.final_answer ?? "";
-  return { answer, runId: body.runId ?? null, latency_ms: Date.now() - startedAt };
 }
 
 const app = new Hono<{ Bindings: Env }>();

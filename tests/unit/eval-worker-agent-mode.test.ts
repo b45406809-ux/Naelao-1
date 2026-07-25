@@ -152,6 +152,44 @@ describe("eval worker — agent mode dispatches a REAL /agent/run per case", () 
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("records a dispatch that throws as THIS case's error, without failing the whole suite", async () => {
+    // Reproduces a real live failure during the model matrix: the dispatch carries an
+    // AbortSignal.timeout, and a model slow enough to trip it threw straight out of the per-case
+    // loop. Nothing caught it, so the run returned an opaque HTTP 500 and every other case that
+    // had already scored was discarded — one slow model read as "the harness is broken".
+    const db = makeDb();
+    let calls = 0;
+    const agentsWorker = {
+      async fetch() {
+        calls++;
+        if (calls === 1) {
+          const err = new Error("The operation was aborted due to timeout");
+          err.name = "TimeoutError";
+          throw err;
+        }
+        return Response.json({ status: "completed", finalAnswer: "second case answer" });
+      },
+    };
+    const env = makeEnv(db, { agentsWorker });
+    const createRes = await req("/evals", {
+      method: "POST",
+      body: JSON.stringify({ name: "s4b", space_id: "space-1", cases: [{ input: "slow task" }, { input: "fast task" }] }),
+    }, env);
+    const { id } = await createRes.json<{ id: string }>();
+
+    const runRes = await req(`/evals/${id}/run`, { method: "POST", body: JSON.stringify({ mode: "agent", session_id: "sess-1" }) }, env);
+    // The whole point: the suite still completes.
+    expect(runRes.status).toBe(200);
+    const body = await runRes.json<{ results: Array<{ score: number; agent_error?: string }> }>();
+    expect(body.results).toHaveLength(2);
+    // The timeout is attributed to the case that caused it, and named as a timeout rather than
+    // surfacing a bare "TimeoutError" that reads identically to a broken binding.
+    expect(body.results[0]?.score).toBe(0);
+    expect(body.results[0]?.agent_error).toMatch(/exceeded \d+ms/);
+    // And the surviving case is still really scored, not collateral damage.
+    expect(body.results[1]?.agent_error).toBeUndefined();
+  });
+
   it("passes agent_definition_id through to the dispatched run when provided", async () => {
     const db = makeDb();
     let capturedRequest: Request | null = null;
