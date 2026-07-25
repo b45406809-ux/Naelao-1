@@ -6,13 +6,18 @@ the harness is `workers/eval` in `mode: "agent"`, driven by `infra/scripts/run-e
 
 ## The short answer
 
-**`@cf/meta/llama-3.3-70b-instruct-fp8-fast`** — which is already what the Launchpad product is
-configured to use. It is the only model tested that reliably produces a decision the agent loop
-can act on.
+**`@cf/ibm-granite/granite-4.0-h-micro`** — by a wide margin the best answer quality (3.83/10 vs
+2.00 for the next best), while still holding the tool contract on 5 of 6 cases. It is also one of
+the smallest and fastest models tested, which was not the expected outcome.
 
-That recommendation comes with a finding that matters more than the ranking: **on this benchmark,
-no free Workers AI model is yet good at the tasks a business agent actually has to do.** The
-ranking tells you which to use; it does not tell you the agent is ready.
+**Switching is a judgement call, not a slam dunk.** The product currently runs
+`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, which is the only model that produced an actionable
+decision on *every* case (6/6). Granite is better when it works and fails slightly more often.
+Prefer granite for answer quality; keep llama-3.3 if predictability matters more.
+
+Either way, a finding that matters more than the ranking: **on this benchmark, no free Workers AI
+model is yet good at the tasks a business agent actually has to do.** The ranking tells you which
+to use; it does not tell you the agent is ready.
 
 ## Why this account has no Claude option
 
