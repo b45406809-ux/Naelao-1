@@ -3070,10 +3070,17 @@ Re-verify before relying on any of these, but they are the real values as of thi
 - **Workers AI free tier is ~10,000 neurons/day ≈ 65 agent runs/day platform-wide**, and
   `worker_loaders` is commented out in `workers/agents/wrangler.toml` (execution Tiers 2-4
   unavailable). Both unblock with the CF Workers Paid plan ($5/mo).
-- **Secrets NOT set (features degrade honestly until they are):** `WHOP_OAUTH_CLIENT_ID` /
-  `WHOP_OAUTH_CLIENT_SECRET` (one-click Whop connect) and `TAVILY_API_KEY` (web search).
-  The key-paste path works meanwhile and the onboarding wizard now leads with it, so nothing is
-  blocked on this.
+- **`WHOP_OAUTH_CLIENT_ID`/`WHOP_OAUTH_CLIENT_SECRET` (on `naelao-agents`) and `TAVILY_API_KEY`
+  (on `naelao-knowledge`) are now SET and LIVE-VERIFIED (2026-07-26).** One-click "Connect with
+  Whop" is real end to end: minted a real internal token for the live product's tenant
+  (`bf24280c-...`) and hit `POST /connectors/whop/oauth/start` directly — returned a genuine
+  `https://api.whop.com/oauth/authorize?...&client_id=app_kbsTERQICLC11F&...` URL with the
+  correct redirect_uri, scopes, and PKCE challenge. Confirmed `WHOP_OAUTH_CLIENT_ID`/
+  `WHOP_OAUTH_CLIENT_SECRET`/`TAVILY_API_KEY` are all present via `wrangler secret list`.
+  `naelao-knowledge` has `workers_dev=false` (item 21's hardening) so its `/internal/web-search/*`
+  route can't be curl'd directly at its `workers.dev` URL (404, correct behavior) — verify that
+  one through a real business's assistant instead if it's ever in question. Do not re-prompt the
+  user for any of these three secrets.
 - **Whop OAuth app registration — findings from the user's 2026-07-26 attempt, so this isn't
   re-derived:**
   - **App type: B2B / business (dashboard), NOT customer-facing.** Customer-facing means embedded
@@ -3109,15 +3116,14 @@ Re-verify before relying on any of these, but they are the real values as of thi
     `oauth:token_exchange` permission already requested. `status: "hidden"` was confirmed (via
     Whop's own docs) to control ONLY marketplace discoverability, never OAuth function — `hidden`
     is actually correct here since this app should never be publicly listed.
-  - **The one thing that genuinely cannot be done via API/CLI: the OAuth client_secret.**
-    Confirmed by grepping the entire installed CLI bundle for `client_secret` — zero hits anywhere.
-    Per Whop's own docs it is shown exactly once, at creation or via a dashboard "Regenerate"
-    button, and deliberately never returned by any GET. This is correct secret hygiene, not a gap.
-    **BLOCKED ON THE USER**: open the Developer Dashboard → the Naelao app → OAuth tab, copy the
-    existing secret or click Regenerate, and hand both the secret and client_id
-    (`app_kbsTERQICLC11F`) back so `WHOP_OAUTH_CLIENT_ID`/`WHOP_OAUTH_CLIENT_SECRET` can be set on
-    `naelao-agents`. `PUBLIC_AGENTS_URL` is already correct; nothing else changes once those two
-    secrets land.
+  - **RESOLVED — the client_secret is now set.** It genuinely cannot be retrieved via API/CLI
+    (confirmed by grepping the entire installed CLI bundle for `client_secret` — zero hits; per
+    Whop's own docs it's shown once, at creation or via dashboard "Regenerate", correct secret
+    hygiene not a gap). The user retrieved it from the Developer Dashboard and supplied both it
+    and the client_id (`app_kbsTERQICLC11F`) on 2026-07-26. Both are now live as
+    `WHOP_OAUTH_CLIENT_ID`/`WHOP_OAUTH_CLIENT_SECRET` on `naelao-agents`, live-verified via a
+    direct call to `POST /connectors/whop/oauth/start` (see the Live Deployment Facts line
+    above for the full verification). No further action needed on this.
   - **This account has ZERO DNS zones** (verified via the CF API 2026-07-26) — no custom domain is
     available today. Registering one would fix BOTH this and item 72's product-address problem
     (the dashboard used to show `{slug}.naelao.app`, a domain with no zone anywhere).
