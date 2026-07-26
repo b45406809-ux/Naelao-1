@@ -3085,12 +3085,16 @@ Re-verify before relying on any of these, but they are the real values as of thi
     scope (per Whop's own setup guide). Our flow exchanges the code server-side, so without it the
     redirect succeeds and the exchange still fails. Easy to miss.
   - **Whop rejected `https://naelao-agents.crzzphillip.workers.dev/connectors/whop/oauth/callback`
-    as an invalid redirect URI.** Our side is fine — that URL returns **400, not 404**, i.e. the
-    route is registered and is only rejecting because there's no `code`/`state`. Leading (NOT
-    confirmed) hypothesis: `workers.dev` is on the Public Suffix List, a shared domain anyone can
-    take a subdomain of, which OAuth providers commonly refuse as a redirect target. `pages.dev`
-    is on the same list, so pointing at `naelao-shell.pages.dev` would not help. Confirm against
-    Whop's exact error text before acting on this.
+    with "please enter a valid url" (example shown: `http://localhost:3000/Oauth/callback`).**
+    Verified our side is clean: 400 (not 404, so the route IS registered), zero redirects, no
+    invisible/non-ASCII bytes, 76 clean characters. The EARLIER hypothesis in this file
+    (`workers.dev` being on the Public Suffix List and refused as a shared domain) is now judged
+    LESS likely — that class of rejection typically names the domain/policy, not "invalid url" on
+    a syntactically well-formed URL. "invalid url" reads more like a client-side format-regex
+    failure, which points at a paste artifact (smart quotes/stray whitespace/invisible char
+    carried in from copy-paste) or the multi-URI field needing an explicit Enter/"Add" confirm
+    after typing (Whop's own docs describe entering exactly two URIs). NOT YET RESOLVED — next
+    step is to see the user's exact input, not to keep guessing.
   - **This account has ZERO DNS zones** (verified via the CF API 2026-07-26) — no custom domain is
     available today. Registering one would fix BOTH this and item 72's product-address problem
     (the dashboard used to show `{slug}.naelao.app`, a domain with no zone anywhere).
