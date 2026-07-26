@@ -142,9 +142,17 @@ export function registerBusinessRoutes(app: Hono<any>): void { // eslint-disable
     const { userId } = callerIdentity(c);
     if (!userId) return c.json({ error_code: "unauthorized", message: "Missing user" }, 401);
 
+    // onboarding_status/template_id ride along from the space's own config_json rather than
+    // costing a second round trip per business: Discover's most important call to action is
+    // "finish setting this one up", and a business that was created but never configured does
+    // nothing at all (its assistant has no account to read and no way to reach its owner). Both
+    // are NULL for a business created before templates existed, which the UI reads as "nothing
+    // left to do" — the honest default, since there is no checklist to point at.
     const { results } = await env.PLATFORM_DB.prepare(
       `SELECT m.business_space_id AS id, m.role, m.status AS membership_status, m.joined_at,
-              s.name, s.status AS space_status
+              s.name, s.status AS space_status,
+              json_extract(s.config_json, '$.onboarding.status') AS onboarding_status,
+              json_extract(s.config_json, '$.template_id') AS template_id
          FROM business_memberships m
          JOIN spaces s ON s.id = m.business_space_id
         WHERE m.product_space_id = ? AND m.end_user_id = ? AND m.status = 'active' AND s.status != 'deleted'

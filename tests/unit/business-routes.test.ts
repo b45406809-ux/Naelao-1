@@ -135,6 +135,34 @@ describe("GET /spaces/:productSpaceId/my-businesses", () => {
     expect(body.count).toBe(1);
     expect(body.data[0]!.name).toBe("Alice's Shop");
   });
+
+  it("reports where each business is in its setup checklist", async () => {
+    // Discover's most useful call to action is "finish setting this one up" — a business that was
+    // created but never configured does nothing at all. Carrying it on this list is what avoids an
+    // extra round trip per business just to find that out.
+    const env = makeEnv();
+    const biz = await createBusiness(env, "alice", "Half-Built Shop");
+    await env.PLATFORM_DB.prepare("UPDATE spaces SET config_json = ? WHERE id = ?")
+      .bind(JSON.stringify({ template_id: "whop-seller", onboarding: { status: "awaiting_setup" } }), biz.space_id)
+      .run();
+
+    const headers = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const res = await spacesWorker.fetch(req("/spaces/prod-1/my-businesses", headers), env as never, execCtx);
+    const body = (await res.json()) as { data: Array<{ onboarding_status: string | null; template_id: string | null }> };
+    expect(body.data[0]!.onboarding_status).toBe("awaiting_setup");
+    expect(body.data[0]!.template_id).toBe("whop-seller");
+  });
+
+  it("reports nothing outstanding for a business created without a template", async () => {
+    // No checklist means nothing to finish — the UI must read this as "done", not "unknown", or
+    // every pre-template business grows a permanent "finish setup" badge that leads nowhere.
+    const env = makeEnv();
+    await createBusiness(env, "alice", "Plain Shop");
+    const headers = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const res = await spacesWorker.fetch(req("/spaces/prod-1/my-businesses", headers), env as never, execCtx);
+    const body = (await res.json()) as { data: Array<{ onboarding_status: string | null }> };
+    expect(body.data[0]!.onboarding_status).toBeNull();
+  });
 });
 
 describe("Business invites — create + accept round trip", () => {

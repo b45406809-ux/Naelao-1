@@ -565,6 +565,10 @@ export interface Business {
   membership_status: string;
   space_status: string;
   joined_at: string;
+  /** Where this business is in its setup checklist, read from the space's own config. `null` for
+   *  a business created without a template — there is no checklist, so nothing is outstanding. */
+  onboarding_status?: "pending" | "awaiting_setup" | "complete" | null;
+  template_id?: string | null;
 }
 
 /** GET /v1/spaces/:productSpaceId/my-businesses — the space switcher's list. */

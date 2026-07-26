@@ -40,21 +40,33 @@ export default function DiscoverPage() {
   // silently did nothing. Keeping the message here too makes it stick until the user retries or
   // closes the dialog.
   const [createError, setCreateError] = React.useState<string | null>(null);
+  // Whether the businesses list actually loaded. Critical distinction: a FAILED load used to
+  // render identically to "you genuinely have no businesses" — the two calls were awaited with
+  // Promise.all, so one failing threw both away, leaving the page confidently telling someone who
+  // owns businesses that they own none, with a 2.8s toast as the only clue. Telling a user their
+  // work is gone is much worse than telling them a page didn't load.
+  const [businessesFailed, setBusinessesFailed] = React.useState(false);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
   const refresh = React.useCallback(async () => {
     if (!creds) return;
     setLoading(true);
-    try {
-      const [m, b] = await Promise.all([getShellManifest(product.space_id, creds), listMyBusinesses(product.space_id, creds)]);
-      setManifest(m);
-      setBusinesses(b);
-    } catch {
-      show("Couldn't load Discover");
-    } finally {
-      setLoading(false);
+    // allSettled, not all: the manifest drives the template catalogue and the businesses call
+    // drives the list above it. They fail independently and one must never take out the other.
+    const [m, b] = await Promise.allSettled([
+      getShellManifest(product.space_id, creds),
+      listMyBusinesses(product.space_id, creds),
+    ]);
+    if (m.status === "fulfilled") setManifest(m.value);
+    if (b.status === "fulfilled") {
+      setBusinesses(b.value);
+      setBusinessesFailed(false);
+    } else {
+      setBusinessesFailed(true);
     }
+    if (m.status === "rejected" && b.status === "rejected") show("Couldn't load Discover");
+    setLoading(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product.space_id, session]);
 
@@ -153,9 +165,21 @@ export default function DiscoverPage() {
         {canCreate && <Button onClick={() => openCreate()}>New business</Button>}
       </div>
 
-      <div className="section-label">Your businesses</div>
+      <div className="section-label">
+        Your businesses{!loading && !businessesFailed && businesses.length > 0 ? ` (${businesses.length})` : ""}
+      </div>
       {loading ? (
         <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading…</p>
+      ) : businessesFailed ? (
+        // Never silently degrade to "you have none" — say the list didn't load and offer a retry.
+        <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: 13 }}>
+          <span style={{ color: "#dc2626" }} role="alert">
+            Couldn&rsquo;t load your businesses. They&rsquo;re still there — this is a loading problem.
+          </span>
+          <Button variant="secondary" onClick={() => void refresh()}>
+            Retry
+          </Button>
+        </div>
       ) : businesses.length === 0 ? (
         <p style={{ color: "var(--text3)", fontSize: 13 }}>
           {canCreate
@@ -167,15 +191,36 @@ export default function DiscoverPage() {
         </p>
       ) : (
         <div className="grid-3">
-          {businesses.map((b) => (
-            <Link key={b.id} href={`/p/${product.slug}/spaces/${b.id}`} style={{ textDecoration: "none" }}>
-              <Card>
-                <CardTitle>{b.name}</CardTitle>
-                <CardDesc>Your role: {b.role}</CardDesc>
-                <Badge color={b.space_status === "active" ? "green" : "amber"}>{b.space_status}</Badge>
-              </Card>
-            </Link>
-          ))}
+          {businesses.map((b) => {
+            // A business created but never configured does nothing at all — its assistant has no
+            // account to read and no way to reach its owner. That's the single most useful thing
+            // this page can tell someone, so it gets the card's primary action.
+            const needsSetup = b.onboarding_status != null && b.onboarding_status !== "complete";
+            const provisioning = b.space_status !== "active";
+            return (
+              <Link
+                key={b.id}
+                href={needsSetup ? `/p/${product.slug}/spaces/${b.id}/onboarding` : `/p/${product.slug}/spaces/${b.id}`}
+                style={{ textDecoration: "none" }}
+              >
+                <Card interactive>
+                  <CardTitle>{b.name}</CardTitle>
+                  <CardDesc>
+                    {needsSetup
+                      ? "Setup isn't finished — it can't run until it is."
+                      : `Your role: ${b.role}`}
+                  </CardDesc>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    {needsSetup && <Badge color="amber">Finish setup</Badge>}
+                    <Badge color={provisioning ? "amber" : "green"}>
+                      {provisioning ? b.space_status : "active"}
+                    </Badge>
+                    {b.template_id && <Badge color="blue">{b.template_id.replace(/-/g, " ")}</Badge>}
+                  </div>
+                </Card>
+              </Link>
+            );
+          })}
         </div>
       )}
 
