@@ -90,6 +90,42 @@ describe("createSpaceRecord — product_slug", () => {
     const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad", productSlug: "my-awesome-shop" });
     expect(result.id).toBeTruthy();
   });
+
+  // The Product Shell resolves every end-user URL as /p/{product_slug}. A product created without
+  // one provisioned fine, reported `active`, and could never be opened — by its owner or by a
+  // single customer. The wizard called the field optional, and nothing anywhere sets it later.
+  it("derives a slug from the name when none is given, so the product is reachable", async () => {
+    const fakeDb = makeDb();
+    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "Acme Creator Store", spacetypeId: "launchpad" });
+    const row = await fakeDb.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(result.id).first<{ product_slug: string }>();
+    expect(row?.product_slug).toBe("acme-creator-store");
+  });
+
+  it("works around a taken name rather than failing on a field the builder never filled in", async () => {
+    const fakeDb = makeDb();
+    await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "Launchpad", spacetypeId: "launchpad" });
+    const second = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t2", name: "Launchpad", spacetypeId: "launchpad" });
+    const row = await fakeDb.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(second.id).first<{ product_slug: string }>();
+    expect(row?.product_slug).toMatch(/^launchpad-[a-z0-9]{4}$/);
+  });
+
+  it("never derives a reserved slug", async () => {
+    // "Admin" is a perfectly reasonable product name and a slug that must never be handed out.
+    const fakeDb = makeDb();
+    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "Admin", spacetypeId: "launchpad" });
+    const row = await fakeDb.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(result.id).first<{ product_slug: string | null }>();
+    expect(row?.product_slug).not.toBe("admin");
+  });
+
+  it("creates the product anyway when no usable slug can be derived", async () => {
+    // Degrading to slugless is the old behavior — a name of pure punctuation must not block
+    // creation over a convenience value the builder never asked for.
+    const fakeDb = makeDb();
+    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "!!!", spacetypeId: "launchpad" });
+    expect(result.id).toBeTruthy();
+    const row = await fakeDb.prepare("SELECT product_slug FROM spaces WHERE id = ?").bind(result.id).first<{ product_slug: string | null }>();
+    expect(row?.product_slug).toBeNull();
+  });
 });
 
 describe("createSpaceRecord — provisioning", () => {

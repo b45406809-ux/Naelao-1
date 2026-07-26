@@ -508,9 +508,21 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     if (!auth) return c.json({ error_code: "unauthorized", message: "Missing or invalid credentials" }, 401);
     const product = await loadOwnedProduct(env, c.req.param("id"), auth.tenantId);
     if (!product) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
+    // Release the slug. The unique index on product_slug doesn't exclude deleted rows, so a
+    // soft delete used to burn the name permanently — a builder who deleted "Launchpad" and
+    // rebuilt it could never call it that again, and (since nothing lets a slug be set after
+    // creation) the replacement had no working URL at all. The old slug is preserved inside
+    // config_json so the row remains identifiable for audit/recovery; only the live, uniqueness-
+    // bearing column is cleared.
+    let config: Record<string, unknown> = {};
+    try {
+      config = JSON.parse(product.config_json ?? "{}") as Record<string, unknown>;
+    } catch { /* malformed config — proceed; releasing the slug matters more than preserving it */ }
+    if (product.product_slug) config["deleted_product_slug"] = product.product_slug;
+
     await env.PLATFORM_DB.prepare(
-      "UPDATE spaces SET status = 'deleted', updated_at = ? WHERE id = ? AND tenant_id = ?"
-    ).bind(new Date().toISOString(), product.id, auth.tenantId).run();
+      "UPDATE spaces SET status = 'deleted', product_slug = NULL, config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
+    ).bind(JSON.stringify(config), new Date().toISOString(), product.id, auth.tenantId).run();
     return new Response(null, { status: 204 });
   });
 

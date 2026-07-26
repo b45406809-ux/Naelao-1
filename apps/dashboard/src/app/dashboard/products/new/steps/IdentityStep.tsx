@@ -29,29 +29,33 @@ export default function IdentityStep({ state, update }: StepProps) {
 
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">
-          Platform subdomain <span className="text-gray-400 font-normal">(optional)</span>
+          Product address <span className="text-gray-400 font-normal">(optional)</span>
         </label>
         <div className="flex items-center">
+          <span className="px-3 py-2 bg-gray-50 border border-r-0 border-gray-300 rounded-l-lg text-sm text-gray-500">
+            /p/
+          </span>
           <input
             type="text"
             value={state.productSlug}
             onChange={(e) => update({ productSlug: e.target.value.toLowerCase() })}
             placeholder="acme-store"
-            className={`flex-1 px-3 py-2 border rounded-l-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition text-sm ${
+            className={`flex-1 px-3 py-2 border rounded-r-lg focus:ring-2 focus:ring-brand-500 focus:border-brand-500 outline-none transition text-sm ${
               slugValid ? "border-gray-300" : "border-red-300"
             }`}
           />
-          <span className="px-3 py-2 bg-gray-50 border border-l-0 border-gray-300 rounded-r-lg text-sm text-gray-500">
-            .naelao.app
-          </span>
         </div>
         {!slugValid && (
           <p className="text-xs text-red-600 mt-1">
             2-40 characters: lowercase letters, numbers, and hyphens only.
           </p>
         )}
+        {/* This used to read "leave blank to pick this later" beside a ".naelao.app" suffix. Both
+            were wrong: nothing anywhere lets a builder set the slug after creation, and no DNS
+            zone for that domain exists — a blank slug produced a product with no working URL at
+            all. It's now derived from the product name when left blank. */}
         <p className="text-xs text-gray-400 mt-1">
-          Leave blank to pick this later, or use only a custom domain.
+          Where your customers sign in. Leave blank and we&rsquo;ll build one from the name.
         </p>
       </div>
     </div>

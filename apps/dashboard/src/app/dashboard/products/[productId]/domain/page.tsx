@@ -7,6 +7,7 @@ import { useParams } from "next/navigation";
 import { configureBuilderProductDomain, getBuilderProductDomain } from "@/lib/api";
 import type { BuilderProductDomain } from "@/lib/api";
 import { useProduct } from "../productContext";
+import { productShellDisplay } from "@/lib/product-url";
 
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   not_configured: { label: "Not configured", color: "bg-gray-100 text-gray-500" },
@@ -78,7 +79,8 @@ export default function ProductDomainPage() {
           <span className={`text-xs px-2.5 py-0.5 rounded-full font-medium ${statusInfo.color}`}>{statusInfo.label}</span>
         </div>
         <p className="text-xs text-gray-400 mb-4">
-          By default your product is served at <span className="font-mono">{product.product_slug}.naelao.app</span>.
+          By default your product is served at{" "}
+          <span className="font-mono">{productShellDisplay(product.product_slug) ?? "no address yet"}</span>.
           Add your own domain so it appears under your brand instead.
         </p>
 

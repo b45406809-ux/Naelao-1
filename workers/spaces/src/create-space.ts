@@ -153,6 +153,24 @@ export function validateConfigSchema(config: Record<string, unknown>, schema: Re
   return errors;
 }
 
+/** Subdomains that collide with Naelao infrastructure or enable phishing. Module-scoped so the
+ *  explicit-slug validator and the name-derived fallback below can never disagree about what is
+ *  allowed — a derived slug reaching the insert unchecked would bypass this entirely. */
+const RESERVED_SLUGS = new Set([
+  "www", "api", "api2", "app", "mail", "email", "smtp", "imap", "pop",
+  "admin", "superadmin", "root", "naelao", "naelao-admin", "dashboard",
+  "login", "signin", "signup", "register", "auth", "oauth", "sso",
+  "billing", "payments", "pay", "checkout", "subscribe", "pricing",
+  "status", "uptime", "health", "monitor", "metrics", "telemetry",
+  "support", "help", "docs", "documentation", "legal", "terms", "privacy",
+  "blog", "news", "press", "media", "marketing", "careers", "jobs",
+  "cdn", "static", "assets", "files", "upload", "downloads",
+  "dev", "staging", "preview", "prod", "production", "sandbox", "test",
+  "internal", "intranet", "corp", "enterprise", "security",
+  "webhooks", "webhook", "events", "queue", "pubsub",
+  "socket", "ws", "wss", "stream", "sse",
+]);
+
 export interface CreateSpaceParams {
   tenantId: string;
   userId?: string;
@@ -169,6 +187,44 @@ export interface CreateSpaceResult {
   id: string;
   status: string;
   created_at: string;
+}
+
+
+/**
+ * Turn a product name into a usable, free platform slug.
+ *
+ * Collisions are resolved by suffixing rather than by rejecting: a builder naming their product
+ * "Launchpad" when someone else already has that slug should still end up with a working product,
+ * not a 409 on a field they never filled in. Returns undefined only if nothing usable can be
+ * derived at all (a name of pure punctuation), in which case the product is created slugless
+ * exactly as before — degrading, never blocking creation over a derived convenience value.
+ */
+export async function deriveAvailableSlug(db: D1Database, name: string): Promise<string | undefined> {
+  const base = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 32);
+  if (base.length < 2) return undefined;
+
+  for (let attempt = 0; attempt < 6; attempt++) {
+    // First try the clean slug, then progressively-random suffixes. Random rather than an
+    // incrementing counter so two products created at once can't race onto the same candidate.
+    const candidate = attempt === 0 ? base : `${base}-${Math.random().toString(36).slice(2, 6)}`;
+    if (RESERVED_SLUGS.has(candidate)) continue;
+    try {
+      const taken = await db
+        .prepare("SELECT 1 AS x FROM spaces WHERE product_slug = ?")
+        .bind(candidate)
+        .first<{ x: number }>();
+      if (!taken) return candidate;
+    } catch {
+      // Can't check: fall through to slugless rather than risk a UNIQUE failure that would turn
+      // a valid creation into an error.
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 /** The one space-creation code path: quota check, config-schema validation, insert (as
@@ -213,25 +269,22 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
     }
   }
 
+  // A product with no slug is not "a product without a subdomain yet" — it is a product nobody
+  // can reach. The Product Shell resolves every end-user URL as /p/{product_slug}, and nothing
+  // anywhere lets a builder set the slug after creation, so a blank one produced a product that
+  // provisioned successfully, reported `active`, and could never be opened by its owner or by a
+  // single customer. Derived from the name instead, which is always present.
+  // Both callers of this function (POST /spaces and POST /builder/products) create top-level
+  // products; a child business goes through createBusinessForEndUser and has no slug of its own.
+  if (!params.productSlug) {
+    const derived = await deriveAvailableSlug(env.PLATFORM_DB, params.name);
+    if (derived) params = { ...params, productSlug: derived };
+  }
+
   if (params.productSlug) {
     if (!/^[a-z0-9-]{2,40}$/.test(params.productSlug)) {
       throw new SpaceCreationError(400, "bad_request", "product_slug must match ^[a-z0-9-]{2,40}$");
     }
-    // Block subdomains that collide with Naelao infrastructure or enable phishing.
-    const RESERVED_SLUGS = new Set([
-      "www", "api", "api2", "app", "mail", "email", "smtp", "imap", "pop",
-      "admin", "superadmin", "root", "naelao", "naelao-admin", "dashboard",
-      "login", "signin", "signup", "register", "auth", "oauth", "sso",
-      "billing", "payments", "pay", "checkout", "subscribe", "pricing",
-      "status", "uptime", "health", "monitor", "metrics", "telemetry",
-      "support", "help", "docs", "documentation", "legal", "terms", "privacy",
-      "blog", "news", "press", "media", "marketing", "careers", "jobs",
-      "cdn", "static", "assets", "media", "files", "upload", "downloads",
-      "dev", "staging", "preview", "prod", "production", "sandbox", "test",
-      "internal", "intranet", "corp", "enterprise", "security",
-      "webhooks", "webhook", "events", "queue", "pubsub",
-      "socket", "ws", "wss", "stream", "sse",
-    ]);
     if (RESERVED_SLUGS.has(params.productSlug)) {
       throw new SpaceCreationError(400, "bad_request", `product_slug '${params.productSlug}' is reserved`);
     }

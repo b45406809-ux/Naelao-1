@@ -7,6 +7,33 @@ import { useParams } from "next/navigation";
 import { updateBuilderProduct, getTemplates } from "@/lib/api";
 import type { BuilderProductConfig, TemplateInfo } from "@/lib/api";
 import { useProduct } from "../productContext";
+import { ALLOWED_MODELS } from "@naelao/billing-core";
+
+/** Cheapest capable model that actually resolves on a Workers-AI-only gateway. Claude ids stay
+ *  selectable for deployments whose gateway has Anthropic wired, but they can't be the default
+ *  here: a product born pointing at an unreachable model fails at its first message. */
+const DEFAULT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+
+/** Short human labels for the shared allowlist. An id with no entry falls back to the id itself,
+ *  so adding a model to ALLOWED_MODELS can never leave this picker blank. */
+const MODEL_LABELS: Record<string, string> = {
+  "claude-haiku-4-5-20251001": "Haiku — needs Anthropic on your gateway",
+  "claude-sonnet-4-6": "Sonnet — needs Anthropic on your gateway",
+  "claude-opus-4-8": "Opus — needs Anthropic on your gateway",
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast": "Llama 3.3 70B — balanced default",
+  "@cf/meta/llama-4-scout-17b-16e-instruct": "Llama 4 Scout — fast",
+  "@cf/openai/gpt-oss-120b": "GPT-OSS 120B — most capable",
+  "@cf/openai/gpt-oss-20b": "GPT-OSS 20B — cheap",
+  "@cf/qwen/qwen3-30b-a3b-fp8": "Qwen3 30B",
+  "@cf/mistralai/mistral-small-3.1-24b-instruct": "Mistral Small",
+  "@cf/ibm-granite/granite-4.0-h-micro": "Granite Micro — cheapest",
+  "@cf/google/gemma-4-26b-a4b-it": "Gemma 4 26B",
+  "@cf/zai-org/glm-4.7-flash": "GLM 4.7 Flash",
+  "@cf/zai-org/glm-5.2": "GLM 5.2",
+  "@cf/nvidia/nemotron-3-120b-a12b": "Nemotron 3 120B",
+  "@cf/moonshotai/kimi-k2.6": "Kimi K2.6",
+  "@cf/moonshotai/kimi-k2.7-code": "Kimi K2.7 Code",
+};
 
 export default function ProductConfigurationPage() {
   const params = useParams<{ productId: string }>();
@@ -146,28 +173,28 @@ export default function ProductConfigurationPage() {
           The LLM your product&apos;s agents run on. A pricier model costs more per message but may
           give better answers for complex work.
         </p>
-        <div className="flex gap-3">
-          {(
-            [
-              { id: "claude-haiku-4-5-20251001", label: "Haiku", blurb: "Fastest, cheapest — good for most conversations." },
-              { id: "claude-sonnet-4-6", label: "Sonnet", blurb: "Balanced — the default for most products." },
-              { id: "claude-opus-4-8", label: "Opus", blurb: "Most capable, highest cost — complex reasoning." },
-            ] as const
-          ).map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              onClick={() => setForm((f) => ({ ...f, modelConfig: { model: m.id } }))}
-              className={`flex-1 text-left px-4 py-3 rounded-lg border text-sm transition-colors ${
-                (form.modelConfig?.model ?? "claude-haiku-4-5-20251001") === m.id
-                  ? "border-brand-500 bg-brand-50 text-brand-800"
-                  : "border-gray-200 text-gray-600 hover:border-gray-300"
-              }`}
-            >
-              <div className="font-semibold">{m.label}</div>
-              <div className="text-xs mt-0.5 text-gray-500">{m.blurb}</div>
-            </button>
-          ))}
+        {/* Rendered from the shared allowlist rather than a hardcoded list. This used to offer
+            only the three Claude ids — none of which resolve on an AI Gateway without Anthropic
+            wired, which is this deployment (CLAUDE.md item 68). Every product created here was
+            therefore born pointing at a model its own agents could never call, and the failure
+            surfaced only at the first message. */}
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {ALLOWED_MODELS.map((id) => {
+            const selected = (form.modelConfig?.model ?? DEFAULT_MODEL) === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setForm((f) => ({ ...f, modelConfig: { model: id } }))}
+                className={`text-left px-3 py-2.5 rounded-lg border text-sm transition-colors ${
+                  selected ? "border-brand-500 bg-brand-50 text-brand-800" : "border-gray-200 text-gray-600 hover:border-gray-300"
+                }`}
+              >
+                <div className="font-semibold text-xs">{MODEL_LABELS[id] ?? id}</div>
+                <div className="text-[11px] mt-0.5 text-gray-400 font-mono truncate">{id}</div>
+              </button>
+            );
+          })}
         </div>
       </div>
 

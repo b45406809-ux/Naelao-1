@@ -32,6 +32,9 @@ importers:
 
   apps/dashboard:
     dependencies:
+      '@naelao/billing-core':
+        specifier: workspace:*
+        version: link:../../packages/billing-core
       '@naelao/types':
         specifier: workspace:*
         version: link:../../packages/types
