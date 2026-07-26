@@ -2918,6 +2918,57 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     while waiting. The ledger closes the duplicate-work half of the Orchestrator gap; the
     zero-cost-waiting half is still ours rather than the platform's.
 
+75. **OPEN DECISION (not built — awaiting the user's call): how a project thread models the
+    person, the project agent, and the Space Assistant.** Raised by the user as a design question,
+    deliberately answered with analysis rather than code. Recorded here so the reasoning isn't
+    re-derived next session.
+    **Ground truth checked against the code, not assumed:**
+    - There is NO three-party thread today. A run writes its answer attributed to whichever
+      `agentId` produced it, so a thread carries the person plus ONE agent. The only multi-agent
+      transcript is `/agent/mention-run`, which posts each mentioned agent's reply into the same
+      session with `agent_id` attribution — unambiguous precisely because the USER did the
+      addressing by typing `@Agent1`.
+    - `sessions` (chat, owns `messages`) and `threads` (structural, project-scoped) are still
+      separate tables with no server link — the documented pre-existing approximation.
+    - The assistant has `project.list` / `agent.list` (`workspace-admin` prebuilt) and
+      `project_journal.read`, but **no way to list or read a project's threads at all**.
+    **The user's sketch:** a project thread is user + project agent + assistant; hide the
+    assistant↔agent lane in the UI but let the user expand it; both agents read both lanes "so
+    context is not lost."
+    **Recommendation given (agreed part):** hide-but-viewable is right and already has a
+    precedent — `thread_kind='sub_agent'` + `parent_thread_id`, hidden unless
+    `projects.show_sub_threads` (migration v?/§A1.14). Reuse that shape.
+    **Recommendation given (pushback), three reasons:**
+    1. A flat transcript cannot express ADDRESSING. If the assistant posts into a project thread,
+       nothing says whether it is talking to the person or to the agent — you end up needing a
+       per-message recipient label, which is the complexity the user was already sensing.
+    2. Hiding a lane that CHANGES the visible lane is worse than not hiding it. Sub-agent traces
+       hide well because nothing depends on reading them; if the agent's visible reply says what
+       it says *because* of a hidden assistant instruction, the collapsed transcript is a
+       non-sequitur the user is forced to expand — not really hidden.
+    3. Cost: every project-thread turn potentially waking the assistant too, on an account whose
+       Workers AI free tier is ~65 agent runs/day platform-wide.
+    **The requirement underneath is already solved — by the user's own earlier design.** "Context
+    is not lost" is what the Project Journal (`PROJECT.md`, item 71) plus Memory OS L3/L4/L6
+    project-shared (Phase U) exist for. The user's own words when we built it: *"the assistant
+    won't even need to read all threads it just accesses the file."* Sharing transcripts would be
+    a second, unbounded, undistilled mechanism for the same requirement.
+    **Proposed model (what I'd build if approved):**
+    - A thread is the person + whichever agent is working. Two visible parties, no addressing
+      problem. `@mention` multi-agent stays exactly as-is (user-addressed = unambiguous).
+    - The assistant speaks in a thread ONLY when it has something for the PERSON — a handoff, an
+      escalation, a summary. Rare enough to be signal, visible, no hiding needed.
+    - Agent↔agent coordination is STATE, not chat: the journal + the HX1 run trace. Both already
+      built and durable.
+    - Delegation that spawns real work becomes a subthread, hidden by default, expandable — the
+      existing `thread_kind='sub_agent'` pattern, applied to delegation rather than to a synthetic
+      conversation.
+    - The one genuinely missing capability: a NARROW escape hatch letting the assistant list and
+      read a named project thread on demand ("what happened in that conversation"), with the
+      journal staying the default path — otherwise we rebuild the thing the journal replaced.
+    **Scope if approved:** one new `workspace-admin`-style op (list/read a project's threads) +
+    subthread collapse in the shell UI. Transcript itself stays two-party. NOT started.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
@@ -2995,6 +3046,49 @@ DO hibernation kills ALL in-memory state — always persist to SQLite.
 - `apps/*` — CF Pages frontends (dashboard, product-portal, widget, marketplace)
 - `infra/` — Terraform IaC, migration scripts, dev tooling
 - `tests/` — integration, e2e, contract, isolation, load tests
+
+## Live Deployment Facts (current as of 2026-07-26 — verified, not remembered)
+Re-verify before relying on any of these, but they are the real values as of this session:
+- **Router / API base:** `https://naelao-router.crzzphillip.workers.dev` — append `/v1`.
+- **Product Shell:** `https://naelao-shell.pages.dev/p/{product_slug}` (Pages project
+  `naelao-shell`). **Builder Dashboard:** `naelao-dashboard.pages.dev` (project
+  `naelao-dashboard`). Both MUST be deployed with `--branch=main` or they land as previews and
+  the bare domain 404s (item 62/64).
+- **`NEXT_PUBLIC_API_URL` asymmetry — getting this backwards produces `/v1/v1/...` → 401 → every
+  route 404s with a valid-looking build:** `apps/shell`'s client already includes `/v1`, so its
+  env var must be the BARE router origin. `apps/dashboard`'s client omits `/v1`, so its env var
+  must CARRY the `/v1`. `apps/dashboard` also needs `NEXT_PUBLIC_SHELL_URL`. Set them in the SAME
+  command as `next-on-pages` — it re-runs its own build and does not inherit from a prior shell
+  invocation. Verify by grepping the built bundle before deploying.
+- **D1 `naelao-platform`:** `f29714eb-28bd-4c76-895d-eb186e92a88f`.
+- **The user's live product:** space `f17b859b-aaf7-436e-a381-87cd6820429a`, slug `launchpad`,
+  tenant `bf24280c-e1f1-43dc-8ebf-09fa64bfd12a` (org `plan_tier = 'enterprise'`).
+  NOTE: this REPLACED the older `457a2b3a-...` product, which the user deleted on 2026-07-26 —
+  any reference to that id is stale.
+- **AI Gateway** id `naelao-gateway`. **No Claude models are available on this account** — Workers
+  AI only (item 68). Default working model: `@cf/meta/llama-3.3-70b-instruct-fp8-fast`.
+- **Workers AI free tier is ~10,000 neurons/day ≈ 65 agent runs/day platform-wide**, and
+  `worker_loaders` is commented out in `workers/agents/wrangler.toml` (execution Tiers 2-4
+  unavailable). Both unblock with the CF Workers Paid plan ($5/mo).
+- **Secrets NOT set (features degrade honestly until they are):** `WHOP_OAUTH_CLIENT_ID` /
+  `WHOP_OAUTH_CLIENT_SECRET` (one-click Whop connect — needs an app registered at Whop's
+  Developer Dashboard with redirect URI
+  `https://naelao-agents.crzzphillip.workers.dev/connectors/whop/oauth/callback`; the key-paste
+  path works meanwhile and the wizard now leads with it), and `TAVILY_API_KEY` (web search).
+  ALREADY SET: `RESEND_API_KEY` on `naelao-notifications` (do not re-prompt), `PUBLIC_AGENTS_URL`,
+  `CF_API_TOKEN`, `NAELAO_AIG_TOKEN`, `COMPOSIO_API_KEY`, `PIPEDREAM_*` on `naelao-agents`.
+- **Router var `PRODUCT_SHELL_URL` is still `http://localhost:3100`** — breaks the clickable link
+  in verification emails. Known, not fixed (the user's call to change a production var).
+- **Correct test command:** `npx vitest run --config tests/vitest.config.ts` (plain `npx vitest
+  run` fails). Typecheck: `npx turbo run typecheck` (76 tasks).
+- **Minting an internal token by hand** (for live testing against a worker directly):
+  `t={ms},v1={HMAC-SHA256("internal:{tenantId}:{ms}", PLATFORM_SECRET)}` — see
+  `packages/http/src/middleware.ts`. `NAELAO_PLATFORM_SECRET` is in `.cf-credentials.local`.
+- **Live UI verification:** Playwright's bundled Chromium cannot complete a TLS handshake through
+  this sandbox's proxy. Use `infra/scripts/shell-screenshot.mjs` (CF Browser Rendering REST API),
+  which injects a real `nps_` session into localStorage. A shell page will REDIRECT to `/spaces`
+  if the account has zero businesses (business-first gate) — create one first or you screenshot
+  the wrong page.
 
 ## Live Cloudflare Access (session-local, may or may not be present)
 A real Cloudflare API token + R2 S3 credentials for the account this platform is actually
