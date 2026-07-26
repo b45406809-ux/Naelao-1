@@ -31,6 +31,7 @@ import { memory } from "./memory.js";
 import { fabric } from "./fabric.js";
 import { wiki } from "./wiki.js";
 import { projectJournal } from "./project-journal.js";
+import { conversation } from "./conversation.js";
 import { lock } from "./lock.js";
 import { workspaceAdmin } from "./workspace-admin.js";
 import { localMachine } from "./local-machine.js";
@@ -87,6 +88,9 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // demand (never injected per call) so an assistant can answer "where is this project at"
   // without walking every thread in it.
   [projectJournal.name]: projectJournal,
+  // Search the full uncompacted transcript — the other half of conversation compaction, so a
+  // model that is missing detail can look it up instead of answering from a partial record.
+  [conversation.name]: conversation,
   // Generic named-lock primitive — the building block for script-composed concurrency
   // strategies (e.g. CSV row locking), not a bespoke locking mechanism per use case.
   [lock.name]: lock,
@@ -147,6 +151,7 @@ export {
   fabric,
   wiki,
   projectJournal,
+  conversation,
   lock,
   workspaceAdmin,
   localMachine,

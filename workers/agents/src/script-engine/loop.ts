@@ -11,6 +11,7 @@
  * unit-testable. The host (NaelaoAgentDO) wires a concrete Reasoner over the AI Gateway.
  */
 
+import type { ConversationContext } from "./conversation-context.js";
 import type {
   ScriptEngineEnv,
   ObserveSnapshot,
@@ -151,6 +152,15 @@ export interface Reasoner {
      * actual agent loop.
      */
     priorSteps?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
+    /**
+     * The thread's own conversation so far, bounded and possibly compacted.
+     *
+     * Without it the agent has no memory of the thread it is replying in: it cannot resolve
+     * "do that again", cannot answer "what did we decide", and re-asks things the user already
+     * told it. When `compacted` is set the model is told so explicitly and pointed at
+     * conversation.search, rather than being left to answer confidently from a partial record.
+     */
+    conversation?: ConversationContext;
   }): Promise<ReasonDecision>;
   /** Token usage from the most recently completed decide() call, when the backing LLM
    *  client reports it. Optional — reasoners that can't report it (e.g. test fakes) leave
@@ -210,6 +220,12 @@ export interface RunLoopOptions {
   /** Opaque run/session identifiers forwarded to the HITL gateway. */
   runId?: string;
   sessionId?: string;
+  /**
+   * The thread's conversation so far, bounded and possibly compacted. Forwarded verbatim to
+   * every reasoning step so the agent has memory of the thread it is replying in — absent for a
+   * first message or a non-conversational wake (cron, channel drain).
+   */
+  conversation?: ConversationContext;
   /**
    * Optional checkpoint callback (spec: incremental sub-agent progress — a parent shouldn't
    * have to wait for a whole child run to finish to see it's alive and making progress).
@@ -318,6 +334,7 @@ export async function runScriptLoop(
         snapshot,
         candidates,
         availableOperations: tools.availableOperations(),
+        ...(opts.conversation ? { conversation: opts.conversation } : {}),
         repairTarget: { name: top!.name, failureReason: "fingerprint drift (partial match)" },
       });
       const usage = usageOf(reasoner);
@@ -373,6 +390,7 @@ export async function runScriptLoop(
           snapshot,
           candidates,
           availableOperations: tools.availableOperations(),
+          ...(opts.conversation ? { conversation: opts.conversation } : {}),
           ...(level === "L3" && top
             ? { repairTarget: { name: top.name, failureReason: "stale / re-derive" } }
             : {}),

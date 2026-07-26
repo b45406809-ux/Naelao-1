@@ -29,6 +29,13 @@ import { resolveAssistantApprovalPlan, type AssistantEffectiveRole } from "../sc
 import { buildCodeRunner, type WorkerLoaderBinding } from "../script-engine/code-runner.js";
 import { initMemorySchema, buildMemoryStore, runMemoryMaintenance } from "../script-engine/memory-os.js";
 import { buildProjectMemoryStore, buildHybridMemoryStore } from "../script-engine/project-memory-client.js";
+import {
+  buildConversationContext,
+  messagesToSummarize,
+  buildSummaryPrompt,
+  type ConversationContext,
+  type ConversationMessage,
+} from "../script-engine/conversation-context.js";
 import { isChannelType, getAdapter, type NormalizedInbound } from "../launchpad/channels.js";
 import {
   sanitizeSubAgentOutput,
@@ -969,6 +976,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       )
     `);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_run_traces_run ON run_traces(run_id)`);
+
+    // Compacted-conversation summaries. Kept in the agent DO rather than SpaceDO because this is
+    // derived reasoning context, not conversation data of record — SpaceDO still holds every
+    // message verbatim, which is what conversation.search reads. `covered_messages` is how many
+    // of the oldest messages the summary already accounts for, so it is only regenerated when the
+    // conversation has actually grown past it, not on every turn.
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS conversation_summaries (
+        session_id      TEXT PRIMARY KEY,
+        summary         TEXT NOT NULL,
+        covered_messages INTEGER NOT NULL,
+        updated_at      TEXT NOT NULL
+      )
+    `);
 
     // Background fibers
     this.ctx.storage.sql.exec(`
@@ -2224,9 +2245,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const maxStepsFromContext = body.context?.["max_steps"];
       const maxTokensFromContext = body.context?.["max_tokens"];
       const onProgress = this.buildSubAgentProgressReporter(body.context);
+      // The thread's own history — without it the agent has no memory of the conversation it is
+      // replying in. Best-effort: undefined simply means "no history", the prior behaviour.
+      const conversation = await this.loadConversationContext(spaceId, sessionId, tenantId);
       const result = await runScriptLoop(engineEnv, tools, reasoner, config.scripts.prebuilt, {
         goal: body.goal,
         startupObserve: config.scripts.startup_observe,
+        ...(conversation ? { conversation } : {}),
         requiresApprovalFor,
         approvalMode,
         runId,
@@ -4276,6 +4301,110 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     this.persistReactSteps(runId, reactSteps);
 
     return { finalAnswer: maxIterAnswer, inputTokens: totalInputTokens, outputTokens: totalOutputTokens, tokensUsed: totalInputTokens + totalOutputTokens };
+  }
+
+  /**
+   * Load the thread's conversation into the bounded, possibly-compacted context the reasoner
+   * carries.
+   *
+   * Before this existed the reasoner had NO conversation history: it could not resolve "do that
+   * again", could not answer "what did we decide", and re-asked things the user had already said.
+   *
+   * Everything here is best-effort. A conversation the DO cannot load must degrade to "no
+   * history" (the previous behaviour) rather than failing the run — an agent that answers with
+   * less context is worse; an agent that refuses to answer at all is broken.
+   */
+  private async loadConversationContext(
+    spaceId: string,
+    sessionId: string,
+    tenantId: string
+  ): Promise<ConversationContext | undefined> {
+    if (!sessionId || !this.env.SPACES_WORKER) return undefined;
+    try {
+      const headers = await this.internalHeaders(tenantId);
+      const resp = await this.env.SPACES_WORKER.fetch(
+        new Request(
+          `http://spaces-worker/spaces/${encodeURIComponent(spaceId)}/sessions/${encodeURIComponent(sessionId)}/messages`,
+          { headers }
+        )
+      );
+      if (!resp.ok) return undefined;
+      const body = (await resp.json()) as { data?: ConversationMessage[]; messages?: ConversationMessage[] };
+      const messages = body.data ?? body.messages ?? [];
+      if (messages.length === 0) return undefined;
+
+      // The stored summary covers the oldest `covered_messages`; reuse it unless the conversation
+      // has grown enough that more messages now fall outside the recent window.
+      let summary = "";
+      let covered = 0;
+      try {
+        const row = this.ctx.storage.sql
+          .exec("SELECT summary, covered_messages FROM conversation_summaries WHERE session_id = ?", sessionId)
+          .toArray()[0] as { summary?: string; covered_messages?: number } | undefined;
+        if (row) {
+          summary = String(row.summary ?? "");
+          covered = Number(row.covered_messages ?? 0);
+        }
+      } catch {
+        // No summary is a valid state — the context is simply less informative.
+      }
+
+      const toSummarize = messagesToSummarize(messages);
+      if (toSummarize.length > covered) {
+        const regenerated = await this.summarizeConversation(toSummarize, summary);
+        if (regenerated) {
+          summary = regenerated;
+          try {
+            this.ctx.storage.sql.exec(
+              `INSERT OR REPLACE INTO conversation_summaries (session_id, summary, covered_messages, updated_at)
+               VALUES (?, ?, ?, ?)`,
+              sessionId,
+              summary,
+              toSummarize.length,
+              new Date().toISOString()
+            );
+          } catch {
+            // Losing the cache costs a regeneration next turn, nothing more.
+          }
+        }
+      }
+
+      return buildConversationContext(messages, summary);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Condense the older part of a conversation. Returns null when no LLM is available or the
+   *  call fails — the caller then carries recent messages with no summary, which is still far
+   *  better than no history at all. */
+  private async summarizeConversation(
+    older: ConversationMessage[],
+    existingSummary: string
+  ): Promise<string | null> {
+    try {
+      const gatewayConfig = this.aiGatewayConfig();
+      if (!gatewayConfig.accountId) return null;
+      const response = await callLlm(
+        "",
+        {
+          // Compaction is background maintenance, not user-facing reasoning — use the cheap model.
+          model: "@cf/ibm-granite/granite-4.0-h-micro",
+          messages: [{ role: "user", content: buildSummaryPrompt(older, existingSummary) }],
+          max_tokens: 600,
+        },
+        undefined,
+        gatewayConfig
+      );
+      const text = response.content
+        .filter((b) => b.type === "text")
+        .map((b) => b.text ?? "")
+        .join("\n")
+        .trim();
+      return text || null;
+    } catch {
+      return null;
+    }
   }
 
   // G-I11: Write user goal and agent answer back to SpaceDO session messages

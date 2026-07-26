@@ -50,13 +50,27 @@ function fakeSql(): SqlStorageLike & { rows: { structured_facts: any[]; episodic
         return { toArray: () => rows.structured_facts.filter((f) => f.user_id === user_id && f.entity === entity && f.relation === relation).map((f) => ({ id: f.id })) };
       }
       if (/SELECT \* FROM structured_facts\s+WHERE user_id IN/i.test(q)) {
-        const [u1, u2, like1, like2, like3, limit] = params as [string, string, string, string, string, number];
-        const needle = String(like1).replace(/^%|%$/g, "").replace(/\\([%_])/g, "$1").toLowerCase();
+        // Recall matches on TOKENS, so the number of LIKE params is variable (3 per token) —
+        // this used to destructure a fixed [like1, like2, like3, limit] and read `limit` at a
+        // fixed index, which silently became a string the moment the query grew. Parse the real
+        // shape instead: two user ids, then 3N like terms, then the limit.
+        const u1 = params[0] as string;
+        const u2 = params[1] as string;
+        const limit = params[params.length - 1] as number;
+        const likes = params.slice(2, params.length - 1) as string[];
+        const needles = [...new Set(likes.map((l) => String(l).replace(/^%|%$/g, "").replace(/\\([%_])/g, "$1").toLowerCase()))];
+        const hit = (f: any) =>
+          needles.some(
+            (n) =>
+              f.entity.toLowerCase().includes(n) ||
+              f.relation.toLowerCase().includes(n) ||
+              f.attribute.toLowerCase().includes(n)
+          );
         return {
           toArray: () =>
             rows.structured_facts
               .filter((f) => f.user_id === u1 || f.user_id === u2)
-              .filter((f) => f.entity.toLowerCase().includes(needle) || f.relation.toLowerCase().includes(needle) || f.attribute.toLowerCase().includes(needle))
+              .filter(hit)
               .sort((a, b) => b.trust_score - a.trust_score)
               .slice(0, limit),
         };
