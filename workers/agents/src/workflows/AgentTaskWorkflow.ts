@@ -64,8 +64,28 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
     });
 
     // ── Step 2: Run agent via agents-worker internal endpoint ─────────────────
-    const runResult = await step.do("run-agent", { ...retry, timeout: 29_000 }, async () => {
+    // No `timeout` and no `retries`, both deliberate, and both changes from a version that made
+    // "long-running background agent" untrue in practice:
+    //
+    // The step used to cap at 29 seconds. A Workflow step has NO wall-time limit (only a CPU-time
+    // limit, which excludes the time spent waiting on an LLM or a tool), so that ceiling was
+    // entirely self-imposed: any real multi-step task — look something up, think, act, verify —
+    // blew through it and was reported as a failure.
+    //
+    // Retries are off because an agent run is NOT idempotent. Retrying it re-executes every tool
+    // call already made: the same email sent twice, the same charge taken twice. That is exactly
+    // the "no duplicate work" guarantee a durable execution layer is supposed to provide, and
+    // retrying a non-idempotent step is the opposite of providing it. The ledger check below is
+    // what makes a REPLAY (a Workflow restart, where step results are memoized) safe; a fresh
+    // attempt at a run that already half-happened is not something we can make safe by hoping.
+    const runResult = await step.do("run-agent", { retries: { limit: 0, delay: 0 } }, async () => {
       const stepStarted = Date.now();
+
+      // Ledger check — the Orchestrator pattern, using the TaskDO row we already write as the
+      // ledger rather than inventing a second store. If this task already reached a terminal
+      // state, the run happened; return what was recorded instead of doing it again.
+      const already = await this.recordedResult(p);
+      if (already) return already;
       // Go-live audit F1: /internal/tasks/:taskId/run is HMAC-gated (verified tenant must match
       // the body's tenantId) — mint the same signed internal token naelao-router's proxyTo and
       // every other internal caller uses. Without this the workflow's own run would now 403.
@@ -110,8 +130,17 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
       // only `final_answer` off a response that actually carried `finalAnswer` — a real,
       // previously-undetected bug (the key was always undefined at runtime, so every
       // TaskDO-completed async run silently stored an empty result). Read both defensively.
-      const body = await resp.json<{ finalAnswer?: string; final_answer?: string; error?: string }>();
-      return { final_answer: body.finalAnswer ?? body.final_answer, error: body.error };
+      const body = await resp.json<{
+        finalAnswer?: string;
+        final_answer?: string;
+        error?: string;
+        status?: string;
+      }>();
+      return {
+        final_answer: body.finalAnswer ?? body.final_answer,
+        error: body.error,
+        status: body.status,
+      };
     });
 
     // ── Step 3: Update task with result ───────────────────────────────────────
@@ -120,11 +149,17 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
       const stub = this.env.TASK_DO.get(doId);
 
       const hasError = !!runResult.error;
+      // A run waiting on a human is neither done nor failed. Recording it as 'complete' would
+      // tell the caller their work finished when it is in fact sitting waiting for them, and
+      // would fire the completion callback for something that hasn't happened.
+      const status = runResult.status === "awaiting_approval"
+        ? "awaiting_approval"
+        : hasError ? "failed" : "complete";
       const resp = await stub.fetch(`http://task-do/tasks/${p.taskId}/status`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          status: hasError ? "failed" : "complete",
+          status,
           result: hasError ? null : JSON.stringify({ final_answer: runResult.final_answer }),
           error: runResult.error ?? null,
         }),
@@ -132,5 +167,34 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
       if (!resp.ok) throw new Error(`Failed to update task result: ${resp.status}`);
       return { ok: true };
     });
+  }
+
+  /**
+   * What the ledger already knows about this task, or null if the run hasn't happened.
+   *
+   * Best-effort by design: a ledger read that fails must not block the run, since a task that has
+   * genuinely never run would otherwise be stuck forever. The cost of being wrong in this
+   * direction is a repeated run on a rare restart; the cost of the other direction is a task that
+   * never executes at all.
+   */
+  private async recordedResult(
+    p: AgentTaskParams
+  ): Promise<{ final_answer: string | undefined; error: string | undefined; status: string | undefined } | null> {
+    try {
+      const stub = this.env.TASK_DO.get(this.env.TASK_DO.idFromName(p.taskDoName));
+      const resp = await stub.fetch(`http://task-do/tasks/${p.taskId}`);
+      if (!resp.ok) return null;
+      const task = await resp.json<{ status?: string; result?: string | null; error?: string | null }>();
+      if (task.status !== "complete" && task.status !== "failed") return null;
+      let answer: string | undefined;
+      if (task.result) {
+        try {
+          answer = (JSON.parse(task.result) as { final_answer?: string }).final_answer;
+        } catch { /* a result we can't parse is still proof the run happened */ }
+      }
+      return { final_answer: answer, error: task.error ?? undefined, status: task.status };
+    } catch {
+      return null;
+    }
   }
 }

@@ -168,7 +168,11 @@ export function Chat({
           setStreamingContent("");
           setIsLoading(false);
           clearActiveRunId(spaceId, sessionKey);
-          if (run.status === "completed" && run.final_answer) {
+          // awaiting_approval is grouped with completed on purpose: both have something real to
+          // say. Without it this status matched no branch at all, so the reply simply vanished —
+          // the user saw the spinner stop and nothing appear, with no way to know the agent was
+          // waiting on them.
+          if ((run.status === "completed" || run.status === "awaiting_approval") && run.final_answer) {
             setMessages((prev) => [
               ...prev,
               { id: `msg_${Date.now()}`, role: "assistant", content: run.final_answer!, created_at: new Date().toISOString() },

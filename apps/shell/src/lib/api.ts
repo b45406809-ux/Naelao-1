@@ -188,7 +188,10 @@ export interface Message {
 
 export interface AgentRun {
   id: string;
-  status: "running" | "completed" | "failed" | "cancelled";
+  /** `awaiting_approval` means the run paused at a gate and is waiting on a PERSON, not on the
+   *  machine. It is not terminal and it is not a failure — the work is intact and continues once
+   *  someone answers, which is a completely different thing to tell a user than "still working". */
+  status: "running" | "completed" | "failed" | "cancelled" | "awaiting_approval";
   final_answer?: string;
   error?: string;
 }

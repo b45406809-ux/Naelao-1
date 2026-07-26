@@ -62,15 +62,40 @@ function safeParse(s: string): unknown {
 // normalize once here so nothing downstream needs to change. Carries both camelCase and
 // snake_case final-answer keys since existing callers read one or the other inconsistently
 // (see AgentTaskWorkflow.ts's own fix for the concrete bug this inconsistency caused).
-function normalizeScriptRunResult(raw: unknown, runId: string): {
+/** Exported for direct testing: the three outcomes it distinguishes (finished, failed, waiting on
+ *  a person) are the whole contract every chat client reads, and two of them used to collapse into
+ *  each other. Same reasoning as conversation.ts's exported scoreMessage. */
+export function normalizeScriptRunResult(raw: unknown, runId: string): {
   runId: string;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "awaiting_approval";
   finalAnswer: string | null;
   final_answer: string | null;
   reactSteps: unknown[];
   error?: string;
+  pending_approval?: { approval_id: string; action_name: string };
 } {
-  const r = raw as { result?: { ok?: boolean; output?: unknown; error?: unknown }; error?: string } | null;
+  const r = raw as {
+    result?: { ok?: boolean; output?: unknown; error?: unknown };
+    error?: string;
+    pending_approval?: { approval_id: string; action_name: string };
+  } | null;
+
+  // A run that stopped at a HITL gate has NO `result` and no `error` — which this function used to
+  // read as ok-with-an-empty-output, reporting "completed" and a blank answer. That's the blank
+  // message bug all over again, and worse here: it tells someone their work finished when it is
+  // actually sitting waiting for them.
+  if (r?.pending_approval) {
+    const action = r.pending_approval.action_name;
+    return {
+      runId,
+      status: "awaiting_approval",
+      finalAnswer: `Waiting for your approval to run '${action}'. Nothing has been executed yet — approve it and I'll carry on from here.`,
+      final_answer: `Waiting for your approval to run '${action}'. Nothing has been executed yet — approve it and I'll carry on from here.`,
+      reactSteps: [],
+      pending_approval: r.pending_approval,
+    };
+  }
+
   const inner = r?.result;
   const ok = inner?.ok !== false && !r?.error;
   const answer = ok
@@ -1033,8 +1058,12 @@ app.post("/internal/scripts/run-durable", async (c) => {
 // reading this exact same GET route needs the SAME id to also resolve against TaskDO. Tried in
 // this order rather than branching on id shape, since task_id and a synchronous runId are both
 // opaque crypto.randomUUID()s with no way to tell them apart without asking.
-const TASK_STATUS_TO_RUN_STATUS: Record<string, "running" | "completed" | "failed"> = {
+const TASK_STATUS_TO_RUN_STATUS: Record<string, "running" | "completed" | "failed" | "awaiting_approval"> = {
   queued: "running", processing: "running", complete: "completed", failed: "failed",
+  // Surfaced as itself rather than folded into "running": a client polling this needs to know the
+  // run is waiting on a PERSON, not on the machine, because those call for completely different
+  // things from the user (go approve it vs. keep waiting).
+  awaiting_approval: "awaiting_approval",
 };
 
 async function fetchRunOrTaskStatus(
@@ -1458,8 +1487,38 @@ function getHitlDo(env: AgentsEnv, spaceId: string) {
   return env.HITL_APPROVAL_DO.get(doId);
 }
 
+/**
+ * Verified tenant + ownership of the named space, the check the four approvals routes below were
+ * missing entirely.
+ *
+ * They had NO auth of any kind: this worker keeps a public workers.dev URL (its channel gateway
+ * needs one), so anyone could list what any space's agent was about to do — with its parameters —
+ * and approve it. That was already wrong when an unanswered approval auto-rejected after 30
+ * seconds; it is far worse now that a real approval stays open for a day. Same shape as the run
+ * endpoints' own ownership check a few routes below, which is the established convention here.
+ *
+ * A product end user's claims.tid is the tenant of the space in their URL (business spaces have
+ * their own child tenant — see /internal/stream-tickets/issue), so a plain tenant match is correct
+ * for both a product root and a business under it.
+ */
+async function requireOwnedSpace(
+  c: {
+    req: { header: (h: string) => string | undefined };
+    env: { PLATFORM_SECRET: string; PLATFORM_DB: D1Database };
+  },
+  spaceId: string
+): Promise<string> {
+  const tenantId = await requireVerifiedTenant(c);
+  const owned = await c.env.PLATFORM_DB.prepare(
+    "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"
+  ).bind(spaceId, tenantId).first<{ id: string }>();
+  if (!owned) throw unauthorized("Space not found for this tenant");
+  return tenantId;
+}
+
 app.get("/spaces/:spaceId/sessions/:sessionId/approvals", async (c) => {
   const { spaceId, sessionId } = c.req.param();
+  await requireOwnedSpace(c, spaceId);
   const stub = getHitlDo(c.env, spaceId);
   const runId = c.req.query("run_id");
   const url = runId ? `/requests?run_id=${runId}` : `/requests?session_id=${sessionId}`;
@@ -1468,13 +1527,13 @@ app.get("/spaces/:spaceId/sessions/:sessionId/approvals", async (c) => {
 
 app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/approve", async (c) => {
   const { spaceId, approvalId } = c.req.param();
+  const tenantId = await requireOwnedSpace(c, spaceId);
   const stub = getHitlDo(c.env, spaceId);
   const res = await stub.fetch(`http://do/requests/${approvalId}/approve`, { method: "PUT" });
   // Approving is only half the job: if a run suspended waiting on this, it has to actually pick
   // back up. Fire-and-forget so the approver's click returns immediately — the resume can take
   // as long as the rest of the agent's work does, and its own result is reported through the
   // run, not through this response. Idempotent on the DO side, so a retry is harmless.
-  const { tenantId } = getCallerIdentity(c);
   if (res.ok) c.executionCtx.waitUntil(resumeSuspendedRun(c.env, tenantId, spaceId, approvalId));
   return res;
 });
@@ -1510,12 +1569,14 @@ async function resumeSuspendedRun(env: AgentsEnv, tenantId: string, spaceId: str
 // spaceId alone) exactly like the approve/reject routes above already ignore it too.
 app.get("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId", async (c) => {
   const { spaceId, approvalId } = c.req.param();
+  await requireOwnedSpace(c, spaceId);
   const stub = getHitlDo(c.env, spaceId);
   return stub.fetch(`http://do/requests/${approvalId}`);
 });
 
 app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/reject", async (c) => {
   const { spaceId, approvalId } = c.req.param();
+  await requireOwnedSpace(c, spaceId);
   const body = await c.req.json<{ reason?: string }>().catch(() => ({}));
   const stub = getHitlDo(c.env, spaceId);
   return stub.fetch(`http://do/requests/${approvalId}/reject`, {

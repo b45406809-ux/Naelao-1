@@ -25,7 +25,11 @@ const TASK_TTL_MS = 24 * 60 * 60 * 1000;
 const LONG_POLL_MAX_MS = 30_000;
 const LONG_POLL_INTERVAL_MS = 500;
 
-type TaskStatus = "queued" | "processing" | "complete" | "failed";
+/** `awaiting_approval` is a real, non-terminal state, not a flavour of complete: the run stopped
+ *  at a human-in-the-loop gate with its work intact and will continue once someone answers.
+ *  Treating it as terminal would fire the completion callback for something that hasn't
+ *  happened, and tell the caller their task finished. */
+type TaskStatus = "queued" | "processing" | "awaiting_approval" | "complete" | "failed";
 
 interface TaskRow {
   id: string;

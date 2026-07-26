@@ -2847,7 +2847,14 @@ DO hibernation kills ALL in-memory state — always persist to SQLite.
 ## Key CF Invariants
 - KV eventual consistency ~60s — never use for rate limiting
 - Analytics Engine: append-only, 25M rows/day, ClickHouse dialect, no DELETE
-- CF Workflows: 1000-step limit, 30s per step, JSON-serializable state
+- CF Workflows: **a step has NO wall-time limit** — only a CPU-time limit, which excludes time
+  spent waiting on an LLM, a tool, or any I/O. The "30s per step" this line used to claim was
+  wrong, and it is what produced `AgentTaskWorkflow`'s self-imposed 29s cap on an agent run (see
+  item 73). Steps per instance: 1,024 on Free, 10,000 default on Paid, configurable to 25,000;
+  `step.sleep` (up to 365 days) does not count toward that. State must be JSON-serializable,
+  ≤100MB per instance on Free / 1GB on Paid. `step.waitForEvent(name, {type, timeout})` +
+  `instance.sendEvent({type, payload})` is the native human-in-the-loop primitive — a waiting
+  instance costs nothing and doesn't hold a concurrency slot.
 - Queues: at-least-once delivery, 5000 msg/sec limit, 128KB msg max, 4-day retention
 - Vectorize filter: `{field: {$eq: value}}` — no nested filters
 - Workers sub-request limit: 1000 per invocation
