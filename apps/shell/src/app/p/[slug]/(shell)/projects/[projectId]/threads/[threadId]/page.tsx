@@ -44,6 +44,7 @@ export default function ProjectThreadPage() {
       sessionKey={params.threadId}
       title={thread?.title ?? "Thread"}
       supportContact={supportContact}
+      threadId={params.threadId}
     />
   );
 }

@@ -1656,10 +1656,16 @@ app.get("/connectors", async (c) => {
   return c.json({ connectors: CONNECTOR_CATALOGUE });
 });
 
-// GET /connectors/status?space_id= — catalogue annotated with which are already connected
-// for the space (i.e. registered as an MCP server in the hub).
+// GET /connectors/status?space_id= — catalogue annotated with which are already connected.
+// scope_model='space' connectors: connected means an MCP server is registered for the space
+// (shared, whoever connected it). scope_model='user' connectors: registration is shared but the
+// underlying credential is per-member (§A1.18) — reporting "connected" from the shared server row
+// would tell every OTHER member their own personal account is connected the moment the FIRST one
+// connects theirs, which is exactly backwards. For those, "connected" means THIS caller's own
+// scope='user' credential exists under the connector's name.
 app.get("/connectors/status", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
+  const { userId } = getCallerIdentity(c);
   const spaceId = c.req.query("space_id") ?? "";
   if (!spaceId) throw badRequest("space_id is required");
 
@@ -1683,30 +1689,64 @@ app.get("/connectors/status", async (c) => {
     }
   }
 
+  const userScoped = CONNECTOR_CATALOGUE.filter((c) => c.scope_model === "user");
+  const ownUserCredentialNames = new Set<string>();
+  if (userScoped.length > 0 && userId && c.env.CREDENTIALS_WORKER) {
+    try {
+      const resp = await c.env.CREDENTIALS_WORKER.fetch(
+        new Request(`http://credentials/spaces/${spaceId}/credentials`, {
+          headers: {
+            "x-naelao-tenant-id": tenantId,
+            "x-naelao-user-id": userId,
+            "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+          },
+        })
+      );
+      if (resp.ok) {
+        const { data } = await resp.json<{ data?: Array<{ name: string; scope: string; user_id: string | null }> }>();
+        for (const row of data ?? []) {
+          if (row.scope === "user" && row.user_id === userId) ownUserCredentialNames.add(row.name);
+        }
+      }
+    } catch {
+      // Best-effort — falls back to "not connected" for user-scoped connectors on error.
+    }
+  }
+
   return c.json({
     connectors: CONNECTOR_CATALOGUE.map((conn) => ({
       ...conn,
-      connected: connectedNames.has(conn.id),
+      connected: conn.scope_model === "user"
+        ? ownUserCredentialNames.has(conn.auth.credential_name)
+        : connectedNames.has(conn.id),
     })),
   });
 });
 
 /**
- * Vault a connector/channel credential (API key or OAuth token blob) at SPACE scope.
+ * Vault a connector/channel credential (API key or OAuth token blob).
  *
- * This must always be scope='space', never the credentials-worker default of scope='user':
- * mcp-hub's buildAuthHeaders (and the webhook-secret lookup below) resolve credentials with no
- * actingUserId at all — resolveCredential() skips the user tier entirely when actingUserId is
- * null, so a credential stored at scope='user' can NEVER be read back by the code that's
- * supposed to use it. It also requires x-naelao-user-id (the credentials worker 400s without
- * one) and, since scope='space' requires a privileged role, x-naelao-role: admin — connecting a
- * platform integration is inherently an admin-level action on behalf of the whole space, not a
- * personal credential of the connecting user.
+ * Defaults to scope='space' (every existing caller's exact prior behavior) — required for any
+ * connector mcp-hub resolves with no acting user (a space-wide integration like a company Slack
+ * or Whop account). mcp-hub's buildAuthHeaders now threads the calling end user's id through as
+ * `on_behalf_of_user_id` (§A1.18 connector scope model), so a row stored here with
+ * `scope: "user"` — a member's OWN personal credential, per `ConnectorDefinition.scope_model` —
+ * IS now reachable at call time, closing the gap this function's own comment used to describe as
+ * unfixable. Only the manual-key-paste connect route below currently passes scope='user' (every
+ * catalogued connector today is genuinely business-owned, so nothing does yet) — the OAuth
+ * connect/refresh paths are deliberately left at scope='space' always: per-user OAuth token
+ * refresh (knowing WHICH member's token to rotate under one shared credential name) is a real,
+ * separate piece of work, not silently covered by this change.
+ *
+ * scope='space' still requires x-naelao-role: admin (a platform-wide integration is an
+ * admin-level action); scope='user' is "always allowed for the caller" per the credentials
+ * worker's own contract, so it's stored under the CONNECTING user's own id with no role check.
  */
 async function storeConnectorCredential(
   env: Pick<AgentsEnv, "CREDENTIALS_WORKER" | "PLATFORM_SECRET">,
-  params: { tenantId: string; spaceId: string; userId: string; name: string; value: string; description: string }
+  params: { tenantId: string; spaceId: string; userId: string; name: string; value: string; description: string; scope?: "space" | "user" }
 ): Promise<Response> {
+  const scope = params.scope ?? "space";
   const internalToken = await mintInternalToken(env.PLATFORM_SECRET, params.tenantId);
   return env.CREDENTIALS_WORKER!.fetch(
     new Request(`http://credentials/spaces/${params.spaceId}/credentials`, {
@@ -1715,13 +1755,13 @@ async function storeConnectorCredential(
         "content-type": "application/json",
         "x-naelao-tenant-id": params.tenantId,
         "x-naelao-user-id": params.userId || "connector-system",
-        "x-naelao-role": "admin",
+        ...(scope === "space" ? { "x-naelao-role": "admin" } : {}),
         "x-naelao-internal-token": internalToken,
       },
       body: JSON.stringify({
         name: params.name,
         value: params.value,
-        scope: "space",
+        scope,
         description: params.description,
       }),
     })
@@ -1744,6 +1784,17 @@ app.post("/connectors/:platform/connect", async (c) => {
   if (!c.env.MCP_HUB || !c.env.CREDENTIALS_WORKER) {
     return c.json({ error_code: "unavailable", message: "Connector services are not bound" }, 503);
   }
+  // §A1.18: a scope_model='space' connector is a platform-wide integration for the whole
+  // business — admin-only, same as it's always been. `x-naelao-business-role` is present ONLY
+  // when the spaces-worker wrapper resolved a real product_end_user business role (see its own
+  // comment); a builder calling with their own JWT never sends it, so this is a no-op for every
+  // caller this route has always served — it only NEWLY restricts the specific case a plain
+  // "member" business role would otherwise now be allowed through by the relaxed spaces-worker
+  // gate. scope_model='user' needs no such check: connecting your own account is always allowed.
+  const businessRole = c.req.header("x-naelao-business-role");
+  if (connector.scope_model !== "user" && businessRole && businessRole !== "owner" && businessRole !== "admin") {
+    return c.json({ error_code: "forbidden", message: "Connecting this app requires an admin of this business" }, 403);
+  }
 
   interface ConnectBody { space_id: string; api_key: string; mcp_url?: string }
   const body = await c.req.json<ConnectBody>().catch(() => ({ space_id: "", api_key: "" } as ConnectBody));
@@ -1754,11 +1805,16 @@ app.post("/connectors/:platform/connect", async (c) => {
   if (connector.auth.type !== "none") {
     // B1/B3 fix: credentials worker's public CRUD routes now require a verified internal
     // token (requireInternalHmac) since this call bypasses the router (direct service
-    // binding). Also fixes two pre-existing bugs: the credentials worker registers this
-    // route WITHOUT a /v1 prefix (only its internal plaintext-resolution route has one) —
-    // the old "/v1/spaces/..." path here would have 404'd against the real worker — and it
-    // requires x-naelao-user-id unconditionally (400s without it) plus scope='space' (see
-    // storeConnectorCredential's header — mcp-hub can never resolve a scope='user' row).
+    // binding). Also fixes a pre-existing bug: the credentials worker registers this route
+    // WITHOUT a /v1 prefix (only its internal plaintext-resolution route has one) — the old
+    // "/v1/spaces/..." path here would have 404'd against the real worker.
+    //
+    // §A1.18: scope_model='user' connectors (a member's own personal account — none in this
+    // catalogue yet, see catalogue.ts's own header) store under THIS caller's id at scope='user'
+    // instead of the space-wide default, and require no admin role — connecting your own account
+    // is "always allowed for the caller" per the credentials worker's own contract.
+    const isUserScoped = connector.scope_model === "user";
+    if (isUserScoped && !userId) throw badRequest("A signed-in user is required to connect a personal account");
     const credResp = await storeConnectorCredential(c.env, {
       tenantId,
       spaceId: body.space_id,
@@ -1766,6 +1822,7 @@ app.post("/connectors/:platform/connect", async (c) => {
       name: connector.auth.credential_name,
       value: body.api_key,
       description: `${connector.name} API key (connector)`,
+      scope: isUserScoped ? "user" : "space",
     });
     if (!credResp.ok && credResp.status !== 409) {
       const msg = await credResp.text();

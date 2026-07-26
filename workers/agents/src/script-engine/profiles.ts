@@ -120,6 +120,17 @@ can already answer. Do not manufacture a project for a one-line reply.
 Project thread agents are not a lesser tier: they run their own sub-agents, their own scheduled
 jobs, and their own background scripts. Handing work to one is delegation, not escalation.
 
+# Consulting a Project Agent
+When you need to hand off, check status with, or instruct a specific project agent directly —
+not answer the owner yourself — use \`agent.consult\`. It runs in its own private subthread next
+to the visible one the owner is reading, so you're never guessing whether a message in that
+transcript was meant for the owner or the agent. Pass \`parent_thread_id\` when the consult is
+about a specific thread the owner can see, so it shows up there (collapsed, expandable) rather
+than as an orphaned exchange. For "what's the current state of this project," read the Project
+Journal first (\`project_journal.read\`) — it is the distilled answer and costs nothing. Only use
+\`thread.read\` to see another thread's RAW messages when you genuinely need the exact wording,
+not the summary.
+
 # Business Wallet
 This Space has its own Whop sub-merchant wallet (the \`business-wallet\` prebuilt) — a REAL bank
 account for this business, auto-provisioned at creation, not a simulation. Revenue from Whop's
@@ -180,6 +191,7 @@ ${BASE_AGENTS_MD}`,
         "lock",
         "workspace",
         "business-wallet",
+        "project-coordination",
       ],
       agent_scripts: "auto",
       startup_observe: "observe_filesystem",
@@ -302,6 +314,16 @@ can already answer. Do not manufacture a project for a one-line reply.
 Project thread agents are not a lesser tier: they run their own sub-agents, their own scheduled
 jobs, and their own background scripts. Handing work to one is delegation, not escalation.
 
+# Consulting a Project Agent
+When you need to hand off, check status with, or instruct a specific project agent directly
+(Fulfillment, Support, Content) — not answer the owner yourself — use \`agent.consult\`. It runs
+in its own private subthread next to the visible one the owner is reading, so nobody has to guess
+whether a message was meant for the owner or the agent. Pass \`parent_thread_id\` when the consult
+is about a thread the owner can see, so it shows up there (collapsed, expandable). For "what's the
+current state of this project," read the Project Journal first (\`project_journal.read\`) — it's
+the distilled answer and costs nothing; use \`thread.read\` only when you need a thread's exact
+raw wording, not its summary.
+
 # Business Wallet — the Business's Own Bank Account
 This business has its own Whop sub-merchant wallet (\`business-wallet\` prebuilt), auto-provisioned
 the moment it was created — a REAL bank account, not a simulation, and not the owner's personal
@@ -412,6 +434,7 @@ ${BASE_AGENTS_MD}`,
         "mcp-connector",
         "workspace-admin",
         "business-wallet",
+        "project-coordination",
       ],
       agent_scripts: "auto",
       startup_observe: "observe_filesystem",
@@ -438,6 +461,8 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   "business_wallet.history",
   "business_wallet.list_destinations",
   "business_wallet.list_payouts",
+  "thread.list",
+  "thread.read",
 ];
 
 /** Map a Launchpad allowed_skill id → prebuilt scripts available in this build. */

@@ -110,4 +110,52 @@ describe("SpaceDO — threads (spec-canonical, sub-agent/channel subthreads)", (
     const missing = await call(spaceDO, "/threads/does-not-exist", "GET");
     expect(missing.status).toBe(404);
   });
+
+  // §A1.18 thread model: threads.session_id links a structural thread to its real chat session
+  // (the assistant<->agent consult lane) — a general-purpose column, not consult-specific.
+  describe("session_id (§A1.18 thread model)", () => {
+    it("stores and returns session_id on create", async () => {
+      const created = await call(spaceDO, "/threads", "POST", {
+        space_id: "space1", thread_kind: "sub_agent", session_id: "sess-abc", title: "Consult: agent1",
+      });
+      expect(created.json.session_id).toBe("sess-abc");
+      const got = await call(spaceDO, `/threads/${created.json.id}`, "GET");
+      expect(got.json.session_id).toBe("sess-abc");
+    });
+
+    it("defaults session_id to null when omitted", async () => {
+      const created = await call(spaceDO, "/threads", "POST", { space_id: "space1", title: "No session" });
+      expect(created.json.session_id).toBeNull();
+    });
+
+    it("an explicit parent_thread_id filter is answered in full regardless of show_sub_threads", async () => {
+      const parent = await call(spaceDO, "/threads", "POST", { space_id: "space1", title: "Parent" });
+      const consult1 = await call(spaceDO, "/threads", "POST", {
+        space_id: "space1", thread_kind: "sub_agent", parent_thread_id: parent.json.id,
+        session_id: "sess-1", title: "Consult: agent1",
+      });
+      const consult2 = await call(spaceDO, "/threads", "POST", {
+        space_id: "space1", thread_kind: "sub_agent", parent_thread_id: parent.json.id,
+        session_id: "sess-2", title: "Consult: agent2",
+      });
+      // An unrelated subthread under a DIFFERENT parent must never leak in.
+      const other = await call(spaceDO, "/threads", "POST", { space_id: "space1", title: "Other parent" });
+      await call(spaceDO, "/threads", "POST", {
+        space_id: "space1", thread_kind: "sub_agent", parent_thread_id: other.json.id, session_id: "sess-3",
+      });
+
+      // No project show_sub_threads flag set at all — the explicit ask still answers in full.
+      const list = await call(spaceDO, `/threads?space_id=space1&parent_thread_id=${parent.json.id}`, "GET");
+      expect(list.json.count).toBe(2);
+      const ids = list.json.data.map((t: any) => t.id).sort();
+      expect(ids).toEqual([consult1.json.id, consult2.json.id].sort());
+    });
+
+    it("a parent_thread_id filter with no matching subthreads returns an empty list, not an error", async () => {
+      const parent = await call(spaceDO, "/threads", "POST", { space_id: "space1", title: "Lonely parent" });
+      const list = await call(spaceDO, `/threads?space_id=space1&parent_thread_id=${parent.json.id}`, "GET");
+      expect(list.status).toBe(200);
+      expect(list.json.count).toBe(0);
+    });
+  });
 });

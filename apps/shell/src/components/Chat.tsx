@@ -26,11 +26,12 @@ import {
   clearActiveRunId,
 } from "@/lib/chatSession";
 import { ContextUsageMeter } from "./ContextUsageMeter";
+import { SubthreadPanel } from "./SubthreadPanel";
 
 const POLL_INTERVAL_MS = 1500;
 const MAX_POLL_DURATION_MS = 60_000;
 
-type ThreadPanelTab = "stats" | "tools" | "files" | "artifacts";
+type ThreadPanelTab = "stats" | "assistant" | "tools" | "files" | "artifacts";
 
 /** A display name for whoever produced a message, or null when it needs no label.
  *
@@ -54,6 +55,7 @@ export function Chat({
   supportContact,
   sessionId,
   initialMessage,
+  threadId,
 }: {
   spaceId: string;
   session: SessionCredentials;
@@ -68,6 +70,11 @@ export function Chat({
   /** Sent once, automatically, on mount. Home mints a session from the user's opening line and
    *  hands it over here rather than duplicating the whole chat surface on the landing page. */
   initialMessage?: string;
+  /** The structural project-thread id (SpaceDO `threads`), when this Chat renders a project
+   *  thread rather than the top-level assistant session. Only threads have an "Assistant" tab —
+   *  a Home/assistant session has no separate agent to consult, so there's no second lane to
+   *  show (§A1.18 thread model: "this is fine in assistant sessions"). */
+  threadId?: string;
 }) {
   const [chatSessionId, setChatSessionId] = React.useState<string | null>(sessionId ?? null);
   const [messages, setMessages] = React.useState<Message[]>([]);
@@ -475,7 +482,7 @@ export function Chat({
             <span className="tp-header-title">Thread</span>
           </div>
           <div className="tp-tabs">
-            {(["stats", "tools", "files", "artifacts"] as ThreadPanelTab[]).map((tab) => (
+            {(["stats", ...(threadId ? (["assistant"] as ThreadPanelTab[]) : []), "tools", "files", "artifacts"] as ThreadPanelTab[]).map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -487,6 +494,9 @@ export function Chat({
             ))}
           </div>
           <div className="tp-body">
+            {panelTab === "assistant" && threadId && (
+              <SubthreadPanel spaceId={spaceId} threadId={threadId} session={session} />
+            )}
             {panelTab === "stats" && (
               <>
                 <div className="tp-stat">
@@ -511,7 +521,7 @@ export function Chat({
                 />
               </>
             )}
-            {panelTab !== "stats" && (
+            {panelTab !== "stats" && panelTab !== "assistant" && (
               <div className="tp-section" style={{ textTransform: "none", color: "var(--text3)" }}>
                 Coming soon.
               </div>

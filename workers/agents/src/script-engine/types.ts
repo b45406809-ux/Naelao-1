@@ -290,6 +290,28 @@ export interface OrchestrationHooks {
   workflowRun?(name: string, params: Record<string, unknown>): Promise<unknown>;
   workflowSchedule?(name: string, cron: string): Promise<{ id: string }>;
   workflowStatus?(id: string): Promise<unknown>;
+  /**
+   * Assistant<->project-agent coordination lane (§A1.18 thread model). Unlike spawnSubAgent
+   * (a throwaway, isolated child with no identity of its own), this dispatches to an EXISTING
+   * named project agent definition, addressed the same way @mention dispatch does
+   * (`{sessionId}:{agentId}`) so the two share the agent's normal per-thread memory/state — the
+   * exchange lives in its own subthread (thread_kind='sub_agent', parent_thread_id), hidden by
+   * default and expandable in the UI, never mixed into the visible user<->agent transcript.
+   */
+  consultAgent?(params: {
+    agentId: string;
+    message: string;
+    spaceId: string;
+    projectId?: string;
+    parentThreadId?: string;
+    threadId?: string;
+  }): Promise<{
+    ok: boolean;
+    thread_id?: string;
+    session_id?: string;
+    reply?: string;
+    error?: string;
+  }>;
 }
 
 /**

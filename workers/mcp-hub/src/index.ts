@@ -275,8 +275,16 @@ async function validateMcpUrl(rawUrl: string): Promise<{ ok: true; url: URL } | 
  * credentials worker, then build the auth headers for the upstream MCP server. The plaintext is
  * fetched per call and never persisted in mcp_servers — the row only holds the credential NAME.
  * agentId scopes the short-lived credential token (for the vault's audit trail).
+ *
+ * §A1.18 connector scope model: `actingUserId`, when given, is passed to the credentials worker
+ * as `on_behalf_of_user_id` — the plaintext-resolution route already implements the full
+ * space-override > user > space-shared hierarchy (`resolveCredential`, unchanged by this pass),
+ * it just never received an acting user from any caller. This is what makes a `scope='user'`
+ * connector credential (a member's own personal account) actually reachable at call time — before
+ * this, every resolution here was effectively space-only regardless of what was stored. Absent
+ * (the vast majority of calls — most connectors are space-scoped) resolves exactly as before.
  */
-export async function buildAuthHeaders(server: McpServer, env: Env, agentId: string): Promise<Record<string, string>> {
+export async function buildAuthHeaders(server: McpServer, env: Env, agentId: string, actingUserId?: string): Promise<Record<string, string>> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (server.auth_type === "none" || !server.auth_secret_name) return headers;
 
@@ -294,6 +302,7 @@ export async function buildAuthHeaders(server: McpServer, env: Env, agentId: str
           "x-naelao-tenant-id": server.tenant_id,
           "x-naelao-credential-token": token,
         },
+        body: JSON.stringify(actingUserId ? { on_behalf_of_user_id: actingUserId } : {}),
       }
     )
   );
@@ -582,7 +591,7 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
 
   let headers: Record<string, string>;
   try {
-    headers = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
+    headers = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub", c.req.header("x-naelao-user-id") || undefined);
   } catch (err) {
     return c.json({ error_code: "credential_error", message: (err as Error).message }, 502);
   }
@@ -687,7 +696,7 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
 
   let headers: Record<string, string>;
   try {
-    headers = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub");
+    headers = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub", c.req.header("x-naelao-user-id") || undefined);
   } catch (err) {
     return c.json({ error_code: "credential_error", message: (err as Error).message }, 502);
   }

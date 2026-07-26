@@ -91,6 +91,68 @@ describe("POST /connectors/:platform/connect — vault write contract", () => {
     expect(calls[0]!.value).toBe("gr_secret_123");
   });
 
+  // §A1.18 connector scope model: the spaces-worker wrapper relaxed its own gate from
+  // "admin-only" to "member" (any member can attempt to connect their OWN personal connector),
+  // so THIS route is now the one place that enforces admin-only for a scope_model='space'
+  // connector — resolved from x-naelao-business-role, forwarded ONLY for a product_end_user
+  // caller (a builder's own JWT caller never sends it, so its existing 201 above is proof the
+  // new check doesn't regress that path).
+  it("refuses a scope_model='space' connector for a non-admin business role", async () => {
+    const { worker: credentialsWorker, calls } = makeCredentialsWorkerStub();
+    const { worker: mcpHub } = makeMcpHubStub();
+    const env = {
+      PLATFORM_SECRET: SECRET,
+      CREDENTIALS_WORKER: credentialsWorker as unknown as Fetcher,
+      MCP_HUB: mcpHub as unknown as Fetcher,
+    } as unknown as AgentsEnv;
+
+    const token = await mintInternalToken(SECRET, "tenant-a");
+    const res = await app.fetch(
+      new Request("https://agents.naelao.com/connectors/gumroad/connect", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": "tenant-a",
+          "x-naelao-user-id": "end-user-1",
+          "x-naelao-business-role": "member",
+          "x-naelao-internal-token": token,
+        },
+        body: JSON.stringify({ space_id: "space-a", api_key: "gr_secret_123" }),
+      }),
+      env as never
+    );
+    expect(res.status).toBe(403);
+    expect(calls.length).toBe(0); // never even reached the vault write
+  });
+
+  it("allows a scope_model='space' connector for an admin business role", async () => {
+    const { worker: credentialsWorker, calls } = makeCredentialsWorkerStub();
+    const { worker: mcpHub } = makeMcpHubStub();
+    const env = {
+      PLATFORM_SECRET: SECRET,
+      CREDENTIALS_WORKER: credentialsWorker as unknown as Fetcher,
+      MCP_HUB: mcpHub as unknown as Fetcher,
+    } as unknown as AgentsEnv;
+
+    const token = await mintInternalToken(SECRET, "tenant-a");
+    const res = await app.fetch(
+      new Request("https://agents.naelao.com/connectors/gumroad/connect", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": "tenant-a",
+          "x-naelao-user-id": "end-user-1",
+          "x-naelao-business-role": "admin",
+          "x-naelao-internal-token": token,
+        },
+        body: JSON.stringify({ space_id: "space-a", api_key: "gr_secret_123" }),
+      }),
+      env as never
+    );
+    expect(res.status).toBe(201);
+    expect(calls.length).toBe(1);
+  });
+
   it("surfaces credential_store_failed (not a silent success) when the vault write is rejected", async () => {
     const { worker: mcpHub } = makeMcpHubStub();
     const env = {

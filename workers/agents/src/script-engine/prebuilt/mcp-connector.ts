@@ -46,13 +46,22 @@ function hub(ctx: PrebuiltOpContext): Fetcher {
  *  §A1.17 Phase I: mcp-hub now gates its routes with requireInternalHmac (defense-in-depth on
  *  top of workers_dev=false, matching every other internal-only worker) — mints a real,
  *  60s-scoped token rather than trusting a static identity header.
+ *
+ *  §A1.18 connector scope model: `x-naelao-user-id` now carries the REAL acting end user
+ *  (`ctx.env.userId` — the person this run is on behalf of, absent for a space-level/system run),
+ *  not the agent id — this is what lets mcp-hub's buildAuthHeaders resolve a `scope='user'`
+ *  connector credential (a member's own personal account) instead of only ever the space-shared
+ *  one. `x-naelao-agent-id` (unchanged) stays the agent id, for the credential vault's own audit
+ *  trail — the two were previously conflated onto one header, which is exactly why a user-scoped
+ *  credential could never be resolved before this change.
+ *
  *  Exported so other prebuilts (e.g. revenue-tracker) can call an already-registered MCP server's
  *  tool without re-implementing the hub request-shaping/credential-resolution logic. */
 export async function hubHeaders(ctx: PrebuiltOpContext): Promise<Record<string, string>> {
   return {
     "content-type": "application/json",
     "x-naelao-tenant-id": ctx.env.tenantId,
-    "x-naelao-user-id": ctx.env.agentId,
+    ...(ctx.env.userId ? { "x-naelao-user-id": ctx.env.userId } : {}),
     "x-naelao-agent-id": ctx.env.agentId,
     "x-naelao-internal-token": await mintInternalToken(ctx.env.platformSecret ?? "", ctx.env.tenantId),
   };

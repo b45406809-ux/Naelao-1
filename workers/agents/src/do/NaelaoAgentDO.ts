@@ -9,6 +9,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
+import { getDOName } from "@naelao/crypto";
 import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao/llm-gateway";
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
@@ -1840,6 +1841,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // agent.spawn({ tasks: [...] }) call instead.
         return { ok: false, reason: "sub-agents run synchronously; spawn another batch instead of sending to a running one" };
       };
+      hooks.consultAgent = (params) => this.consultAgentImpl(params, tenantId, apiKey, agentDO);
     }
 
     // §A1.17 Phase J: the dynamic-workflow prebuilt's ops. A "workflow" here is not a second
@@ -2065,6 +2067,113 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private terminateSubAgentImpl(id: string): Promise<void> {
     this.ctx.storage.sql.exec(`UPDATE sub_agents SET status = 'terminated', updated_at = ? WHERE id = ? AND status = 'running'`, Date.now(), id);
     return Promise.resolve();
+  }
+
+  /**
+   * Assistant<->project-agent consult (§A1.18 thread model). Unlike spawnSubAgent, this talks to
+   * an EXISTING named agent definition (a real, addressable "Agent1" a builder configured), not a
+   * throwaway child — so it's addressed exactly the way @mention dispatch already addresses one:
+   * `{sessionId}:{agentId}` (Phase T2), meaning the consulted agent's own per-thread memory/state
+   * for THIS consult session is separate from its memory in the visible user<->agent thread, same
+   * as two @mentioned agents in one project already get separate state.
+   *
+   * The exchange gets its own subthread (thread_kind='sub_agent', parent_thread_id — reusing the
+   * existing sub-agent-spawn hierarchy pattern rather than inventing a second one) so the shell
+   * can show it collapsed-but-expandable under the visible thread it's about, never mixed into
+   * that transcript directly (no addressing ambiguity: whoever reads the subthread knows both
+   * parties are the assistant and the named agent, nobody else).
+   *
+   * `threadId` given: reuse that subthread's session (continuing a prior consult). Omitted:
+   * mint a fresh session + subthread. Either way, the caller (this hook, standing in for "the
+   * client") writes the assistant's own message with role:'user' before dispatching — exactly
+   * what apps/shell's Chat.tsx does for a human turn — because handleScriptRun only ever writes
+   * back the ANSWER (see its own comment at the writeAgentAnswerToSession call site); nothing
+   * else here writes the question.
+   */
+  private async consultAgentImpl(
+    params: { agentId: string; message: string; spaceId: string; projectId?: string; parentThreadId?: string; threadId?: string },
+    tenantId: string,
+    apiKey: string,
+    agentDO: DurableObjectNamespace<NaelaoAgentDO>
+  ): Promise<{ ok: boolean; thread_id?: string; session_id?: string; reply?: string; error?: string }> {
+    const { agentId: targetAgentId, message, spaceId, projectId, parentThreadId } = params;
+    if (!targetAgentId || !message) return { ok: false, error: "agent_id and message are required" };
+    if (!this.env.SPACES_WORKER) return { ok: false, error: "spaces worker binding not configured" };
+    const headers = await this.internalHeaders(tenantId, { "content-type": "application/json" });
+
+    let threadId = params.threadId;
+    let sessionId: string;
+    try {
+      if (threadId) {
+        const threadResp = await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/spaces/${spaceId}/threads/${encodeURIComponent(threadId)}`,
+          { headers }
+        ));
+        if (!threadResp.ok) return { ok: false, error: `consult thread ${threadId} not found` };
+        const thread = await threadResp.json<{ session_id?: string | null }>();
+        if (!thread.session_id) return { ok: false, error: `consult thread ${threadId} has no session` };
+        sessionId = thread.session_id;
+      } else {
+        const sessionResp = await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/spaces/${spaceId}/sessions`,
+          { method: "POST", headers, body: JSON.stringify({}) }
+        ));
+        if (!sessionResp.ok) return { ok: false, error: `failed to create consult session: HTTP ${sessionResp.status}` };
+        const session = await sessionResp.json<{ id: string }>();
+        sessionId = session.id;
+
+        const threadResp = await this.env.SPACES_WORKER.fetch(new Request(
+          `http://spaces-worker/spaces/${spaceId}/threads`,
+          {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              thread_kind: "sub_agent",
+              session_id: sessionId,
+              title: `Consult: ${targetAgentId}`,
+              ...(parentThreadId ? { parent_thread_id: parentThreadId } : {}),
+              ...(projectId ? { project_id: projectId } : {}),
+            }),
+          }
+        ));
+        if (!threadResp.ok) return { ok: false, error: `failed to create consult thread: HTTP ${threadResp.status}` };
+        const thread = await threadResp.json<{ id: string }>();
+        threadId = thread.id;
+      }
+
+      // The assistant's own turn — see this method's header for why nothing else writes it.
+      await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/messages`,
+        { method: "POST", headers, body: JSON.stringify({ role: "user", content: message, agent_id: "naelao-agent" }) }
+      ));
+
+      const doName = await getDOName("agent", `${sessionId}:${targetAgentId}`, tenantId, this.env.PLATFORM_SECRET);
+      const stub = agentDO.get(agentDO.idFromName(doName));
+      const resp = await stub.fetch(new Request("http://agent-do/script/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          goal: message, spaceId, agentId: targetAgentId, tenantId, sessionId, apiKey,
+          ...(projectId ? { projectId } : {}),
+        }),
+      }));
+      const runBody = await resp.json<{
+        result?: { ok?: boolean; output?: unknown; error?: unknown };
+        pending_approval?: { action_name: string };
+      }>().catch(() => ({}) as Record<string, never>);
+      if (runBody.pending_approval) {
+        return { ok: true, thread_id: threadId, session_id: sessionId, reply: `${targetAgentId} needs approval before it can act on this: ${runBody.pending_approval.action_name}` };
+      }
+      const ok = resp.ok && runBody.result?.ok !== false;
+      if (!ok) {
+        const errMsg = typeof runBody.result?.error === "string" ? runBody.result.error : `HTTP ${resp.status}`;
+        return { ok: false, thread_id: threadId, session_id: sessionId, error: errMsg };
+      }
+      const reply = typeof runBody.result?.output === "string" ? runBody.result.output : JSON.stringify(runBody.result?.output ?? "");
+      return { ok: true, thread_id: threadId, session_id: sessionId, reply };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
   }
 
   /**

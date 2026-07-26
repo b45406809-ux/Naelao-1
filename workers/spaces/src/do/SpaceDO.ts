@@ -910,6 +910,20 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_session_spend_space ON session_spend(space_id);
     `,
   },
+  {
+    // threads.session_id — a general-purpose link from a structural thread row to the real chat
+    // session (SpaceDO `sessions`) that carries its actual messages. Item 71/74 documented these
+    // as two separate tables with no server-side link, approximated client-side via a cached
+    // sessionKey; this column closes that gap for threads created THROUGH this link (notably the
+    // new assistant<->agent consult subthreads, §A1.18/A1.34 thread model) without retrofitting
+    // every pre-existing thread/session pair, which stays exactly as it was.
+    version: 32,
+    description: "threads.session_id — links a structural thread to its chat session",
+    up: `
+      ALTER TABLE threads ADD COLUMN session_id TEXT;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_session ON threads(session_id) WHERE session_id IS NOT NULL;
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -3673,6 +3687,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listThreads(params: URLSearchParams): Response {
     const spaceId = params.get("space_id") ?? "";
     const projectId = params.get("project_id");
+    const parentThreadId = params.get("parent_thread_id");
     let showSubThreads = params.get("include_sub_threads") === "true";
     if (!showSubThreads && projectId) {
       const project = queryOne<{ show_sub_threads: number }>(
@@ -3689,7 +3704,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       clauses.push("project_id = ?");
       args.push(projectId);
     }
-    if (!showSubThreads) clauses.push("thread_kind = 'primary'");
+    // An explicit parent_thread_id ask (the shell's "show what the assistant discussed with the
+    // agent about this thread" panel, or the assistant's own thread.list op) is always answered
+    // in full regardless of the project's show_sub_threads default — the caller named exactly
+    // which subthreads it wants, not "give me everything hidden by default".
+    if (parentThreadId) {
+      clauses.push("parent_thread_id = ?");
+      args.push(parentThreadId);
+    } else if (!showSubThreads) {
+      clauses.push("thread_kind = 'primary'");
+    }
 
     const rows = queryAll(
       this.ctx.storage.sql as never,
@@ -3732,6 +3756,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       channel?: string;
       channel_session_id?: string;
       tenant_id?: string;
+      session_id?: string;
     }>().catch(() => ({}) as Record<string, never>);
     if (!body.space_id) {
       return Response.json({ error_code: "bad_request", message: "space_id is required" }, { status: 400 });
@@ -3770,10 +3795,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, session_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
         id, body.space_id, body.user_id ?? null, body.project_id ?? null, body.title ?? null,
-        body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id, now, now
+        body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id, body.session_id ?? null, now, now
       );
       await fireCreated(id, body.project_id ?? null);
       const row = queryOne(this.ctx.storage.sql as never, "SELECT * FROM threads WHERE id = ?", id);
@@ -3789,10 +3814,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       execute(
         this.ctx.storage.sql as never,
-        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO threads (id, space_id, user_id, project_id, title, status, parent_thread_id, thread_kind, channel, channel_session_id, session_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
         id, body.space_id, body.user_id ?? null, body.project_id ?? null, body.title ?? null,
-        body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id ?? null, now, now
+        body.parent_thread_id ?? null, kind, body.channel ?? null, body.channel_session_id ?? null, body.session_id ?? null, now, now
       );
       await fireCreated(id, body.project_id ?? null);
     }

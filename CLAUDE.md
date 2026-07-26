@@ -2969,6 +2969,89 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     **Scope if approved:** one new `workspace-admin`-style op (list/read a project's threads) +
     subthread collapse in the shell UI. Transcript itself stays two-party. NOT started.
 
+76. **The thread model from item 75 was approved and is now BUILT, refined from the original
+    proposal — the user's own framing (two SEPARATE conversations: user↔agent and
+    assistant↔agent, the second hidden-but-expandable) is stronger than item 75's "state only, no
+    second chat" recommendation, because it resolves the exact addressing-ambiguity objection that
+    recommendation was raised to avoid. Connectors also gained a real space-vs-user scope model,
+    closing a gap items 32/55 had already flagged and left open.**
+    - **Thread model.** `threads.session_id` (SpaceDO migration v32) links a structural thread to
+      a real chat session — a general-purpose column, not consult-specific, closing the "two
+      tables with no server-side link" approximation items 66/71 documented, for threads created
+      through this new path (every pre-existing thread/session pairing is untouched).
+      `listThreads` gained a `parent_thread_id` filter, always answered in full regardless of a
+      project's `show_sub_threads` default — the caller named exactly which subthreads it wants.
+      New `OrchestrationHooks.consultAgent` (mirrors `spawnSubAgent`'s DO-to-DO dispatch pattern
+      exactly, but addresses an EXISTING named agent definition via `{sessionId}:{agentId}` —
+      Phase T2's own addressing — instead of a throwaway child): mints a fresh session + a
+      `thread_kind='sub_agent'` subthread (or reuses one via `thread_id`), writes the assistant's
+      own turn (nothing else does — `handleScriptRun` only ever writes back the answer, per its
+      own comment), dispatches to the target agent's own DO directly via
+      `agentDO.get(agentDO.idFromName(...))`, and returns the reply — or an honest
+      "needs approval" when the consulted agent itself hits a HITL gate. New prebuilt
+      `project-coordination` (`agent.consult`, `thread.list`, `thread.read` — deliberately a
+      SEPARATE script from `workspace-admin`, which stays Launchpad-business-scaffolding-specific
+      per its own header) is wired into BOTH assistant profiles, not just Launchpad's. `thread.
+      list`/`thread.read` are read-only and added to the Launchpad guided-mode auto-approved
+      allowlist (same precedent as `project.list`/`agent.list`); `agent.consult` stays gated by
+      default (a real dispatched run has real cost, same posture as project scaffolding).
+      Shell: `Chat.tsx` gained a `threadId` prop (only project threads pass one — Home/assistant
+      sessions have no second party to consult, matching the user's own "this is fine in
+      assistant sessions" carve-out) and a new "Assistant" panel tab, rendering
+      `SubthreadPanel.tsx` — lists consult subthreads for the current thread, collapsed by
+      default, each one expandable to its real messages via the existing `getMessages` call.
+      Nothing here touches the visible user↔agent transcript itself, which stays exactly
+      two-party — the exact non-ambiguity property item 75 was trying to preserve.
+    - **Connectors: space-vs-user scope model.** `ConnectorDefinition.scope_model?: "space" |
+      "user"` (default absent = `"space"`, byte-identical behavior for every existing catalogue
+      entry — none are genuinely personal today; Whop/Gumroad/Higgsfield/the social connectors/
+      Notion are all real business accounts, honestly documented in the field's own header rather
+      than inventing a fake personal connector to demo it). The credential HIERARCHY already
+      existed (item 18's `resolveCredential`: privileged override → user tier for an acting user →
+      space-shared fallback) — the actual gap, exactly as items 32 and 55 both flagged and left
+      open, was that nothing ever THREADED an acting user id far enough to reach it.
+      `storeConnectorCredential` now accepts an explicit `scope`, used by the manual-key connect
+      route when `connector.scope_model === "user"` (stores under the CONNECTING member's own id,
+      no admin role required — "always allowed for the caller" per the credentials worker's own
+      contract); the OAuth/channel paths stay `scope: "space"` always, since per-user OAuth token
+      refresh (knowing WHICH member's token to rotate under one shared name) is real, separate,
+      explicitly NOT built here. mcp-hub's `buildAuthHeaders` gained an `actingUserId` parameter,
+      passed as `on_behalf_of_user_id` to the credentials worker's plaintext-resolution route
+      (which already implemented the hierarchy, just never received this) — both `tools/list` and
+      `tools/call` now forward `x-naelao-user-id`. The `mcp-connector` prebuilt's `hubHeaders` used
+      to send the AGENT's id as `x-naelao-user-id` (harmless before, since nothing read it) — now
+      sends the REAL acting end user (`ctx.env.userId`), keeping `x-naelao-agent-id` (the vault
+      audit trail) separate, which is what actually makes a `scope='user'` credential reachable at
+      call time for the first time. `GET /connectors/status` now resolves "connected" correctly
+      per scope model: a space-scoped connector's status still comes from the shared MCP-server
+      registration, but a user-scoped one reports whether THIS caller has their own credential row
+      (querying the credentials worker's list route, itself unchanged) — reporting a shared
+      registration as "connected" for every member the moment the FIRST one connects their own
+      account would have been exactly backwards. The connect route's admin gate is now genuinely
+      scope-aware end to end: the spaces-worker wrapper relaxed its floor to "member" (a personal
+      connector needs no admin), and the agents worker's own connect handler makes the real
+      admin-vs-member call per connector, using a NEWLY resolved `x-naelao-business-role` header
+      the spaces-worker wrapper forwards ONLY for a `product_end_user` caller (a builder's own JWT
+      caller never sends it, so every existing caller is unaffected — verified by a test asserting
+      the pre-existing no-header case still succeeds). This is a handler-logic change, not a new
+      route shape, so it doesn't carry the Hono route-table-corruption risk items 40/52/60
+      documented for genuinely new dynamic-segment routes. Shell: business detail page gained a
+      "My Connections" section — any member, not admin-gated — reusing the existing Connect Apps
+      handlers; it simply doesn't render today since nothing in the catalogue is `scope_model:
+      "user"` yet, honestly, same precedent as the Customers/Campaigns tabs with no backing data.
+    - **Not done, deliberately, not silently:** per-user OAuth token refresh; the `ctx.mcp` Tier
+      2-4 isolate loopback (`code-runner.ts`) still sends the agent id as the acting user (would
+      need `userId` threaded through `CodeRunnerOptions`/`params`, real plumbing across several
+      files, for a path currently non-functional in production anyway since `worker_loaders` is
+      disabled — see Live Deployment Facts).
+    2190/2190 tests pass (25 new: `spacedo-threads.test.ts` extended for `session_id`/
+    `parent_thread_id`; `project-coordination-prebuilt.test.ts`; `consult-agent-orchestration-
+    hook.test.ts` drives the real DO-to-DO dispatch, not a hand-rolled substitute;
+    `mcp-hub-connector-scope.test.ts` proves `on_behalf_of_user_id` threading both at the
+    `buildAuthHeaders` unit level and through the real `tools/call` route;
+    `connector-channel-vault-write.test.ts` extended for the new business-role gate), `npx turbo
+    run typecheck` clean (76 tasks), `apps/shell` verified via `next build`.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

@@ -120,6 +120,21 @@ export interface ConnectorDefinition {
   category: ConnectorCategory;
   status: ConnectorStatus;
   summary: string;
+  /**
+   * Who a connected credential belongs to — same distinction Claude/ChatGPT connectors draw
+   * between an org-wide integration and a person's own account. `"space"` (default when absent,
+   * preserving every pre-existing connector's behavior): one shared credential for the whole
+   * business, connected once by an admin (Whop, a company Slack, a shared Notion workspace — the
+   * business-wallet precedent). `"user"`: each member connects their OWN account — a member's
+   * personal credential is never visible to or usable by another member, resolved via the
+   * existing credential hierarchy's user tier (packages this repo already built — see
+   * `workers/credentials`'s `resolveCredential` — the gap was that connectors never threaded an
+   * acting user id through to reach it, not that the hierarchy didn't exist). Every connector in
+   * this catalogue today is genuinely business-owned (a company's Whop/Gumroad/social account),
+   * so none currently opt into `"user"` — this field exists so a personal connector (a member's
+   * own inbox, calendar, ...) can be added later without new plumbing.
+   */
+  scope_model?: "space" | "user";
   /** Docs the builder/agent can consult. */
   docs_url?: string;
   auth: ConnectorAuth;

@@ -463,6 +463,7 @@ export interface ThreadSummary {
   status: string;
   thread_kind: string;
   parent_thread_id: string | null;
+  session_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -474,6 +475,18 @@ export async function listThreads(
 ): Promise<ThreadSummary[]> {
   const qs = opts.projectId ? `?project_id=${encodeURIComponent(opts.projectId)}` : "";
   const res = await apiFetch<{ data: ThreadSummary[]; count: number }>(`/v1/spaces/${spaceId}/threads${qs}`, { session });
+  return res.data;
+}
+
+// A project thread's own private assistant<->agent consult subthreads (§A1.18 thread model) —
+// hidden from the default project thread list, fetched explicitly here for the collapsed
+// "Assistant" panel on that thread's own page. Always answered in full regardless of the
+// project's show_sub_threads default (SpaceDO honors an explicit parent_thread_id ask).
+export async function listSubthreads(spaceId: string, parentThreadId: string, session: SessionCredentials): Promise<ThreadSummary[]> {
+  const res = await apiFetch<{ data: ThreadSummary[]; count: number }>(
+    `/v1/spaces/${spaceId}/threads?parent_thread_id=${encodeURIComponent(parentThreadId)}`,
+    { session }
+  );
   return res.data;
 }
 
@@ -1002,6 +1015,9 @@ export interface ConnectorInfo {
   connected?: boolean;
   oauth?: unknown;
   composio?: unknown;
+  /** "space" (default, absent = space): one shared connection for the whole business. "user":
+   *  each member connects their OWN account — never visible to or usable by anyone else. */
+  scope_model?: "space" | "user";
 }
 
 export async function getConnectorStatus(spaceId: string, session: SessionCredentials): Promise<ConnectorInfo[]> {

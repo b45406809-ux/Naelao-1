@@ -1382,7 +1382,15 @@ app.get("/spaces/:spaceId/business-wallet/payouts", async (c) =>
 // body; only "whop" is supported today anyway.
 app.use("/spaces/:spaceId/connectors/*", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.use("/spaces/:spaceId/connectors/status", requireBusinessMembership({ GET: "member" }));
-app.use("/spaces/:spaceId/connectors/connect", requireBusinessMembership({ POST: "admin" }));
+// §A1.18: the floor is now "member", not "admin" — a scope_model='user' connector (a member's
+// OWN personal account, see catalogue.ts's own header) should need no more than membership to
+// connect. The admin requirement for a scope_model='space' connector is enforced downstream, in
+// the agents worker's own connect handler, which is the one place that actually knows a given
+// platform's scope_model — see the x-naelao-business-role forwarding below. Only the GATE moved;
+// no new route or route-shape changed, so this isn't the class of change that's previously
+// triggered this file's documented Hono route-table corruption (items 40/52/60 were all about
+// adding a NEW dynamic-segment-then-static-suffix route, not loosening an existing gate).
+app.use("/spaces/:spaceId/connectors/connect", requireBusinessMembership({ POST: "member" }));
 
 // Generic authenticated proxy to the agents worker (connectors, and the onboarding wizard's
 // bootstrap routes) — mints a real internal token for the space's OWNING tenant.
@@ -1390,7 +1398,8 @@ async function proxyToAgentsWorker(
   c: { env: Env; req: { header: (n: string) => string | undefined } },
   path: string,
   method: "GET" | "POST",
-  body?: Record<string, unknown>
+  body?: Record<string, unknown>,
+  extraHeaders?: Record<string, string>
 ): Promise<Response> {
   if (!c.env.AGENTS_WORKER) {
     return Response.json({ error_code: "connectors_unavailable", message: "Agents worker not configured" }, { status: 503 });
@@ -1410,6 +1419,7 @@ async function proxyToAgentsWorker(
         "x-naelao-tenant-id": tenantId,
         "x-naelao-user-id": identity.userId ?? "",
         "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId),
+        ...extraHeaders,
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
     })
@@ -1425,10 +1435,25 @@ app.post("/spaces/:spaceId/connectors/connect", async (c) => {
   const body = await c.req.json<{ platform?: string; api_key?: string }>().catch(() => ({}) as Record<string, never>);
   const platform = body.platform ?? "";
   if (!platform) return c.json({ error_code: "bad_request", message: "platform is required" }, 400);
-  return proxyToAgentsWorker(c, `/connectors/${encodeURIComponent(platform)}/connect`, "POST", {
-    space_id: c.req.param("spaceId"),
-    api_key: body.api_key,
-  });
+  // §A1.18: the gate above only enforces "member" — the agents worker's own connect handler
+  // makes the real admin-vs-any-member decision per the PLATFORM's scope_model, which only it
+  // knows. It needs this caller's actual BUSINESS role to do that, which for a product_end_user
+  // is a resolved value (owner/admin/editor/member/viewer via business_memberships), not the raw
+  // "product_end_user" JWT role — resolved here, once, and forwarded. Absent for every other
+  // caller (a builder's own JWT role isn't a business role and never needs to be): the connect
+  // handler treats a missing header as "not an end user, apply today's unchanged behavior".
+  const identity = getCallerIdentity(c);
+  let businessRole: string | undefined;
+  if (identity.role === "product_end_user" && identity.userId) {
+    businessRole = (await resolveEndUserBusinessRole(c.env.PLATFORM_DB, c.req.param("spaceId"), identity.userId)) ?? undefined;
+  }
+  return proxyToAgentsWorker(
+    c,
+    `/connectors/${encodeURIComponent(platform)}/connect`,
+    "POST",
+    { space_id: c.req.param("spaceId"), api_key: body.api_key },
+    businessRole ? { "x-naelao-business-role": businessRole } : undefined
+  );
 });
 
 // "Connect with X" OAuth flow — same admin-only gate as the manual-key connect above, same
@@ -1953,6 +1978,8 @@ app.get("/spaces/:spaceId/threads", async (c) => {
   if (projectId) qs.set("project_id", projectId);
   const includeSubThreads = c.req.query("include_sub_threads");
   if (includeSubThreads) qs.set("include_sub_threads", includeSubThreads);
+  const parentThreadId = c.req.query("parent_thread_id");
+  if (parentThreadId) qs.set("parent_thread_id", parentThreadId);
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/threads?${qs.toString()}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });

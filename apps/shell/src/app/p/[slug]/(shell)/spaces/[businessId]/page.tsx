@@ -743,6 +743,70 @@ export default function BusinessDetailPage() {
         );
       })()}
 
+      {/* My Connections (§A1.18 connector scope model) — personal connectors, distinct from the
+          shared "Connect Apps" above: connecting one is YOUR own account, never visible to or
+          usable by another member (like connecting your own Gmail/Slack identity in Claude or
+          ChatGPT, vs. an admin installing a workspace-wide integration). Any member can connect
+          their own, no admin needed. Nothing in the catalogue is scope_model='user' yet — see
+          catalogue.ts's own header — so this section simply doesn't render until one exists; the
+          mechanism (backend storage/resolution + this UI) is real and ready for when one does. */}
+      {(() => {
+        const personal = connectors.filter((c) => c.scope_model === "user" && c.status === "available");
+        if (personal.length === 0) return null;
+        return (
+          <>
+            <div className="section-label">My Connections</div>
+            <p style={{ fontSize: 12, color: "var(--text3)", marginBottom: 8 }}>
+              Your own personal accounts — connecting one only affects your agent conversations,
+              never anyone else on this business.
+            </p>
+            <div className="settings-block">
+              {personal.map((c) => (
+                <React.Fragment key={c.id}>
+                  <div className="settings-row">
+                    <div>
+                      <div className="settings-row-label">{c.name}</div>
+                      <div className="settings-row-sub">{c.summary}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      {c.connected ? (
+                        <Badge color="green">Connected</Badge>
+                      ) : manualKeyOpenFor !== c.id ? (
+                        <Button onClick={() => handleConnectApp(c)} disabled={appBusy === c.id}>
+                          {appBusy === c.id ? "Connecting…" : "Connect"}
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                  {manualKeyOpenFor === c.id && (
+                    <div style={{ padding: "0 12px 12px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+                      <FormInput
+                        type="password"
+                        placeholder={`Your ${c.name} API key`}
+                        value={manualKeyValue}
+                        onChange={(e) => setManualKeyValue(e.target.value)}
+                        style={{ flex: 1, minWidth: 220 }}
+                      />
+                      <Button onClick={() => handleManualAppConnect(c.id)} disabled={appBusy === c.id || !manualKeyValue.trim()}>
+                        {appBusy === c.id ? "Connecting…" : "Connect"}
+                      </Button>
+                      <button
+                        className="btn btn-secondary"
+                        type="button"
+                        onClick={() => { setManualKeyOpenFor(null); setManualKeyValue(""); }}
+                        disabled={appBusy === c.id}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
+          </>
+        );
+      })()}
+
       {/* Business Wallet (Whop Platforms/sub-merchant model): every business auto-provisions its
           own isolated wallet — but this rail needs Naelao's own invite-only Whop Platforms API
           access, not yet granted, so it stays inactive until then. The Connect card above is the

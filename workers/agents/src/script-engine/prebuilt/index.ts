@@ -34,6 +34,7 @@ import { projectJournal } from "./project-journal.js";
 import { conversation } from "./conversation.js";
 import { lock } from "./lock.js";
 import { workspaceAdmin } from "./workspace-admin.js";
+import { projectCoordination } from "./project-coordination.js";
 import { localMachine } from "./local-machine.js";
 import { workspace } from "./workspace.js";
 import { wallet } from "./wallet.js";
@@ -97,6 +98,11 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // Workspace scaffolding (§A1.17 Phase G) — lets the Launchpad business-builder assistant
   // actually create/configure projects and read the agent roster, not just describe them.
   [workspaceAdmin.name]: workspaceAdmin,
+  // Assistant<->project-agent consult lane + on-demand thread read (§A1.18 thread model) — a
+  // private subthread, not a shared transcript with the visible user<->agent thread. See its
+  // own header for why this is a separate script from workspace-admin (general, not Launchpad-
+  // specific business scaffolding).
+  [projectCoordination.name]: projectCoordination,
   // Local-machine-as-container (§A1.17 Phase M) — grant-checked read/write/exec on a builder's
   // own machine via the Naelao Local Agent tunnel. No default access; see local-machine.ts.
   [localMachine.name]: localMachine,
@@ -154,5 +160,6 @@ export {
   conversation,
   lock,
   workspaceAdmin,
+  projectCoordination,
   localMachine,
 };
