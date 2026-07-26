@@ -32,6 +32,20 @@ const MAX_POLL_DURATION_MS = 60_000;
 
 type ThreadPanelTab = "stats" | "tools" | "files" | "artifacts";
 
+/** A display name for whoever produced a message, or null when it needs no label.
+ *
+ *  Deliberately silent for the Space Assistant and for the person typing: labelling every bubble
+ *  in an ordinary two-party chat is clutter. The case this exists for is a thread where a named
+ *  project agent has also spoken — there, "who said this" is real information. */
+function authorLabel(m: Message): string | null {
+  if (m.author_type !== "agent" || !m.author_id) return null;
+  return m.author_id
+    .replace(/^launchpad-/, "")
+    .replace(/-v\d+$/, "")
+    .replace(/[-_]/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export function Chat({
   spaceId,
   session,
@@ -367,7 +381,17 @@ export function Chat({
                     </svg>
                   </div>
                 )}
-                <div className={["bubble", m.role === "user" ? "user" : ""].filter(Boolean).join(" ")}>{m.content}</div>
+                <div style={{ minWidth: 0 }}>
+                  {/* Only for a NAMED agent. The Space Assistant is the default voice of this
+                      surface and labelling every one of its replies is noise; a project agent
+                      speaking in the same thread is the case worth distinguishing. */}
+                  {authorLabel(m) && (
+                    <div style={{ fontSize: 11.5, color: "var(--text3)", marginBottom: 3, fontWeight: 600 }}>
+                      {authorLabel(m)}
+                    </div>
+                  )}
+                  <div className={["bubble", m.role === "user" ? "user" : ""].filter(Boolean).join(" ")}>{m.content}</div>
+                </div>
               </div>
             ))}
 

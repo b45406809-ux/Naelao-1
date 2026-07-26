@@ -490,6 +490,32 @@ export interface HITLGateway {
   }): Promise<{ approvalId: string; approved: boolean; pending?: boolean; expiresAt?: number; reason?: string }>;
 }
 
+/**
+ * A record of actions that have actually been executed, so the same one is never executed twice.
+ *
+ * The gap this closes is replay. A run can be re-entered — a Workflow restart, or a resume after
+ * someone approves a gated action hours later — and re-entering means the loop walks the task
+ * again from the top. Handing the model its completed steps helps it not to repeat them, but
+ * "the model should know better" is not a guarantee, and the cost of being wrong is a second
+ * email, a second charge, a second payout.
+ *
+ * This is the ledger half of the durable-execution pattern (Palantir's Orchestrator names it
+ * exactly that): an action is recorded when it runs, and a later attempt at the SAME action with
+ * the SAME arguments under the SAME ledger key returns the recorded result instead of executing.
+ * The ledger key is what ties an original run to its own resumes — a genuinely new run doing the
+ * same work again is ordinary, and must not short-circuit.
+ *
+ * Optional: an unwired ledger degrades to today's behavior (the model's judgment plus the
+ * within-run repeat guard), never to a blocked run.
+ */
+export interface ActionLedger {
+  /** The recorded result of this exact action, if it has already run under this key. */
+  lookup(key: string, actionName: string, paramsHash: string): Promise<ScriptRunResult | null>;
+  /** Record an action that just executed. Never throws — a ledger write failure must not fail a
+   *  run that already succeeded (the cost is a possible repeat on replay, not a lost result). */
+  record(key: string, actionName: string, paramsHash: string, result: ScriptRunResult): Promise<void>;
+}
+
 /** Everything the engine needs from the host (NaelaoAgentDO) to operate. */
 export interface ScriptEngineEnv {
   /** R2 bucket holding the skill library (spaces/{spaceId}/scripts/...). */
@@ -520,6 +546,9 @@ export interface ScriptEngineEnv {
   orchestration?: OrchestrationHooks;
   /** HITL approval gateway — present when HITLApprovalDO is wired up. */
   hitlGateway?: HITLGateway;
+  /** Exactly-once record of executed actions — present when the host provides one. See
+   *  ActionLedger for why "the model can see it already ran" is not on its own a guarantee. */
+  actionLedger?: ActionLedger;
   /** Generic named-lock primitive — present when CONCURRENCY_DO is wired up (the `lock`
    *  prebuilt reports itself degraded, not unavailable, when absent — see LockGateway). */
   lockGateway?: LockGateway;

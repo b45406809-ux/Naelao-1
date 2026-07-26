@@ -184,6 +184,12 @@ export interface Message {
   role: "user" | "assistant" | "system" | "tool";
   content: string;
   created_at: string;
+  /** Which identity produced this. A thread can carry the Space Assistant, one or more named
+   *  project agents, and people — collapsing all of them into one anonymous "assistant" bubble
+   *  makes a multi-agent thread unreadable, and hides who actually did a thing. */
+  author_type?: "user" | "agent" | "assistant" | "tool";
+  /** The agent's own id for author_type "agent"; the person's id for "user". */
+  author_id?: string | null;
 }
 
 export interface AgentRun {
@@ -302,6 +308,55 @@ export async function pollRun(spaceId: string, sessionId: string, runId: string,
     ...(res.final_answer !== undefined ? { final_answer: res.final_answer } : {}),
     ...(res.error !== undefined ? { error: res.error } : {}),
   };
+}
+
+
+// ── Approvals — the things an agent is waiting on you for ────────────────────
+//
+// A gated action opens a request and does NOT run; the agent parks it and carries on with the
+// rest of the task. Until this existed there was no way to answer one from the product at all,
+// so every parked action sat until it expired — the feature was real end to end except for the
+// one step that needs a person.
+
+export interface PendingApproval {
+  id: string;
+  run_id: string;
+  session_id: string;
+  tool_name: string;
+  /** JSON string of the arguments the agent wants to run with — shown so a decision is informed. */
+  tool_input: string;
+  action_description: string;
+  status: "pending" | "approved" | "rejected" | "timeout";
+  reject_reason: string | null;
+  created_at: string;
+  expires_at: number;
+}
+
+/** Every open request in this space. The list is space-wide — the session in the path is only
+ *  there because that's where the route lives. */
+export async function listApprovals(spaceId: string, session: SessionCredentials): Promise<PendingApproval[]> {
+  const res = await apiFetch<{ approvals: PendingApproval[] }>(
+    `/v1/spaces/${spaceId}/sessions/inbox/approvals`,
+    { session }
+  );
+  return (res.approvals ?? []).filter((a) => a.status === "pending");
+}
+
+export async function approveAction(spaceId: string, approvalId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/sessions/inbox/approvals/${approvalId}/approve`, { method: "PUT", session });
+}
+
+export async function rejectAction(
+  spaceId: string,
+  approvalId: string,
+  reason: string,
+  session: SessionCredentials
+): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/sessions/inbox/approvals/${approvalId}/reject`, {
+    method: "PUT",
+    body: JSON.stringify({ reason }),
+    session,
+  });
 }
 
 // ── Context-window usage (§A1.27) ────────────────────────────────────────────

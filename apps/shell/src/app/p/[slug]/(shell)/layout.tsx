@@ -21,6 +21,7 @@ import {
   listProjects,
   listSessions,
   listMyBusinesses,
+  listApprovals,
   type ShellManifest,
   type ProductUserMe,
   type Project,
@@ -37,6 +38,9 @@ const DEFAULT_PRIMARY_NAV: SidebarNavEntry[] = [
 ];
 
 const DEFAULT_MORE_NAV: SidebarNavEntry[] = [
+  // Approvals sits in the primary nav below, not here, and only once something is actually
+  // waiting: a permanently-visible empty inbox trains people to ignore it, which defeats the one
+  // job it has.
   { key: "agents", icon: "agents", label: "Agents" },
   { key: "knowledge", icon: "knowledge", label: "Knowledge" },
   { key: "workflows", icon: "workflows", label: "Workflows" },
@@ -70,6 +74,10 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   // fetched) — the business-first gate and default-business auto-select below both need to know
   // the list has actually SETTLED, not just that it currently reads empty.
   const [businessesLoaded, setBusinessesLoaded] = React.useState(false);
+  // How many actions an agent has paused on, waiting for this person. A parked action is
+  // invisible otherwise — the agent carries on with the rest of the task, which is exactly what
+  // makes it easy to miss that something needs a decision.
+  const [pendingApprovals, setPendingApprovals] = React.useState(0);
   const [switcherOpen, setSwitcherOpen] = React.useState(false);
   // hybrid/tenant products (Launchpad) are business-first: nothing chattable exists at the
   // product root, every thread/project/session belongs to a business. "team" mode is the
@@ -114,6 +122,7 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
     // The sidebar's recent list is assistant SESSIONS (what Home starts), not structural project
     // threads — those belong to a project and are reached through /projects/:id.
     listSessions(activeSpaceId, creds, 5).then(setSessions).catch(() => {});
+    listApprovals(activeSpaceId, creds).then((a) => setPendingApprovals(a.length)).catch(() => {});
     // The switcher's own entry list is always the product-root's businesses, regardless of which
     // one is currently active — deliberately NOT activeSpaceId.
     listMyBusinesses(product.space_id, creds)
@@ -169,7 +178,12 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   }
 
   const hidden = new Set(manifest?.ui.hidden_core_items ?? []);
-  const primaryNav = DEFAULT_PRIMARY_NAV.filter((item) => !hidden.has(item.key));
+  const primaryNav: SidebarNavEntry[] = [
+    ...DEFAULT_PRIMARY_NAV.filter((item) => !hidden.has(item.key)),
+    ...(pendingApprovals > 0
+      ? [{ key: "approvals", icon: "agents" as const, label: "Approvals", badge: pendingApprovals }]
+      : []),
+  ];
   const moreNav = DEFAULT_MORE_NAV.filter((item) => !hidden.has(item.key));
   const rawKey = pathname?.split("/").filter(Boolean)[2] ?? "new";
   // /new and /sessions are the conversation flow, which deliberately has no nav item of its own

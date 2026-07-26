@@ -244,6 +244,13 @@ export interface RunLoopOptions {
    */
   preApprovedActions?: string[];
   /**
+   * Ties an original run to its own resumes for the action ledger. A resume mints a fresh runId
+   * (so its trace is separately readable), which would otherwise make every already-executed
+   * action look brand new to the ledger and let a replay redo it. Defaults to `runId`, so a
+   * first-time run is keyed by itself and a genuinely new run never short-circuits another's work.
+   */
+  ledgerKey?: string;
+  /**
    * Resuming: what the suspended pass had already executed. Handed to the model as its
    * steps-so-far so it can build on that work instead of repeating it. The gated action itself
    * is never in here — the whole point of suspending at the gate is that it had not run.
@@ -297,6 +304,36 @@ export async function runScriptLoop(
   const runId = opts.runId ?? crypto.randomUUID();
   const sessionId = opts.sessionId ?? "unknown";
   const preApproved = new Set(opts.preApprovedActions ?? []);
+  const ledgerKey = opts.ledgerKey ?? runId;
+
+  /**
+   * Run an action, unless the ledger says it already ran under this key — in which case return
+   * what it returned then. This is what makes re-entering a run safe rather than merely likely to
+   * be safe: on a resume the model is shown its completed steps, but showing is not preventing.
+   */
+  const runOnce = async (name: string, params: Record<string, unknown>): Promise<ScriptRunResult> => {
+    const ledger = env.actionLedger;
+    if (!ledger) return tools.run(name, params);
+    const paramsHash = stableStringify(params);
+    try {
+      const recorded = await ledger.lookup(ledgerKey, name, paramsHash);
+      if (recorded) {
+        notes.push(`ledger: '${name}' already ran under this task — returning the recorded result`);
+        pushTrace({ phase: "run", name, ok: recorded.ok, detail: "replayed from ledger", tier: recorded.tier });
+        return recorded;
+      }
+    } catch {
+      // A ledger that can't be read must not block real work. The exposure is a possible repeat
+      // on replay — the same risk as having no ledger at all, which is where this started.
+    }
+    const result = await tools.run(name, params);
+    if (result.ok) {
+      try {
+        await ledger.record(ledgerKey, name, paramsHash, result);
+      } catch { /* recorded-or-not, the action really happened; never fail the run over the write */ }
+    }
+    return result;
+  };
 
   // Phase HX1: structured per-step trace, the persisted counterpart to `notes`. `finish()`
   // attaches the accumulated `trace` array to whichever LoopResultCore a return site produces —
@@ -386,7 +423,7 @@ export async function runScriptLoop(
       if (gate.verdict === "denied") {
         return finish({ level, script_name: top!.name, result: { ok: false, error: gateRejectedMessage(top!.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes });
       }
-      const result = await tools.run(top!.name, params);
+      const result = await runOnce(top!.name, params);
       notes.push(`L1 run ${top!.name}: ${result.ok ? "ok" : "fail"}`);
       pushTrace({ phase: "run", name: top!.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
       return finish({ level, script_name: top!.name, result, notes });
@@ -414,7 +451,7 @@ export async function runScriptLoop(
         if (gate.verdict === "denied") {
           return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(decision.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usage));
         }
-        const result = await tools.run(decision.name, params);
+        const result = await runOnce(decision.name, params);
         notes.push(`L2 patched ${decision.name}: ${result.ok ? "ok" : "fail"}`);
         pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
         // Automatic rollback on immediate failure (spec §10.3).
@@ -427,7 +464,7 @@ export async function runScriptLoop(
         }
         return finish(withTokenUsage({ level, script_name: decision.name, result, distilled_script: decision.name, notes }, usage));
       }
-      return finish(withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes, pushTrace), usage));
+      return finish(withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes, pushTrace, runOnce), usage));
     }
 
     case "L3":
@@ -549,7 +586,7 @@ export async function runScriptLoop(
           if (gate.verdict === "denied") {
             return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(decision.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usageAcc));
           }
-          const result = await tools.run(decision.name, decision.params);
+          const result = await runOnce(decision.name, decision.params);
           notes.push(`${level} run ${decision.name}: ${result.ok ? "ok" : "fail"}`);
           pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
           // Record what happened and KEEP GOING. This used to `return` on the first successful
@@ -569,11 +606,11 @@ export async function runScriptLoop(
         }
 
         if (decision.action === "distill" || decision.action === "patch") {
-          return finish(withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes, pushTrace), usageAcc));
+          return finish(withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes, pushTrace, runOnce), usageAcc));
         }
 
         if (decision.action === "answer" || decision.action === "give_up") {
-          return finish(withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes, pushTrace), usageAcc));
+          return finish(withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes, pushTrace, runOnce), usageAcc));
         }
       }
       notes.push(`${level} exhausted ${maxSteps} steps`);
@@ -602,7 +639,7 @@ export async function runScriptLoop(
         }, usageAcc));
       }
       return finish(withTokenUsage(
-        await applyTerminalDecision(level, lastDecision ?? { action: "give_up", reason: "no decision" }, tools, opts.goal, notes, pushTrace),
+        await applyTerminalDecision(level, lastDecision ?? { action: "give_up", reason: "no decision" }, tools, opts.goal, notes, pushTrace, runOnce),
         usageAcc
       ));
     }
@@ -657,7 +694,12 @@ async function applyTerminalDecision(
   tools: ScriptToolSurface,
   goal: string,
   notes: string[],
-  pushTrace: PushTrace
+  pushTrace: PushTrace,
+  /** Ledger-guarded execution. Distill and patch both AUTHOR a script and then run it, and that
+   *  run has real side effects — on a replay it would be re-derived and re-run, so it needs the
+   *  same exactly-once treatment as any other action. Defaults to a plain run for callers (tests)
+   *  that don't wire a ledger. */
+  runAction: (name: string, params: Record<string, unknown>) => Promise<ScriptRunResult> = (n, p) => tools.run(n, p)
 ): Promise<LoopResultCore> {
   if (decision.action === "distill") {
     // DISTILL (spec §7): compile the successful trace into a reusable parameterized script.
@@ -677,7 +719,7 @@ async function applyTerminalDecision(
         } as ScriptMetadata,
       });
     }
-    const result = await tools.run(decision.name, decision.params);
+    const result = await runAction(decision.name, decision.params);
     notes.push(`${level} distilled ${decision.name}: ${result.ok ? "ok" : "fail"}`);
     pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: `distilled: ${result.error ?? "ok"}` });
     return { level, script_name: decision.name, result, distilled_script: decision.name, notes };
@@ -685,7 +727,7 @@ async function applyTerminalDecision(
 
   if (decision.action === "patch") {
     await tools.update(decision.name, { code: decision.code }, decision.reason);
-    const result = await tools.run(decision.name, {});
+    const result = await runAction(decision.name, {});
     notes.push(`${level} patched ${decision.name}`);
     pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: `patched: ${result.error ?? "ok"}` });
     return { level, script_name: decision.name, result, distilled_script: decision.name, notes };

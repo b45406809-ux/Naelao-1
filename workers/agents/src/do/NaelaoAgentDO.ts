@@ -23,6 +23,7 @@ import {
   type ExecutionTier,
   type TraceStep,
   type LoopResult,
+  type ScriptRunResult,
 } from "../script-engine/index.js";
 import { createTracer } from "@naelao/tracing";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
@@ -1000,6 +1001,22 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       )
     `);
 
+    // Actions that have actually executed, so a replay can't execute them again. Keyed by the
+    // run's ledger key (an original run and every resume of it share one), the action name, and a
+    // hash of its arguments. Rows are pruned by age — this is replay protection for a run in
+    // flight, not a permanent audit log (run_traces and agent_activity_log are that).
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS action_ledger (
+        ledger_key  TEXT NOT NULL,
+        action_name TEXT NOT NULL,
+        params_hash TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        created_at  INTEGER NOT NULL,
+        PRIMARY KEY (ledger_key, action_name, params_hash)
+      )
+    `);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_action_ledger_age ON action_ledger(created_at)`);
+
     // Runs suspended at a HITL gate, waiting for a human. The checkpoint that makes an approval
     // answerable on a human timescale rather than within one request: the run stopped just BEFORE
     // the gated action, so nothing gated has executed, and everything it had already done is
@@ -1685,6 +1702,36 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       };
     }
 
+    // Exactly-once record of executed actions (see ActionLedger). Always wired — unlike the
+    // gateways around it there is no binding to be missing; the store is this DO's own SQLite.
+    env.actionLedger = {
+      lookup: async (key, actionName, paramsHash) => {
+        const rows = this.ctx.storage.sql
+          .exec(
+            `SELECT result_json FROM action_ledger WHERE ledger_key = ? AND action_name = ? AND params_hash = ?`,
+            key, actionName, paramsHash
+          )
+          .toArray() as unknown as Array<{ result_json: string }>;
+        if (!rows[0]) return null;
+        try {
+          return JSON.parse(rows[0].result_json) as ScriptRunResult;
+        } catch {
+          // An unparseable row is worse than no row: returning null re-runs the action, which is
+          // the behavior we had before a ledger existed, rather than handing back garbage.
+          return null;
+        }
+      },
+      record: async (key, actionName, paramsHash, result) => {
+        // INSERT OR IGNORE, not REPLACE: the FIRST execution is the one that happened, and a
+        // later attempt must never overwrite the recorded truth with its own.
+        this.ctx.storage.sql.exec(
+          `INSERT OR IGNORE INTO action_ledger (ledger_key, action_name, params_hash, result_json, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+          key, actionName, paramsHash, JSON.stringify(result), Date.now()
+        );
+      },
+    };
+
     // Generic named-lock primitive (the `lock` prebuilt) — an assistant/agent composes its
     // OWN concurrency strategy on top of this (e.g. "lock this CSV row before writing"; see
     // A1.15). Keys are always prefixed by space (+ project, when scoped) HERE, server-side —
@@ -2162,6 +2209,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
        *  request never reaches this DO except through the router's verified proxy. */
       preApprovedActions?: string[];
       resumeSteps?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
+      /** The ORIGINAL run's id, so the action ledger recognises a resume as the same task. */
+      ledgerKey?: string;
     }>();
 
     // Also accept spaceId / agentId / tenantId from internal request headers (set by billing/triggers)
@@ -2320,6 +2369,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         runId,
         sessionId,
         ...(body.preApprovedActions?.length ? { preApprovedActions: body.preApprovedActions } : {}),
+        ...(body.ledgerKey ? { ledgerKey: body.ledgerKey } : {}),
         ...(body.resumeSteps?.length ? { resumeSteps: body.resumeSteps } : {}),
         ...(typeof maxStepsFromContext === "number" ? { maxSteps: maxStepsFromContext } : {}),
         ...(typeof maxTokensFromContext === "number" ? { maxTokens: maxTokensFromContext } : {}),
@@ -2378,6 +2428,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         durationMs: result.result?.duration_ms,
         sessionId, sessionCreditCeiling: body.sessionCreditCeiling,
       });
+
+      // Persist the answer into the thread. The client already writes the USER message before
+      // dispatching, but nothing wrote the assistant's — so a reload showed a conversation of
+      // questions with no replies, and the agent's own conversation memory (which reads this same
+      // transcript) only ever saw the user's half. `agent_id` is what lets a bubble say which
+      // agent spoke: the Space Assistant, or a named project agent.
+      if (typeof result.result?.output === "string" && result.result.output.trim()) {
+        void this.writeAgentAnswerToSession(sessionId, spaceId, tenantId, result.result.output, agentId);
+      }
 
       // Layer 4 (Fabric) auto-consolidation (spec: "runs LLM-driven session extraction
       // post-run"). Reuses the trace this run already produced instead of a second LLM call —
@@ -2676,8 +2735,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(row["user_id"] ? { userId: row["user_id"] } : {}),
       ...(row["model"] ? { model: row["model"] } : {}),
       // A fresh run id: this is a second, separately-traceable pass, and reusing the suspended
-      // one would overwrite the trace that shows why it paused in the first place.
+      // one would overwrite the trace that shows why it paused in the first place. The ledger key
+      // stays the ORIGINAL run's, which is what stops this pass re-executing the ungated work the
+      // first pass already did — the model is shown those steps, but being shown is not being
+      // prevented, and the cost of it deciding to redo one is a second real side effect.
       runId: crypto.randomUUID(),
+      ledgerKey: row["run_id"] ?? undefined,
       preApprovedActions: [row["action_name"] ?? ""],
       resumeSteps: steps,
     };
@@ -4671,6 +4734,38 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       return text || null;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Write just the agent's answer into the thread, attributed to the agent that produced it.
+   *
+   * Deliberately NOT the goal+answer pair `writeConversationToSession` writes: on this path the
+   * client has already persisted the user's message before dispatching, so writing it again would
+   * duplicate every question in the transcript.
+   *
+   * Best-effort — the run itself already succeeded, and losing the transcript write must not turn
+   * a completed run into a failed one. It does mean a rare write failure loses that reply from
+   * history, which is the lesser of the two harms.
+   */
+  private async writeAgentAnswerToSession(
+    sessionId: string,
+    spaceId: string,
+    tenantId: string,
+    answer: string,
+    agentId: string
+  ): Promise<void> {
+    try {
+      await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/messages`,
+        {
+          method: "POST",
+          headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+          body: JSON.stringify({ role: "assistant", content: answer, agent_id: agentId }),
+        }
+      ));
+    } catch {
+      /* the answer was already returned to the caller; history is the only casualty */
     }
   }
 
