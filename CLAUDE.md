@@ -2867,6 +2867,57 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     eventually become `step.waitForEvent`, which is the same thing natively and free while waiting;
     rewriting it twice in one session was the wrong trade.
 
+74. **The four items item 73 left open are now BUILT — plus a real bug found while closing them:
+    the script-native path never persisted the assistant's answer.** The client writes the USER
+    message before dispatching, but nothing wrote the reply, so a reload showed questions with no
+    answers, the agent's own conversation memory (item 71 — which reads that same SpaceDO
+    transcript) only ever saw the user's half, and a resumed run had nowhere to put its result.
+    `handleScriptRun` now writes the answer back via a new `writeAgentAnswerToSession` —
+    deliberately NOT the legacy `writeConversationToSession` goal+answer pair, which would
+    duplicate every question — attributed with `agent_id` so a bubble can say which agent spoke.
+    - **Granularity / exactly-once (the Palantir Orchestrator gap item 73 named) is CLOSED at
+      action level.** New `ActionLedger` (`script-engine/types.ts`, optional on `ScriptEngineEnv`
+      like `hitlGateway`): an action is recorded when it runs, and the same action with the same
+      arguments under the same key returns the recorded result instead of executing. Implemented
+      in `NaelaoAgentDO`'s own SQLite (`action_ledger`, PK `(ledger_key, action_name,
+      params_hash)`, `INSERT OR IGNORE` so the FIRST execution is the truth a later attempt can't
+      overwrite). The key is what ties an original run to its own resumes: `handleResumeRun` mints
+      a fresh `runId` (so the trace stays separately readable) but passes the ORIGINAL run's id as
+      `ledgerKey` — without that, every already-executed action would look brand new to the ledger
+      on a resume. A genuinely different run is never short-circuited. Only SUCCESSES are recorded
+      (a failure must stay retryable). All FOUR execution sites go through it, including the two
+      inside `applyTerminalDecision` (distill/patch author a script and then run it — that run has
+      real side effects too), which needed the runner threaded in as a parameter. Degrades to the
+      prior behaviour (model judgment + the within-run repeat guard) when unwired OR when the
+      ledger throws — never to a blocked run. 6 new tests.
+    - **The approvals inbox — durable approvals were unreachable from the product.** There was NO
+      way for an end user to answer a request anywhere in the UI, so every parked action sat until
+      it expired: the feature was real end to end except the one step that needs a person. New
+      `apps/shell` `/approvals` page listing what's waiting WITH the actual arguments (approving
+      `commerce.payout` without seeing the amount and destination is not an informed decision),
+      Approve/Decline, a time-left badge, and a load-failure state distinct from "nothing pending"
+      (telling someone there's nothing to approve when the list merely failed is how a payout
+      quietly never happens). Sidebar entry appears ONLY when something is genuinely waiting — a
+      permanently-visible empty inbox trains people to ignore it. No new backend: the routes
+      existed (item 73 gated them) and `/spaces/:id/sessions/*` is already router-allowlisted.
+    - **Thread authorship.** `messages.author_type`/`author_id` existed since Phase O but nothing
+      rendered them. `Chat.tsx` now labels a bubble when a NAMED project agent produced it —
+      deliberately silent for the Space Assistant and the person typing, since labelling every
+      bubble in an ordinary two-party chat is clutter; a multi-agent thread is the case where "who
+      said this" is real information.
+    - **Live-verified end to end on production**, not just in tests: minted a real internal token,
+      created a genuine `commerce.payout` approval against a real business, and screenshotted the
+      deployed shell showing **Approvals · 1** in the sidebar with the request, its amount and
+      destination, and a 23h window — then approved it through the product and confirmed the
+      pending count returned to 0. Also confirmed the business-first redirect correctly bounces
+      `/approvals` to `/spaces` for an account with zero businesses (that was the first
+      screenshot's "wrong page" — correct behaviour, not a bug).
+    2165/2165 tests pass (10 new), `npx turbo run typecheck` clean (76 tasks), `naelao-agents` +
+    `apps/shell` deployed. **Still open:** item 73's other half — replacing the hand-rolled
+    `suspended_runs` + poll with `step.waitForEvent`, which is the same thing natively and free
+    while waiting. The ledger closes the duplicate-work half of the Orchestrator gap; the
+    zero-cost-waiting half is still ours rather than the platform's.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
