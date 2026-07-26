@@ -3741,6 +3741,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           startupObserve: config.scripts.startup_observe,
           requiresApprovalFor,
           sessionId: msg.session_id,
+          // This customer's earlier messages on this channel — without it every inbound message
+          // is answered as if it were the first thing they ever said.
+          ...(() => {
+            const conversation = this.loadChannelConversation(msg.session_id);
+            return conversation ? { conversation } : {};
+          })(),
         });
       } catch (err) {
         result = { level: "L4", result: { ok: false, error: String(err), tier: 1, duration_ms: 0, tokens_used: 0 }, notes: [], trace: [] };
@@ -4370,6 +4376,42 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }
 
       return buildConversationContext(messages, summary);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The channel equivalent of loadConversationContext.
+   *
+   * A WhatsApp/Slack/Discord customer's earlier messages live in this DO's own channel_messages
+   * table, not in SpaceDO's sessions — so the web-chat loader cannot see them. Without this the
+   * drain loop handed the model ONE message with no history: a customer answering "yes, the blue
+   * one" got a reply that had no idea what had been offered, which is exactly how a support bot
+   * earns a reputation for being useless.
+   */
+  private loadChannelConversation(sessionId: string): ConversationContext | undefined {
+    try {
+      const rows = this.ctx.storage.sql
+        .exec(
+          `SELECT direction, text, created_at FROM channel_messages
+           WHERE session_id = ? ORDER BY created_at DESC LIMIT 60`,
+          sessionId
+        )
+        .toArray() as Array<{ direction: string; text: string; created_at: number }>;
+      if (rows.length === 0) return undefined;
+      const messages: ConversationMessage[] = rows
+        .reverse()
+        .map((r) => ({
+          role: r.direction === "inbound" ? "user" : "assistant",
+          content: r.text,
+          created_at: new Date(r.created_at).toISOString(),
+        }));
+      // No stored summary for channel threads yet: the customer-bot path is cost-sensitive and a
+      // per-drain summarisation call would run on every inbound message. Recent history bounded
+      // by the same budget is the win; compaction here can come later if threads get long enough
+      // to need it.
+      return buildConversationContext(messages);
     } catch {
       return undefined;
     }

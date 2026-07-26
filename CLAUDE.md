@@ -2657,6 +2657,79 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       `commerce-business-ops` and `multi-step-web-file` exist and the harness runs them in one
       command, but a model choice should not be made off a single 6-case dataset.
 
+71. **Project Journal, conversation memory + compaction, and the assistant/shell UI split are
+    BUILT — and building them surfaced that the agent had NO conversation memory at all.**
+    - **Project Journal** (`script-engine/project-journal.ts` + `prebuilt/project-journal.ts`).
+      One `PROJECT.md` per project (`spaces/{id}/projects/{id}/PROJECT.md`, a SIBLING of
+      `workspace/` so an ordinary file write can't spoof it): goal, standing instructions, status,
+      todos, and a bounded log of what every agent did. Memory OS already shared L3/L4/L6 across a
+      project and kept L5 private, but project STATE ("invoice.csv exists", "the payout task is
+      done") was homeless, so two threads would each redo the other's work. Read ON DEMAND via
+      `project_journal.read` — never injected per call, which is what lets it hold real detail.
+      Bounded by entry count AND rendered bytes; overflow folds into a dense archive
+      (Mastra Observational Memory's shape) rather than truncating. Summarisation is optional:
+      LLM when wired, deterministic rollup when not — losing a completed action to a summariser
+      outage would defeat the point. Scoping is structural (project comes from the run, never an
+      argument). Both assistant profiles instruct: read before working, log after acting.
+    - **The agent had no conversation memory.** Confirmed by reading `GatewayReasoner.decide()`:
+      the payload carried goal + snapshot + candidates + this run's own steps, and NOTHING else.
+      No history at all — so it could not resolve "do that again", could not answer "what did we
+      decide", and re-asked what the user had just said. The context-usage meter (§A1.27) was
+      measuring a transcript the model never received. New
+      `script-engine/conversation-context.ts` carries recent history bounded by tokens and message
+      count, walking backwards so the newest message can never be the one evicted; a single huge
+      message is truncated (and says so) rather than evicting everything else.
+    - **Compaction is explicit, never silent.** Claude Code's own has the documented failure mode
+      the user described: after a compact the assistant treats anything absent from the summary as
+      never having happened. So the payload itself carries a `notice` (not just the system prompt)
+      saying the history is compacted, how many messages are missing, and to run
+      `conversation.search` rather than guess. `DECISION_INSTRUCTIONS` says the same.
+      New `prebuilt/conversation.ts` searches the FULL uncompacted transcript; an empty result
+      says plainly "not discussed here", which is what stops a model inventing a memory.
+      **Deliberately keyword-scored, not AI Search**: messages live in SpaceDO, not R2, so
+      AutoRAG cannot see them, and a just-sent message must be findable immediately — a reindex
+      delay would break the exact case this exists for. Summaries cache in a new agent-DO
+      `conversation_summaries` table keyed by how many messages they already cover.
+    - **Channels answer the user's "is Telegram even in the CF ecosystem" question: YES.** An
+      inbound WhatsApp/Slack/Discord/email message flows through the signature-verified webhook
+      into this DO's own `channel_sessions`/`channel_messages`, and `channel_user_id` already maps
+      to a stable Memory OS `user_id`. But the drain loop passed ONLY the current message as the
+      goal — so a customer replying "yes, the blue one" got an answer with no idea what had been
+      offered. New `loadChannelConversation()` reads that table (a DIFFERENT table from SpaceDO
+      sessions, which is why the web-chat loader could not cover it). No per-drain summarisation:
+      that path is cost-sensitive and would run on every inbound message. **Telegram is NOT a
+      supported channel** — `ChannelType` is email/slack/discord/whatsapp.
+    - **A real Memory OS defect, found by writing the end-to-end test**: `recall` required the
+      WHOLE query string to appear inside a SINGLE column, so "refund window" could never match
+      the fact (entity=refund, relation=window, attribute=30 days). Agents recall in natural
+      language, so the structured layer was near-useless in practice. Facts AND episodic notes now
+      match on tokens (OR, not AND — a near-miss is far cheaper than a silent miss). Fixing this
+      broke a cross-user isolation test in `memory-os.test.ts`: its hand-rolled fake destructured
+      a fixed `[like1, like2, like3, limit]` and read `limit` at a fixed index, so a variadic
+      query made it slice with a string. The fake was wrong, not the isolation — same "test double
+      diverges from the real contract" class this file already documents.
+    - **`memory-os-end-to-end.test.ts`** pins what seven per-layer test files never asserted: the
+      project/thread boundary. L3/L4/L6 shared so thread B doesn't redo thread A's work; L5
+      private so one thread's half-formed reasoning ("maybe try 39") never surfaces in another as
+      established fact. Writing it also caught that `Embedder.embed` takes a STRING, not an array
+      — getting that wrong makes promotion silently no-op (the throw is caught).
+    - **UI**: `/new` (claude.com's split) with Home dropped from the sidebar and the root
+      redirecting; `/assistant` is now a DASHBOARD (config, built-in scripts, learned skills,
+      recent conversations, memory, crons, channels, agents, files) with the chat moved to
+      `/assistant/chat`, backed by a new read-only `/assistant/capabilities` route (metadata only
+      — never script source; authoring stays a builder operation). Discover's
+      "doesn't support customer-created businesses" string replaced — that was the platform
+      describing itself to itself.
+    2129 tests pass (61 new), `npx turbo run typecheck` clean (76 tasks), `apps/shell` builds.
+    **BLOCKED, and more important than any of the above: the account's Workers AI free allocation
+    (10,000 neurons/day) is exhausted.** At ~155 neurons/run that is ~65 agent runs per DAY
+    platform-wide — confirmed live as `4006` errors, which is what invalidated matrix v4 from
+    model 4 onward. `worker_loaders` is also still commented out (Tiers 2-4 unavailable). Both
+    unblock with the same CF Workers Paid plan. **Not done:** the model matrix could not be
+    completed (kimi-k2.6, kimi-k2.7-code, glm-5.2 exist and are queued; kimi k2.5, kimi k3 and
+    glm 5.1 do NOT exist on this account), and no live end-to-end verification of this pass's
+    work was possible for the same reason.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
