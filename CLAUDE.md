@@ -3084,17 +3084,40 @@ Re-verify before relying on any of these, but they are the real values as of thi
   - **The Permissions tab needs `oauth:token_exchange`** — an App API key permission, NOT an OAuth
     scope (per Whop's own setup guide). Our flow exchanges the code server-side, so without it the
     redirect succeeds and the exchange still fails. Easy to miss.
-  - **Whop rejected `https://naelao-agents.crzzphillip.workers.dev/connectors/whop/oauth/callback`
-    with "please enter a valid url" (example shown: `http://localhost:3000/Oauth/callback`).**
-    Verified our side is clean: 400 (not 404, so the route IS registered), zero redirects, no
-    invisible/non-ASCII bytes, 76 clean characters. The EARLIER hypothesis in this file
-    (`workers.dev` being on the Public Suffix List and refused as a shared domain) is now judged
-    LESS likely — that class of rejection typically names the domain/policy, not "invalid url" on
-    a syntactically well-formed URL. "invalid url" reads more like a client-side format-regex
-    failure, which points at a paste artifact (smart quotes/stray whitespace/invisible char
-    carried in from copy-paste) or the multi-URI field needing an explicit Enter/"Add" confirm
-    after typing (Whop's own docs describe entering exactly two URIs). NOT YET RESOLVED — next
-    step is to see the user's exact input, not to keep guessing.
+  - **RESOLVED — root cause found and fixed via the real Whop CLI/API, not the dashboard.** The
+    user supplied a temporary `apik_...` API key. Installed `@whop/cli` (`npm install -g
+    @whop/cli`, binary `whop`, auth via `WHOP_API_KEY` env var) and traced the actual bug by
+    reading the installed CLI's bundled source
+    (`$(npm root -g)/@whop/cli/dist/index.js`): `redirect_uris` is typed `array | null` (a
+    ZodUnion), but the CLI's `isArrayOption()` only recognizes a BARE `ZodArray` — `unwrap2()`
+    stops at the union and never drills into it — so `setOption()` never accumulates repeated
+    `--redirect_uris` flags into an array, and `coerceUnion()` only JSON-parses union members that
+    are `ZodObject`/`ZodRecord`, never `ZodArray`. The value therefore ALWAYS reaches Whop's
+    server as a bare string, which the API correctly rejects as `"expected array, received
+    string"` — reproduced this exact error through the CLI before working around it. The
+    dashboard form almost certainly shares the same generated validation, which is what produced
+    "please enter a valid url" — a genuine Whop-side bug, not anything wrong with our URL, a paste
+    artifact, or the earlier `workers.dev` public-suffix theory (also now considered LESS likely).
+    **Fixed by calling the REST API directly**, bypassing the CLI's broken option parser:
+    `PATCH https://api.whop.com/api/v1/apps/app_kbsTERQICLC11F` with
+    `{"redirect_uris": ["https://naelao-agents.crzzphillip.workers.dev/connectors/whop/oauth/callback"]}`
+    — verified persisted via a follow-up GET.
+  - **The user's app (`app_kbsTERQICLC11F`, "Naelao", company `biz_m4K8Ox1wlMJC1J`) already had
+    everything else correct** from an earlier session: `app_type: "b2b_app"` (confirms the earlier
+    B2B recommendation — nobody's members ever see a Whop-hosted surface in our flow),
+    `oauth_client_type: "confidential"` (correct for our server-side token exchange), and the
+    `oauth:token_exchange` permission already requested. `status: "hidden"` was confirmed (via
+    Whop's own docs) to control ONLY marketplace discoverability, never OAuth function — `hidden`
+    is actually correct here since this app should never be publicly listed.
+  - **The one thing that genuinely cannot be done via API/CLI: the OAuth client_secret.**
+    Confirmed by grepping the entire installed CLI bundle for `client_secret` — zero hits anywhere.
+    Per Whop's own docs it is shown exactly once, at creation or via a dashboard "Regenerate"
+    button, and deliberately never returned by any GET. This is correct secret hygiene, not a gap.
+    **BLOCKED ON THE USER**: open the Developer Dashboard → the Naelao app → OAuth tab, copy the
+    existing secret or click Regenerate, and hand both the secret and client_id
+    (`app_kbsTERQICLC11F`) back so `WHOP_OAUTH_CLIENT_ID`/`WHOP_OAUTH_CLIENT_SECRET` can be set on
+    `naelao-agents`. `PUBLIC_AGENTS_URL` is already correct; nothing else changes once those two
+    secrets land.
   - **This account has ZERO DNS zones** (verified via the CF API 2026-07-26) — no custom domain is
     available today. Registering one would fix BOTH this and item 72's product-address problem
     (the dashboard used to show `{slug}.naelao.app`, a domain with no zone anywhere).
