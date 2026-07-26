@@ -22,6 +22,7 @@ import {
   type ScriptEngineEnv,
   type ExecutionTier,
   type TraceStep,
+  type LoopResult,
 } from "../script-engine/index.js";
 import { createTracer } from "@naelao/tracing";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
@@ -116,6 +117,14 @@ interface ToolResult {
 
 const MAX_ITERATIONS = 10;
 const MAX_GOAL_LENGTH = 10_000;
+
+/** How long a human actually has to answer an approval. Bounded rather than open-ended so a
+ *  forgotten request can't hold a checkpoint forever, but on a human scale — the previous 30s
+ *  meant an owner who wasn't already staring at the screen could never approve anything. */
+const APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
+/** How long the run holds its request open before suspending. Long enough that someone already
+ *  looking at the approval sees an uninterrupted run; short enough not to burn the invocation. */
+const APPROVAL_INLINE_WAIT_MS = 20_000;
 // G-BB41: 64KB cap per tool response (down from 100KB) to limit context bloat
 const MAX_TOOL_OUTPUT_BYTES = 64 * 1024;
 const TIMEOUT_MS = 30_000; // 30 seconds
@@ -991,6 +1000,31 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       )
     `);
 
+    // Runs suspended at a HITL gate, waiting for a human. The checkpoint that makes an approval
+    // answerable on a human timescale rather than within one request: the run stopped just BEFORE
+    // the gated action, so nothing gated has executed, and everything it had already done is
+    // preserved in `steps_json` to be handed back to the model on resume instead of re-derived.
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS suspended_runs (
+        approval_id  TEXT PRIMARY KEY,
+        run_id       TEXT NOT NULL,
+        space_id     TEXT NOT NULL,
+        tenant_id    TEXT NOT NULL,
+        agent_id     TEXT NOT NULL,
+        session_id   TEXT NOT NULL,
+        project_id   TEXT,
+        user_id      TEXT,
+        caller_role  TEXT,
+        model        TEXT,
+        goal         TEXT NOT NULL,
+        action_name  TEXT NOT NULL,
+        steps_json   TEXT NOT NULL DEFAULT '[]',
+        status       TEXT NOT NULL DEFAULT 'suspended',
+        created_at   TEXT NOT NULL
+      )
+    `);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_suspended_runs_run ON suspended_runs(run_id)`);
+
     // Background fibers
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS fibers (
@@ -1167,6 +1201,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // POST /script/run — script-first loop (authoritative agent model)
       if (method === "POST" && url.pathname === "/script/run") {
         return this.handleScriptRun(request);
+      }
+
+      // POST /script/resume — continue a run that suspended at a HITL gate, now that a human
+      // has answered. See handleResumeRun for why re-entering the loop is the correct (and only
+      // hibernation-safe) shape here.
+      if (method === "POST" && url.pathname === "/script/resume") {
+        return this.handleResumeRun(request);
       }
 
       // POST /cancel — cancel all active runs for this DO
@@ -1597,6 +1638,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               tool_name: params.actionName,
               tool_input: params.actionInput,
               action_description: params.description,
+              // The whole point of the suspend/resume path: an approval must outlive the request
+              // that opened it. HITLApprovalDO's own 30s default is a request-lifetime timeout —
+              // fine when the only outcome was "proceed or don't", actively wrong now that the
+              // run can wait. A person who is asleep, at work, or on another screen gets a day.
+              ttl_ms: APPROVAL_TTL_MS,
+              // Route a later resume back to THIS DO. Agent DOs are addressed per
+              // space:project:thread, so the approving request (which only knows the space)
+              // could not otherwise find the checkpoint that lets the run continue.
+              resume_do_id: this.ctx.id.toString(),
             }),
           }));
           const { approval_id } = await createResp.json<{ approval_id: string }>();
@@ -1607,8 +1657,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           // never delay or fail the approval flow itself.
           void this.notifyApprovalRequested(spaceId, tenantId, agentId, approval_id, params.actionName, params.description);
 
-          // Poll for resolution (28s — HITLApprovalDO auto-rejects at 30s)
-          const deadline = Date.now() + 28_000;
+          // Short courtesy poll, not a deadline. Someone already looking at the approval answers
+          // within seconds, and holding the request open for them keeps the common interactive
+          // case feeling synchronous. Nobody answering is NOT a refusal — it returns `pending`,
+          // the run suspends with its work intact, and the resume path picks it back up whenever
+          // the human actually gets to it.
+          const deadline = Date.now() + APPROVAL_INLINE_WAIT_MS;
           while (Date.now() < deadline) {
             await new Promise<void>((r) => setTimeout(r, 2_000));
             const pollResp = await stub.fetch(new Request(`http://hitl/requests/${approval_id}`));
@@ -1621,7 +1675,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               };
             }
           }
-          return { approvalId: approval_id, approved: false, reason: "HITL polling timeout" };
+          return {
+            approvalId: approval_id,
+            approved: false,
+            pending: true,
+            expiresAt: Date.now() + APPROVAL_TTL_MS,
+          };
         },
       };
     }
@@ -2099,6 +2158,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       /** The id the caller already handed to its client, so the persisted trace is reachable
        *  through GET .../runs/:runId/trace. Optional — direct callers omit it. */
       runId?: string;
+      /** Set only by the resume path (handleResumeRun) — never by an external caller, whose
+       *  request never reaches this DO except through the router's verified proxy. */
+      preApprovedActions?: string[];
+      resumeSteps?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
     }>();
 
     // Also accept spaceId / agentId / tenantId from internal request headers (set by billing/triggers)
@@ -2256,10 +2319,29 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         approvalMode,
         runId,
         sessionId,
+        ...(body.preApprovedActions?.length ? { preApprovedActions: body.preApprovedActions } : {}),
+        ...(body.resumeSteps?.length ? { resumeSteps: body.resumeSteps } : {}),
         ...(typeof maxStepsFromContext === "number" ? { maxSteps: maxStepsFromContext } : {}),
         ...(typeof maxTokensFromContext === "number" ? { maxTokens: maxTokensFromContext } : {}),
         ...(onProgress ? { onProgress } : {}),
       });
+
+      // Suspended at a gate. Persist the checkpoint and return without billing, memory, or a
+      // run_completed/run_failed activity row — none of those are true yet, and recording a
+      // waiting run as failed is exactly what made approvals look broken.
+      if (result.pending_approval) {
+        this.persistSuspendedRun(result.pending_approval, {
+          runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
+          model: body.model, goal: body.goal,
+        });
+        void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
+          projectId: projectId ?? null,
+          threadId: sessionId,
+          summary: `Waiting for approval to run '${result.pending_approval.action_name}'`,
+        });
+        this.persistRunTrace(runId, tenantId, result.trace);
+        return Response.json(result);
+      }
 
       // §A1 Phase HX1 — persist the structured trace this run just produced (see loop.ts's
       // TraceStep[]). Never blocks/fails the run itself (persistRunTrace swallows its own
@@ -2472,6 +2554,134 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       "x-naelao-internal-token": await mintInternalToken(this.env.PLATFORM_SECRET, tenantId),
       ...extra,
     };
+  }
+
+  /**
+   * Record a run that stopped at a HITL gate so it can be picked up again once a human answers.
+   *
+   * Safe to replay from: the loop suspends BEFORE executing the gated action, so at the moment
+   * this row is written nothing gated has happened. `steps_json` is the ungated work the run had
+   * already completed — carried so the resumed pass hands it to the model as steps-so-far rather
+   * than doing it a second time.
+   *
+   * Best-effort by design: a run that suspended has already returned its pending state to the
+   * caller, and throwing here would turn a correctly-paused run into a failed one.
+   */
+  private persistSuspendedRun(
+    pending: NonNullable<LoopResult["pending_approval"]>,
+    ctx: {
+      runId: string; spaceId: string; tenantId: string; agentId: string; sessionId: string;
+      projectId?: string | undefined; userId?: string | undefined; callerRole?: string | undefined;
+      model?: string | undefined; goal: string;
+    }
+  ): void {
+    try {
+      this.ctx.storage.sql.exec(
+        `INSERT OR REPLACE INTO suspended_runs
+           (approval_id, run_id, space_id, tenant_id, agent_id, session_id, project_id, user_id,
+            caller_role, model, goal, action_name, steps_json, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'suspended', ?)`,
+        pending.approval_id, ctx.runId, ctx.spaceId, ctx.tenantId, ctx.agentId, ctx.sessionId,
+        ctx.projectId ?? null, ctx.userId ?? null, ctx.callerRole ?? null, ctx.model ?? null,
+        ctx.goal, pending.action_name, JSON.stringify(pending.steps_completed ?? []),
+        new Date().toISOString()
+      );
+    } catch {
+      /* the run is already correctly paused; losing the checkpoint must not fail it */
+    }
+  }
+
+  /**
+   * Continue a run that was waiting on a human, now that the approval has been resolved.
+   *
+   * Deliberately re-enters the loop rather than restoring an in-memory continuation: DO
+   * hibernation destroys in-memory state, so a continuation could never have survived the wait
+   * this feature exists to allow. What makes re-entry safe is that the suspension point is the
+   * gate — the dangerous action had not run — and `resumeSteps` hands the already-completed
+   * ungated work back to the model instead of inviting it to repeat it.
+   *
+   * Idempotent: the checkpoint is claimed with a conditional UPDATE, so a duplicate resume
+   * (a retried webhook, a double click on Approve) finds nothing to claim and does nothing.
+   */
+  private async handleResumeRun(request: Request): Promise<Response> {
+    const { approvalId } = await request.json<{ approvalId: string }>();
+    if (!approvalId) return Response.json({ error: "approvalId is required" }, { status: 400 });
+
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT * FROM suspended_runs WHERE approval_id = ? AND status = 'suspended'`, approvalId)
+      .toArray() as unknown as Array<Record<string, string | null>>;
+    const row = rows[0];
+    if (!row) return Response.json({ resumed: false, reason: "no suspended run for this approval" });
+
+    // Claim it before doing any work — two concurrent resumes must not both re-enter the loop.
+    const claimed = this.ctx.storage.sql.exec(
+      `UPDATE suspended_runs SET status = 'resuming' WHERE approval_id = ? AND status = 'suspended'`,
+      approvalId
+    );
+    if (claimed.rowsWritten !== 1) {
+      return Response.json({ resumed: false, reason: "already claimed" });
+    }
+
+    // Trust HITLApprovalDO, not the caller, for whether this was actually approved.
+    let approved = false;
+    if (this.env.HITL_APPROVAL_DO) {
+      try {
+        const stub = this.env.HITL_APPROVAL_DO.get(this.env.HITL_APPROVAL_DO.idFromName(`hitl:${row["space_id"]}`));
+        const resp = await stub.fetch(new Request(`http://hitl/requests/${approvalId}`));
+        const state = await resp.json<{ status?: string }>();
+        approved = state.status === "approved";
+      } catch {
+        // Unknown resolution: leave the checkpoint claimable again rather than guessing. Guessing
+        // "approved" would execute a gated action nobody confirmed; guessing "rejected" would
+        // silently discard approved work.
+        this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status = 'suspended' WHERE approval_id = ?`, approvalId);
+        return Response.json({ resumed: false, reason: "could not read approval state" }, { status: 503 });
+      }
+    }
+
+    if (!approved) {
+      this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status = 'rejected' WHERE approval_id = ?`, approvalId);
+      return Response.json({ resumed: false, reason: "approval was not granted" });
+    }
+
+    let steps: unknown[] = [];
+    try {
+      steps = JSON.parse(row["steps_json"] ?? "[]") as unknown[];
+    } catch {
+      steps = [];
+    }
+
+    const resumeBody = {
+      goal: row["goal"] ?? "",
+      spaceId: row["space_id"] ?? "",
+      agentId: row["agent_id"] ?? "naelao-agent",
+      tenantId: row["tenant_id"] ?? "",
+      sessionId: row["session_id"] ?? "",
+      ...(row["project_id"] ? { projectId: row["project_id"] } : {}),
+      ...(row["user_id"] ? { userId: row["user_id"] } : {}),
+      ...(row["model"] ? { model: row["model"] } : {}),
+      // A fresh run id: this is a second, separately-traceable pass, and reusing the suspended
+      // one would overwrite the trace that shows why it paused in the first place.
+      runId: crypto.randomUUID(),
+      preApprovedActions: [row["action_name"] ?? ""],
+      resumeSteps: steps,
+    };
+
+    const resp = await this.handleScriptRun(
+      new Request("http://agent-do/script/run", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": row["tenant_id"] ?? "",
+          ...(row["caller_role"] ? { "x-naelao-role": row["caller_role"] } : {}),
+        },
+        body: JSON.stringify(resumeBody),
+      })
+    );
+
+    this.ctx.storage.sql.exec(`UPDATE suspended_runs SET status = 'resumed' WHERE approval_id = ?`, approvalId);
+    const result = await resp.json<Record<string, unknown>>();
+    return Response.json({ resumed: true, run_id: resumeBody.runId, result });
   }
 
   /**

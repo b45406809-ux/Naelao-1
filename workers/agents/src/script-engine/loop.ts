@@ -73,9 +73,17 @@ export function isGated(actionName: string, gatedActions: Set<string>, mode: App
   return mode === "gate_unless_listed" ? !gatedActions.has(actionName) : gatedActions.has(actionName);
 }
 
+/** What the gate decided. `pending` is the state a two-valued gate could not express: nobody has
+ *  answered yet, the request is still open, and the run should suspend rather than fail. */
+type GateOutcome =
+  | { verdict: "proceed" }
+  | { verdict: "denied"; reason?: string }
+  | { verdict: "pending"; approvalId: string; expiresAt?: number };
+
 /**
- * Gate an action against the HITL policy. Returns true if execution should proceed.
- * When hitlGateway is absent or the action isn't gated under the current mode, proceeds.
+ * Gate an action against the HITL policy.
+ * When hitlGateway is absent, the action isn't gated under the current mode, or the action was
+ * already approved on a previous pass of a suspended run, execution proceeds.
  */
 async function hitlGate(
   actionName: string,
@@ -85,11 +93,18 @@ async function hitlGate(
   gateway: HITLGateway | undefined,
   runId: string,
   sessionId: string,
-  notes: string[]
-): Promise<boolean> {
-  if (!isGated(actionName, gatedActions, mode) || !gateway) return true;
+  notes: string[],
+  preApproved: Set<string>
+): Promise<GateOutcome> {
+  if (!isGated(actionName, gatedActions, mode) || !gateway) return { verdict: "proceed" };
+  // A human already said yes to exactly this action on the pass that suspended — asking again
+  // would make an approved action unapprovable, since every resume would re-open a new request.
+  if (preApproved.has(actionName)) {
+    notes.push(`HITL: '${actionName}' was approved before this resume → proceeding`);
+    return { verdict: "proceed" };
+  }
   notes.push(`HITL gate: requesting approval for '${actionName}'`);
-  const { approved, reason, approvalId } = await gateway.requestApproval({
+  const { approved, pending, expiresAt, reason, approvalId } = await gateway.requestApproval({
     runId,
     sessionId,
     actionName,
@@ -98,10 +113,14 @@ async function hitlGate(
   });
   if (approved) {
     notes.push(`HITL ${approvalId}: approved → proceeding`);
-    return true;
+    return { verdict: "proceed" };
+  }
+  if (pending) {
+    notes.push(`HITL ${approvalId}: awaiting a human → suspending the run (nothing was executed)`);
+    return { verdict: "pending", approvalId, ...(expiresAt ? { expiresAt } : {}) };
   }
   notes.push(`HITL ${approvalId}: rejected (${reason ?? "no reason"}) → aborting action`);
-  return false;
+  return { verdict: "denied", ...(reason ? { reason } : {}) };
 }
 
 /** The user-facing reason a gated action didn't run.
@@ -217,6 +236,19 @@ export interface RunLoopOptions {
    */
   requiresApprovalFor?: string[];
   approvalMode?: ApprovalMode;
+  /**
+   * Resuming a run that suspended waiting on a human: the actions a human has since approved.
+   * The gate lets these through once without re-asking — otherwise every resume would open a
+   * fresh approval request for the very action that was just approved, and no gated action
+   * could ever run.
+   */
+  preApprovedActions?: string[];
+  /**
+   * Resuming: what the suspended pass had already executed. Handed to the model as its
+   * steps-so-far so it can build on that work instead of repeating it. The gated action itself
+   * is never in here — the whole point of suspending at the gate is that it had not run.
+   */
+  resumeSteps?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
   /** Opaque run/session identifiers forwarded to the HITL gateway. */
   runId?: string;
   sessionId?: string;
@@ -264,6 +296,7 @@ export async function runScriptLoop(
   const approvalMode: ApprovalMode = opts.approvalMode ?? "gate_listed";
   const runId = opts.runId ?? crypto.randomUUID();
   const sessionId = opts.sessionId ?? "unknown";
+  const preApproved = new Set(opts.preApprovedActions ?? []);
 
   // Phase HX1: structured per-step trace, the persisted counterpart to `notes`. `finish()`
   // attaches the accumulated `trace` array to whichever LoopResultCore a return site produces —
@@ -272,6 +305,31 @@ export async function runScriptLoop(
   let traceSeq = 0;
   const pushTrace: PushTrace = (step) => trace.push({ seq: traceSeq++, ts: Date.now(), ...step });
   const finish = (r: LoopResultCore): LoopResult => ({ ...r, trace });
+
+  /** A run that stopped at the gate, waiting on a human. Deliberately NOT an error result: the
+   *  work so far is intact and the action is still pending, so the caller persists a checkpoint
+   *  and resumes rather than reporting a failure the user has to redo. */
+  const suspend = (
+    level: EscalationLevel,
+    gate: { verdict: "pending"; approvalId: string; expiresAt?: number },
+    actionName: string,
+    params: Record<string, unknown>,
+    stepsCompleted: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>
+  ): LoopResult => {
+    pushTrace({ phase: "gate", name: actionName, detail: "awaiting_approval" });
+    return finish({
+      level,
+      script_name: actionName,
+      notes,
+      pending_approval: {
+        approval_id: gate.approvalId,
+        action_name: actionName,
+        params,
+        ...(gate.expiresAt ? { expires_at: gate.expiresAt } : {}),
+        steps_completed: stepsCompleted,
+      },
+    });
+  };
 
   // 1-2. OBSERVE + FINGERPRINT
   const observeStart = Date.now();
@@ -315,8 +373,9 @@ export async function runScriptLoop(
     case "L1": {
       const params = paramsFor(top!, opts.goal);
       // HITL gate before execution
-      const allowed = await hitlGate(top!.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes);
-      if (!allowed) {
+      const gate = await hitlGate(top!.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved);
+      if (gate.verdict === "pending") return suspend(level, gate, top!.name, params, opts.resumeSteps ?? []);
+      if (gate.verdict === "denied") {
         return finish({ level, script_name: top!.name, result: { ok: false, error: gateRejectedMessage(top!.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes });
       }
       const result = await tools.run(top!.name, params);
@@ -342,8 +401,9 @@ export async function runScriptLoop(
       if (decision.action === "patch") {
         await tools.update(decision.name, { code: decision.code }, decision.reason);
         const params = paramsFor(top!, opts.goal);
-        const allowed = await hitlGate(decision.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes);
-        if (!allowed) {
+        const gate = await hitlGate(decision.name, params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved);
+        if (gate.verdict === "pending") return suspend(level, gate, decision.name, params, opts.resumeSteps ?? []);
+        if (gate.verdict === "denied") {
           return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(decision.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usage));
         }
         const result = await tools.run(decision.name, params);
@@ -368,8 +428,12 @@ export async function runScriptLoop(
       const maxSteps = opts.maxSteps ?? 6;
       let lastDecision: ReasonDecision | null = null;
       const usageAcc = { input: 0, output: 0 };
-      // What this run has already done, fed back into every subsequent decide() call.
-      const priorSteps: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }> = [];
+      // What this run has already done, fed back into every subsequent decide() call. Seeded from
+      // a suspended pass's completed steps on resume, so an approval that arrives an hour later
+      // continues the work rather than starting it over.
+      const priorSteps: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }> = [
+        ...(opts.resumeSteps ?? []),
+      ];
       // The most recent SUCCESSFUL tool result, kept so an agent that runs out of steps without
       // ever composing an answer still returns the work it actually did rather than "gave up".
       let lastGoodRun: { name: string; result: ScriptRunResult } | null = null;
@@ -428,8 +492,9 @@ export async function runScriptLoop(
           attemptedCalls.add(callKey);
 
           // HITL gate before execution
-          const allowed = await hitlGate(decision.name, decision.params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes);
-          if (!allowed) {
+          const gate = await hitlGate(decision.name, decision.params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved);
+          if (gate.verdict === "pending") return suspend(level, gate, decision.name, decision.params, priorSteps);
+          if (gate.verdict === "denied") {
             return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(decision.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usageAcc));
           }
           const result = await tools.run(decision.name, decision.params);

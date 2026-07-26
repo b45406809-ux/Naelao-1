@@ -200,6 +200,20 @@ export interface LoopResult {
   notes: string[];
   /** Structured per-phase/per-script.run trace (Phase HX1) — same run, richer than `notes`. */
   trace: TraceStep[];
+  /**
+   * Set only when the run stopped because a gated action is waiting on a human. This is NOT a
+   * failure and must never be rendered as one: the work is intact, paused at the point just
+   * before the gated action, and resumable once someone answers. `steps_completed` is what the
+   * run had already done, carried so a resume can hand it back to the model rather than
+   * re-deriving (or worse, re-executing) it.
+   */
+  pending_approval?: {
+    approval_id: string;
+    action_name: string;
+    params: Record<string, unknown>;
+    expires_at?: number;
+    steps_completed: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
+  };
 }
 
 // ── Engine bindings (dependency-injected so the engine is testable + DO-agnostic) ──────
@@ -442,8 +456,14 @@ export interface ContainerWorkspaceGateway {
 export interface HITLGateway {
   /**
    * Pause execution and wait for a human to approve or reject the named action.
-   * Polls HITLApprovalDO (or the host equivalent) until resolved or timed out (28s).
-   * Returns { approved: true } to proceed, { approved: false } to abort.
+   *
+   * Three outcomes, not two. `approved: false` means a human said no. `pending: true` means
+   * nobody has answered YET and the request is still open — the run must suspend, not fail.
+   * Collapsing those two into one boolean is what made "human in the loop" mean "the human has
+   * a few seconds to answer or the action is refused": an owner who is asleep, at work, or
+   * simply on another screen could never approve anything, and the agent reported their absence
+   * as a refusal. An autonomous business that must ask before a payout or an ad spend cannot
+   * work on that timescale.
    */
   requestApproval(params: {
     runId: string;
@@ -451,7 +471,7 @@ export interface HITLGateway {
     actionName: string;
     actionInput: Record<string, unknown>;
     description: string;
-  }): Promise<{ approvalId: string; approved: boolean; reason?: string }>;
+  }): Promise<{ approvalId: string; approved: boolean; pending?: boolean; expiresAt?: number; reason?: string }>;
 }
 
 /** Everything the engine needs from the host (NaelaoAgentDO) to operate. */

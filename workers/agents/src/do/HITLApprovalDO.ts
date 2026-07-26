@@ -43,6 +43,12 @@ interface ApprovalRow {
   // in-loop reasoning gate (which never calls consume; it just polls until resolved). Without
   // this, the same approval_id could authorize an unbounded number of later, different requests.
   consumed_at: string | null;
+  // The Durable Object id (stringified) of the agent DO whose reasoning loop opened this
+  // request, when one did. A run can suspend waiting for a human, and the checkpoint that lets
+  // it continue lives in THAT DO — which is addressed per space:project:thread, so it cannot be
+  // rederived from the space alone. Null for approvals opened outside a loop (the Phase O
+  // HTTP agent-key gate), which have no run to resume.
+  resume_do_id: string | null;
 }
 
 export class HITLApprovalDO extends DurableObject {
@@ -63,11 +69,21 @@ export class HITLApprovalDO extends DurableObject {
         created_at         TEXT NOT NULL DEFAULT (datetime('now')),
         resolved_at        TEXT,
         expires_at         INTEGER NOT NULL,
-        consumed_at        TEXT
+        consumed_at        TEXT,
+        resume_do_id       TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_approvals_run ON approvals(run_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, created_at DESC);
     `);
+    // CREATE TABLE IF NOT EXISTS is a no-op against a table that already exists, so an instance
+    // created before resume_do_id existed would never gain the column. Adding it here rather than
+    // silently running without it — the same forward-fix shape migration 0048 used for the
+    // api_keys table this exact mistake had already broken once.
+    try {
+      this.ctx.storage.sql.exec(`ALTER TABLE approvals ADD COLUMN resume_do_id TEXT`);
+    } catch {
+      /* already present — the ordinary case on every wake-up after the first */
+    }
     this.initialized = true;
   }
 
@@ -88,6 +104,7 @@ export class HITLApprovalDO extends DurableObject {
         tool_input: Record<string, unknown>;
         action_description: string;
         ttl_ms?: number;
+        resume_do_id?: string;
       }>();
 
       if (!body.run_id || !body.tool_name) {
@@ -99,11 +116,11 @@ export class HITLApprovalDO extends DurableObject {
       const expiresAt = Date.now() + (body.ttl_ms && body.ttl_ms > 0 ? body.ttl_ms : AUTO_REJECT_MS);
 
       this.ctx.storage.sql.exec(
-        `INSERT INTO approvals (id, run_id, session_id, tool_name, tool_input, action_description, status, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+        `INSERT INTO approvals (id, run_id, session_id, tool_name, tool_input, action_description, status, created_at, expires_at, resume_do_id)
+         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
         id, body.run_id, body.session_id, body.tool_name,
         JSON.stringify(body.tool_input ?? {}),
-        body.action_description, now, expiresAt
+        body.action_description, now, expiresAt, body.resume_do_id ?? null
       );
 
       // Set alarm to auto-reject when TTL expires

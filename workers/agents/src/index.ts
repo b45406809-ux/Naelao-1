@@ -1469,8 +1469,39 @@ app.get("/spaces/:spaceId/sessions/:sessionId/approvals", async (c) => {
 app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/approve", async (c) => {
   const { spaceId, approvalId } = c.req.param();
   const stub = getHitlDo(c.env, spaceId);
-  return stub.fetch(`http://do/requests/${approvalId}/approve`, { method: "PUT" });
+  const res = await stub.fetch(`http://do/requests/${approvalId}/approve`, { method: "PUT" });
+  // Approving is only half the job: if a run suspended waiting on this, it has to actually pick
+  // back up. Fire-and-forget so the approver's click returns immediately — the resume can take
+  // as long as the rest of the agent's work does, and its own result is reported through the
+  // run, not through this response. Idempotent on the DO side, so a retry is harmless.
+  const { tenantId } = getCallerIdentity(c);
+  if (res.ok) c.executionCtx.waitUntil(resumeSuspendedRun(c.env, tenantId, spaceId, approvalId));
+  return res;
 });
+
+/** Nudge the space's agent DO to continue whatever run was waiting on this approval. Best-effort
+ *  in both directions: no suspended run is the normal case (an approval opened by the HTTP agent
+ *  gate has no loop behind it), and a failure here must never make an approval look unsuccessful. */
+async function resumeSuspendedRun(env: AgentsEnv, tenantId: string, spaceId: string, approvalId: string): Promise<void> {
+  try {
+    // Which agent DO actually suspended is recorded on the approval itself. Agent DOs are
+    // addressed per space:project:thread, so guessing (e.g. always the Space Assistant) would
+    // reach the wrong instance for any project-scoped run and silently find no checkpoint.
+    const hitl = getHitlDo(env, spaceId);
+    const row = await (await hitl.fetch(`http://do/requests/${approvalId}`)).json<{ resume_do_id?: string | null }>();
+    if (!row.resume_do_id) return; // opened by the HTTP agent-key gate — no loop to resume
+    const stub = env.NAELAO_AGENT_DO.get(env.NAELAO_AGENT_DO.idFromString(row.resume_do_id));
+    await stub.fetch(
+      new Request("http://agent-do/script/resume", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ approvalId }),
+      })
+    );
+  } catch {
+    /* the approval itself succeeded; resuming is a follow-on, never a precondition */
+  }
+}
 
 // GET a single approval — added for §A1.17 Phase O's agent-key HTTP gate: the agent's own
 // caller (its script, or the @naelao/agent-sdk wrapper) polls this by id rather than the whole
