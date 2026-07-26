@@ -192,7 +192,15 @@ export default function BusinessOnboardingPage() {
       const { authorize_url } = await startOAuthConnect(params.businessId, creds, connector, window.location.href);
       window.location.href = authorize_url;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't start the connection");
+      // Belt-and-braces alongside the oauth_available check above: if the deployment's config
+      // changed between loading this page and clicking, fall through to the key form rather than
+      // showing "OAuth is not configured on this deployment" to someone who cannot configure it.
+      if (err instanceof ApiError && err.errorCode === "oauth_not_configured") {
+        setShowManualKey(true);
+        setError("One-click connect isn't available — paste an API key instead.");
+      } else {
+        setError(err instanceof Error ? err.message : "Couldn't start the connection");
+      }
       setBusy(false);
     }
   }
@@ -369,11 +377,23 @@ export default function BusinessOnboardingPage() {
               <Badge color="green">Connected</Badge>
             ) : (
               <>
-                <div>
-                  <Button onClick={() => handleConnect(prompt.connector!)} disabled={busy}>
-                    {busy ? "Opening…" : `Connect ${titleCase(prompt.connector)}`}
-                  </Button>
-                </div>
+                {/* One-click connect needs a registered OAuth app for this connector. When this
+                    deployment doesn't have one, showing the button anyway leads a business owner
+                    to a failure they cannot act on, phrased in platform-internal language, at the
+                    one setup step they can't skip. Lead with the path that works instead. */}
+                {prompt.oauth_available !== false ? (
+                  <div>
+                    <Button onClick={() => handleConnect(prompt.connector!)} disabled={busy}>
+                      {busy ? "Opening…" : `Connect ${titleCase(prompt.connector)}`}
+                    </Button>
+                  </div>
+                ) : (
+                  <p style={{ fontSize: 12.5, color: "var(--text3)", margin: 0 }}>
+                    One-click connect isn&rsquo;t set up for {titleCase(prompt.connector)} yet.
+                    Paste an API key from your {titleCase(prompt.connector)} dashboard instead —
+                    it gives your assistant the same access.
+                  </p>
+                )}
                 {step.fallback && (
                   <div>
                     <button
@@ -383,7 +403,7 @@ export default function BusinessOnboardingPage() {
                     >
                       {step.fallback.question}
                     </button>
-                    {showManualKey && (
+                    {(showManualKey || prompt.oauth_available === false) && (
                       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
                         <FormInput
                           placeholder="API key"

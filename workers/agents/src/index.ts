@@ -73,11 +73,14 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
   reactSteps: unknown[];
   error?: string;
   pending_approval?: { approval_id: string; action_name: string };
+  /** Actions the run parked and carried on around — it has a real answer AND outstanding work. */
+  deferred_approvals?: Array<{ approval_id: string; action_name: string }>;
 } {
   const r = raw as {
     result?: { ok?: boolean; output?: unknown; error?: unknown };
     error?: string;
     pending_approval?: { approval_id: string; action_name: string };
+    deferred_approvals?: Array<{ approval_id: string; action_name: string }>;
   } | null;
 
   // A run that stopped at a HITL gate has NO `result` and no `error` — which this function used to
@@ -111,6 +114,11 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
     final_answer: answer,
     reactSteps: [],
     ...(errorMessage !== undefined ? { error: errorMessage } : {}),
+    // Carried as structured data, not only inside the model's prose: a client should be able to
+    // render "1 action waiting on you" without parsing an answer for it.
+    ...(r?.deferred_approvals?.length
+      ? { deferred_approvals: r.deferred_approvals.map((d) => ({ approval_id: d.approval_id, action_name: d.action_name })) }
+      : {}),
   };
 }
 
@@ -2771,6 +2779,20 @@ function promptSatisfied(
   return typeof a === "string" ? a.trim().length > 0 : a !== undefined && a !== null;
 }
 
+/** Whether this deployment can actually run a connector's one-click OAuth flow. Mirrors the exact
+ *  condition the /connectors/:platform/oauth/start route checks, so the two can't disagree about
+ *  what "configured" means. */
+function oauthConfigured(env: AgentsEnv, platform: string): boolean {
+  const connector = CONNECTOR_CATALOGUE.find((x) => x.id === platform);
+  if (!connector?.oauth) return false;
+  const record = env as unknown as Record<string, string | undefined>;
+  return Boolean(
+    record[connector.oauth.client_id_env] &&
+    record[connector.oauth.client_secret_env] &&
+    env.PUBLIC_AGENTS_URL
+  );
+}
+
 // GET /spaces/:spaceId/bootstrap — everything a setup wizard needs in ONE call: the template's
 // prompts, whatever's already been answered, and whether each is genuinely satisfied. The shell
 // renders straight from this rather than carrying its own copy of the template definitions (the
@@ -2787,6 +2809,13 @@ app.get("/spaces/:spaceId/bootstrap", async (c) => {
     ...p,
     answer: p.type === "credential" || p.type === "connection" ? undefined : answers[p.id] ?? null,
     satisfied: promptSatisfied(p, answers, connected),
+    // Whether one-click connect actually works on THIS deployment. A connector's OAuth needs a
+    // registered app (client id + secret) that a self-hosted or not-yet-configured deployment
+    // won't have — and a wizard that leads with a button which can only ever return
+    // "OAuth is not configured on this deployment" is a dead end phrased in platform-internal
+    // language, at the one step a business owner cannot skip. Reported up front so the wizard can
+    // lead with the path that works (pasting a key) instead of discovering this on a failed click.
+    oauth_available: p.connector ? oauthConfigured(c.env, p.connector) : false,
   }));
 
   return c.json({

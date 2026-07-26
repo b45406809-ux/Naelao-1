@@ -2329,6 +2329,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // Suspended at a gate. Persist the checkpoint and return without billing, memory, or a
       // run_completed/run_failed activity row — none of those are true yet, and recording a
       // waiting run as failed is exactly what made approvals look broken.
+      // Parked-and-continued: the run finished with a real answer, but some actions are waiting on
+      // a human. Each gets its own checkpoint so it resumes alone when answered — the run itself is
+      // done and bills/settles normally below, unlike a fully suspended one.
+      for (const parked of result.deferred_approvals ?? []) {
+        this.persistSuspendedRun(parked, {
+          runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
+          model: body.model, goal: body.goal,
+        });
+        void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", {
+          projectId: projectId ?? null,
+          threadId: sessionId,
+          summary: `Waiting for approval to run '${parked.action_name}' — the rest of the task continued`,
+        });
+      }
+
       if (result.pending_approval) {
         this.persistSuspendedRun(result.pending_approval, {
           runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
@@ -2568,7 +2583,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * caller, and throwing here would turn a correctly-paused run into a failed one.
    */
   private persistSuspendedRun(
-    pending: NonNullable<LoopResult["pending_approval"]>,
+    pending: NonNullable<LoopResult["pending_approval"]> | NonNullable<LoopResult["deferred_approvals"]>[number],
     ctx: {
       runId: string; spaceId: string; tenantId: string; agentId: string; sessionId: string;
       projectId?: string | undefined; userId?: string | undefined; callerRole?: string | undefined;

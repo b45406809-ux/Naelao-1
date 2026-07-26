@@ -304,7 +304,15 @@ export async function runScriptLoop(
   const trace: TraceStep[] = [];
   let traceSeq = 0;
   const pushTrace: PushTrace = (step) => trace.push({ seq: traceSeq++, ts: Date.now(), ...step });
-  const finish = (r: LoopResultCore): LoopResult => ({ ...r, trace });
+  /** Parked-for-approval actions accumulated by the L3/L4 block, attached by finish() to whichever
+   *  exit the run takes — so a run that answered around a parked action still reports it, rather
+   *  than the outstanding work quietly disappearing with the reply. */
+  let deferredOut: NonNullable<LoopResult["deferred_approvals"]> = [];
+  const finish = (r: LoopResultCore): LoopResult => ({
+    ...r,
+    trace,
+    ...(deferredOut.length > 0 ? { deferred_approvals: deferredOut } : {}),
+  });
 
   /** A run that stopped at the gate, waiting on a human. Deliberately NOT an error result: the
    *  work so far is intact and the action is still pending, so the caller persists a checkpoint
@@ -434,6 +442,10 @@ export async function runScriptLoop(
       const priorSteps: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }> = [
         ...(opts.resumeSteps ?? []),
       ];
+      // Actions parked mid-run because they need a human. The run continues around them; each one
+      // carries its own checkpoint so it can be picked up alone when the answer arrives.
+      const deferred: NonNullable<LoopResult["deferred_approvals"]> = [];
+      deferredOut = deferred;
       // The most recent SUCCESSFUL tool result, kept so an agent that runs out of steps without
       // ever composing an answer still returns the work it actually did rather than "gave up".
       let lastGoodRun: { name: string; result: ScriptRunResult } | null = null;
@@ -479,6 +491,21 @@ export async function runScriptLoop(
           // the damage — while a call with DIFFERENT params is still allowed through, since
           // re-running an op with new arguments is ordinary work, not a pathology.
           const callKey = `${decision.name}:${stableStringify(decision.params)}`;
+
+          // Checked BEFORE the repeat guard, deliberately. A parked action was added to
+          // attemptedCalls but never actually ran, so the repeat guard would answer "already run
+          // in this task" — telling the model a gated action succeeded when it is still sitting
+          // unapproved. That is the worst possible thing to be wrong about here.
+          if (deferred.some((d) => d.action_name === decision.name)) {
+            priorSteps.push({
+              name: decision.name,
+              params: decision.params,
+              ok: false,
+              error: "still waiting on a human for this one — do something else, or answer with what you have",
+            });
+            continue;
+          }
+
           if (attemptedCalls.has(callKey)) {
             notes.push(`${level} skipped repeat call ${decision.name} (already run this task)`);
             priorSteps.push({
@@ -493,7 +520,32 @@ export async function runScriptLoop(
 
           // HITL gate before execution
           const gate = await hitlGate(decision.name, decision.params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved);
-          if (gate.verdict === "pending") return suspend(level, gate, decision.name, decision.params, priorSteps);
+          if (gate.verdict === "pending") {
+            // Park it and CARRY ON. Blocking the whole run here is what made an agent useless the
+            // moment it needed permission for one thing: an assistant with five jobs to do would
+            // stop dead on the first one that needed a signature, and stay stopped until someone
+            // happened to look. Nothing gated has run, so the rest of the task is still safe to
+            // work on — and the parked action resumes on its own once someone answers.
+            deferred.push({
+              approval_id: gate.approvalId,
+              action_name: decision.name,
+              params: decision.params,
+              ...(gate.expiresAt ? { expires_at: gate.expiresAt } : {}),
+              steps_completed: [...priorSteps],
+            });
+            notes.push(`${level} parked '${decision.name}' pending approval and continued`);
+            pushTrace({ phase: "gate", name: decision.name, detail: "deferred_pending_approval" });
+            priorSteps.push({
+              name: decision.name,
+              params: decision.params,
+              ok: false,
+              error:
+                "waiting on a human to approve this — it has NOT run. Continue with anything else " +
+                "the task needs that doesn't depend on it, then answer describing what you did and " +
+                "what is still waiting. Do not retry this call.",
+            });
+            continue;
+          }
           if (gate.verdict === "denied") {
             return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(decision.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usageAcc));
           }

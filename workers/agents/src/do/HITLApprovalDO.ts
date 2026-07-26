@@ -224,9 +224,16 @@ export class HITLApprovalDO extends DurableObject {
     return Response.json({ id, status });
   }
 
+  /**
+   * An approval nobody answered in time. Deliberately NOT phrased as a rejection: the reason text
+   * used to say "Auto-rejected", which the agent then reported to the user as though they had
+   * declined. Nobody declined anything — the request simply wasn't seen. Those are different
+   * facts, and only one of them means "don't ask again".
+   */
   private expireApproval(id: string): void {
     this.ctx.storage.sql.exec(
-      `UPDATE approvals SET status = 'timeout', reject_reason = 'Auto-rejected: 30s approval timeout', resolved_at = ? WHERE id = ?`,
+      `UPDATE approvals SET status = 'timeout', reject_reason = ?, resolved_at = ? WHERE id = ?`,
+      "No answer yet — this request expired before anyone approved or declined it.",
       new Date().toISOString(), id
     );
   }

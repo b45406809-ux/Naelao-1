@@ -94,30 +94,68 @@ function rejectingGateway(): { asked: string[]; gateway: HITLGateway } {
   };
 }
 
-describe("a pending approval suspends the run rather than failing it", () => {
-  it("returns pending_approval, not an error result", async () => {
+describe("a pending approval never fails the run", () => {
+  it("parks the gated action and carries on with the rest of the task", async () => {
+    // Blocking here is what made an agent useless the moment it needed permission for one thing:
+    // an assistant with five jobs would stop dead on the one needing a signature and stay stopped
+    // until somebody happened to look.
     const env = makeEnv();
     const { gateway } = pendingGateway();
     env.hitlGateway = gateway;
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    let step = 0;
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
-        return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        // Asks for the gated write first, then does something else, then answers.
+        if (step++ === 0) return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        if (step === 2) return { action: "run", name: "list_files", params: {} };
+        return { action: "answer", text: "Listed the files; the write is waiting on you." };
       },
     };
 
     const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
+      goal: "write a file and list them",
+      startupObserve: "observe_filesystem",
+      requiresApprovalFor: ["list_files"], // pre-approved; write_file is not
+      approvalMode: "gate_unless_listed",
+    });
+
+    // A real answer AND outstanding work — not a failure, and not a silent drop.
+    expect(result.deferred_approvals).toHaveLength(1);
+    expect(result.deferred_approvals![0]!.action_name).toBe("write_file");
+    expect(result.deferred_approvals![0]!.approval_id).toBe("appr-1");
+    expect(result.result?.ok).toBe(true);
+    expect(String(result.result?.output)).toContain("waiting on you");
+  });
+
+  it("opens exactly one request even if the model asks for the same action again", async () => {
+    // And it must never be told the parked action "already ran": it was added to the attempted
+    // set but never executed, so the repeat guard would otherwise report a gated action as done.
+    const env = makeEnv();
+    const { asked, gateway } = pendingGateway();
+    env.hitlGateway = gateway;
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    let seenSteps: Array<{ name: string; ok: boolean; output?: unknown; error?: string }> = [];
+    let step = 0;
+    const reasoner: Reasoner = {
+      async decide(input): Promise<ReasonDecision> {
+        seenSteps = ((input as { priorSteps?: typeof seenSteps }).priorSteps ?? []) as typeof seenSteps;
+        if (step++ < 2) return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        return { action: "answer", text: "done what I could" };
+      },
+    };
+
+    await runScriptLoop(env, tools, reasoner, ["r2-workspace"], {
       goal: "write a file",
       startupObserve: "observe_filesystem",
       requiresApprovalFor: [],
       approvalMode: "gate_unless_listed",
     });
 
-    expect(result.pending_approval).toBeDefined();
-    expect(result.pending_approval!.approval_id).toBe("appr-1");
-    expect(result.pending_approval!.action_name).toBe("write_file");
-    // Not an error. Rendering a waiting run as a failure is what made approvals look broken.
-    expect(result.result).toBeUndefined();
+    expect(asked).toEqual(["write_file"]); // asked once, not twice
+    const writeStep = seenSteps.find((s) => s.name === "write_file");
+    expect(writeStep?.ok).toBe(false);
+    expect(String(writeStep?.error)).toContain("waiting on a human");
   });
 
   it("does not execute the gated action while it waits", async () => {
@@ -170,10 +208,10 @@ describe("a pending approval suspends the run rather than failing it", () => {
     let step = 0;
     const reasoner: Reasoner = {
       async decide(): Promise<ReasonDecision> {
-        // First an ungated read, then the gated write that suspends.
-        return step++ === 0
-          ? { action: "run", name: "list_files", params: {} }
-          : { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        // An ungated read, then the gated write, then an answer around it.
+        if (step++ === 0) return { action: "run", name: "list_files", params: {} };
+        if (step === 2) return { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } };
+        return { action: "answer", text: "listed them; write is pending" };
       },
     };
 
@@ -184,8 +222,7 @@ describe("a pending approval suspends the run rather than failing it", () => {
       approvalMode: "gate_unless_listed",
     });
 
-    expect(result.pending_approval).toBeDefined();
-    const done = result.pending_approval!.steps_completed;
+    const done = result.deferred_approvals![0]!.steps_completed;
     expect(done.map((s) => s.name)).toContain("list_files");
     // The gated action is never in the completed list — it hadn't run.
     expect(done.map((s) => s.name)).not.toContain("write_file");

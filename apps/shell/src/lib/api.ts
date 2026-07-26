@@ -1019,6 +1019,10 @@ export interface OnboardingPrompt {
   answer?: string | null;
   /** A connection prompt is satisfied by a REAL registered connector, not by a stored string. */
   satisfied: boolean;
+  /** Whether one-click connect actually works on this deployment (the connector's OAuth app is
+   *  registered). False means the key-paste path is the only one that works — lead with it rather
+   *  than offering a button whose only possible outcome is a platform-internal error. */
+  oauth_available?: boolean;
 }
 
 export interface OnboardingState {

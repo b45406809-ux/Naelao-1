@@ -214,6 +214,22 @@ export interface LoopResult {
     expires_at?: number;
     steps_completed: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
   };
+  /**
+   * Actions parked mid-run because they need a human, on a run that CARRIED ON around them and
+   * finished. Distinct from `pending_approval`, which is the whole run stopping: here the agent
+   * did everything else it could, so there is a real answer AND some outstanding work.
+   *
+   * Blocking on the first thing that needs permission is what makes an agent useless in practice —
+   * an assistant with five jobs stops dead on the one that needs a signature and stays stopped
+   * until somebody happens to look. Each entry carries its own checkpoint so it resumes alone.
+   */
+  deferred_approvals?: Array<{
+    approval_id: string;
+    action_name: string;
+    params: Record<string, unknown>;
+    expires_at?: number;
+    steps_completed: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
+  }>;
 }
 
 // ── Engine bindings (dependency-injected so the engine is testable + DO-agnostic) ──────
