@@ -2797,6 +2797,76 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     `@naelao/idempotency` has ZERO consumers anywhere in the repo, so there is no exactly-once
     guarantee on tool execution. Those two together are the remaining "no duplicate work" gap.
 
+73. **"Long-running background agent" was capped at 29 seconds — now genuinely unbounded — plus a
+    replay-safety ledger, an honest `awaiting_approval` status, and an unauthenticated approvals
+    surface closed. Driven by reading CF's own docs rather than this file's stale invariant.**
+    - **The 29s cap.** `AgentTaskWorkflow` set `timeout: 29_000` on `run-agent`, the step that does
+      all the work. **A CF Workflow step has NO wall-time limit** — only a CPU-time limit, which
+      excludes time spent waiting on an LLM/tool/any I/O (`/workflows/reference/limits/`, verified
+      2026-07). The ceiling was self-imposed and traceable to this file's own Key CF Invariants line
+      claiming "30s per step" — now corrected there too, along with the real step counts (1,024
+      Free / 10,000 default Paid / 25,000 configurable; `step.sleep` up to 365 days, not counted)
+      and a pointer to `step.waitForEvent`/`instance.sendEvent`. Any real multi-step task blew
+      through 29s and was reported as a failure. Dispatch was already durable-by-default (item 38
+      Phase Q); this is what made it not actually long-running.
+    - **Retries removed from that step + a ledger check added.** `retries: {limit: 3}` on a
+      NON-idempotent step meant a slow run re-executed every tool call already made — the same
+      email sent up to three times. New `recordedResult()` reads the TaskDO row (already written,
+      so no second store — the Orchestrator ledger pattern) and short-circuits when the task
+      already reached a terminal state, making a Workflow REPLAY safe. Best-effort on purpose: a
+      failed ledger read must not strand a task that genuinely never ran.
+    - **`awaiting_approval` is now a real status end-to-end.** Item 72's suspend path landed with a
+      hole: a run stopped at a gate has no `result` and no `error`, which `normalizeScriptRunResult`
+      read as ok-with-empty-output → `status: "completed"` with a blank answer. Worse,
+      `apps/shell`'s `Chat.tsx` matches on status, so an unrecognised one hit no branch and the
+      reply silently vanished — the exact case the feature exists for looked like the agent gave up.
+      Threaded through the normalizer, `TaskDO`'s `TaskStatus` (explicitly non-terminal, so the
+      completion callback doesn't fire), `TASK_STATUS_TO_RUN_STATUS`, `AgentRun` in the shell
+      client, and Chat's poll loop.
+    - **The four approvals routes had NO auth of any kind — FIXED.** `GET/PUT
+      /spaces/:spaceId/sessions/:sessionId/approvals*` never called `requireVerifiedTenant` or any
+      ownership check, and `naelao-agents` keeps a public `workers.dev` URL (its channel gateway
+      needs one): anyone could list what any space's agent was about to do *with its parameters*
+      and approve it. Item 44's F1 sweep missed these. Already wrong at a 30s auto-reject window;
+      much worse now that item 72 made approvals stay open 24h. New `requireOwnedSpace()` (verified
+      tenant + `spaces.tenant_id` match, the same convention the run endpoints beside them already
+      used). Confirmed a plain tenant match is correct for a business sub-space too: an end user's
+      `claims.tid` is the tenant of the space in their URL, not the product root's
+      (`/internal/stream-tickets/issue` sets `tenantId = urlSpace.tenant_id`). Live-verified BOTH
+      directions against production — a real end user reading their own space's approvals gets 200,
+      a spoofed-tenant call direct at the worker gets 401.
+    - **CF research worth keeping** (docs read this pass, `/agents/concepts/agentic-patterns/
+      long-running-agents/` + `/agents/runtime/execution/durable-execution/`): the Agents SDK's
+      long-running primitives are `keepAlive`/`keepAliveWhile` (30s heartbeat alarm, minute-scale),
+      `runFiber`/`startFiber` + `ctx.stash()` (checkpoint to SQLite, `onFiberRecovered` to resume,
+      idempotency keys on `startFiber`), `subAgent`, and a persisted `Plan` object
+      (goal/steps/currentStep) doing triple duty as recovery point, user-visible progress, and
+      cheap context reconstruction. Also: since 2026-06, an **active outbound connection keeps a DO
+      alive for up to 15 minutes**, so an in-flight LLM call no longer risks mid-stream eviction.
+      NOTE: `NaelaoAgentDO` has a `fibers` table that is READ in two places and **never written** —
+      dead scaffolding for exactly this pattern, same as `@naelao/idempotency`'s zero consumers.
+    - **Palantir Orchestrator, from its own DevCon 6 launch** (transcript via Palantir's post; the
+      YouTube page itself is bot-blocked from here): `orchestrator.run(...)` wraps a step so the
+      operation "is executed once and then recorded into the Orchestrator Services Ledger"; on
+      reinvocation "every finished orchestrator.run call short circuits — it returns the recorded
+      result stored in the Ledger"; an "execution attempt plus an idempotency key" in the ledger is
+      what gives "exactly once execution"; and `orchestrator.signal` "allows the agent to suspend"
+      with process teardown at zero cost, making "waiting essentially free" for "thousands of
+      agents suspended for basically an unbounded amount of time." Their framing: *"The bottleneck
+      for an agent's usefulness today is not intelligence. It's trust."* **Every one of those maps
+      onto a CF primitive we already pay for**: `step.do` memoization IS the ledger short-circuit,
+      `step.waitForEvent`/`sendEvent` IS `orchestrator.signal` (and a waiting instance holds no
+      concurrency slot), and Workflow instance state is the durable journal. We are behind on
+      GRANULARITY, not capability.
+    2154/2154 tests pass (12 new in `long-running-agent-runs.test.ts`), `npx turbo run typecheck`
+    clean (76 tasks), `naelao-agents` + `apps/shell` deployed and the auth fix verified live.
+    **Still open (deliberately not attempted in the same pass):** the checkpoint granularity is
+    still the whole run — one `step.do` wrapping everything — so per-tool-call exactly-once needs
+    either `@naelao/idempotency` finally wired into `ScriptToolSurface.run()` or the loop decomposed
+    into one `step.do` per action. And item 72's hand-rolled `suspended_runs` + poll should
+    eventually become `step.waitForEvent`, which is the same thing natively and free while waiting;
+    rewriting it twice in one session was the wrong trade.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
