@@ -2730,6 +2730,73 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     glm 5.1 do NOT exist on this account), and no live end-to-end verification of this pass's
     work was possible for the same reason.
 
+72. **Durable approvals, and four bugs that made a product unreachable — found by tracing a
+    reported Discover bug to live data rather than to the page it was reported on.**
+    - **HITL was a 28-second window, not a human one — now FIXED.** `NaelaoAgentDO`'s
+      `requestApproval` polled `HITLApprovalDO` inline for 28s (which auto-rejected at 30s) and
+      the loop read the timeout as `approved: false` — i.e. a refusal. An owner asleep, at work,
+      or on another screen could never approve anything, and their absence was reported to the
+      user as a rejection. For an agent whose differentiator is asking before it spends money,
+      that is the feature not existing. `HITLGateway` now returns a third state (`pending`);
+      `hitlGate` is tri-valued (`proceed`/`denied`/`pending`); a pending gate SUSPENDS the run
+      (new `LoopResult.pending_approval`, never an error result) and writes a `suspended_runs`
+      checkpoint; approving resumes it. **What makes re-entering the loop safe rather than a
+      replay hazard is where it stops** — at the gate, before the gated action ran — so the
+      checkpoint's `steps_completed` (the ungated work already done) is handed back as
+      `resumeSteps`/`priorSteps` instead of being repeated, and `preApprovedActions` lets the
+      approved action through exactly once (otherwise every resume would open a fresh request for
+      the very thing just approved). Resume routes by a new `approvals.resume_do_id` recorded at
+      request time — agent DOs are addressed per space:project:thread, so resuming "the space's
+      assistant DO" would silently find no checkpoint for any project-scoped run. Deliberately
+      NOT an in-memory continuation: DO hibernation destroys that, which is the exact wait this
+      feature exists to allow. TTL 24h, inline courtesy poll 20s.
+    - **A product could be created with no working address — FIXED.** The wizard called the
+      platform subdomain optional and said "pick this later"; there is no later (nothing anywhere
+      sets `product_slug` after creation) and the Product Shell builds every end-user URL as
+      `/p/{product_slug}`. A blank field produced a product that provisioned cleanly, reported
+      `active`, and could not be opened by its owner or any customer. `createSpaceRecord` now
+      derives a slug from the name (`deriveAvailableSlug`, suffix-on-collision rather than 409 on
+      a field the builder never filled in, reserved-list shared with the explicit-slug validator,
+      degrades to slugless only when nothing usable can be derived).
+    - **Soft-deleting a product burned its name permanently — FIXED** (item 64 flagged this as
+      "may still be real, unverified"; it is real). The unique index on `product_slug` doesn't
+      exclude deleted rows, so deleting "Launchpad" and rebuilding it could never reuse the name —
+      and, combined with the bug above, the replacement then had NO address at all. The two
+      compounded into a product that silently could not exist. DELETE now nulls the column,
+      preserving the old value as `config_json.deleted_product_slug` for audit.
+    - **The address shown everywhere pointed nowhere — FIXED.** `{slug}.naelao.app` was hardcoded
+      in six dashboard files; no DNS zone for that domain has ever existed on this account
+      (item 64). New `apps/dashboard/src/lib/product-url.ts` derives it from the real shell origin
+      (`NEXT_PUBLIC_SHELL_URL`, default `naelao-shell.pages.dev`), and the product header now
+      links it.
+    - **The model picker offered only models this account cannot serve — FIXED.** The
+      Configuration tab's three hardcoded Claude ids are all unreachable on a gateway without
+      Anthropic wired (item 68), so every product created here was born pointing at a model its
+      own agents could never call — surfacing only at the first message. Now renders from the
+      shared `ALLOWED_MODELS` (new `@naelao/billing-core` dep on `apps/dashboard`) defaulting to
+      `@cf/meta/llama-3.3-70b-instruct-fp8-fast`.
+    - **Discover:** `Promise.all` meant either the manifest or the business list failing threw
+      both away, and the resulting empty state was written for a user who genuinely has none — so
+      a load failure told someone their businesses did not exist. Now `allSettled` with a distinct
+      failure state and a retry. `my-businesses` also carries `onboarding_status`/`template_id`
+      (`json_extract` on a JOIN it already does, not an extra round trip per business) so an
+      unfinished business says so and links to its checklist.
+    - **Investigation note worth keeping:** the reported Discover symptom was NOT reproducible in
+      code — a live authenticated screenshot showed the page working correctly. Querying D1
+      directly found the real cause: the user had deleted and recreated their product mid-session,
+      and the recreated one had no slug (the bugs above), so `/products/by-slug/launchpad` 404'd
+      platform-wide. Repaired live (freed the deleted row's slug, assigned it to the live product
+      `f17b859b-aaf7-436e-a381-87cd6820429a`). Verify a reported UI bug against live DATA before
+      assuming the page is at fault.
+    2142/2142 tests pass (13 new), `npx turbo run typecheck` clean (76 tasks), `naelao-spaces` +
+    `naelao-agents` + both Pages apps deployed and verified live end-to-end (signup → create
+    business → Discover renders it).
+    **Still open vs. Palantir Orchestrator (verified in code this pass, not fixed):**
+    `AgentTaskWorkflow` wraps an entire agent run in ONE `step.do`, so the durable checkpoint
+    granularity is the whole run — a retry re-executes every tool call already made. And
+    `@naelao/idempotency` has ZERO consumers anywhere in the repo, so there is no exactly-once
+    guarantee on tool execution. Those two together are the remaining "no duplicate work" gap.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
