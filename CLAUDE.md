@@ -3071,10 +3071,33 @@ Re-verify before relying on any of these, but they are the real values as of thi
   `worker_loaders` is commented out in `workers/agents/wrangler.toml` (execution Tiers 2-4
   unavailable). Both unblock with the CF Workers Paid plan ($5/mo).
 - **Secrets NOT set (features degrade honestly until they are):** `WHOP_OAUTH_CLIENT_ID` /
-  `WHOP_OAUTH_CLIENT_SECRET` (one-click Whop connect — needs an app registered at Whop's
-  Developer Dashboard with redirect URI
-  `https://naelao-agents.crzzphillip.workers.dev/connectors/whop/oauth/callback`; the key-paste
-  path works meanwhile and the wizard now leads with it), and `TAVILY_API_KEY` (web search).
+  `WHOP_OAUTH_CLIENT_SECRET` (one-click Whop connect) and `TAVILY_API_KEY` (web search).
+  The key-paste path works meanwhile and the onboarding wizard now leads with it, so nothing is
+  blocked on this.
+- **Whop OAuth app registration — findings from the user's 2026-07-26 attempt, so this isn't
+  re-derived:**
+  - **App type: B2B / business (dashboard), NOT customer-facing.** Customer-facing means embedded
+    in a creator's whop and shown to THEIR members (Whop iframes it, hence its Base URL field).
+    Our flow is the opposite: a business owner authenticates their OWN Whop account so their
+    Naelao assistant can read products/payments/members. No Whop-hosted surface is ever shown to
+    anyone's members.
+  - **The Permissions tab needs `oauth:token_exchange`** — an App API key permission, NOT an OAuth
+    scope (per Whop's own setup guide). Our flow exchanges the code server-side, so without it the
+    redirect succeeds and the exchange still fails. Easy to miss.
+  - **Whop rejected `https://naelao-agents.crzzphillip.workers.dev/connectors/whop/oauth/callback`
+    as an invalid redirect URI.** Our side is fine — that URL returns **400, not 404**, i.e. the
+    route is registered and is only rejecting because there's no `code`/`state`. Leading (NOT
+    confirmed) hypothesis: `workers.dev` is on the Public Suffix List, a shared domain anyone can
+    take a subdomain of, which OAuth providers commonly refuse as a redirect target. `pages.dev`
+    is on the same list, so pointing at `naelao-shell.pages.dev` would not help. Confirm against
+    Whop's exact error text before acting on this.
+  - **This account has ZERO DNS zones** (verified via the CF API 2026-07-26) — no custom domain is
+    available today. Registering one would fix BOTH this and item 72's product-address problem
+    (the dashboard used to show `{slug}.naelao.app`, a domain with no zone anywhere).
+  - **The redirect URI is config-driven**: `${PUBLIC_AGENTS_URL}/connectors/{platform}/oauth/
+    callback` (`workers/agents/src/index.ts`). Whatever host ends up registered, the change is a
+    single `wrangler secret put PUBLIC_AGENTS_URL` — no code edit, no logic redeploy. Note the
+    PATH is fixed; only the host is configurable.
   ALREADY SET: `RESEND_API_KEY` on `naelao-notifications` (do not re-prompt), `PUBLIC_AGENTS_URL`,
   `CF_API_TOKEN`, `NAELAO_AIG_TOKEN`, `COMPOSIO_API_KEY`, `PIPEDREAM_*` on `naelao-agents`.
 - **Router var `PRODUCT_SHELL_URL` is still `http://localhost:3100`** — breaks the clickable link
