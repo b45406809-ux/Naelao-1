@@ -3214,44 +3214,48 @@ Re-verify before relying on any of these, but they are the real values as of thi
     callback` (`workers/agents/src/index.ts`). Whatever host ends up registered, the change is a
     single `wrangler secret put PUBLIC_AGENTS_URL` — no code edit, no logic redeploy. Note the
     PATH is fixed; only the host is configurable.
-  - **`invalid_scope` root-caused (2026-07-27) — our connector requested scopes that don't exist
-    in Whop's OAuth system.** `catalogue.ts`'s Whop `oauth.scopes` was
-    `["openid","read_memberships","read_payments","checkout_configuration:create",
-    "checkout_configuration:basic:read","plan:create","access_pass:create","access_pass:update"]`
-    — written against Whop's docs without live API access (item 58's own header already flagged
-    this risk). Confirmed live with the owner's API key: `PATCH /apps/:id` has a REAL
-    `required_scopes` field in its OpenAPI schema ("The OAuth scopes the app requests from users
-    when they install it") whose validator rejects every value except `read_user`
-    (`"Invalid value for parameter 'required_scopes.0': must be one of read_user"`). Every scope
-    our connector requested was therefore invalid by construction, not just unapproved. Fixed:
-    `scopes: ["read_user"]`, deployed, live-verified — `POST /connectors/whop/oauth/start` now
-    returns `scope=read_user` in the real authorize URL.
-    **`requested_permissions` (the `oauth:token_exchange` entry) is a SEPARATE system** — its own
-    OpenAPI description says it's "a permission that the app requests from the admin of a company
-    during the oauth flow," and it's managed ONLY via a dedicated `PATCH /apps/:id/permissions`
-    endpoint that requires an App-level API key (`app.api_key`, currently `null` — never
-    generated, and generating one needs `developer:manage_api_key`, a permission the owner's
-    personal `apik_...` key doesn't carry per its own `x-missing-permissions` response header).
-    The general `PATCH /apps/:id` endpoint's schema does not include `requested_permissions` at
-    all, which is why attempts to set it there 400 with a bare "Invalid value" regardless of shape.
-    **STILL BLOCKED — `read_user` itself is rejected live** (`error=invalid_scope` from
-    `api.whop.com/oauth/authorize` even with the corrected scope param), meaning the app has NO
-    OAuth scopes actually enabled yet despite the `required_scopes` PATCH returning 200 with no
-    error — the field is never echoed back by GET either, so that PATCH is a confirmed no-op
-    against the live app, not a persisted change (same "API accepts syntax but doesn't apply"
-    shape as `client_secret`, but this time there is no known API workaround — the CLI's own
-    `apps update --required_scopes` hits the identical array-flag bug `redirect_uris` had).
-    **This needs the Whop Developer Dashboard's own UI**: the app's OAuth section → "View
-    available scopes" button (per Whop's OAuth guide, confirmed via `docs.whop.com` earlier this
-    session) → check `read_user` → save. No further API path is known; do not re-attempt via
-    curl/CLI without a genuinely new lead.
-    **Flag, not fixed: item 58's OAuth-delegated end-user checkout** (`workers/billing/src/
+  - **`invalid_scope` — RESOLVED (2026-07-27, second pass).** The first pass's fix
+    (`scopes: ["read_user"]`) was ITSELF wrong — `read_user` still 302'd to
+    `error=invalid_scope` live even after that deploy. Root cause: `PATCH /apps/:id`'s
+    `required_scopes` field (what the first pass tested against) is a DIFFERENT, embedded-app-only
+    concept — the scope auto-granted when a member opens a Whop-hosted iframe app — and has
+    nothing to do with what the real standalone `/oauth/authorize` endpoint (our actual flow)
+    validates. Found the real answer by fetching Whop's own OAuth guide
+    (`docs.whop.com/developer/guides/oauth`) directly instead of trusting the `required_scopes`
+    validator's error message: standalone "Sign in with Whop" apps use the standard OIDC scope
+    triad — **`openid`, `profile`, `email`** — set via the dashboard's "View available scopes"
+    button, requested per-flow via the `scope` URL param. Confirmed live end-to-end, incrementally:
+    `scope=openid` alone returned a DIFFERENT, informative error
+    (`"nonce is required for openid scope"` — i.e. the scope itself was ACCEPTED, just missing a
+    param) and `scope=openid+profile+email` + a real `nonce` param redirected cleanly to
+    `whop.com/oauth/authorize?...` — Whop's actual login/consent page, no error. Fixed:
+    `catalogue.ts`'s Whop `oauth.scopes` is now `["openid", "profile", "email"]`;
+    `oauth.ts`/`buildAuthorizeUrl` gained a `nonce` param (required whenever `openid` is
+    requested — new `generateNonce()`, wired through `/connectors/:platform/oauth/start`); not
+    yet validated against an `id_token` (this flow resolves identity via the userinfo endpoint,
+    not by parsing an id_token — a real, scoped gap, flagged not silently dropped). Live-verified
+    THROUGH OUR OWN CODE PATH, not just raw curl against Whop: called the real, deployed
+    `POST /connectors/whop/oauth/start` with a minted internal token against the live tenant,
+    took the `authorize_url` it returned, and followed it — 302'd straight to Whop's real
+    consent page. **The Whop connect flow is now genuinely live and functional end to end**,
+    modulo a real click-through by an actual Whop-account holder (not done here — no browser
+    session available in this environment).
+    **`requested_permissions` (the `oauth:token_exchange` entry) remains a SEPARATE system** from
+    OAuth scopes — its own OpenAPI description says it's "a permission that the app requests from
+    the admin of a company during the oauth flow," managed only via a dedicated
+    `PATCH /apps/:id/permissions` endpoint that requires an App-level API key this app has never
+    generated (blocked on `developer:manage_api_key`, which the owner's personal key doesn't
+    carry). This was a real, separate dead end investigated in the first pass — not revisited,
+    since it turned out to be irrelevant to `invalid_scope` (a real OAuth scope, `read_user`, was
+    never the issue; the whole `required_scopes`/`requested_permissions` API surface was a red
+    herring for THIS bug, confirmed by the fix landing without touching either).
+    **Flag, still not fixed: item 58's OAuth-delegated end-user checkout** (`workers/billing/src/
     whop-oauth-billing.ts`) assumed `checkout_configuration:create`/`plan:create`/
-    `access_pass:create+update` were grantable OAuth scopes — they were never valid scopes at all.
-    Per `requested_permissions`'s own description, those company-resource actions are plausibly
-    gated by the CONNECTING USER'S OWN role in their Whop company once a token is issued, not by
-    OAuth scope — but this is UNVERIFIED (no live OAuth flow has ever completed against this app)
-    and needs re-checking once `read_user` is enabled and a real consent flow can run end to end.
+    `access_pass:create+update` were grantable OAuth scopes — confirmed now, definitively, that
+    they are not (the real scope set is `openid`/`profile`/`email`, nothing else). Whether the
+    resulting token can still perform those company-resource actions (gated by the connecting
+    user's own role in their Whop company, per `requested_permissions`'s description) is
+    UNVERIFIED — needs a real completed consent flow to check, now unblocked and ready to try.
   ALREADY SET: `RESEND_API_KEY` on `naelao-notifications` (do not re-prompt), `PUBLIC_AGENTS_URL`,
   `CF_API_TOKEN`, `NAELAO_AIG_TOKEN`, `COMPOSIO_API_KEY`, `PIPEDREAM_*` on `naelao-agents`.
 - **Router var `PRODUCT_SHELL_URL` is still `http://localhost:3100`** — breaks the clickable link

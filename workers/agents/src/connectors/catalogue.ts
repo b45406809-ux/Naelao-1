@@ -184,21 +184,25 @@ const WHOP: ConnectorDefinition = {
   oauth: {
     authorize_url: "https://api.whop.com/oauth/authorize",
     token_url: "https://api.whop.com/oauth/token",
-    // §A1.18 follow-up — corrected against Whop's LIVE API, not just its docs. Live-verified via
-    // the owner's own API key: PATCH /apps/:id with `required_scopes` (the real OAuth-scope field,
-    // found in the app's OpenAPI schema — distinct from `requested_permissions` below) rejects
-    // every value except `read_user` ("Invalid value for parameter 'required_scopes.0': must be
-    // one of read_user"). The prior list here — openid/read_memberships/read_payments/
-    // checkout_configuration:*/plan:create/access_pass:* — were never real "Sign in with Whop"
-    // OAuth scopes; they were written against Whop's docs without live API access (see item 58's
-    // own header) and are the direct cause of the `invalid_scope` error reported live. Whop's
-    // `requested_permissions` (visible on GET, e.g. `oauth:token_exchange`) is a SEPARATE
-    // App-permission system, "requested from the admin of a company during the oauth flow" per
-    // its own OpenAPI description — actual company-resource access (memberships, payments,
-    // checkout, plans, access passes) is gated by the CONNECTING USER'S OWN role in their Whop
-    // company once the token is issued, not by an OAuth scope string. `openid`/`profile` are not
-    // real Whop scopes either — `read_user` is what the userinfo lookup below actually needs.
-    scopes: ["read_user"],
+    // §A1.18 follow-up #2 — the PRIOR comment here (which shipped `scopes: ["read_user"]`) was
+    // itself wrong, caught by testing directly against the live `/oauth/authorize` endpoint
+    // instead of trusting `PATCH /apps/:id`'s `required_scopes` field. `required_scopes` is a
+    // DIFFERENT, embedded-app-only concept (the auto-granted scope a Whop iframe app gets when a
+    // member opens it) — its validator only accepting `read_user` says nothing about what the
+    // real standalone "Sign in with Whop" `/oauth/authorize` endpoint accepts, and `read_user`
+    // itself was live-confirmed to fail there with `invalid_scope`. Whop's own OAuth guide
+    // (docs.whop.com/developer/guides/oauth) documents the REAL standalone-app scopes as the
+    // standard OIDC triad — confirmed live: `scope=openid` alone returns a DIFFERENT error
+    // ("nonce is required for openid scope", i.e. the scope itself is accepted) and
+    // `scope=openid profile email` + a `nonce` param redirects cleanly to Whop's real
+    // login/consent page (`whop.com/oauth/authorize?...`). `requested_permissions` (visible on
+    // GET, e.g. `oauth:token_exchange`) remains a SEPARATE App-permission system, "requested from
+    // the admin of a company during the oauth flow" per its own OpenAPI description — actual
+    // company-resource access (memberships, payments, checkout, plans, access passes) is
+    // plausibly gated by the CONNECTING USER'S OWN role in their Whop company once the token is
+    // issued, not by an OAuth scope string — still UNVERIFIED end-to-end (no full consent flow
+    // has completed against this app), flagged again in item 58's own gap.
+    scopes: ["openid", "profile", "email"],
     client_id_env: "WHOP_OAUTH_CLIENT_ID",
     client_secret_env: "WHOP_OAUTH_CLIENT_SECRET",
     credential_name: "WHOP_OAUTH_TOKENS",

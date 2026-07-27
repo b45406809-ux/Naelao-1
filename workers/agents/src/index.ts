@@ -27,6 +27,7 @@ import { promoteSkill, inheritTemplateSkills } from "./script-engine/federation.
 import { verifyWebhookSignature, normalizeWebhook, webhookGoal } from "./connectors/webhook-normalizer.js";
 import {
   generatePkce,
+  generateNonce,
   buildAuthorizeUrl,
   exchangeCodeForTokens,
   refreshTokens,
@@ -1899,6 +1900,7 @@ app.post("/connectors/:platform/oauth/start", async (c) => {
   if (!body.return_url) throw badRequest("return_url is required");
 
   const { verifier, challenge } = await generatePkce();
+  const nonce = generateNonce();
   const ticket = await issueOAuthTicket(c.env.AGENT_CACHE, {
     verifier, spaceId: body.space_id, tenantId, userId, returnUrl: body.return_url, platform,
   });
@@ -1910,6 +1912,7 @@ app.post("/connectors/:platform/oauth/start", async (c) => {
     scopes: connector.oauth.scopes,
     state: ticket,
     codeChallenge: challenge,
+    nonce,
   });
   return c.json({ authorize_url });
 });

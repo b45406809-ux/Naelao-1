@@ -47,7 +47,11 @@ export interface OAuthTokens {
   expires_at: number;
 }
 
-/** Builds the authorize URL the browser is redirected to. */
+/** Builds the authorize URL the browser is redirected to.
+ *  Whop's live authorize endpoint REJECTS an `openid`-scoped request with no `nonce` param
+ *  ("nonce is required for openid scope", confirmed live) — standard OIDC behavior, but not
+ *  documented anywhere we found before hitting it. `nonce` is included whenever the scope list
+ *  requests `openid`; harmless to omit for a connector whose scopes don't include it. */
 export function buildAuthorizeUrl(params: {
   authorizeUrl: string;
   clientId: string;
@@ -55,6 +59,7 @@ export function buildAuthorizeUrl(params: {
   scopes: string[];
   state: string;
   codeChallenge: string;
+  nonce?: string;
 }): string {
   const u = new URL(params.authorizeUrl);
   u.searchParams.set("response_type", "code");
@@ -64,7 +69,16 @@ export function buildAuthorizeUrl(params: {
   u.searchParams.set("state", params.state);
   u.searchParams.set("code_challenge", params.codeChallenge);
   u.searchParams.set("code_challenge_method", "S256");
+  if (params.nonce && params.scopes.includes("openid")) u.searchParams.set("nonce", params.nonce);
   return u.toString();
+}
+
+/** Generates an opaque per-flow nonce for the `openid` scope's replay-protection param. Not
+ *  currently verified against an `id_token` (this flow resolves identity via the userinfo
+ *  endpoint, not by parsing an id_token) — a real, scoped gap, not silently claimed as complete;
+ *  it's still generated and sent since Whop's authorize endpoint requires SOME value be present. */
+export function generateNonce(): string {
+  return base64url(crypto.getRandomValues(new Uint8Array(16)));
 }
 
 interface TokenResponse {
