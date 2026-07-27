@@ -175,8 +175,11 @@
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 .ai-icon{width:28px;height:28px;border-radius:7px;background:var(--text);display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-right:12px;margin-top:2px}
 .ai-icon svg{fill:var(--bg);width:13px;height:13px}
-.bubble{max-width:100%;padding:10px 14px;border-radius:14px;font-size:14px;line-height:1.68;color:var(--ai-text);background:var(--ai-bubble)}
-.bubble.user{background:var(--user-bubble);color:var(--user-text);border-radius:14px 14px 4px 14px}
+/* Claude-style: only the user's own message gets bubble chrome (background/padding/radius). An
+   assistant/agent reply renders as plain text on the page background — no box around it — same
+   as claude.ai's own thread. .bubble alone (no .user) is now just a text-metrics wrapper. */
+.bubble{max-width:100%;font-size:14px;line-height:1.68;color:var(--ai-text)}
+.bubble.user{padding:10px 14px;border-radius:14px 14px 4px 14px;background:var(--user-bubble);color:var(--user-text)}
 .bubble p{margin-bottom:8px}.bubble p:last-child{margin-bottom:0}
 .bubble ul{padding-left:18px;margin-bottom:8px}.bubble ul li{margin-bottom:3px}
 .bubble strong{font-weight:500}.bubble em{font-style:italic;opacity:0.85}

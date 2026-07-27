@@ -24,11 +24,14 @@ export const runtime = "edge";
 import * as React from "react";
 import Link from "next/link";
 import { Card, CardLabel, CardValue, CardSub, Badge, type BadgeColor } from "@naelao/ui";
+import { ALLOWED_MODELS } from "@naelao/billing-core";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
 import {
   getAssistantPolicy,
+  updateAssistantPolicy,
+  updateModelConfig,
   getAssistantMemory,
   getAssistantCapabilities,
   listScheduledJobs,
@@ -64,6 +67,30 @@ import {
   type PendingApproval,
 } from "@/lib/api";
 import { relativeTime } from "@/lib/relativeTime";
+
+/** Same curated allowlist + default the dashboard's own Configuration tab picker uses — kept as
+ *  a parallel copy rather than a new shared export (this codebase's own precedent for a small
+ *  duplicated label map, e.g. mcp-hub/credentials each holding their own token helper — see
+ *  item 58). An id with no entry falls back to the id itself. */
+const DEFAULT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+const MODEL_LABELS: Record<string, string> = {
+  "claude-haiku-4-5-20251001": "Haiku — needs Anthropic on the gateway",
+  "claude-sonnet-4-6": "Sonnet — needs Anthropic on the gateway",
+  "claude-opus-4-8": "Opus — needs Anthropic on the gateway",
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast": "Llama 3.3 70B — balanced default",
+  "@cf/meta/llama-4-scout-17b-16e-instruct": "Llama 4 Scout — fast",
+  "@cf/openai/gpt-oss-120b": "GPT-OSS 120B — most capable",
+  "@cf/openai/gpt-oss-20b": "GPT-OSS 20B — cheap",
+  "@cf/qwen/qwen3-30b-a3b-fp8": "Qwen3 30B",
+  "@cf/mistralai/mistral-small-3.1-24b-instruct": "Mistral Small",
+  "@cf/ibm-granite/granite-4.0-h-micro": "Granite Micro — cheapest",
+  "@cf/google/gemma-4-26b-a4b-it": "Gemma 4 26B",
+  "@cf/zai-org/glm-4.7-flash": "GLM 4.7 Flash",
+  "@cf/zai-org/glm-5.2": "GLM 5.2",
+  "@cf/nvidia/nemotron-3-120b-a12b": "Nemotron 3 120B",
+  "@cf/moonshotai/kimi-k2.6": "Kimi K2.6",
+  "@cf/moonshotai/kimi-k2.7-code": "Kimi K2.7 Code",
+};
 
 function centsToDisplay(cents: number, currency = "USD"): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency, minimumFractionDigits: 2 }).format(cents / 100);
@@ -142,7 +169,7 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <div style={{ color: "var(--text3)", fontSize: 12, padding: "4px 0" }}>{children}</div>;
 }
 
-function Row({ left, right }: { left: React.ReactNode; right?: React.ReactNode }) {
+function Row({ left, right }: { left: React.ReactNode; right?: React.ReactNode | undefined }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
       <div style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{left}</div>
@@ -184,8 +211,12 @@ export default function DashboardPage() {
   const [members, setMembers] = React.useState<{ end_user_id: string; role: string }[]>([]);
   const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
   const [approvals, setApprovals] = React.useState<PendingApproval[]>([]);
+  const [currentModel, setCurrentModel] = React.useState<string | null>(null);
 
   const [loading, setLoading] = React.useState(true);
+  const [savingPolicy, setSavingPolicy] = React.useState(false);
+  const [savingModel, setSavingModel] = React.useState(false);
+  const [controlError, setControlError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (!creds || !activeSpaceId) return;
@@ -206,6 +237,22 @@ export default function DashboardPage() {
       settle(listAgentDefinitions(activeSpaceId, creds), setAgents),
       settle(getMe(activeSpaceId, creds), setMe),
       settle(listApprovals(activeSpaceId, creds), setApprovals),
+      // Always fetched (not just for a business): this is where the configured model lives for
+      // any space, and it's what previously silently defaulted to an unreachable Claude id with
+      // no visible control anywhere (item 79).
+      getShellManifest(activeSpaceId, creds)
+        .then((m) => {
+          if (cancelled) return;
+          setCurrentModel(m.model ?? null);
+          const commerce = m.ui.sidebar_items.some((item) => item.id === "revenue");
+          setHasCommerce(commerce);
+          if (!commerce || !isBusinessSpace) return;
+          return Promise.all([
+            settle(getBusinessRevenue(activeSpaceId, creds), setRevenue),
+            settle(listBusinessOrders(activeSpaceId, creds), setOrders),
+          ]).then(() => undefined);
+        })
+        .catch(() => {}),
     ];
 
     if (isBusinessSpace) {
@@ -217,19 +264,7 @@ export default function DashboardPage() {
         settle(getBusinessWalletBalance(activeSpaceId, creds), setWallet),
         settle(getBusinessWalletTransactions(activeSpaceId, creds, 6), setWalletTx),
         settle(listBusinessMembers(activeSpaceId, creds), setMembers),
-        settle(getConnectorStatus(activeSpaceId, creds), setConnectors),
-        getShellManifest(activeSpaceId, creds)
-          .then((m) => {
-            const commerce = m.ui.sidebar_items.some((item) => item.id === "revenue");
-            if (cancelled) return;
-            setHasCommerce(commerce);
-            if (!commerce) return;
-            return Promise.all([
-              settle(getBusinessRevenue(activeSpaceId, creds), setRevenue),
-              settle(listBusinessOrders(activeSpaceId, creds), setOrders),
-            ]).then(() => undefined);
-          })
-          .catch(() => {})
+        settle(getConnectorStatus(activeSpaceId, creds), setConnectors)
       );
     } else {
       setBusiness(null);
@@ -248,6 +283,40 @@ export default function DashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [creds, activeSpaceId, isBusinessSpace, product.space_id]);
 
+  // item 79: the guided/autonomous toggle and model picker are real writes, not display-only —
+  // gated to a business admin, the same floor requireBusinessMembership enforces server-side.
+  // A plain member (or a non-business/team-mode space, where an end user is never more than
+  // "member") sees the same panel read-only, same as before this pass.
+  const canManageAssistant = isBusinessSpace && business?.role === "admin";
+
+  async function setAutonomy(autonomous: boolean) {
+    if (!activeSpaceId || !creds) return;
+    setSavingPolicy(true);
+    setControlError(null);
+    try {
+      const next = await updateAssistantPolicy(activeSpaceId, creds, { approval_mode: autonomous ? "yolo" : "always_ask" });
+      setPolicy(next);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "Couldn't update autonomy");
+    } finally {
+      setSavingPolicy(false);
+    }
+  }
+
+  async function setModel(model: string) {
+    if (!activeSpaceId || !creds) return;
+    setSavingModel(true);
+    setControlError(null);
+    try {
+      const next = await updateModelConfig(activeSpaceId, creds, model);
+      setCurrentModel(next.model);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "Couldn't update the model");
+    } finally {
+      setSavingModel(false);
+    }
+  }
+
   if (!creds) return null;
 
   const modeLabel =
@@ -260,6 +329,7 @@ export default function DashboardPage() {
           : policy?.approval_mode === "always_ask"
             ? "Asks before acting"
             : "—";
+  const isAutonomous = policy?.approval_mode === "yolo";
 
   const heading = isBusinessSpace ? (business?.name ?? activeSpaceName ?? "Business") : (activeSpaceName ?? product.product_name);
   const connectedApps = connectors.filter((c) => c.connected).length;
@@ -411,7 +481,38 @@ export default function DashboardPage() {
       <SectionHeading>Assistant</SectionHeading>
       <div style={panelGrid}>
         <Panel title="Configuration">
-          <Row left="Autonomy" right={modeLabel} />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <div>
+              <Row left="Autonomy" right={canManageAssistant ? undefined : modeLabel} />
+              {!canManageAssistant && (
+                <div style={{ fontSize: 11, color: "var(--text3)" }}>
+                  {isAutonomous ? "Acts without asking first." : "Asks before scaffolding a project or spending anything."}
+                </div>
+              )}
+            </div>
+            {canManageAssistant && (
+              <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                <button
+                  type="button"
+                  className={isAutonomous ? "btn btn-secondary" : "btn btn-primary"}
+                  disabled={savingPolicy || !isAutonomous}
+                  onClick={() => void setAutonomy(false)}
+                  style={{ padding: "4px 10px", fontSize: 11.5 }}
+                >
+                  Guided
+                </button>
+                <button
+                  type="button"
+                  className={isAutonomous ? "btn btn-primary" : "btn btn-secondary"}
+                  disabled={savingPolicy || isAutonomous}
+                  onClick={() => void setAutonomy(true)}
+                  style={{ padding: "4px 10px", fontSize: 11.5 }}
+                >
+                  Autonomous
+                </button>
+              </div>
+            )}
+          </div>
           <Row left="Pre-approved actions" right={String(policy?.auto_approved_actions?.length ?? 0)} />
           {policy?.auto_approved_actions?.length ? (
             <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--text3)", lineHeight: 1.6 }}>
@@ -420,9 +521,40 @@ export default function DashboardPage() {
           ) : (
             <Empty>Every action is confirmed with you before it happens.</Empty>
           )}
-          <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--text3)" }}>
-            Autonomy is changed by the space owner in the builder dashboard.
+
+          <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <span style={{ fontSize: 12.5 }}>Model</span>
+              {canManageAssistant ? (
+                <select
+                  value={currentModel ?? DEFAULT_MODEL}
+                  disabled={savingModel}
+                  onChange={(e) => void setModel(e.target.value)}
+                  style={{
+                    fontSize: 11.5, padding: "3px 6px", borderRadius: 6, border: "1px solid var(--border)",
+                    background: "var(--bg)", color: "var(--text1)", maxWidth: 220,
+                  }}
+                >
+                  {ALLOWED_MODELS.map((m) => (
+                    <option key={m} value={m}>{MODEL_LABELS[m] ?? m}</option>
+                  ))}
+                </select>
+              ) : (
+                <span style={{ fontSize: 11.5, color: "var(--text3)" }}>
+                  {MODEL_LABELS[currentModel ?? DEFAULT_MODEL] ?? currentModel ?? DEFAULT_MODEL}
+                </span>
+              )}
+            </div>
           </div>
+
+          {controlError && (
+            <div style={{ marginTop: 8, fontSize: 11.5, color: "#dc2626" }}>{controlError}</div>
+          )}
+          {!canManageAssistant && (
+            <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--text3)" }}>
+              {isBusinessSpace ? "Only a business admin can change autonomy or model." : "Changed by the space owner in the builder dashboard."}
+            </div>
+          )}
         </Panel>
 
         <Panel title="Built-in scripts" count={capabilities?.prebuilt_count}>

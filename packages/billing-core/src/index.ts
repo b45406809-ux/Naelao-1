@@ -207,6 +207,19 @@ export type AllowedModel = (typeof ALLOWED_MODELS)[number];
 export function isAllowedModel(model: string): model is AllowedModel {
   return (ALLOWED_MODELS as readonly string[]).includes(model);
 }
+
+/**
+ * The model a run falls back to when neither an explicit request nor a product's own
+ * `productConfig.modelConfig.model` names one. This used to be a bare `"claude-sonnet-4-6"`
+ * literal at each fallback site — on an account whose AI Gateway has no Anthropic provider wired
+ * (see CLAUDE.md item 68 — Workers AI only, confirmed live), that string 404s with "Model not
+ * found" on every single unconfigured product. A Claude id is only a safe default on a deployment
+ * that actually has Anthropic behind its gateway; a Workers AI id is the one guaranteed to resolve
+ * everywhere, so it is the shared default rather than a Claude one. Matches the dashboard's own
+ * model-picker default (apps/dashboard's Configuration tab) — both must name the same model or a
+ * builder who never opens Configuration gets a different default than the one shown as selected.
+ */
+export const DEFAULT_WORKING_MODEL: AllowedModel = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 /** Context window size for a model, falling back to a documented default for an unknown model

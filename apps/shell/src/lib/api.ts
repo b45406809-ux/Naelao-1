@@ -95,6 +95,11 @@ export interface ShellManifest {
     suppress_naelao_branding: boolean;
   };
   assistant_mode: string;
+  /** §A1.28 model switcher — null means unset (the dispatch layer's own DEFAULT_WORKING_MODEL
+   *  fallback applies). Present in the real backend response since item 48; the type just never
+   *  carried it (item 79 — same "server sends it, TS type didn't know" gap as template_catalog's
+   *  missing free_tier_eligible, item 65). */
+  model: string | null;
   sub_space_display: unknown;
   allow_public_signup: boolean;
   auth_provider: string;
@@ -190,6 +195,17 @@ export interface Message {
   author_type?: "user" | "agent" | "assistant" | "tool";
   /** The agent's own id for author_type "agent"; the person's id for "user". */
   author_id?: string | null;
+  /** item 79: when this assistant message resulted from consulting a project agent, which
+   *  subthread(s) it opened — rendered inline as an expandable card at this exact turn instead
+   *  of only in the separate "Assistant" tab. Absent/empty for an ordinary message. */
+  metadata?: { consulted_threads?: ConsultedThread[] };
+}
+
+export interface ConsultedThread {
+  thread_id: string;
+  agent_id: string;
+  title: string;
+  session_id?: string;
 }
 
 export interface AgentRun {
@@ -529,6 +545,25 @@ export interface AssistantPolicy {
 
 export async function getAssistantPolicy(spaceId: string, session: SessionCredentials): Promise<AssistantPolicy> {
   return apiFetch(`/v1/spaces/${spaceId}/assistant-policy`, { session });
+}
+
+// item 79: a business admin can now change their OWN business's guided/autonomous policy — this
+// was previously a builder-dashboard-only write (the route 403'd every product_end_user caller
+// outright). Not exposed for a plain member — the caller composing the request enforces that in
+// the UI, and requireBusinessMembership enforces it for real on the backend either way.
+export async function updateAssistantPolicy(
+  spaceId: string,
+  session: SessionCredentials,
+  patch: Partial<AssistantPolicy>
+): Promise<AssistantPolicy> {
+  return apiFetch(`/v1/spaces/${spaceId}/assistant-policy`, { method: "PATCH", body: JSON.stringify(patch), session });
+}
+
+// item 79: which model this business's assistant/agents run on — a business-scoped counterpart
+// to the dashboard's own product-level model picker (Configuration tab), reachable by whoever
+// actually owns the business rather than only the platform builder account.
+export async function updateModelConfig(spaceId: string, session: SessionCredentials, model: string): Promise<{ model: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/model-config`, { method: "PATCH", body: JSON.stringify({ model }), session });
 }
 
 export interface MemoryFact {

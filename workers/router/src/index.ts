@@ -572,8 +572,13 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // spaces worker (member GET / admin POST), same identity-here-authorization-there split.
   /^\/spaces\/([^/]+)\/onboarding$/,
   // WS-2 (Space Assistant surface): the Status/Crons panels — additionally gated by
-  // resolveEndUserBusinessRole on the spaces worker exactly like the routes above.
+  // resolveEndUserBusinessRole on the spaces worker exactly like the routes above. PATCH is now
+  // reachable too (a business-admin end user genuinely IS the owner of their own business, see
+  // that route's own comment) — requireBusinessMembership's admin floor does the real gating.
   /^\/spaces\/([^/]+)\/assistant-policy$/,
+  // Which model this business's assistant/agents run on — admin-gated by requireBusinessMembership
+  // on the spaces worker, same identity-here-authorization-there split as every route above.
+  /^\/spaces\/([^/]+)\/model-config$/,
   /^\/spaces\/([^/]+)\/scheduled-jobs$/,
   // The Memory/Channels/Sub-agents/Files panels — additionally gated by
   // requireEndUserBusinessMembership on the agents worker (same floor, different worker since

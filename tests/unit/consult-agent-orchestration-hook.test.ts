@@ -71,14 +71,24 @@ function makeDO(agentDONs: DurableObjectNamespace, spacesWorker: Fetcher): Naela
   return new NaelaoAgentDO(ctx as never, env as never);
 }
 
-function getConsultHook(doInstance: NaelaoAgentDO): OrchestrationHooks["consultAgent"] {
+type ConsultLogEntry = { thread_id: string; agent_id: string; title: string; session_id?: string };
+
+function getConsultHook(
+  doInstance: NaelaoAgentDO,
+  consultLog?: ConsultLogEntry[]
+): OrchestrationHooks["consultAgent"] {
   // buildOrchestrationHooks is private — cast to reach it, the same way this file drives
   // consultAgentImpl's real logic rather than re-testing a hand-rolled substitute.
   const hooks = (doInstance as unknown as {
     buildOrchestrationHooks: (
-      spaceId: string, agentId: string, tenantId: string, apiKey: string, parentRunId: string
+      spaceId: string, agentId: string, tenantId: string, apiKey: string, parentRunId: string,
+      parentThreadId?: string, projectId?: string, tools?: unknown, userId?: string,
+      consultLog?: ConsultLogEntry[]
     ) => OrchestrationHooks;
-  }).buildOrchestrationHooks("space-1", "naelao-agent", "tenant-1", "", "run-1");
+  }).buildOrchestrationHooks(
+    "space-1", "naelao-agent", "tenant-1", "", "run-1",
+    undefined, undefined, undefined, undefined, consultLog
+  );
   return hooks.consultAgent;
 }
 
@@ -165,5 +175,52 @@ describe("consultAgentImpl (via buildOrchestrationHooks.consultAgent)", () => {
     const result = await consult({ agentId: "wallet-agent", message: "do the impossible", spaceId: "space-1" });
     expect(result.ok).toBe(false);
     expect(result.error).toBe("no such tool");
+  });
+
+  // item 79: what makes the inline consult card possible — a successful consult must be
+  // recorded with enough to render it (thread_id + a fetchable session_id), keyed to which agent
+  // was actually addressed.
+  describe("consultLog recording (item 79 — inline consult cards)", () => {
+    it("records thread_id/agent_id/session_id on a successful consult", async () => {
+      const { namespace } = makeAgentDONamespace({ result: { ok: true, output: "done" } });
+      const consultLog: ConsultLogEntry[] = [];
+      const doInstance = makeDO(namespace, makeSpacesWorker([]));
+      const consult = getConsultHook(doInstance, consultLog)!;
+
+      await consult({ agentId: "wallet-agent", message: "check balance", spaceId: "space-1" });
+
+      expect(consultLog).toEqual([{ thread_id: "thread-1", agent_id: "wallet-agent", title: "Consult: wallet-agent", session_id: "sess-1" }]);
+    });
+
+    it("still records it when the consulted agent itself needs approval (a real thread exists either way)", async () => {
+      const { namespace } = makeAgentDONamespace({ pending_approval: { action_name: "commerce.payout" } });
+      const consultLog: ConsultLogEntry[] = [];
+      const doInstance = makeDO(namespace, makeSpacesWorker([]));
+      const consult = getConsultHook(doInstance, consultLog)!;
+
+      await consult({ agentId: "wallet-agent", message: "pay out $50", spaceId: "space-1" });
+
+      expect(consultLog).toHaveLength(1);
+      expect(consultLog[0]!.agent_id).toBe("wallet-agent");
+    });
+
+    it("does not record a consult that never even opened a thread (missing agent_id/message)", async () => {
+      const { namespace } = makeAgentDONamespace({ result: { ok: true, output: "x" } });
+      const consultLog: ConsultLogEntry[] = [];
+      const doInstance = makeDO(namespace, makeSpacesWorker([]));
+      const consult = getConsultHook(doInstance, consultLog)!;
+
+      await consult({ agentId: "", message: "", spaceId: "space-1" });
+
+      expect(consultLog).toEqual([]);
+    });
+
+    it("is a no-op (never throws) when the caller doesn't pass a consultLog at all", async () => {
+      const { namespace } = makeAgentDONamespace({ result: { ok: true, output: "x" } });
+      const doInstance = makeDO(namespace, makeSpacesWorker([]));
+      const consult = getConsultHook(doInstance)!; // no consultLog
+
+      await expect(consult({ agentId: "wallet-agent", message: "hi", spaceId: "space-1" })).resolves.toMatchObject({ ok: true });
+    });
   });
 });

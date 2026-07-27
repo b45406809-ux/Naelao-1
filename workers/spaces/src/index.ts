@@ -14,6 +14,7 @@ import { requireBusinessMembership, requireBusinessMembershipForWallet, resolveE
 import { createBusinessForEndUser } from "./business-create.js";
 import { loadTemplateCatalog, loadShellCatalog } from "./template-catalog.js";
 import { registerBusinessRoutes } from "./business-routes.js";
+import { ALLOWED_MODELS, isAllowedModel } from "@naelao/billing-core";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
@@ -1726,20 +1727,24 @@ app.delete("/spaces/:spaceId/scheduled-jobs/:jobId", async (c) => {
 });
 
 // Space Assistant approval policy — "same access as the owning user, ask first unless the
-// user has trusted this action." PATCH stays owner-authenticated only; the assistant can never
-// set its own policy. WS-2: GET is now also reachable by a product_end_user viewing their own
+// user has trusted this action." WS-2: GET is reachable by a product_end_user viewing their own
 // Space Assistant's Status panel (which permissions the assistant currently has) — gated by the
-// same resolveEndUserBusinessRole floor every other end-user-reachable route uses.
+// same resolveEndUserBusinessRole floor every other end-user-reachable route uses. PATCH used to
+// be blocked outright for every product_end_user, on the theory that only a JWT builder could
+// ever be "the owner" — but on a Launchpad business an end user with admin role on their OWN
+// business genuinely IS its owner (§A1.18/item 79: an end-user-created business needs the SAME
+// guided/autonomous toggle a dashboard-created one already has, or "does everything on the
+// user's behalf in yolo mode" has no real control surface for the person who actually runs the
+// business). requireBusinessMembership's admin floor is what makes this safe: a plain member
+// still cannot change it, and a caller who isn't a member of THIS business at all is refused
+// before reaching here — same precedent as local-grants/pricing's own admin-gated writes. A
+// builder JWT caller (role !== "product_end_user") is untouched, exactly as before.
 app.use("/spaces/:spaceId/assistant-policy", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/assistant-policy", requireBusinessMembership({ GET: "member", PATCH: "admin" }));
 app.get("/spaces/:spaceId/assistant-policy", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
-  const callerIdentity = getCallerIdentity(c);
-  if (callerIdentity.role === "product_end_user") {
-    const role = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, spaceId, callerIdentity.userId);
-    if (!role) return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
-  }
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/assistant-policy?space_id=${encodeURIComponent(spaceId)}`, "GET");
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
@@ -1749,15 +1754,40 @@ app.patch("/spaces/:spaceId/assistant-policy", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
   if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
-  // WS-2: the router allowlist for this path (GET+PATCH share it, no distinguishing sub-path)
-  // only proves identity — a product_end_user must never be able to CHANGE the assistant's own
-  // approval policy, only read it (same "GET only" precedent as agent-definitions/scheduled-jobs).
-  if (getCallerIdentity(c).role === "product_end_user") {
-    return c.json({ error_code: "forbidden", message: "product_end_user callers may only read the assistant policy" }, 403);
-  }
   const stub = await spaceDoStub(c.env, spaceId, tenantId);
   const res = await forwardToSpaceDO(stub, `/assistant-policy?space_id=${encodeURIComponent(spaceId)}`, "PATCH", c.req.raw.body);
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+// PATCH /spaces/:spaceId/model-config — which model THIS business's assistant/agents run on.
+// §A1.28 shipped the switcher only on /builder/products/:id (JWT-builder-only, via the
+// dashboard) — a business an end user created and owns had no reachable way to change it, the
+// same reachability gap assistant-policy had (see the comment above). Reuses the exact
+// member-billing config_json-override pattern: read the space's OWN row (not the product root —
+// each business space carries its own productConfig override), merge modelConfig.model in,
+// write back. Same curated-allowlist validation as the builder route, so the two paths can never
+// let a caller pick a model contextWindowForModel/tokensToCredits don't know how to price.
+app.use("/spaces/:spaceId/model-config", requireBusinessMembership({ PATCH: "admin" }));
+app.patch("/spaces/:spaceId/model-config", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const owned = await loadOwnedSpace(c, spaceId);
+  if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
+
+  const body = await c.req.json<{ model?: string }>().catch(() => ({}) as { model?: string });
+  if (!body.model || !isAllowedModel(body.model)) {
+    return c.json({ error_code: "bad_request", message: `model must be one of ${ALLOWED_MODELS.join(", ")}` }, 400);
+  }
+
+  let config: { productConfig?: Partial<SpaceTypeProductConfig> } & Record<string, unknown> = {};
+  if (owned.configJson) {
+    try { config = JSON.parse(owned.configJson); } catch { /* start clean on malformed */ }
+  }
+  config.productConfig = { ...(config.productConfig ?? {}), modelConfig: { model: body.model } };
+  await c.env.PLATFORM_DB.prepare(
+    "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
+  ).bind(JSON.stringify(config), new Date().toISOString(), spaceId, owned.tenantId).run();
+
+  return c.json({ model: body.model });
 });
 
 // ── Builder observability surface (security audit follow-up) ────────────────
@@ -3324,9 +3354,10 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
       suppress_naelao_branding: pc?.branding?.suppressNaelaoBranding ?? false,
     },
     assistant_mode: pc?.assistantMode ?? "per-user",
-    // §A1.28 (model switcher): null means "unset" — the dispatch layer's own hardcoded fallback
-    // (e.g. "claude-haiku-4-5-20251001") applies, same meaning as every other unset productConfig
-    // field in this projection.
+    // §A1.28 (model switcher): null means "unset" — the dispatch layer's own DEFAULT_WORKING_MODEL
+    // fallback (@naelao/billing-core, a Workers AI id — see CLAUDE.md item 68/79: a Claude default
+    // 404s on an account with no Anthropic provider on its gateway) applies, same meaning as every
+    // other unset productConfig field in this projection.
     model: pc?.modelConfig?.model ?? null,
     sub_space_display: pc?.subSpaceDisplay ?? null,
     allow_public_signup: pc?.allowPublicSignup ?? false,

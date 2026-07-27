@@ -26,7 +26,8 @@ import {
   clearActiveRunId,
 } from "@/lib/chatSession";
 import { ContextUsageMeter } from "./ContextUsageMeter";
-import { SubthreadPanel } from "./SubthreadPanel";
+import { SubthreadPanel, SubthreadEntry } from "./SubthreadPanel";
+import type { ThreadSummary, ConsultedThread } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 1500;
 const MAX_POLL_DURATION_MS = 60_000;
@@ -45,6 +46,24 @@ function authorLabel(m: Message): string | null {
     .replace(/-v\d+$/, "")
     .replace(/[-_]/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** item 79: a message's own metadata carries just enough to render the SAME expandable card
+ *  SubthreadPanel already knows how to render — building a minimal ThreadSummary-shaped object
+ *  from it rather than a second component, so expand/fetch-messages logic exists in one place. */
+function consultThreadSummary(spaceId: string, c: ConsultedThread): ThreadSummary {
+  return {
+    id: c.thread_id,
+    space_id: spaceId,
+    project_id: null,
+    title: c.title,
+    status: "active",
+    thread_kind: "sub_agent",
+    parent_thread_id: null,
+    session_id: c.session_id ?? null,
+    created_at: "",
+    updated_at: "",
+  };
 }
 
 export function Chat({
@@ -398,6 +417,15 @@ export function Chat({
                     </div>
                   )}
                   <div className={["bubble", m.role === "user" ? "user" : ""].filter(Boolean).join(" ")}>{m.content}</div>
+                  {/* item 79: where the assistant delegated to a project agent on the user's
+                      behalf, right at the turn it happened — collapsed by default, expandable
+                      in place. A separate, private exchange (see SubthreadPanel's own header),
+                      never appended to this visible transcript itself. */}
+                  {m.metadata?.consulted_threads?.map((c) => (
+                    <div key={c.thread_id} style={{ marginTop: 6, maxWidth: 420 }}>
+                      <SubthreadEntry spaceId={spaceId} thread={consultThreadSummary(spaceId, c)} session={session} />
+                    </div>
+                  ))}
                 </div>
               </div>
             ))}

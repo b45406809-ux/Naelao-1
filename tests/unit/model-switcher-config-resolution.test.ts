@@ -164,15 +164,19 @@ describe("POST /agent/run — resolves the configured model, not the dead spacet
     expect((calls[0]!.body as { model?: string }).model).toBe("claude-opus-4-8");
   });
 
-  it("falls back to the hardcoded default when no model is configured", async () => {
+  // item 79: this used to be a bare "claude-sonnet-4-6" literal at each fallback site — on an
+  // account with no Anthropic provider on its AI Gateway (Workers AI only, item 68), that string
+  // 404'd with "Model not found" on every product that never explicitly configured a model.
+  // DEFAULT_WORKING_MODEL (@naelao/billing-core) is the one guaranteed to resolve everywhere.
+  it("falls back to DEFAULT_WORKING_MODEL when no model is configured", async () => {
     const { env, calls } = makeAgentsEnv("{}");
     await runReq(env, "hello");
-    expect((calls[0]!.body as { model?: string }).model).toBe("claude-sonnet-4-6");
+    expect((calls[0]!.body as { model?: string }).model).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
   });
 
-  it("falls back to the hardcoded default when config_json is malformed", async () => {
+  it("falls back to DEFAULT_WORKING_MODEL when config_json is malformed", async () => {
     const { env, calls } = makeAgentsEnv("{not valid json");
     await runReq(env, "hello");
-    expect((calls[0]!.body as { model?: string }).model).toBe("claude-sonnet-4-6");
+    expect((calls[0]!.body as { model?: string }).model).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
   });
 });

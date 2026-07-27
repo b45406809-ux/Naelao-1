@@ -924,6 +924,20 @@ const MIGRATIONS: Migration[] = [
       CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_session ON threads(session_id) WHERE session_id IS NOT NULL;
     `,
   },
+  {
+    // messages.metadata — same free-form JSON-override pattern sessions.metadata already used
+    // (this table, migration 0001). Item 79 (inline consult cards): when the assistant's own
+    // reply in a visible thread resulted from consulting a project agent in a hidden subthread
+    // (agent.consult), the ASSISTANT'S message here carries which subthread(s) it opened —
+    // {consulted_threads: [{thread_id, agent_id, title}]} — so the client can render an inline,
+    // expandable card at the exact point in the conversation where the delegation happened,
+    // instead of only in a separate side panel with no correlation to any specific turn.
+    version: 33,
+    description: "messages.metadata — carries structured per-message data (e.g. consulted_threads)",
+    up: `
+      ALTER TABLE messages ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -964,6 +978,8 @@ interface MessageRow {
   // "Agent2" vs the assistant instead of every non-user message collapsing into one identity.
   author_type: string;
   author_id: string | null;
+  /** Raw JSON string (migration v33) — parsed in getMessages before it reaches a client. */
+  metadata: string;
 }
 
 interface AgentStateRow {
@@ -1642,6 +1658,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // never a human — those calls carry no x-naelao-role header at all (internalHeaders()
       // only sets tenant + internal-token), so this is how they name which agent replied.
       agent_id?: string;
+      // item 79: structured per-message data, same trust level as agent_id above (an internal
+      // write-back only) — e.g. {consulted_threads:[{thread_id, agent_id, title}]} so the client
+      // can render an inline card at the exact turn where the assistant consulted a project agent.
+      metadata?: Record<string, unknown>;
     }>();
 
     // G-D02: Reject oversized messages before writing to SQLite
@@ -1707,8 +1727,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
 
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO messages (id, session_id, role, content, tool_call_id, tool_name, token_count, created_at, author_type, author_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages (id, session_id, role, content, tool_call_id, tool_name, token_count, created_at, author_type, author_id, metadata)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       sessionId,
       body.role,
@@ -1718,7 +1738,8 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       body.token_count ?? null,
       now,
       authorType,
-      authorId
+      authorId,
+      body.metadata ? JSON.stringify(body.metadata) : "{}"
     );
 
     // Update session updated_at
@@ -1730,7 +1751,10 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     );
 
     return Response.json(
-      { id, session_id: sessionId, role: body.role, author_type: authorType, author_id: authorId, created_at: now },
+      {
+        id, session_id: sessionId, role: body.role, author_type: authorType, author_id: authorId, created_at: now,
+        ...(body.metadata ? { metadata: body.metadata } : {}),
+      },
       { status: 201 }
     );
   }
@@ -1773,7 +1797,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
           limit
         );
 
-    return Response.json({ data: rows, count: rows.length });
+    // metadata is stored as a raw JSON string column (matching sessions.metadata's own
+    // convention) — parsed here so the client never has to double-decode it. A malformed value
+    // (shouldn't happen — only this route's own JSON.stringify ever writes it) degrades to {}
+    // rather than breaking the whole message list.
+    const data = rows.map((r) => {
+      let metadata: Record<string, unknown> = {};
+      try { metadata = JSON.parse((r as unknown as { metadata?: string }).metadata ?? "{}"); } catch { /* default {} */ }
+      return { ...r, metadata };
+    });
+
+    return Response.json({ data, count: data.length });
   }
 
   private async updateSession(request: Request, sessionId: string): Promise<Response> {

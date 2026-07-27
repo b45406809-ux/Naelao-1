@@ -456,6 +456,71 @@ describe("GET /spaces/:spaceId/sessions (list)", () => {
   });
 });
 
+// item 79 (inline consult cards): messages.metadata round-trips a real JSON object through POST
+// and GET, so the client can render a card at the exact turn a consult happened without a second
+// mechanism correlating threads to messages.
+describe("messages.metadata (item 79)", () => {
+  async function internalHeaders(tenantId: string, extra: Record<string, string> = {}): Promise<Record<string, string>> {
+    const token = await mintInternalToken("test-platform-secret", tenantId);
+    return { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token, ...extra };
+  }
+
+  async function createSession(env: ReturnType<typeof makeEnv>, spaceId: string, tenantId: string): Promise<string> {
+    const res = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/${spaceId}/sessions`, {
+        method: "POST", headers: await internalHeaders(tenantId), body: JSON.stringify({}),
+      }),
+      env as never, execCtx
+    );
+    return ((await res.json()) as { id: string }).id;
+  }
+
+  it("persists an assistant message's metadata and returns it, already parsed, on GET", async () => {
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    const sessionId = await createSession(env, "prod-1", "tenant-1");
+    const metadata = { consulted_threads: [{ thread_id: "thread-9", agent_id: "wallet-agent", title: "Consult: wallet-agent", session_id: "sess-9" }] };
+
+    const postRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${sessionId}/messages`, {
+        method: "POST",
+        headers: await internalHeaders("tenant-1"),
+        body: JSON.stringify({ role: "assistant", content: "checked the wallet for you", agent_id: "naelao-agent", metadata }),
+      }),
+      env as never, execCtx
+    );
+    expect(postRes.status).toBe(201);
+    expect((await postRes.json()) as { metadata: unknown }).toMatchObject({ metadata });
+
+    const getRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${sessionId}/messages`, { headers: await internalHeaders("tenant-1") }),
+      env as never, execCtx
+    );
+    const body = (await getRes.json()) as { data: Array<{ content: string; metadata: unknown }> };
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]!.metadata).toEqual(metadata);
+  });
+
+  it("an ordinary message with no metadata gets an empty object, not undefined or a raw string", async () => {
+    const env = makeEnv();
+    await seedSpace(env, "prod-1", "tenant-1");
+    const sessionId = await createSession(env, "prod-1", "tenant-1");
+
+    await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${sessionId}/messages`, {
+        method: "POST", headers: await internalHeaders("tenant-1"), body: JSON.stringify({ role: "user", content: "hi" }),
+      }),
+      env as never, execCtx
+    );
+    const getRes = await spacesWorker.fetch(
+      new Request(`https://spaces.naelao.com/spaces/prod-1/sessions/${sessionId}/messages`, { headers: await internalHeaders("tenant-1") }),
+      env as never, execCtx
+    );
+    const body = (await getRes.json()) as { data: Array<{ metadata: unknown }> };
+    expect(body.data[0]!.metadata).toEqual({});
+  });
+});
+
 describe("GET /products/by-slug/:slug", () => {
   it("resolves an active product's space id + safe branding from its slug, with no credentials at all", async () => {
     const env = makeEnv();

@@ -1802,7 +1802,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // F-36: the acting user the PARENT run is on behalf of — threaded into every child spawn
     // so a clamped parent can't escape its per-user clamp by fanning work out to sub-agents
     // (the child's own handleScriptRun re-resolves the same clamp for the same user).
-    userId?: string
+    userId?: string,
+    // item 79 (inline consult cards): when given, every agent.consult call this run makes is
+    // recorded here — thread_id/agent_id, regardless of whether the consult itself succeeded
+    // (the subthread and the assistant's opening message were created either way, so it's still
+    // worth a link). The caller attaches this to the run's own answer message as metadata so the
+    // client can render an inline, expandable card at the point in the conversation where the
+    // delegation happened, instead of only in a separate side panel with no correlation to any
+    // specific turn.
+    consultLog?: Array<{ thread_id: string; agent_id: string; title: string; session_id?: string }>
   ): import("../script-engine/types.js").OrchestrationHooks {
     const hooks: import("../script-engine/types.js").OrchestrationHooks = {};
 
@@ -1841,7 +1849,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // agent.spawn({ tasks: [...] }) call instead.
         return { ok: false, reason: "sub-agents run synchronously; spawn another batch instead of sending to a running one" };
       };
-      hooks.consultAgent = (params) => this.consultAgentImpl(params, tenantId, apiKey, agentDO);
+      hooks.consultAgent = async (params) => {
+        const result = await this.consultAgentImpl(params, tenantId, apiKey, agentDO);
+        if (consultLog && result.thread_id) {
+          consultLog.push({
+            thread_id: result.thread_id,
+            agent_id: params.agentId,
+            title: `Consult: ${params.agentId}`,
+            ...(result.session_id ? { session_id: result.session_id } : {}),
+          });
+        }
+        return result;
+      };
     }
 
     // §A1.17 Phase J: the dynamic-workflow prebuilt's ops. A "workflow" here is not a second
@@ -2448,7 +2467,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // conceptually a subthread of the same project, not a different workspace. Built after
     // `tools` (§A1.17 Phase J's workflow.create/run ops need it to author/re-run stored
     // scripts) — read lazily at call time, so ordering relative to runScriptLoop is safe.
-    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools, userId);
+    const consultLog: Array<{ thread_id: string; agent_id: string; title: string }> = [];
+    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools, userId, consultLog);
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
       gateway: {
@@ -2544,7 +2564,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // transcript) only ever saw the user's half. `agent_id` is what lets a bubble say which
       // agent spoke: the Space Assistant, or a named project agent.
       if (typeof result.result?.output === "string" && result.result.output.trim()) {
-        void this.writeAgentAnswerToSession(sessionId, spaceId, tenantId, result.result.output, agentId);
+        void this.writeAgentAnswerToSession(
+          sessionId, spaceId, tenantId, result.result.output, agentId,
+          consultLog.length ? { consulted_threads: consultLog } : undefined
+        );
       }
 
       // Layer 4 (Fabric) auto-consolidation (spec: "runs LLM-driven session extraction
@@ -4862,7 +4885,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     spaceId: string,
     tenantId: string,
     answer: string,
-    agentId: string
+    agentId: string,
+    // item 79: {consulted_threads:[...]} when this run consulted a project agent — see
+    // buildOrchestrationHooks' consultLog param for what populates it.
+    metadata?: Record<string, unknown>
   ): Promise<void> {
     try {
       await this.env.SPACES_WORKER.fetch(new Request(
@@ -4870,7 +4896,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         {
           method: "POST",
           headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
-          body: JSON.stringify({ role: "assistant", content: answer, agent_id: agentId }),
+          body: JSON.stringify({ role: "assistant", content: answer, agent_id: agentId, ...(metadata ? { metadata } : {}) }),
         }
       ));
     } catch {

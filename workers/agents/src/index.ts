@@ -9,7 +9,7 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
-import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS } from "@naelao/billing-core";
+import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, type MentionableAgent } from "@naelao/events";
@@ -634,7 +634,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         // A-2 cutover: the script-native engine resolves its own system prompt/tools from the
         // agent's R2 config by agentId — systemPrompt/tools/kbContext are no longer meaningful.
         agentId,
-        model: rawBody.model ?? modelConfig.model ?? "claude-sonnet-4-6",
+        model: rawBody.model ?? modelConfig.model ?? DEFAULT_WORKING_MODEL,
         taskDoName,
         // Go-live audit A-1/A-2: threaded through to /internal/tasks/:taskId/run's own
         // http://agent-do/script/run call — see that route's own comment.
@@ -693,7 +693,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         userId,
         projectId: rawBody.project_id,
         apiKey: c.env.ANTHROPIC_API_KEY ?? "",
-        model: rawBody.model ?? modelConfig.model ?? "claude-sonnet-4-6",
+        model: rawBody.model ?? modelConfig.model ?? DEFAULT_WORKING_MODEL,
         // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
         sessionCreditCeiling,
         // The id returned to the client below. Without sending it, the DO minted its own and
@@ -1301,7 +1301,7 @@ app.get("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.param("sessionId");
-  const model = c.req.query("model") || "claude-haiku-4-5-20251001";
+  const model = c.req.query("model") || DEFAULT_WORKING_MODEL;
 
   const space = await c.env.PLATFORM_DB.prepare(
     "SELECT id FROM spaces WHERE id = ? AND tenant_id = ?"

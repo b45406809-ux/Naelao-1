@@ -19,7 +19,10 @@ function authorLabel(m: Message): string {
   return m.role === "user" ? "Assistant" : "Agent";
 }
 
-function SubthreadEntry({ spaceId, thread, session }: { spaceId: string; thread: ThreadSummary; session: SessionCredentials }) {
+// Exported so Chat.tsx can render the SAME expandable card inline in the main transcript, at the
+// exact turn where a consult happened (item 79) — not just here in the separate "Assistant" tab,
+// which still lists every subthread for a thread regardless of whether it's tied to one message.
+export function SubthreadEntry({ spaceId, thread, session }: { spaceId: string; thread: ThreadSummary; session: SessionCredentials }) {
   const [expanded, setExpanded] = React.useState(false);
   const [messages, setMessages] = React.useState<Message[] | null>(null);
   const [loading, setLoading] = React.useState(false);
