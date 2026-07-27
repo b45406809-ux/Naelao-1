@@ -3214,6 +3214,44 @@ Re-verify before relying on any of these, but they are the real values as of thi
     callback` (`workers/agents/src/index.ts`). Whatever host ends up registered, the change is a
     single `wrangler secret put PUBLIC_AGENTS_URL` — no code edit, no logic redeploy. Note the
     PATH is fixed; only the host is configurable.
+  - **`invalid_scope` root-caused (2026-07-27) — our connector requested scopes that don't exist
+    in Whop's OAuth system.** `catalogue.ts`'s Whop `oauth.scopes` was
+    `["openid","read_memberships","read_payments","checkout_configuration:create",
+    "checkout_configuration:basic:read","plan:create","access_pass:create","access_pass:update"]`
+    — written against Whop's docs without live API access (item 58's own header already flagged
+    this risk). Confirmed live with the owner's API key: `PATCH /apps/:id` has a REAL
+    `required_scopes` field in its OpenAPI schema ("The OAuth scopes the app requests from users
+    when they install it") whose validator rejects every value except `read_user`
+    (`"Invalid value for parameter 'required_scopes.0': must be one of read_user"`). Every scope
+    our connector requested was therefore invalid by construction, not just unapproved. Fixed:
+    `scopes: ["read_user"]`, deployed, live-verified — `POST /connectors/whop/oauth/start` now
+    returns `scope=read_user` in the real authorize URL.
+    **`requested_permissions` (the `oauth:token_exchange` entry) is a SEPARATE system** — its own
+    OpenAPI description says it's "a permission that the app requests from the admin of a company
+    during the oauth flow," and it's managed ONLY via a dedicated `PATCH /apps/:id/permissions`
+    endpoint that requires an App-level API key (`app.api_key`, currently `null` — never
+    generated, and generating one needs `developer:manage_api_key`, a permission the owner's
+    personal `apik_...` key doesn't carry per its own `x-missing-permissions` response header).
+    The general `PATCH /apps/:id` endpoint's schema does not include `requested_permissions` at
+    all, which is why attempts to set it there 400 with a bare "Invalid value" regardless of shape.
+    **STILL BLOCKED — `read_user` itself is rejected live** (`error=invalid_scope` from
+    `api.whop.com/oauth/authorize` even with the corrected scope param), meaning the app has NO
+    OAuth scopes actually enabled yet despite the `required_scopes` PATCH returning 200 with no
+    error — the field is never echoed back by GET either, so that PATCH is a confirmed no-op
+    against the live app, not a persisted change (same "API accepts syntax but doesn't apply"
+    shape as `client_secret`, but this time there is no known API workaround — the CLI's own
+    `apps update --required_scopes` hits the identical array-flag bug `redirect_uris` had).
+    **This needs the Whop Developer Dashboard's own UI**: the app's OAuth section → "View
+    available scopes" button (per Whop's OAuth guide, confirmed via `docs.whop.com` earlier this
+    session) → check `read_user` → save. No further API path is known; do not re-attempt via
+    curl/CLI without a genuinely new lead.
+    **Flag, not fixed: item 58's OAuth-delegated end-user checkout** (`workers/billing/src/
+    whop-oauth-billing.ts`) assumed `checkout_configuration:create`/`plan:create`/
+    `access_pass:create+update` were grantable OAuth scopes — they were never valid scopes at all.
+    Per `requested_permissions`'s own description, those company-resource actions are plausibly
+    gated by the CONNECTING USER'S OWN role in their Whop company once a token is issued, not by
+    OAuth scope — but this is UNVERIFIED (no live OAuth flow has ever completed against this app)
+    and needs re-checking once `read_user` is enabled and a real consent flow can run end to end.
   ALREADY SET: `RESEND_API_KEY` on `naelao-notifications` (do not re-prompt), `PUBLIC_AGENTS_URL`,
   `CF_API_TOKEN`, `NAELAO_AIG_TOKEN`, `COMPOSIO_API_KEY`, `PIPEDREAM_*` on `naelao-agents`.
 - **Router var `PRODUCT_SHELL_URL` is still `http://localhost:3100`** — breaks the clickable link

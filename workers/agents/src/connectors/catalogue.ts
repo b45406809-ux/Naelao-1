@@ -184,20 +184,21 @@ const WHOP: ConnectorDefinition = {
   oauth: {
     authorize_url: "https://api.whop.com/oauth/authorize",
     token_url: "https://api.whop.com/oauth/token",
-    // `openid` is required for the userinfo lookup below (same-account-multiple-businesses
-    // detection); `profile` isn't needed since only the stable `sub` is used, not the name/avatar.
-    // checkout_configuration:create/plan:create/access_pass:create+update/
-    // checkout_configuration:basic:read (added for the end-user billing pivot) let the connected
-    // business's OWN Whop company create plans + checkout links for its own end-user
-    // subscriptions/credit-packs (workers/billing/src/whop-oauth-billing.ts) — a genuinely new
-    // money-in capability beyond the original read-only connect, so an ALREADY-connected business
-    // must re-consent once for the widened scope (OAuth doesn't retroactively grant new scopes to
-    // an existing token).
-    scopes: [
-      "openid", "read_memberships", "read_payments",
-      "checkout_configuration:create", "checkout_configuration:basic:read",
-      "plan:create", "access_pass:create", "access_pass:update",
-    ],
+    // §A1.18 follow-up — corrected against Whop's LIVE API, not just its docs. Live-verified via
+    // the owner's own API key: PATCH /apps/:id with `required_scopes` (the real OAuth-scope field,
+    // found in the app's OpenAPI schema — distinct from `requested_permissions` below) rejects
+    // every value except `read_user` ("Invalid value for parameter 'required_scopes.0': must be
+    // one of read_user"). The prior list here — openid/read_memberships/read_payments/
+    // checkout_configuration:*/plan:create/access_pass:* — were never real "Sign in with Whop"
+    // OAuth scopes; they were written against Whop's docs without live API access (see item 58's
+    // own header) and are the direct cause of the `invalid_scope` error reported live. Whop's
+    // `requested_permissions` (visible on GET, e.g. `oauth:token_exchange`) is a SEPARATE
+    // App-permission system, "requested from the admin of a company during the oauth flow" per
+    // its own OpenAPI description — actual company-resource access (memberships, payments,
+    // checkout, plans, access passes) is gated by the CONNECTING USER'S OWN role in their Whop
+    // company once the token is issued, not by an OAuth scope string. `openid`/`profile` are not
+    // real Whop scopes either — `read_user` is what the userinfo lookup below actually needs.
+    scopes: ["read_user"],
     client_id_env: "WHOP_OAUTH_CLIENT_ID",
     client_secret_env: "WHOP_OAUTH_CLIENT_SECRET",
     credential_name: "WHOP_OAUTH_TOKENS",
