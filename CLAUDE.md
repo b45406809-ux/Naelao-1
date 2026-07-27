@@ -3095,6 +3095,58 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     this pass to remove it the way prior sessions' test PRODUCTS were cleaned up; harmless
     leftover test data, same accepted precedent as items 62-64's own verification runs.
 
+78. **Assistant/user capability parity — the assistant could not create a project or a thread, and
+    anything it DID create was invisible to the person who asked. Both now FIXED.** Prompted by a
+    direct question ("can the assistant create new threads, new projects — everything a user can?").
+    Traced the real surface rather than answering from memory: `workspace-admin` had
+    `project.create_from_template` / `project.list` / `project.configure` / `agent.list`, and item
+    76's `project-coordination` had `thread.list` / `thread.read` / `agent.consult`. So the gaps
+    were exactly the two named: **no ad-hoc project** (only from the template catalogue — "make me
+    a project for Q3 marketing" was impossible, since no template matches) and **no thread creation
+    at all** (the only thread it could produce was the hidden consult subthread, as a side effect of
+    `agent.consult`). Also missing: the Phase T1 project-member ACL. Everything else was already
+    covered — `project.configure` is a PATCH passthrough so rename/archive/visibility/caps/agent-
+    bindings all work, KB via `knowledge-base`, schedules via `dynamic-workflow.workflow.schedule`.
+    - **The real bug found while building this:** neither prebuilt's `spacesCall` ever sent
+      `x-naelao-user-id`, so `POST /spaces/:id/projects` computed `created_by: undefined,
+      system_caller: true`. `SpaceDO.createProject`'s "the creator is always an implicit
+      `project_members` owner" insert is guarded by `if (!alreadyExisted && row && body.created_by)`
+      — so it was skipped — and a project defaults to `visibility: 'private'`, which `listProjects`
+      shows only to a project member or a space owner/admin. Net effect: **every project the
+      assistant scaffolded was invisible to the person who asked for it** (and to every non-owner
+      business member) — pre-existing since Phase G, not introduced here. Fixed by forwarding the
+      acting user (`ctx.env.userId`) on every spaces-worker call from both prebuilts. That also
+      correctly CLAMPS the assistant to what that person could do unaided — a plain member asking
+      for a project-member change now gets the same 403 they'd get themselves — which is the same
+      principle F-36's `resolveAssistantEffectiveRole` already established. A system run (cron tick,
+      channel drain, provision-time scaffolding) has no acting user, so the header is omitted and
+      behavior is byte-identical to before.
+    - **New ops.** `workspace-admin`: `project.create` (plain named project — what "New project" in
+      the shell does), `project.list_members` / `project.add_member` / `project.remove_member`.
+      `project-coordination`: `thread.create`. Archiving is deliberately NOT its own op —
+      `project.configure({status:'archived'})` already does it through the single PATCH passthrough.
+      `thread.create` forces `thread_kind: 'primary'` and drops any caller-supplied kind: `sub_agent`
+      is the orchestration hook's private consult/fan-out lane and `channel` is minted by the channel
+      gateway from a verified inbound webhook, so letting an agent forge either would give a message
+      a provenance it never had (tested explicitly).
+    - Gating follows the existing convention with no new engine: guided mode (`always_ask` + a
+      read-only allowlist) gates every new mutating op automatically; only `project.list_members` was
+      added to `LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED`. Both assistant profiles gained a
+      "Shaping the Workspace" section — including the two rules that matter operationally: don't
+      scaffold to look productive (one well-named project beats five thin ones), and since you act
+      AS the owner, a refusal is the real answer for them too, so report it rather than routing
+      around it.
+    - A test caught a real contract violation before it shipped: the new validating ops were written
+      as non-`async` arrows that throw synchronously, but `PrebuiltOp` is declared
+      `=> Promise<unknown>` and every sibling validating op (`agent.consult`, `thread.read`,
+      `project.configure`) is `async` — so the error path never returned a promise. Fixed at the
+      source rather than by relaxing the test.
+    2204/2204 tests pass (14 new), `npx turbo run typecheck` clean (76 tasks), `naelao-agents`
+    deployed. **Still not reachable by the assistant** (documented, not silently dropped): creating
+    a business, inviting/removing BUSINESS members, and connecting a connector — all three are
+    deliberately owner-only account actions, not workspace structure, and connecting an app is a
+    real browser OAuth consent the assistant structurally cannot perform on someone's behalf.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

@@ -18,7 +18,9 @@
  * `project.list`/`agent.list`). `agent.consult` is left ungated by default too — it dispatches the
  * assistant's own normal operating cost (one run), same posture as @mention dispatch; whatever the
  * consulted agent decides to DO is still gated by its own agent_policy_overrides/assistant_policy
- * exactly as if a human had asked it directly.
+ * exactly as if a human had asked it directly. `thread.create` IS gated by default — it's a
+ * structural write, and the guided policy's job is to let the owner see structure appear on
+ * purpose rather than accumulate.
  */
 
 import type { PrebuiltScript, PrebuiltOpContext } from "./index.js";
@@ -34,6 +36,10 @@ async function spacesCall(ctx: PrebuiltOpContext, method: string, path: string, 
         "content-type": "application/json",
         "x-naelao-tenant-id": ctx.env.tenantId,
         "x-naelao-internal-token": token,
+        // Act on behalf of the person who asked, when there is one — same reasoning as
+        // workspace-admin's own spacesCall (see that file's header): correct attribution on
+        // anything created, and the assistant is clamped to what that person could do unaided.
+        ...(ctx.env.userId ? { "x-naelao-user-id": ctx.env.userId } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
     })
@@ -45,11 +51,11 @@ async function spacesCall(ctx: PrebuiltOpContext, method: string, path: string, 
 export const projectCoordination: PrebuiltScript = {
   name: "project-coordination",
   description:
-    "Consult a named project agent directly (a private, separate exchange — not the visible " +
-    "thread the person is in), and look at a project's other threads on demand. Use this when " +
-    "you need to hand off, check status with, or instruct a specific agent, or when you need to " +
-    "see exactly what was said in another thread rather than relying on the Project Journal's " +
-    "distilled summary.",
+    "Work with a project's threads and its agents: open a new thread, list a project's threads, " +
+    "read exactly what was said in one, and consult a named project agent directly (a private, " +
+    "separate exchange — not the visible thread the person is in). Use the consult when you need " +
+    "to hand off to, check status with, or instruct a specific agent; use thread.read when you " +
+    "need the raw exchange rather than the Project Journal's distilled summary.",
   domain: "orchestration",
   requires_tier: 1,
   operations: {
@@ -70,6 +76,18 @@ export const projectCoordination: PrebuiltScript = {
         ...(projectId ? { projectId } : {}),
         ...(parentThreadId ? { parentThreadId } : {}),
         ...(threadId ? { threadId } : {}),
+      });
+    },
+    // Open a real, visible thread — what "new thread" in the shell does. Deliberately creates a
+    // 'primary' thread only: 'sub_agent' threads are the private consult/fan-out lane above (the
+    // orchestration hook owns those), and 'channel' threads are minted by the channel gateway from
+    // a verified inbound webhook. Letting an agent forge either kind by hand would put messages
+    // somewhere the UI presents as having a provenance they didn't have.
+    "thread.create": (a, c) => {
+      const projectId = a["project_id"] ? String(a["project_id"]) : c.env.projectId;
+      return spacesCall(c, "POST", `/spaces/${c.env.spaceId}/threads`, {
+        ...(a["title"] ? { title: String(a["title"]) } : {}),
+        ...(projectId ? { project_id: projectId } : {}),
       });
     },
     "thread.list": (a, c) => {

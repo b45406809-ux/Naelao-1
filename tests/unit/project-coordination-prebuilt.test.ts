@@ -152,6 +152,61 @@ describe("project-coordination prebuilt", () => {
     });
   });
 
+  // The assistant can open a real thread, the same as a person clicking "new thread".
+  describe("thread.create", () => {
+    it("posts a thread with the title and the run's own project", async () => {
+      const calls: Call[] = [];
+      const env = { ...makeEnv(calls, () => ({ id: "thread-9" })), projectId: "proj-1" } as ScriptEngineEnv;
+      const result = await projectCoordination.operations["thread.create"]!({ title: "Q3 pricing" }, { env, run: noopRun });
+      expect(result).toEqual({ id: "thread-9" });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.method).toBe("POST");
+      expect(calls[0]!.url).toContain("/spaces/space-1/threads");
+      expect(calls[0]!.body).toEqual({ title: "Q3 pricing", project_id: "proj-1" });
+    });
+
+    it("an explicit project_id overrides the run's own project", async () => {
+      const calls: Call[] = [];
+      const env = { ...makeEnv(calls, () => ({ id: "t" })), projectId: "proj-1" } as ScriptEngineEnv;
+      await projectCoordination.operations["thread.create"]!({ project_id: "proj-2" }, { env, run: noopRun });
+      expect(calls[0]!.body).toEqual({ project_id: "proj-2" });
+    });
+
+    // thread_kind is deliberately NOT forwardable: 'sub_agent' is the private consult/fan-out lane
+    // the orchestration hook owns, and 'channel' is minted by the channel gateway from a verified
+    // inbound webhook. An agent forging either would give a message a provenance it didn't have.
+    it("never lets the caller forge a thread_kind", async () => {
+      const calls: Call[] = [];
+      const env = makeEnv(calls, () => ({ id: "t" }));
+      await projectCoordination.operations["thread.create"]!(
+        { title: "x", thread_kind: "channel", parent_thread_id: "t-other", channel: "whatsapp" },
+        { env, run: noopRun }
+      );
+      expect(calls[0]!.body).toEqual({ title: "x" });
+    });
+  });
+
+  // §A1.18 follow-up: the acting user must reach the spaces worker, or anything created lands
+  // with created_by=undefined — and a private-by-default project with no creator gets no
+  // project_members row, so it's invisible to the very person who asked for it.
+  describe("acting user", () => {
+    it("forwards x-naelao-user-id when the run has one", async () => {
+      const calls: Call[] = [];
+      const env = { ...makeEnv(calls, () => ({ id: "t" })), userId: "end-user-7" } as ScriptEngineEnv;
+      await projectCoordination.operations["thread.create"]!({ title: "x" }, { env, run: noopRun });
+      expect(calls[0]!.headers["x-naelao-user-id"]).toBe("end-user-7");
+    });
+
+    it("omits the header entirely for a system run (cron/channel drain), unchanged from before", async () => {
+      const calls: Call[] = [];
+      const env = makeEnv(calls, () => ({ id: "t" })); // no userId
+      await projectCoordination.operations["thread.create"]!({ title: "x" }, { env, run: noopRun });
+      expect(calls[0]!.headers["x-naelao-user-id"]).toBeUndefined();
+      // still a verified internal caller either way
+      expect(await verifyInternalToken(calls[0]!.headers["x-naelao-internal-token"], "tenant-1", PLATFORM_SECRET)).toBe(true);
+    });
+  });
+
   it("throws a clear error when the spaces worker binding is missing", async () => {
     const env = { scriptsBucket: {} as never, spaceId: "space-1", tenantId: "tenant-1", platformSecret: PLATFORM_SECRET } as unknown as ScriptEngineEnv;
     await expect(projectCoordination.operations["thread.list"]!({}, { env, run: noopRun })).rejects.toThrow(/spaces worker binding/);
