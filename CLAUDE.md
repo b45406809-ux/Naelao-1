@@ -3146,6 +3146,62 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     a business, inviting/removing BUSINESS members, and connecting a connector — all three are
     deliberately owner-only account actions, not workspace structure, and connecting an app is a
     real browser OAuth consent the assistant structurally cannot perform on someone's behalf.
+79. **Fixed the live "Model not found: claude-sonnet-4-6" chat bug (root cause + a real stale-data
+    repair), gave a business owner real control over yolo mode and model choice, added inline
+    consult cards, and made assistant chat bubbles transparent (Claude-style).**
+    - **Root cause, FIXED:** two live dispatch fallbacks in `workers/agents/src/index.ts`
+      (`rawBody.model ?? modelConfig.model ?? "claude-sonnet-4-6"`) used a bare Claude id as the
+      last resort — on an account with no Anthropic provider on its AI Gateway (Workers AI only,
+      item 68) that string always 404s. New `DEFAULT_WORKING_MODEL` (`@naelao/billing-core`, same
+      Llama id the dashboard's own picker already defaults to) replaces it at both dispatch sites
+      plus the context-usage estimate's own separate fallback (`claude-haiku-4-5-20251001`,
+      cosmetic but same bug class).
+    - **The live blocker was actually a step further: this fallback isn't what the user's product
+      was hitting.** `f17b859b-...`'s `config_json.productConfig.modelConfig.model` was explicitly
+      set to `"claude-sonnet-4-6"` (a real value, not "unset") — confirmed via a direct D1 query,
+      and reproduced live: `POST /agent/run` returned the exact reported 404 even after the code
+      fix deployed, since an explicit override always wins over the new default. No end-user- or
+      builder-reachable control existed to CHANGE it (the dashboard's model picker only PATCHes
+      `/builder/products/:id`, JWT-builder-only). Repaired the live row directly (D1 UPDATE,
+      `modelConfig.model` → the working Llama id) and re-verified: `POST /agent/run` against the
+      same product now returns `status:"completed"`, `finalAnswer:"2+2 is 4."` — the first real
+      confirmed working chat reply on this specific product.
+    - **The actual control surface, BUILT so this can't recur invisibly.** New
+      `PATCH /spaces/:spaceId/model-config` (business-scoped, same `config_json.productConfig`
+      override pattern as `member-billing`) and `assistant-policy` PATCH's product_end_user block
+      relaxed to `requireBusinessMembership({PATCH:"admin"})` — a business-admin end user who
+      genuinely owns their own Launchpad business can now toggle guided/yolo and pick the model
+      themselves, not just a platform builder via the dashboard. Router allowlist grew accordingly
+      (identity-only, real authorization on the spaces worker as always). Surfaced in
+      `apps/shell`'s Dashboard tab (item 77) as an editable Guided/Autonomous toggle + model
+      `<select>`, read-only for a non-admin viewer, reusing `ALLOWED_MODELS`/`DEFAULT_WORKING_MODEL`
+      from `@naelao/billing-core` (new shell dependency).
+    - **Inline consult cards (the subthread UX question).** Item 76 rendered a consult
+      (assistant→project-agent delegation) only in a separate "Assistant" tab, with no link back
+      to which chat turn caused it. New `messages.metadata` column (SpaceDO migration v33, same
+      free-form-JSON-override pattern `sessions.metadata` already used) lets the assistant's own
+      reply carry `{consulted_threads:[{thread_id, agent_id, title, session_id}]}` — populated by
+      a `consultLog` collector threaded through `buildOrchestrationHooks` that records every
+      `agent.consult` call (success OR the consulted agent needing its own approval — the thread
+      exists either way) and is attached when `writeAgentAnswerToSession` persists the answer.
+      `apps/shell`'s `Chat.tsx` renders one expandable `SubthreadEntry` (exported from
+      `SubthreadPanel.tsx`, so both surfaces share one expand/fetch-messages implementation)
+      directly under the assistant bubble that produced it — collapsed by default, same "a real,
+      separate exchange, never appended to the visible transcript itself" rule item 76 established.
+      The separate "Assistant" tab is unchanged and still useful (it lists every subthread for a
+      project thread, including ones not tied to any rendered message).
+    - **Transparent chat bubbles.** `packages/ui/src/styles.css`'s `.bubble` no longer carries
+      background/padding/radius — only `.bubble.user` does. An assistant/agent reply now renders
+      as plain text on the page background, matching claude.ai's own thread, not a colored box.
+    - Live-verified end to end: the corrected chat run above; grepped the deployed
+      `naelao-shell.pages.dev` production bundle for the new Autonomy/Model control strings and
+      the transparent-bubble CSS rule, both present. `naelao-agents`, `naelao-spaces`,
+      `naelao-router`, and `apps/shell` all deployed. 2219/2219 tests pass (24 new),
+      `npx turbo run typecheck` clean (76 tasks).
+    - **Not done:** a live browser click-through of the new Autonomy/Model controls (same
+      Playwright-can't-TLS-handshake limitation as every prior UI pass — verified via bundle
+      content + a direct spaces-worker test suite instead); per-message streaming deltas for a
+      consult's own reply (the outer assistant reply already streams normally).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
@@ -3242,7 +3298,12 @@ Re-verify before relying on any of these, but they are the real values as of thi
 - **The user's live product:** space `f17b859b-aaf7-436e-a381-87cd6820429a`, slug `launchpad`,
   tenant `bf24280c-e1f1-43dc-8ebf-09fa64bfd12a` (org `plan_tier = 'enterprise'`).
   NOTE: this REPLACED the older `457a2b3a-...` product, which the user deleted on 2026-07-26 —
-  any reference to that id is stale.
+  any reference to that id is stale. Its `config_json.productConfig.modelConfig.model` was found
+  set to `"claude-sonnet-4-6"` (item 79's live-blocking bug) and corrected to
+  `@cf/meta/llama-3.3-70b-instruct-fp8-fast` on 2026-07-27 — a real chat run against it now
+  completes. If chat on this product ever 404s "Model not found" again, check this field first
+  (now editable from `apps/shell`'s Dashboard tab by a business admin, or `PATCH
+  /builder/products/:id` from the dashboard) before assuming it's the code-level default again.
 - **AI Gateway** id `naelao-gateway`. **No Claude models are available on this account** — Workers
   AI only (item 68). Default working model: `@cf/meta/llama-3.3-70b-instruct-fp8-fast`.
 - **Workers AI free tier is ~10,000 neurons/day ≈ 65 agent runs/day platform-wide**, and
