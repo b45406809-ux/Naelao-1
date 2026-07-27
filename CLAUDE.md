@@ -3052,6 +3052,49 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     `connector-channel-vault-write.test.ts` extended for the new business-role gate), `npx turbo
     run typecheck` clean (76 tasks), `apps/shell` verified via `next build`.
 
+77. **Shell nav: "Assistant" merged into a "Dashboard" tab (business + assistant overview in one
+    place), moved above Discover, and rebuilt on the real design system.** User-directed UI
+    change, not a bug fix. Route folder moved `assistant/` → `dashboard/` (both `dashboard/
+    page.tsx` and the chat surface at `dashboard/chat/page.tsx`); sidebar nav key/label/order
+    updated in `layout.tsx` (`DEFAULT_PRIMARY_NAV` is now Dashboard → Discover → Projects). The
+    page itself now reads BOTH what the old Assistant dashboard showed (config/autonomy,
+    built-in scripts, learned skills, memory, crons, channels, agents, recent conversations,
+    workspace files) AND, whenever the active space is a real business (`isBusinessSpace` from
+    `active-space-context`), a "Business" section (wallet balance + recent transactions, revenue/
+    orders when the manifest advertises a `revenue` sidebar item, connected apps, members) plus a
+    KPI tile row up top (credits, wallet balance, revenue, members, connected apps, pending
+    approvals). Deep management (invites, payout destinations, connecting apps, product CRUD)
+    deliberately stays on the business's own `/spaces/:id` page — this is an overview with a
+    "Manage business →" link there, not a re-implementation of it. Rebuilt using the REAL design
+    system (`Card`/`CardLabel`/`CardValue` from `@naelao/ui`, `.page-view`/`.page-header`/
+    `.page-title`, `.section-label`, `.settings-block`/`.settings-row`) instead of the prior
+    page's one-off inline-styled grid — visually consistent with the rest of the shell
+    (business detail, settings) for the first time. No backend changes — every panel is a
+    read-only consumer of already-built endpoints (`getMe`, `listMyBusinesses`,
+    `getBusinessWalletBalance/Transactions`, `getBusinessRevenue`, `listBusinessOrders`,
+    `getConnectorStatus`, `listBusinessMembers`, `listApprovals`, plus the pre-existing assistant-
+    capability endpoints), each settled independently so one unavailable endpoint can't blank the
+    page. `npx turbo run typecheck` clean (76 tasks — caught and fixed two real
+    `exactOptionalPropertyTypes` violations and one nested-promise return-type mismatch before
+    they shipped), `apps/shell` verified via `next build` (stale `.next/types` cache from the
+    old `assistant/` route had to be cleared first, or `tsc` fails on a dangling type reference to
+    a path that no longer exists — worth remembering for any future route rename). Deployed and
+    live-verified end to end: signed up a disposable test end user on the real `launchpad`
+    product, created a real test business, and screenshotted the live page twice — confirmed the
+    sidebar order (Dashboard above Discover), the merged Business+Assistant sections with real
+    data (26 built-in scripts, 10 learned skills actually populated for a `whop-seller` business),
+    the KPI tiles, and the "active" status badge all render correctly. One real bug caught and
+    fixed from the live screenshot before calling it done: the wallet KPI tile showed "…" forever
+    for a genuinely-loaded-but-`not_provisioned` wallet (`{wallet: null, status:
+    "not_provisioned"}` has no `balance_cents` field) instead of "$0.00" with a status badge —
+    fixed to fall back to 0 whenever the wallet object itself has loaded, redeployed, and
+    reverified the fix is live by matching the deployed JS chunk hashes against the local build
+    output. **Not cleaned up:** the disposable test business left under the live `launchpad`
+    product (`d128c552-8e95-4d11-ab93-8ecabb6dff4b`, "Dashboard Test Co") — deleting a business is
+    a builder-only operation with no end-user-reachable route, and no builder JWT was available in
+    this pass to remove it the way prior sessions' test PRODUCTS were cleaned up; harmless
+    leftover test data, same accepted precedent as items 62-64's own verification runs.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

@@ -31,9 +31,13 @@ import {
 
 // No "Home" entry: starting a conversation is what the "new session" button does, and having
 // both a button and a nav item pointing at the same surface just made the sidebar ambiguous.
+//
+// "Dashboard" (formerly "Assistant") is a merged business dashboard + assistant dashboard for
+// whichever space is currently active — it's the first thing worth seeing, so it leads the list,
+// ahead of Discover.
 const DEFAULT_PRIMARY_NAV: SidebarNavEntry[] = [
+  { key: "dashboard", icon: "assistant", label: "Dashboard" },
   { key: "spaces", icon: "spaces", label: "Discover" },
-  { key: "assistant", icon: "assistant", label: "Assistant" },
   { key: "projects", icon: "projects", label: "Projects" },
 ];
 
