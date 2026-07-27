@@ -3249,13 +3249,30 @@ Re-verify before relying on any of these, but they are the real values as of thi
     since it turned out to be irrelevant to `invalid_scope` (a real OAuth scope, `read_user`, was
     never the issue; the whole `required_scopes`/`requested_permissions` API surface was a red
     herring for THIS bug, confirmed by the fix landing without touching either).
-    **Flag, still not fixed: item 58's OAuth-delegated end-user checkout** (`workers/billing/src/
-    whop-oauth-billing.ts`) assumed `checkout_configuration:create`/`plan:create`/
-    `access_pass:create+update` were grantable OAuth scopes — confirmed now, definitively, that
-    they are not (the real scope set is `openid`/`profile`/`email`, nothing else). Whether the
-    resulting token can still perform those company-resource actions (gated by the connecting
-    user's own role in their Whop company, per `requested_permissions`'s description) is
-    UNVERIFIED — needs a real completed consent flow to check, now unblocked and ready to try.
+    **Follow-up (2026-07-27, third pass) — the owner pulled Whop's REAL, full ~190-scope catalog
+    directly from the Developer Dashboard, which reverses part of the second pass's conclusion.**
+    `checkout_configuration:create`/`plan:create`/`access_pass:create`/`access_pass:update` (item
+    58's dependency, previously declared "not real scopes") ARE genuinely real scope names —
+    confirmed present verbatim in the dashboard's own list, which `docs.whop.com`'s scopes
+    reference page couldn't confirm from this environment (404s unauthenticated). Rebuilt
+    `catalogue.ts`'s Whop `oauth.scopes` on least-privilege from that real catalog: the OIDC
+    triad (`openid`/`profile`/`email`, still required for the standalone-app flow + `nonce`,
+    unchanged from the second pass) plus exactly the resource scopes this connector's own
+    `operations` need (`company:basic:read`, `member:basic:read`/`member:email:read`,
+    `access_pass:basic:read`, `plan:basic:read`, `payment:basic:read`, `dms:read`/
+    `dms:message:manage`, `forum:read`/`forum:post:create`) plus the five item 58 needs
+    (`checkout_configuration:basic:read`/`:create`, `plan:create`, `access_pass:create`/`:update`,
+    `company:manage_checkout`) — 19 scopes total, none of the company-admin-destructive
+    (`company:delete`, `developer:*`) or payout/wallet scopes (those stay on the separate
+    invite-gated Platforms API rail, items 50-51, never this BYO connector). Live-verified twice:
+    once as a raw probe of the full combined scope string against `api.whop.com/oauth/authorize`
+    directly, and once through our own deployed `POST /connectors/whop/oauth/start` route,
+    following the exact `authorize_url` it generated — both landed cleanly on Whop's real
+    consent page with all 19 scopes intact, no `invalid_scope`. **Item 58's own scope assumption
+    is no longer wrong** — whether the connecting user's OWN role in their Whop company actually
+    GRANTS those scopes at consent time (vs. Whop silently dropping ones their role doesn't cover)
+    remains the one genuinely unverified step, since no real human has clicked through consent
+    against this app yet.
   ALREADY SET: `RESEND_API_KEY` on `naelao-notifications` (do not re-prompt), `PUBLIC_AGENTS_URL`,
   `CF_API_TOKEN`, `NAELAO_AIG_TOKEN`, `COMPOSIO_API_KEY`, `PIPEDREAM_*` on `naelao-agents`.
 - **Router var `PRODUCT_SHELL_URL` is still `http://localhost:3100`** — breaks the clickable link

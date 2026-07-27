@@ -184,25 +184,35 @@ const WHOP: ConnectorDefinition = {
   oauth: {
     authorize_url: "https://api.whop.com/oauth/authorize",
     token_url: "https://api.whop.com/oauth/token",
-    // §A1.18 follow-up #2 — the PRIOR comment here (which shipped `scopes: ["read_user"]`) was
-    // itself wrong, caught by testing directly against the live `/oauth/authorize` endpoint
-    // instead of trusting `PATCH /apps/:id`'s `required_scopes` field. `required_scopes` is a
-    // DIFFERENT, embedded-app-only concept (the auto-granted scope a Whop iframe app gets when a
-    // member opens it) — its validator only accepting `read_user` says nothing about what the
-    // real standalone "Sign in with Whop" `/oauth/authorize` endpoint accepts, and `read_user`
-    // itself was live-confirmed to fail there with `invalid_scope`. Whop's own OAuth guide
-    // (docs.whop.com/developer/guides/oauth) documents the REAL standalone-app scopes as the
-    // standard OIDC triad — confirmed live: `scope=openid` alone returns a DIFFERENT error
-    // ("nonce is required for openid scope", i.e. the scope itself is accepted) and
-    // `scope=openid profile email` + a `nonce` param redirects cleanly to Whop's real
-    // login/consent page (`whop.com/oauth/authorize?...`). `requested_permissions` (visible on
-    // GET, e.g. `oauth:token_exchange`) remains a SEPARATE App-permission system, "requested from
-    // the admin of a company during the oauth flow" per its own OpenAPI description — actual
-    // company-resource access (memberships, payments, checkout, plans, access passes) is
-    // plausibly gated by the CONNECTING USER'S OWN role in their Whop company once the token is
-    // issued, not by an OAuth scope string — still UNVERIFIED end-to-end (no full consent flow
-    // has completed against this app), flagged again in item 58's own gap.
-    scopes: ["openid", "profile", "email"],
+    // §A1.18 follow-up #3 — the prior two passes got the MECHANISM right (openid/profile/email +
+    // nonce is genuinely what unblocks the standalone `/oauth/authorize` flow — confirmed live,
+    // unchanged here) but were guessing at the resource-permission scopes beyond that OIDC triad,
+    // since `docs.whop.com`'s scopes reference page 404s from this environment. The owner pulled
+    // the app's REAL, full scope catalog straight from the Whop Developer Dashboard (~190 values)
+    // — every scope name below is copied verbatim from that list, not invented. Selected on
+    // least-privilege: only what this connector's own `operations` below actually call, plus the
+    // exact five (`checkout_configuration:create`, `plan:create`, `access_pass:create/update`,
+    // `company:manage_checkout`) item 58's OAuth-delegated end-user checkout depends on — those
+    // were flagged UNVERIFIED-as-real-scopes in the prior pass; the dashboard list now confirms
+    // they genuinely exist, resolving that flag (whether the connecting user's OWN Whop role
+    // actually grants them at consent time is still unverified — no live consent flow has run).
+    // NOT requested: anything company-admin-destructive (company:delete, developer:*,
+    // incorporation:*), payout/wallet scopes (that's the separate invite-gated Platforms API,
+    // items 50-51, not this BYO connector), or write scopes beyond what `operations` declares.
+    scopes: [
+      "openid", "profile", "email",
+      "company:basic:read",
+      "member:basic:read", "member:email:read",
+      "access_pass:basic:read",
+      "plan:basic:read",
+      "payment:basic:read",
+      "dms:read", "dms:message:manage",
+      "forum:read", "forum:post:create",
+      // item 58's delegated end-user checkout (business's own connected Whop company sells directly):
+      "checkout_configuration:basic:read", "checkout_configuration:create",
+      "plan:create", "access_pass:create", "access_pass:update",
+      "company:manage_checkout",
+    ],
     client_id_env: "WHOP_OAUTH_CLIENT_ID",
     client_secret_env: "WHOP_OAUTH_CLIENT_SECRET",
     credential_name: "WHOP_OAUTH_TOKENS",
