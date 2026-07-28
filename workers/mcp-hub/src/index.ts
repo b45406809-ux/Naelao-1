@@ -29,6 +29,33 @@ export interface Env {
    *  near-expiry access token by calling this internal endpoint — only the agents worker holds
    *  the connector's OAuth client secret, so refresh logic lives there, not here. */
   AGENTS_WORKER?: Fetcher;
+  /** Meters a call that rode on Naelao's OWN platform provider key (not the builder's BYO
+   *  credential) so it bills the builder's org rather than being an open, unattributed platform
+   *  cost sink. Optional/best-effort — degrades to unmetered (not unblocked) when unwired. */
+  BILLING_WORKER?: Fetcher;
+}
+
+/** Meter a tool call that resolved to Naelao's platform provider key (never a builder's own BYO
+ *  credential — that case is the builder's own provider billing, not ours). Reuses the existing
+ *  generic POST /billing/usage sink (same one llm_tokens/infra_credits already use), so this
+ *  needs no new billing-worker route. Best-effort: never blocks or fails the tool call itself. */
+async function recordPlatformKeyUsage(env: Env, tenantId: string, spaceId: string, connectorProvider: string): Promise<void> {
+  if (!env.BILLING_WORKER) return;
+  try {
+    await env.BILLING_WORKER.fetch(
+      new Request("http://billing-worker/billing/usage", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+        },
+        body: JSON.stringify({ space_id: spaceId, event_type: "platform_connector_key", quantity: 1 }),
+      })
+    );
+  } catch {
+    // Best-effort — the tool call itself already succeeded/failed independently of billing.
+  }
 }
 
 // Hosts that are external payment processors (incl. Naelao's own LS). A connector may never be
@@ -674,6 +701,9 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
     }
     if (!server.provider_connection_id) {
       return c.json({ error_code: "bad_request", message: "Provider connection_id missing" }, 400);
+    }
+    if (keyRes.source === "platform") {
+      c.executionCtx.waitUntil(recordPlatformKeyUsage(c.env, tenantId, spaceId, server.connector_provider ?? "unknown"));
     }
     let providerResult: ProviderToolCallResult;
     if (server.connector_provider === "composio") {

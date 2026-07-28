@@ -3202,6 +3202,75 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       Playwright-can't-TLS-handshake limitation as every prior UI pass — verified via bundle
       content + a direct spaces-worker test suite instead); per-message streaming deltas for a
       consult's own reply (the outer assistant reply already streams normally).
+80. **Credential hierarchy expanded to a real Naelao -> Product -> Business -> Personal model
+    (user's own design, this session) + three launchpad-mockup page ports, scoped per the user's
+    own answers to a design-tradeoff review before building.** Design tradeoffs resolved via
+    `AskUserQuestion` before writing code: naelao-platform-key fallback usage auto-bills the
+    builder's org (not an opt-in toggle); multiple named credentials per connector use a
+    `connector::slot` naming convention on the EXISTING `space_credentials` schema (not a new
+    table); per-project connector-tier overrides are explicitly deferred (hierarchy defaults
+    only this pass).
+    - **Credential hierarchy** (`workers/credentials/src/index.ts`, migration
+      `0069_credential_sharing_and_product_tier.sql`): `resolveCredential` gained a 4th tier — a
+      business (child) space with no local match now falls through ONCE to its PRODUCT ROOT's own
+      `scope='space'` row (walked via the existing `spaces.parent_space_id`, best-effort/never a
+      hard dependency of resolution). New `shared_with_user_ids` column lets an admin narrow a
+      business-shared credential to specific members instead of only "everyone" — checked in
+      `sharedRowAppliesToUser`, settable at creation or via a new sharing-only
+      `PATCH /spaces/:spaceId/credentials/:credId` (never touches the encrypted value). Multi-slot
+      naming (`gmail::work` vs `gmail::personal`) is just a widened name-validation regex — zero
+      schema change. `/plaintext` now returns `resolved_tier` (`user`/`business_shared`/
+      `business_override`/`product`) and, when a specific acting user didn't land on their OWN
+      credential, fires `credential.fallback_used` through SpaceDO's existing generic event-fire
+      endpoint (fire-and-forget, mirrors `whop-wallet.ts`'s `fireWalletEvent`) — the "notify the
+      assistant when a fallback happened" ask, reusing infra rather than inventing a second
+      notification path. **A real bug caught by the new product-tier test**: decryption used the
+      REQUESTED space's id to re-derive the per-space HKDF key, which is wrong the moment a row
+      resolves from a DIFFERENT space than the one asked about (exactly the product-root case) —
+      fixed to key off `row.space_id`, the credential's own space, not the caller's.
+    - **Naelao-wide fallback billing**: `mcp-hub`'s `resolveProviderApiKey` (Composio/Pipedream
+      routing, item 56/57) is the real "falls back to Naelao's own platform key" moment — new
+      `recordPlatformKeyUsage` meters it via the ALREADY-EXISTING generic `POST /billing/usage`
+      sink (`event_type: "platform_connector_key"`, same route `llm_tokens`/`infra_credits`
+      already use), fired only when `keyRes.source === "platform"` at actual tool-CALL time (not
+      the cheaper, high-frequency `tools/list`). New `BILLING_WORKER` service binding.
+    - **Dashboard credentials page was silently broken — found and fixed while extending it.**
+      `apps/dashboard/.../spaces/[spaceId]/credentials/page.tsx` posted
+      `{name, credential_type, secret_value, label}` and read `data.data` — the real worker wants
+      `{name, value, scope, is_override, shared_with_user_ids}` and returns
+      `{credentials: [...]}`, so every create 400'd ("value is required") and the list silently
+      rendered empty. The exact "UI diverges from the real contract" bug class this file has
+      documented repeatedly (`config_schema`/`schema_json`, etc.) — nobody had exercised this page
+      against the real backend before. Rewritten against the real contract, extended with a
+      scope picker (Personal/Shared — creating a Shared credential on a product's OWN root space
+      IS the product-wide default, no separate "product" UI needed) and the sharing control
+      (everyone / selected member ids).
+    - **Three UI ports from `apps/launchpad/src/index.html`'s mockup, honest about what carried
+      over and what didn't.** Discover (`/spaces`) gained a left quick-nav tree of the user's real
+      businesses (name + status dot), alongside the existing card grid — a shortcut, not a
+      replacement. The mockup's own "Space Types" grid on this same page was deliberately dropped
+      per the user's explicit instruction (also matches CLAUDE.md item 7: Naelao authors
+      SpaceTypes, an end user never picks one per-space). Home (`/new`) gained the mockup's
+      icon quick-chip row (Run agent / Web search / Help me write / Analyze data) — these PREFILL
+      the input rather than send immediately, a real, distinct affordance from the existing
+      full-sentence STARTERS buttons, not a redundant second row. The mockup's fake weather widget
+      was deliberately NOT ported — decorative, not backed by any real capability, and porting it
+      would be fabricating a feature. Projects (`/projects/[projectId]`) gained a real stats row
+      (Threads / Agents / Last activity, all from data already fetched — no fabricated "credits
+      used"/"runs" numbers, matching this file's own `credits_consumed: null` precedent) and an
+      "Agents in this project" grid marking the project's default agent.
+    2230/2230 tests pass (11 new: product-root tier, selective sharing, PATCH sharing, multi-slot
+    naming), `npx turbo run typecheck` clean (76 tasks), both apps verified via a real build +
+    deploy (not just `next build`). Migration 0069 applied directly to the live D1
+    (`naelao-platform`); `naelao-credentials` and `naelao-mcp-hub` redeployed to production;
+    `apps/shell`/`apps/dashboard` rebuilt and redeployed, both confirmed live (200) at
+    `naelao-shell.pages.dev/p/launchpad/spaces` and
+    `naelao-dashboard.pages.dev/dashboard/spaces/.../credentials`.
+    **Not done, deliberately (per the resolved design-tradeoff answers):** per-project connector-
+    tier override UI/table (hierarchy-default-only this pass); an end-user-facing "promote my
+    personal connector credential to shared" control in the shell (today sharing is set from the
+    admin-only raw credentials CRUD page in the builder dashboard, not from a business's own
+    Connect Apps panel — a natural, separate follow-up).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

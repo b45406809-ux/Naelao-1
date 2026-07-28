@@ -28,6 +28,40 @@ const STARTERS = [
   "Find something I could be doing better",
 ];
 
+/** Icon quick-chips (launchpad mockup's insertPrompt row) — PREFILL the input rather than send
+ *  immediately, unlike the full-sentence STARTERS above. A real, distinct affordance (fill-then-
+ *  edit) rather than a second row that does the same thing a different way. */
+const QUICK_PROMPTS: Array<{ label: string; prompt: string; icon: React.ReactNode }> = [
+  {
+    label: "Run agent",
+    prompt: "Run an agent to ",
+    icon: (
+      <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><rect x="3" y="3" width="10" height="10" rx="2" /><path d="M6 6L10 8L6 10V6Z" /></svg>
+    ),
+  },
+  {
+    label: "Web search",
+    prompt: "Search the web for ",
+    icon: (
+      <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><circle cx="7" cy="7" r="4.5" /><line x1="10.5" y1="10.5" x2="14" y2="14" /></svg>
+    ),
+  },
+  {
+    label: "Help me write",
+    prompt: "Help me write ",
+    icon: (
+      <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><path d="M11 2L14 5L5 14H2V11L11 2Z" /></svg>
+    ),
+  },
+  {
+    label: "Analyze data",
+    prompt: "Analyze this data: ",
+    icon: (
+      <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><rect x="2" y="10" width="3" height="4" /><rect x="6.5" y="6" width="3" height="8" /><rect x="11" y="2" width="3" height="12" /></svg>
+    ),
+  },
+];
+
 export default function HomePage() {
   const product = useProduct();
   const router = useRouter();
@@ -39,6 +73,12 @@ export default function HomePage() {
   const [starting, setStarting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [setupPending, setSetupPending] = React.useState(false);
+  const inputRef = React.useRef<HTMLTextAreaElement>(null);
+
+  function insertPrompt(prompt: string) {
+    setInput(prompt);
+    inputRef.current?.focus();
+  }
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -112,6 +152,7 @@ export default function HomePage() {
         <div className="input-container" style={{ marginTop: 26 }}>
           <div className="input-top">
             <textarea
+              ref={inputRef}
               className="msg-input"
               placeholder="Ask your assistant anything…"
               value={input}
@@ -140,7 +181,33 @@ export default function HomePage() {
           </p>
         )}
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 16, justifyContent: "center" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 14, justifyContent: "center" }}>
+          {QUICK_PROMPTS.map((q) => (
+            <button
+              key={q.label}
+              type="button"
+              disabled={starting}
+              onClick={() => insertPrompt(q.prompt)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "6px 12px",
+                borderRadius: 999,
+                border: "1px solid var(--border)",
+                background: "var(--surface2)",
+                color: "var(--text2)",
+                fontSize: 12,
+                cursor: starting ? "default" : "pointer",
+              }}
+            >
+              <span style={{ width: 13, height: 13, display: "flex" }}>{q.icon}</span>
+              {q.label}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10, justifyContent: "center" }}>
           {STARTERS.map((s) => (
             <button
               key={s}

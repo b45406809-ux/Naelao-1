@@ -127,6 +127,13 @@ export default function DiscoverPage() {
     setCreateError(null);
   }
 
+  // Quick-nav tree on the left (per the launchpad mockup's Spaces page) — real businesses only,
+  // never the SpaceType-picker grid the mockup's page also had (explicitly out of scope: builders
+  // configure a Product's SpaceType once at creation, not something an end user picks per-space —
+  // see CLAUDE.md item 7). It's a shortcut alongside the card grid below, not a replacement for
+  // it: the grid is still what you'd use to actually start something new.
+  const showTree = !loading && !businessesFailed && businesses.length > 0;
+
   const canCreate = manifest?.membership_model === "tenant" || manifest?.membership_model === "hybrid";
   // Phase F: render from the real, coming_soon-aware catalog (shell/manifest's template_catalog,
   // already intersected server-side with the builder's business_templates narrowing) instead of a
@@ -140,7 +147,58 @@ export default function DiscoverPage() {
   const firstRun = useSearchParams().get("onboarding") === "1" && !loading && businesses.length === 0;
 
   return (
-    <div className="page-view">
+    <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+      {showTree && (
+        <div
+          style={{
+            width: 200,
+            flexShrink: 0,
+            borderRight: "1px solid var(--border)",
+            overflowY: "auto",
+            padding: "14px 10px",
+          }}
+        >
+          <div style={{ fontSize: "10.5px", fontWeight: 500, color: "var(--text3)", letterSpacing: "0.07em", textTransform: "uppercase", padding: "2px 6px 8px" }}>
+            Your businesses
+          </div>
+          {businesses.map((b) => (
+            <Link
+              key={b.id}
+              href={b.onboarding_status != null && b.onboarding_status !== "complete" ? `/p/${product.slug}/spaces/${b.id}/onboarding` : `/p/${product.slug}/spaces/${b.id}`}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "6px 8px",
+                borderRadius: 8,
+                fontSize: 12.5,
+                color: "var(--text2)",
+                textDecoration: "none",
+              }}
+            >
+              <div
+                style={{
+                  width: 18,
+                  height: 18,
+                  borderRadius: 5,
+                  background: b.space_status === "active" ? "var(--accent)" : "var(--text3)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                  fontSize: 8,
+                  color: "#fff",
+                  fontWeight: 600,
+                }}
+              >
+                {b.name.slice(0, 2).toUpperCase()}
+              </div>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</span>
+            </Link>
+          ))}
+        </div>
+      )}
+      <div className="page-view" style={{ flex: 1, overflowY: "auto" }}>
       {firstRun && (
         <div
           style={{
@@ -352,6 +410,7 @@ export default function DiscoverPage() {
         </form>
       </Modal>
       <Toast toast={toast} />
+      </div>
     </div>
   );
 }

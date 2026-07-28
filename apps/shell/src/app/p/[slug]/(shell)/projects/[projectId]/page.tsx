@@ -5,7 +5,8 @@ export const runtime = "edge";
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { Button, Badge, FormInput, FormSelect, FormTextarea, useToast, Toast } from "@naelao/ui";
+import { Button, Badge, Card, CardLabel, CardValue, CardTitle, CardDesc, FormInput, FormSelect, FormTextarea, useToast, Toast } from "@naelao/ui";
+import { relativeTime } from "@/lib/relativeTime";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
@@ -179,6 +180,30 @@ export default function ProjectDetailPage() {
           shell's generic Settings/Threads/KB scaffolding. */}
       {creds && <ProjectKindPanel project={project} spaceId={activeSpaceId} creds={creds} />}
 
+      {/* Real data only — no fabricated "credits used"/"runs" tiles the way the launchpad mockup's
+          equivalent had; those aren't tracked per-project today (same "credits_consumed: null"
+          honesty precedent used elsewhere in this codebase rather than making up a number). */}
+      <div className="grid-3" style={{ marginTop: 16, marginBottom: 8 }}>
+        <Card interactive={false}>
+          <CardLabel>Threads</CardLabel>
+          <CardValue>{threads.length}</CardValue>
+        </Card>
+        <Card interactive={false}>
+          <CardLabel>Agents</CardLabel>
+          <CardValue>{agents.length}</CardValue>
+        </Card>
+        <Card interactive={false}>
+          <CardLabel>Last activity</CardLabel>
+          <CardValue>
+            <span style={{ fontSize: 16 }}>
+              {threads.length > 0
+                ? relativeTime(threads.reduce((latest, t) => (t.updated_at > latest ? t.updated_at : latest), threads[0]!.updated_at))
+                : "—"}
+            </span>
+          </CardValue>
+        </Card>
+      </div>
+
       <div className="section-label" style={{ marginTop: 24 }}>Settings</div>
       <div className="settings-block">
         <div className="settings-row">
@@ -279,6 +304,23 @@ export default function ProjectDetailPage() {
             </div>
           </Link>
         ))
+      )}
+
+      <div className="section-label" style={{ marginTop: 24 }}>Agents in this project</div>
+      {agents.length === 0 ? (
+        <p style={{ color: "var(--text3)", fontSize: 13 }}>
+          No agents installed in this space yet — your assistant can set one up when you ask.
+        </p>
+      ) : (
+        <div className="grid-3">
+          {agents.map((a) => (
+            <Card key={a.id} interactive={false}>
+              <CardTitle>{a.name ?? a.id}</CardTitle>
+              {a.description && <CardDesc>{a.description}</CardDesc>}
+              {a.id === project.default_agent_id && <Badge color="blue">Default for this project</Badge>}
+            </Card>
+          ))}
+        </div>
       )}
 
       <div className="page-header" style={{ marginTop: 24 }}>
