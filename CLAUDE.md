@@ -3271,6 +3271,69 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     personal connector credential to shared" control in the shell (today sharing is set from the
     admin-only raw credentials CRUD page in the builder dashboard, not from a business's own
     Connect Apps panel — a natural, separate follow-up).
+81. **The Projects page port (item 80) was corrected — the first pass only bolted a stats row
+    onto the OLD layout without touching structure, which the user caught immediately.** Rebuilt
+    `apps/shell/.../projects/[projectId]/page.tsx` against `apps/launchpad/src/index.html`'s
+    `#projects-view` for real, using the SAME global classes `packages/ui` already ports from
+    that mockup (`grid-4`, `workflow-item`, `badge-green`/`badge-amber`, `search-bar`,
+    `card-icon`, `btn-ghost`/`btn-primary`) rather than a re-theme: a breadcrumb, an icon-button
+    header (Settings scroll-to + New Thread), a 4-tile stats row, a client-side-searchable thread
+    list with status-colored badges, and an agents-in-project grid ending in a real "view all
+    agents" link (`/agents`) instead of the mockup's fake "Add Agent" affordance. No fabricated
+    data anywhere (no credits/run-count tiles). 2230/2230 tests pass, typecheck clean, deployed
+    and confirmed live by grepping the deployed bundle for the new markup.
+    **Lesson for future UI-port asks in this codebase: match STRUCTURE, not just add data.**
+82. **Polsia gap analysis (asked directly) surfaced a real inaccuracy in how the prior session
+    summarized this platform's own proactive/heartbeat design — corrected by reading the actual
+    code, not the changelog prose — and the one real, narrow gap that analysis found is now
+    BUILT: every business previously got ZERO proactive activity unless a builder happened to
+    wire a channel, connector, or cron by hand.**
+    - **The correction:** `enqueueAgentTicks` (`workers/agents/src/index.ts`) runs on an
+      **hourly** cron (`0 * * * *`, `workers/agents/wrangler.toml [triggers]`), not nightly like
+      Polsia's once-a-day CEO-agent batch — and inbound channel messages trigger a heartbeat
+      immediately, with the hourly sweep as a backstop, so the real cadence is closer to
+      near-real-time than either "nightly" or "hourly" alone suggests. A `case "daily_digest"`
+      handler already existed and correctly emails the owner a real last-24h activity summary
+      (runs/failures/approvals/tokens/credits pulled from `agent_activity_log`) — a prior
+      session's own claim that this was "not built" was stale/wrong, corrected here after
+      actually reading the code.
+    - **The real gap, found by reading `enqueueAgentTicks` end to end:** every roster it sweeps
+      (channel heartbeats, connector polls, scheduled jobs, the digest itself) only fires for a
+      space that ALREADY has something configured — a connected channel, a pollable connector, an
+      explicit `scheduled_jobs` row, or (for the digest) an explicit
+      `productConfig.notificationsConfig.dailyDigestEnabled: true` opt-in. Nothing auto-creates
+      any of these at provision time, so the assistant profile's own "REVENUE REVIEW — on your
+      recurring wake-ups" instruction (`workers/agents/src/script-engine/profiles.ts`) sat unused
+      for any business that hadn't been manually wired up — a materially narrower gap than "no
+      proactive system," but a real one.
+    - **Fixed both defaults.** `seedDefaultRevenueReviewCron` (new, `workers/provisioner/src/
+      index.ts`, exported and unit-tested standalone like its `seedLaunchpadAssistantPolicy`/
+      `seedWallet`/`seedOwnerMember` siblings) seeds one daily `scheduled_jobs` row per templated
+      Launchpad business at provision time (Step 9b, alongside `seedTemplateProjects`),
+      addressed at the Space Assistant with a goal that mirrors the profile's own instruction:
+      read the project journal, check `business_wallet`/commerce orders, log findings to the
+      journal, and only message the owner when something genuinely needs attention — never a
+      routine "all good" ping. Deliberately DAILY (`0 13 * * *`), not hourly: the platform-wide
+      tick infrastructure is already more continuous than Polsia's cadence, so this only needs to
+      cover businesses with no channel/connector activity at all, without adding load on top of
+      an already-constrained Workers AI quota (see Live Deployment Facts). `createSpaceRecord`
+      (`workers/spaces/src/create-space.ts`) now defaults
+      `productConfig.notificationsConfig.dailyDigestEnabled` to `true` for every new product
+      unless the caller already set it explicitly (respects an explicit opt-out; preserves every
+      other `productConfig` field via a shallow merge). Both best-effort/non-fatal, matching this
+      file's own standing precedent for provisioning-time seeds — a failure degrades to "no
+      proactive review until configured by hand," never blocks or breaks provisioning.
+    2236/2236 tests pass (6 new: `provisioner-default-revenue-review.test.ts` plus 3 new cases in
+    `create-space-record.test.ts`), `npx turbo run typecheck` clean (76 tasks), `naelao-
+    provisioner` and `naelao-spaces` deployed to production. **Not done:** live end-to-end
+    verification (create a real business, confirm the cron row lands) was deliberately skipped
+    this pass — the exact `POST /spaces/:spaceId/scheduled-jobs` call this reuses is
+    already proven live-working from prior sessions, and the new logic is fully covered by unit
+    tests against the real request shape; skipped creating another disposable test business to
+    avoid clutter for a low-risk, best-effort, unit-proven change. **Also noted in passing, out
+    of scope, not touched:** `workers/spaces/wrangler.toml`'s `PRODUCT_SHELL_URL` var is blank
+    (`""`) in every environment including production — a separate, pre-existing, already-known
+    gap in the same family as the router's own documented `PRODUCT_SHELL_URL` issue.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

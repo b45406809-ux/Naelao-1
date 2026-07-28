@@ -292,8 +292,23 @@ export async function createSpaceRecord(env: CreateSpaceEnv, params: CreateSpace
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
+  // Default the daily digest ON for every new product — Naelao's proactive tick infrastructure
+  // (hourly cron + near-real-time channel triggers, workers/agents/src/index.ts enqueueAgentTicks)
+  // already runs more continuously than a Polsia-style nightly batch, but the digest email that
+  // reports it was opt-in and off by default, so a builder who never found the toggle got zero
+  // visibility into it. Only defaults when the caller hasn't already set it explicitly — a wizard
+  // or API caller that deliberately opted out keeps that choice.
+  const productConfig = (params.configOverrides?.["productConfig"] ?? {}) as Record<string, unknown>;
+  const notificationsConfig = (productConfig["notificationsConfig"] ?? {}) as Record<string, unknown>;
+  const mergedConfigOverrides =
+    notificationsConfig["dailyDigestEnabled"] === undefined
+      ? {
+          ...(params.configOverrides ?? {}),
+          productConfig: { ...productConfig, notificationsConfig: { ...notificationsConfig, dailyDigestEnabled: true } },
+        }
+      : (params.configOverrides ?? {});
   const configJson = JSON.stringify({
-    ...(params.configOverrides ?? {}),
+    ...mergedConfigOverrides,
     ...(params.templateId ? { template_id: params.templateId } : {}),
   });
   const initialStatus = env.PROVISION_QUEUE ? "provisioning" : "active";

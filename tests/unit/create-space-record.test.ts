@@ -164,6 +164,39 @@ describe("createSpaceRecord — provisioning", () => {
     const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id = ?").bind(result.id).first<{ config_json: string }>();
     expect(JSON.parse(row!.config_json)).toMatchObject({ productConfig: { branding: { brandColor: "#ff0000" } } });
   });
+
+  // The proactive tick infrastructure (hourly cron + near-real-time channel triggers) already
+  // runs continuously; the digest email that reports on it was opt-in and off by default, so a
+  // builder who never found the toggle got no visibility. Defaulted ON here unless the caller
+  // already made an explicit choice.
+  it("defaults the daily digest email ON when the caller doesn't specify it", async () => {
+    const fakeDb = makeDb();
+    const result = await createSpaceRecord({ PLATFORM_DB: fakeDb }, { tenantId: "t1", name: "A", spacetypeId: "launchpad" });
+    const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id = ?").bind(result.id).first<{ config_json: string }>();
+    expect(JSON.parse(row!.config_json)).toMatchObject({ productConfig: { notificationsConfig: { dailyDigestEnabled: true } } });
+  });
+
+  it("respects an explicit dailyDigestEnabled: false rather than overriding it", async () => {
+    const fakeDb = makeDb();
+    const result = await createSpaceRecord(
+      { PLATFORM_DB: fakeDb },
+      { tenantId: "t1", name: "A", spacetypeId: "launchpad", configOverrides: { productConfig: { notificationsConfig: { dailyDigestEnabled: false } } } }
+    );
+    const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id = ?").bind(result.id).first<{ config_json: string }>();
+    expect(JSON.parse(row!.config_json)).toMatchObject({ productConfig: { notificationsConfig: { dailyDigestEnabled: false } } });
+  });
+
+  it("preserves other productConfig fields alongside the defaulted digest setting", async () => {
+    const fakeDb = makeDb();
+    const result = await createSpaceRecord(
+      { PLATFORM_DB: fakeDb },
+      { tenantId: "t1", name: "A", spacetypeId: "launchpad", configOverrides: { productConfig: { branding: { brandColor: "#ff0000" } } } }
+    );
+    const row = await fakeDb.prepare("SELECT config_json FROM spaces WHERE id = ?").bind(result.id).first<{ config_json: string }>();
+    expect(JSON.parse(row!.config_json)).toMatchObject({
+      productConfig: { branding: { brandColor: "#ff0000" }, notificationsConfig: { dailyDigestEnabled: true } },
+    });
+  });
 });
 
 describe("createSpaceRecord — config schema validation (G-AV02)", () => {

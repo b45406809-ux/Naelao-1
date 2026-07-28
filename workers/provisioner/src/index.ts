@@ -261,6 +261,53 @@ async function installAgentTrigger(
   }
 }
 
+/**
+ * Seed a default "recurring wake-up" for the Space Assistant so a Launchpad business gets
+ * SOME proactive activity from day one, matching the "REVENUE REVIEW — on your recurring
+ * wake-ups" instruction already baked into LAUNCHPAD_ASSISTANT_PROFILE's system prompt (which
+ * otherwise sits unused unless a builder or the assistant itself creates a scheduled_jobs row).
+ * Without this, enqueueAgentTicks (workers/agents/src/index.ts) never fires anything for a
+ * business that has no connected channel, no pollable connector, and no cron of its own — so a
+ * business created and left alone got zero proactive agent activity, ever, unlike a Polsia-style
+ * cycle that runs unconditionally for every company. Deliberately DAILY, not hourly: the
+ * platform-wide tick infrastructure is already more continuous than a nightly batch (near-
+ * real-time channel triggers + an hourly sweep), so this only needs to cover the gap — a business
+ * with no channel/connector activity at all — without adding needless load on top of an
+ * already-constrained Workers AI quota. Best-effort/non-fatal, same posture as
+ * seedLaunchpadAssistantPolicy right above it; a failure here degrades to "no proactive review
+ * until the builder configures one," never blocks provisioning.
+ */
+export async function seedDefaultRevenueReviewCron(spaceId: string, tenantId: string, env: Env): Promise<void> {
+  try {
+    const resp = await env.SPACES_WORKER.fetch(
+      new Request(`http://spaces-worker/spaces/${spaceId}/scheduled-jobs`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+        },
+        body: JSON.stringify({
+          name: "Daily revenue review",
+          cron_expression: "0 13 * * *",
+          agent_id: LAUNCHPAD_ASSISTANT_PROFILE.agentId,
+          goal:
+            "Run your recurring revenue review. Read the project journal for what's already known, then check " +
+            "business_wallet.balance/history and any storefront/commerce orders since your last review. Log what " +
+            "you find to the project journal. Only message the owner (via the notifications prebuilt) if something " +
+            "genuinely needs their attention — a stalled task, a real opportunity, or a problem — never a routine " +
+            "'all good' ping. Never fabricate a number you can't verify from real data.",
+        }),
+      })
+    );
+    if (!resp.ok) {
+      console.warn(`[provisioner] default revenue-review cron seed failed for ${spaceId}: ${await resp.text()}`);
+    }
+  } catch (err) {
+    console.warn(`[provisioner] default revenue-review cron seed threw for ${spaceId}:`, (err as Error).message);
+  }
+}
+
 async function registerAgentIndex(
   spaceId: string,
   tenantId: string,
@@ -710,6 +757,11 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
         } catch (err) {
           console.warn(`[provisioner] template project seeding failed for ${spaceId}:`, (err as Error).message);
         }
+
+        // Default proactive wake-up (see seedDefaultRevenueReviewCron's own doc comment) — every
+        // templated Launchpad business gets one, not just spaces with a channel/connector already
+        // configured.
+        await seedDefaultRevenueReviewCron(spaceId, tenantId, env);
 
         // Anything still genuinely outstanding (setup scripts that need a connected account,
         // credential/preference prompts) keeps onboarding open; otherwise it is already done and
