@@ -2,10 +2,21 @@
 
 export const runtime = "edge";
 
+// Ported from apps/launchpad/src/index.html's Projects page (#projects-view): breadcrumb, a
+// header with icon action buttons, a stats row, a searchable thread list with status-colored
+// badges, and an agents-in-project grid ending in a "view all" card — using the SAME global
+// classes (grid-4, workflow-item, badge-green/amber, search-bar, card-icon, btn-ghost/btn-primary)
+// packages/ui/src/styles.css already ports verbatim from that same mockup, so this isn't a
+// re-theme, it's actually using the shared system the way the mockup's own markup does.
+//
+// Kept, not ported: the mockup's per-tile "Credits used" stat (not tracked per-project — would be
+// fabricated, same precedent as this codebase's `credits_consumed: null` elsewhere) and each
+// thread/agent's fake run counts. Everything else here is real, fetched data.
+
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { Button, Badge, Card, CardLabel, CardValue, CardTitle, CardDesc, FormInput, FormSelect, FormTextarea, useToast, Toast } from "@naelao/ui";
+import { Button, Card, CardLabel, CardValue, FormInput, FormSelect, FormTextarea, useToast, Toast } from "@naelao/ui";
 import { relativeTime } from "@/lib/relativeTime";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
@@ -26,11 +37,16 @@ import {
 } from "@/lib/api";
 import { ProjectKindPanel } from "@/components/ProjectKindPanel";
 
+const STATUS_BADGE: Record<string, "green" | "amber" | "blue" | undefined> = {
+  active: "green",
+  archived: undefined,
+};
+
 export default function ProjectDetailPage() {
   const params = useParams<{ projectId: string }>();
   const router = useRouter();
   const product = useProduct();
-  const { activeSpaceId } = useActiveSpace();
+  const { activeSpaceId, activeSpaceName } = useActiveSpace();
   const { session } = useProductAuth();
   const { toast, show } = useToast();
   const [project, setProject] = React.useState<Project | null>(null);
@@ -38,6 +54,8 @@ export default function ProjectDetailPage() {
   const [agents, setAgents] = React.useState<AgentDefinitionSummary[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [creating, setCreating] = React.useState(false);
+  const [threadQuery, setThreadQuery] = React.useState("");
+  const settingsRef = React.useRef<HTMLDivElement>(null);
 
   const [docs, setDocs] = React.useState<KbDocument[]>([]);
   const [docsLoading, setDocsLoading] = React.useState(true);
@@ -169,21 +187,59 @@ export default function ProjectDetailPage() {
   if (loading) return <div className="page-view">Loading…</div>;
   if (!project) return <div className="page-view">Project not found.</div>;
 
+  const lastActivityAt = threads.length > 0
+    ? threads.reduce((latest, t) => (t.updated_at > latest ? t.updated_at : latest), threads[0]!.updated_at)
+    : null;
+  const visibleThreads = threadQuery.trim()
+    ? threads.filter((t) => (t.title ?? "Untitled thread").toLowerCase().includes(threadQuery.trim().toLowerCase()))
+    : threads;
+
   return (
     <div className="page-view">
-      <div className="page-header">
-        <div className="page-title">{project.name}</div>
-        {project.description && <div className="page-subtitle">{project.description}</div>}
+      {/* Breadcrumb: Business > Project (mockup's #projects-back-label). */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 16, fontSize: 12, color: "var(--text3)" }}>
+        <Link href={`/p/${product.slug}/spaces/${activeSpaceId}`} style={{ color: "var(--text2)", textDecoration: "none" }}>
+          {activeSpaceName ?? "Business"}
+        </Link>
+        <span>›</span>
+        <span style={{ color: "var(--text)", fontWeight: 500 }}>{project.name}</span>
+      </div>
+
+      <div className="page-header" style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+        <div>
+          <div className="page-title">{project.name}</div>
+          <div className="page-subtitle">
+            {project.description ? `${project.description} · ` : ""}
+            {threads.length} thread{threads.length === 1 ? "" : "s"}
+            {lastActivityAt ? ` · Last active ${relativeTime(lastActivityAt)}` : ""}
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => settingsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}
+          >
+            <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor" width={12} height={12}>
+              <circle cx="8" cy="8" r="2.5" /><path d="M8 1V2.5M8 13.5V15M1 8H2.5M13.5 8H15" />
+            </svg>
+            Settings
+          </button>
+          <button type="button" className="btn btn-primary btn-sm" onClick={handleNewThread} disabled={creating}>
+            <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor" width={12} height={12}>
+              <line x1="8" y1="3" x2="8" y2="13" /><line x1="3" y1="8" x2="13" y2="8" />
+            </svg>
+            {creating ? "Creating…" : "New Thread"}
+          </button>
+        </div>
       </div>
 
       {/* F-40: the kind-specific panel (wallet ledger, etc.) + F-39 files viewer, above the shared
           shell's generic Settings/Threads/KB scaffolding. */}
       {creds && <ProjectKindPanel project={project} spaceId={activeSpaceId} creds={creds} />}
 
-      {/* Real data only — no fabricated "credits used"/"runs" tiles the way the launchpad mockup's
-          equivalent had; those aren't tracked per-project today (same "credits_consumed: null"
-          honesty precedent used elsewhere in this codebase rather than making up a number). */}
-      <div className="grid-3" style={{ marginTop: 16, marginBottom: 8 }}>
+      {/* Real data only — no fabricated "credits used" tile the way the mockup's equivalent had. */}
+      <div className="grid-4">
         <Card interactive={false}>
           <CardLabel>Threads</CardLabel>
           <CardValue>{threads.length}</CardValue>
@@ -193,18 +249,83 @@ export default function ProjectDetailPage() {
           <CardValue>{agents.length}</CardValue>
         </Card>
         <Card interactive={false}>
+          <CardLabel>Default agent</CardLabel>
+          <CardValue><span style={{ fontSize: 14 }}>{agents.find((a) => a.id === project.default_agent_id)?.name ?? "Space default"}</span></CardValue>
+        </Card>
+        <Card interactive={false}>
           <CardLabel>Last activity</CardLabel>
-          <CardValue>
-            <span style={{ fontSize: 16 }}>
-              {threads.length > 0
-                ? relativeTime(threads.reduce((latest, t) => (t.updated_at > latest ? t.updated_at : latest), threads[0]!.updated_at))
-                : "—"}
-            </span>
-          </CardValue>
+          <CardValue><span style={{ fontSize: 16 }}>{lastActivityAt ? relativeTime(lastActivityAt) : "—"}</span></CardValue>
         </Card>
       </div>
 
-      <div className="section-label" style={{ marginTop: 24 }}>Settings</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <div className="section-label" style={{ margin: 0 }}>Threads</div>
+        {threads.length > 0 && (
+          <div className="search-bar" style={{ margin: 0, maxWidth: 220, padding: "5px 10px" }}>
+            <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><circle cx="7" cy="7" r="4.5" /><line x1="10.5" y1="10.5" x2="14" y2="14" /></svg>
+            <input type="text" placeholder="Search threads…" value={threadQuery} onChange={(e) => setThreadQuery(e.target.value)} style={{ fontSize: 12 }} />
+          </div>
+        )}
+      </div>
+      {threads.length === 0 ? (
+        <p style={{ color: "var(--text3)", fontSize: 13, marginBottom: 24 }}>No threads yet.</p>
+      ) : visibleThreads.length === 0 ? (
+        <p style={{ color: "var(--text3)", fontSize: 13, marginBottom: 24 }}>No threads match &ldquo;{threadQuery}&rdquo;.</p>
+      ) : (
+        <div style={{ marginBottom: 24 }}>
+          {visibleThreads.map((t) => (
+            <Link key={t.id} href={`/p/${product.slug}/projects/${params.projectId}/threads/${t.id}`} style={{ textDecoration: "none" }}>
+              <div className="workflow-item">
+                <div className="workflow-icon">
+                  <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="var(--accent)" width={14} height={14}>
+                    <path d="M4 2H10L13 5V14H4V2Z" /><polyline points="10,2 10,5 13,5" />
+                  </svg>
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="workflow-name" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {t.title ?? "Untitled thread"}
+                  </div>
+                  <div className="workflow-meta">{relativeTime(t.updated_at)}</div>
+                </div>
+                <span className={`badge${STATUS_BADGE[t.status] ? ` badge-${STATUS_BADGE[t.status]}` : ""}`} style={STATUS_BADGE[t.status] ? undefined : { background: "var(--surface2)", color: "var(--text3)" }}>
+                  {STATUS_BADGE[t.status] === "green" && <span className="badge-dot" />}
+                  {t.status}
+                </span>
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
+
+      <div className="section-label">Agents in this project</div>
+      {agents.length === 0 ? (
+        <p style={{ color: "var(--text3)", fontSize: 13, marginBottom: 24 }}>
+          No agents installed in this space yet — your assistant can set one up when you ask.
+        </p>
+      ) : (
+        <div className="grid-3">
+          {agents.map((a) => (
+            <div key={a.id} className="card agent-card">
+              <div className="card-icon">
+                <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="var(--accent)"><rect x="3" y="3" width="10" height="10" rx="2" /><circle cx="6" cy="7" r="1" /><circle cx="10" cy="7" r="1" /><path d="M6 10C6 10 7 11 10 10" /></svg>
+              </div>
+              <div className="card-title">{a.name ?? a.id}</div>
+              {a.description && <div className="card-desc">{a.description}</div>}
+              {a.id === project.default_agent_id && (
+                <div style={{ marginTop: 8 }}>
+                  <span className="badge badge-green"><span className="badge-dot" />Default</span>
+                </div>
+              )}
+            </div>
+          ))}
+          <Link href={`/p/${product.slug}/agents`} className="card" style={{ borderStyle: "dashed", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 6, minHeight: 90, textDecoration: "none" }}>
+            <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="var(--text3)" width={16} height={16}><circle cx="8" cy="8" r="6" /></svg>
+            <div style={{ fontSize: 12, color: "var(--text3)" }}>View all agents</div>
+          </Link>
+        </div>
+      )}
+
+      <div className="section-label" ref={settingsRef} style={{ marginTop: 24, scrollMarginTop: 16 }}>Settings</div>
       <div className="settings-block">
         <div className="settings-row">
           <div>
@@ -276,52 +397,6 @@ export default function ProjectDetailPage() {
           </Button>
         </div>
       </div>
-
-      <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 24 }}>
-        <div className="section-label" style={{ marginBottom: 0 }}>
-          Threads
-        </div>
-        <Button size="sm" onClick={handleNewThread} disabled={creating}>
-          {creating ? "Creating…" : "New Thread"}
-        </Button>
-      </div>
-      {threads.length === 0 ? (
-        <p style={{ color: "var(--text3)", fontSize: 13 }}>No threads yet.</p>
-      ) : (
-        threads.map((t) => (
-          <Link key={t.id} href={`/p/${product.slug}/projects/${params.projectId}/threads/${t.id}`} style={{ textDecoration: "none" }}>
-            <div className="workflow-item">
-              <div className="workflow-icon">
-                <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="var(--accent)">
-                  <path d="M4 2H10L13 5V14H4V2Z" />
-                </svg>
-              </div>
-              <div style={{ flex: 1 }}>
-                <div className="workflow-name">{t.title ?? "Untitled thread"}</div>
-                <div className="workflow-meta">{new Date(t.created_at).toLocaleString()}</div>
-              </div>
-              <Badge color={t.status === "active" ? "green" : "blue"}>{t.status}</Badge>
-            </div>
-          </Link>
-        ))
-      )}
-
-      <div className="section-label" style={{ marginTop: 24 }}>Agents in this project</div>
-      {agents.length === 0 ? (
-        <p style={{ color: "var(--text3)", fontSize: 13 }}>
-          No agents installed in this space yet — your assistant can set one up when you ask.
-        </p>
-      ) : (
-        <div className="grid-3">
-          {agents.map((a) => (
-            <Card key={a.id} interactive={false}>
-              <CardTitle>{a.name ?? a.id}</CardTitle>
-              {a.description && <CardDesc>{a.description}</CardDesc>}
-              {a.id === project.default_agent_id && <Badge color="blue">Default for this project</Badge>}
-            </Card>
-          ))}
-        </div>
-      )}
 
       <div className="page-header" style={{ marginTop: 24 }}>
         <div className="section-label" style={{ marginBottom: 0 }}>
