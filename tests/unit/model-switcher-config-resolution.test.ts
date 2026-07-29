@@ -140,7 +140,7 @@ describe("POST /agent/run — resolves the configured model, not the dead spacet
     return { env, calls };
   }
 
-  async function runReq(env: AgentsEnv, goal: string) {
+  async function runReq(env: AgentsEnv, goal: string, extra: Record<string, unknown> = {}) {
     const token = await mintInternalToken(SECRET, "tenant-a");
     return agentsApp.fetch(
       new Request("https://agents.naelao.com/spaces/space-1/sessions/sess-1/agent/run", {
@@ -151,7 +151,7 @@ describe("POST /agent/run — resolves the configured model, not the dead spacet
           "x-naelao-internal-token": token,
           "prefer": "respond-sync",
         },
-        body: JSON.stringify({ goal }),
+        body: JSON.stringify({ goal, ...extra }),
       }),
       env,
       agentExecCtx
@@ -178,5 +178,38 @@ describe("POST /agent/run — resolves the configured model, not the dead spacet
     const { env, calls } = makeAgentsEnv("{not valid json");
     await runReq(env, "hello");
     expect((calls[0]!.body as { model?: string }).model).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+  });
+
+  // §A1 Harness Excellence (chat UI parity): the model switcher's capability-config card lets a
+  // caller request a reasoning-effort level alongside the model — validated against whichever
+  // model actually runs, not just the raw request body's own model field.
+  describe("reasoning_effort — validated against the model that actually runs", () => {
+    it("rejects a level the resolved model doesn't offer", async () => {
+      const { env } = makeAgentsEnv("{}"); // resolves to DEFAULT_WORKING_MODEL (Llama — no reasoning at all)
+      const res = await runReq(env, "hello", { reasoning_effort: "high" });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a level valid for a DIFFERENT model than the one this run actually resolves to", async () => {
+      const { env } = makeAgentsEnv(JSON.stringify({ productConfig: { modelConfig: { model: "@cf/openai/gpt-oss-120b" } } }));
+      // "max" is glm-5.2's level, not gpt-oss-120b's (low/medium/high) — must be rejected even
+      // though it's a real level for SOME model in the registry.
+      const res = await runReq(env, "hello", { reasoning_effort: "max" });
+      expect(res.status).toBe(400);
+    });
+
+    it("accepts and forwards a level the resolved model genuinely offers", async () => {
+      const { env, calls } = makeAgentsEnv(JSON.stringify({ productConfig: { modelConfig: { model: "@cf/openai/gpt-oss-120b" } } }));
+      const res = await runReq(env, "hello", { reasoning_effort: "medium" });
+      expect(res.status).toBe(200);
+      expect((calls[0]!.body as { reasoningEffort?: string }).reasoningEffort).toBe("medium");
+    });
+
+    it("omitting reasoning_effort entirely is unaffected (the common case — most runs don't set one)", async () => {
+      const { env, calls } = makeAgentsEnv("{}");
+      const res = await runReq(env, "hello");
+      expect(res.status).toBe(200);
+      expect((calls[0]!.body as { reasoningEffort?: string }).reasoningEffort).toBeUndefined();
+    });
   });
 });

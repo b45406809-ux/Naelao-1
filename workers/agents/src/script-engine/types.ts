@@ -178,7 +178,7 @@ export type EscalationLevel = "L1" | "L2" | "L3" | "L4";
  */
 export interface TraceStep {
   seq: number;
-  /** "observe" | "find" | "gate" | "reason" | "run" */
+  /** "observe" | "find" | "gate" | "reason" | "run" | "answer" | "give_up" */
   phase: string;
   /** Script name, when the step concerns one (find top candidate, reason decision, run). */
   name?: string | undefined;
@@ -187,6 +187,11 @@ export interface TraceStep {
   tokens?: number | undefined;
   ok?: boolean | undefined;
   detail?: string | undefined;
+  /** A reasoning-capable model's own chain-of-thought for this "reason" step, when the model
+   *  returned one — see billing-core's MODEL_CAPABILITIES doc header for which models this
+   *  applies to. Rendered as a collapsed "Thoughts" block a user can expand, distinct from
+   *  `detail` (which stays a short label like the chosen action). */
+  thinking?: string | undefined;
   /** Date.now() at the moment the step was recorded. */
   ts: number;
 }

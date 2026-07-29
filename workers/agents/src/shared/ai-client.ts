@@ -136,6 +136,14 @@ export interface FailoverModel {
  * encoded here — dropping the parameter would silently change every caller's meaning, so it stays
  * in the signature and this comment records why it has no effect.
  */
+/** A chosen reasoning-effort level, ready to wire into the request body per the model's own
+ *  ReasoningParamShape (packages/billing-core's MODEL_CAPABILITIES — see that file's header for
+ *  what's actually confirmed vs. inferred per model). */
+export interface ReasoningRequest {
+  param: "reasoning_effort" | "kimi_thinking";
+  level: string;
+}
+
 export function buildUniversalBody(opts: {
   apiKey: string;
   cfApiToken?: string;
@@ -152,13 +160,18 @@ export function buildUniversalBody(opts: {
   /** Declared action space, sent as real tools so the model returns a schema-constrained call
    *  instead of prose we have to regex. */
   tools?: ToolSpec[];
+  /** Set only for a model whose MODEL_CAPABILITIES entry supports it; absent means "send nothing
+   *  reasoning-related" (the model either doesn't support it or the caller didn't choose a level). */
+  reasoning?: ReasoningRequest;
 }): string {
-  const { query, tools } = opts;
+  const { query, tools, reasoning } = opts;
   return JSON.stringify({
     model: query.model,
     max_tokens: query.max_tokens,
     messages: [{ role: "system", content: query.system }, ...query.messages],
     ...(tools && tools.length > 0 ? { tools: toolsWire(tools), tool_choice: "required" } : {}),
+    ...(reasoning?.param === "reasoning_effort" ? { reasoning_effort: reasoning.level } : {}),
+    ...(reasoning?.param === "kimi_thinking" ? { chat_template_kwargs: { thinking: reasoning.level === "on" } } : {}),
   });
 }
 
@@ -175,6 +188,10 @@ export function normalizeUniversalResponse(data: unknown): {
   /** The first tool call the model made, when it made one. Callers that declared a tool set
    *  should prefer this over parsing `text` — see the ToolSpec block above for why. */
   toolCall?: ToolCall;
+  /** A reasoning-capable model's chain-of-thought, when it returned one (see MODEL_CAPABILITIES'
+   *  own doc header for which models this applies to and the field-name caveat for Kimi). Absent
+   *  for every model that doesn't report one — never fabricated from `text`. */
+  thinking?: string;
 } {
   if (data && typeof data === "object") {
     const d = data as Record<string, unknown>;
@@ -202,33 +219,57 @@ export function normalizeUniversalResponse(data: unknown): {
       const u = result["usage"] as { prompt_tokens?: number; completion_tokens?: number } | undefined;
       // Workers AI returns already-parsed objects in `arguments`, unlike OpenAI's JSON string.
       const wc = (result["tool_calls"] as Array<{ name?: string; arguments?: unknown }> | undefined)?.[0];
+      // A real captured payload (reasoner-tool-calling.test.ts's gpt-oss-120b fixture) shows a
+      // model can send BOTH fields at once — `reasoning` the fuller chain-of-thought,
+      // `reasoning_content` a shorter one — so `reasoning` is checked first; Kimi K2.6 only ever
+      // sets `reasoning` (its own documented deviation, no `reasoning_content` at all), so this
+      // order serves both cases.
+      const thinking = firstNonEmptyString(result["reasoning"], result["reasoning_content"]);
       return {
         text: typeof result["response"] === "string" ? result["response"] : "",
         usage: u
           ? { input_tokens: u.prompt_tokens ?? 0, output_tokens: u.completion_tokens ?? 0 }
           : undefined,
         ...(wc?.name ? { toolCall: { name: wc.name, arguments: coerceArgs(wc.arguments) } } : {}),
+        ...(thinking ? { thinking } : {}),
       };
     }
 
     // OpenAI native format
     const choices = d["choices"] as Array<{
-      message?: { content?: string; tool_calls?: Array<{ function?: { name?: string; arguments?: unknown } }> };
+      message?: {
+        content?: string;
+        reasoning_content?: string;
+        reasoning?: string;
+        tool_calls?: Array<{ function?: { name?: string; arguments?: unknown } }>;
+      };
     }> | undefined;
     if (Array.isArray(choices) && choices.length > 0) {
       const message = choices[0]?.message;
       const u = d["usage"] as { prompt_tokens?: number; completion_tokens?: number } | undefined;
       const fn = message?.tool_calls?.[0]?.function;
+      // Same field-preference order as the Workers AI branch above — see that comment.
+      const thinking = firstNonEmptyString(message?.reasoning, message?.reasoning_content);
       return {
         text: message?.content ?? "",
         usage: u
           ? { input_tokens: u.prompt_tokens ?? 0, output_tokens: u.completion_tokens ?? 0 }
           : undefined,
         ...(fn?.name ? { toolCall: { name: fn.name, arguments: coerceArgs(fn.arguments) } } : {}),
+        ...(thinking ? { thinking } : {}),
       };
     }
   }
   return { text: "", usage: undefined };
+}
+
+/** The first argument that is a non-empty string, or undefined. Small helper for the
+ *  reasoning_content/reasoning field-name ambiguity above — never fabricates a value. */
+function firstNonEmptyString(...values: unknown[]): string | undefined {
+  for (const v of values) {
+    if (typeof v === "string" && v.length > 0) return v;
+  }
+  return undefined;
 }
 
 /** Tool arguments arrive as an object (Anthropic, Workers AI) or a JSON string (OpenAI). Normalize

@@ -58,6 +58,97 @@ describe("buildUniversalBody — tool declaration", () => {
   });
 });
 
+// Model switcher capability config (billing-core's MODEL_CAPABILITIES) — a chosen reasoning level
+// gets wired into the actual request body differently per model family; see that file's own doc
+// header for what's confirmed vs. inferred.
+describe("buildUniversalBody — reasoning-effort/thinking wiring", () => {
+  it("sends a plain reasoning_effort field for the reasoning_effort shape", () => {
+    const body = JSON.parse(
+      buildUniversalBody({
+        apiKey: "k", gatewayOpts: GATEWAY, ctx: CTX,
+        query: { model: "@cf/openai/gpt-oss-120b", max_tokens: 100, system: "s", messages: [] },
+        reasoning: { param: "reasoning_effort", level: "high" },
+      })
+    );
+    expect(body.reasoning_effort).toBe("high");
+    expect(body.chat_template_kwargs).toBeUndefined();
+  });
+
+  it("sends chat_template_kwargs.thinking as a boolean for the kimi_thinking shape", () => {
+    const on = JSON.parse(
+      buildUniversalBody({
+        apiKey: "k", gatewayOpts: GATEWAY, ctx: CTX,
+        query: { model: "@cf/moonshotai/kimi-k2.6", max_tokens: 100, system: "s", messages: [] },
+        reasoning: { param: "kimi_thinking", level: "on" },
+      })
+    );
+    expect(on.chat_template_kwargs).toEqual({ thinking: true });
+    expect(on.reasoning_effort).toBeUndefined();
+
+    const off = JSON.parse(
+      buildUniversalBody({
+        apiKey: "k", gatewayOpts: GATEWAY, ctx: CTX,
+        query: { model: "@cf/moonshotai/kimi-k2.6", max_tokens: 100, system: "s", messages: [] },
+        reasoning: { param: "kimi_thinking", level: "off" },
+      })
+    );
+    expect(off.chat_template_kwargs).toEqual({ thinking: false });
+  });
+
+  it("sends nothing reasoning-related when no reasoning option is given (unchanged for every non-reasoning-capable model)", () => {
+    const body = JSON.parse(
+      buildUniversalBody({
+        apiKey: "k", gatewayOpts: GATEWAY, ctx: CTX,
+        query: { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", max_tokens: 100, system: "s", messages: [] },
+      })
+    );
+    expect(body.reasoning_effort).toBeUndefined();
+    expect(body.chat_template_kwargs).toBeUndefined();
+  });
+});
+
+describe("normalizeUniversalResponse — a reasoning-capable model's chain-of-thought", () => {
+  it("captures `thinking` from the OpenAI-shaped choices[].message.reasoning field", () => {
+    const r = normalizeUniversalResponse({
+      choices: [{ message: { content: "4", reasoning: "2+2 is a basic addition." } }],
+    });
+    expect(r.thinking).toBe("2+2 is a basic addition.");
+  });
+
+  it("prefers the fuller `reasoning` field over `reasoning_content` when a model sends both — the real captured gpt-oss-120b payload below shows this happens", () => {
+    const r = normalizeUniversalResponse({
+      choices: [{
+        message: {
+          content: null,
+          reasoning: "User asks what is 2+2. Use the answer function.",
+          reasoning_content: "User asks what is 2+2.",
+          tool_calls: [{ function: { name: "answer", arguments: '{"text":"4"}' } }],
+        },
+      }],
+    });
+    expect(r.thinking).toBe("User asks what is 2+2. Use the answer function.");
+  });
+
+  it("falls back to reasoning_content when reasoning itself is absent", () => {
+    const r = normalizeUniversalResponse({
+      choices: [{ message: { content: "4", reasoning_content: "only this field is set" } }],
+    });
+    expect(r.thinking).toBe("only this field is set");
+  });
+
+  it("Workers AI native shape: same reasoning/reasoning_content preference on `result`", () => {
+    const r = normalizeUniversalResponse({
+      result: { response: "4", reasoning: "thinking out loud", usage: { prompt_tokens: 1, completion_tokens: 1 } },
+    });
+    expect(r.thinking).toBe("thinking out loud");
+  });
+
+  it("is absent (not fabricated) for a model that never reports one", () => {
+    const r = normalizeUniversalResponse({ choices: [{ message: { content: "hello" } }] });
+    expect(r.thinking).toBeUndefined();
+  });
+});
+
 describe("normalizeUniversalResponse — parsing tool calls back out of each provider's shape", () => {
   it("Anthropic tool_use block", () => {
     const r = normalizeUniversalResponse({
@@ -166,6 +257,63 @@ describe("GatewayReasoner.decide — tool call preferred, text kept as fallback"
       ],
     });
     expect(d).toMatchObject({ action: "answer", text: "recovered" });
+  });
+});
+
+describe("GatewayReasoner — reasoning-effort request + lastThinking capture", () => {
+  it("forwards a configured reasoning option into the actual gateway request body", async () => {
+    let capturedBody: string | undefined;
+    const original = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      capturedBody = init?.body as string;
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"action":"answer","text":"ok"}' } }] }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const reasoner = new GatewayReasoner({
+        apiKey: "k", gateway: GATEWAY, ctx: CTX,
+        reasoning: { param: "reasoning_effort", level: "high" },
+      });
+      await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(JSON.parse(capturedBody!).reasoning_effort).toBe("high");
+  });
+
+  it("captures the model's own chain-of-thought onto lastThinking, mirroring lastUsage's contract", async () => {
+    const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      choices: [{ message: { content: null, reasoning: "thinking about it", tool_calls: [{ function: { name: "answer", arguments: '{"text":"ok"}' } }] } }],
+    }), { status: 200 })) as typeof fetch;
+    try {
+      expect(reasoner.lastThinking).toBeUndefined();
+      await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
+      expect(reasoner.lastThinking).toBe("thinking about it");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("resets lastThinking to undefined at the start of a new decide() call that reports none", async () => {
+    const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
+    const original = globalThis.fetch;
+    let call = 0;
+    globalThis.fetch = (async () => {
+      call++;
+      const body = call === 1
+        ? { choices: [{ message: { content: null, reasoning: "first call thought", tool_calls: [{ function: { name: "answer", arguments: '{"text":"a"}' } }] } }] }
+        : { choices: [{ message: { content: null, tool_calls: [{ function: { name: "answer", arguments: '{"text":"b"}' } }] } }] };
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
+      expect(reasoner.lastThinking).toBe("first call thought");
+      await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
+      expect(reasoner.lastThinking).toBeUndefined();
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 });
 

@@ -36,6 +36,9 @@ export interface AgentTaskParams {
   // §A1 Harness Excellence Phase HX2: threaded through the same path as the fields above so the
   // async dispatch path's session-budget gate matches the sync path's exactly.
   sessionCreditCeiling?: number;
+  /** Model switcher capability config (a chosen reasoning-effort/thinking level) — already
+   *  validated by the /agent/run route against whichever model this task actually runs. */
+  reasoningEffort?: string;
 }
 
 export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> {
@@ -111,6 +114,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
             projectId: p.projectId,
             callerRole: p.callerRole,
             sessionCreditCeiling: p.sessionCreditCeiling,
+            reasoningEffort: p.reasoningEffort,
           }),
         }
       );

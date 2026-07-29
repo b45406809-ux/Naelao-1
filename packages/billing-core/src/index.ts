@@ -229,6 +229,89 @@ export function contextWindowForModel(model: string): number {
   return MODEL_CONTEXT_WINDOWS[model] ?? DEFAULT_CONTEXT_WINDOW;
 }
 
+/**
+ * How a chosen reasoning-effort LEVEL gets sent to Cloudflare's AI REST API — the models on this
+ * list don't all share one wire shape:
+ *  - "reasoning_effort": a plain `reasoning_effort: "<level>"` field at the top level of the
+ *    request body. Confirmed present on glm-5.2's own Workers AI docs page (described generically
+ *    as "constrains effort on reasoning for reasoning models") and reported for gpt-oss-120b/20b
+ *    (OpenAI's own Responses-API-style "low"/"medium"/"high").
+ *  - "kimi_thinking": Moonshot's Kimi K2.6 family uses ITS OWN shape instead — a boolean
+ *    `chat_template_kwargs: { thinking: true|false }` field, and returns the model's reasoning
+ *    text in a `reasoning` response field rather than the more common `reasoning_content` name
+ *    (Cloudflare's own Kimi K2.6 changelog post names both differences explicitly).
+ *  - "none": no configurable reasoning mode.
+ */
+export type ReasoningParamShape = "reasoning_effort" | "kimi_thinking" | "none";
+
+export interface ModelCapability {
+  /** Ordered low → high. Empty when the model has no configurable reasoning at all. A model with
+   *  a plain on/off toggle (no graduated effort) reports exactly two levels, e.g. ["off", "on"]. */
+  reasoningLevels: readonly string[];
+  reasoningParam: ReasoningParamShape;
+}
+
+const NO_REASONING: ModelCapability = { reasoningLevels: [], reasoningParam: "none" };
+
+/**
+ * Per-model reasoning/"thinking" capability for every entry in ALLOWED_MODELS — what a model
+ * switcher's capability-aware config card should offer, and how to wire a chosen level into the
+ * actual AI Gateway request (ai-client.ts's buildUniversalBody).
+ *
+ * Confirmed against each model's own Cloudflare Workers AI docs page or changelog post where
+ * noted below; NOT yet exercised against a LIVE call for any entry except the account's actual
+ * working default (llama-3.3-70b, correctly NO_REASONING — it isn't a reasoning model) — this
+ * account has only ever successfully served that one model in production (CLAUDE.md item 68).
+ * Confirm the exact wire shape the first time a reasoning-capable model here actually gets called,
+ * same "confirm once real access exists" precedent as this codebase's Whop/Composio/Pipedream
+ * integrations. Entries with no independently confirmed reasoning shape default to NO_REASONING
+ * rather than guessing — a missing config control is a UI gap, a wrong one silently mis-bills or
+ * 400s a real request.
+ */
+export const MODEL_CAPABILITIES: Record<string, ModelCapability> = {
+  "claude-haiku-4-5-20251001": NO_REASONING,
+  "claude-sonnet-4-6": NO_REASONING,
+  "claude-opus-4-8": NO_REASONING,
+  "@cf/meta/llama-3.3-70b-instruct-fp8-fast": NO_REASONING,
+  "@cf/meta/llama-4-scout-17b-16e-instruct": NO_REASONING,
+  // Confirmed: OpenAI's own gpt-oss docs describe "reasoning_effort" (low/medium/high) as a
+  // first-class, fully documented Responses-API parameter; Cloudflare's changelog post announcing
+  // these models on Workers AI names "adjustable reasoning effort levels" explicitly.
+  "@cf/openai/gpt-oss-120b": { reasoningLevels: ["low", "medium", "high"], reasoningParam: "reasoning_effort" },
+  "@cf/openai/gpt-oss-20b": { reasoningLevels: ["low", "medium", "high"], reasoningParam: "reasoning_effort" },
+  "@cf/qwen/qwen3-30b-a3b-fp8": NO_REASONING,
+  "@cf/mistralai/mistral-small-3.1-24b-instruct": NO_REASONING,
+  "@cf/ibm-granite/granite-4.0-h-micro": NO_REASONING,
+  "@cf/google/gemma-4-26b-a4b-it": NO_REASONING,
+  "@cf/zai-org/glm-4.7-flash": NO_REASONING,
+  // Confirmed via glm-5.2's own Workers AI docs page (reasoning_effort field present in its
+  // parameter list) plus third-party coverage describing exactly two named modes: "High" (default,
+  // faster, ~half the output tokens) and "Max" (extended chain-of-thought, up to 85K output
+  // tokens, +30-80% first-token latency).
+  "@cf/zai-org/glm-5.2": { reasoningLevels: ["high", "max"], reasoningParam: "reasoning_effort" },
+  "@cf/nvidia/nemotron-3-120b-a12b": NO_REASONING,
+  // Confirmed: Kimi K2.6 uses chat_template_kwargs.thinking (a boolean) rather than
+  // reasoning_effort, and returns its chain-of-thought under a `reasoning` response field instead
+  // of the more common `reasoning_content` name — both are called out explicitly in Cloudflare's
+  // own K2.6 model docs. K2.7-code is the same model family's code-specialized variant; treated
+  // the same pending independent confirmation of its own docs page.
+  "@cf/moonshotai/kimi-k2.6": { reasoningLevels: ["off", "on"], reasoningParam: "kimi_thinking" },
+  "@cf/moonshotai/kimi-k2.7-code": { reasoningLevels: ["off", "on"], reasoningParam: "kimi_thinking" },
+};
+
+/** Reasoning capability for a model string, degrading to NO_REASONING for anything not in the
+ *  table above rather than throwing — an unknown/future model should just show no reasoning
+ *  control, not break the config card. */
+export function capabilityForModel(model: string): ModelCapability {
+  return MODEL_CAPABILITIES[model] ?? NO_REASONING;
+}
+
+/** Whether `level` is one this model actually offers — used to validate a client-supplied
+ *  reasoning-effort override server-side before it ever reaches the AI Gateway request. */
+export function isValidReasoningLevel(model: string, level: string): boolean {
+  return capabilityForModel(model).reasoningLevels.includes(level);
+}
+
 // Compute token cost in USD micros (cost * 1,000,000 for integer storage)
 export function computeTokenCostMicro(
   inputTokens: number,

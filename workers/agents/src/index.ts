@@ -9,7 +9,7 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
-import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
+import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL, isValidReasoningLevel, capabilityForModel } from "@naelao/billing-core";
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, type MentionableAgent } from "@naelao/events";
@@ -395,7 +395,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.param("sessionId");
 
-  const rawBody = await c.req.json<{ goal?: string; agent_definition_id?: string; project_id?: string; model?: string }>();
+  const rawBody = await c.req.json<{ goal?: string; agent_definition_id?: string; project_id?: string; model?: string; reasoning_effort?: string }>();
   const resolvedGoal = await resolveRunGoal(c.env, tenantId, spaceId, sessionId, rawBody.goal);
   if (!resolvedGoal) {
     throw badRequest("goal is required and must be a string (or the session must already have a user message)");
@@ -503,6 +503,17 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     sessionCreditCeiling = cfg.productConfig?.limits?.sessionCreditCeiling;
   } catch {
     modelConfig = {};
+  }
+
+  // A model switcher's capability-aware config card only offers levels the CHOSEN model actually
+  // supports (billing-core's MODEL_CAPABILITIES) — but the model resolved for THIS run may still
+  // be the space's own default rather than rawBody.model, so validate against whichever model
+  // will actually run, not just what the client happened to send. An invalid pairing is rejected
+  // outright rather than silently dropped, same posture as the model check above: a client that
+  // thinks it configured reasoning should learn immediately if that request can't be honored.
+  const effectiveModelForReasoning = rawBody.model ?? modelConfig.model ?? DEFAULT_WORKING_MODEL;
+  if (rawBody.reasoning_effort && !isValidReasoningLevel(effectiveModelForReasoning, rawBody.reasoning_effort)) {
+    throw badRequest(`reasoning_effort '${rawBody.reasoning_effort}' is not offered by model '${effectiveModelForReasoning}'`);
   }
 
   // A-2 cutover: the script-native engine addresses agents by their R2-config `agentId`
@@ -643,6 +654,9 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         callerRole,
         // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
         sessionCreditCeiling,
+        // Model switcher capability config — already validated above against whichever model
+        // actually runs, so this is passed through as-is rather than re-checked at the DO.
+        reasoningEffort: rawBody.reasoning_effort,
       },
     });
 
@@ -696,6 +710,9 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         model: rawBody.model ?? modelConfig.model ?? DEFAULT_WORKING_MODEL,
         // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
         sessionCreditCeiling,
+        // Model switcher capability config — already validated above against whichever model
+        // actually runs.
+        reasoningEffort: rawBody.reasoning_effort,
         // The id returned to the client below. Without sending it, the DO minted its own and
         // persisted the run trace under that instead — so GET .../runs/:runId/trace (HX1's
         // builder-facing observability) could never find a trace for any id a caller actually had.
@@ -1075,13 +1092,27 @@ const TASK_STATUS_TO_RUN_STATUS: Record<string, "running" | "completed" | "faile
   awaiting_approval: "awaiting_approval",
 };
 
+/** One live-progress checkpoint (loop.ts's TraceStep, minus seq/ts which this shape re-adds
+ *  concretely) — "currently doing X" for a chat UI's activity feed while a run is still going. */
+export interface LiveRunStep {
+  seq: number;
+  phase: string;
+  name?: string;
+  detail?: string;
+  ok?: boolean;
+  tier?: number;
+  duration_ms?: number;
+  tokens?: number;
+  ts: number;
+}
+
 async function fetchRunOrTaskStatus(
   env: AgentsEnv, tenantId: string, sessionId: string, spaceId: string, runId: string
-): Promise<{ status: number; body: { id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[] } }> {
+): Promise<{ status: number; body: { id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[] } }> {
   const stub = await getAgentDO(env, tenantId, sessionId);
   const doResponse = await stub.fetch(new Request(`http://agent-do/runs/${runId}`, { method: "GET" }));
   if (doResponse.ok) {
-    const doBody = await doResponse.json<{ id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[] }>();
+    const doBody = await doResponse.json<{ id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[] }>();
     return { status: 200, body: doBody };
   }
   if (!env.TASK_DO) return { status: doResponse.status, body: { id: runId, status: "failed", error: "run not found" } };
@@ -1236,10 +1267,24 @@ app.get(
     // durable-by-default run's task_id (see fetchRunOrTaskStatus above).
     const pollTask = async (): Promise<void> => {
       let lastSentAnswer = "";
+      // §A1 Harness Excellence (chat UI parity): the "currently doing X" activity feed. Each
+      // fetchRunOrTaskStatus tick may carry NEW entries in `live_steps` (NaelaoAgentDO's
+      // in-memory, still-running progress — see handleGetRun) — track the highest seq already
+      // forwarded so only the delta since the last tick is sent, same shape as the answer delta
+      // just above it.
+      let lastActivitySeq = -1;
       try {
         const deadline = Date.now() + 120_000;
         while (Date.now() < deadline) {
           const { body: run } = await fetchRunOrTaskStatus(c.env, tenantId, sessionId, spaceId, runId);
+
+          if (run.live_steps?.length) {
+            const newSteps = run.live_steps.filter((s) => s.seq > lastActivitySeq);
+            if (newSteps.length) {
+              await sendEvent({ type: "activity", run_id: runId, steps: newSteps });
+              lastActivitySeq = Math.max(...run.live_steps.map((s) => s.seq));
+            }
+          }
 
           // §A1.27: honest partial progress — if the run has already accumulated more final_answer
           // text than we've sent (a run whose underlying execution writes incremental output),
@@ -1446,6 +1491,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
     projectId?: string;
     callerRole?: string;
     sessionCreditCeiling?: number;
+    reasoningEffort?: string;
   }>();
   if (body.tenantId !== headerTenantId) {
     return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
@@ -1474,6 +1520,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           userId: body.userId,
           projectId: body.projectId,
           sessionCreditCeiling: body.sessionCreditCeiling,
+          reasoningEffort: body.reasoningEffort,
         }),
       })
     );

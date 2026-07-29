@@ -15,6 +15,7 @@ import {
   startSession,
   type AgentRun,
   type Message,
+  type LiveRunStep,
 } from "@/lib/api";
 import type { SessionCredentials } from "@/lib/api";
 import {
@@ -25,8 +26,17 @@ import {
   storeActiveRunId,
   clearActiveRunId,
 } from "@/lib/chatSession";
+import {
+  getPreferredModel,
+  storePreferredModel,
+  getPreferredReasoningLevel,
+  storePreferredReasoningLevel,
+} from "@/lib/modelPreference";
+import { DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
 import { ContextUsageMeter } from "./ContextUsageMeter";
 import { SubthreadPanel, SubthreadEntry } from "./SubthreadPanel";
+import { ModelSelector } from "./ModelSelector";
+import { LiveActivityLine, ActivitySummary } from "./ActivityFeed";
 import type { ThreadSummary, ConsultedThread } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 1500;
@@ -105,11 +115,40 @@ export function Chat({
   const [panelOpen, setPanelOpen] = React.useState(true);
   const [panelTab, setPanelTab] = React.useState<ThreadPanelTab>("stats");
   const [lastRun, setLastRun] = React.useState<AgentRun | null>(null);
+  // Model switcher (Claude-Code-style per-session model + capability config) — a client-side
+  // preference (modelPreference.ts), NOT the business's own stored default (that's
+  // updateModelConfig/the Dashboard tab). Lazily read from localStorage so it survives reloads;
+  // falls back to the platform default the very first time this space is ever opened.
+  const [selectedModel, setSelectedModel] = React.useState<string>(() => getPreferredModel(spaceId) ?? DEFAULT_WORKING_MODEL);
+  const [selectedReasoningLevel, setSelectedReasoningLevel] = React.useState<string | null>(
+    () => getPreferredReasoningLevel(spaceId, getPreferredModel(spaceId) ?? DEFAULT_WORKING_MODEL)
+  );
+  const handleModelChange = React.useCallback(
+    (model: string, level: string | null) => {
+      setSelectedModel(model);
+      setSelectedReasoningLevel(level);
+      storePreferredModel(spaceId, model);
+      if (level) storePreferredReasoningLevel(spaceId, model, level);
+    },
+    [spaceId]
+  );
+  // The in-flight run's "currently doing X" trail (script-engine/loop.ts's TraceStep, live via
+  // NaelaoAgentDO's in-memory progress map) — reset per send, attached to the completed message
+  // once the run resolves so the tool-call/thinking summary stays visible under that turn.
+  const [liveActivity, setLiveActivity] = React.useState<LiveRunStep[]>([]);
 
   const endRef = React.useRef<HTMLDivElement>(null);
   const sseRef = React.useRef<EventSource | null>(null);
   const pollTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
   const pollDeadlineRef = React.useRef(0);
+  // Bug fix: send() mints a session and calls streamRun for the run it just started, but setting
+  // chatSessionId to a NEW value also re-fires the "reattach to an in-flight run on mount" effect
+  // below (its deps include chatSessionId) — and by then storeActiveRunId has already run, so that
+  // effect sees the SAME run as "already in flight" and opens a SECOND EventSource for it. Two
+  // independent SSE connections each append their own completed-answer bubble on "done", which is
+  // exactly the double/triple-reply bug. This ref is the single gate: whichever call site reaches
+  // a given runId first wins, and every other attempt for that same runId is a no-op.
+  const attachedRunIdRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -188,6 +227,11 @@ export function Chat({
 
   const pollUntilDone = React.useCallback(
     (sid: string, runId: string) => {
+      // The DO's own /runs/:runId response carries the FULL live-progress list every tick (not a
+      // delta, unlike the SSE endpoint's own "activity" events) — so each tick just replaces the
+      // local copy with whatever's current, and the last one read is what gets attached to the
+      // completed message below.
+      let latestActivity: LiveRunStep[] = [];
       pollDeadlineRef.current = Date.now() + MAX_POLL_DURATION_MS;
       pollTimerRef.current = setInterval(async () => {
         if (Date.now() > pollDeadlineRef.current) {
@@ -200,6 +244,10 @@ export function Chat({
         try {
           const run = await pollRun(spaceId, sid, runId, session);
           setLastRun(run);
+          if (run.live_steps) {
+            latestActivity = run.live_steps;
+            setLiveActivity(latestActivity);
+          }
           if (run.status === "running") {
             if (run.final_answer) setStreamingContent(run.final_answer);
             return;
@@ -207,6 +255,7 @@ export function Chat({
           stopPolling();
           setStreamingContent("");
           setIsLoading(false);
+          setLiveActivity([]);
           clearActiveRunId(spaceId, sessionKey);
           // awaiting_approval is grouped with completed on purpose: both have something real to
           // say. Without it this status matched no branch at all, so the reply simply vanished —
@@ -215,7 +264,11 @@ export function Chat({
           if ((run.status === "completed" || run.status === "awaiting_approval") && run.final_answer) {
             setMessages((prev) => [
               ...prev,
-              { id: `msg_${Date.now()}`, role: "assistant", content: run.final_answer!, created_at: new Date().toISOString() },
+              {
+                id: `msg_${Date.now()}`, role: "assistant", content: run.final_answer!,
+                created_at: new Date().toISOString(),
+                ...(latestActivity.length > 0 ? { activity: latestActivity } : {}),
+              },
             ]);
           } else if (run.status === "failed" || run.status === "cancelled") {
             setError(run.error ?? "The agent run failed");
@@ -224,6 +277,7 @@ export function Chat({
           stopPolling();
           setStreamingContent("");
           setIsLoading(false);
+          setLiveActivity([]);
           clearActiveRunId(spaceId, sessionKey);
           setError(err instanceof Error ? err.message : "Polling failed");
         }
@@ -245,29 +299,44 @@ export function Chat({
       const es = new EventSource(url);
       sseRef.current = es;
       let accumulated = "";
+      // The SSE endpoint sends only the DELTA of new steps each tick (unlike the plain poll
+      // route's full-list response) — accumulate locally so the completed message can carry the
+      // whole trail, same reasoning as `accumulated` above for the answer text itself.
+      let activitySteps: LiveRunStep[] = [];
 
       es.onmessage = (evt) => {
         try {
-          const data = JSON.parse(evt.data) as { type: string; content?: string; run_id?: string; message?: string };
-          if (data.type === "delta" && data.content) {
+          const data = JSON.parse(evt.data) as {
+            type: string; content?: string; run_id?: string; message?: string; steps?: LiveRunStep[];
+          };
+          if (data.type === "activity" && data.steps?.length) {
+            activitySteps = [...activitySteps, ...data.steps];
+            setLiveActivity(activitySteps);
+          } else if (data.type === "delta" && data.content) {
             accumulated += data.content;
             setStreamingContent(accumulated);
           } else if (data.type === "done") {
             closeSSE();
             setStreamingContent("");
             setIsLoading(false);
+            setLiveActivity([]);
             clearActiveRunId(spaceId, sessionKey);
             setLastRun({ id: data.run_id ?? runId, status: "completed", final_answer: accumulated });
             if (accumulated) {
               setMessages((prev) => [
                 ...prev,
-                { id: data.run_id ?? `msg_${Date.now()}`, role: "assistant", content: accumulated, created_at: new Date().toISOString() },
+                {
+                  id: data.run_id ?? `msg_${Date.now()}`, role: "assistant", content: accumulated,
+                  created_at: new Date().toISOString(),
+                  ...(activitySteps.length > 0 ? { activity: activitySteps } : {}),
+                },
               ]);
             }
           } else if (data.type === "error") {
             closeSSE();
             setStreamingContent("");
             setIsLoading(false);
+            setLiveActivity([]);
             clearActiveRunId(spaceId, sessionKey);
             setError(data.message ?? "The agent run failed");
           }
@@ -289,6 +358,19 @@ export function Chat({
     [spaceId, sessionKey, session, closeSSE, pollUntilDone]
   );
 
+  // Single entry point for "start following this run's status" — both send() (a run it just
+  // started) and the reattach-on-mount effect (a run it found already in flight) go through this,
+  // so attachedRunIdRef guarantees streamRun is only ever opened once per runId no matter which
+  // path gets there first or how many times either path fires.
+  const attachToRun = React.useCallback(
+    (sid: string, runId: string) => {
+      if (attachedRunIdRef.current === runId) return;
+      attachedRunIdRef.current = runId;
+      void streamRun(sid, runId);
+    },
+    [streamRun]
+  );
+
   // §A1.27: reattach to an in-flight run on mount (a reload, or a remount from navigating away
   // and back within the same tab) instead of only showing history with no sign a run is still
   // going. Runs once chatSessionId is resolved (i.e. init() above has finished).
@@ -303,7 +385,7 @@ export function Chat({
         if (cancelled) return;
         if (run.status === "running") {
           setIsLoading(true);
-          void streamRun(chatSessionId, activeRunId);
+          attachToRun(chatSessionId, activeRunId);
         } else {
           // Already resolved while we were away — history (fetched above) already reflects it.
           clearActiveRunId(spaceId, sessionKey);
@@ -316,9 +398,9 @@ export function Chat({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- streamRun/session intentionally
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- attachToRun/session intentionally
     // excluded: this should only re-run when the session actually changes, not on every render
-    // streamRun/session identity happens to change.
+    // attachToRun/session identity happens to change.
   }, [chatSessionId, spaceId, sessionKey]);
 
   const send = React.useCallback(async (text: string) => {
@@ -327,6 +409,7 @@ export function Chat({
     setError(null);
     setIsLoading(true);
     setStreamingContent("");
+    setLiveActivity([]);
     const optimistic: Message = { id: `optimistic_${Date.now()}`, role: "user", content: trimmed, created_at: new Date().toISOString() };
     setMessages((prev) => [...prev, optimistic]);
     try {
@@ -340,15 +423,18 @@ export function Chat({
         storeChatSessionId(spaceId, sid, sessionKey);
         setChatSessionId(sid);
       }
-      const { agentRunId } = await sendMessage(spaceId, sid, trimmed, session);
+      const { agentRunId } = await sendMessage(spaceId, sid, trimmed, session, {
+        model: selectedModel,
+        ...(selectedReasoningLevel ? { reasoningEffort: selectedReasoningLevel } : {}),
+      });
       storeActiveRunId(spaceId, agentRunId, sessionKey);
-      streamRun(sid, agentRunId);
+      attachToRun(sid, agentRunId);
     } catch (err) {
       setIsLoading(false);
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       setError(err instanceof Error ? err.message : "Failed to send message");
     }
-  }, [isLoading, chatSessionId, spaceId, sessionKey, session, streamRun]);
+  }, [isLoading, chatSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, selectedReasoningLevel]);
 
   const handleSubmit = React.useCallback(async () => {
     const trimmed = input.trim();
@@ -417,6 +503,9 @@ export function Chat({
                     </div>
                   )}
                   <div className={["bubble", m.role === "user" ? "user" : ""].filter(Boolean).join(" ")}>{m.content}</div>
+                  {/* Claude-Code-style collapsed tool-call/thinking summary for this turn — see
+                      ActivityFeed.tsx. Renders nothing for a trivial answer-only turn. */}
+                  {m.role !== "user" && m.activity && <ActivitySummary steps={m.activity} />}
                   {/* item 79: where the assistant delegated to a project agent on the user's
                       behalf, right at the turn it happened — collapsed by default, expandable
                       in place. A separate, private exchange (see SubthreadPanel's own header),
@@ -437,7 +526,10 @@ export function Chat({
                   <path d="M7 1L12.5 4.25V10.75L7 14L1.5 10.75V4.25L7 1Z" />
                 </svg>
               </div>
-              <div className="bubble">{streamingContent}</div>
+              <div style={{ minWidth: 0 }}>
+                {liveActivity.length > 0 && <div style={{ marginBottom: 4 }}><LiveActivityLine steps={liveActivity} /></div>}
+                <div className="bubble">{streamingContent}</div>
+              </div>
             </div>
           )}
           {isLoading && !streamingContent && (
@@ -447,11 +539,17 @@ export function Chat({
                   <path d="M7 1L12.5 4.25V10.75L7 14L1.5 10.75V4.25L7 1Z" />
                 </svg>
               </div>
-              <div className="bubble typing-indicator">
-                <span className="typing-dot" />
-                <span className="typing-dot" />
-                <span className="typing-dot" />
-              </div>
+              {liveActivity.length > 0 ? (
+                <div className="bubble">
+                  <LiveActivityLine steps={liveActivity} />
+                </div>
+              ) : (
+                <div className="bubble typing-indicator">
+                  <span className="typing-dot" />
+                  <span className="typing-dot" />
+                  <span className="typing-dot" />
+                </div>
+              )}
             </div>
           )}
           {error && (
@@ -498,6 +596,9 @@ export function Chat({
                   <path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                 </svg>
               </button>
+            </div>
+            <div style={{ display: "flex", marginTop: 6 }}>
+              <ModelSelector model={selectedModel} reasoningLevel={selectedReasoningLevel} onChange={handleModelChange} />
             </div>
           </div>
           <p className="disclaimer">AI-generated responses may be inaccurate.</p>

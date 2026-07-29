@@ -3335,6 +3335,99 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     (`""`) in every environment including production — a separate, pre-existing, already-known
     gap in the same family as the router's own documented `PRODUCT_SHELL_URL` issue.
 
+83. **Chat UI parity pass: fixed a real duplicate-reply bug, and built a live "currently doing X"
+    activity feed + a Claude-Code-style model/reasoning-effort switcher for the chat input bar.**
+    User-reported: sending a message in `apps/shell`'s chat sometimes echoed the same reply 2-3
+    times.
+    - **Root cause, FIXED:** `Chat.tsx`'s `send()` mints a session for a fresh thread and calls
+      `streamRun` for the run it just started; separately, a "reattach to an in-flight run on
+      mount" effect (item §A1.27) depends on `chatSessionId` and ALSO calls `streamRun` for
+      whatever `getActiveRunId` returns. Since `send()` calls `storeActiveRunId` synchronously
+      before `setChatSessionId` re-renders, the reattach effect fired on that SAME re-render and
+      saw the run `send()` had just started as "already in flight" — opening a SECOND independent
+      EventSource for it. Each one independently appended its own completed-answer bubble on
+      "done" (and a THIRD copy if one connection's `onerror` fell back to `pollUntilDone`),
+      producing the reported 2-3x duplication on every first message of a new session/thread.
+      Fixed with a single `attachedRunIdRef` gate shared by both call sites — whichever reaches a
+      given `runId` first wins; every other attempt for that id is a no-op.
+    - **Live activity feed (script-engine/loop.ts + NaelaoAgentDO + the SSE stream).** The loop's
+      `onProgress` checkpoint was previously fired only at 3 spots (observe/gate/L3-L4-step) with a
+      narrow `{phase, detail}` shape — widened to the full `TraceStep` shape and now fires from
+      `pushTrace` itself (so EVERY persisted trace event also live-reports, for free) plus new
+      "begin" pings before each slow op (observe/find/reason/run) so a chat UI can show "Thinking…"
+      /"Running script.find…" WHILE it's happening, not just after. `NaelaoAgentDO` gained an
+      in-memory `liveRuns` map (bounded, cleared in a `finally` once the run resolves) fed by a
+      newly-general `onProgress` wiring (previously built ONLY for sub-agent-parent progress
+      reporting, via a new `composeProgressReporters` combinator so both uses coexist).
+      `handleGetRun` now synthesizes a `{status:"running", live_steps:[...]}` response from that
+      map BEFORE falling through to its `agent_runs` SQL lookup — closing a real gap: a
+      script-native run (the default dispatch since item 47) writes no `agent_runs` row at all, so
+      this route always 404'd for the run every real chat message actually uses, and
+      `fetchRunOrTaskStatus` silently fell through to TaskDO on every poll with zero mid-run
+      visibility. The SSE `/stream` endpoint's existing 1s poll loop now also diffs `live_steps`
+      against the highest `seq` already sent and forwards new ones as a `type:"activity"` event;
+      the plain poll route (`pollRun`) gets the same data as a full list each tick (no delta
+      tracking needed there). Shell: new `ActivityFeed.tsx` (`LiveActivityLine` — the live
+      single-line "currently doing X" indicator; `ActivitySummary` — a Claude-Code-style
+      collapsed-by-default "Thought and used 2 tools" bar under a completed reply, expandable to
+      the ordered step list, each step individually expandable to inspect tokens/duration/tier).
+      Renders nothing for a trivial answer-only turn — a bar under every single message would be
+      noise, not signal.
+    - **Model + reasoning-effort switcher, researched per-model rather than assumed.** New
+      `packages/billing-core` export `MODEL_CAPABILITIES`/`capabilityForModel`/
+      `isValidReasoningLevel`: which of `ALLOWED_MODELS` support a configurable reasoning/thinking
+      mode, and the exact wire shape — confirmed via Cloudflare's own Workers AI docs pages
+      (gpt-oss-120b/20b: `reasoning_effort` low/medium/high; glm-5.2: `reasoning_effort` with
+      exactly two modes, "high"/"max") and its Kimi K2.6 changelog post (a DIFFERENT shape,
+      `chat_template_kwargs.thinking` boolean, returning chain-of-thought in a `reasoning` field
+      rather than the more common `reasoning_content` name) — everything else (including the
+      account's actual working default, Llama 3.3) honestly reports no reasoning capability rather
+      than guessing. `ai-client.ts`'s `buildUniversalBody` gained a `reasoning?: {param, level}`
+      option that injects the right field per shape; `normalizeUniversalResponse` gained a
+      `thinking` extraction — a REAL captured live payload already in this repo's own tests (a
+      gpt-oss-120b response) showed a model can send BOTH `reasoning` (fuller) and
+      `reasoning_content` (shorter) at once, so `reasoning` is preferred first. `GatewayReasoner`
+      gained `lastThinking` (mirrors the existing `lastUsage` per-call contract);
+      `NaelaoAgentDO.resolveReasoningRequest` validates a client-requested level against the
+      model's own capability before ever constructing the reasoner. `/agent/run` accepts
+      `reasoning_effort`, validated against whichever model the run actually resolves to (not just
+      the raw request field) — rejecting e.g. `glm-5.2`'s `"max"` level for a `gpt-oss-120b` run —
+      and threads it through both the sync dispatch and the async Workflow→
+      `/internal/tasks/:taskId/run` path identically. Shell: new `ModelSelector.tsx` (a
+      capability-aware dropdown — a model with no reasoning capability simply shows no such
+      control, never a disabled dead one) + `modelPreference.ts` (localStorage, per-space model +
+      per-(space,model) reasoning level — a client-side override distinct from
+      `updateModelConfig`'s business-wide stored default, same relationship Claude Code's own
+      per-session model picker has to an org default).
+    - **Not built this pass (scoped, documented, not silently dropped):** true token-by-token
+      streaming of the final answer text itself — still the same documented §A1.27 gap (the
+      script-native loop's terminal LLM call doesn't progressively persist); the activity feed
+      gives real live STEP-level granularity ("currently doing X") but not sub-step token
+      streaming. Also not built: a live DO-instance-level integration test beyond the one
+      concurrency-gated test added (`live-activity-feed.test.ts`) — deeper scenarios (multiple
+      concurrent runs on one DO, a run that hits an approval gate mid-stream) are unexercised.
+    - **A deploy-tooling trap worth recording:** `workers/agents/wrangler.toml` has NO `name`
+      override under `[env.production]`/`[env.staging]`, so `wrangler deploy --env production`
+      targets a DIFFERENT worker (`naelao-agents-production`, auto-created, MISSING its D1/DO/KV/
+      Vectorize/Queues/R2/AI bindings per wrangler's own "not inherited by environments" warnings)
+      than the actual long-standing live worker (`naelao-agents`, confirmed via the CF API's
+      services list by `modified_on` timestamp). The real production deploy command for this
+      worker is the BARE `wrangler deploy` (no `--env` flag) — it uses the top-level `[vars]`/
+      bindings, which already carry everything needed (this is presumably also why item 45's "carry
+      NAELAO_ACCOUNT_ID/NAELAO_GATEWAY_ID forward into env.staging/production" fix has never
+      actually been exercised by a real production deploy — those blocks aren't what's live). The
+      accidentally-created `naelao-agents-production` duplicate was deleted via the CF API
+      immediately after being found. **Do not use `--env production` for this worker's deploys —
+      use bare `wrangler deploy`.**
+    2258/2258 tests pass (22 new: `live-activity-feed.test.ts`'s concurrency-gated DO test proving
+    `live_steps` is really visible mid-run and cleared after; new cases in
+    `reasoner-tool-calling.test.ts`, `packages/billing-core.test.ts`, and
+    `model-switcher-config-resolution.test.ts`), `npx turbo run typecheck` clean (76 tasks),
+    `naelao-agents` (the REAL one, verified via bare `wrangler deploy`) and `apps/shell` both
+    deployed and live-verified by fetching the deployed JS chunks directly and grepping for the
+    new `reasoning_effort`/`live_steps`/`ModelSelector` strings (present, byte-identical to the
+    local build).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

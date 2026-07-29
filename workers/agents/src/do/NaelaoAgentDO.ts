@@ -14,7 +14,8 @@ import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
-import { tokensToCredits, infraTimeToCredits } from "@naelao/billing-core";
+import { tokensToCredits, infraTimeToCredits, capabilityForModel } from "@naelao/billing-core";
+import type { ReasoningRequest } from "../shared/ai-client.js";
 import {
   ScriptToolSurface,
   runScriptLoop,
@@ -2201,7 +2202,63 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * PARENT DO instance so its sub_agents row is updated live, mid-run — see loop.ts's
    * onProgress checkpoints and handleSubAgentProgress below.
    */
-  private buildSubAgentProgressReporter(context: Record<string, unknown> | undefined): ((checkpoint: { phase: string; detail?: string }) => Promise<void>) | undefined {
+  /**
+   * §A1 Harness Excellence (chat UI parity): an in-flight run's live "currently doing X" state —
+   * observe/find/gate/reason/run/answer checkpoints, most-recent-first-consumed, capped so a
+   * runaway loop can't grow this unbounded. In-memory only, on THIS DO instance: the interactive
+   * chat path (handleScriptRun) and its poller (GET /runs/:runId, called by the SAME agent-DO
+   * stub the SSE endpoint already addresses) run against the identical DO id, so a concurrent
+   * poll reads this while the run is still executing. Cleared once the run resolves (see the
+   * `finally` in handleScriptRun) — deliberately NOT persisted, since `run_traces` (HX1) already
+   * durably records the same information once the run completes; this is only for the window
+   * while it hasn't yet.
+   */
+  private liveRuns = new Map<string, { steps: Array<Omit<TraceStep, "ts"> & { ts: number }>; updatedAt: number }>();
+  private static readonly MAX_LIVE_STEPS = 60;
+
+  /** Turns a client-requested (model, level) pair into a GatewayReasoner-ready ReasoningRequest,
+   *  or undefined when the model has no reasoning capability, no level was requested, or the
+   *  requested level isn't one this model actually offers (billing-core's isValidReasoningLevel —
+   *  an invalid level is dropped honestly rather than sent through and 400ing at the gateway). */
+  private static resolveReasoningRequest(model: string | undefined, level: string | undefined): ReasoningRequest | undefined {
+    if (!model || !level) return undefined;
+    const { reasoningParam, reasoningLevels } = capabilityForModel(model);
+    if (reasoningParam === "none" || !reasoningLevels.includes(level)) return undefined;
+    return { param: reasoningParam, level };
+  }
+
+  private recordLiveProgress(runId: string, checkpoint: Omit<TraceStep, "seq" | "ts">): void {
+    const entry = this.liveRuns.get(runId) ?? { steps: [], updatedAt: Date.now() };
+    entry.steps.push({ seq: entry.steps.length, ts: Date.now(), ...checkpoint });
+    if (entry.steps.length > NaelaoAgentDO.MAX_LIVE_STEPS) entry.steps.shift();
+    entry.updatedAt = Date.now();
+    this.liveRuns.set(runId, entry);
+  }
+
+  private buildLiveProgressReporter(runId: string): (checkpoint: Omit<TraceStep, "seq" | "ts">) => void {
+    return (checkpoint) => this.recordLiveProgress(runId, checkpoint);
+  }
+
+  /** Combines any number of onProgress reporters (live-progress + sub-agent-parent-callback,
+   *  when both apply) into one — each fires independently and a throwing one never blocks the
+   *  others, same "never fails the run" contract loop.ts's own reportProgress already has. */
+  private composeProgressReporters(
+    reporters: Array<((checkpoint: Omit<TraceStep, "seq" | "ts">) => void | Promise<void>) | undefined>
+  ): ((checkpoint: Omit<TraceStep, "seq" | "ts">) => Promise<void>) | undefined {
+    const active = reporters.filter((r): r is (checkpoint: Omit<TraceStep, "seq" | "ts">) => void | Promise<void> => !!r);
+    if (active.length === 0) return undefined;
+    return async (checkpoint) => {
+      for (const r of active) {
+        try {
+          await r(checkpoint);
+        } catch {
+          /* one reporter failing must never block the others or the run itself */
+        }
+      }
+    };
+  }
+
+  private buildSubAgentProgressReporter(context: Record<string, unknown> | undefined): ((checkpoint: Omit<TraceStep, "seq" | "ts">) => Promise<void>) | undefined {
     const parentDoId = context?.["parent_do_id"];
     const subAgentId = context?.["sub_agent_id"];
     if (typeof parentDoId !== "string" || typeof subAgentId !== "string" || !this.env.NAELAO_AGENT_DO) return undefined;
@@ -2327,6 +2384,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       context?: Record<string, unknown>;
       apiKey?: string;
       model?: string;
+      /** A chosen reasoning-effort/thinking level for `model`, already validated by the caller
+       *  (index.ts's /agent/run route) against billing-core's isValidReasoningLevel — an invalid
+       *  or unsupported level for the chosen model is dropped rather than trusted again here,
+       *  same "validate once at the edge, degrade honestly if it somehow arrives wrong" posture
+       *  every other client-supplied enum in this handler already has. */
+      reasoningEffort?: string;
       // §A1 Harness Excellence Phase HX2: resolved by the caller (index.ts) from
       // productConfig.limits.sessionCreditCeiling — this DO has no PLATFORM_DB binding.
       sessionCreditCeiling?: number;
@@ -2469,6 +2532,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // scripts) — read lazily at call time, so ordering relative to runScriptLoop is safe.
     const consultLog: Array<{ thread_id: string; agent_id: string; title: string }> = [];
     engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools, userId, consultLog);
+    const reasoningRequest = NaelaoAgentDO.resolveReasoningRequest(body.model, body.reasoningEffort);
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
       gateway: {
@@ -2480,12 +2544,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ctx: { spaceId, agentId, model: body.model ?? "claude-haiku-4-5-20251001" },
       ...(body.model ? { model: body.model } : {}),
       fallbacks: this.resolveFailoverChain(body.model ?? "claude-haiku-4-5-20251001", body.apiKey ?? ""),
+      ...(reasoningRequest ? { reasoning: reasoningRequest } : {}),
     });
 
     try {
       const maxStepsFromContext = body.context?.["max_steps"];
       const maxTokensFromContext = body.context?.["max_tokens"];
-      const onProgress = this.buildSubAgentProgressReporter(body.context);
+      const onProgress = this.composeProgressReporters([
+        this.buildLiveProgressReporter(runId),
+        this.buildSubAgentProgressReporter(body.context),
+      ]);
       // The thread's own history — without it the agent has no memory of the conversation it is
       // replying in. Best-effort: undefined simply means "no history", the prior behaviour.
       const conversation = await this.loadConversationContext(spaceId, sessionId, tenantId);
@@ -2613,6 +2681,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         { error: errMessage },
         { status: 500 }
       );
+    } finally {
+      // The run has fully resolved (success, suspended-for-approval, or thrown) — no more
+      // onProgress calls will fire for this runId, so the live-progress window is over. Suspended
+      // runs are deliberately cleared too: `pending_approval`/deferred already carry their own
+      // status (awaiting_approval) that the client reads independently of this ephemeral feed.
+      this.liveRuns.delete(runId);
     }
   }
 
@@ -4988,6 +5062,24 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   // ── GET /runs/:runId ──────────────────────────────────────────────────────
 
   private handleGetRun(runId: string): Response {
+    // §A1 Harness Excellence (chat UI parity): a script-native run (handleScriptRun, the default
+    // dispatch path since item 47's cutover) writes NO `agent_runs` row — that table is legacy-
+    // ReAct-only — so this route always 404'd for the run everyone actually uses, and
+    // fetchRunOrTaskStatus correctly fell through to TaskDO on every single poll. That's still
+    // right for the FINAL answer (TaskDO is the durable source of truth), but it meant a client
+    // polling this route while the run was still executing learned nothing beyond "running" —
+    // no live "currently doing X". While a live-progress entry exists for this runId (i.e. the
+    // run is still inside this DO's own runScriptLoop call), answer from it directly instead of
+    // falling through — synthesizing a "running" status with the steps recorded so far.
+    const live = this.liveRuns.get(runId);
+    if (live) {
+      return Response.json({
+        id: runId,
+        status: "running",
+        live_steps: live.steps,
+      });
+    }
+
     const run = (this.ctx.storage.sql
       .exec(`SELECT * FROM agent_runs WHERE id = ?`, runId)
       .toArray() as unknown as AgentRunRow[])[0];

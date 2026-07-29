@@ -199,6 +199,12 @@ export interface Message {
    *  subthread(s) it opened — rendered inline as an expandable card at this exact turn instead
    *  of only in the separate "Assistant" tab. Absent/empty for an ordinary message. */
   metadata?: { consulted_threads?: ConsultedThread[] };
+  /** CLIENT-ONLY, never persisted server-side: the "currently doing X" activity trail this run
+   *  produced (observe/find/gate/reason/run/answer steps, live while the run was in flight — see
+   *  LiveRunStep). Attached locally to the completed assistant bubble by Chat.tsx once the run
+   *  finishes, so the tool-call/thinking summary stays visible under that turn — lost on reload,
+   *  same documented scope as the backend's own in-memory (not persisted) live-progress map. */
+  activity?: LiveRunStep[];
 }
 
 export interface ConsultedThread {
@@ -206,6 +212,25 @@ export interface ConsultedThread {
   agent_id: string;
   title: string;
   session_id?: string;
+}
+
+/** One "currently doing X" checkpoint from the script-native loop (observe/find/gate/reason/run/
+ *  answer/give_up) — mirrors workers/agents/src/index.ts's LiveRunStep. Live while a run is in
+ *  flight (NaelaoAgentDO's in-memory liveRuns map); the SAME shape is what loop.ts persists to
+ *  run_traces once the run completes, so a step seen live never changes shape once it's "done". */
+export interface LiveRunStep {
+  seq: number;
+  phase: string;
+  name?: string;
+  detail?: string;
+  ok?: boolean;
+  tier?: number;
+  duration_ms?: number;
+  tokens?: number;
+  /** A reasoning-capable model's own chain-of-thought for a "reason" step, when the model
+   *  returned one. Rendered as a separate collapsed "Thoughts" block, not folded into `detail`. */
+  thinking?: string;
+  ts: number;
 }
 
 export interface AgentRun {
@@ -216,6 +241,9 @@ export interface AgentRun {
   status: "running" | "completed" | "failed" | "cancelled" | "awaiting_approval";
   final_answer?: string;
   error?: string;
+  /** New steps recorded since the run started, present only while status is "running" — see
+   *  LiveRunStep's own doc. */
+  live_steps?: LiveRunStep[];
 }
 
 /** POST /v1/spaces/:spaceId/sessions — start a new chat session.
@@ -271,12 +299,21 @@ export async function getMessages(spaceId: string, sessionId: string, session: S
   return res.data ?? res.messages ?? [];
 }
 
+/** Model switcher options for one send — both optional, both already validated server-side
+ *  against billing-core's ALLOWED_MODELS/MODEL_CAPABILITIES; an invalid pairing 400s rather than
+ *  silently running a different config than the user chose. */
+export interface RunModelOptions {
+  model?: string;
+  reasoningEffort?: string;
+}
+
 /** Persists the user's message, then kicks off an agent run. */
 export async function sendMessage(
   spaceId: string,
   sessionId: string,
   content: string,
-  session: SessionCredentials
+  session: SessionCredentials,
+  modelOptions?: RunModelOptions
 ): Promise<{ userMessage: Message; agentRunId: string }> {
   const userMessage = await apiFetch<Message>(`/v1/spaces/${spaceId}/sessions/${sessionId}/messages`, {
     method: "POST",
@@ -288,7 +325,16 @@ export async function sendMessage(
   // sending it directly avoids that extra round trip on every single message.
   const agentRun = await apiFetch<{ id?: string; run_id?: string; task_id?: string }>(
     `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/run`,
-    { method: "POST", body: JSON.stringify({ session_id: sessionId, goal: content }), session }
+    {
+      method: "POST",
+      body: JSON.stringify({
+        session_id: sessionId,
+        goal: content,
+        ...(modelOptions?.model ? { model: modelOptions.model } : {}),
+        ...(modelOptions?.reasoningEffort ? { reasoning_effort: modelOptions.reasoningEffort } : {}),
+      }),
+      session,
+    }
   );
   return { userMessage, agentRunId: agentRun.id ?? agentRun.run_id ?? agentRun.task_id ?? "" };
 }
@@ -314,7 +360,7 @@ export async function getStreamUrl(spaceId: string, sessionId: string, runId: st
 
 /** Polling fallback for environments without SSE. */
 export async function pollRun(spaceId: string, sessionId: string, runId: string, session: SessionCredentials): Promise<AgentRun> {
-  const res = await apiFetch<{ id: string; status: string; final_answer?: string; error?: string }>(
+  const res = await apiFetch<{ id: string; status: string; final_answer?: string; error?: string; live_steps?: LiveRunStep[] }>(
     `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}`,
     { session }
   );
@@ -323,6 +369,7 @@ export async function pollRun(spaceId: string, sessionId: string, runId: string,
     status: (res.status as AgentRun["status"]) ?? "running",
     ...(res.final_answer !== undefined ? { final_answer: res.final_answer } : {}),
     ...(res.error !== undefined ? { error: res.error } : {}),
+    ...(res.live_steps ? { live_steps: res.live_steps } : {}),
   };
 }
 

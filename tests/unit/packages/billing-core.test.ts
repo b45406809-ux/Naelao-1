@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { computeTokenCostMicro, tokensToCredits, CREDITS_PER_USD, contextWindowForModel, MODEL_CONTEXT_WINDOWS } from "@naelao/billing-core";
+import {
+  computeTokenCostMicro, tokensToCredits, CREDITS_PER_USD, contextWindowForModel, MODEL_CONTEXT_WINDOWS,
+  capabilityForModel, isValidReasoningLevel, ALLOWED_MODELS, MODEL_CAPABILITIES,
+} from "@naelao/billing-core";
 
 describe("computeTokenCostMicro — per-model USD pricing", () => {
   it("prices a known model's input/output tokens separately", () => {
@@ -49,5 +52,45 @@ describe("contextWindowForModel — §A1.27 per-model context window lookup", ()
   it("degrades to a sane documented default for an unknown model rather than throwing", () => {
     expect(() => contextWindowForModel("some-future-model")).not.toThrow();
     expect(contextWindowForModel("some-future-model")).toBeGreaterThan(0);
+  });
+});
+
+// The model switcher's capability-aware config card: which of ALLOWED_MODELS support a
+// configurable reasoning-effort/thinking mode, and what levels/wire shape to use.
+describe("MODEL_CAPABILITIES / capabilityForModel — reasoning-effort capability registry", () => {
+  it("has a registry entry for every allowed model — none silently missing", () => {
+    for (const model of ALLOWED_MODELS) {
+      expect(MODEL_CAPABILITIES[model]).toBeDefined();
+    }
+  });
+
+  it("the account's actual working default (Llama 3.3) correctly has NO reasoning control — it isn't a reasoning model", () => {
+    const cap = capabilityForModel("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+    expect(cap.reasoningParam).toBe("none");
+    expect(cap.reasoningLevels).toEqual([]);
+  });
+
+  it("gpt-oss models offer the OpenAI-style low/medium/high reasoning_effort levels", () => {
+    const cap = capabilityForModel("@cf/openai/gpt-oss-120b");
+    expect(cap.reasoningParam).toBe("reasoning_effort");
+    expect(cap.reasoningLevels).toEqual(["low", "medium", "high"]);
+  });
+
+  it("Kimi K2.6 uses its own kimi_thinking shape (an on/off toggle), not reasoning_effort", () => {
+    const cap = capabilityForModel("@cf/moonshotai/kimi-k2.6");
+    expect(cap.reasoningParam).toBe("kimi_thinking");
+    expect(cap.reasoningLevels).toEqual(["off", "on"]);
+  });
+
+  it("degrades to no-reasoning for an unknown model string rather than throwing", () => {
+    expect(() => capabilityForModel("some-future-model")).not.toThrow();
+    expect(capabilityForModel("some-future-model").reasoningParam).toBe("none");
+  });
+
+  it("isValidReasoningLevel accepts only a level the model actually offers", () => {
+    expect(isValidReasoningLevel("@cf/openai/gpt-oss-120b", "high")).toBe(true);
+    expect(isValidReasoningLevel("@cf/openai/gpt-oss-120b", "max")).toBe(false); // that's glm-5.2's level, not this model's
+    expect(isValidReasoningLevel("@cf/zai-org/glm-5.2", "max")).toBe(true);
+    expect(isValidReasoningLevel("@cf/meta/llama-3.3-70b-instruct-fp8-fast", "high")).toBe(false);
   });
 });

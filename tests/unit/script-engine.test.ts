@@ -264,7 +264,13 @@ describe("runScriptLoop — real per-token accounting (replaces the step-count-o
     expect(result.notes.some((n) => n.includes("token budget"))).toBe(true);
   });
 
-  it("onProgress fires at observe, gate, and each L3/L4 step", async () => {
+  it("onProgress fires live (pre-step) AND persisted (post-step, via pushTrace) checkpoints in phase order", async () => {
+    // §A1 Harness Excellence Phase HX2+ (live activity feed): onProgress now fires the SAME
+    // TraceStep-shaped checkpoint pushTrace persists, both right before a slow operation starts
+    // (a "Thinking…"/"Running X" live ping with no `ok`) and again once it completes — so a host
+    // with no live-progress needs can ignore it, and one building a chat UI's "currently doing X"
+    // indicator gets it for free. Assert relative ORDER (a subsequence), not exact call count,
+    // since exactly how many times a phase pings is an implementation detail.
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
     const reasoner: Reasoner = {
@@ -280,7 +286,8 @@ describe("runScriptLoop — real per-token accounting (replaces the step-count-o
         phases.push(checkpoint.phase);
       },
     });
-    expect(phases).toEqual(["observe", "gate", "step"]);
+    const uniqueInOrder = [...new Set(phases)];
+    expect(uniqueInOrder).toEqual(["observe", "find", "gate", "reason", "answer"]);
   });
 
   it("a throwing onProgress never fails the run", async () => {

@@ -185,6 +185,10 @@ export interface Reasoner {
    *  client reports it. Optional — reasoners that can't report it (e.g. test fakes) leave
    *  this undefined, which the loop treats as zero, not an error. */
   lastUsage?: ReasonerUsage | undefined;
+  /** The model's own chain-of-thought from the most recently completed decide() call, when the
+   *  model/provider returned one (a reasoning-capable model with a reasoning level chosen — see
+   *  billing-core's MODEL_CAPABILITIES). Optional — most reasoners/models never set this. */
+  lastThinking?: string | undefined;
 }
 
 /** Escalation thresholds (spec §11.1 agents.md "Escalation Rules"). Overridable per agent. */
@@ -267,18 +271,25 @@ export interface RunLoopOptions {
   conversation?: ConversationContext;
   /**
    * Optional checkpoint callback (spec: incremental sub-agent progress — a parent shouldn't
-   * have to wait for a whole child run to finish to see it's alive and making progress).
-   * Called at OBSERVE, GATE (once the escalation level is known), and before each L3/L4
-   * reasoning step. Never awaited into the critical path failing the run — a throwing
-   * onProgress is swallowed, not propagated.
+   * have to wait for a whole child run to finish to see it's alive and making progress; also the
+   * host's hook for a live "currently doing X" activity feed in a chat UI, e.g. Claude Code's own
+   * "Thinking…"/tool-call display).
+   *
+   * Fired twice per phase: once right before a slow operation starts (name/detail set, `ok`
+   * absent — "in flight"), and once automatically from `pushTrace` when it completes (the same
+   * shape persisted to `LoopResult.trace`, `ok`/`tokens`/`duration_ms` now populated) — so a host
+   * with no live-progress needs can simply ignore the checkpoints and only read the final
+   * `LoopResult.trace`, while one that wants live status gets it for free from the same callback.
+   * Never awaited into the critical path failing the run — a throwing onProgress is swallowed,
+   * not propagated.
    */
-  onProgress?: (checkpoint: { phase: string; detail?: string }) => void | Promise<void>;
+  onProgress?: (checkpoint: Omit<TraceStep, "seq" | "ts">) => void | Promise<void>;
 }
 
-async function reportProgress(opts: RunLoopOptions, phase: string, detail?: string): Promise<void> {
+async function reportProgress(opts: RunLoopOptions, checkpoint: Omit<TraceStep, "seq" | "ts">): Promise<void> {
   if (!opts.onProgress) return;
   try {
-    await opts.onProgress({ phase, ...(detail ? { detail } : {}) });
+    await opts.onProgress(checkpoint);
   } catch {
     /* progress reporting is a convenience, never fails the run */
   }
@@ -340,7 +351,12 @@ export async function runScriptLoop(
   // every return in this function goes through it so no exit path is untraced.
   const trace: TraceStep[] = [];
   let traceSeq = 0;
-  const pushTrace: PushTrace = (step) => trace.push({ seq: traceSeq++, ts: Date.now(), ...step });
+  const pushTrace: PushTrace = (step) => {
+    trace.push({ seq: traceSeq++, ts: Date.now(), ...step });
+    // Fire-and-forget: this is what gives a live activity feed the COMPLETED half of every
+    // phase (ok/tokens/duration_ms filled in) with zero extra call sites — see onProgress's doc.
+    if (opts.onProgress) void reportProgress(opts, step);
+  };
   /** Parked-for-approval actions accumulated by the L3/L4 block, attached by finish() to whichever
    *  exit the run takes — so a run that answered around a parked action still reports it, rather
    *  than the outstanding work quietly disappearing with the reply. */
@@ -377,13 +393,14 @@ export async function runScriptLoop(
   };
 
   // 1-2. OBSERVE + FINGERPRINT
+  await reportProgress(opts, { phase: "observe", detail: "Observing current state" });
   const observeStart = Date.now();
   const snapshot = await runObserve(env, opts.startupObserve, opts.observeArgs ?? {});
   notes.push(`observed ${snapshot.type} fingerprint=${snapshot.fingerprint.slice(0, 12)}`);
-  pushTrace({ phase: "observe", detail: snapshot.type, duration_ms: Date.now() - observeStart });
-  await reportProgress(opts, "observe", snapshot.type);
+  pushTrace({ phase: "observe", detail: snapshot.type, duration_ms: Date.now() - observeStart, ok: true });
 
   // 3. FIND
+  await reportProgress(opts, { phase: "find", detail: "Searching for a matching capability" });
   const findStart = Date.now();
   const candidates = await tools.find(opts.goal, { snapshot, limit: 3 });
   const top = candidates[0];
@@ -393,6 +410,7 @@ export async function runScriptLoop(
     name: top?.name,
     detail: `${candidates.length} candidate(s)`,
     duration_ms: Date.now() - findStart,
+    ok: true,
   });
 
   // 4. GATE — choose escalation level.
@@ -410,8 +428,7 @@ export async function runScriptLoop(
     level = "L4";
   }
   notes.push(`gate → ${level}`);
-  pushTrace({ phase: "gate", detail: level });
-  await reportProgress(opts, "gate", level);
+  pushTrace({ phase: "gate", detail: level, ok: true });
 
   // 5-7. EXECUTE / VERIFY / DISTILL per level.
   switch (level) {
@@ -423,6 +440,7 @@ export async function runScriptLoop(
       if (gate.verdict === "denied") {
         return finish({ level, script_name: top!.name, result: { ok: false, error: gateRejectedMessage(top!.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes });
       }
+      await reportProgress(opts, { phase: "run", name: top!.name, detail: `Running ${top!.name}` });
       const result = await runOnce(top!.name, params);
       notes.push(`L1 run ${top!.name}: ${result.ok ? "ok" : "fail"}`);
       pushTrace({ phase: "run", name: top!.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
@@ -431,6 +449,7 @@ export async function runScriptLoop(
 
     case "L2": {
       // Cheap patch of a drifted script, then run the patched version.
+      await reportProgress(opts, { phase: "reason", detail: "Thinking…" });
       const reasonStart = Date.now();
       const decision = await reasoner.decide({
         goal: opts.goal,
@@ -442,7 +461,14 @@ export async function runScriptLoop(
         repairTarget: { name: top!.name, failureReason: "fingerprint drift (partial match)" },
       });
       const usage = usageOf(reasoner);
-      pushTrace({ phase: "reason", name: top?.name, detail: decision.action, tokens: usage.input + usage.output, duration_ms: Date.now() - reasonStart });
+      pushTrace({
+        phase: "reason",
+        name: top?.name,
+        detail: decision.action,
+        tokens: usage.input + usage.output,
+        duration_ms: Date.now() - reasonStart,
+        ...(thinkingOf(reasoner) ? { thinking: thinkingOf(reasoner) } : {}),
+      });
       if (decision.action === "patch") {
         await tools.update(decision.name, { code: decision.code }, decision.reason);
         const params = paramsFor(top!, opts.goal);
@@ -451,6 +477,7 @@ export async function runScriptLoop(
         if (gate.verdict === "denied") {
           return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(decision.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usage));
         }
+        await reportProgress(opts, { phase: "run", name: decision.name, detail: `Running ${decision.name}` });
         const result = await runOnce(decision.name, params);
         notes.push(`L2 patched ${decision.name}: ${result.ok ? "ok" : "fail"}`);
         pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
@@ -495,7 +522,7 @@ export async function runScriptLoop(
           notes.push(`${level} token budget ${opts.maxTokens} reached before step ${step + 1}`);
           break;
         }
-        await reportProgress(opts, "step", `${level} step ${step + 1}/${maxSteps}`);
+        await reportProgress(opts, { phase: "reason", detail: `Thinking (step ${step + 1}/${maxSteps})…` });
         const reasonStart = Date.now();
         const decision = await reasoner.decide({
           goal: opts.goal,
@@ -519,6 +546,7 @@ export async function runScriptLoop(
           detail: decision.action,
           tokens: stepUsage.input + stepUsage.output,
           duration_ms: Date.now() - reasonStart,
+          ...(thinkingOf(reasoner) ? { thinking: thinkingOf(reasoner) } : {}),
         });
 
         if (decision.action === "run") {
@@ -586,6 +614,7 @@ export async function runScriptLoop(
           if (gate.verdict === "denied") {
             return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(decision.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usageAcc));
           }
+          await reportProgress(opts, { phase: "run", name: decision.name, detail: `Running ${decision.name}` });
           const result = await runOnce(decision.name, decision.params);
           notes.push(`${level} run ${decision.name}: ${result.ok ? "ok" : "fail"}`);
           pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
@@ -659,6 +688,11 @@ function stableStringify(value: unknown): string {
 function usageOf(reasoner: Reasoner): { input: number; output: number } {
   const u = reasoner.lastUsage;
   return u ? { input: u.input_tokens, output: u.output_tokens } : { input: 0, output: 0 };
+}
+
+/** Reads the reasoner's most recently reported chain-of-thought, when it reported one. */
+function thinkingOf(reasoner: Reasoner): string | undefined {
+  return reasoner.lastThinking;
 }
 
 /**
@@ -735,6 +769,7 @@ async function applyTerminalDecision(
 
   if (decision.action === "answer") {
     notes.push(`${level} answered directly`);
+    pushTrace({ phase: "answer", ok: true, detail: "Composed a final answer" });
     return {
       level,
       result: { ok: true, output: decision.text, tier: 1, duration_ms: 0, tokens_used: 0 },
@@ -743,6 +778,7 @@ async function applyTerminalDecision(
   }
 
   notes.push(`${level} gave up: ${decision.action === "give_up" ? decision.reason : "unknown"}`);
+  pushTrace({ phase: "give_up", ok: false, detail: decision.action === "give_up" ? decision.reason : "no terminal action" });
   return {
     level,
     result: {

@@ -25,6 +25,7 @@ import {
   type FailoverModel,
   type ToolSpec,
   type ToolCall,
+  type ReasoningRequest,
 } from "../shared/ai-client.js";
 
 export interface ReasonerDeps {
@@ -35,6 +36,11 @@ export interface ReasonerDeps {
   /** F-12: ordered cross-provider failover chain (each {model, apiKey}). The CF AI Gateway tries
    *  the primary then each of these until one succeeds. Empty/absent = no failover (single provider). */
   fallbacks?: FailoverModel[];
+  /** A chosen reasoning-effort/thinking level, validated against the model's own
+   *  MODEL_CAPABILITIES entry by the caller (NaelaoAgentDO) before this is ever set — absent
+   *  means "don't send anything reasoning-related" (the model doesn't support it, or the caller
+   *  didn't choose a level). */
+  reasoning?: ReasoningRequest;
 }
 
 const DECISION_INSTRUCTIONS = `You are the reasoning core of a script-first agent. Your entire action space is choosing ONE next action, returned as STRICT JSON (no prose, no markdown fences). Schema:
@@ -202,11 +208,16 @@ export class GatewayReasoner implements Reasoner {
   /** Usage from the most recently completed decide() call (Reasoner.lastUsage contract) —
    *  real per-token accounting read by the loop's budget/credit tracking, not a proxy. */
   lastUsage: ReasonerUsage | undefined;
+  /** The model's own chain-of-thought from the most recently completed decide() call, when the
+   *  model/provider returned one (see ReasoningRequest's doc) — undefined for every model that
+   *  doesn't report one. Mirrors lastUsage's "read immediately after each awaited decide()" contract. */
+  lastThinking: string | undefined;
 
   constructor(private readonly deps: ReasonerDeps) {}
 
   async decide(input: Parameters<Reasoner["decide"]>[0]): Promise<ReasonDecision> {
     this.lastUsage = undefined;
+    this.lastThinking = undefined;
     const userContent = JSON.stringify({
       goal: input.goal,
       // The thread's own history. Absent for a first message or a non-conversational wake
@@ -265,6 +276,7 @@ export class GatewayReasoner implements Reasoner {
           query,
           tools: DECISION_TOOLS,
           ...(this.deps.fallbacks && this.deps.fallbacks.length > 0 ? { fallbacks: this.deps.fallbacks } : {}),
+          ...(this.deps.reasoning ? { reasoning: this.deps.reasoning } : {}),
         }),
       });
     } catch (err) {
@@ -283,8 +295,9 @@ export class GatewayReasoner implements Reasoner {
       };
     }
     const data = await resp.json();
-    const { text, usage, toolCall } = normalizeUniversalResponse(data);
+    const { text, usage, toolCall, thinking } = normalizeUniversalResponse(data);
     if (usage) this.lastUsage = usage;
+    if (thinking) this.lastThinking = thinking;
 
     // Preferred path: a real, schema-constrained tool call.
     if (toolCall) {
