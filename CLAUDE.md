@@ -3428,6 +3428,83 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     new `reasoning_effort`/`live_steps`/`ModelSelector` strings (present, byte-identical to the
     local build).
 
+84. **Projects sidebar (mockup port), in-chat approval + connector cards, a Connectors browser
+    (Composio default / Pipedream filter), and input-bar Connectors/Upload buttons — a large,
+    user-directed batch, explicitly scoped down in two places (documented below, not silently
+    dropped).**
+    - **Projects page sidebar.** `apps/launchpad/src/index.html`'s `#projects-view` has a 220px
+      left rail (project tree + "Agents in Space" shortcuts) the shell's `/projects/[projectId]`
+      page never ported (item 81 only matched the RIGHT pane). Added, reusing the Discover page's
+      existing `.spaces-layout`/`.spaces-sidebar`/`.spaces-content` classes rather than inventing
+      new ones (packages/ui/styles.css already has this exact two-pane shape). Thread counts are
+      shown only for the currently-open project (already fetched) — every OTHER project's count
+      would be an N+1 fetch for a cosmetic number, so it's left off rather than faked.
+    - **In-chat approval cards.** A run stopping at a HITL gate had a real, previously-undetected
+      gap: the DEFAULT async (Workflow/TaskDO) dispatch path stored only the friendly placeholder
+      text in TaskDO, never the `approval_id`/`action_name`/`params` `normalizeScriptRunResult`
+      already computes — so a polling client could see `status:"awaiting_approval"` but nothing
+      to act on. Fixed end-to-end: `AgentTaskWorkflow`'s run-agent step captures
+      `pending_approval` (pre-JSON-stringified to satisfy CF Workflow's `Serializable<T>` step
+      -return constraint, which chokes on a bare `Record<string,unknown>` — re-parsed only inside
+      the plain, non-step `update-result` callback where that constraint doesn't apply) and
+      stores it in TaskDO's `result`; `fetchRunOrTaskStatus` (shared by the plain GET-run route
+      AND the SSE `/stream` poller) now surfaces it. **A second real gap found in the same
+      code path:** the SSE stream's poll loop never treated `awaiting_approval` as
+      stream-terminal — it just kept polling silently for up to 2 minutes (the client's
+      `onmessage` only ever acted on `"done"`), so a chat message hitting an approval gate via the
+      SSE path (the common case) showed a stuck typing indicator with zero feedback until
+      timeout. Fixed by sending `type:"done"` (carrying `pending_approval`) for
+      `awaiting_approval` too, same as completed/failed/cancelled. `apps/shell`'s new
+      `InlineApprovalCard.tsx` renders Approve/Decline at the exact turn that asked, reusing the
+      same `/approvals` endpoints the separate inbox page already uses — resuming happens
+      server-side automatically once answered.
+    - **Inline "Connect this app" card.** `script-engine/tool-surface.ts`'s `needs_connector`/
+      `connector_id`/`connector_name` (item 56) reached only `ScriptRunResult`, never the
+      persisted message — `NaelaoAgentDO.writeAgentAnswerToSession`'s call site now folds them
+      into the SAME `metadata` object `consulted_threads` already rides in, so
+      `InlineConnectorCard.tsx` can render a real Connect button under the exact reply that asked
+      for the app, instead of the connector name only ever appearing in prose.
+    - **Sidebar → More → Connectors, with a real Composio/Pipedream filter.** New
+      `apps/shell/.../connectors/page.tsx`: search bar + a provider filter chip row (Composio
+      default per the ask, Pipedream, All) over `getConnectorStatus`'s existing catalogue
+      response — no new backend route, this promotes the business-detail page's existing inline
+      "Connect Apps" panel logic into its own browsable page. New
+      `apps/shell/src/lib/connectorActions.ts` factors the composio/oauth/manual-key connect
+      branching into shared functions (used by the new page, the input bar's Connectors popover,
+      and the inline connector card) — the business-detail page's own long-standing inline copy
+      of this same logic was deliberately left untouched rather than refactored under this pass,
+      to avoid risking a regression in already-working, deployed code for a UI consistency win.
+    - **Input bar: tools/connectors + uploads, not just the model selector.** New
+      `InputBarExtras.tsx`: `ConnectorsButton` (a popover listing this space's connectors with
+      inline connect, a shortcut to the full page) and `UploadButton` (attaches a TEXT file
+      directly into the space/project's knowledge base via the existing `createKbDocument`
+      pipeline — real, working ingestion; deliberately scoped to text-readable files, rejecting
+      binaries client-side rather than silently ingesting garbage, since real PDF/image parsing
+      is a separate, larger KB-pipeline feature this pass doesn't add).
+    - **Deliberately NOT built this pass (documented, not silently dropped, both genuinely large):**
+      (1) project-level and assistant-level credential SCOPING TIERS — the ask ("stored project
+      wise... for assistants stored assistant wise") is a real extension of the existing
+      Naelao→Product→Business→Personal hierarchy (items 18/80), needing new scope enum values in
+      the credentials worker, a resolution-order change, and picker UI; the EXISTING architecture
+      already satisfies the "AI never sees the raw key" half of the ask (agents call scripts,
+      scripts resolve credentials server-side via mcp-hub, the LLM itself never receives
+      plaintext) — only the NEW scoping granularity is the open item. (2) a cross-provider MCP
+      TOOL SEARCH capability so the assistant/project agents can discover tools across Composio's
+      AND Pipedream's full catalogs (today they can only use what's in the curated, Naelao-added
+      `CONNECTOR_CATALOGUE` — there's no `script.find`-equivalent semantic/keyword search across
+      either provider's own tool listings). Both are real, scoped, separately-sized follow-ups.
+    - **Duplicate-reply bug (item 83) — confirmed by the user as fixed on reload even before this
+      session's redeploy; re-confirmed still fixed after this pass's changes** (the
+      `attachedRunIdRef` gate is untouched by this batch).
+    2261/2261 tests pass (26 new: `run-status-pending-approval.test.ts` proves
+    `fetchRunOrTaskStatus` surfaces `pending_approval` through the REAL TaskDO wire contract — a
+    first draft of this test used the wrong shape (a JSON *string* for `result`, matching how
+    TaskDO STORES it) and failed; TaskDO's own GET handler actually JSON.parses `result` before
+    responding, so the real contract is an already-parsed object — fixed the test to match, not
+    the code), `npx turbo run typecheck` clean (76 tasks), `naelao-agents` (bare `wrangler
+    deploy`, per item 83's own documented trap) and `apps/shell` both deployed and live-verified
+    by fetching the exact deployed chunks and confirming byte-identical size to the local build.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

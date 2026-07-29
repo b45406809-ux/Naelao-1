@@ -25,6 +25,7 @@ import {
   getProject,
   updateProject,
   listThreads,
+  listProjects,
   createThread,
   listAgentDefinitions,
   listKbDocuments,
@@ -50,6 +51,7 @@ export default function ProjectDetailPage() {
   const { session } = useProductAuth();
   const { toast, show } = useToast();
   const [project, setProject] = React.useState<Project | null>(null);
+  const [allProjects, setAllProjects] = React.useState<Project[]>([]);
   const [threads, setThreads] = React.useState<ThreadSummary[]>([]);
   const [agents, setAgents] = React.useState<AgentDefinitionSummary[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -80,14 +82,16 @@ export default function ProjectDetailPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      const [p, t, a] = await Promise.all([
+      const [p, t, a, allP] = await Promise.all([
         getProject(activeSpaceId, params.projectId, creds),
         listThreads(activeSpaceId, creds, { projectId: params.projectId }),
         listAgentDefinitions(activeSpaceId, creds).catch(() => []),
+        listProjects(activeSpaceId, creds).catch(() => []),
       ]);
       setProject(p);
       setThreads(t);
       setAgents(a);
+      setAllProjects(allP);
       setDraftKind(p.kind === "customer_bot" ? "customer_bot" : "workspace");
       setDraftMaxThreads(String(p.max_threads ?? 0));
       setDraftExecutionCeiling(String(p.execution_ceiling ?? 5));
@@ -195,7 +199,50 @@ export default function ProjectDetailPage() {
     : threads;
 
   return (
-    <div className="page-view">
+    <div className="spaces-layout">
+      {/* Left: project tree nav — the mockup's #projects-view left rail (quick-switch between
+          this space's projects without leaving the detail view), plus space-wide shortcuts to
+          Agent Library / Knowledge Base. Thread counts are shown ONLY for the currently open
+          project (the one count already fetched here) — fetching every OTHER project's thread
+          count just to populate this rail would be an N+1 for a cosmetic number, so those are
+          left off rather than fabricated or paid for. */}
+      <div className="spaces-sidebar">
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "2px 4px 6px" }}>
+          <span style={{ fontSize: 10.5, fontWeight: 500, color: "var(--text3)", letterSpacing: "0.07em", textTransform: "uppercase" }}>
+            Projects
+          </span>
+        </div>
+        {allProjects.map((p) => (
+          <Link
+            key={p.id}
+            href={`/p/${product.slug}/projects/${p.id}`}
+            className={`space-tree-item${p.id === params.projectId ? " active" : ""}`}
+            style={{ textDecoration: "none" }}
+          >
+            <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><path d="M2 4H6L7 5H14V13H2V4Z" /></svg>
+            {p.name}
+            {p.id === params.projectId && <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text3)" }}>{threads.length}</span>}
+          </Link>
+        ))}
+        <div style={{ padding: "4px 10px", marginTop: 4 }}>
+          <div style={{ height: 1, background: "var(--border)" }} />
+        </div>
+        <div style={{ padding: "10px 14px 4px", fontSize: 10.5, fontWeight: 500, color: "var(--text3)", letterSpacing: "0.07em", textTransform: "uppercase" }}>
+          Agents in Space
+        </div>
+        <Link href={`/p/${product.slug}/agents`} className="space-tree-item" style={{ textDecoration: "none" }}>
+          <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><rect x="3" y="3" width="10" height="10" rx="2" /><circle cx="6" cy="7" r="1" /><circle cx="10" cy="7" r="1" /><path d="M6 10C6 10 7 11 10 10" /></svg>
+          Agent Library
+        </Link>
+        <Link href={`/p/${product.slug}/knowledge`} className="space-tree-item" style={{ textDecoration: "none" }}>
+          <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><path d="M3 3H9L13 7V13H3V3Z" /><polyline points="9,3 9,7 13,7" /></svg>
+          Knowledge Base
+        </Link>
+      </div>
+
+      {/* Right: project content (unchanged from the prior single-pane layout, just re-parented
+          under spaces-content instead of page-view — same padding/scroll behavior). */}
+      <div className="spaces-content">
       {/* Breadcrumb: Business > Project (mockup's #projects-back-label). */}
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 16, fontSize: 12, color: "var(--text3)" }}>
         <Link href={`/p/${product.slug}/spaces/${activeSpaceId}`} style={{ color: "var(--text2)", textDecoration: "none" }}>
@@ -446,6 +493,7 @@ export default function ProjectDetailPage() {
       )}
 
       <Toast toast={toast} />
+      </div>
     </div>
   );
 }

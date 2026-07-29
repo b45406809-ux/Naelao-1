@@ -47,6 +47,9 @@ const DEFAULT_MORE_NAV: SidebarNavEntry[] = [
   // job it has.
   { key: "agents", icon: "agents", label: "Agents" },
   { key: "knowledge", icon: "knowledge", label: "Knowledge" },
+  // Real third-party apps (Composio/Pipedream-routed + bespoke OAuth/manual-key) the assistant
+  // and project agents can reach over MCP — see connectors/page.tsx.
+  { key: "connectors", icon: "marketplace", label: "Connectors" },
   { key: "workflows", icon: "workflows", label: "Workflows" },
   { key: "settings", icon: "settings", label: "Settings" },
 ];

@@ -37,6 +37,9 @@ import { ContextUsageMeter } from "./ContextUsageMeter";
 import { SubthreadPanel, SubthreadEntry } from "./SubthreadPanel";
 import { ModelSelector } from "./ModelSelector";
 import { LiveActivityLine, ActivitySummary } from "./ActivityFeed";
+import { InlineApprovalCard } from "./InlineApprovalCard";
+import { InlineConnectorCard } from "./InlineConnectorCard";
+import { ConnectorsButton, UploadButton } from "./InputBarExtras";
 import type { ThreadSummary, ConsultedThread } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 1500;
@@ -136,6 +139,9 @@ export function Chat({
   // NaelaoAgentDO's in-memory progress map) — reset per send, attached to the completed message
   // once the run resolves so the tool-call/thinking summary stays visible under that turn.
   const [liveActivity, setLiveActivity] = React.useState<LiveRunStep[]>([]);
+  // Transient feedback for the input bar's Upload button (InputBarExtras.tsx) — not an error,
+  // just a small "added/failed" confirmation that fades after a few seconds.
+  const [uploadNotice, setUploadNotice] = React.useState<string | null>(null);
 
   const endRef = React.useRef<HTMLDivElement>(null);
   const sseRef = React.useRef<EventSource | null>(null);
@@ -268,6 +274,7 @@ export function Chat({
                 id: `msg_${Date.now()}`, role: "assistant", content: run.final_answer!,
                 created_at: new Date().toISOString(),
                 ...(latestActivity.length > 0 ? { activity: latestActivity } : {}),
+                ...(run.pending_approval ? { pendingApproval: run.pending_approval } : {}),
               },
             ]);
           } else if (run.status === "failed" || run.status === "cancelled") {
@@ -308,6 +315,8 @@ export function Chat({
         try {
           const data = JSON.parse(evt.data) as {
             type: string; content?: string; run_id?: string; message?: string; steps?: LiveRunStep[];
+            status?: AgentRun["status"]; final_answer?: string; error?: string;
+            pending_approval?: AgentRun["pending_approval"];
           };
           if (data.type === "activity" && data.steps?.length) {
             activitySteps = [...activitySteps, ...data.steps];
@@ -321,16 +330,25 @@ export function Chat({
             setIsLoading(false);
             setLiveActivity([]);
             clearActiveRunId(spaceId, sessionKey);
-            setLastRun({ id: data.run_id ?? runId, status: "completed", final_answer: accumulated });
-            if (accumulated) {
+            // The backend sends "done" for completed/failed/cancelled/awaiting_approval alike
+            // (a run waiting on a person is not "still working" — see the server-side comment);
+            // read the real status rather than assuming success, or a failed/declined run would
+            // render as though it had answered normally.
+            const status = data.status ?? "completed";
+            setLastRun({ id: data.run_id ?? runId, status, final_answer: data.final_answer ?? accumulated });
+            const answerText = data.final_answer ?? accumulated;
+            if ((status === "completed" || status === "awaiting_approval") && answerText) {
               setMessages((prev) => [
                 ...prev,
                 {
-                  id: data.run_id ?? `msg_${Date.now()}`, role: "assistant", content: accumulated,
+                  id: data.run_id ?? `msg_${Date.now()}`, role: "assistant", content: answerText,
                   created_at: new Date().toISOString(),
                   ...(activitySteps.length > 0 ? { activity: activitySteps } : {}),
+                  ...(data.pending_approval ? { pendingApproval: data.pending_approval } : {}),
                 },
               ]);
+            } else if (status === "failed" || status === "cancelled") {
+              setError(data.error ?? "The agent run failed");
             }
           } else if (data.type === "error") {
             closeSSE();
@@ -506,6 +524,22 @@ export function Chat({
                   {/* Claude-Code-style collapsed tool-call/thinking summary for this turn — see
                       ActivityFeed.tsx. Renders nothing for a trivial answer-only turn. */}
                   {m.role !== "user" && m.activity && <ActivitySummary steps={m.activity} />}
+                  {/* In-chat approval card, at the exact turn the run stopped waiting on a
+                      person — see InlineApprovalCard's own header for why this doesn't need to
+                      duplicate the separate /approvals inbox to be useful here. */}
+                  {m.role !== "user" && m.pendingApproval && (
+                    <InlineApprovalCard spaceId={spaceId} approval={m.pendingApproval} session={session} />
+                  )}
+                  {/* The assistant tried to use a connected-but-not-yet-connected app — let the
+                      person connect it right here instead of hunting for the Connectors page. */}
+                  {m.role !== "user" && m.metadata?.needs_connector && m.metadata.connector_id && (
+                    <InlineConnectorCard
+                      spaceId={spaceId}
+                      connectorId={m.metadata.connector_id}
+                      connectorName={m.metadata.connector_name ?? m.metadata.connector_id}
+                      session={session}
+                    />
+                  )}
                   {/* item 79: where the assistant delegated to a project agent on the user's
                       behalf, right at the turn it happened — collapsed by default, expandable
                       in place. A separate, private exchange (see SubthreadPanel's own header),
@@ -597,9 +631,19 @@ export function Chat({
                 </svg>
               </button>
             </div>
-            <div style={{ display: "flex", marginTop: 6 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
               <ModelSelector model={selectedModel} reasoningLevel={selectedReasoningLevel} onChange={handleModelChange} />
+              <ConnectorsButton spaceId={spaceId} session={session} />
+              <UploadButton
+                spaceId={spaceId}
+                session={session}
+                onUploaded={(msg) => {
+                  setUploadNotice(msg);
+                  window.setTimeout(() => setUploadNotice((cur) => (cur === msg ? null : cur)), 4000);
+                }}
+              />
             </div>
+            {uploadNotice && <p style={{ fontSize: 11.5, color: "var(--text3)", marginTop: 4 }}>{uploadNotice}</p>}
           </div>
           <p className="disclaimer">AI-generated responses may be inaccurate.</p>
         </div>

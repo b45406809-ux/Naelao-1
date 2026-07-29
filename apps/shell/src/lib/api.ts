@@ -197,14 +197,27 @@ export interface Message {
   author_id?: string | null;
   /** item 79: when this assistant message resulted from consulting a project agent, which
    *  subthread(s) it opened — rendered inline as an expandable card at this exact turn instead
-   *  of only in the separate "Assistant" tab. Absent/empty for an ordinary message. */
-  metadata?: { consulted_threads?: ConsultedThread[] };
+   *  of only in the separate "Assistant" tab. Absent/empty for an ordinary message.
+   *  needs_connector/connector_id/connector_name: the assistant tried to use a catalogued but
+   *  not-yet-connected app (script-engine's tool-surface.ts) — rendered as an inline "Connect X"
+   *  card at this exact turn instead of the connector name only ever appearing in prose. */
+  metadata?: {
+    consulted_threads?: ConsultedThread[];
+    needs_connector?: boolean;
+    connector_id?: string;
+    connector_name?: string;
+  };
   /** CLIENT-ONLY, never persisted server-side: the "currently doing X" activity trail this run
    *  produced (observe/find/gate/reason/run/answer steps, live while the run was in flight — see
    *  LiveRunStep). Attached locally to the completed assistant bubble by Chat.tsx once the run
    *  finishes, so the tool-call/thinking summary stays visible under that turn — lost on reload,
    *  same documented scope as the backend's own in-memory (not persisted) live-progress map. */
   activity?: LiveRunStep[];
+  /** CLIENT-ONLY: attached by Chat.tsx when THIS turn's run stopped waiting on a person, so an
+   *  inline approval card renders at the exact turn that asked for it. Not persisted — a reload
+   *  loses this (the run is still genuinely pending; the separate /approvals inbox is the
+   *  durable, reload-safe way to find and answer it). */
+  pendingApproval?: RunPendingApproval;
 }
 
 export interface ConsultedThread {
@@ -233,6 +246,15 @@ export interface LiveRunStep {
   ts: number;
 }
 
+/** What a run is waiting on a PERSON for — the data an inline in-chat approval card renders.
+ *  Mirrors workers/agents/src/index.ts's RunPendingApproval. */
+export interface RunPendingApproval {
+  approval_id: string;
+  action_name: string;
+  params?: Record<string, unknown>;
+  expires_at?: number;
+}
+
 export interface AgentRun {
   id: string;
   /** `awaiting_approval` means the run paused at a gate and is waiting on a PERSON, not on the
@@ -244,6 +266,8 @@ export interface AgentRun {
   /** New steps recorded since the run started, present only while status is "running" — see
    *  LiveRunStep's own doc. */
   live_steps?: LiveRunStep[];
+  /** Present when status is "awaiting_approval" — which action, with what parameters. */
+  pending_approval?: RunPendingApproval;
 }
 
 /** POST /v1/spaces/:spaceId/sessions — start a new chat session.
@@ -360,7 +384,7 @@ export async function getStreamUrl(spaceId: string, sessionId: string, runId: st
 
 /** Polling fallback for environments without SSE. */
 export async function pollRun(spaceId: string, sessionId: string, runId: string, session: SessionCredentials): Promise<AgentRun> {
-  const res = await apiFetch<{ id: string; status: string; final_answer?: string; error?: string; live_steps?: LiveRunStep[] }>(
+  const res = await apiFetch<{ id: string; status: string; final_answer?: string; error?: string; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval }>(
     `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}`,
     { session }
   );
@@ -370,6 +394,7 @@ export async function pollRun(spaceId: string, sessionId: string, runId: string,
     ...(res.final_answer !== undefined ? { final_answer: res.final_answer } : {}),
     ...(res.error !== undefined ? { error: res.error } : {}),
     ...(res.live_steps ? { live_steps: res.live_steps } : {}),
+    ...(res.pending_approval ? { pending_approval: res.pending_approval } : {}),
   };
 }
 
@@ -1097,9 +1122,22 @@ export interface ConnectorInfo {
   connected?: boolean;
   oauth?: unknown;
   composio?: unknown;
+  /** Pipedream Connect — the second hosted "click Install" provider (item 57), e.g. Notion.
+   *  Mutually exclusive with `composio` in practice, same real-catalogue precedent as that field. */
+  pipedream?: unknown;
   /** "space" (default, absent = space): one shared connection for the whole business. "user":
    *  each member connects their OWN account — never visible to or usable by anyone else. */
   scope_model?: "space" | "user";
+}
+
+/** Which hosted-connect provider (or mechanism) a connector uses — for the Connectors page's
+ *  provider filter. Composio is the default/most common; Pipedream and bespoke OAuth/manual-key
+ *  connectors are real but fewer. */
+export function connectorProvider(c: ConnectorInfo): "composio" | "pipedream" | "oauth" | "manual" {
+  if (c.composio) return "composio";
+  if (c.pipedream) return "pipedream";
+  if (c.oauth) return "oauth";
+  return "manual";
 }
 
 export async function getConnectorStatus(spaceId: string, session: SessionCredentials): Promise<ConnectorInfo[]> {

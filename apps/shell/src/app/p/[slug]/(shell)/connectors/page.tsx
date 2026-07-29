@@ -1,0 +1,219 @@
+"use client";
+
+export const runtime = "edge";
+
+// Sidebar → More → Connectors: a real click-to-install app browser for the active
+// business/space, promoting the business-detail page's inline "Connect Apps" panel into its own
+// searchable, filterable page. Composio is the default provider filter (it's what most of the
+// catalogue is routed through); Pipedream is a real, smaller, opt-in filter (Notion today).
+// Manual-key and bespoke-OAuth connectors (Whop) show up under "All".
+
+import * as React from "react";
+import { Button, FormInput, useToast, Toast } from "@naelao/ui";
+import { useProductAuth } from "@/lib/auth-provider";
+import { useActiveSpace } from "@/lib/active-space-context";
+import { getConnectorStatus, connectorProvider, type ConnectorInfo } from "@/lib/api";
+import { startConnectorConnect, submitManualConnectorKey, consumeConnectorReturnMarker } from "@/lib/connectorActions";
+
+type ProviderFilter = "all" | "composio" | "pipedream";
+
+export default function ConnectorsPage() {
+  const { activeSpaceId } = useActiveSpace();
+  const { session } = useProductAuth();
+  const { toast, show } = useToast();
+  const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
+
+  const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
+  const [loading, setLoading] = React.useState(true);
+  const [query, setQuery] = React.useState("");
+  // Composio is the DEFAULT filter per the ask — not "all" — since it's the common case; a user
+  // who wants Pipedream's smaller list, or everything, switches explicitly.
+  const [provider, setProvider] = React.useState<ProviderFilter>("composio");
+  const [busyId, setBusyId] = React.useState<string | null>(null);
+  const [manualKeyFor, setManualKeyFor] = React.useState<string | null>(null);
+  const [manualKeyValue, setManualKeyValue] = React.useState("");
+
+  const refresh = React.useCallback(async () => {
+    if (!creds) return;
+    setLoading(true);
+    try {
+      setConnectors(await getConnectorStatus(activeSpaceId, creds));
+    } catch {
+      show("Couldn't load connectors");
+    } finally {
+      setLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSpaceId, session]);
+
+  React.useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  // Land back here after any redirect-based connect flow (Composio/Pipedream hosted, or a bespoke
+  // OAuth app) — every flow marks `${id}_connected=1` / `${id}_oauth_error=` on return.
+  React.useEffect(() => {
+    if (connectors.length === 0) return;
+    let touched = false;
+    for (const c of connectors) {
+      const marker = consumeConnectorReturnMarker(c.id);
+      if (!marker) continue;
+      touched = true;
+      show(marker.error ? `${c.name} connection failed: ${marker.error}` : `${c.name} connected.`);
+    }
+    if (touched) void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectors.length]);
+
+  async function handleConnect(c: ConnectorInfo) {
+    if (!creds) return;
+    setBusyId(c.id);
+    try {
+      const { needsManualKey } = await startConnectorConnect(activeSpaceId, creds, c, window.location.href);
+      if (needsManualKey) {
+        setManualKeyFor(c.id);
+        setManualKeyValue("");
+        setBusyId(null);
+      }
+      // Composio/OAuth: the browser is already navigating away, nothing else to do here.
+    } catch (err) {
+      show(err instanceof Error ? err.message : `Failed to start connecting ${c.name}`);
+      setBusyId(null);
+    }
+  }
+
+  async function handleManualSubmit(connectorId: string) {
+    if (!creds || !manualKeyValue.trim()) return;
+    setBusyId(connectorId);
+    try {
+      await submitManualConnectorKey(activeSpaceId, creds, connectorId, manualKeyValue.trim());
+      setManualKeyFor(null);
+      setManualKeyValue("");
+      await refresh();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to connect");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const available = connectors.filter((c) => c.status === "available");
+  const comingSoon = connectors.filter((c) => c.status === "coming_soon");
+  const filtered = available.filter((c) => {
+    if (provider !== "all") {
+      const p = connectorProvider(c);
+      if (provider === "composio" && p !== "composio") return false;
+      if (provider === "pipedream" && p !== "pipedream") return false;
+    }
+    if (query.trim()) {
+      const q = query.trim().toLowerCase();
+      return c.name.toLowerCase().includes(q) || c.category.toLowerCase().includes(q) || c.summary.toLowerCase().includes(q);
+    }
+    return true;
+  });
+
+  if (loading) return <div className="page-view">Loading…</div>;
+
+  return (
+    <div className="page-view">
+      <div className="page-header">
+        <div className="page-title">Connectors</div>
+        <div className="page-subtitle">
+          Real third-party apps your assistant and project agents can reach over MCP — click Connect and sign in, no API keys to hunt down for most of these.
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+        <div className="search-bar" style={{ margin: 0, maxWidth: 260, flex: 1 }}>
+          <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><circle cx="7" cy="7" r="4.5" /><line x1="10.5" y1="10.5" x2="14" y2="14" /></svg>
+          <input type="text" placeholder="Search connectors…" value={query} onChange={(e) => setQuery(e.target.value)} style={{ fontSize: 13 }} />
+        </div>
+        <div style={{ display: "flex", gap: 4 }}>
+          {(["composio", "pipedream", "all"] as ProviderFilter[]).map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => setProvider(p)}
+              className="btn btn-sm"
+              style={{
+                border: `1px solid ${provider === p ? "var(--accent)" : "var(--border)"}`,
+                background: provider === p ? "var(--accent-dim)" : "transparent",
+                color: provider === p ? "var(--accent)" : "var(--text2)",
+                textTransform: "capitalize",
+              }}
+            >
+              {p === "all" ? "All providers" : p}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <p style={{ color: "var(--text3)", fontSize: 13, marginBottom: 24 }}>
+          No connectors match {query.trim() ? `"${query}"` : "this filter"}.
+        </p>
+      ) : (
+        <div className="settings-block" style={{ marginBottom: 24 }}>
+          {filtered.map((c) => (
+            <React.Fragment key={c.id}>
+              <div className="settings-row">
+                <div>
+                  <div className="settings-row-label">
+                    {c.name}
+                    <span style={{ marginLeft: 8, fontSize: 10, color: "var(--text3)", textTransform: "uppercase", letterSpacing: 0.4 }}>
+                      {connectorProvider(c)}
+                    </span>
+                    {c.scope_model === "user" && (
+                      <span style={{ marginLeft: 6, fontSize: 10, color: "var(--text3)" }}>· personal</span>
+                    )}
+                  </div>
+                  <div className="settings-row-sub">{c.summary}</div>
+                </div>
+                {c.connected ? (
+                  <span className="badge badge-green"><span className="badge-dot" />Connected</span>
+                ) : manualKeyFor !== c.id ? (
+                  <Button size="sm" onClick={() => handleConnect(c)} disabled={busyId === c.id}>
+                    {busyId === c.id ? "Connecting…" : "Connect"}
+                  </Button>
+                ) : null}
+              </div>
+              {manualKeyFor === c.id && (
+                <div style={{ padding: "0 16px 14px", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+                  <FormInput
+                    type="password"
+                    placeholder={`${c.name} API key`}
+                    value={manualKeyValue}
+                    onChange={(e) => setManualKeyValue(e.target.value)}
+                    style={{ flex: 1, minWidth: 220 }}
+                  />
+                  <Button size="sm" onClick={() => handleManualSubmit(c.id)} disabled={busyId === c.id || !manualKeyValue.trim()}>
+                    {busyId === c.id ? "Connecting…" : "Connect"}
+                  </Button>
+                  <button className="btn btn-secondary btn-sm" type="button" onClick={() => { setManualKeyFor(null); setManualKeyValue(""); }} disabled={busyId === c.id}>
+                    Cancel
+                  </button>
+                </div>
+              )}
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+
+      {comingSoon.length > 0 && (
+        <>
+          <div className="section-label">Coming soon</div>
+          <div className="grid-3">
+            {comingSoon.map((c) => (
+              <div key={c.id} className="card" style={{ cursor: "default", opacity: 0.6 }}>
+                <div className="card-title">{c.name}</div>
+                <div className="card-desc">{c.summary}</div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      <Toast toast={toast} />
+    </div>
+  );
+}

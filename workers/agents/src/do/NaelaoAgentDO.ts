@@ -2631,10 +2631,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // questions with no replies, and the agent's own conversation memory (which reads this same
       // transcript) only ever saw the user's half. `agent_id` is what lets a bubble say which
       // agent spoke: the Space Assistant, or a named project agent.
+      // needs_connector/connector_id/connector_name (tool-surface.ts, set when resolveServerId
+      // names a catalogued-but-unregistered connector) rides in the SAME metadata object as
+      // consulted_threads so the chat UI can render an inline "Connect X" card at the exact turn
+      // the assistant asked for it, instead of the connector name only ever appearing in prose.
       if (typeof result.result?.output === "string" && result.result.output.trim()) {
+        const answerMetadata: Record<string, unknown> = {};
+        if (consultLog.length) answerMetadata["consulted_threads"] = consultLog;
+        if (result.result.needs_connector) {
+          answerMetadata["needs_connector"] = true;
+          if (result.result.connector_id) answerMetadata["connector_id"] = result.result.connector_id;
+          if (result.result.connector_name) answerMetadata["connector_name"] = result.result.connector_name;
+        }
         void this.writeAgentAnswerToSession(
           sessionId, spaceId, tenantId, result.result.output, agentId,
-          consultLog.length ? { consulted_threads: consultLog } : undefined
+          Object.keys(answerMetadata).length > 0 ? answerMetadata : undefined
         );
       }
 

@@ -73,15 +73,15 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
   final_answer: string | null;
   reactSteps: unknown[];
   error?: string;
-  pending_approval?: { approval_id: string; action_name: string };
+  pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
   /** Actions the run parked and carried on around — it has a real answer AND outstanding work. */
-  deferred_approvals?: Array<{ approval_id: string; action_name: string }>;
+  deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
 } {
   const r = raw as {
     result?: { ok?: boolean; output?: unknown; error?: unknown };
     error?: string;
-    pending_approval?: { approval_id: string; action_name: string };
-    deferred_approvals?: Array<{ approval_id: string; action_name: string }>;
+    pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
+    deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
   } | null;
 
   // A run that stopped at a HITL gate has NO `result` and no `error` — which this function used to
@@ -1106,26 +1106,36 @@ export interface LiveRunStep {
   ts: number;
 }
 
+/** An inline approval card's data — mirrors loop.ts's LoopResult.pending_approval, minus
+ *  steps_completed (internal replay bookkeeping a chat client has no use for). */
+export interface RunPendingApproval {
+  approval_id: string;
+  action_name: string;
+  params?: Record<string, unknown>;
+  expires_at?: number;
+}
+
 async function fetchRunOrTaskStatus(
   env: AgentsEnv, tenantId: string, sessionId: string, spaceId: string, runId: string
-): Promise<{ status: number; body: { id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[] } }> {
+): Promise<{ status: number; body: { id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval } }> {
   const stub = await getAgentDO(env, tenantId, sessionId);
   const doResponse = await stub.fetch(new Request(`http://agent-do/runs/${runId}`, { method: "GET" }));
   if (doResponse.ok) {
-    const doBody = await doResponse.json<{ id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[] }>();
+    const doBody = await doResponse.json<{ id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval }>();
     return { status: 200, body: doBody };
   }
   if (!env.TASK_DO) return { status: doResponse.status, body: { id: runId, status: "failed", error: "run not found" } };
   const taskStub = getTaskDO(env, spaceId);
   const taskResponse = await taskStub.fetch(`http://task-do/tasks/${runId}`);
   if (!taskResponse.ok) return { status: 404, body: { id: runId, status: "failed", error: "run not found" } };
-  const task = await taskResponse.json<{ task_id: string; status: string; result: { final_answer?: string } | null; error: string | null }>();
+  const task = await taskResponse.json<{ task_id: string; status: string; result: { final_answer?: string; pending_approval?: RunPendingApproval } | null; error: string | null }>();
   return {
     status: 200,
     body: {
       id: task.task_id,
       status: TASK_STATUS_TO_RUN_STATUS[task.status] ?? "running",
       ...(task.result?.final_answer !== undefined ? { final_answer: task.result.final_answer } : {}),
+      ...(task.result?.pending_approval ? { pending_approval: task.result.pending_approval } : {}),
       ...(task.error ? { error: task.error } : {}),
     },
   };
@@ -1304,9 +1314,18 @@ app.get(
           if (
             run.status === "completed" ||
             run.status === "failed" ||
-            run.status === "cancelled"
+            run.status === "cancelled" ||
+            // A run waiting on a person is not "still working" — without this, a run that hit an
+            // approval gate mid-chat just sat silently until the 2-minute stream deadline (the
+            // client's onmessage handler only ever acts on "done"; "status" events are otherwise
+            // ignored), showing nothing but a stuck typing indicator. Terminal for the STREAM's
+            // purposes only — the underlying run itself resumes normally once approved.
+            run.status === "awaiting_approval"
           ) {
-            await sendEvent({ type: "done", run_id: runId, status: run.status, final_answer: run.final_answer, error: run.error });
+            await sendEvent({
+              type: "done", run_id: runId, status: run.status, final_answer: run.final_answer, error: run.error,
+              ...(run.pending_approval ? { pending_approval: run.pending_approval } : {}),
+            });
             break;
           }
 

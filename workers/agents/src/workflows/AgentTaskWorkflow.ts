@@ -139,11 +139,17 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
         final_answer?: string;
         error?: string;
         status?: string;
+        pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
       }>();
       return {
         final_answer: body.finalAnswer ?? body.final_answer,
         error: body.error,
         status: body.status,
+        // CF Workflow step results must be Serializable<T>, which a bare Record<string, unknown>
+        // (the params object's own type) doesn't satisfy — pre-stringified here, parsed back only
+        // inside the plain (non-step) "update-result" callback below where that constraint
+        // doesn't apply.
+        pending_approval_json: body.pending_approval ? JSON.stringify(body.pending_approval) : undefined,
       };
     });
 
@@ -164,7 +170,17 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           status,
-          result: hasError ? null : JSON.stringify({ final_answer: runResult.final_answer }),
+          // §A1 chat UI parity: an awaiting_approval task previously stored only the friendly
+          // placeholder text (see normalizeScriptRunResult), with no way for a polling client to
+          // learn WHICH approval opened, its action name, or its parameters — so an inline
+          // in-chat approval card had nothing to render. Carried through unconditionally (a
+          // completed/failed run simply has none).
+          result: hasError ? null : JSON.stringify({
+            final_answer: runResult.final_answer,
+            // Re-parsed here (a plain step-3 callback, not the run-agent step itself, so the
+            // Serializable<T> constraint that made the pre-stringify necessary doesn't apply).
+            ...(runResult.pending_approval_json ? { pending_approval: JSON.parse(runResult.pending_approval_json) } : {}),
+          }),
           error: runResult.error ?? null,
         }),
       });
@@ -183,12 +199,20 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
    */
   private async recordedResult(
     p: AgentTaskParams
-  ): Promise<{ final_answer: string | undefined; error: string | undefined; status: string | undefined } | null> {
+  ): Promise<{
+    final_answer: string | undefined; error: string | undefined; status: string | undefined;
+    pending_approval_json: string | undefined;
+  } | null> {
     try {
       const stub = this.env.TASK_DO.get(this.env.TASK_DO.idFromName(p.taskDoName));
       const resp = await stub.fetch(`http://task-do/tasks/${p.taskId}`);
       if (!resp.ok) return null;
       const task = await resp.json<{ status?: string; result?: string | null; error?: string | null }>();
+      // "awaiting_approval" is deliberately NOT recorded-and-short-circuited here — unlike
+      // complete/failed, it isn't a terminal outcome the ledger should ever treat as "the run
+      // happened, don't redo it": the whole point of a suspended run is that it resumes later
+      // (via handleResumeRun, a separate flow this Workflow instance never re-enters), so there's
+      // nothing this method needs to protect against re-running.
       if (task.status !== "complete" && task.status !== "failed") return null;
       let answer: string | undefined;
       if (task.result) {
@@ -196,7 +220,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           answer = (JSON.parse(task.result) as { final_answer?: string }).final_answer;
         } catch { /* a result we can't parse is still proof the run happened */ }
       }
-      return { final_answer: answer, error: task.error ?? undefined, status: task.status };
+      return { final_answer: answer, error: task.error ?? undefined, status: task.status, pending_approval_json: undefined };
     } catch {
       return null;
     }
