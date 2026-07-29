@@ -584,6 +584,10 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // requireEndUserBusinessMembership on the agents worker (same floor, different worker since
   // these routes live there).
   /^\/spaces\/([^/]+)\/assistant\/(memory|channels|sub-agents|files|capabilities)$/,
+  // Notifications inbox — end-user-facing (a business admin reading their own business's
+  // notifications), additionally gated by requireBusinessMembership on the spaces worker exactly
+  // like the routes above (identity here, authorization there).
+  /^\/spaces\/([^/]+)\/notifications$/,
 ];
 
 /** Resolve productId from the path if it matches an end-user-reachable route pattern. Strips the
@@ -1026,6 +1030,12 @@ api.all("/spaces/:spaceId/sessions/:sessionId/context-usage", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 api.all("/spaces/:spaceId/sessions/:sessionId/compact", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+// §A1 connector default-vs-personal switch — same explicit-before-catch-all registration as
+// context-usage/compact above (implemented on the agents worker, would otherwise silently fall
+// through to the generic sessions/* catch-all and 404 against SPACES_WORKER).
+api.all("/spaces/:spaceId/sessions/:sessionId/connector-mode", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
 

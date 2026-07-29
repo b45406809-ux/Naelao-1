@@ -938,6 +938,53 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE messages ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
     `,
   },
+  {
+    // notifications — a durable, business-member-visible inbox for what the assistant/its agents
+    // surface (an approval waiting, a run that failed, a connector that needs setup). Distinct
+    // from agent_activity_log (builder-only, a technical audit trail) — this is END-USER-facing
+    // (a business admin using the shell) and carries read/delivery state so the assistant's own
+    // heartbeat sweep can tell "already seen" from "still needs escalating to a channel".
+    version: 34,
+    description: "notifications — durable business-member inbox + delivery tracking for heartbeat escalation",
+    up: `
+      CREATE TABLE IF NOT EXISTS notifications (
+        id            TEXT PRIMARY KEY,
+        space_id      TEXT NOT NULL,
+        project_id    TEXT,
+        kind          TEXT NOT NULL,
+        title         TEXT NOT NULL,
+        body          TEXT NOT NULL DEFAULT '',
+        severity      TEXT NOT NULL DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'critical')),
+        source_agent_id TEXT,
+        related_id    TEXT,
+        status        TEXT NOT NULL DEFAULT 'unread' CHECK (status IN ('unread', 'read')),
+        read_at       TEXT,
+        delivered_at  TEXT,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_notifications_space ON notifications(space_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_notifications_undelivered ON notifications(space_id, status, delivered_at, created_at);
+    `,
+  },
+  {
+    // connector_account_mode — a per-session preference: which credential tier a script's mcp-hub
+    // calls should use for a given connector ("business", the default shared account, vs
+    // "personal", the caller's own connected one). No row for a connector = business (today's
+    // default resolution, unchanged). Deliberately its own table rather than folded into
+    // sessions.metadata — updateSession's PATCH replaces the whole metadata object, and a UI
+    // toggle firing concurrently with, say, a title update would silently clobber one or the other.
+    version: 35,
+    description: "connector_account_mode — per-session business-vs-personal connector preference",
+    up: `
+      CREATE TABLE IF NOT EXISTS connector_account_mode (
+        session_id   TEXT NOT NULL,
+        connector_id TEXT NOT NULL,
+        mode         TEXT NOT NULL CHECK (mode IN ('business', 'personal')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (session_id, connector_id)
+      );
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1093,6 +1140,14 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // PATCH /sessions/:id — update status
       if (method === "PATCH" && sessionMatch?.[1]) {
         return this.updateSession(request, sessionMatch[1]);
+      }
+      // §A1 connector default-vs-personal switch — GET/PATCH /sessions/:id/connector-mode
+      const connModeMatch = url.pathname.match(/^\/sessions\/([^/]+)\/connector-mode$/);
+      if (method === "GET" && connModeMatch?.[1]) {
+        return this.getConnectorMode(connModeMatch[1]);
+      }
+      if (method === "PATCH" && connModeMatch?.[1]) {
+        return await this.setConnectorMode(request, connModeMatch[1]);
       }
       // GET /sessions/:id/state — agent state
       const stateMatch = url.pathname.match(/^\/sessions\/([^/]+)\/state$/);
@@ -1332,6 +1387,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       }
       if (method === "GET" && url.pathname === "/agent-activity") {
         return this.listAgentActivity(url.searchParams);
+      }
+      // ── Notifications inbox ────────────────────────────────────────────────
+      // Deliberately ONE path (no /notifications/undelivered sibling) — a dynamic-:spaceId route
+      // with a static suffix has repeatedly corrupted this file's Hono route table for UNRELATED
+      // routes elsewhere in the app (items 40/52/60's documented RegExpRouter bug); the
+      // undelivered-only sweep is a query param on the same GET instead.
+      if (method === "POST" && url.pathname === "/notifications") {
+        return await this.createOrActOnNotification(request);
+      }
+      if (method === "GET" && url.pathname === "/notifications") {
+        return this.listNotifications(url.searchParams);
       }
       // ── §A1 Harness Excellence Phase HX2: signals + session token-budget guard ─
       // GET /agent-signals?project_id=&window_hours= — explicit signals, computed on read from
@@ -1836,6 +1902,41 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       );
     }
     return Response.json({ id: sessionId, updated_at: now });
+  }
+
+  // §A1 connector default-vs-personal switch — {connector_id: "business"|"personal"} for a
+  // session, no entry meaning "business" (today's implicit default). Read by NaelaoAgentDO once
+  // per run (best-effort — a failure here means "resolve as business", never blocks a run) and
+  // written by the shell's Connectors popover.
+  private getConnectorMode(sessionId: string): Response {
+    const rows = queryAll<{ connector_id: string; mode: string }>(
+      this.ctx.storage.sql as never,
+      "SELECT connector_id, mode FROM connector_account_mode WHERE session_id = ?",
+      sessionId
+    );
+    const modes: Record<string, string> = {};
+    for (const r of rows) modes[r.connector_id] = r.mode;
+    return Response.json({ modes });
+  }
+
+  private async setConnectorMode(request: Request, sessionId: string): Promise<Response> {
+    const body = await request.json<{ connector_id?: string; mode?: string }>().catch(() => null);
+    if (!body?.connector_id || (body.mode !== "business" && body.mode !== "personal")) {
+      return Response.json({ error_code: "bad_request", message: "connector_id and mode ('business'|'personal') are required" }, { status: 400 });
+    }
+    if (body.mode === "business") {
+      // Business is the implicit default — delete rather than store a redundant row, so a fresh
+      // read-out (getConnectorMode) and "was this ever switched" both stay simple.
+      execute(this.ctx.storage.sql as never, "DELETE FROM connector_account_mode WHERE session_id = ? AND connector_id = ?", sessionId, body.connector_id);
+      return Response.json({ ok: true, mode: "business" });
+    }
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO connector_account_mode (session_id, connector_id, mode) VALUES (?, ?, 'personal')
+       ON CONFLICT(session_id, connector_id) DO UPDATE SET mode = 'personal', updated_at = datetime('now')`,
+      sessionId, body.connector_id
+    );
+    return Response.json({ ok: true, mode: "personal" });
   }
 
   private getAgentState(sessionId: string): Response {
@@ -2904,6 +3005,105 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       : queryAll(
           this.ctx.storage.sql as never,
           "SELECT * FROM agent_activity_log ORDER BY created_at DESC LIMIT ?",
+          limit
+        );
+    return Response.json({ data: rows, count: rows.length });
+  }
+
+  // ── Notifications inbox ─────────────────────────────────────────────────────
+  // POST /notifications — either a CREATE (kind/title present, called internal-only by
+  // NaelaoAgentDO — see its createSpaceNotification helper) or a mark-read ACTION
+  // ({action:"mark_read", notification_id}, reachable by any business member for their own
+  // space's notifications). The spaces-worker route restricts a caller without an internal HMAC
+  // token to ONLY the mark_read shape (see index.ts) — this method still checks defensively so a
+  // bug at that layer can't turn into a forged notification.
+  private async createOrActOnNotification(request: Request): Promise<Response> {
+    const body = await request.json<{
+      action?: string;
+      notification_id?: string;
+      space_id?: string;
+      project_id?: string | null;
+      kind?: string;
+      title?: string;
+      body?: string;
+      severity?: "info" | "warning" | "critical";
+      source_agent_id?: string | null;
+      related_id?: string | null;
+    }>().catch(() => null);
+    if (!body) return Response.json({ error_code: "bad_request", message: "Invalid body" }, { status: 400 });
+
+    if (body.action === "mark_read") {
+      if (!body.notification_id) {
+        return Response.json({ error_code: "bad_request", message: "notification_id is required" }, { status: 400 });
+      }
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE notifications SET status = 'read', read_at = datetime('now') WHERE id = ? AND status != 'read'",
+        body.notification_id
+      );
+      return Response.json({ ok: true });
+    }
+
+    // Internal-only in practice (the heartbeat sweep, after it actually sends the channel
+    // message) — marks a row so it's never re-escalated on the next sweep. Deliberately does NOT
+    // require internal auth at this DO layer (the spaces-worker route in front of it does), same
+    // posture as mark_read.
+    if (body.action === "mark_delivered") {
+      if (!body.notification_id) {
+        return Response.json({ error_code: "bad_request", message: "notification_id is required" }, { status: 400 });
+      }
+      execute(
+        this.ctx.storage.sql as never,
+        "UPDATE notifications SET delivered_at = datetime('now') WHERE id = ? AND delivered_at IS NULL",
+        body.notification_id
+      );
+      return Response.json({ ok: true });
+    }
+
+    if (!body.space_id || !body.kind || !body.title) {
+      return Response.json({ error_code: "bad_request", message: "space_id, kind, title are required" }, { status: 400 });
+    }
+    const id = crypto.randomUUID();
+    execute(
+      this.ctx.storage.sql as never,
+      `INSERT INTO notifications (id, space_id, project_id, kind, title, body, severity, source_agent_id, related_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id, body.space_id, body.project_id ?? null, body.kind, body.title.slice(0, 300),
+      (body.body ?? "").slice(0, 2000), body.severity ?? "info",
+      body.source_agent_id ?? null, body.related_id ?? null
+    );
+    return Response.json({ ok: true, id }, { status: 201 });
+  }
+
+  // GET /notifications?status=&limit=&undelivered_only=&stale_after_minutes= — the same read path
+  // serves both the business-member-facing inbox (status/limit only) and the heartbeat sweep's
+  // "what still needs escalating to a channel" query (undelivered_only + stale_after_minutes),
+  // rather than a second route — see the dispatcher comment above for why.
+  private listNotifications(params: URLSearchParams): Response {
+    const status = params.get("status");
+    const limit = Math.min(Math.max(parseInt(params.get("limit") ?? "50", 10) || 50, 1), 200);
+    if (params.get("undelivered_only") === "true") {
+      const staleMinutesRaw = parseInt(params.get("stale_after_minutes") ?? "15", 10);
+      const staleMinutes = Number.isFinite(staleMinutesRaw) && staleMinutesRaw >= 0 ? staleMinutesRaw : 15;
+      const rows = queryAll(
+        this.ctx.storage.sql as never,
+        `SELECT * FROM notifications
+         WHERE status = 'unread' AND delivered_at IS NULL
+           AND created_at <= datetime('now', ?)
+         ORDER BY created_at ASC LIMIT ?`,
+        `-${staleMinutes} minutes`, limit
+      );
+      return Response.json({ data: rows, count: rows.length });
+    }
+    const rows = status
+      ? queryAll(
+          this.ctx.storage.sql as never,
+          "SELECT * FROM notifications WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+          status, limit
+        )
+      : queryAll(
+          this.ctx.storage.sql as never,
+          "SELECT * FROM notifications ORDER BY created_at DESC LIMIT ?",
           limit
         );
     return Response.json({ data: rows, count: rows.length });

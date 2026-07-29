@@ -633,7 +633,7 @@ export function Chat({
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
               <ModelSelector model={selectedModel} reasoningLevel={selectedReasoningLevel} onChange={handleModelChange} />
-              <ConnectorsButton spaceId={spaceId} session={session} />
+              <ConnectorsButton spaceId={spaceId} {...(chatSessionId ? { sessionId: chatSessionId } : {})} session={session} />
               <UploadButton
                 spaceId={spaceId}
                 session={session}

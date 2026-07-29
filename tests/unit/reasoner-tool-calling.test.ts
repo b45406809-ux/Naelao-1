@@ -258,6 +258,25 @@ describe("GatewayReasoner.decide — tool call preferred, text kept as fallback"
     });
     expect(d).toMatchObject({ action: "answer", text: "recovered" });
   });
+
+  // Live-reported bug (2026-07-29): "search the web for polsia ai and tell me what it's about"
+  // produced a bare "unparseable reasoner output: no JSON object in reasoner output" as the
+  // agent's own reply — no tool_calls at all AND no {..} JSON in the text, because
+  // tool_choice:"required" isn't always honored by every Workers AI model. Plain, non-empty
+  // prose with no tool call and no JSON braces is a real model behavior (it just answered), not
+  // a parse failure, and must become the actual answer rather than leak an internal error string.
+  it("plain prose with no tool call and no JSON braces becomes the answer, not a give_up", async () => {
+    const d = await decideWith({
+      content: [{ type: "text", text: "Polsia AI is an autonomous business operator that runs online businesses for you." }],
+    });
+    expect(d).toMatchObject({ action: "answer", text: "Polsia AI is an autonomous business operator that runs online businesses for you." });
+  });
+
+  it("still gives up honestly when the model returns truly nothing", async () => {
+    const d = await decideWith({ content: [{ type: "text", text: "   " }] });
+    expect(d.action).toBe("give_up");
+    expect((d as { reason: string }).reason).toMatch(/unparseable reasoner output/);
+  });
 });
 
 describe("GatewayReasoner — reasoning-effort request + lastThinking capture", () => {

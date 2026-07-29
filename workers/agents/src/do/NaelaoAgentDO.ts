@@ -2464,6 +2464,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!engineEnv) {
       return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     }
+    // §A1 connector default-vs-personal switch: read once per run, best-effort — a failure or an
+    // empty map both mean "resolve as business" (today's implicit default), never blocks the run.
+    engineEnv.connectorAccountMode = await this.fetchConnectorAccountMode(spaceId, sessionId, tenantId);
     // F14: customer-bot daily spend cap was only enforced in the channel-heartbeat drain path
     // (handleChannelHeartbeat) — a direct /script/run call with the same projectId bypassed it
     // entirely. Apply the identical cap-then-execution-ceiling gate here.
@@ -2681,6 +2684,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, body.model ?? "claude-haiku-4-5-20251001")
           : (result.result?.tokens_used ?? null),
       });
+      if (result.result?.ok === false) {
+        void this.createSpaceNotification(spaceId, tenantId, {
+          kind: "run_failed",
+          title: `'${agentId}' couldn't finish: ${body.goal.slice(0, 80)}`,
+          body: result.result?.error ? String(result.result.error).slice(0, 500) : "Run did not complete successfully",
+          severity: "warning",
+          projectId: projectId ?? null,
+          sourceAgentId: agentId,
+        });
+      }
 
       return Response.json(result);
     } catch (err) {
@@ -3128,9 +3141,24 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // approval immediately rather than only via the owner's inbox.
     await broadcastSpaceEvent(this.env, tenantId, spaceId, "approval.requested", { approval_id: approvalId, agent_id: agentId, action: actionName });
     void this.logAgentActivity(spaceId, tenantId, agentId, "approval_requested", { summary: `${actionName}: ${description}`.slice(0, 500) });
+    void this.createSpaceNotification(spaceId, tenantId, {
+      kind: "approval_requested",
+      title: `Approval needed: '${agentId}' wants to ${actionName}`,
+      body: `${description}\n\nApproval id: ${approvalId}.`,
+      severity: "warning",
+      sourceAgentId: agentId,
+      relatedId: approvalId,
+    });
 
     if (!this.env.NOTIFICATIONS_WORKER || !this.env.SPACES_WORKER || !tenantId) return;
     try {
+      // Ask-before-emailing: someone actively in the space right now sees this via the in-app
+      // notification / inline approval card (item 84) the moment it happens — an immediate email
+      // on top of that is noise, not signal. Nobody present (or the presence check itself
+      // failing) is treated the same as "away" — the hourly notification sweep is the real
+      // backstop either way, so erring toward sending here costs nothing but an extra email.
+      const present = await this.isAnyoneCurrentlyPresent(spaceId, tenantId);
+      if (present) return;
       const contactRes = await this.env.SPACES_WORKER.fetch(new Request(
         `http://spaces-worker/internal/spaces/${spaceId}/owner-contact`,
         { headers: await this.internalHeaders(tenantId) }
@@ -3151,6 +3179,91 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       }));
     } catch {
       // best-effort — never block or fail the approval flow over a notification hiccup
+    }
+  }
+
+  /** §A1 connector default-vs-personal switch: this session's stored mode per connector id. Any
+   *  failure (unbound worker, network error, not-yet-migrated deployment) degrades to an empty
+   *  map — identical to "nobody ever switched away from business", never a run-blocking error. */
+  private async fetchConnectorAccountMode(spaceId: string, sessionId: string, tenantId: string): Promise<Record<string, "business" | "personal">> {
+    if (!this.env.SPACES_WORKER || !tenantId) return {};
+    try {
+      const resp = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/connector-mode`,
+        { headers: await this.internalHeaders(tenantId) }
+      ));
+      if (!resp.ok) return {};
+      const data = await resp.json<{ modes?: Record<string, string> }>();
+      const out: Record<string, "business" | "personal"> = {};
+      for (const [k, v] of Object.entries(data.modes ?? {})) {
+        if (v === "personal") out[k] = "personal";
+      }
+      return out;
+    } catch {
+      return {};
+    }
+  }
+
+  /** Whether anyone has a fresh presence heartbeat in this space right now — see
+   *  requireBusinessMembership's own pass-through for a non-product_end_user caller, which is
+   *  what lets this internal-token call reach the route at all. Any failure reads as "not
+   *  present" (the safer default for an escalation decision: erring toward sending a
+   *  notification is harmless, erring toward silence is not). */
+  private async isAnyoneCurrentlyPresent(spaceId: string, tenantId: string): Promise<boolean> {
+    if (!this.env.SPACES_WORKER || !tenantId) return false;
+    try {
+      const resp = await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/spaces/${spaceId}/presence`,
+        { headers: await this.internalHeaders(tenantId) }
+      ));
+      if (!resp.ok) return false;
+      const data = await resp.json<{ count?: number }>();
+      return (data.count ?? 0) > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Write a durable, business-member-visible notification (SpaceDO's `notifications` table) —
+   * the same "mirror into SpaceDO because it's the one product-wide surface" precedent as
+   * logAgentActivity, but end-user-facing rather than a builder-only audit trail. Fire-and-forget:
+   * a failure here must never fail the run/approval that triggered it.
+   */
+  private async createSpaceNotification(
+    spaceId: string,
+    tenantId: string,
+    opts: {
+      kind: string;
+      title: string;
+      body?: string;
+      severity?: "info" | "warning" | "critical";
+      projectId?: string | null;
+      sourceAgentId?: string | null;
+      relatedId?: string | null;
+    }
+  ): Promise<void> {
+    if (!this.env.SPACES_WORKER || !tenantId) return;
+    try {
+      await this.env.SPACES_WORKER.fetch(new Request(
+        `http://spaces-worker/internal/spaces/${spaceId}/notifications`,
+        {
+          method: "POST",
+          headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+          body: JSON.stringify({
+            space_id: spaceId,
+            project_id: opts.projectId ?? null,
+            kind: opts.kind,
+            title: opts.title,
+            body: opts.body ?? "",
+            severity: opts.severity ?? "info",
+            source_agent_id: opts.sourceAgentId ?? null,
+            related_id: opts.relatedId ?? null,
+          }),
+        }
+      ));
+    } catch {
+      /* best-effort — never fails the caller's own run/approval flow */
     }
   }
 
@@ -4124,8 +4237,27 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     for (const msg of pending) {
       try {
-      // Untrusted inbound text — moderate before it ever reaches the reasoning prompt or a rule match.
-      if (moderateInput(msg.text).blocked) { escalated++; continue; }
+      // Untrusted inbound text — moderate before it ever reaches the reasoning prompt or a rule
+      // match. This used to just count "escalated" and continue — the message was silently
+      // dropped with nobody ever told a customer-bot channel (including a business's own inbound
+      // email) had received something that tried to get the low-tier channel agent to do
+      // something unsafe. Now it also flags the session for a human AND raises a real
+      // notification, the same pattern every other genuine escalation in this platform uses.
+      if (moderateInput(msg.text).blocked) {
+        this.ctx.storage.sql.exec(`UPDATE channel_sessions SET human_takeover = 1 WHERE id = ?`, msg.session_id);
+        void this.createSpaceNotification(spaceId, tenantId, {
+          kind: "inbound_message_blocked",
+          title: `An inbound ${msg.channel} message was blocked — looked unsafe`,
+          body: "A message tried to get the agent to do something it flagged as unsafe (a prompt-injection or policy match). " +
+            "It was not acted on. The conversation is now held for a human — review it before it continues automatically.",
+          severity: "critical",
+          projectId: msg.project_id ?? null,
+          sourceAgentId: agentId,
+          relatedId: msg.session_id,
+        });
+        escalated++;
+        continue;
+      }
 
       const projectCfgResult = msg.project_id ? projectConfigs.get(msg.project_id) : undefined;
       const projectCfg = projectCfgResult?.status === "found" ? projectCfgResult : undefined;

@@ -447,6 +447,52 @@ export async function rejectAction(
   });
 }
 
+// ── Notifications — what the assistant/its agents surface for a human to see ─
+//
+// Distinct from approvals: a notification doesn't necessarily need a decision (a run failed, a
+// connector needs setup) — it just needs to be SEEN. Reading the list here does not mark
+// anything read; call markNotificationRead explicitly (mirrors the approvals inbox's own
+// explicit approve/reject, not an implicit "viewed it" side effect).
+
+export interface AppNotification {
+  id: string;
+  space_id: string;
+  project_id: string | null;
+  kind: string;
+  title: string;
+  body: string;
+  severity: "info" | "warning" | "critical";
+  source_agent_id: string | null;
+  related_id: string | null;
+  status: "unread" | "read";
+  read_at: string | null;
+  delivered_at: string | null;
+  created_at: string;
+}
+
+export async function listNotifications(
+  spaceId: string,
+  session: SessionCredentials,
+  opts?: { status?: "unread" | "read"; limit?: number }
+): Promise<AppNotification[]> {
+  const params = new URLSearchParams();
+  if (opts?.status) params.set("status", opts.status);
+  params.set("limit", String(opts?.limit ?? 50));
+  const res = await apiFetch<{ data: AppNotification[] }>(
+    `/v1/spaces/${spaceId}/notifications?${params.toString()}`,
+    { session }
+  );
+  return res.data ?? [];
+}
+
+export async function markNotificationRead(spaceId: string, notificationId: string, session: SessionCredentials): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/notifications`, {
+    method: "POST",
+    body: JSON.stringify({ action: "mark_read", notification_id: notificationId }),
+    session,
+  });
+}
+
 // ── Context-window usage (§A1.27) ────────────────────────────────────────────
 
 export interface ContextUsage {
@@ -1128,6 +1174,39 @@ export interface ConnectorInfo {
   /** "space" (default, absent = space): one shared connection for the whole business. "user":
    *  each member connects their OWN account — never visible to or usable by anyone else. */
   scope_model?: "space" | "user";
+}
+
+// §A1 connector default-vs-personal switch: which credential tier a session's connector calls use
+// — "business" (default, the shared account) or "personal" (this member's own connected one). A
+// missing entry means business. Read once by the agent per run, so a mismatch ("do X on my Gmail"
+// while still on business) can be reported instead of silently used against the wrong account.
+
+export async function getConnectorMode(
+  spaceId: string,
+  sessionId: string,
+  session: SessionCredentials
+): Promise<Record<string, "business" | "personal">> {
+  const res = await apiFetch<{ modes?: Record<string, string> }>(
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/connector-mode`,
+    { session }
+  );
+  const out: Record<string, "business" | "personal"> = {};
+  for (const [k, v] of Object.entries(res.modes ?? {})) if (v === "personal") out[k] = "personal";
+  return out;
+}
+
+export async function setConnectorMode(
+  spaceId: string,
+  sessionId: string,
+  connectorId: string,
+  mode: "business" | "personal",
+  session: SessionCredentials
+): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/sessions/${sessionId}/connector-mode`, {
+    method: "PATCH",
+    body: JSON.stringify({ connector_id: connectorId, mode }),
+    session,
+  });
 }
 
 /** Which hosted-connect provider (or mechanism) a connector uses — for the Connectors page's

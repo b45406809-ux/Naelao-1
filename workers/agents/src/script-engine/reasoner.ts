@@ -316,6 +316,19 @@ export class GatewayReasoner implements Reasoner {
       if (toolCall) {
         return { action: "give_up", reason: `reasoner returned an unusable tool call '${toolCall.name}' (missing required fields) and no parseable text` };
       }
+      // No tool call AND no {..} JSON in the reply — but the model may simply have ANSWERED in
+      // plain prose despite tool_choice:"required" (a real, observed degradation: open-weight
+      // Workers AI models don't always honor a required tool call, especially for a goal the
+      // model considers directly answerable). Reported live: "search the web for polsia ai and
+      // tell me what it's about" produced exactly this shape on a later turn — a real prose
+      // reply with no JSON — which used to surface as a bare internal parse-error string
+      // ("unparseable reasoner output: ...") standing in for the agent's actual answer. Treat
+      // any non-empty text as the intended answer; only give up when the model truly said
+      // nothing at all.
+      const trimmed = text.trim();
+      if (trimmed) {
+        return { action: "answer", text: trimmed };
+      }
       return { action: "give_up", reason: `unparseable reasoner output: ${err instanceof Error ? err.message : String(err)}` };
     }
   }

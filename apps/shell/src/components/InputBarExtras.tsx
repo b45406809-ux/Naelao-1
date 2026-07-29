@@ -6,7 +6,7 @@
 // needs to render them, not own their state.
 
 import * as React from "react";
-import { getConnectorStatus, createKbDocument, type ConnectorInfo } from "@/lib/api";
+import { getConnectorStatus, createKbDocument, getConnectorMode, setConnectorMode, type ConnectorInfo } from "@/lib/api";
 import type { SessionCredentials } from "@/lib/api";
 import { startConnectorConnect, submitManualConnectorKey } from "@/lib/connectorActions";
 
@@ -33,9 +33,20 @@ function IconButton({ title, onClick, children }: { title: string; onClick: () =
   );
 }
 
-export function ConnectorsButton({ spaceId, session }: { spaceId: string; session: SessionCredentials }) {
+export function ConnectorsButton({
+  spaceId,
+  sessionId,
+  session,
+}: {
+  spaceId: string;
+  /** Which chat session's connector-mode preference to show/edit — absent on surfaces with no
+   *  session yet (e.g. before the first message mints one), where the toggle just doesn't render. */
+  sessionId?: string;
+  session: SessionCredentials;
+}) {
   const [open, setOpen] = React.useState(false);
   const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
+  const [modes, setModes] = React.useState<Record<string, "business" | "personal">>({});
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [manualKeyFor, setManualKeyFor] = React.useState<string | null>(null);
   const [manualKeyValue, setManualKeyValue] = React.useState("");
@@ -44,7 +55,19 @@ export function ConnectorsButton({ spaceId, session }: { spaceId: string; sessio
   React.useEffect(() => {
     if (!open) return;
     getConnectorStatus(spaceId, session).then(setConnectors).catch(() => {});
-  }, [open, spaceId, session]);
+    if (sessionId) getConnectorMode(spaceId, sessionId, session).then(setModes).catch(() => {});
+  }, [open, spaceId, sessionId, session]);
+
+  async function toggleMode(connectorId: string) {
+    if (!sessionId) return;
+    const next = modes[connectorId] === "personal" ? "business" : "personal";
+    setModes((m) => ({ ...m, [connectorId]: next }));
+    try {
+      await setConnectorMode(spaceId, sessionId, connectorId, next, session);
+    } catch {
+      setModes((m) => ({ ...m, [connectorId]: next === "personal" ? "business" : "personal" })); // revert
+    }
+  }
 
   async function handleConnect(c: ConnectorInfo) {
     setBusyId(c.id);
@@ -114,6 +137,20 @@ export function ConnectorsButton({ spaceId, session }: { spaceId: string; sessio
                     </button>
                   ) : null}
                 </div>
+                {c.connected && sessionId && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                    <span style={{ fontSize: 10.5, color: "var(--text3)" }}>Using:</span>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      style={{ fontSize: 10.5, padding: "1px 6px" }}
+                      onClick={() => toggleMode(c.id)}
+                      title="Switch which account this chat's tool calls use for this connector"
+                    >
+                      {(modes[c.id] ?? "business") === "personal" ? "My personal account" : "Business account (default)"} — switch
+                    </button>
+                  </div>
+                )}
                 {manualKeyFor === c.id && (
                   <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
                     <input

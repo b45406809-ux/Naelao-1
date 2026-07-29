@@ -1449,6 +1449,38 @@ app.post("/spaces/:spaceId/sessions/:sessionId/compact", async (c) => {
   return c.json({ ok: true, result });
 });
 
+// ── GET/PATCH /spaces/:spaceId/sessions/:sessionId/connector-mode ────────────
+// §A1 connector default-vs-personal switch: which credential tier this session's connector calls
+// should use, per connector — "business" (default, no stored row) or "personal" (this member's
+// own connected account). Storage lives on SpaceDO (same DO that already owns sessions); this
+// worker is just the same explicit-before-the-catch-all registration context-usage/compact
+// already needed for their own sub-paths under /sessions/:sessionId/.
+app.get("/spaces/:spaceId/sessions/:sessionId/connector-mode", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const sessionId = c.req.param("sessionId");
+  const resp = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/connector-mode`,
+    { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) } }
+  ));
+  return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
+});
+app.patch("/spaces/:spaceId/sessions/:sessionId/connector-mode", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const sessionId = c.req.param("sessionId");
+  const resp = await c.env.SPACES_WORKER.fetch(new Request(
+    `http://spaces-worker/spaces/${spaceId}/sessions/${sessionId}/connector-mode`,
+    {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, tenantId) },
+      body: c.req.raw.body,
+      duplex: "half",
+    } as RequestInit
+  ));
+  return new Response(resp.body, { status: resp.status, headers: { "content-type": "application/json" } });
+});
+
 // ── G-AX04: Async Task routes ─────────────────────────────────────────────────
 // GET  /spaces/:spaceId/tasks             — list tasks for space
 // GET  /spaces/:spaceId/tasks/:taskId     — poll task status (optional ?timeout=30)
@@ -3582,9 +3614,58 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
 // already been recorded — the narrow exception is a redelivery that lands between a successful
 // fireScriptDirectly and the last_run_at UPDATE actually committing, which could double-fire;
 // accepted as a rare, bounded risk rather than adding cross-invocation locking for it.
+/**
+ * Deterministic, no-LLM-cost escalation for notifications nobody has actually seen. Deliberately
+ * NOT its own platform-wide roster in enqueueAgentTicks — there is no cheap D1-indexed way to know
+ * which of millions of per-space SpaceDOs have an undelivered notification without either opening
+ * every one of them (the exact anti-pattern this file's own docs warn against) or mirroring
+ * delivery state into a new D1 table, which is a bigger change than this pass's budget covers.
+ * Piggybacked instead onto whichever roster already reaches a given space — "heartbeat" (spaces
+ * with a connected channel) and "scheduled_job" (item 82's default daily revenue-review cron,
+ * which every templated Launchpad business gets) — so real, actively-managed businesses get this
+ * at least once a day even with no channel configured, and the immediate at-creation-time email
+ * (NaelaoAgentDO.notifyApprovalRequested, sent right away when nobody's present) is what actually
+ * covers the time-sensitive case. A space reached by neither roster gets no sweep at all — a real,
+ * documented gap, not a silent one.
+ */
+async function sweepUndeliveredNotifications(env: AgentsEnv, spaceId: string, tenantId: string): Promise<void> {
+  if (!env.SPACES_WORKER || !env.NOTIFICATIONS_WORKER) return;
+  try {
+    const headers = { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) };
+    const listResp = await env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/internal/spaces/${spaceId}/notifications?undelivered_only=true&stale_after_minutes=15&limit=10`,
+      { headers }
+    ));
+    if (!listResp.ok) return;
+    const { data } = await listResp.json<{ data: Array<{ id: string; title: string; body: string }> }>();
+    if (!data || data.length === 0) return;
+
+    const contactResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/spaces/${spaceId}/owner-contact`, { headers }));
+    if (!contactResp.ok) return;
+    const contact = await contactResp.json<{ found: boolean; email?: string }>();
+    if (!contact.found || !contact.email) return;
+
+    for (const n of data) {
+      await env.NOTIFICATIONS_WORKER.fetch(new Request("http://notifications-worker/internal/notify", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId },
+        body: JSON.stringify({ channel: "email", space_id: spaceId, to: contact.email, subject: n.title, body: n.body }),
+      }));
+      await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/internal/spaces/${spaceId}/notifications`, {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ action: "mark_delivered", notification_id: n.id }),
+      }));
+    }
+  } catch {
+    /* best-effort — never blocks the tick's real work */
+  }
+}
+
 async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<void> {
   switch (msg.kind) {
     case "heartbeat": {
+      void sweepUndeliveredNotifications(env, msg.spaceId, msg.tenantId);
       const stub = await getAgentDOForSpace(env, msg.tenantId, msg.spaceId, "naelao-agent");
       await stub.fetch(new Request("http://agent-do/channels/heartbeat", {
         method: "POST",
@@ -3699,6 +3780,7 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
            FROM scheduled_jobs WHERE id = ? AND enabled = 1`
       ).bind(msg.jobId).first<ScheduledJobRow>();
       if (!row) return; // deleted or already disabled since enqueue — nothing to do.
+      void sweepUndeliveredNotifications(env, row.space_id, row.tenant_id);
 
       const now = Date.now();
       try {

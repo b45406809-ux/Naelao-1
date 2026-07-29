@@ -608,6 +608,16 @@ export interface ScriptEngineEnv {
    *  (Memory OS) and per-(channel,user) sessions. Absent for space-level/system-triggered runs. */
   userId?: string;
   /**
+   * §A1 connector default-vs-personal switch: this session's chosen mode per connector id
+   * ("business" — the default, use the shared account; "personal" — require the caller's own
+   * connected account, refuse rather than silently fall back). Read once by NaelaoAgentDO at run
+   * start (best-effort GET to SpaceDO's connector-mode store) and forwarded by the mcp-connector
+   * prebuilt as `x-naelao-connector-scope` on each mcp-hub call for the referenced server. Absent
+   * entries (the common case — most connectors never had a user switch away from business) mean
+   * "resolve exactly as before this feature existed."
+   */
+  connectorAccountMode?: Record<string, "business" | "personal">;
+  /**
    * The project this run is bound to, when it's an ordinary (project-scoped) Naelao Agent
    * thread rather than the Space Assistant. Determines the R2 workspace prefix (see
    * `workspacePrefix()` below) — every thread's agent in the SAME project shares one

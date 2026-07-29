@@ -3505,6 +3505,99 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     deploy`, per item 83's own documented trap) and `apps/shell` both deployed and live-verified
     by fetching the exact deployed chunks and confirming byte-identical size to the local build.
 
+85. **Fixed a real live bug where the agent's own reply was a raw internal parse-error string, and
+    built a bounded slice of a large user-directed batch (business-wide connector accounts,
+    notifications, safer inbound-channel handling) — with two genuinely large pieces explicitly
+    scoped down and documented, not silently dropped.**
+    - **Root-caused and fixed the reported bug.** "search the web for polsia ai" returned
+      `unparseable reasoner output: no JSON object in reasoner output` as the AI's own reply.
+      Reproduced live against the real AI Gateway endpoint (both a first-turn tool-call and a
+      second-turn post-search-result turn worked fine in isolation), which pointed at the real
+      cause: `tool_choice:"required"` (item 68) isn't always honored by Workers AI models — a
+      model can still answer in plain prose with no tool call and no `{...}` JSON at all.
+      `GatewayReasoner.decide()`'s fallback used to `give_up` with that raw parser-error string
+      whenever neither a tool call nor parseable JSON was present; it now treats any non-empty
+      prose as the intended answer (only giving up when the model truly returned nothing), fixing
+      this whole class of failure rather than one query. 2 new tests
+      (`reasoner-tool-calling.test.ts`) pin both the fixed prose-becomes-answer case and the
+      still-correct empty-response give_up case.
+    - **Notifications — a durable, business-member-visible inbox** (new SpaceDO `notifications`
+      table, migration v34): what the assistant/its agents want a human to see (an approval
+      opened, a run failed, an inbound message got blocked) — distinct from `agent_activity_log`
+      (builder-only audit trail) and from Approvals (which needs a decision; a notification just
+      needs to be seen). `GET/POST /spaces/:spaceId/notifications` (business-member-gated,
+      POST restricted to `{action:"mark_read"}` only at that layer — a real notification can only
+      ever be created via the internal HMAC-gated route). `notifyApprovalRequested` now also
+      writes a notification and — new — checks `isAnyoneCurrentlyPresent` (the existing presence
+      table) before sending the immediate owner email: someone actively in the space sees it via
+      the in-app notification / inline approval card already built (item 84); an immediate email
+      on top is noise. A genuine run failure (`result.result.ok === false`) now raises one too.
+      **Heartbeat escalation for whoever's away**: since there's no cheap D1-indexed way to know
+      platform-wide which spaces have an undelivered notification without opening every SpaceDO
+      (the enumeration anti-pattern this file already warns against), `sweepUndeliveredNotifications`
+      piggybacks on whichever roster already reaches a given space (`heartbeat` — spaces with a
+      connected channel; `scheduled_job` — every templated Launchpad business via item 82's daily
+      revenue-review cron), delivering anything still unread+undelivered past a 15-minute grace
+      window via email and marking it delivered. A space reached by neither roster gets no sweep
+      at all — a real, documented gap, not a silent one; the immediate at-creation-time email is
+      what actually covers the time-sensitive case. Shell: new `/notifications` page (sidebar →
+      More), reusing the Approvals page's own loading/failure-state discipline (a load failure
+      must never read as "nothing to see"). 10 new tests (`spacedo-notifications.test.ts`).
+    - **Connector default-vs-personal account switch — the actual mechanism, not just a UI
+      toggle.** The existing credential hierarchy (items 18/80) resolves a member's OWN personal
+      credential ahead of the shared business one whenever one is connected — the opposite of
+      what "business is autonomous, humans stay relaxed" wants as a default. New `prefer_scope`
+      param on the credentials worker's `resolveCredential` (additive — absent behaves
+      byte-identically to before): `"business"` skips the personal tier even when one exists;
+      `"personal"` REQUIRES it, returning a distinct `personal_credential_required` 404 rather
+      than silently substituting the shared account (exactly the "forgot to switch" case the UI
+      needs to surface). The privileged override tier always wins regardless of either mode.
+      Threaded end to end: `mcp-hub`'s `buildAuthHeaders` forwards it; the `mcp-connector`
+      prebuilt's `hubHeaders` reads a new `ScriptEngineEnv.connectorAccountMode` map (per-connector
+      `"business"|"personal"`) and sends it as `x-naelao-connector-scope`; `NaelaoAgentDO` reads a
+      session's stored mode ONCE per run (new SpaceDO `connector_account_mode` table + a
+      `GET/PATCH /spaces/:spaceId/sessions/:sessionId/connector-mode` route on the agents worker,
+      same explicit-before-the-router's-generic-sessions-catch-all registration item 48's
+      context-usage/compact routes needed) — best-effort, defaults to business on any failure.
+      Shell: the input bar's Connectors popover shows a per-connector "Using: business/personal —
+      switch" toggle for anything already connected. Both assistant profiles were told the rule:
+      a `personal_credential_required` error means the chat is still on the business account (or
+      has no personal one connected) — say so plainly, never silently retry against the business
+      account as a stand-in for what was actually asked. 5 new tests
+      (`credential-hierarchy.test.ts`).
+    - **Inbound-channel safety — a real, previously-silent gap closed.** Traced
+      `handleChannelHeartbeat` (the drain loop behind EVERY customer-bot/channel project, which is
+      also what a future business-email channel would run through) and found the existing
+      prompt-injection/jailbreak moderation check on inbound messages (`moderateInput`) already
+      blocked a flagged message from ever reaching the reasoning prompt — but then just
+      incremented an `escalated` counter and silently dropped it. Nobody was ever told. Now sets
+      `human_takeover` on the session (same contract as an explicit no-code rule) AND raises a
+      `critical` notification through the new inbox above — directly the "the moment it tries
+      something bad, the assistant is notified" behavior asked for, built on infrastructure that
+      already existed rather than a new per-project "lower-tier agent" mechanism. 1 new test
+      (`naelaoagentdo-customer-bot-heartbeat.test.ts`) drives a real jailbreak-pattern inbound
+      message through the actual heartbeat and confirms the session is held for a human.
+    - **`business_email` project kind fixed to actually declare its own script** — the registry
+      entry (`packages/events/src/business-feature-kinds.ts`) has existed since a much earlier
+      pass with `autoProvisionable: true` and a real `business-email` prebuilt (Naelao-managed
+      outbound sending address) already built, but the registry's own `prebuiltScripts` field was
+      simply never set — a one-line, correct fix, not new functionality.
+    - **Deliberately scoped down, documented not dropped (two genuinely large asks):**
+      (1) a real AgentMail-style (or similar) auto-provisioned, INBOUND-capable business mailbox
+      with zero human setup — investigated rather than guessed at: this account owns **zero DNS
+      zones** (confirmed via the CF API, same blocker CLAUDE.md's Live Deployment Facts already
+      records for the dashboard's product-domain display), so a Naelao-issued receiving address
+      can't resolve regardless of any code written this pass, and fabricating a client against an
+      unverified AgentMail API shape under time pressure would violate this codebase's own
+      "confirm once real access exists" discipline rather than honor it. The already-built `email`
+      CHANNEL type (Mailgun-style inbound-parse, real and tested) remains the working path for a
+      business that brings its own domain/provider today. (2) A business having its assistant sign
+      itself up for arbitrary third-party services autonomously via CF Browser + a shared identity
+      — a real, substantial capability (browser automation, credential capture, per-service consent
+      modeling) that deserves its own dedicated pass, not a rushed corner of this one. Both are
+      real, named follow-ups, not silently abandoned.
+    2279/2279 tests pass (25 new across this pass), `npx turbo run typecheck` clean (76 tasks).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

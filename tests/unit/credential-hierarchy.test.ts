@@ -318,6 +318,82 @@ describe("credential hierarchy", () => {
     });
   });
 
+  // §A1 connector default-vs-personal switch: prefer_scope lets the caller (mcp-hub, forwarding
+  // the chat session's own toggle) override the implicit "personal always wins" default above.
+  describe("prefer_scope override", () => {
+    async function makeToken(spaceId: string, agentId = "agent-1"): Promise<string> {
+      return generateCredentialToken(env.PLATFORM_SECRET, spaceId, agentId);
+    }
+
+    it("prefer_scope='business' skips the personal credential even when one is connected", async () => {
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "GMAIL", value: "biz@x.com", scope: "space" } }), env, execCtx);
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "user-1", body: { name: "GMAIL", value: "personal@x.com" } }), env, execCtx);
+
+      const token = await makeToken("space-1");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-1/credentials/GMAIL/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-1", prefer_scope: "business" } }),
+        env, execCtx
+      );
+      const json = await res.json() as { value: string; scope: string };
+      expect(json.value).toBe("biz@x.com");
+      expect(json.scope).toBe("space");
+    });
+
+    it("prefer_scope='personal' resolves the personal credential when connected", async () => {
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "GMAIL", value: "biz@x.com", scope: "space" } }), env, execCtx);
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "user-1", body: { name: "GMAIL", value: "personal@x.com" } }), env, execCtx);
+
+      const token = await makeToken("space-1");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-1/credentials/GMAIL/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-1", prefer_scope: "personal" } }),
+        env, execCtx
+      );
+      const json = await res.json() as { value: string; scope: string };
+      expect(json.value).toBe("personal@x.com");
+      expect(json.scope).toBe("user");
+    });
+
+    it("prefer_scope='personal' with no personal credential connected returns a distinct 404, never the shared one", async () => {
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "GMAIL", value: "biz@x.com", scope: "space" } }), env, execCtx);
+
+      const token = await makeToken("space-1");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-1/credentials/GMAIL/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-1", prefer_scope: "personal" } }),
+        env, execCtx
+      );
+      expect(res.status).toBe(404);
+      const json = await res.json() as { error_code: string };
+      expect(json.error_code).toBe("personal_credential_required");
+    });
+
+    it("a privileged override still wins over prefer_scope='personal'", async () => {
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "user-1", body: { name: "GMAIL", value: "personal@x.com" } }), env, execCtx);
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "GMAIL", value: "forced@x.com", scope: "space", is_override: true } }), env, execCtx);
+
+      const token = await makeToken("space-1");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-1/credentials/GMAIL/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-1", prefer_scope: "personal" } }),
+        env, execCtx
+      );
+      const json = await res.json() as { value: string; is_override: boolean };
+      expect(json.value).toBe("forced@x.com");
+      expect(json.is_override).toBe(true);
+    });
+
+    it("an unrecognized prefer_scope value is ignored, resolving exactly as if it were absent", async () => {
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "admin-1", role: "admin", body: { name: "GMAIL", value: "biz@x.com", scope: "space" } }), env, execCtx);
+      await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", user: "user-1", body: { name: "GMAIL", value: "personal@x.com" } }), env, execCtx);
+
+      const token = await makeToken("space-1");
+      const res = await credentialsWorker.fetch(
+        await req("/v1/internal/spaces/space-1/credentials/GMAIL/plaintext", { method: "POST", credToken: token, body: { on_behalf_of_user_id: "user-1", prefer_scope: "nonsense" } }),
+        env, execCtx
+      );
+      const json = await res.json() as { value: string };
+      expect(json.value).toBe("personal@x.com"); // today's default: personal wins
+    });
+  });
+
   describe("cross-tenant isolation", () => {
     it("a credential created under one tenant is invisible to another tenant's list", async () => {
       await credentialsWorker.fetch(await req("/spaces/space-1/credentials", { method: "POST", tenant: "tenant-A", user: "user-1", body: { name: "SECRET", value: "v" } }), env, execCtx);

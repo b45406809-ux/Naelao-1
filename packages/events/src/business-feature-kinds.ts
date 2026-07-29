@@ -88,6 +88,7 @@ export const BUSINESS_FEATURE_KIND_REGISTRY: readonly BusinessFeatureKind[] = [
     singleton: true,
     minCreationRole: "admin",
     autoProvisionable: true,
+    prebuiltScripts: ["business-email"],
     uiPanel: "email-inbox",
   },
   {

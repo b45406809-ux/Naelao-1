@@ -51,6 +51,10 @@ const DEFAULT_MORE_NAV: SidebarNavEntry[] = [
   // and project agents can reach over MCP — see connectors/page.tsx.
   { key: "connectors", icon: "marketplace", label: "Connectors" },
   { key: "workflows", icon: "workflows", label: "Workflows" },
+  // What the assistant/its agents want you to know about (an approval opened, a run failed, a
+  // connector needs setup) — distinct from Approvals (which needs a decision, not just a look).
+  // No dedicated bell icon in this design system yet; "explore" is the closest unused glyph.
+  { key: "notifications", icon: "explore", label: "Notifications" },
   { key: "settings", icon: "settings", label: "Settings" },
 ];
 

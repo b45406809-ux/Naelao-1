@@ -311,7 +311,24 @@ async function validateMcpUrl(rawUrl: string): Promise<{ ok: true; url: URL } | 
  * this, every resolution here was effectively space-only regardless of what was stored. Absent
  * (the vast majority of calls — most connectors are space-scoped) resolves exactly as before.
  */
-export async function buildAuthHeaders(server: McpServer, env: Env, agentId: string, actingUserId?: string): Promise<Record<string, string>> {
+/** Normalizes the `x-naelao-connector-scope` header (set by the mcp-connector prebuilt from the
+ *  chat surface's per-session connector-mode preference) into buildAuthHeaders' preferScope
+ *  param — any other/absent value degrades to undefined (today's default resolution), never a
+ *  thrown error over a malformed header. */
+function readPreferScope(raw: string | undefined): "business" | "personal" | undefined {
+  return raw === "business" || raw === "personal" ? raw : undefined;
+}
+
+export async function buildAuthHeaders(
+  server: McpServer,
+  env: Env,
+  agentId: string,
+  actingUserId?: string,
+  /** §A1 connector default-vs-personal switch: forwarded verbatim to the credentials worker's
+   *  resolveCredential (see that function's own doc for the tier semantics). Absent for every
+   *  pre-existing caller — byte-identical behavior. */
+  preferScope?: "business" | "personal"
+): Promise<Record<string, string>> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (server.auth_type === "none" || !server.auth_secret_name) return headers;
 
@@ -329,10 +346,19 @@ export async function buildAuthHeaders(server: McpServer, env: Env, agentId: str
           "x-naelao-tenant-id": server.tenant_id,
           "x-naelao-credential-token": token,
         },
-        body: JSON.stringify(actingUserId ? { on_behalf_of_user_id: actingUserId } : {}),
+        body: JSON.stringify({
+          ...(actingUserId ? { on_behalf_of_user_id: actingUserId } : {}),
+          ...(preferScope ? { prefer_scope: preferScope } : {}),
+        }),
       }
     )
   );
+  if (resp.status === 404) {
+    const body = await resp.json<{ error_code?: string }>().catch(() => ({}) as Record<string, never>);
+    if (body.error_code === "personal_credential_required") {
+      throw new Error(`personal_credential_required: no personal account connected for '${server.name}' — switch to the business account or connect your own`);
+    }
+  }
   if (!resp.ok) {
     throw new Error(`Failed to resolve credential '${server.auth_secret_name}' (${resp.status})`);
   }
@@ -618,7 +644,10 @@ app.get("/v1/spaces/:spaceId/mcp-servers/:serverId/tools", async (c) => {
 
   let headers: Record<string, string>;
   try {
-    headers = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub", c.req.header("x-naelao-user-id") || undefined);
+    headers = await buildAuthHeaders(
+      server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub", c.req.header("x-naelao-user-id") || undefined,
+      readPreferScope(c.req.header("x-naelao-connector-scope"))
+    );
   } catch (err) {
     return c.json({ error_code: "credential_error", message: (err as Error).message }, 502);
   }
@@ -726,7 +755,10 @@ app.post("/v1/spaces/:spaceId/mcp-servers/:serverId/tools/call", async (c) => {
 
   let headers: Record<string, string>;
   try {
-    headers = await buildAuthHeaders(server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub", c.req.header("x-naelao-user-id") || undefined);
+    headers = await buildAuthHeaders(
+      server, c.env, c.req.header("x-naelao-agent-id") ?? "mcp-hub", c.req.header("x-naelao-user-id") || undefined,
+      readPreferScope(c.req.header("x-naelao-connector-scope"))
+    );
   } catch (err) {
     return c.json({ error_code: "credential_error", message: (err as Error).message }, 502);
   }

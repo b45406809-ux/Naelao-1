@@ -318,17 +318,34 @@ async function resolveCredential(
   spaceId: string,
   tenantId: string,
   name: string,
-  actingUserId: string | null
-): Promise<{ row: CredentialRow; tier: CredentialResolvedTier } | null> {
+  actingUserId: string | null,
+  /** §A1 connector default-vs-personal switch: an explicit ask from the caller for WHICH tier to
+   *  use, overriding the implicit "personal always wins when connected" default below.
+   *  "business": skip tier 2 entirely (a member's own personal credential is ignored even if one
+   *  exists) — the chat surface's default mode, so a shared business account is used unless the
+   *  caller deliberately switched. "personal": REQUIRE tier 2 — a missing personal credential is
+   *  reported distinctly (personal_required), never silently substituted with the shared one,
+   *  since that's exactly the "forgot to switch" case the UI needs to warn about. Absent (every
+   *  pre-existing caller) keeps today's byte-identical behavior. The privileged override (tier 1)
+   *  always wins regardless — an admin forcing a value is not something either mode should skip. */
+  preferScope?: "business" | "personal"
+): Promise<{ row: CredentialRow; tier: CredentialResolvedTier } | { notFoundReason: "personal_required" } | null> {
   const spaceRow = await fetchSpaceRow(db, spaceId, tenantId, name);
 
   if (spaceRow && spaceRow.is_override) return { row: spaceRow, tier: "business_override" };
 
-  if (actingUserId) {
+  const checkPersonalTier = preferScope !== "business" && Boolean(actingUserId);
+  if (checkPersonalTier) {
     const userRow = await db.prepare(
       `SELECT * FROM space_credentials WHERE space_id = ? AND tenant_id = ? AND name = ? AND scope = 'user' AND user_id = ? LIMIT 1`
     ).bind(spaceId, tenantId, name, actingUserId).first<CredentialRow>();
     if (userRow) return { row: userRow, tier: "user" };
+  }
+  if (preferScope === "personal") {
+    // Explicitly asked for the personal account and there isn't one connected — never fall
+    // through to the shared credential silently, that's the exact mismatch the caller needs to
+    // know about (see catalogue.ts / the shell's connector-mode UI).
+    return { notFoundReason: "personal_required" };
   }
 
   if (spaceRow && sharedRowAppliesToUser(spaceRow, actingUserId)) {
@@ -633,16 +650,21 @@ app.post("/v1/internal/spaces/:spaceId/credentials/:name/plaintext", async (c) =
   }
 
   let onBehalfOfUserId: string | null = null;
+  let preferScope: "business" | "personal" | undefined;
   try {
-    const body = await c.req.json<{ on_behalf_of_user_id?: string }>();
+    const body = await c.req.json<{ on_behalf_of_user_id?: string; prefer_scope?: "business" | "personal" }>();
     onBehalfOfUserId = body.on_behalf_of_user_id ?? null;
+    preferScope = body.prefer_scope;
   } catch {
     // Empty/absent body is fine — resolves at the space level.
   }
 
-  const resolved = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, credName, onBehalfOfUserId);
+  const resolved = await resolveCredential(c.env.PLATFORM_DB, spaceId, tenantId, credName, onBehalfOfUserId, preferScope);
   if (!resolved) {
     throw notFound("Credential");
+  }
+  if ("notFoundReason" in resolved) {
+    return c.json({ error_code: "personal_credential_required", message: "No personal credential is connected for this member" }, 404);
   }
   const { row, tier } = resolved;
 

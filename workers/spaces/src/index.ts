@@ -1822,6 +1822,57 @@ app.get("/spaces/:spaceId/agent-activity", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// ── Notifications inbox ──────────────────────────────────────────────────────
+// Unlike agent-activity (builder-only technical audit trail), this IS end-user-facing — a
+// business admin reading their own business's inbox — so the public route is
+// requireBusinessMembership-gated, not builder-only. Internal-only CREATE (NaelaoAgentDO's
+// createSpaceNotification) and the heartbeat sweep's undelivered-list/mark_delivered both go
+// through /internal/spaces/:spaceId/notifications instead — same path as agent-activity's own
+// internal/public split, chosen deliberately so this file gains no NEW dynamic-segment-then-
+// static-suffix route shape (the documented Hono RegExpRouter corruption, items 40/52/60).
+app.use("/internal/spaces/:spaceId/notifications", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.post("/internal/spaces/:spaceId/notifications", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/notifications", "POST", c.req.raw.body);
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+app.get("/internal/spaces/:spaceId/notifications", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const qs = new URL(c.req.url).search;
+  const res = await forwardToSpaceDO(stub, `/notifications${qs}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
+app.use("/spaces/:spaceId/notifications", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/notifications", requireBusinessMembership({ GET: "member", POST: "member" }));
+app.get("/spaces/:spaceId/notifications", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const qs = new URL(c.req.url).search;
+  const res = await forwardToSpaceDO(stub, `/notifications${qs}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+// POST is restricted to the mark_read shape only — a caller reaching this without an internal
+// HMAC token (every real business-member caller) can never fabricate a notification, only mark
+// their own space's real ones read.
+app.post("/spaces/:spaceId/notifications", async (c) => {
+  const body = await c.req.json<{ action?: string; notification_id?: string }>().catch(() => ({}) as Record<string, never>);
+  if (body.action !== "mark_read" || !body.notification_id) {
+    return c.json({ error_code: "bad_request", message: "action must be 'mark_read' with a notification_id" }, 400);
+  }
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const res = await forwardToSpaceDO(stub, "/notifications", "POST", JSON.stringify(body));
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // ── §A1 Harness Excellence Phase HX2: signals + session token-budget guard ──────
 // Explicit signals (agent-signals) and implicit signals (signal-events) are both builder-only
 // reads, same rationale/precedent as agent-activity just above (a cross-user audit/observability
