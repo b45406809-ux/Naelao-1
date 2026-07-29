@@ -3598,6 +3598,56 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       real, named follow-ups, not silently abandoned.
     2279/2279 tests pass (25 new across this pass), `npx turbo run typecheck` clean (76 tasks).
 
+86. **Live-reported bug ("no approval UI shown at all") root-caused via a real reproduction
+    against production, not guessed — found a real data-loss bug in item 84's own approval
+    plumbing, plus a stale sidebar badge, plus fixed web search being gated at all.** Reproduced
+    directly: minted a real internal token, dispatched `/agent/run` (`Prefer: respond-sync`)
+    against the user's own live business with the exact reported goal, and got back
+    `{"status":"failed","error":"unparseable reasoner output: ...","deferred_approvals":[{...
+    "action_name":"search"}]}` — a REAL, still-open approval (confirmed by `wrangler tail`
+    showing genuine `GET http://hitl/requests/...` polling) that the frontend had never once
+    rendered.
+    - **Root cause: `deferred_approvals` (item 73/84's "parked and carried on around" approvals —
+      the run does NOT suspend, it keeps working and just remembers what it's still waiting on)
+      was handled at the loop/DO level but never threaded through the REST of the pipeline.**
+      `AgentTaskWorkflow` (the DEFAULT async dispatch path — this is not an edge case, it's what
+      every real chat message goes through) only ever read `pending_approval` off the internal
+      run response, so `deferred_approvals` was silently dropped before it even reached TaskDO.
+      Worse: `update-result`'s `result: hasError ? null : JSON.stringify(...)` discarded
+      `deferred_approvals` a SECOND time whenever the run also hit an unrelated failure — exactly
+      the reproduced case, where the model successfully parked a `web-search.search` approval and
+      then failed on its NEXT reasoning turn. `fetchRunOrTaskStatus`, the SSE stream's "done"
+      event, and `apps/shell`'s own `Message`/`AgentRun` types never carried the field at all.
+      Fixed end to end: `AgentTaskWorkflow` now reads and persists `deferred_approvals`
+      unconditionally (never dropped by `hasError`), `fetchRunOrTaskStatus` and the SSE endpoint
+      forward it, and `Chat.tsx` renders one `InlineApprovalCard` per entry — including a new
+      branch for the specific reproduced shape (a run that FAILED but still carries a real,
+      separate, still-open approval): a short note plus the card, rather than losing it behind an
+      error banner. 3 new tests (`run-status-pending-approval.test.ts`) pin the exact reproduced
+      wire shape, including "survives even when the task itself is recorded as failed."
+    - **A second, independent bug in the same investigation: the sidebar's Approvals badge only
+      ever loaded once per business switch.** `apps/shell`'s layout effect that populates
+      `pendingApprovals` had no polling — a new approval opened mid-conversation never made the
+      badge (or the nav item itself, which only renders `pendingApprovals > 0`) appear until the
+      user happened to navigate away and back. Added a 30s interval poll (cleared on unmount/space
+      switch), independent of the inline-card fix above — this is also what makes an approval
+      opened by a background/scheduled run (not the conversation currently open) visible at all.
+    - **Design fix, the user's other point ("shouldn't such tools already be approved"): web
+      search is now in the default guided-mode auto-approved allowlist**
+      (`LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED` — `web-search.search`/`fetch_page`/
+      `extract_content`/`grounded_answer`). It's read-only, platform-keyed (no BYO credential,
+      no external side effect, can't move money or post anywhere) — the same "safe by
+      construction" class as `mcp.list_tools`/`memory.recall`, which were already on the list;
+      web search being absent was a real oversight, not a deliberate security boundary. This is
+      the DEFAULT for newly-provisioned businesses only — `seedLaunchpadAssistantPolicy` snapshots
+      the list once at provision time into each business's own stored `assistant_policy` row, so
+      an already-existing business (like the one this bug was reproduced against) needs its owner
+      to either flip the business to Autonomous mode (Dashboard tab, item 79) or re-approve web
+      search once from the inline/Approvals UI (now that both actually work) — there is no safe
+      way to bulk-migrate a live SpaceDO's stored row from outside a real builder/business-admin
+      session, and none was attempted.
+    2282/2282 tests pass (3 new), `npx turbo run typecheck` clean (76 tasks).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

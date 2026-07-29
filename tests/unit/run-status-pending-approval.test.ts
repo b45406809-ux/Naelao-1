@@ -64,3 +64,47 @@ describe("fetchRunOrTaskStatus — pending_approval surfaces through TaskDO poll
     expect(body.error).toBe("boom");
   });
 });
+
+// Live-reported bug (2026-07-29): a run that PARKED a real, still-open approval and continued
+// (rather than fully suspending — see loop.ts's `deferred_approvals`) had that approval silently
+// dropped by this exact function's TaskDO branch, which only ever read `pending_approval`. The
+// approval genuinely existed (visible via the separate /approvals inbox, backed by
+// HITLApprovalDO directly) but the chat itself showed nothing about it whatsoever.
+describe("fetchRunOrTaskStatus — deferred_approvals surfaces through TaskDO polling", () => {
+  it("includes deferred_approvals on an otherwise-completed run", async () => {
+    const env = makeEnv({
+      status: "complete",
+      result: {
+        final_answer: "I looked into it and also started a search that needs your OK.",
+        deferred_approvals: [{ approval_id: "appr-2", action_name: "web-search.search", params: { query: "polsia ai" } }],
+      },
+      error: null,
+    });
+    const { body } = await fetchRunOrTaskStatus(env, "tenant-1", "session-1", "space-1", "task-1");
+    expect(body.status).toBe("completed");
+    expect(body.deferred_approvals).toEqual([
+      { approval_id: "appr-2", action_name: "web-search.search", params: { query: "polsia ai" } },
+    ]);
+  });
+
+  // The exact reproduction: the run parked a real approval, then a LATER, unrelated reasoning
+  // step failed — the task is recorded as failed, but the approval it already opened is still
+  // real and still open, and must not vanish along with the error.
+  it("survives even when the task itself is recorded as failed", async () => {
+    const env = makeEnv({
+      status: "failed",
+      result: { deferred_approvals: [{ approval_id: "appr-3", action_name: "web-search.search" }] },
+      error: "unparseable reasoner output: no JSON object in reasoner output",
+    });
+    const { body } = await fetchRunOrTaskStatus(env, "tenant-1", "session-1", "space-1", "task-1");
+    expect(body.status).toBe("failed");
+    expect(body.error).toContain("unparseable reasoner output");
+    expect(body.deferred_approvals).toEqual([{ approval_id: "appr-3", action_name: "web-search.search" }]);
+  });
+
+  it("is absent (not an empty array) when there are none", async () => {
+    const env = makeEnv({ status: "complete", result: { final_answer: "done" }, error: null });
+    const { body } = await fetchRunOrTaskStatus(env, "tenant-1", "session-1", "space-1", "task-1");
+    expect(body.deferred_approvals).toBeUndefined();
+  });
+});

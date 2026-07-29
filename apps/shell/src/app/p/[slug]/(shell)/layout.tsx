@@ -141,6 +141,15 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
       // Left unset on failure (not "loaded with zero") — a transient load error must not be
       // mistaken for "this account genuinely has no businesses" and force a redirect loop.
       .catch(() => {});
+    // Live-reported bug: this count only ever loaded once per business switch — a new approval
+    // opened mid-conversation (e.g. an assistant reply that parked a gated action) never made the
+    // sidebar badge appear until the user happened to navigate away and back. A light periodic
+    // re-check while this page is open is a real fix, not just the inline card added elsewhere:
+    // it's also what makes an approval opened by a background/scheduled run visible at all.
+    const approvalPoll = window.setInterval(() => {
+      listApprovals(activeSpaceId, creds).then((a) => setPendingApprovals(a.length)).catch(() => {});
+    }, 30_000);
+    return () => window.clearInterval(approvalPoll);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, activeSpaceId, product.space_id, product.slug]);
 

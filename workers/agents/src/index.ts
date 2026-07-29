@@ -116,9 +116,20 @@ export function normalizeScriptRunResult(raw: unknown, runId: string): {
     reactSteps: [],
     ...(errorMessage !== undefined ? { error: errorMessage } : {}),
     // Carried as structured data, not only inside the model's prose: a client should be able to
-    // render "1 action waiting on you" without parsing an answer for it.
+    // render "1 action waiting on you" without parsing an answer for it. Full shape (params/
+    // expires_at), same as pending_approval — an inline card needs the parameters to be an
+    // informed approval, not just the action's name. Present regardless of `ok`/`status`: a run
+    // that parked a real approval and only then hit an unrelated second-turn failure must not
+    // have that approval disappear along with the error (see AgentTaskWorkflow's own comment).
     ...(r?.deferred_approvals?.length
-      ? { deferred_approvals: r.deferred_approvals.map((d) => ({ approval_id: d.approval_id, action_name: d.action_name })) }
+      ? {
+          deferred_approvals: r.deferred_approvals.map((d) => ({
+            approval_id: d.approval_id,
+            action_name: d.action_name,
+            ...(d.params !== undefined ? { params: d.params } : {}),
+            ...(d.expires_at !== undefined ? { expires_at: d.expires_at } : {}),
+          })),
+        }
       : {}),
   };
 }
@@ -1117,18 +1128,18 @@ export interface RunPendingApproval {
 
 async function fetchRunOrTaskStatus(
   env: AgentsEnv, tenantId: string, sessionId: string, spaceId: string, runId: string
-): Promise<{ status: number; body: { id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval } }> {
+): Promise<{ status: number; body: { id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] } }> {
   const stub = await getAgentDO(env, tenantId, sessionId);
   const doResponse = await stub.fetch(new Request(`http://agent-do/runs/${runId}`, { method: "GET" }));
   if (doResponse.ok) {
-    const doBody = await doResponse.json<{ id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval }>();
+    const doBody = await doResponse.json<{ id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>();
     return { status: 200, body: doBody };
   }
   if (!env.TASK_DO) return { status: doResponse.status, body: { id: runId, status: "failed", error: "run not found" } };
   const taskStub = getTaskDO(env, spaceId);
   const taskResponse = await taskStub.fetch(`http://task-do/tasks/${runId}`);
   if (!taskResponse.ok) return { status: 404, body: { id: runId, status: "failed", error: "run not found" } };
-  const task = await taskResponse.json<{ task_id: string; status: string; result: { final_answer?: string; pending_approval?: RunPendingApproval } | null; error: string | null }>();
+  const task = await taskResponse.json<{ task_id: string; status: string; result: { final_answer?: string; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] } | null; error: string | null }>();
   return {
     status: 200,
     body: {
@@ -1136,6 +1147,11 @@ async function fetchRunOrTaskStatus(
       status: TASK_STATUS_TO_RUN_STATUS[task.status] ?? "running",
       ...(task.result?.final_answer !== undefined ? { final_answer: task.result.final_answer } : {}),
       ...(task.result?.pending_approval ? { pending_approval: task.result.pending_approval } : {}),
+      // A run that opened a real, still-open approval and only then hit a SECOND, unrelated
+      // reasoning failure must not have that approval vanish along with the error — see
+      // AgentTaskWorkflow's update-result step, which now carries this through even when the
+      // task itself is recorded as failed.
+      ...(task.result?.deferred_approvals?.length ? { deferred_approvals: task.result.deferred_approvals } : {}),
       ...(task.error ? { error: task.error } : {}),
     },
   };
@@ -1325,6 +1341,11 @@ app.get(
             await sendEvent({
               type: "done", run_id: runId, status: run.status, final_answer: run.final_answer, error: run.error,
               ...(run.pending_approval ? { pending_approval: run.pending_approval } : {}),
+              // Live-reported bug: a run that parked an approval and continued (rather than fully
+              // suspending) never carried this to the client at all — the approval genuinely
+              // existed (visible in the separate /approvals inbox) but the chat itself showed
+              // nothing about it.
+              ...(run.deferred_approvals?.length ? { deferred_approvals: run.deferred_approvals } : {}),
             });
             break;
           }

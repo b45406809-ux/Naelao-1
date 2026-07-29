@@ -218,6 +218,10 @@ export interface Message {
    *  loses this (the run is still genuinely pending; the separate /approvals inbox is the
    *  durable, reload-safe way to find and answer it). */
   pendingApproval?: RunPendingApproval;
+  /** CLIENT-ONLY, same non-persisted scope as pendingApproval: one or more actions this run
+   *  parked and carried on around (as opposed to pendingApproval, where the WHOLE run stopped).
+   *  Rendered as the same inline card, one per entry. */
+  deferredApprovals?: RunPendingApproval[];
 }
 
 export interface ConsultedThread {
@@ -268,6 +272,10 @@ export interface AgentRun {
   live_steps?: LiveRunStep[];
   /** Present when status is "awaiting_approval" — which action, with what parameters. */
   pending_approval?: RunPendingApproval;
+  /** Actions the run parked and carried on around — distinct from pending_approval (which means
+   *  the WHOLE run suspended). A run can finish (or even fail on something unrelated afterward)
+   *  while still carrying one or more of these — they must be rendered regardless of `status`. */
+  deferred_approvals?: RunPendingApproval[];
 }
 
 /** POST /v1/spaces/:spaceId/sessions — start a new chat session.
@@ -384,7 +392,7 @@ export async function getStreamUrl(spaceId: string, sessionId: string, runId: st
 
 /** Polling fallback for environments without SSE. */
 export async function pollRun(spaceId: string, sessionId: string, runId: string, session: SessionCredentials): Promise<AgentRun> {
-  const res = await apiFetch<{ id: string; status: string; final_answer?: string; error?: string; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval }>(
+  const res = await apiFetch<{ id: string; status: string; final_answer?: string; error?: string; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>(
     `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}`,
     { session }
   );
@@ -395,6 +403,7 @@ export async function pollRun(spaceId: string, sessionId: string, runId: string,
     ...(res.error !== undefined ? { error: res.error } : {}),
     ...(res.live_steps ? { live_steps: res.live_steps } : {}),
     ...(res.pending_approval ? { pending_approval: res.pending_approval } : {}),
+    ...(res.deferred_approvals?.length ? { deferred_approvals: res.deferred_approvals } : {}),
   };
 }
 

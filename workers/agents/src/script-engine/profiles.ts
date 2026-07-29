@@ -503,6 +503,15 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   "thread.list",
   "thread.read",
   "project.list_members",
+  // Read-only, platform-keyed (no BYO credential, no external side effect) — same class of
+  // "safe by construction" as mcp.list_tools/memory.recall above. A user reported this gated
+  // web search under guided mode's default, which is real friction for zero actual risk: a
+  // search/fetch/extract/grounded-answer call can't move money, can't post anywhere, and never
+  // exposes a credential the agent doesn't already have platform-wide access to.
+  "web-search.search",
+  "web-search.fetch_page",
+  "web-search.extract_content",
+  "web-search.grounded_answer",
 ];
 
 /** Map a Launchpad allowed_skill id → prebuilt scripts available in this build. */

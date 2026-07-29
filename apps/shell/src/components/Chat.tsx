@@ -275,10 +275,26 @@ export function Chat({
                 created_at: new Date().toISOString(),
                 ...(latestActivity.length > 0 ? { activity: latestActivity } : {}),
                 ...(run.pending_approval ? { pendingApproval: run.pending_approval } : {}),
+                ...(run.deferred_approvals?.length ? { deferredApprovals: run.deferred_approvals } : {}),
               },
             ]);
           } else if (run.status === "failed" || run.status === "cancelled") {
             setError(run.error ?? "The agent run failed");
+            // A run can fail on something UNRELATED while still carrying a real, still-open
+            // approval it parked earlier — that approval must not vanish along with the error
+            // banner, since it's a completely separate, still-actionable thing.
+            if (run.deferred_approvals?.length) {
+              const deferred = run.deferred_approvals;
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `msg_${Date.now()}`, role: "assistant",
+                  content: "Something else went wrong finishing this — but it also asked to run something that needs your approval first:",
+                  created_at: new Date().toISOString(),
+                  deferredApprovals: deferred,
+                },
+              ]);
+            }
           }
         } catch (err) {
           stopPolling();
@@ -317,6 +333,7 @@ export function Chat({
             type: string; content?: string; run_id?: string; message?: string; steps?: LiveRunStep[];
             status?: AgentRun["status"]; final_answer?: string; error?: string;
             pending_approval?: AgentRun["pending_approval"];
+            deferred_approvals?: AgentRun["deferred_approvals"];
           };
           if (data.type === "activity" && data.steps?.length) {
             activitySteps = [...activitySteps, ...data.steps];
@@ -345,10 +362,25 @@ export function Chat({
                   created_at: new Date().toISOString(),
                   ...(activitySteps.length > 0 ? { activity: activitySteps } : {}),
                   ...(data.pending_approval ? { pendingApproval: data.pending_approval } : {}),
+                  ...(data.deferred_approvals?.length ? { deferredApprovals: data.deferred_approvals } : {}),
                 },
               ]);
             } else if (status === "failed" || status === "cancelled") {
               setError(data.error ?? "The agent run failed");
+              // Same "a real, still-open approval must not vanish along with an unrelated
+              // failure" rule as the plain-polling fallback below.
+              if (data.deferred_approvals?.length) {
+                const deferred = data.deferred_approvals;
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: `msg_${Date.now()}`, role: "assistant",
+                    content: "Something else went wrong finishing this — but it also asked to run something that needs your approval first:",
+                    created_at: new Date().toISOString(),
+                    deferredApprovals: deferred,
+                  },
+                ]);
+              }
             }
           } else if (data.type === "error") {
             closeSSE();
@@ -530,6 +562,14 @@ export function Chat({
                   {m.role !== "user" && m.pendingApproval && (
                     <InlineApprovalCard spaceId={spaceId} approval={m.pendingApproval} session={session} />
                   )}
+                  {/* Actions the run parked and carried on around (as opposed to pendingApproval,
+                      where the WHOLE run stopped) — a run can even finish (or fail on something
+                      unrelated) while still carrying one or more of these; they must show up
+                      regardless. Live-reported bug: this used to be silently dropped entirely, so
+                      a real, open approval existed with no sign of it anywhere in the chat. */}
+                  {m.role !== "user" && m.deferredApprovals?.map((a) => (
+                    <InlineApprovalCard key={a.approval_id} spaceId={spaceId} approval={a} session={session} />
+                  ))}
                   {/* The assistant tried to use a connected-but-not-yet-connected app — let the
                       person connect it right here instead of hunting for the Connectors page. */}
                   {m.role !== "user" && m.metadata?.needs_connector && m.metadata.connector_id && (

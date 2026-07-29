@@ -140,6 +140,12 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
         error?: string;
         status?: string;
         pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
+        // Live-reported bug (2026-07-29): a run that parked a real approval and continued (rather
+        // than fully suspending) carried this array in the direct-DO response, but this step never
+        // read it at all — every async-dispatched (the DEFAULT) run silently dropped it, so the
+        // approval genuinely existed (visible in HITLApprovalDO/the /approvals page) while the chat
+        // UI showed nothing about it whatsoever.
+        deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
       }>();
       return {
         final_answer: body.finalAnswer ?? body.final_answer,
@@ -150,6 +156,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
         // inside the plain (non-step) "update-result" callback below where that constraint
         // doesn't apply.
         pending_approval_json: body.pending_approval ? JSON.stringify(body.pending_approval) : undefined,
+        deferred_approvals_json: body.deferred_approvals?.length ? JSON.stringify(body.deferred_approvals) : undefined,
       };
     });
 
@@ -175,11 +182,18 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           // learn WHICH approval opened, its action name, or its parameters — so an inline
           // in-chat approval card had nothing to render. Carried through unconditionally (a
           // completed/failed run simply has none).
-          result: hasError ? null : JSON.stringify({
-            final_answer: runResult.final_answer,
+          // Live-reported bug: this used to be `hasError ? null : JSON.stringify(...)` — a run
+          // that opened a real, still-open approval and only THEN hit an unrelated second-turn
+          // reasoning failure had that approval silently discarded along with the error, even
+          // though it genuinely exists and is still waiting on a human. deferred_approvals is now
+          // carried through unconditionally; final_answer/pending_approval stay null on a genuine
+          // error (there is no real answer to show), matching every other error's behavior.
+          result: (hasError && !runResult.deferred_approvals_json) ? null : JSON.stringify({
+            ...(hasError ? {} : { final_answer: runResult.final_answer }),
             // Re-parsed here (a plain step-3 callback, not the run-agent step itself, so the
             // Serializable<T> constraint that made the pre-stringify necessary doesn't apply).
             ...(runResult.pending_approval_json ? { pending_approval: JSON.parse(runResult.pending_approval_json) } : {}),
+            ...(runResult.deferred_approvals_json ? { deferred_approvals: JSON.parse(runResult.deferred_approvals_json) } : {}),
           }),
           error: runResult.error ?? null,
         }),
@@ -201,7 +215,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
     p: AgentTaskParams
   ): Promise<{
     final_answer: string | undefined; error: string | undefined; status: string | undefined;
-    pending_approval_json: string | undefined;
+    pending_approval_json: string | undefined; deferred_approvals_json: string | undefined;
   } | null> {
     try {
       const stub = this.env.TASK_DO.get(this.env.TASK_DO.idFromName(p.taskDoName));
@@ -220,7 +234,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
           answer = (JSON.parse(task.result) as { final_answer?: string }).final_answer;
         } catch { /* a result we can't parse is still proof the run happened */ }
       }
-      return { final_answer: answer, error: task.error ?? undefined, status: task.status, pending_approval_json: undefined };
+      return { final_answer: answer, error: task.error ?? undefined, status: task.status, pending_approval_json: undefined, deferred_approvals_json: undefined };
     } catch {
       return null;
     }
