@@ -10,6 +10,7 @@ import {
   ApiError,
   getMessages,
   getStreamUrl,
+  getApprovalResumeStatus,
   pollRun,
   sendMessage,
   startSession,
@@ -155,6 +156,12 @@ export function Chat({
   // exactly the double/triple-reply bug. This ref is the single gate: whichever call site reaches
   // a given runId first wins, and every other attempt for that same runId is a no-op.
   const attachedRunIdRef = React.useRef<string | null>(null);
+  // Maps a resumed-run's own id (handleResumeRun mints a fresh one) back to the message that held
+  // the approval it continues — set by watchForResume once the continuation actually starts, read
+  // by finalizeAnswer so that run's eventual answer is folded INTO that same bubble instead of
+  // appearing as a brand new one, closer to how Claude keeps one long message going across a
+  // mid-turn permission prompt.
+  const resumeOriginRef = React.useRef<Map<string, string>>(new Map());
 
   React.useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -231,6 +238,50 @@ export function Chat({
     sseRef.current = null;
   }, []);
 
+  // Shared by pollUntilDone and streamRun's "done" handling: when this runId is a resume
+  // continuation (resumeOriginRef has an entry for it), fold the answer into the ORIGINAL
+  // message's bubble instead of pushing a new row — one long message across an approval, the way
+  // Claude keeps a single turn going across a mid-turn permission prompt. Any other run (the
+  // ordinary case) appends a new message exactly as before.
+  const finalizeAnswer = React.useCallback(
+    (
+      runId: string,
+      answerText: string,
+      activitySteps: LiveRunStep[],
+      pendingApproval?: AgentRun["pending_approval"],
+      deferredApprovals?: AgentRun["deferred_approvals"]
+    ) => {
+      const continuationOf = resumeOriginRef.current.get(runId);
+      if (continuationOf) {
+        resumeOriginRef.current.delete(runId);
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== continuationOf) return m;
+            return {
+              ...m,
+              content: m.content ? `${m.content}\n\n${answerText}` : answerText,
+              ...(activitySteps.length > 0 ? { activity: [...(m.activity ?? []), ...activitySteps] } : {}),
+              ...(pendingApproval ? { pendingApproval } : {}),
+              ...(deferredApprovals?.length ? { deferredApprovals: [...(m.deferredApprovals ?? []), ...deferredApprovals] } : {}),
+            };
+          })
+        );
+        return;
+      }
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `msg_${Date.now()}`, role: "assistant", content: answerText,
+          created_at: new Date().toISOString(),
+          ...(activitySteps.length > 0 ? { activity: activitySteps } : {}),
+          ...(pendingApproval ? { pendingApproval } : {}),
+          ...(deferredApprovals?.length ? { deferredApprovals } : {}),
+        },
+      ]);
+    },
+    []
+  );
+
   const pollUntilDone = React.useCallback(
     (sid: string, runId: string) => {
       // The DO's own /runs/:runId response carries the FULL live-progress list every tick (not a
@@ -238,9 +289,21 @@ export function Chat({
       // local copy with whatever's current, and the last one read is what gets attached to the
       // completed message below.
       let latestActivity: LiveRunStep[] = [];
+      // Bug fix: setInterval does NOT wait for a previous async callback to finish before firing
+      // the next one. If a single pollRun round-trip ever takes longer than POLL_INTERVAL_MS (a
+      // slow network tick, a GC pause, a burst of load), two or more overlapping callbacks each
+      // independently see the SAME terminal status and each independently append their own
+      // completed-message row — which is exactly the reported "same reply 2-3-4 times" bug (and,
+      // since every duplicate carries the same pendingApproval/deferredApprovals, the same
+      // approval card too). `settled` is the single gate: only the FIRST tick to observe a
+      // terminal status is allowed to finalize; every later overlapping tick is a no-op.
+      let settled = false;
       pollDeadlineRef.current = Date.now() + MAX_POLL_DURATION_MS;
       pollTimerRef.current = setInterval(async () => {
+        if (settled) return;
         if (Date.now() > pollDeadlineRef.current) {
+          if (settled) return;
+          settled = true;
           stopPolling();
           setIsLoading(false);
           setStreamingContent("");
@@ -249,6 +312,7 @@ export function Chat({
         }
         try {
           const run = await pollRun(spaceId, sid, runId, session);
+          if (settled) return;
           setLastRun(run);
           if (run.live_steps) {
             latestActivity = run.live_steps;
@@ -258,6 +322,7 @@ export function Chat({
             if (run.final_answer) setStreamingContent(run.final_answer);
             return;
           }
+          settled = true;
           stopPolling();
           setStreamingContent("");
           setIsLoading(false);
@@ -268,16 +333,7 @@ export function Chat({
           // the user saw the spinner stop and nothing appear, with no way to know the agent was
           // waiting on them.
           if ((run.status === "completed" || run.status === "awaiting_approval") && run.final_answer) {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: `msg_${Date.now()}`, role: "assistant", content: run.final_answer!,
-                created_at: new Date().toISOString(),
-                ...(latestActivity.length > 0 ? { activity: latestActivity } : {}),
-                ...(run.pending_approval ? { pendingApproval: run.pending_approval } : {}),
-                ...(run.deferred_approvals?.length ? { deferredApprovals: run.deferred_approvals } : {}),
-              },
-            ]);
+            finalizeAnswer(runId, run.final_answer, latestActivity, run.pending_approval, run.deferred_approvals);
           } else if (run.status === "failed" || run.status === "cancelled") {
             setError(run.error ?? "The agent run failed");
             // A run can fail on something UNRELATED while still carrying a real, still-open
@@ -297,6 +353,8 @@ export function Chat({
             }
           }
         } catch (err) {
+          if (settled) return;
+          settled = true;
           stopPolling();
           setStreamingContent("");
           setIsLoading(false);
@@ -306,7 +364,7 @@ export function Chat({
         }
       }, POLL_INTERVAL_MS);
     },
-    [spaceId, session, stopPolling]
+    [spaceId, session, stopPolling, finalizeAnswer]
   );
 
   const streamRun = React.useCallback(
@@ -326,6 +384,11 @@ export function Chat({
       // route's full-list response) — accumulate locally so the completed message can carry the
       // whole trail, same reasoning as `accumulated` above for the answer text itself.
       let activitySteps: LiveRunStep[] = [];
+      // Same overlapping-callback defense as pollUntilDone's `settled`: EventSource auto-reconnects
+      // on a dropped connection, and a reconnect can redeliver a "done" the browser had already
+      // queued for onmessage before the drop — without this, that shows up as the exact same
+      // "duplicated reply/approval card" bug via the SSE path instead of the polling one.
+      let doneHandled = false;
 
       es.onmessage = (evt) => {
         try {
@@ -342,6 +405,8 @@ export function Chat({
             accumulated += data.content;
             setStreamingContent(accumulated);
           } else if (data.type === "done") {
+            if (doneHandled) return;
+            doneHandled = true;
             closeSSE();
             setStreamingContent("");
             setIsLoading(false);
@@ -355,16 +420,7 @@ export function Chat({
             setLastRun({ id: data.run_id ?? runId, status, final_answer: data.final_answer ?? accumulated });
             const answerText = data.final_answer ?? accumulated;
             if ((status === "completed" || status === "awaiting_approval") && answerText) {
-              setMessages((prev) => [
-                ...prev,
-                {
-                  id: data.run_id ?? `msg_${Date.now()}`, role: "assistant", content: answerText,
-                  created_at: new Date().toISOString(),
-                  ...(activitySteps.length > 0 ? { activity: activitySteps } : {}),
-                  ...(data.pending_approval ? { pendingApproval: data.pending_approval } : {}),
-                  ...(data.deferred_approvals?.length ? { deferredApprovals: data.deferred_approvals } : {}),
-                },
-              ]);
+              finalizeAnswer(data.run_id ?? runId, answerText, activitySteps, data.pending_approval, data.deferred_approvals);
             } else if (status === "failed" || status === "cancelled") {
               setError(data.error ?? "The agent run failed");
               // Same "a real, still-open approval must not vanish along with an unrelated
@@ -383,6 +439,8 @@ export function Chat({
               }
             }
           } else if (data.type === "error") {
+            if (doneHandled) return;
+            doneHandled = true;
             closeSSE();
             setStreamingContent("");
             setIsLoading(false);
@@ -397,6 +455,7 @@ export function Chat({
 
       es.onerror = () => {
         closeSSE();
+        if (doneHandled) return;
         if (accumulated === "") {
           pollUntilDone(sid, runId);
         } else {
@@ -405,7 +464,7 @@ export function Chat({
         }
       };
     },
-    [spaceId, sessionKey, session, closeSSE, pollUntilDone]
+    [spaceId, sessionKey, session, closeSSE, pollUntilDone, finalizeAnswer]
   );
 
   // Single entry point for "start following this run's status" — both send() (a run it just
@@ -419,6 +478,36 @@ export function Chat({
       void streamRun(sid, runId);
     },
     [streamRun]
+  );
+
+  // Poll (short-lived, bounded) for handleResumeRun's continuation run id to appear after an
+  // approval, then attach to it via the SAME pollRun/streamRun machinery an ordinary run uses —
+  // this is what makes the continuation's own tool calls show a real activity trail instead of
+  // silently only appearing on the next reload with none. Registers the message-merge mapping
+  // BEFORE attaching, so finalizeAnswer already knows to fold this run's answer into messageId.
+  const watchForResume = React.useCallback(
+    (messageId: string, approvalId: string) => {
+      if (!chatSessionId) return;
+      const deadline = Date.now() + 20_000;
+      const tick = async () => {
+        try {
+          const { resumed_run_id } = await getApprovalResumeStatus(spaceId, approvalId, session);
+          if (resumed_run_id) {
+            resumeOriginRef.current.set(resumed_run_id, messageId);
+            setIsLoading(true);
+            storeActiveRunId(spaceId, resumed_run_id, sessionKey);
+            attachToRun(chatSessionId, resumed_run_id);
+            return;
+          }
+        } catch {
+          /* keep trying until the deadline — a transient lookup failure here just means one more
+             wait; the approval itself already succeeded regardless. */
+        }
+        if (Date.now() < deadline) window.setTimeout(() => void tick(), 1500);
+      };
+      void tick();
+    },
+    [spaceId, chatSessionId, sessionKey, session, attachToRun]
   );
 
   // §A1.27: reattach to an in-flight run on mount (a reload, or a remount from navigating away
@@ -560,7 +649,14 @@ export function Chat({
                       person — see InlineApprovalCard's own header for why this doesn't need to
                       duplicate the separate /approvals inbox to be useful here. */}
                   {m.role !== "user" && m.pendingApproval && (
-                    <InlineApprovalCard spaceId={spaceId} approval={m.pendingApproval} session={session} />
+                    <InlineApprovalCard
+                      spaceId={spaceId}
+                      approval={m.pendingApproval}
+                      session={session}
+                      onResolved={(decision) => {
+                        if (decision === "approved") watchForResume(m.id, m.pendingApproval!.approval_id);
+                      }}
+                    />
                   )}
                   {/* Actions the run parked and carried on around (as opposed to pendingApproval,
                       where the WHOLE run stopped) — a run can even finish (or fail on something
@@ -568,7 +664,15 @@ export function Chat({
                       regardless. Live-reported bug: this used to be silently dropped entirely, so
                       a real, open approval existed with no sign of it anywhere in the chat. */}
                   {m.role !== "user" && m.deferredApprovals?.map((a) => (
-                    <InlineApprovalCard key={a.approval_id} spaceId={spaceId} approval={a} session={session} />
+                    <InlineApprovalCard
+                      key={a.approval_id}
+                      spaceId={spaceId}
+                      approval={a}
+                      session={session}
+                      onResolved={(decision) => {
+                        if (decision === "approved") watchForResume(m.id, a.approval_id);
+                      }}
+                    />
                   ))}
                   {/* The assistant tried to use a connected-but-not-yet-connected app — let the
                       person connect it right here instead of hunting for the Connectors page. */}

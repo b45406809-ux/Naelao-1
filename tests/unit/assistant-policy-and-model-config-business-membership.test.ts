@@ -166,3 +166,71 @@ describe("model-config PATCH — business membership gate + model validation", (
     expect(parsed.productConfig.modelConfig.model).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
   });
 });
+
+// A project agent's own approval-policy override (GET/PATCH /spaces/:spaceId/agents/:agentId/
+// policy) was builder-JWT-only (tenant-match only, no requireBusinessMembership floor at all) —
+// the exact gap assistant-policy itself had before this same fix was applied to it. A business
+// admin end user had no reachable way to configure a project agent's own approvals at all.
+describe("agent policy GET/PATCH — business membership gate", () => {
+  it("a business admin end user CAN read an agent's policy", async () => {
+    const env = makeEnv();
+    const headers = await endUserHeaders("tenant-1", "alice");
+    const res = await spacesWorker.fetch(
+      req("/spaces/biz-alice/agents/agent-1/policy", headers),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("a business admin end user CAN update an agent's policy", async () => {
+    const env = makeEnv();
+    const headers = await endUserHeaders("tenant-1", "alice");
+    const res = await spacesWorker.fetch(
+      req("/spaces/biz-alice/agents/agent-1/policy", headers, {
+        method: "PATCH",
+        body: JSON.stringify({ approval_mode: "yolo", auto_approved_actions: ["web-search.search"] }),
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json<{ approval_mode: string; auto_approved_actions: string[] }>();
+    expect(body.approval_mode).toBe("yolo");
+    expect(body.auto_approved_actions).toEqual(["web-search.search"]);
+  });
+
+  it("a plain member (not admin) can read but cannot update an agent's policy", async () => {
+    const env = makeEnv();
+    const headers = await endUserHeaders("tenant-1", "alice-member");
+    const getRes = await spacesWorker.fetch(
+      req("/spaces/biz-alice/agents/agent-1/policy", headers),
+      env as never, execCtx
+    );
+    expect(getRes.status).toBe(200);
+    const patchRes = await spacesWorker.fetch(
+      req("/spaces/biz-alice/agents/agent-1/policy", headers, { method: "PATCH", body: JSON.stringify({ approval_mode: "yolo" }) }),
+      env as never, execCtx
+    );
+    expect(patchRes.status).toBe(403);
+  });
+
+  it("a non-member of this business cannot read or update its agent policy", async () => {
+    const env = makeEnv();
+    const headers = await endUserHeaders("tenant-1", "someone-else");
+    const res = await spacesWorker.fetch(
+      req("/spaces/biz-alice/agents/agent-1/policy", headers, { method: "PATCH", body: JSON.stringify({ approval_mode: "yolo" }) }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it("a builder JWT-style caller (no x-naelao-role) is unaffected", async () => {
+    const env = makeEnv();
+    const token = await mintInternalToken(PLATFORM_SECRET, "tenant-1");
+    const builderHeaders = { "content-type": "application/json", "x-naelao-tenant-id": "tenant-1", "x-naelao-internal-token": token };
+    const res = await spacesWorker.fetch(
+      req("/spaces/biz-alice/agents/agent-1/policy", builderHeaders, { method: "PATCH", body: JSON.stringify({ approval_mode: "always_ask" }) }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+  });
+});

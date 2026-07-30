@@ -37,6 +37,7 @@ import {
   type KbDocument,
 } from "@/lib/api";
 import { ProjectKindPanel } from "@/components/ProjectKindPanel";
+import { AgentPolicyPanel } from "@/components/AgentPolicyPanel";
 
 const STATUS_BADGE: Record<string, "green" | "amber" | "blue" | undefined> = {
   active: "green",
@@ -361,6 +362,11 @@ export default function ProjectDetailPage() {
               {a.id === project.default_agent_id && (
                 <div style={{ marginTop: 8 }}>
                   <span className="badge badge-green"><span className="badge-dot" />Default</span>
+                </div>
+              )}
+              {creds && (
+                <div style={{ marginTop: 8 }}>
+                  <AgentPolicyPanel spaceId={activeSpaceId} agentId={a.id} session={creds} canEdit />
                 </div>
               )}
             </div>

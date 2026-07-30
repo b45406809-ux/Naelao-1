@@ -456,6 +456,22 @@ export async function rejectAction(
   });
 }
 
+/** What handleResumeRun's own continuation pass is called, once it's started — lets the chat
+ *  surface attach to it via the SAME pollRun/streamRun machinery an ordinary run uses, instead of
+ *  only learning the answer on reload with no activity trail. `resumed_run_id` is null until the
+ *  continuation has actually begun (it's recorded the moment it's minted, ahead of it finishing). */
+export async function getApprovalResumeStatus(
+  spaceId: string,
+  approvalId: string,
+  session: SessionCredentials
+): Promise<{ resumed_run_id: string | null; resume_status: string | null }> {
+  const res = await apiFetch<{ resumed_run_id?: string | null; resume_status?: string | null }>(
+    `/v1/spaces/${spaceId}/sessions/inbox/approvals/${approvalId}`,
+    { session }
+  );
+  return { resumed_run_id: res.resumed_run_id ?? null, resume_status: res.resume_status ?? null };
+}
+
 // ── Notifications — what the assistant/its agents surface for a human to see ─
 //
 // Distinct from approvals: a notification doesn't necessarily need a decision (a run failed, a
@@ -661,6 +677,31 @@ export async function listAgentDefinitions(spaceId: string, session: SessionCred
     { session }
   );
   return Array.isArray(res) ? res : res.data ?? [];
+}
+
+/** A single project agent's own approval-policy override — falls back to the space-wide
+ *  assistant_policy row (getAssistantPolicy) when the agent has no override of its own. GET is
+ *  member-level, PATCH is business-admin-only (requireBusinessMembership on the spaces worker). */
+export interface AgentPolicy {
+  approval_mode: "always_ask" | "yolo";
+  auto_approved_actions: string[];
+}
+
+export async function getAgentPolicy(spaceId: string, agentId: string, session: SessionCredentials): Promise<AgentPolicy> {
+  return apiFetch(`/v1/spaces/${spaceId}/agents/${encodeURIComponent(agentId)}/policy`, { session });
+}
+
+export async function updateAgentPolicy(
+  spaceId: string,
+  agentId: string,
+  session: SessionCredentials,
+  patch: Partial<AgentPolicy>
+): Promise<AgentPolicy> {
+  return apiFetch(`/v1/spaces/${spaceId}/agents/${encodeURIComponent(agentId)}/policy`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+    session,
+  });
 }
 
 // ── Space Assistant surface (WS-2) — read-only panels, all pure consumers of existing backends ──

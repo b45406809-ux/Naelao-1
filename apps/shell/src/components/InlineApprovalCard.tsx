@@ -7,7 +7,7 @@
 // the same request again in a different page.
 
 import * as React from "react";
-import { approveAction, rejectAction, type RunPendingApproval } from "@/lib/api";
+import { approveAction, rejectAction, getAssistantPolicy, updateAssistantPolicy, type RunPendingApproval } from "@/lib/api";
 import type { SessionCredentials } from "@/lib/api";
 
 export function InlineApprovalCard({
@@ -27,13 +27,37 @@ export function InlineApprovalCard({
   const [resolved, setResolved] = React.useState<"approved" | "declined" | null>(null);
   const [declining, setDeclining] = React.useState(false);
   const [reason, setReason] = React.useState("");
+  // Whether this exact action ended up on the space's own auto-approved allowlist — only known
+  // once an "always allow" attempt actually succeeds, so this stays unset (not silently claimed)
+  // when the caller isn't a business admin (PATCH is admin-gated; approving itself is not).
+  const [alwaysAllowed, setAlwaysAllowed] = React.useState(false);
+  const [alwaysAllowFailed, setAlwaysAllowFailed] = React.useState(false);
 
-  async function handleApprove() {
+  async function handleApprove(alwaysAllow: boolean) {
     setBusy(true);
     try {
       await approveAction(spaceId, approval.approval_id, session);
       setResolved("approved");
       onResolved?.("approved");
+      // "Approve and don't ask again" — self-serve fix for a business whose stored policy
+      // predates a default auto-approved action (e.g. web search) being added, or for any action
+      // a person has simply decided is fine going forward. Read-then-write against the real
+      // stored list rather than assuming it's empty, since PATCH replaces the whole array.
+      if (alwaysAllow) {
+        try {
+          const policy = await getAssistantPolicy(spaceId, session);
+          if (!policy.auto_approved_actions.includes(approval.action_name)) {
+            await updateAssistantPolicy(spaceId, session, {
+              auto_approved_actions: [...policy.auto_approved_actions, approval.action_name],
+            });
+          }
+          setAlwaysAllowed(true);
+        } catch {
+          // Most likely: this person isn't a business admin. The approval itself already
+          // succeeded — just say so rather than failing the whole action silently.
+          setAlwaysAllowFailed(true);
+        }
+      }
     } catch {
       /* the card stays actionable — the approvals inbox is the fallback if this keeps failing */
     } finally {
@@ -82,8 +106,20 @@ export function InlineApprovalCard({
       )}
 
       {resolved ? (
-        <div style={{ fontSize: 12.5, color: resolved === "approved" ? "var(--accent)" : "var(--text3)", fontWeight: 600 }}>
-          {resolved === "approved" ? "Approved — the agent will continue." : "Declined."}
+        <div>
+          <div style={{ fontSize: 12.5, color: resolved === "approved" ? "var(--accent)" : "var(--text3)", fontWeight: 600 }}>
+            {resolved === "approved" ? "Approved — the agent will continue." : "Declined."}
+          </div>
+          {alwaysAllowed && (
+            <div style={{ fontSize: 11.5, color: "var(--text3)", marginTop: 4 }}>
+              Won&apos;t ask for <code style={{ fontSize: 11 }}>{approval.action_name}</code> again.
+            </div>
+          )}
+          {alwaysAllowFailed && (
+            <div style={{ fontSize: 11.5, color: "var(--text3)", marginTop: 4 }}>
+              Approved, but couldn&apos;t update the always-allow list (needs a business admin).
+            </div>
+          )}
         </div>
       ) : declining ? (
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
@@ -102,9 +138,18 @@ export function InlineApprovalCard({
           </button>
         </div>
       ) : (
-        <div style={{ display: "flex", gap: 8 }}>
-          <button type="button" className="btn btn-primary btn-sm" onClick={handleApprove} disabled={busy}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => void handleApprove(false)} disabled={busy}>
             {busy ? "…" : "Approve"}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => void handleApprove(true)}
+            disabled={busy}
+            title="Approve this, and auto-approve this exact action from now on"
+          >
+            {busy ? "…" : "Always allow"}
           </button>
           <button type="button" className="btn btn-ghost btn-sm" onClick={() => setDeclining(true)} disabled={busy}>
             Decline

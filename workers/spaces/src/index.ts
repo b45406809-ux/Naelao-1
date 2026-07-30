@@ -1989,7 +1989,12 @@ app.delete("/spaces/:spaceId/agents/:agentId/api-keys/:keyId", async (c) => {
 
 // GET/PATCH — an agent's own approval-policy override. Same shape/authorization as
 // assistant-policy above; falls back to the space-wide row when no override exists (SpaceDO's
-// resolveAgentPolicy).
+// resolveAgentPolicy). Previously builder-JWT-only (tenant-match via getCallerIdentity, no
+// requireBusinessMembership floor at all) — a business admin who owns their own Launchpad
+// business had no reachable way to configure a project agent's own approvals, same gap
+// assistant-policy itself had before item 79 relaxed it. Same fix, same precedent.
+app.use("/spaces/:spaceId/agents/:agentId/policy", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/agents/:agentId/policy", requireBusinessMembership({ GET: "member", PATCH: "admin" }));
 app.get("/spaces/:spaceId/agents/:agentId/policy", async (c) => {
   const spaceId = c.req.param("spaceId");
   const agentId = c.req.param("agentId");

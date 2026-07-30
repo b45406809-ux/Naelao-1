@@ -1046,6 +1046,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       )
     `);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_suspended_runs_run ON suspended_runs(run_id)`);
+    // The run id handleResumeRun mints for its continuation pass, recorded as soon as it exists
+    // (before the continuation actually executes) so a chat client can poll for it and attach to
+    // the SAME pollRun/streamRun machinery an ordinary run uses — reusing the live activity trail
+    // and completion handling instead of the client only ever learning about the answer on reload.
+    try { this.ctx.storage.sql.exec(`ALTER TABLE suspended_runs ADD COLUMN resumed_run_id TEXT`); } catch { /* exists */ }
 
     // Background fibers
     this.ctx.storage.sql.exec(`
@@ -1230,6 +1235,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // hibernation-safe) shape here.
       if (method === "POST" && url.pathname === "/script/resume") {
         return this.handleResumeRun(request);
+      }
+
+      // GET /script/resume-status?approvalId= — the id handleResumeRun minted for its
+      // continuation pass, if it's started yet. Lets a chat client attach to the SAME run-polling
+      // machinery an ordinary run uses (pollRun/streamRun) instead of only learning the answer on
+      // reload, with no live activity trail at all.
+      if (method === "GET" && url.pathname === "/script/resume-status") {
+        const approvalId = url.searchParams.get("approvalId") ?? "";
+        const row = this.ctx.storage.sql
+          .exec(`SELECT status, resumed_run_id FROM suspended_runs WHERE approval_id = ?`, approvalId)
+          .toArray() as unknown as Array<{ status: string; resumed_run_id: string | null }>;
+        return Response.json({ status: row[0]?.status ?? null, resumed_run_id: row[0]?.resumed_run_id ?? null });
       }
 
       // POST /cancel — cancel all active runs for this DO
@@ -2980,6 +2997,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       preApprovedActions: [row["action_name"] ?? ""],
       resumeSteps: steps,
     };
+
+    // Recorded BEFORE the continuation actually executes (which can take as long as the rest of
+    // the agent's work) — a poller watching this approval_id sees the new run id the moment it
+    // exists, not only once the whole continuation has already finished.
+    this.ctx.storage.sql.exec(
+      `UPDATE suspended_runs SET resumed_run_id = ? WHERE approval_id = ?`,
+      resumeBody.runId, approvalId
+    );
 
     const resp = await this.handleScriptRun(
       new Request("http://agent-do/script/run", {

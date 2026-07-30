@@ -1703,11 +1703,38 @@ async function resumeSuspendedRun(env: AgentsEnv, tenantId: string, spaceId: str
 // pending list. Kept under the existing /sessions/:sessionId path so naelao-router's existing
 // approvals proxy rule needs no change; sessionId is unused here (HITLApprovalDO is addressed by
 // spaceId alone) exactly like the approve/reject routes above already ignore it too.
+//
+// Also folds in `resumed_run_id`/`resume_status` when this approval suspended a script-native
+// loop (resume_do_id set): the id handleResumeRun's continuation minted for itself, the moment it
+// exists — this is what lets a chat client attach to the continuation via the SAME pollRun/
+// streamRun machinery an ordinary run uses, instead of only learning the answer on reload with no
+// activity trail. Deliberately merged into this EXISTING route rather than a new
+// `:approvalId/resumed-run` sibling — a new dynamic-segment-then-static-suffix route is exactly
+// the shape that has repeatedly triggered Hono's documented RegExpRouter route-table corruption
+// elsewhere in this codebase (spaces worker, items 40/52/60/69); extending an already-registered
+// route's response carries none of that risk.
 app.get("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId", async (c) => {
   const { spaceId, approvalId } = c.req.param();
   await requireOwnedSpace(c, spaceId);
   const stub = getHitlDo(c.env, spaceId);
-  return stub.fetch(`http://do/requests/${approvalId}`);
+  const res = await stub.fetch(`http://do/requests/${approvalId}`);
+  if (!res.ok) return res;
+  const body = await res.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  const resumeDoId = typeof body["resume_do_id"] === "string" ? body["resume_do_id"] : null;
+  if (resumeDoId) {
+    try {
+      const agentStub = c.env.NAELAO_AGENT_DO.get(c.env.NAELAO_AGENT_DO.idFromString(resumeDoId));
+      const statusRes = await agentStub.fetch(`http://agent-do/script/resume-status?approvalId=${encodeURIComponent(approvalId)}`);
+      const status = await statusRes.json<{ status: string | null; resumed_run_id: string | null }>().catch(() => null);
+      if (status) {
+        body["resumed_run_id"] = status.resumed_run_id;
+        body["resume_status"] = status.status;
+      }
+    } catch {
+      /* the approval row itself is still returned correctly either way */
+    }
+  }
+  return Response.json(body);
 });
 
 app.put("/spaces/:spaceId/sessions/:sessionId/approvals/:approvalId/reject", async (c) => {

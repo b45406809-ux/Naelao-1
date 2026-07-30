@@ -67,6 +67,8 @@ import {
   type PendingApproval,
 } from "@/lib/api";
 import { relativeTime } from "@/lib/relativeTime";
+import { ApprovedActionsEditor } from "@/components/ApprovedActionsEditor";
+import { AgentPolicyPanel } from "@/components/AgentPolicyPanel";
 
 /** Same curated allowlist + default the dashboard's own Configuration tab picker uses — kept as
  *  a parallel copy rather than a new shared export (this codebase's own precedent for a small
@@ -303,6 +305,38 @@ export default function DashboardPage() {
     }
   }
 
+  async function addApprovedAction(action: string) {
+    if (!activeSpaceId || !creds || !policy) return;
+    setSavingPolicy(true);
+    setControlError(null);
+    try {
+      const next = await updateAssistantPolicy(activeSpaceId, creds, {
+        auto_approved_actions: [...policy.auto_approved_actions, action],
+      });
+      setPolicy(next);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "Couldn't update the allowlist");
+    } finally {
+      setSavingPolicy(false);
+    }
+  }
+
+  async function removeApprovedAction(action: string) {
+    if (!activeSpaceId || !creds || !policy) return;
+    setSavingPolicy(true);
+    setControlError(null);
+    try {
+      const next = await updateAssistantPolicy(activeSpaceId, creds, {
+        auto_approved_actions: policy.auto_approved_actions.filter((a) => a !== action),
+      });
+      setPolicy(next);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "Couldn't update the allowlist");
+    } finally {
+      setSavingPolicy(false);
+    }
+  }
+
   async function setModel(model: string) {
     if (!activeSpaceId || !creds) return;
     setSavingModel(true);
@@ -514,13 +548,13 @@ export default function DashboardPage() {
             )}
           </div>
           <Row left="Pre-approved actions" right={String(policy?.auto_approved_actions?.length ?? 0)} />
-          {policy?.auto_approved_actions?.length ? (
-            <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--text3)", lineHeight: 1.6 }}>
-              {policy.auto_approved_actions.join(", ")}
-            </div>
-          ) : (
-            <Empty>Every action is confirmed with you before it happens.</Empty>
-          )}
+          <ApprovedActionsEditor
+            actions={policy?.auto_approved_actions ?? []}
+            canEdit={canManageAssistant}
+            busy={savingPolicy}
+            onAdd={(a) => void addApprovedAction(a)}
+            onRemove={(a) => void removeApprovedAction(a)}
+          />
 
           <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -638,7 +672,14 @@ export default function DashboardPage() {
           {agents.length === 0 ? (
             <Empty>No specialist agents configured.</Empty>
           ) : (
-            agents.slice(0, 10).map((a) => <Row key={a.id} left={a.name || a.id} />)
+            <div style={{ maxHeight: 320, overflowY: "auto" }}>
+              {agents.slice(0, 10).map((a) => (
+                <div key={a.id} style={{ padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+                  <Row left={a.name || a.id} />
+                  <AgentPolicyPanel spaceId={activeSpaceId} agentId={a.id} session={creds!} canEdit={canManageAssistant} />
+                </div>
+              ))}
+            </div>
           )}
         </Panel>
 
