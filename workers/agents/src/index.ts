@@ -46,7 +46,7 @@ import { startPipedreamConnect, getPipedreamAccountStatus } from "./connectors/p
 import { isChannelType, getAdapter, type ChannelType } from "./launchpad/channels.js";
 import {
   agentMailConfigured, createInbox, createInboundWebhook, sendFromInbox,
-  verifySvixSignature, parseInboundMessageReceived, toInboxUsername,
+  verifySvixSignature, parseInboundMessageReceived, uniqueInboxUsername,
 } from "./channels/agentmail.js";
 import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
 import { seedTemplateProjects } from "./launchpad/bootstrap.js";
@@ -2796,7 +2796,7 @@ app.post("/internal/business-email/provision", async (c) => {
 
   const inbox = await createInbox(c.env, {
     spaceId: body.spaceId,
-    username: toInboxUsername(body.slug ?? "team"),
+    username: uniqueInboxUsername(body.slug ?? "team", body.spaceId),
     ...(body.displayName ? { displayName: body.displayName } : {}),
   });
   if (!inbox.ok || !inbox.email || !inbox.inboxId) {

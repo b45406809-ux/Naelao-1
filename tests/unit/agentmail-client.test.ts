@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   agentMailConfigured,
   toInboxUsername,
+  uniqueInboxUsername,
   createInbox,
   createInboundWebhook,
   sendFromInbox,
@@ -48,6 +49,33 @@ describe("toInboxUsername", () => {
     expect(toInboxUsername("My Cool Shop!")).toBe("my-cool-shop");
     expect(toInboxUsername("")).toBe("team");
     expect(toInboxUsername("---weird--")).toBe("weird");
+  });
+});
+
+// A live-reproduced production bug: AgentMail's `username` is unique across its WHOLE customer
+// base, not scoped to our account — provisioning the platform's own "launchpad" business 403'd
+// with `resource_taken` because some other AgentMail customer already owns that exact username.
+describe("uniqueInboxUsername", () => {
+  it("appends a spaceId-derived suffix so two spaces with the same slug never collide", () => {
+    const a = uniqueInboxUsername("launchpad", "space-aaa111");
+    const b = uniqueInboxUsername("launchpad", "space-bbb222");
+    expect(a).not.toBe(b);
+    expect(a.startsWith("launchpad-")).toBe(true);
+    expect(b.startsWith("launchpad-")).toBe(true);
+  });
+
+  it("is deterministic for the same slug+spaceId (idempotent re-provisioning)", () => {
+    expect(uniqueInboxUsername("launchpad", "space-aaa111")).toBe(uniqueInboxUsername("launchpad", "space-aaa111"));
+  });
+
+  it("stays within AgentMail-safe characters and a sane length", () => {
+    const long = uniqueInboxUsername("A".repeat(80), "space-with-a-very-long-id-000111222");
+    expect(long).toMatch(/^[a-z0-9.-]+$/);
+    expect(long.length).toBeLessThanOrEqual(40);
+  });
+
+  it("falls back to a safe suffix when the spaceId has no alphanumeric characters", () => {
+    expect(uniqueInboxUsername("shop", "---")).toBe("shop-000000");
   });
 });
 

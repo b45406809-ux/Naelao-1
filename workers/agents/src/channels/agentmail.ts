@@ -53,6 +53,20 @@ export function toInboxUsername(input: string): string {
   return (input || "team").toLowerCase().replace(/[^a-z0-9.-]+/g, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 40) || "team";
 }
 
+/**
+ * `toInboxUsername` alone collides in production: AgentMail's `username` is unique across its
+ * ENTIRE customer base, not scoped to our account — confirmed live provisioning the platform's own
+ * "launchpad" business, which 403'd with `resource_taken` because some other AgentMail customer
+ * already owns that exact username on their shared default domain. A common business name/slug is
+ * genuinely likely to collide. Appends a short spaceId-derived suffix so a provisioned address is
+ * virtually guaranteed unique while staying readable (`acme-corp-a1b2c3` rather than a bare UUID).
+ */
+export function uniqueInboxUsername(slug: string, spaceId: string): string {
+  const suffix = (spaceId.replace(/[^a-z0-9]/gi, "").slice(0, 6).toLowerCase() || "000000");
+  const base = toInboxUsername(slug).slice(0, Math.max(1, 39 - suffix.length - 1));
+  return `${base}-${suffix}`;
+}
+
 export interface CreateInboxResult {
   ok: boolean;
   configured: boolean;
