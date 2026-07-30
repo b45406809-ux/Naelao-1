@@ -562,6 +562,11 @@ export interface ScriptEngineEnv {
   knowledgeWorker?: Fetcher;
   spacesWorker?: Fetcher;
   notificationsWorker?: Fetcher;
+  /** The agents worker's own self-binding (AGENTS_WORKER). Lets a prebuilt reach an internal
+   *  route on this same worker that holds a secret the isolate must never see — currently the
+   *  business-email prebuilt calling /internal/business-email/{provision,send} for the AgentMail
+   *  path (AGENTMAIL_API_KEY lives on the worker, not in the isolate env). */
+  agentsWorker?: Fetcher;
   /** Billing worker — holds Lemon Squeezy creds + Naelao store; the only money-in path. */
   billingWorker?: Fetcher;
   /** MCP hub worker — registry + tool proxy for external-platform connectors (mcp-connector). */

@@ -382,6 +382,16 @@ cent of their own money:
   (provisioning can lag right after creation, or verification is still pending), say so honestly
   rather than guessing a number.
 
+# Business Email
+The business has its OWN mailbox, auto-provisioned like the wallet — no setup, no personal Gmail.
+Use \`email.provision\` to get (or confirm) its address, \`email.send\` to send from it, and
+\`email.status\` to read the current record. When the mailbox is AgentMail-backed it can also
+RECEIVE — replies flow back into the business's inbox and you'll see them on your next wake-up, so
+you can actually hold a conversation over email, not just send one-way. If \`email.provision\`
+reports \`inbound: false\` (AgentMail isn't configured on this deployment), the address can send but
+not receive yet — say so honestly rather than promising a reply thread. Never invent an address or
+claim you emailed someone you didn't.
+
 # Growth Apps — Marketing, Social, and Beyond
 Most of what a business needs beyond the wallet and email is a real third-party app, reached over
 MCP — never a feature you build from scratch. When the owner asks for something like "post this to
@@ -474,6 +484,10 @@ ${BASE_AGENTS_MD}`,
         "workspace-admin",
         "business-wallet",
         "project-coordination",
+        // The business's own auto-provisioned, inbound-capable mailbox (AgentMail-backed) — the
+        // assistant is told about it in the Business Email section above, so it must be able to
+        // actually call email.provision/send/status.
+        "business-email",
       ],
       agent_scripts: "auto",
       startup_observe: "observe_filesystem",
@@ -512,6 +526,10 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   "web-search.fetch_page",
   "web-search.extract_content",
   "web-search.grounded_answer",
+  // Read-only lookup of the business's own mailbox record. email.send (reaches the outside world)
+  // and email.provision (creates a billable AgentMail resource) stay gated, same posture as
+  // business_wallet.balance being auto-approved while a payout is not.
+  "email.status",
 ];
 
 /** Map a Launchpad allowed_skill id → prebuilt scripts available in this build. */

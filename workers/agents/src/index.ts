@@ -44,6 +44,10 @@ import {
 } from "./connectors/composio.js";
 import { startPipedreamConnect, getPipedreamAccountStatus } from "./connectors/pipedream.js";
 import { isChannelType, getAdapter, type ChannelType } from "./launchpad/channels.js";
+import {
+  agentMailConfigured, createInbox, createInboundWebhook, sendFromInbox,
+  verifySvixSignature, parseInboundMessageReceived, toInboxUsername,
+} from "./channels/agentmail.js";
 import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
 import { seedTemplateProjects } from "./launchpad/bootstrap.js";
 import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
@@ -205,6 +209,10 @@ export interface AgentsEnv {
   /** "development" or "production" — Pipedream's Connect API requires this on every call via the
    *  x-pd-environment header. Defaults to "development" when unset. */
   PIPEDREAM_ENVIRONMENT?: string;
+  /** AgentMail — auto-provisioned, INBOUND-capable business mailbox (AgentMail hosts the domain,
+   *  so no Naelao DNS zone is needed — see channels/agentmail.ts). A Workers Secret; unset = the
+   *  whole email feature degrades honestly (send falls back to Resend, no inbound). */
+  AGENTMAIL_API_KEY?: string;
   /** §A1.27: already bound in wrangler.toml (naelao-billing); added here so the context-usage
    *  endpoint can read the day/week/month llm_tokens summary. */
   BILLING_WORKER?: Fetcher;
@@ -2701,6 +2709,186 @@ app.post("/channels/:channel/inbound/:spaceId", async (c) => {
     }));
   } catch (err) {
     console.error(`[channels] inbound forward failed channel=${channel} space=${spaceId}:`, (err as Error).message);
+  }
+  return c.json({ ok: true });
+});
+
+// ── AgentMail: auto-provisioned, inbound-capable business mailbox ─────────────
+// AgentMail hosts the receiving domain itself, so a business gets a REAL send+receive address
+// with no Naelao-owned DNS zone (the exact blocker the prior pass deferred on). The API key lives
+// ONLY on this worker (AGENTMAIL_API_KEY secret); the agent never sees it. Everything degrades
+// honestly when the key is unset — provision returns configured:false, send falls back to Resend
+// (handled by the business-email prebuilt), and no inbound webhook is ever registered.
+//
+// The Svix webhook secret is vaulted under its OWN credential name (distinct from the generic
+// channel gateway's Mailgun-style EMAIL_SIGNING_SECRET) so a business could in principle run both
+// a BYO Mailgun inbound-parse AND an AgentMail inbox without the two verification schemes
+// colliding on one credential.
+const AGENTMAIL_WEBHOOK_SECRET_CRED = "AGENTMAIL_WEBHOOK_SECRET";
+
+/** Resolve a space's provisioned AgentMail service record (email + inbox id) from
+ *  business_services via the spaces worker. Null when not provisioned or on any error. */
+async function resolveBusinessEmailService(
+  env: AgentsEnv, spaceId: string, tenantId: string
+): Promise<{ email: string; inboxId: string } | null> {
+  if (!env.SPACES_WORKER) return null;
+  try {
+    const resp = await env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/internal/business-services?space_id=${encodeURIComponent(spaceId)}&kind=business_email`,
+      { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId) } }
+    ));
+    if (!resp.ok) return null;
+    const row = await resp.json<{ naelao_handle?: string; config_json?: string } | null>();
+    if (!row?.naelao_handle) return null;
+    let inboxId = "";
+    try { inboxId = (JSON.parse(row.config_json ?? "{}") as { agentmail_inbox_id?: string }).agentmail_inbox_id ?? ""; } catch { /* no id */ }
+    if (!inboxId) return null;
+    return { email: row.naelao_handle, inboxId };
+  } catch {
+    return null;
+  }
+}
+
+// POST /internal/business-email/provision — create (or reuse) a real AgentMail inbox for a space,
+// register the inbound webhook, and persist the address + inbox id. Idempotent: if a record
+// already exists it's returned without creating a second inbox. HMAC-gated, tenant-matched.
+app.post("/internal/business-email/provision", async (c) => {
+  const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const valid = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
+  if (!headerTenantId || !valid) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  const body = await c.req.json<{ spaceId?: string; tenantId?: string; slug?: string; displayName?: string }>().catch(() => null);
+  if (!body?.spaceId || !body.tenantId) return c.json({ error_code: "bad_request", message: "spaceId and tenantId are required" }, 400);
+  if (body.tenantId !== headerTenantId) return c.json({ error_code: "forbidden", message: "tenantId does not match token" }, 403);
+
+  if (!agentMailConfigured(c.env)) {
+    return c.json({ ok: false, configured: false, message: "AgentMail is not configured on this deployment" });
+  }
+  // Idempotent: already provisioned → return the existing record, never mint a second inbox.
+  const existing = await resolveBusinessEmailService(c.env, body.spaceId, body.tenantId);
+  if (existing) return c.json({ ok: true, configured: true, email: existing.email, inbox_id: existing.inboxId, already: true });
+
+  const inbox = await createInbox(c.env, {
+    spaceId: body.spaceId,
+    username: toInboxUsername(body.slug ?? "team"),
+    ...(body.displayName ? { displayName: body.displayName } : {}),
+  });
+  if (!inbox.ok || !inbox.email || !inbox.inboxId) {
+    return c.json({ ok: false, configured: true, error: inbox.error ?? "inbox creation failed" }, 502);
+  }
+
+  // Register the inbound webhook at our own public, Svix-verified ingress. Best-effort: a failure
+  // here still leaves a working SEND-capable inbox; inbound just won't flow until re-provisioned.
+  let webhookSecret: string | undefined;
+  if (c.env.PUBLIC_AGENTS_URL && c.env.CREDENTIALS_WORKER) {
+    const webhookUrl = `${c.env.PUBLIC_AGENTS_URL.replace(/\/$/, "")}/channels/email/agentmail-inbound/${encodeURIComponent(body.spaceId)}`;
+    const wh = await createInboundWebhook(c.env, inbox.inboxId, webhookUrl);
+    if (wh.ok && wh.secret) {
+      webhookSecret = wh.secret;
+      // Vault the Svix secret so the public inbound route can verify deliveries (same vault the
+      // channel gateway resolves its own signing secrets from).
+      await storeConnectorCredential(c.env, {
+        tenantId: body.tenantId, spaceId: body.spaceId, userId: "agentmail-system",
+        name: AGENTMAIL_WEBHOOK_SECRET_CRED, value: wh.secret,
+        description: "AgentMail inbound webhook signing secret (Svix)",
+      }).catch(() => undefined);
+    }
+  }
+
+  // Persist the address + inbox id (business_services, via the spaces worker — config_json holds
+  // the inbox id, no schema change).
+  if (c.env.SPACES_WORKER) {
+    await c.env.SPACES_WORKER.fetch(new Request("http://spaces-worker/internal/business-services", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-naelao-tenant-id": body.tenantId, "x-naelao-internal-token": await mintInternalToken(c.env.PLATFORM_SECRET, body.tenantId) },
+      body: JSON.stringify({ space_id: body.spaceId, kind: "business_email", handle: inbox.email, agentmail_inbox_id: inbox.inboxId }),
+    })).catch(() => undefined);
+  }
+
+  return c.json({ ok: true, configured: true, email: inbox.email, inbox_id: inbox.inboxId, inbound_wired: Boolean(webhookSecret) });
+});
+
+// POST /internal/business-email/send — send from a space's provisioned AgentMail inbox. Returns
+// configured:false when AgentMail is unset OR the space has no inbox, so the caller (the
+// business-email prebuilt) can fall back to the Resend/notifications path.
+app.post("/internal/business-email/send", async (c) => {
+  const headerTenantId = c.req.header("x-naelao-tenant-id") ?? "";
+  const valid = await verifyInternalToken(c.req.header("x-naelao-internal-token"), headerTenantId, c.env.PLATFORM_SECRET);
+  if (!headerTenantId || !valid) return c.json({ error_code: "forbidden", message: "internal only" }, 403);
+  const body = await c.req.json<{ spaceId?: string; tenantId?: string; to?: string | string[]; subject?: string; text?: string; html?: string }>().catch(() => null);
+  if (!body?.spaceId || !body.tenantId || !body.to) return c.json({ error_code: "bad_request", message: "spaceId, tenantId, to are required" }, 400);
+  if (body.tenantId !== headerTenantId) return c.json({ error_code: "forbidden", message: "tenantId does not match token" }, 403);
+
+  if (!agentMailConfigured(c.env)) return c.json({ ok: false, configured: false });
+  const svc = await resolveBusinessEmailService(c.env, body.spaceId, body.tenantId);
+  if (!svc) return c.json({ ok: false, configured: false, reason: "no_agentmail_inbox" });
+
+  const result = await sendFromInbox(c.env, svc.inboxId, {
+    to: body.to,
+    ...(body.subject ? { subject: body.subject } : {}),
+    ...(body.text ? { text: body.text } : {}),
+    ...(body.html ? { html: body.html } : {}),
+  });
+  return c.json(result, result.ok ? 200 : 502);
+});
+
+// POST /channels/email/agentmail-inbound/:spaceId — public inbound webhook for AgentMail
+// deliveries. UNAUTHENTICATED at the HTTP layer (like the generic channel gateway) — the Svix
+// signature IS the auth. Verifies against the vaulted webhook secret, parses the message.received
+// event, and forwards it to the same NaelaoAgentDO channel inbox every other channel uses, so a
+// business_email project's AI-triaged inbox is fed identically to Slack/Discord/WhatsApp.
+app.post("/channels/email/agentmail-inbound/:spaceId", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT tenant_id, status FROM spaces WHERE id = ?"
+  ).bind(spaceId).first<{ tenant_id: string; status: string }>();
+  if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
+
+  const rawBody = await c.req.text();
+  if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable" }, 503);
+
+  // Resolve the vaulted Svix secret (written at provision time).
+  const credToken = await generateCredentialToken(c.env.PLATFORM_SECRET, spaceId, "naelao-agent");
+  const secretResp = await c.env.CREDENTIALS_WORKER.fetch(new Request(
+    `http://credentials/v1/internal/spaces/${spaceId}/credentials/${encodeURIComponent(AGENTMAIL_WEBHOOK_SECRET_CRED)}/plaintext`,
+    { method: "POST", headers: { "content-type": "application/json", "x-naelao-tenant-id": space.tenant_id, "x-naelao-credential-token": credToken } }
+  ));
+  if (!secretResp.ok) return c.json({ error_code: "no_webhook_secret", message: "AgentMail inbound not configured for this space" }, 400);
+  const { value: secret } = await secretResp.json<{ value: string }>();
+
+  const headers: Record<string, string> = {};
+  c.req.raw.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+  const valid = await verifySvixSignature({ headers, rawBody, secret });
+  if (!valid) return c.json({ error_code: "invalid_signature" }, 401);
+
+  let payload: unknown = null;
+  try { payload = JSON.parse(rawBody); } catch { return c.json({ ok: true, skipped: "unparseable" }); }
+  const parsed = parseInboundMessageReceived(payload);
+  // A non-message event, or a spam/blocked variant, parses to null — ack-ignore so Svix doesn't
+  // retry it forever. (A spam-flagged message is deliberately NOT auto-fed to the agent.)
+  if (!parsed) return c.json({ ok: true, skipped: "not_actionable" });
+
+  // Resolve which project (if any) the email channel is bound to — same customer-bot scoping as
+  // the generic gateway.
+  const link = await c.env.PLATFORM_DB.prepare(
+    "SELECT project_id FROM channel_links WHERE space_id = ? AND channel = 'email'"
+  ).bind(spaceId).first<{ project_id: string | null }>();
+
+  try {
+    const stub = await getAgentDOForSpace(c.env, space.tenant_id, spaceId, "naelao-agent", c.get("requestId"));
+    await stub.fetch(new Request("http://agent-do/channels/email/inbound", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        // Shape matches emailAdapter.normalizeInbound's expected raw fields (from/text/message_id).
+        raw: { from: parsed.from, text: parsed.text, message_id: parsed.messageId, subject: parsed.subject },
+        projectId: link?.project_id ?? undefined,
+        spaceId,
+        tenantId: space.tenant_id,
+        apiKey: "",
+      }),
+    }));
+  } catch (err) {
+    console.error(`[agentmail] inbound forward failed space=${spaceId}:`, (err as Error).message);
   }
   return c.json({ ok: true });
 });

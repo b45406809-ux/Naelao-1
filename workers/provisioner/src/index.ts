@@ -51,6 +51,10 @@ export interface Env {
   SCRIPTS_R2: R2Bucket;
   /** Workspace R2 bucket for the external portal slug→spaceId KV route. */
   PORTAL_KV?: KVNamespace;
+  /** Service binding to naelao-agents — used only for the best-effort AgentMail email seed
+   *  (holds AGENTMAIL_API_KEY). Optional: the seed degrades to a no-op when unbound or the key
+   *  isn't configured, so email provisioning happens on-demand via the assistant instead. */
+  AGENTS_WORKER?: Fetcher;
 }
 
 interface ProvisionMessage {
@@ -305,6 +309,34 @@ export async function seedDefaultRevenueReviewCron(spaceId: string, tenantId: st
     }
   } catch (err) {
     console.warn(`[provisioner] default revenue-review cron seed threw for ${spaceId}:`, (err as Error).message);
+  }
+}
+
+/**
+ * Best-effort: auto-provision a REAL, inbound-capable AgentMail mailbox at creation time (like the
+ * wallet), so a business starts with an address it can send AND receive from without the owner
+ * connecting anything. Degrades to a no-op when AGENTS_WORKER is unbound or AGENTMAIL_API_KEY isn't
+ * configured (the agents-worker route returns configured:false) — email then provisions on demand
+ * the first time the assistant calls email.provision. Never throws; a mail-seed failure must never
+ * turn a successful space creation into a failed one (same posture as seedWallet/seedOwnerMember).
+ */
+export async function seedBusinessEmail(spaceId: string, tenantId: string, slug: string, env: Env): Promise<void> {
+  if (!env.AGENTS_WORKER) return;
+  try {
+    const resp = await env.AGENTS_WORKER.fetch(new Request("http://agents-worker/internal/business-email/provision", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+      },
+      body: JSON.stringify({ spaceId, tenantId, slug }),
+    }));
+    if (!resp.ok) {
+      console.warn(`[provisioner] business-email seed failed for ${spaceId}: ${resp.status}`);
+    }
+  } catch (err) {
+    console.warn(`[provisioner] business-email seed threw for ${spaceId}:`, (err as Error).message);
   }
 }
 
@@ -762,6 +794,10 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
         // templated Launchpad business gets one, not just spaces with a channel/connector already
         // configured.
         await seedDefaultRevenueReviewCron(spaceId, tenantId, env);
+
+        // Auto-provision a real, inbound-capable business mailbox (like the wallet) — best-effort,
+        // no-op when AgentMail isn't configured. See seedBusinessEmail's own doc.
+        await seedBusinessEmail(spaceId, tenantId, spaceName, env);
 
         // Anything still genuinely outstanding (setup scripts that need a connected account,
         // credential/preference prompts) keeps onboarding open; otherwise it is already done and

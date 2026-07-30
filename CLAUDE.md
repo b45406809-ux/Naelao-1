@@ -3647,6 +3647,57 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       way to bulk-migrate a live SpaceDO's stored row from outside a real builder/business-admin
       session, and none was attempted.
     2282/2282 tests pass (3 new), `npx turbo run typecheck` clean (76 tasks).
+87. **Auto-provisioned, INBOUND-capable business email is now BUILT via AgentMail — the exact
+    feature the prior pass (item 85) deferred because this account owns zero DNS zones. AgentMail
+    HOSTS the receiving domain itself, so a business gets a real send+receive address with no
+    Naelao-owned zone — the blocker doesn't apply.** Built against AgentMail's real OpenAPI
+    (`https://api.agentmail.to`, Bearer auth, `/v0/*`), not a guess — pulled and read the actual
+    `openapi.json` for every shape used.
+    - **`workers/agents/src/channels/agentmail.ts`** — a dependency-free REST client (`createInbox`
+      → `{email, inbox_id}`, `createInboundWebhook` → `{webhook_id, secret}`, `sendFromInbox` →
+      `{message_id, thread_id}`) + Svix inbound-signature verification (`svix-id`/`-timestamp`/
+      `-signature`, `whsec_`-decoded HMAC-SHA256 over `${id}.${ts}.${body}`, 5-min replay window,
+      multi-signature rotation support) + a `message.received` payload parser that returns null for
+      spam/blocked variants (never auto-drives the agent) and for non-message events (ack-ignore so
+      Svix doesn't retry forever). Every function degrades honestly (`configured:false`) when
+      `AGENTMAIL_API_KEY` is unset — same "confirm once real access exists" precedent as Whop/
+      Composio/Pipedream. 17 tests including a REAL Svix HMAC round-trip (sign → verify), tamper/
+      stale/rotation cases.
+    - **The API key lives ONLY on the agents worker** (`AGENTMAIL_API_KEY` secret) — the agent
+      isolate never sees it. Three routes: `POST /internal/business-email/provision` (HMAC-gated;
+      idempotent — reuses an existing inbox; creates inbox + registers the inbound webhook at our
+      own public ingress + vaults the Svix secret under a dedicated `AGENTMAIL_WEBHOOK_SECRET`
+      credential name distinct from the Mailgun `EMAIL_SIGNING_SECRET` + persists the address/
+      inbox id in `business_services` — inbox id in `config_json`, no schema change), `POST
+      /internal/business-email/send` (looks up the inbox, sends; returns `configured:false` so the
+      caller can fall back), and `POST /channels/email/agentmail-inbound/:spaceId` (PUBLIC, Svix-
+      verified against the vaulted secret, forwards into the SAME `NaelaoAgentDO` channel inbox +
+      heartbeat pipeline every other channel uses, so a `business_email` project's AI-triaged inbox
+      is fed identically to Slack/Discord/WhatsApp). The webhook URL carries `:spaceId`, so no
+      reverse inbox→space map is needed. 7 route tests (HMAC gate, honest degradation, inbound
+      fail-closed on bad signature / missing secret).
+    - **The `business-email` prebuilt now routes through AgentMail when configured, else falls back
+      to Resend outbound-only** — `email.provision` reports `inbound: true/false` honestly;
+      `email.send` prefers the real reply-able AgentMail address and degrades to the notifications-
+      worker/Resend path otherwise. Reached via a new `agentsWorker` self-binding threaded into the
+      isolate env (the agents worker already binds `AGENTS_WORKER` to itself). Added `business-email`
+      to the Launchpad assistant's prebuilt list (it was told about email but couldn't call it) and
+      `email.status` (read-only) to the guided-mode auto-approved allowlist; `email.send`/
+      `email.provision` stay gated (outside-world reach / billable resource), same posture as
+      `business_wallet.balance` vs a payout.
+    - **Auto-provisioned at creation like the wallet:** `seedBusinessEmail` (provisioner, new
+      `AGENTS_WORKER` service binding) best-effort provisions a real mailbox for every templated
+      Launchpad business at provision time — no-op when AgentMail is unconfigured (email then
+      provisions on demand the first time the assistant calls `email.provision`). Never throws — a
+      mail-seed failure can't fail a space creation, same posture as `seedWallet`/`seedOwnerMember`.
+    - Both assistant profiles gained a "Business Email" section (it has its own mailbox, can send
+      AND receive when AgentMail-backed, say so honestly when it's send-only).
+    2310/2310 tests pass (28 new), `npx turbo run typecheck` clean (76 tasks). **Not done:** an
+    operational `AGENTMAIL_API_KEY` must be set via `wrangler secret put --name naelao-agents`
+    before any of this returns live results — the code degrades honestly until then; the exact
+    Svix header names AgentMail uses are per its Svix advertisement + OpenAPI schema names, not yet
+    observed against a live webhook delivery (same "confirm once real access exists" caveat every
+    other integration carries).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

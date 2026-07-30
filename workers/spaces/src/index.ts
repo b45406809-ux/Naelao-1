@@ -2437,6 +2437,12 @@ app.post("/internal/business-services", async (c) => {
     kind: "storefront" | "business_email" | "custom_domain";
     slug?: string;
     custom_domain?: string;
+    // AgentMail (auto-provisioned inbound-capable mailbox): when the agents worker has actually
+    // created a real AgentMail inbox, it passes the allocated address as `handle` (used verbatim
+    // instead of the slug-derived placeholder) and the inbox id to persist in config_json so
+    // send/status can resolve it later. Absent = the legacy slug-derived placeholder behavior.
+    handle?: string;
+    agentmail_inbox_id?: string;
   }>();
   if (!body.space_id || !body.kind) {
     return c.json({ error_code: "bad_request", message: "space_id and kind are required" }, 400);
@@ -2488,17 +2494,24 @@ app.post("/internal/business-services", async (c) => {
   // suffix from the space id so two spaces can both want "shop").
   const slug = (body.slug ?? "shop").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "") || "shop";
   const suffix = body.space_id.slice(0, 6);
-  const handle = body.kind === "storefront"
-    ? `${slug}-${suffix}.${STOREFRONT_ROOT}`
-    : `hi@${slug}-${suffix}.${EMAIL_ROOT}`;
+  // A real AgentMail-allocated address (body.handle) wins over the slug-derived placeholder — the
+  // placeholder was never inbound-capable, the AgentMail one is.
+  const handle = body.handle
+    ? body.handle
+    : body.kind === "storefront"
+      ? `${slug}-${suffix}.${STOREFRONT_ROOT}`
+      : `hi@${slug}-${suffix}.${EMAIL_ROOT}`;
+  // Store the AgentMail inbox id in config_json (no schema change — the column already exists),
+  // matching this codebase's "config_json override, not a new column/table" convention.
+  const configJson = body.agentmail_inbox_id ? JSON.stringify({ agentmail_inbox_id: body.agentmail_inbox_id }) : "{}";
 
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   await c.env.PLATFORM_DB.prepare(
-    `INSERT INTO business_services (id, space_id, tenant_id, kind, naelao_handle, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
-     ON CONFLICT(space_id, kind) DO UPDATE SET naelao_handle = excluded.naelao_handle, status = 'active', updated_at = excluded.updated_at`
-  ).bind(id, body.space_id, tenantId, body.kind, handle, now, now).run();
+    `INSERT INTO business_services (id, space_id, tenant_id, kind, naelao_handle, config_json, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?)
+     ON CONFLICT(space_id, kind) DO UPDATE SET naelao_handle = excluded.naelao_handle, config_json = excluded.config_json, status = 'active', updated_at = excluded.updated_at`
+  ).bind(id, body.space_id, tenantId, body.kind, handle, configJson, now, now).run();
 
   // For a storefront, register the Host→space route the portal Worker resolves.
   if (body.kind === "storefront") {
