@@ -3698,6 +3698,60 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     Svix header names AgentMail uses are per its Svix advertisement + OpenAPI schema names, not yet
     observed against a live webhook delivery (same "confirm once real access exists" caveat every
     other integration carries).
+88. **Live-reported chat bugs found and FIXED: duplicated replies/approval cards, no self-serve
+    "always allow," resumed approvals invisible with no activity trail, and no way to actually
+    configure per-tool approvals or a project agent's own policy.**
+    - **Root cause of "the same AI message renders 2-4 times, even the approval dialog":**
+      `pollUntilDone`'s `setInterval` callback is `async`, but `setInterval` does not wait for one
+      firing to finish before scheduling the next — a single slow `pollRun` round-trip let two or
+      more overlapping callbacks each independently observe the SAME terminal status and each
+      independently append their own completed-message row (and, since every duplicate carries the
+      same `pendingApproval`/`deferredApprovals`, the same approval card too) — exactly why a
+      reload "fixed" it (reload re-fetches the single canonical persisted transcript). Fixed with a
+      `settled` guard so only the first tick to see a terminal status finalizes; mirrored as
+      `doneHandled` on `streamRun`'s SSE path (EventSource auto-reconnect can redeliver a queued
+      "done").
+    - **"Always allow" self-serve fix.** `InlineApprovalCard` gained a second button —
+      approve, then read-modify-write the space's `assistant_policy.auto_approved_actions` to
+      include this exact action name (business-admin only; a non-admin's approve still succeeds,
+      the allowlist write just silently doesn't take, surfaced as an inline note) — the self-serve
+      answer to "why does search still ask" for a business whose stored policy predates a newer
+      default (item 86 already fixed this for NEW businesses; existing ones needed this).
+    - **Resumed approvals now get a real activity trail and fold into the SAME message bubble,
+      instead of only ever surfacing on the next reload with no sign of what happened.**
+      `handleResumeRun` mints a fresh run id for its continuation pass but never surfaced it
+      anywhere pollable — fixed by recording `resumed_run_id` on `suspended_runs` the moment it's
+      minted (a new `GET /script/resume-status` DO route), merged into the agents-worker's
+      existing single-approval GET response (deliberately NOT a new `:approvalId/resumed-run`
+      sibling route — that dynamic-segment-then-static-suffix shape is exactly what has repeatedly
+      triggered Hono's documented RegExpRouter corruption elsewhere in this codebase). The chat
+      client polls for it after approving and attaches via the SAME `pollRun`/`streamRun`
+      machinery an ordinary run uses (`watchForResume`/`finalizeAnswer`), so the continuation gets
+      a real "currently doing X" trail and its answer is appended into the ORIGINAL bubble instead
+      of a new row — closer to how Claude keeps one long message going across a mid-turn
+      permission prompt.
+    - **Per-tool approval config + per-project agent config, previously nowhere reachable.** The
+      Dashboard's "Pre-approved actions" list was read-only with no way to add/remove an entry
+      short of an approval card happening to appear — new `ApprovedActionsEditor` (shared
+      component) makes it a real add/remove control. A project agent's OWN approval-policy
+      override (`GET/PATCH /spaces/:spaceId/agents/:agentId/policy`, `agent_policy_overrides` —
+      falls back to the space-wide row when absent) existed on the SpaceDO side since Phase O but
+      was **builder-JWT-only with no `requireBusinessMembership` floor at all** — the exact gap
+      `assistant-policy` itself had before item 79's fix. Same fix applied here (`GET`: member,
+      `PATCH`: admin) + a router allowlist entry. New `AgentPolicyPanel` (expandable "Configure"
+      control: autonomy toggle + the same `ApprovedActionsEditor`) is wired into both the
+      Dashboard's "Agents in this space" panel and the Projects page's "Agents in this project"
+      grid — the two places a user asked to be able to "change configs... on each tool" and
+      "change about agents" and genuinely couldn't before.
+    18 new tests (2320/2320 pass), `npx turbo run typecheck` clean (76 tasks), `naelao-agents`
+    (bare `wrangler deploy`), `naelao-spaces`, `naelao-router`, and `apps/shell` all deployed;
+    live-verified by fetching the exact deployed JS chunks and confirming the new "Always allow"/
+    "Configure" strings are present, and by exercising the deployed agents-worker approval route
+    directly with a minted internal token. **Not done this pass:** a full live click-through of
+    the new per-agent/per-tool editors and the resume-continuation merge behavior with a real
+    business-admin browser session (same Playwright/TLS-handshake limitation as prior UI passes —
+    verified via unit tests against the real request contracts plus deployed-bundle content
+    instead).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
