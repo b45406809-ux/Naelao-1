@@ -3692,12 +3692,20 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       mail-seed failure can't fail a space creation, same posture as `seedWallet`/`seedOwnerMember`.
     - Both assistant profiles gained a "Business Email" section (it has its own mailbox, can send
       AND receive when AgentMail-backed, say so honestly when it's send-only).
-    2310/2310 tests pass (28 new), `npx turbo run typecheck` clean (76 tasks). **Not done:** an
-    operational `AGENTMAIL_API_KEY` must be set via `wrangler secret put --name naelao-agents`
-    before any of this returns live results — the code degrades honestly until then; the exact
-    Svix header names AgentMail uses are per its Svix advertisement + OpenAPI schema names, not yet
-    observed against a live webhook delivery (same "confirm once real access exists" caveat every
-    other integration carries).
+    2310/2310 tests pass (28 new), `npx turbo run typecheck` clean (76 tasks).
+    **`AGENTMAIL_API_KEY` is now SET and LIVE-VERIFIED (2026-07-30) — do not re-prompt the user for
+    it.** Provisioning the platform's own `launchpad` business against the real key immediately
+    surfaced a real, previously-undetected bug: AgentMail's `username` is unique across its ENTIRE
+    customer base, not scoped to our account, so the naive slug-derived username ("launchpad")
+    403'd with `resource_taken` — some other AgentMail customer already owns that exact username.
+    Fixed with new `uniqueInboxUsername(slug, spaceId)` (`toInboxUsername` itself untouched — still
+    a pure, tested slug transform), appending a short spaceId-derived suffix so a provisioned
+    address is virtually guaranteed unique while staying readable. Live-verified end to end after
+    the fix + a real redeploy: created a real inbox (`launchpad-f17b85@agentmail.to`) for the live
+    `launchpad` product, confirmed idempotent re-provisioning returns the same address without
+    creating a duplicate, registered the inbound webhook (`inbound_wired: true`), and sent a real
+    test email through it (`ok: true` with a real AgentMail/SES message id). 4 new tests,
+    2324/2324 pass.
 88. **Live-reported chat bugs found and FIXED: duplicated replies/approval cards, no self-serve
     "always allow," resumed approvals invisible with no activity trail, and no way to actually
     configure per-tool approvals or a project agent's own policy.**
@@ -3980,7 +3988,8 @@ Re-verify before relying on any of these, but they are the real values as of thi
     remains the one genuinely unverified step, since no real human has clicked through consent
     against this app yet.
   ALREADY SET: `RESEND_API_KEY` on `naelao-notifications` (do not re-prompt), `PUBLIC_AGENTS_URL`,
-  `CF_API_TOKEN`, `NAELAO_AIG_TOKEN`, `COMPOSIO_API_KEY`, `PIPEDREAM_*` on `naelao-agents`.
+  `CF_API_TOKEN`, `NAELAO_AIG_TOKEN`, `COMPOSIO_API_KEY`, `PIPEDREAM_*`, `AGENTMAIL_API_KEY`
+  (live-verified 2026-07-30 — real inbox created/sent, see item 88) on `naelao-agents`.
 - **Router var `PRODUCT_SHELL_URL` is still `http://localhost:3100`** — breaks the clickable link
   in verification emails. Known, not fixed (the user's call to change a production var).
 - **Correct test command:** `npx vitest run --config tests/vitest.config.ts` (plain `npx vitest
