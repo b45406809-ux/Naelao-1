@@ -11,12 +11,14 @@ import {
   getMessages,
   getStreamUrl,
   getApprovalResumeStatus,
+  listApprovals,
   pollRun,
   sendMessage,
   startSession,
   type AgentRun,
   type Message,
   type LiveRunStep,
+  type PendingApproval,
 } from "@/lib/api";
 import type { SessionCredentials } from "@/lib/api";
 import {
@@ -143,6 +145,17 @@ export function Chat({
   // Transient feedback for the input bar's Upload button (InputBarExtras.tsx) — not an error,
   // just a small "added/failed" confirmation that fades after a few seconds.
   const [uploadNotice, setUploadNotice] = React.useState<string | null>(null);
+  // Real, previously-reported bug: a message's own pendingApproval/deferredApprovals are CLIENT-
+  // ONLY (never persisted — see Message's own doc), attached only during the exact live poll/SSE
+  // session that watched a run reach a gate. Navigate away, reload, or approve from the separate
+  // /approvals page instead of this card, and the chat surface never learns anything happened —
+  // the approval genuinely exists (HITLApprovalDO/suspended_runs has it) but nothing here shows
+  // it. This periodically re-derives THIS session's still-open approvals from the durable,
+  // space-wide list (filtered client-side by session_id — HITLApprovalDO's own GET /requests
+  // doesn't filter server-side by session, so the filtering has to happen here) and renders them
+  // as a persistent block near the composer, independent of which tab/page opened or resolves
+  // them.
+  const [sessionApprovals, setSessionApprovals] = React.useState<PendingApproval[]>([]);
 
   const endRef = React.useRef<HTMLDivElement>(null);
   const sseRef = React.useRef<EventSource | null>(null);
@@ -486,14 +499,17 @@ export function Chat({
   // silently only appearing on the next reload with none. Registers the message-merge mapping
   // BEFORE attaching, so finalizeAnswer already knows to fold this run's answer into messageId.
   const watchForResume = React.useCallback(
-    (messageId: string, approvalId: string) => {
+    // messageId is optional: the persistent session-approvals block (below) isn't attached to any
+    // one message, so approving from there has nothing to merge the continuation INTO — it just
+    // appends as a new message once ready, via finalizeAnswer's own default branch.
+    (approvalId: string, messageId?: string) => {
       if (!chatSessionId) return;
       const deadline = Date.now() + 20_000;
       const tick = async () => {
         try {
           const { resumed_run_id } = await getApprovalResumeStatus(spaceId, approvalId, session);
           if (resumed_run_id) {
-            resumeOriginRef.current.set(resumed_run_id, messageId);
+            if (messageId) resumeOriginRef.current.set(resumed_run_id, messageId);
             setIsLoading(true);
             storeActiveRunId(spaceId, resumed_run_id, sessionKey);
             attachToRun(chatSessionId, resumed_run_id);
@@ -541,6 +557,27 @@ export function Chat({
     // excluded: this should only re-run when the session actually changes, not on every render
     // attachToRun/session identity happens to change.
   }, [chatSessionId, spaceId, sessionKey]);
+
+  const refreshSessionApprovals = React.useCallback(async () => {
+    if (!chatSessionId) return;
+    try {
+      const all = await listApprovals(spaceId, session);
+      setSessionApprovals(all.filter((a) => a.session_id === chatSessionId));
+    } catch {
+      // A failed refresh leaves the last-known list showing rather than blanking it — the
+      // separate /approvals page is the fallback if this keeps failing.
+    }
+  }, [spaceId, chatSessionId, session]);
+
+  // Poll this thread's own still-open approvals independent of any live run this tab happens to
+  // be watching — this is what makes an approval opened before this tab was here (or resolved
+  // from the separate /approvals page) actually show up and clear here too.
+  React.useEffect(() => {
+    if (!chatSessionId) return;
+    void refreshSessionApprovals();
+    const timer = window.setInterval(() => void refreshSessionApprovals(), 8_000);
+    return () => window.clearInterval(timer);
+  }, [chatSessionId, refreshSessionApprovals]);
 
   const send = React.useCallback(async (text: string) => {
     const trimmed = text.trim();
@@ -603,6 +640,16 @@ export function Chat({
     );
   }
 
+  // Don't show a second, duplicate card for an approval a rendered message ALREADY carries its
+  // own inline card for (the live-tab flow) — the persistent block below is only for ones no
+  // message in this render has attached.
+  const attachedApprovalIds = new Set<string>();
+  for (const m of messages) {
+    if (m.pendingApproval) attachedApprovalIds.add(m.pendingApproval.approval_id);
+    for (const d of m.deferredApprovals ?? []) attachedApprovalIds.add(d.approval_id);
+  }
+  const unattachedApprovals = sessionApprovals.filter((a) => !attachedApprovalIds.has(a.id));
+
   return (
     <div className="chat-layout">
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
@@ -654,7 +701,8 @@ export function Chat({
                       approval={m.pendingApproval}
                       session={session}
                       onResolved={(decision) => {
-                        if (decision === "approved") watchForResume(m.id, m.pendingApproval!.approval_id);
+                        if (decision === "approved") watchForResume(m.pendingApproval!.approval_id, m.id);
+                        void refreshSessionApprovals();
                       }}
                     />
                   )}
@@ -670,7 +718,8 @@ export function Chat({
                       approval={a}
                       session={session}
                       onResolved={(decision) => {
-                        if (decision === "approved") watchForResume(m.id, a.approval_id);
+                        if (decision === "approved") watchForResume(a.approval_id, m.id);
+                        void refreshSessionApprovals();
                       }}
                     />
                   ))}
@@ -744,6 +793,38 @@ export function Chat({
                     </a>
                   </span>
                 )}
+              </div>
+            </div>
+          )}
+          {unattachedApprovals.length > 0 && (
+            <div className="msg-row">
+              <div style={{ minWidth: 0, width: "100%" }}>
+                <div style={{ fontSize: 11.5, color: "var(--text3)", marginBottom: 4, fontWeight: 600 }}>
+                  Waiting on you
+                </div>
+                {unattachedApprovals.map((a) => (
+                  <InlineApprovalCard
+                    key={a.id}
+                    spaceId={spaceId}
+                    approval={{
+                      approval_id: a.id,
+                      action_name: a.tool_name,
+                      ...(() => {
+                        try {
+                          return { params: JSON.parse(a.tool_input) as Record<string, unknown> };
+                        } catch {
+                          return {};
+                        }
+                      })(),
+                      expires_at: a.expires_at,
+                    }}
+                    session={session}
+                    onResolved={(decision) => {
+                      setSessionApprovals((prev) => prev.filter((x) => x.id !== a.id));
+                      if (decision === "approved") watchForResume(a.id);
+                    }}
+                  />
+                ))}
               </div>
             </div>
           )}
