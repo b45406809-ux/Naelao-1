@@ -513,8 +513,10 @@ export async function runScriptLoop(
       // The most recent SUCCESSFUL tool result, kept so an agent that runs out of steps without
       // ever composing an answer still returns the work it actually did rather than "gave up".
       let lastGoodRun: { name: string; result: ScriptRunResult } | null = null;
-      /** `name:params` of every call already attempted this run — see the repeat guard below. */
-      const attemptedCalls = new Set<string>();
+      /** `name:params` → the REAL outcome of the first attempt this run — see the repeat guard
+       *  below. Only ever set once the outcome is actually known (never for a merely "pending"
+       *  gate, which never reaches here). */
+      const attemptedCalls = new Map<string, { ok: boolean; output?: unknown; error?: string }>();
       for (let step = 0; step < maxSteps; step++) {
         // Real per-token budget ceiling (sub-agent budgets — spec: enforce actual reasoner
         // spend, not a step-count proxy). Never starts a step it can't afford.
@@ -571,17 +573,32 @@ export async function runScriptLoop(
             continue;
           }
 
-          if (attemptedCalls.has(callKey)) {
-            notes.push(`${level} skipped repeat call ${decision.name} (already run this task)`);
+          // A live-reported bug: this used to record `callKey` as "attempted" BEFORE knowing the
+          // outcome, and the repeat guard below unconditionally told the model the repeat call
+          // "already ran" with `ok: true` — even when the FIRST attempt had genuinely FAILED. A
+          // model that (reasonably) retries a failed tool call would be told its retry succeeded
+          // without either attempt ever actually running, so a real failure (a tool error, a
+          // network problem, anything) got silently reported to the person as success. Fixed by
+          // only recording an entry once the real outcome is known (gate-denied or run-completed
+          // — never on "pending", which the `deferred.some()` check above already covers), and
+          // having the repeat guard replay that REAL ok/output/error instead of assuming success.
+          const attempted = attemptedCalls.get(callKey);
+          if (attempted) {
+            notes.push(`${level} skipped repeat call ${decision.name} (already ${attempted.ok ? "ran" : "failed"} this task)`);
             priorSteps.push({
               name: decision.name,
               params: decision.params,
-              ok: true,
-              output: "(already run in this task — see the earlier step's result)",
+              ok: attempted.ok,
+              ...(attempted.ok
+                ? { output: attempted.output ?? "(already run in this task — see the earlier step's result)" }
+                : {
+                    error:
+                      attempted.error ??
+                      "(already failed in this task with the same arguments — retrying will not help; try something different or answer describing the failure)",
+                  }),
             });
             continue;
           }
-          attemptedCalls.add(callKey);
 
           // HITL gate before execution
           const gate = await hitlGate(decision.name, decision.params, gatedActions, approvalMode, env.hitlGateway, runId, sessionId, notes, preApproved);
@@ -618,6 +635,13 @@ export async function runScriptLoop(
           const result = await runOnce(decision.name, decision.params);
           notes.push(`${level} run ${decision.name}: ${result.ok ? "ok" : "fail"}`);
           pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
+          // The real outcome, recorded for the repeat guard above — see its own comment for why
+          // this must never be assumed to be a success.
+          attemptedCalls.set(callKey, {
+            ok: result.ok,
+            ...(result.output !== undefined ? { output: result.output } : {}),
+            ...(result.error !== undefined ? { error: result.error } : {}),
+          });
           // Record what happened and KEEP GOING. This used to `return` on the first successful
           // tool call, handing the tool's raw result back as the run's answer — so the model never
           // observed its own output, could never chain two calls, and a user asking "look up the

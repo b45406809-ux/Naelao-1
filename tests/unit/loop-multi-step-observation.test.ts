@@ -109,6 +109,14 @@ describe("a successful tool call is a STEP, not the end of the run", () => {
 describe("the loop cannot be made to spin on one repeated call", () => {
   it("runs an identical call once, then serves the result it already has", async () => {
     const env = makeEnv();
+    // A real write count, not a substring guess — the direct way to prove the repeat guard
+    // actually skips re-execution rather than merely relabeling its output.
+    let putCount = 0;
+    const realPut = env.scriptsBucket.put.bind(env.scriptsBucket);
+    env.scriptsBucket.put = (async (...args: Parameters<R2Bucket["put"]>) => {
+      putCount++;
+      return realPut(...args);
+    }) as R2Bucket["put"];
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);
     // A model that ignores its observations and re-decides the same call forever.
     const { reasoner, seen } = scriptedReasoner([
@@ -118,10 +126,18 @@ describe("the loop cannot be made to spin on one repeated call", () => {
     await runScriptLoop(env, tools, reasoner, ["r2-workspace"], { ...LOOP_OPTS, maxSteps: 5 });
 
     // Every step still consults the reasoner (that's the budget bound), but the repeated call is
-    // not re-executed — the observation it already produced is handed back instead.
+    // not re-executed — the observation it already produced (the REAL first result, not a vague
+    // placeholder — the repeat guard used to always hardcode both `ok: true` and a generic string,
+    // even hiding a genuine first-attempt FAILURE behind a false "already ran" success) is handed
+    // back instead every time after the first.
     expect(seen.length).toBeLessThanOrEqual(5);
-    const repeats = seen[seen.length - 1]!.priorSteps!.filter((s) => String(s.output ?? "").includes("already run"));
-    expect(repeats.length).toBeGreaterThan(0);
+    expect(putCount).toBe(1);
+    const last = seen[seen.length - 1]!.priorSteps!;
+    expect(last.length).toBeGreaterThan(1);
+    for (const step of last) {
+      expect(step.ok).toBe(true);
+      expect(step.output).toEqual({ ok: true, path: "a.txt" });
+    }
   });
 
   it("still allows the SAME op with DIFFERENT params — that is ordinary work, not a loop", async () => {
