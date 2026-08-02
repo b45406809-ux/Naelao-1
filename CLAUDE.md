@@ -3760,6 +3760,59 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     business-admin browser session (same Playwright/TLS-handshake limitation as prior UI passes —
     verified via unit tests against the real request contracts plus deployed-bundle content
     instead).
+89. **Root-caused and fixed a real repeat-call-guard bug (the actual source of "the project
+    creation request is still waiting for human approval, no further action can be taken" reported
+    stuck) — plus confirmed two other suspected bugs from the same report were testing-harness
+    artifacts, not product defects, and confirmed redeploys never reset builder/business/product
+    data (deploys only replace worker CODE, never touch D1/DO storage).**
+    - **The real bug, in `script-engine/loop.ts`'s within-run repeat-call guard.** `attemptedCalls`
+      used to be a bare `Set<string>` marked BEFORE a call's outcome was known, and the guard's
+      cached response for a repeat call hardcoded a generic success placeholder regardless of
+      whether the original attempt actually succeeded, failed, or was itself still gated/parked.
+      A model that retried a call already recorded as "attempted" (including one that had FAILED,
+      or one still sitting in `deferred_approvals` waiting on a human) could be told it had already
+      SUCCEEDED — a false-success report the model could act on as if the action had gone through.
+      Fixed: `attemptedCalls` is now `Map<string, {ok, output?, error?}>`, populated only AFTER
+      `runOnce()` resolves with the REAL outcome; the repeat-guard's synthesized `priorSteps` entry
+      now correctly reports `ok: attempted.ok` and either the real cached `output` or the real
+      cached `error` — never a fabricated success. The separate, pre-existing "still waiting on a
+      human for this one" message for a call still sitting in `deferred_approvals` (checked BEFORE
+      the repeat guard) is unaffected and remains correct — that message is what a user sees when
+      an approval genuinely hasn't been resolved yet, which is expected behavior, not a bug.
+    - **Two other suspected bugs from the same report, investigated to completion and found to be
+      testing-harness artifacts of MY OWN manual reproduction, not real product defects** —
+      confirmed by re-running the identical flow correctly and observing success both times:
+      (1) a project created via a hand-rolled `/agent/run` curl call was invisible in project
+      listings — because I passed `user_id` in the JSON body instead of as the
+      `x-naelao-user-id` HEADER `getCallerIdentity()` actually reads, so `created_by` landed
+      `null` and `SpaceDO.createProject`'s implicit-owner-membership insert
+      (`if (!alreadyExisted && row && body.created_by)`) never fired — the real client (via
+      `naelao-router`'s `proxyTo`) always sets this header correctly. (2) A resumed run's answer
+      appeared lost — because my manual test never called the real `POST
+      /spaces/:spaceId/sessions` (which mints its own server-side session id) before dispatching
+      `/agent/run` against a self-chosen session id, so `writeAgentAnswerToSession`'s persist call
+      404'd silently (caught by its own best-effort try/catch) — `apps/shell`'s real client
+      always creates a session first (item 66), so this path is not reachable in production.
+    - **Noted, NOT fixed this pass (real, minor, out of scope):** `SpaceDO.createProject` always
+      returns HTTP 201 even when its `ON CONFLICT(space_id, name) DO NOTHING` silently no-ops on a
+      name collision — a caller can't distinguish "created" from "already existed" from the
+      response alone. Relatedly, the `alreadyExisted` check has no status filter, so an ARCHIVED
+      project with the same name permanently blocks reuse of that name by a new project.
+    - **Confirmed for the user: a worker redeploy (`wrangler deploy`) only replaces that worker's
+      CODE — it never touches D1 or Durable Object storage.** Builder accounts, products,
+      businesses, projects, threads, and all previously-built config UI (Dashboard tab, per-agent
+      Configure panels from items 79/88) remain exactly where they were; there is no need to
+      recreate a product or business after a deploy. The "not showing in approvals page" symptom
+      specifically could not be reproduced from the backend in this session — every approval
+      opened via direct API testing appeared and resolved correctly; if it recurs, the business
+      and approximate time are needed to investigate further.
+    Verified via the real unit test suite (rewrote
+    `loop-multi-step-observation.test.ts`'s repeat-call case to assert against a real R2 `put()`
+    call counter and the real cached output object, not placeholder text) — 2324/2324 tests pass,
+    `npx turbo run typecheck` clean (76 tasks). `naelao-agents` deployed (bare `wrangler deploy`)
+    and the fix live-verified via temporary forced-throw diagnostics in a prebuilt op (added,
+    used to confirm root cause against production, then fully reverted before the final deploy —
+    confirmed via `git diff --stat` showing no net change to that file).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
