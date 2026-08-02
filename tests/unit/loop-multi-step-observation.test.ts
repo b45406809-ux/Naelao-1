@@ -130,7 +130,10 @@ describe("the loop cannot be made to spin on one repeated call", () => {
     // placeholder — the repeat guard used to always hardcode both `ok: true` and a generic string,
     // even hiding a genuine first-attempt FAILURE behind a false "already ran" success) is handed
     // back instead every time after the first.
-    expect(seen.length).toBeLessThanOrEqual(5);
+    // 5 steps, plus one closing-summary call once they run out — that last one is deliberate:
+    // it is what turns "ran out of steps" into a report of what actually happened instead of a
+    // bare error. It is bounded at exactly one.
+    expect(seen.length).toBeLessThanOrEqual(6);
     expect(putCount).toBe(1);
     const last = seen[seen.length - 1]!.priorSteps!;
     expect(last.length).toBeGreaterThan(1);
@@ -191,5 +194,107 @@ describe("running out of steps without an answer", () => {
 
     const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], { ...LOOP_OPTS, maxSteps: 3 });
     expect(result.result?.ok).toBe(false);
+  });
+});
+
+describe("the last step is a real deadline, not a cliff", () => {
+  it("tells the model when it is on its final turn", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const { reasoner, seen } = scriptedReasoner([
+      { action: "run", name: "write_file", params: { path: "a.txt", content: "x" } },
+      { action: "run", name: "write_file", params: { path: "b.txt", content: "y" } },
+      { action: "answer", text: "done" },
+    ]);
+
+    await runScriptLoop(env, tools, reasoner, ["r2-workspace"], { ...LOOP_OPTS, maxSteps: 3 });
+
+    expect(seen[0]?.finalStep).toBeUndefined();
+    expect(seen[1]?.finalStep).toBeUndefined();
+    expect(seen[2]?.finalStep).toBe(true);
+  });
+
+  it("does not execute a tool chosen on the final step", async () => {
+    // Running it would spend real side effects on a result nobody can be told about — there is no
+    // step left to report it in.
+    const env = makeEnv();
+    // A real write count, the same way the repeat-guard test above proves non-execution.
+    let putCount = 0;
+    const realPut = env.scriptsBucket.put.bind(env.scriptsBucket);
+    env.scriptsBucket.put = (async (...args: Parameters<R2Bucket["put"]>) => {
+      putCount++;
+      return realPut(...args);
+    }) as R2Bucket["put"];
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    let decided = 0;
+    const reasoner: Reasoner = {
+      async decide(): Promise<ReasonDecision> {
+        decided++;
+        return { action: "run", name: "write_file", params: { path: `f${decided}.txt`, content: "x" } };
+      },
+    };
+
+    await runScriptLoop(env, tools, reasoner, ["r2-workspace"], { ...LOOP_OPTS, maxSteps: 3 });
+
+    // Three steps were reasoned about, but only the first two were allowed to run — the third
+    // landed on the deadline turn and was refused.
+    expect(putCount).toBe(2);
+  });
+
+  it("reports work that succeeded instead of failing, when the model can still summarise it", async () => {
+    // The exact live failure: a project WAS created, the loop then burned its remaining steps, and
+    // the user was shown "Ran 6 step(s) without reaching an answer" with a Try again button — so
+    // they retried and created a second project. Successful work must not be reported as failure.
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const reasoner: Reasoner = {
+      async decide(input): Promise<ReasonDecision> {
+        // Ignores its own observations and keeps reaching for a tool — until it is told the
+        // deadline has arrived, which is the only thing that makes it report back.
+        if (input.finalStep) return { action: "answer", text: "I created the project for you." };
+        return { action: "run", name: "write_file", params: { path: `f${Math.random()}.txt`, content: "x" } };
+      },
+    };
+
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], { ...LOOP_OPTS, maxSteps: 3 });
+
+    expect(result.result?.ok).toBe(true);
+    expect(result.result?.output).toBe("I created the project for you.");
+    expect(result.result?.error).toBeUndefined();
+  });
+
+  it("still fails honestly when the model will not summarise even on the deadline", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const reasoner: Reasoner = {
+      async decide(): Promise<ReasonDecision> {
+        return { action: "run", name: "write_file", params: { path: `f${Math.random()}.txt`, content: "x" } };
+      },
+    };
+
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], { ...LOOP_OPTS, maxSteps: 3 });
+
+    expect(result.result?.ok).toBe(false);
+    expect(result.result?.error).toMatch(/without reaching an answer/);
+  });
+
+  it("never lets the summary attempt itself become the reported failure", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    let calls = 0;
+    const reasoner: Reasoner = {
+      async decide(): Promise<ReasonDecision> {
+        calls++;
+        // The closing-summary call (the one after the loop breaks) throws.
+        if (calls > 3) throw new Error("reasoner exploded");
+        return { action: "run", name: "write_file", params: { path: `f${calls}.txt`, content: "x" } };
+      },
+    };
+
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], { ...LOOP_OPTS, maxSteps: 3 });
+
+    expect(result.result?.ok).toBe(false);
+    expect(result.result?.error).toMatch(/without reaching an answer/);
+    expect(result.result?.error).not.toMatch(/exploded/);
   });
 });

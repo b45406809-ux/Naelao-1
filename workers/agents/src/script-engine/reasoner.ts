@@ -53,6 +53,8 @@ Prefer "run" with an existing operation when one fits. Only "distill" when the c
 
 "steps_so_far" lists what you have ALREADY run in this task and what each returned. Read it before deciding: do not repeat a call that already succeeded, use its result to inform the next step, and when you have enough to respond, finish with "answer" — a task is only complete once you have answered, not once a tool has run. If a tool failed twice, do not try it a third time; either take a different approach or "give_up" with the real reason.
 
+When "final_step" is true this is your LAST turn — there is no step after this one. You MUST reply with "answer" (or "give_up" if you truly cannot). Do not choose "run": it will not be executed. If work already succeeded in "steps_so_far", answer by telling the user plainly what was done. Reporting completed work is always better than saying nothing.
+
 "conversation" is the thread you are replying in: "recent_messages" verbatim, plus "earlier_summary" when older messages have been compacted away. Use it — the user should never have to repeat something they already told you.
 
 When "conversation.compacted" is true you are NOT seeing the whole conversation. Older messages were replaced by a summary and detail has been lost. This matters more than it sounds: if the user refers to something that is not in the summary or the recent messages, the correct move is to run conversation.search to find it in the full transcript. Do NOT assume it never happened, and do NOT answer from the partial record as though it were complete. Only say you cannot find something after actually searching for it.`;
@@ -247,6 +249,9 @@ export class GatewayReasoner implements Reasoner {
         // of the reasoning payload or blow the model's context window.
         ...(s.ok ? { result: truncateObservation(s.output) } : { error: String(s.error ?? "failed").slice(0, 500) }),
       })),
+      // Last step — see DECISION_INSTRUCTIONS' own note. Only present when true, so an ordinary
+      // step's payload is byte-identical to before.
+      ...(input.finalStep ? { final_step: true } : {}),
     });
 
     const query = {

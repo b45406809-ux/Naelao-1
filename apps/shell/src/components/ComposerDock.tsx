@@ -255,7 +255,7 @@ export function ComposerDock({
                   </div>
                   <div className="dock-row-action">
                     {isActive ? (
-                      <span className="dock-pill on"><Icon path={ICONS.check} size={11} />Active</span>
+                      <span className="dock-pill on"><Icon path={ICONS.check} size={11} />Active mode</span>
                     ) : (
                       <button
                         type="button"

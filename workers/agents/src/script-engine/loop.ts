@@ -180,6 +180,15 @@ export interface Reasoner {
      * conversation.search, rather than being left to answer confidently from a partial record.
      */
     conversation?: ConversationContext;
+    /**
+     * This is the last step available — there is no next turn to answer in, so the model must
+     * finish now (`answer`, or `give_up` if it genuinely cannot). Set only on the final iteration.
+     *
+     * Without it a model that keeps choosing `run` falls off the end of the loop and the run is
+     * reported as "never reached an answer" even when its tool calls all succeeded, which reads to
+     * the user as a failure of work that actually happened.
+     */
+    finalStep?: boolean;
   }): Promise<ReasonDecision>;
   /** Token usage from the most recently completed decide() call, when the backing LLM
    *  client reports it. Optional — reasoners that can't report it (e.g. test fakes) leave
@@ -526,6 +535,12 @@ export async function runScriptLoop(
         }
         await reportProgress(opts, { phase: "reason", detail: `Thinking (step ${step + 1}/${maxSteps})…` });
         const reasonStart = Date.now();
+        // On the last step there is no step after this one to answer in, so the model is told to
+        // finish now. Without this a model that keeps choosing `run` simply falls off the end of
+        // the loop and the user is told the agent "never reached an answer" — even when the work
+        // itself succeeded. Reported live: a project was created, then the loop burned its
+        // remaining steps and surfaced an error, so the user retried and created a second one.
+        const isFinalStep = step === maxSteps - 1;
         const decision = await reasoner.decide({
           goal: opts.goal,
           level,
@@ -537,6 +552,7 @@ export async function runScriptLoop(
             ? { repairTarget: { name: top.name, failureReason: "stale / re-derive" } }
             : {}),
           ...(priorSteps.length > 0 ? { priorSteps } : {}),
+          ...(isFinalStep ? { finalStep: true } : {}),
         });
         const stepUsage = usageOf(reasoner);
         usageAcc.input += stepUsage.input;
@@ -552,6 +568,15 @@ export async function runScriptLoop(
         });
 
         if (decision.action === "run") {
+          // The model was told this is its last turn and chose a tool anyway. Running it would
+          // spend real money/side effects on work nobody will ever see the result of, since
+          // there's no step left to report it in — so it isn't run, and the loop drops straight
+          // into the summary path below with whatever already succeeded.
+          if (isFinalStep) {
+            notes.push(`${level} chose ${decision.name} on the final step; not run — summarising instead`);
+            break;
+          }
+
           // Now that a successful run no longer ends the loop, a model that ignores its own
           // observations could burn every remaining step re-running the identical call. Serving
           // the result it already has costs nothing, keeps the observation accurate, and bounds
@@ -669,15 +694,47 @@ export async function runScriptLoop(
       notes.push(`${level} exhausted ${maxSteps} steps`);
       // Ran out of steps without ever composing an answer.
       //
-      // This FAILS, always — even when tool calls succeeded along the way. Returning a raw tool
-      // payload as "the answer" is the exact conflation this change set exists to fix: there is
-      // no reliable way to tell a receipt (`{written: true}`) from a result worth reading
-      // (`{content: "..."}`), and guessing wrong means the user gets `ok` plus a blank or a JSON
-      // dump. The work that DID succeed is named in the error rather than discarded, so nothing
-      // is hidden — but "the agent never answered you" is reported as what it is.
+      // A raw tool payload is still never returned as "the answer" — there is no reliable way to
+      // tell a receipt (`{written: true}`) from a result worth reading (`{content: "..."}`), and
+      // guessing wrong hands the user `ok` plus a blank or a JSON dump.
+      //
+      // But failing outright was ALSO wrong, and was reported live: a project really was created,
+      // the loop then burned its remaining steps, and the user was shown
+      // "Ran 6 step(s) without reaching an answer" with a Try again button — so they retried and
+      // created a second project. Successful work reported as a failure is worse than no report.
+      //
+      // So: ask the model for the summary it failed to write, restricted to a terminal decision.
+      // That is not guessing at a payload — it is the same model, with the same observations,
+      // asked only to say what happened. If it still won't answer, the honest error stands.
       if (lastGoodRun) {
         const ran = priorSteps.filter((p) => p.ok).map((p) => p.name).join(", ");
         notes.push(`${level} ran ${priorSteps.length} step(s) but never composed an answer`);
+        try {
+          const summary = await reasoner.decide({
+            goal: opts.goal,
+            level,
+            snapshot,
+            candidates,
+            availableOperations: tools.availableOperations(),
+            ...(opts.conversation ? { conversation: opts.conversation } : {}),
+            priorSteps,
+            finalStep: true,
+          });
+          const summaryUsage = usageOf(reasoner);
+          usageAcc.input += summaryUsage.input;
+          usageAcc.output += summaryUsage.output;
+          if (summary.action === "answer" || summary.action === "give_up") {
+            notes.push(`${level} composed a closing summary after exhausting its steps`);
+            return finish(withTokenUsage(
+              await applyTerminalDecision(level, summary, tools, opts.goal, notes, pushTrace, runOnce),
+              usageAcc
+            ));
+          }
+          notes.push(`${level} summary attempt returned ${summary.action}; reporting the exhaustion instead`);
+        } catch (err) {
+          // Never let the recovery attempt itself become the failure the user sees.
+          notes.push(`${level} summary attempt failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
         return finish(withTokenUsage({
           level,
           script_name: lastGoodRun.name,
