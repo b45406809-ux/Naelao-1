@@ -3814,6 +3814,77 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     used to confirm root cause against production, then fully reverted before the final deploy —
     confirmed via `git diff --stat` showing no net change to that file).
 
+90. **"Can't change assistant configs" root-caused to a one-word role check — and verifying the fix
+    against production surfaced THREE more real bugs, including an infinite refetch loop that had
+    been silently blanking the Dashboard. Plus the QClay-style composer dock and two real settings
+    pages.**
+    - **The reported bug.** `apps/shell`'s Dashboard gated every config control on
+      `business?.role === "admin"` — an EXACT match. Whoever creates a business is inserted as
+      `'owner'` (`workers/spaces/src/business-routes.ts`), and the backend ranks
+      `owner(3) >= admin(2)` (`business-auth.ts`'s `ROLE_RANK`), so the server would have accepted
+      every write the UI never offered: the creator of a business could not change their own
+      assistant's autonomy, model, or approved actions. `spaces/[businessId]/page.tsx` had the
+      same check written correctly (`=== "owner" || === "admin"`), which is how the two drifted.
+      Fixed by extracting the ranked comparison into `apps/shell/src/lib/roles.ts`
+      (`roleAtLeast`/`canManageSpaceSettings`, mirroring `ROLE_RANK`) and using it everywhere;
+      `tests/unit/shell-role-gate.test.ts` asserts the UI predicate agrees with the REAL backend
+      `resolveEndUserBusinessRole` for a business creator's actual stored row — verified to fail
+      (3 of 7 cases) when the exact-match bug is reintroduced.
+    - **Infinite refetch loop (found while verifying, pre-existing, worse than the reported bug).**
+      Pages wrote `const creds = session ? {sessionToken, endUserId} : null` in the render body and
+      listed `creds` in a data-loading effect's dependency array. That literal is a NEW object every
+      render, so: the effect fires a batch of fetches → the first resolves and calls setState → the
+      re-render mints a new `creds` → deps "changed" → React runs the cleanup, flipping the batch's
+      `cancelled` flag and DISCARDING every result still in flight → a fresh batch starts. Forever.
+      Visible damage: the Dashboard hammering the API in a loop, panels rendering "Couldn't read the
+      capability list" / 0 members / 0 connectors even though those requests returned 200, and a
+      "Loading…" that never cleared. Fixed with a memoised `useSessionCredentials()` hook
+      (`auth-provider.tsx`), keyed on the primitive token/id.
+      **Diagnostic technique worth keeping:** curl from the sandbox showed every endpoint 200 and
+      fast, which looked like the server was fine and the client was lying. The decisive evidence
+      came from running the SAME fetches *inside the real browser* via CF Browser Rendering's
+      `/content` + `addScriptTag`, printing status+body into the DOM — that proved the requests
+      succeeded in-browser and the STATE was being thrown away, which is what pointed at the deps
+      array. Also note `waitUntil:"domcontentloaded"` + `addScriptTag` lets an injected script set
+      localStorage *before* React hydrates and then click something afterwards, which
+      `shell-screenshot.mjs`'s navigate-after-inject flow cannot do (navigation destroys the script
+      context) — that's how the dock panels were screenshotted open.
+    - **`getMe` was called with the active BUSINESS space.** `ProductUserDO` is one instance per
+      (productId × endUserId), so `GET /spaces/:businessId/product-users/me` 404s
+      (`{"error_code":"not_found"}`, confirmed live) — the credit balance read 0 forever inside any
+      business, in both the Dashboard KPI and the sidebar footer. Now always the product root; the
+      person is not per-business.
+    - **`RevenueSummary` was typed with `orders`; the server sends `order_count`** — the Dashboard
+      rendered a literal "undefined orders". Fixed the client type and both consumers (the business
+      detail page had it too).
+    - **New surfaces.** `/dashboard/assistant` — all FOUR real approval modes (`always_ask`,
+      `gate_unless_listed`, `gate_listed`, `yolo`) described in terms of what actually happens; the
+      dashboard tile only ever exposed two of them as unlabelled buttons. Plus the pre-approved
+      action editor, model picker, channels, recurring work, capability counts. `/agents` was
+      rebuilt (it listed `product.space_id` — the product ROOT, not the active business, a real bug
+      — and claimed configuring an agent was "a builder capability", untrue since the per-agent
+      policy routes gained a `requireBusinessMembership` floor) and now links to a new
+      `/agents/[agentId]` page with that agent's own autonomy + allowlist, stating plainly when it's
+      inheriting the space-wide policy rather than showing an empty form.
+    - **Composer dock** (`components/ComposerDock.tsx` + `.dock-*` in `packages/ui`): the QClay
+      reference layout — labelled model pill on the left, icon row, divider, member avatar stack on
+      the right — with panels that expand ABOVE the input (model / connected apps / knowledge /
+      tips / members) instead of cramped popovers, in Naelao's own tokens rather than the mockup's
+      lime. It wraps the input as `children` so an open panel pushes the composer down as one unit,
+      matching the reference. Replaces `ModelSelector`+`InputBarExtras` in `Chat.tsx` and adds a
+      model picker to Home (`/new`), which had none. **Deliberately not built:** per-member
+      online/last-active dots from the reference's collaborators panel — `business-members` carries
+      role/status/joined_at and there is no end-user-reachable presence route, so those would be
+      invented (same precedent as `credits_consumed: null`).
+    2331/2331 tests pass (7 new), `npx turbo run typecheck` clean (76 tasks), `apps/shell` deployed
+    to production and verified with real authenticated screenshots against a real `owner`-role
+    business: config controls enabled, every previously-blank panel populated (26 scripts, 10
+    skills, 8 connectors, 1 member), "Loading…" gone, and the model + tips dock panels rendering.
+    **Test data left behind:** business "Dock UI Test"
+    (`b3c12ae4-82c7-4803-b4a4-7f1a71d234f9`) under the live `launchpad` product, plus its disposable
+    end user — harmless, same precedent as items 62-64/77, and deleting a business has no
+    end-user-reachable route.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
