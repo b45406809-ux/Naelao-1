@@ -3885,6 +3885,49 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     end user — harmless, same precedent as items 62-64/77, and deleting a business has no
     end-user-reachable route.
 
+91. **"Ran 6 step(s) without reaching an answer (completed: project.create, project.create)" —
+    reported live in autonomous mode, with a Try again button, on a run whose project HAD actually
+    been created. Two real causes, both fixed; plus a second pass on the composer dock.**
+    - **The model was never told it was on its final turn.** `runScriptLoop`'s step loop simply ran
+      out: a model that keeps choosing `run` falls off the end and hits the exhaustion branch. New
+      `Reasoner.decide({finalStep})` (payload field `final_step`, only present when true so an
+      ordinary step's payload is byte-identical) + a `DECISION_INSTRUCTIONS` paragraph telling it to
+      finish with `answer` and to report completed work. A `run` chosen ON that turn is **not
+      executed** — there is no step left to report its result in, so running it would spend real
+      side effects (money, an email, a created project) on an outcome nobody would ever be told
+      about. This is the direct cause of the duplicate `project.create`: the loop burned its steps,
+      surfaced an error, the user retried, and a second project was created.
+    - **Exhaustion failed outright even when work had succeeded.** The prior code deliberately
+      refused to return a raw tool payload as "the answer" — correct, since a receipt
+      (`{written:true}`) and a real result (`{content:"..."}`) are not distinguishable — but it took
+      that to mean the whole run must FAIL. Successful work reported as a failure is worse than no
+      report, and it is what made the user retry. The third option it missed: ask the model once,
+      restricted to a terminal decision (`finalStep:true`), for the summary it failed to write —
+      same model, same observations, asked only to say what happened. Not guessing at a payload. If
+      it still returns `run`, the honest exhaustion error stands; if the summary CALL ITSELF throws,
+      that is caught and never becomes the error the user sees.
+    - **Deliberately NOT changed:** `maxSteps ?? 6`. The deadline fix is the correctness fix; the
+      step budget is a cost/capability tuning question on an account whose Workers AI free tier is
+      ~65 agent runs/day, and raising it silently would increase per-message cost without being
+      asked for.
+    - **A pre-existing test asserted the reasoner is called at most `maxSteps` times.** The
+      closing-summary call is a real, deliberate extra call, bounded at exactly one — assertion
+      updated to `maxSteps + 1` with the reason stated, not loosened silently.
+    - **Composer dock, second pass against the reference images.** The first pass rendered the panel
+      as a separate floating card above a separate pill bar. In the reference the panel, the input
+      and the toolbar are ONE continuous card — so opening a panel pushes the composer down as a
+      single object rather than overlaying it. Restructured accordingly (`.composer-dock` is now the
+      card and neutralises the nested `.input-container`'s own chrome); row chips, pill weight/
+      casing, the joined 3-across tips strip, and the accent-ringed member stack with its corner
+      overflow badge all follow the reference. Verified with live authenticated screenshots of both
+      the model and tips panels on production.
+    2336/2336 tests pass (5 new in `loop-multi-step-observation.test.ts`: the deadline flag is set
+    only on the last step, a tool chosen on the deadline is not executed (proved with a real R2 put
+    counter, not a substring guess), a model that summarises on the deadline yields a real answer
+    instead of the error, a model that refuses still fails honestly, and a throwing summary attempt
+    never becomes the reported error), `npx turbo run typecheck` clean (76 tasks), `naelao-agents`
+    (bare `wrangler deploy`) and `apps/shell` both deployed.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
