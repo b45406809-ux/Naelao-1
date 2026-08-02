@@ -128,7 +128,10 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
       setManifest(m);
       setSupportContact(m.legal?.support_contact ?? null);
     }).catch(() => show("Couldn't load workspace"));
-    getMe(activeSpaceId, creds).then(setMe).catch(() => {});
+    // …with one deliberate exception: `me` is the PERSON, not the workspace. A ProductUserDO is
+    // one instance per (productId × endUserId), so scoping this to a business 404s and the credit
+    // balance renders as 0 forever. Always the product root.
+    getMe(product.space_id, creds).then(setMe).catch(() => {});
     listProjects(activeSpaceId, creds).then(setProjects).catch(() => {});
     // The sidebar's recent list is assistant SESSIONS (what Home starts), not structural project
     // threads — those belong to a project and are reached through /projects/:id.

@@ -17,7 +17,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { Button, FormInput } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
-import { useProductAuth } from "@/lib/auth-provider";
+import { useProductAuth, useSessionCredentials } from "@/lib/auth-provider";
 import { verifyEmail, resendVerification } from "@/lib/productAccount";
 import { getMe } from "@/lib/api";
 
@@ -37,7 +37,7 @@ export default function VerifyEmailPage() {
   const [knownEmail, setKnownEmail] = React.useState<string | null>(null);
   const [resendSent, setResendSent] = React.useState(false);
 
-  const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
+  const creds = useSessionCredentials();
 
   // If already signed in, pre-fill the resend email from the account's own profile — no need to
   // ask a signed-in user to retype the address they already gave at signup.

@@ -519,6 +519,78 @@
 .mobile-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.45);backdrop-filter:blur(2px);z-index:99;opacity:0;transition:opacity 0.22s}
 .mobile-backdrop.show{display:block;opacity:1}
 
+/* one labelled row inside a settings block — last row carries no rule, so a block never ends on a
+   dangling divider */
+.settings-line{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--border)}
+.settings-line:last-child{border-bottom:none;padding-bottom:2px}
+
+/* ── COMPOSER DOCK ──
+   The floating toolbar under the message input: a labelled primary pill on the left, a row of
+   icon buttons, then the member stack on the right — with panels that expand ABOVE the bar rather
+   than as small dropdowns, so a panel has room for real content (the model list, connected apps,
+   the knowledge shelf). Uses the same tokens as everything else, so it themes with the app. */
+.composer-dock{position:relative;width:100%;max-width:680px;display:flex;flex-direction:column;gap:8px}
+.dock-panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow-lg);overflow:hidden;animation:dockUp 0.2s ease both}
+@keyframes dockUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.dock-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:13px 16px 11px;border-bottom:1px solid var(--border)}
+.dock-panel-title{font-size:14px;font-weight:600;color:var(--text)}
+.dock-panel-note{display:flex;align-items:center;gap:5px;font-size:10.5px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:var(--text3)}
+.dock-panel-body{padding:10px 12px 12px;max-height:340px;overflow-y:auto}
+.dock-close{width:24px;height:24px;flex-shrink:0;background:none;border:none;border-radius:6px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text3);transition:all var(--transition)}
+.dock-close:hover{background:var(--surface2);color:var(--text)}
+.dock-close svg{width:13px;height:13px;stroke:currentColor}
+
+/* one selectable row inside a panel (a model, an app, a member) */
+.dock-row{display:flex;align-items:center;gap:11px;padding:10px 12px;border:1px solid transparent;border-radius:var(--radius-sm);transition:background var(--transition),border-color var(--transition)}
+.dock-row + .dock-row{margin-top:4px}
+.dock-row:hover{background:var(--surface2)}
+.dock-row.active{background:var(--surface2);border-color:var(--border2)}
+.dock-row-icon{width:30px;height:30px;flex-shrink:0;border-radius:8px;background:var(--surface3);display:flex;align-items:center;justify-content:center;color:var(--text2);font-size:11px;font-weight:600;overflow:hidden}
+.dock-row-icon svg{width:15px;height:15px;stroke:currentColor}
+.dock-row-main{flex:1;min-width:0}
+.dock-row-title{font-size:13px;font-weight:500;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dock-row-desc{font-size:11.5px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dock-row-action{flex-shrink:0}
+.dock-pill{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;border-radius:999px;font-size:10.5px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;border:1px solid var(--border2);background:none;color:var(--text2);cursor:pointer;font-family:'DM Sans',sans-serif;transition:all var(--transition)}
+.dock-pill:hover:not(:disabled){background:var(--surface3);color:var(--text)}
+.dock-pill.on{background:var(--text);border-color:var(--text);color:var(--bg);cursor:default}
+.dock-pill:disabled{opacity:0.5;cursor:not-allowed}
+.dock-pill svg{width:11px;height:11px;stroke:currentColor}
+
+/* the tips strip (three side-by-side hint cards) */
+.dock-tips{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:12px}
+.dock-tip{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 13px}
+.dock-tip-dot{width:11px;height:11px;border-radius:999px;background:var(--accent);margin-bottom:16px}
+.dock-tip-title{font-size:12.5px;font-weight:600;color:var(--text);margin-bottom:3px}
+.dock-tip-desc{font-size:11px;color:var(--text3);line-height:1.45}
+
+/* the bar itself */
+.dock-bar{display:flex;align-items:center;gap:4px;background:var(--input-bg);border:1px solid var(--border2);border-radius:999px;box-shadow:var(--shadow-md);padding:6px 8px}
+.dock-primary{display:flex;align-items:center;gap:8px;flex-shrink:0;background:var(--surface2);border:1px solid var(--border);border-radius:999px;padding:7px 15px 7px 11px;font-family:'DM Sans',sans-serif;font-size:13px;color:var(--text2);cursor:pointer;transition:all var(--transition);max-width:210px}
+.dock-primary:hover,.dock-primary.open{background:var(--surface3);color:var(--text);border-color:var(--border2)}
+.dock-primary svg{width:16px;height:16px;stroke:currentColor;flex-shrink:0}
+.dock-primary span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dock-btn{position:relative;width:34px;height:34px;flex-shrink:0;background:none;border:none;border-radius:999px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text3);transition:all var(--transition)}
+.dock-btn:hover{background:var(--surface2);color:var(--text)}
+.dock-btn.open{background:var(--surface3);color:var(--text)}
+.dock-btn svg{width:16px;height:16px;stroke:currentColor}
+.dock-btn-dot{position:absolute;top:5px;right:5px;width:6px;height:6px;border-radius:999px;background:var(--accent)}
+.dock-sep{width:1px;height:20px;flex-shrink:0;background:var(--border);margin:0 4px}
+.dock-spacer{flex:1;min-width:4px}
+
+/* member avatar stack */
+.dock-stack{display:flex;align-items:center;flex-shrink:0;background:var(--surface2);border:1px solid var(--border);border-radius:999px;padding:3px 4px 3px 6px;cursor:pointer;transition:all var(--transition)}
+.dock-stack:hover,.dock-stack.open{background:var(--surface3);border-color:var(--border2)}
+.dock-avatar{width:26px;height:26px;border-radius:999px;border:2px solid var(--input-bg);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#fff;flex-shrink:0}
+.dock-avatar + .dock-avatar{margin-left:-9px}
+.dock-stack-count{margin-left:5px;margin-right:3px;font-size:11px;font-weight:600;color:var(--text2)}
+
+@media (max-width:640px){
+  .dock-tips{grid-template-columns:1fr}
+  .dock-primary{max-width:132px;padding-left:9px;padding-right:11px}
+  .dock-sep{margin:0 1px}
+}
+
 @media (max-width:900px){
   #sidebar{position:fixed;top:0;left:0;height:100%;width:264px!important;max-width:86vw;z-index:200;
            padding-top:env(safe-area-inset-top);

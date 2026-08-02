@@ -38,11 +38,11 @@ import {
 import { DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
 import { ContextUsageMeter } from "./ContextUsageMeter";
 import { SubthreadPanel, SubthreadEntry } from "./SubthreadPanel";
-import { ModelSelector } from "./ModelSelector";
 import { LiveActivityLine, ActivitySummary } from "./ActivityFeed";
 import { InlineApprovalCard } from "./InlineApprovalCard";
 import { InlineConnectorCard } from "./InlineConnectorCard";
-import { ConnectorsButton, UploadButton } from "./InputBarExtras";
+import { ComposerDock } from "./ComposerDock";
+import { useActiveSpace } from "@/lib/active-space-context";
 import type { ThreadSummary, ConsultedThread } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 1500;
@@ -111,6 +111,12 @@ export function Chat({
    *  show (§A1.18 thread model: "this is fine in assistant sessions"). */
   threadId?: string;
 }) {
+  // Only used to label/scope the composer dock. Compared against the space this Chat was actually
+  // given: the dock's member stack must never describe a DIFFERENT space than the conversation
+  // belongs to, which is possible during a space switch before this component remounts.
+  const { activeSpaceId, activeSpaceName, isBusinessSpace } = useActiveSpace();
+  const dockIsBusinessSpace = isBusinessSpace && activeSpaceId === spaceId;
+
   const [chatSessionId, setChatSessionId] = React.useState<string | null>(sessionId ?? null);
   const [messages, setMessages] = React.useState<Message[]>([]);
   const [input, setInput] = React.useState("");
@@ -832,44 +838,48 @@ export function Chat({
         </div>
 
         <div className="chat-input-area">
-          <div className="input-container">
-            <div className="input-top">
-              <textarea
-                className="msg-input"
-                placeholder="Message…"
-                value={input}
-                disabled={isLoading}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    void handleSubmit();
-                  }
-                }}
-                rows={1}
-              />
-              {/* No chatSessionId gate here — a fresh thread/Home has none yet by design
-                  (lazy creation), and the input must stay usable so the first send can mint one. */}
-              <button className="send-btn" type="button" disabled={isLoading || !input.trim()} onClick={() => void handleSubmit()}>
-                <svg viewBox="0 0 24 24" fill="none" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                </svg>
-              </button>
+          <ComposerDock
+            spaceId={spaceId}
+            {...(chatSessionId ? { sessionId: chatSessionId } : {})}
+            session={session}
+            model={selectedModel}
+            reasoningLevel={selectedReasoningLevel}
+            onModelChange={handleModelChange}
+            spaceName={activeSpaceName ?? undefined}
+            isBusinessSpace={dockIsBusinessSpace}
+            onNotice={(msg) => {
+              setUploadNotice(msg);
+              window.setTimeout(() => setUploadNotice((cur) => (cur === msg ? null : cur)), 4000);
+            }}
+            onUseTip={(text) => setInput(text)}
+          >
+            <div className="input-container">
+              <div className="input-top">
+                <textarea
+                  className="msg-input"
+                  placeholder="Message…"
+                  value={input}
+                  disabled={isLoading}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void handleSubmit();
+                    }
+                  }}
+                  rows={1}
+                />
+                {/* No chatSessionId gate here — a fresh thread/Home has none yet by design
+                    (lazy creation), and the input must stay usable so the first send can mint one. */}
+                <button className="send-btn" type="button" disabled={isLoading || !input.trim()} onClick={() => void handleSubmit()}>
+                  <svg viewBox="0 0 24 24" fill="none" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                  </svg>
+                </button>
+              </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6 }}>
-              <ModelSelector model={selectedModel} reasoningLevel={selectedReasoningLevel} onChange={handleModelChange} />
-              <ConnectorsButton spaceId={spaceId} {...(chatSessionId ? { sessionId: chatSessionId } : {})} session={session} />
-              <UploadButton
-                spaceId={spaceId}
-                session={session}
-                onUploaded={(msg) => {
-                  setUploadNotice(msg);
-                  window.setTimeout(() => setUploadNotice((cur) => (cur === msg ? null : cur)), 4000);
-                }}
-              />
-            </div>
-            {uploadNotice && <p style={{ fontSize: 11.5, color: "var(--text3)", marginTop: 4 }}>{uploadNotice}</p>}
-          </div>
+          </ComposerDock>
+          {uploadNotice && <p style={{ fontSize: 11.5, color: "var(--text3)", marginTop: 4 }}>{uploadNotice}</p>}
           <p className="disclaimer">AI-generated responses may be inaccurate.</p>
         </div>
       </div>

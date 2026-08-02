@@ -979,7 +979,9 @@ export interface RevenueSummary {
   gross_cents: number;
   fee_cents: number;
   net_cents: number;
-  orders: number;
+  /** The server's own field name (workers/spaces/src/index.ts). This was typed as `orders` here,
+   *  which never existed on the wire — the dashboard rendered a literal "undefined orders". */
+  order_count: number;
 }
 
 // F-WALLET-7: the consolidated per-business wallet view (available balance + lifetime cut summary

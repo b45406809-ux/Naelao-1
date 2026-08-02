@@ -26,7 +26,7 @@ import Link from "next/link";
 import { Card, CardLabel, CardValue, CardSub, Badge, type BadgeColor } from "@naelao/ui";
 import { ALLOWED_MODELS } from "@naelao/billing-core";
 import { useProduct } from "@/lib/product-context";
-import { useProductAuth } from "@/lib/auth-provider";
+import { useSessionCredentials } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
 import {
   getAssistantPolicy,
@@ -68,7 +68,7 @@ import {
 } from "@/lib/api";
 import { relativeTime } from "@/lib/relativeTime";
 import { ApprovedActionsEditor } from "@/components/ApprovedActionsEditor";
-import { AgentPolicyPanel } from "@/components/AgentPolicyPanel";
+import { canManageSpaceSettings } from "@/lib/roles";
 
 /** Same curated allowlist + default the dashboard's own Configuration tab picker uses — kept as
  *  a parallel copy rather than a new shared export (this codebase's own precedent for a small
@@ -188,8 +188,7 @@ const panelGrid: React.CSSProperties = {
 
 export default function DashboardPage() {
   const product = useProduct();
-  const { session } = useProductAuth();
-  const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
+  const creds = useSessionCredentials();
   const { activeSpaceId, activeSpaceName, isBusinessSpace } = useActiveSpace();
 
   // Assistant dashboard state (unchanged from the prior standalone page).
@@ -237,7 +236,11 @@ export default function DashboardPage() {
       settle(listAssistantFiles(activeSpaceId, creds), setFiles),
       settle(listSessions(activeSpaceId, creds), setSessions),
       settle(listAgentDefinitions(activeSpaceId, creds), setAgents),
-      settle(getMe(activeSpaceId, creds), setMe),
+      // The PRODUCT root, never the active business. A ProductUserDO instance is one per
+      // (productId × endUserId), so asking for "me" scoped to a business 404s — which is exactly
+      // why "Your credits" sat at "…" forever inside a business. Credits belong to the person at
+      // product level; they are not per-business.
+      settle(getMe(product.space_id, creds), setMe),
       settle(listApprovals(activeSpaceId, creds), setApprovals),
       // Always fetched (not just for a business): this is where the configured model lives for
       // any space, and it's what previously silently defaulted to an unreachable Claude id with
@@ -286,10 +289,11 @@ export default function DashboardPage() {
   }, [creds, activeSpaceId, isBusinessSpace, product.space_id]);
 
   // item 79: the guided/autonomous toggle and model picker are real writes, not display-only —
-  // gated to a business admin, the same floor requireBusinessMembership enforces server-side.
-  // A plain member (or a non-business/team-mode space, where an end user is never more than
-  // "member") sees the same panel read-only, same as before this pass.
-  const canManageAssistant = isBusinessSpace && business?.role === "admin";
+  // gated to the same floor requireBusinessMembership enforces server-side. A plain member (or a
+  // non-business/team-mode space, where an end user is never more than "member") sees the same
+  // panel read-only. Ranked, not exact-match — see lib/roles.ts for why that distinction is what
+  // this pass was reported for.
+  const canManageAssistant = canManageSpaceSettings(isBusinessSpace, business?.role);
 
   async function setAutonomy(autonomous: boolean) {
     if (!activeSpaceId || !creds) return;
@@ -417,7 +421,7 @@ export default function DashboardPage() {
           <Stat
             label={`Revenue (${revenue?.period ?? "this month"})`}
             value={revenue ? centsToDisplay(revenue.net_cents, revenue.currency) : "…"}
-            sub={revenue ? `${revenue.orders} order${revenue.orders === 1 ? "" : "s"}` : undefined}
+            sub={revenue ? `${revenue.order_count} order${revenue.order_count === 1 ? "" : "s"}` : undefined}
           />
         )}
         {isBusinessSpace && <Stat label="Members" value={String(members.length)} />}
@@ -512,7 +516,15 @@ export default function DashboardPage() {
         </>
       )}
 
-      <SectionHeading>Assistant</SectionHeading>
+      <SectionHeading
+        action={
+          <Link href={`/p/${product.slug}/dashboard/assistant`} style={{ fontSize: 12, color: "var(--accent)", textDecoration: "none" }}>
+            Assistant settings →
+          </Link>
+        }
+      >
+        Assistant
+      </SectionHeading>
       <div style={panelGrid}>
         <Panel title="Configuration">
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -586,9 +598,16 @@ export default function DashboardPage() {
           )}
           {!canManageAssistant && (
             <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--text3)" }}>
-              {isBusinessSpace ? "Only a business admin can change autonomy or model." : "Changed by the space owner in the builder dashboard."}
+              {isBusinessSpace
+                ? "Only the owner or an admin of this business can change autonomy or model."
+                : "Changed by the space owner in the builder dashboard."}
             </div>
           )}
+          <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+            <Link href={`/p/${product.slug}/dashboard/assistant`} style={{ fontSize: 12, color: "var(--accent)", textDecoration: "none" }}>
+              All assistant settings →
+            </Link>
+          </div>
         </Panel>
 
         <Panel title="Built-in scripts" count={capabilities?.prebuilt_count}>
@@ -674,13 +693,27 @@ export default function DashboardPage() {
           ) : (
             <div style={{ maxHeight: 320, overflowY: "auto" }}>
               {agents.slice(0, 10).map((a) => (
-                <div key={a.id} style={{ padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
-                  <Row left={a.name || a.id} />
-                  <AgentPolicyPanel spaceId={activeSpaceId} agentId={a.id} session={creds!} canEdit={canManageAssistant} />
-                </div>
+                <Row
+                  key={a.id}
+                  left={
+                    <Link href={`/p/${product.slug}/agents/${encodeURIComponent(a.id)}`} style={{ color: "var(--text2)", textDecoration: "none" }}>
+                      {a.name || a.id}
+                    </Link>
+                  }
+                  right={
+                    <Link href={`/p/${product.slug}/agents/${encodeURIComponent(a.id)}`} style={{ color: "var(--accent)", textDecoration: "none" }}>
+                      Configure
+                    </Link>
+                  }
+                />
               ))}
             </div>
           )}
+          <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}>
+            <Link href={`/p/${product.slug}/agents`} style={{ fontSize: 12, color: "var(--accent)", textDecoration: "none" }}>
+              All agents →
+            </Link>
+          </div>
         </Panel>
 
         <Panel title="Workspace files" count={files.length}>

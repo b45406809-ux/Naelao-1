@@ -18,6 +18,9 @@ import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { listSessions, startSession, getOnboarding, type SessionSummary } from "@/lib/api";
 import { relativeTime } from "@/lib/relativeTime";
+import { ComposerDock } from "@/components/ComposerDock";
+import { getPreferredModel, storePreferredModel, getPreferredReasoningLevel, storePreferredReasoningLevel } from "@/lib/modelPreference";
+import { DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
 
 /** Openers that reflect what this assistant is actually for — running the business — rather than
  *  generic "ask me anything" filler. Every one is answerable from what it can already see. */
@@ -72,6 +75,13 @@ export default function HomePage() {
   const [sessions, setSessions] = React.useState<SessionSummary[]>([]);
   const [starting, setStarting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // The model choice made here is the same per-space preference the chat itself reads, so picking
+  // one before the first message carries straight into the session it mints.
+  const [dockModel, setDockModel] = React.useState<string>(() => getPreferredModel(activeSpaceId) ?? DEFAULT_WORKING_MODEL);
+  const [dockReasoning, setDockReasoning] = React.useState<string | null>(
+    () => getPreferredReasoningLevel(activeSpaceId, getPreferredModel(activeSpaceId) ?? DEFAULT_WORKING_MODEL)
+  );
+  const [dockNotice, setDockNotice] = React.useState<string | null>(null);
   const [setupPending, setSetupPending] = React.useState(false);
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
 
@@ -149,31 +159,58 @@ export default function HomePage() {
           </div>
         )}
 
-        <div className="input-container" style={{ marginTop: 26 }}>
-          <div className="input-top">
-            <textarea
-              ref={inputRef}
-              className="msg-input"
-              placeholder="Ask your assistant anything…"
-              value={input}
-              disabled={starting}
-              autoFocus
-              rows={1}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void start(input);
-                }
+        {creds && (
+          <div style={{ marginTop: 26, width: "100%", display: "flex", justifyContent: "center" }}>
+            <ComposerDock
+              spaceId={activeSpaceId}
+              session={creds}
+              model={dockModel}
+              reasoningLevel={dockReasoning}
+              onModelChange={(m, level) => {
+                setDockModel(m);
+                setDockReasoning(level);
+                storePreferredModel(activeSpaceId, m);
+                if (level) storePreferredReasoningLevel(activeSpaceId, m, level);
               }}
-            />
-            <button className="send-btn" type="button" disabled={starting || !input.trim()} onClick={() => void start(input)}>
-              <svg viewBox="0 0 24 24" fill="none" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-              </svg>
-            </button>
+              spaceName={activeSpaceName ?? undefined}
+              isBusinessSpace={isBusinessSpace}
+              onNotice={(msg) => {
+                setDockNotice(msg);
+                window.setTimeout(() => setDockNotice((cur) => (cur === msg ? null : cur)), 4000);
+              }}
+              onUseTip={(text) => insertPrompt(text)}
+            >
+              <div className="input-container">
+                <div className="input-top">
+                  <textarea
+                    ref={inputRef}
+                    className="msg-input"
+                    placeholder="Ask your assistant anything…"
+                    value={input}
+                    disabled={starting}
+                    autoFocus
+                    rows={1}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        void start(input);
+                      }
+                    }}
+                  />
+                  <button className="send-btn" type="button" disabled={starting || !input.trim()} onClick={() => void start(input)}>
+                    <svg viewBox="0 0 24 24" fill="none" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </ComposerDock>
           </div>
-        </div>
+        )}
+        {dockNotice && (
+          <p style={{ fontSize: 11.5, color: "var(--text3)", marginTop: 8, textAlign: "center" }}>{dockNotice}</p>
+        )}
 
         {error && (
           <p role="alert" style={{ fontSize: 12.5, color: "#dc2626", marginTop: 12, textAlign: "center" }}>

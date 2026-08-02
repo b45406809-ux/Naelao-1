@@ -970,7 +970,7 @@ export default function BusinessDetailPage() {
             <div className="settings-row">
               <div>
                 <div className="settings-row-label">This month ({revenue?.period ?? "—"})</div>
-                <div className="settings-row-sub">{revenue?.orders ?? 0} orders</div>
+                <div className="settings-row-sub">{revenue?.order_count ?? 0} orders</div>
               </div>
               <div style={{ textAlign: "right" }}>
                 <div className="settings-row-label">{revenue ? centsToDisplay(revenue.net_cents) : "—"} net</div>

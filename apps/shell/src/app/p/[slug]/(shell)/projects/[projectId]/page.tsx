@@ -365,8 +365,14 @@ export default function ProjectDetailPage() {
                 </div>
               )}
               {creds && (
-                <div style={{ marginTop: 8 }}>
+                <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                   <AgentPolicyPanel spaceId={activeSpaceId} agentId={a.id} session={creds} canEdit />
+                  <Link
+                    href={`/p/${product.slug}/agents/${encodeURIComponent(a.id)}`}
+                    style={{ fontSize: 11.5, color: "var(--accent)", textDecoration: "none" }}
+                  >
+                    All settings →
+                  </Link>
                 </div>
               )}
             </div>
