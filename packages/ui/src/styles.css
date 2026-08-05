@@ -650,3 +650,17 @@
   .page-title{font-size:22px}
   .toast{left:16px;right:16px;bottom:16px;max-width:none;text-align:center}
 }
+
+/* ── INTERRUPTED RUN CARD ──
+   The standing "this didn't finish — continue?" offer in a thread. Amber rather than red: the
+   work is recoverable and mostly intact, which is a different thing from an error. Persistent by
+   construction (server-backed), so it must read as calm and answerable, not alarming. */
+.interrupted-card{margin:14px 0;padding:14px 16px 13px;border:1px solid var(--warn-border,#e0b872);border-radius:14px;background:var(--warn-bg,rgba(224,184,114,0.08));max-width:640px}
+.interrupted-head{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.interrupted-dot{width:8px;height:8px;border-radius:999px;background:var(--warn-border,#e0b872);flex-shrink:0}
+.interrupted-title{font-size:13.5px;font-weight:600;color:var(--text)}
+.interrupted-reason{font-size:13px;color:var(--text2);line-height:1.5;margin:0 0 6px}
+.interrupted-note{font-size:12px;color:var(--text3);line-height:1.5;margin:0 0 12px}
+.interrupted-error{font-size:12px;color:var(--danger,#c0392b);margin:0 0 10px}
+.interrupted-actions{display:flex;align-items:center;gap:8px}
+.interrupted-actions .btn-primary,.interrupted-actions .btn-ghost{padding:7px 15px;font-size:12.5px;border-radius:999px}

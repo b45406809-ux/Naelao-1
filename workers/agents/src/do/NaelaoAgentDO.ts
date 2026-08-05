@@ -1046,6 +1046,39 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       )
     `);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_suspended_runs_run ON suspended_runs(run_id)`);
+
+    // A run that FAILED (or ran out of steps) and can still be picked up.
+    //
+    // The sibling of suspended_runs: that one is "stopped waiting for a person", this one is
+    // "stopped because something went wrong". Both keep the work already done so continuing means
+    // continuing — the action ledger is keyed on the ORIGINAL run id, so a Continue re-enters
+    // under that same key and every completed action short-circuits instead of running twice.
+    // Restarting is what created a second project when a user pressed Try again.
+    //
+    // Durable on purpose: the offer to continue has to survive a refresh, a closed tab and a DO
+    // eviction, or the work is stranded the moment the person looks away.
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS interrupted_runs (
+        run_id         TEXT PRIMARY KEY,
+        space_id       TEXT NOT NULL,
+        tenant_id      TEXT NOT NULL,
+        agent_id       TEXT NOT NULL,
+        session_id     TEXT NOT NULL,
+        project_id     TEXT,
+        user_id        TEXT,
+        caller_role    TEXT,
+        model          TEXT,
+        goal           TEXT NOT NULL,
+        reason         TEXT NOT NULL,
+        steps_json     TEXT NOT NULL DEFAULT '[]',
+        status         TEXT NOT NULL DEFAULT 'open',
+        continued_run_id TEXT,
+        created_at     INTEGER NOT NULL
+      )
+    `);
+    this.ctx.storage.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_interrupted_session ON interrupted_runs(session_id, status)`
+    );
     // The run id handleResumeRun mints for its continuation pass, recorded as soon as it exists
     // (before the continuation actually executes) so a chat client can poll for it and attach to
     // the SAME pollRun/streamRun machinery an ordinary run uses — reusing the live activity trail
@@ -1247,6 +1280,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           .exec(`SELECT status, resumed_run_id FROM suspended_runs WHERE approval_id = ?`, approvalId)
           .toArray() as unknown as Array<{ status: string; resumed_run_id: string | null }>;
         return Response.json({ status: row[0]?.status ?? null, resumed_run_id: row[0]?.resumed_run_id ?? null });
+      }
+
+      // GET /script/interrupted?sessionId= — the standing offer to continue a run that went
+      // wrong in this thread, if there is one. Read from durable storage rather than held in the
+      // client, so the offer survives a refresh, a closed tab and a DO eviction.
+      if (method === "GET" && url.pathname === "/script/interrupted") {
+        return this.handleGetInterruptedRun(url.searchParams.get("sessionId") ?? "");
+      }
+
+      // POST /script/interrupted — {runId, action: "continue" | "dismiss"}. One route with an
+      // action field rather than /interrupted/:runId/continue: a dynamic segment followed by a
+      // static suffix is the shape that has repeatedly triggered Hono's route-table corruption
+      // in this codebase.
+      if (method === "POST" && url.pathname === "/script/interrupted") {
+        return this.handleContinueInterruptedRun(request);
       }
 
       // POST /cancel — cancel all active runs for this DO
@@ -2637,6 +2685,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // trace is exactly what a builder (or a future skill-evolution job) needs to diagnose it.
       this.persistRunTrace(runId, tenantId, result.trace);
 
+      // A run that went wrong is checkpointed so it can be CONTINUED rather than restarted.
+      // Restarting is what created a second project when a user pressed Try again: a fresh run
+      // gets a fresh ledger key and redoes everything. The offer is durable (see
+      // interrupted_runs) so it survives a refresh, and it carries the completed steps forward.
+      if (result.result && result.result.ok === false) {
+        this.persistInterruptedRun({
+          runId, spaceId, tenantId, agentId, sessionId, projectId, userId, callerRole,
+          model: body.model, goal: body.goal,
+          reason: result.result.error ?? "the run did not finish",
+          steps: result.steps_completed ?? [],
+        });
+      }
+
       // Go-live audit A-1/A-2: shared with handleRun via settleRunBilling — see that method's
       // doc for why both runtimes must settle billing identically rather than each carrying
       // their own copy (the divergence that let handleRun run completely unmetered).
@@ -2919,6 +2980,135 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   /**
+   * Checkpoint a run that failed, so the person can continue it instead of starting over.
+   *
+   * Only ONE offer stays open per thread: a second failure replaces the first rather than
+   * stacking, because a queue of stale "continue?" cards is noise, and the newest failure is the
+   * one that actually reflects where the work stands.
+   */
+  private persistInterruptedRun(ctx: {
+    runId: string; spaceId: string; tenantId: string; agentId: string; sessionId: string;
+    projectId?: string | undefined; userId?: string | undefined; callerRole?: string | undefined;
+    model?: string | undefined; goal: string; reason: string;
+    steps: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
+  }): void {
+    try {
+      this.ctx.storage.sql.exec(
+        `UPDATE interrupted_runs SET status = 'superseded' WHERE session_id = ? AND status = 'open'`,
+        ctx.sessionId
+      );
+      this.ctx.storage.sql.exec(
+        `INSERT OR REPLACE INTO interrupted_runs
+           (run_id, space_id, tenant_id, agent_id, session_id, project_id, user_id, caller_role,
+            model, goal, reason, steps_json, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+        ctx.runId, ctx.spaceId, ctx.tenantId, ctx.agentId, ctx.sessionId,
+        ctx.projectId ?? null, ctx.userId ?? null, ctx.callerRole ?? null, ctx.model ?? null,
+        ctx.goal, ctx.reason.slice(0, 2000), JSON.stringify(ctx.steps), Date.now()
+      );
+    } catch {
+      /* the failure is already reported to the caller; losing the checkpoint must not add to it */
+    }
+  }
+
+  /** The open offer to continue for this thread, if there is one. */
+  private handleGetInterruptedRun(sessionId: string): Response {
+    try {
+      const rows = this.ctx.storage.sql
+        .exec(
+          `SELECT run_id, goal, reason, steps_json, created_at FROM interrupted_runs
+            WHERE session_id = ? AND status = 'open' ORDER BY created_at DESC LIMIT 1`,
+          sessionId
+        )
+        .toArray() as unknown as Array<Record<string, string | number | null>>;
+      const row = rows[0];
+      if (!row) return Response.json({ interrupted: null });
+      let completed = 0;
+      try {
+        completed = (JSON.parse(String(row["steps_json"] ?? "[]")) as unknown[]).length;
+      } catch { /* a malformed checkpoint still deserves to offer a continue */ }
+      return Response.json({
+        interrupted: {
+          run_id: row["run_id"],
+          goal: row["goal"],
+          reason: row["reason"],
+          steps_completed: completed,
+          created_at: row["created_at"],
+        },
+      });
+    } catch {
+      // Never turn "I couldn't read the checkpoint" into "there is nothing to continue" — the
+      // caller distinguishes the two, and claiming the latter would strand real work.
+      return Response.json({ error: "could not read the checkpoint" }, { status: 500 });
+    }
+  }
+
+  /**
+   * Continue (or dismiss) an interrupted run.
+   *
+   * The whole point is the ledger key: re-entering under the ORIGINAL run id means every action
+   * already recorded short-circuits instead of executing a second time. A fresh run — which is
+   * what a naive "Try again" does — gets a fresh key and redoes the lot.
+   *
+   * Claimed with a conditional UPDATE so a double click can only ever continue once.
+   */
+  private async handleContinueInterruptedRun(request: Request): Promise<Response> {
+    const body = await request.json<{ runId?: string; action?: string }>();
+    const runId = body.runId;
+    if (!runId) return Response.json({ error: "runId is required" }, { status: 400 });
+    const action = body.action === "dismiss" ? "dismiss" : "continue";
+
+    const rows = this.ctx.storage.sql
+      .exec(`SELECT * FROM interrupted_runs WHERE run_id = ? AND status = 'open'`, runId)
+      .toArray() as unknown as Array<Record<string, string | number | null>>;
+    const row = rows[0];
+    if (!row) return Response.json({ continued: false, reason: "nothing open to continue" });
+
+    // RETURNING, not rowsWritten: that counter is a billing measure of rows touched, INCLUDING
+    // index entries, so an UPDATE of a column that appears in an index (status does, here)
+    // reports 2 for a single changed row. Checking it against 1 silently consumed the offer
+    // while reporting that nothing was continued — caught live, not in tests.
+    const claimed = this.ctx.storage.sql.exec(
+      `UPDATE interrupted_runs SET status = ? WHERE run_id = ? AND status = 'open' RETURNING run_id`,
+      action === "dismiss" ? "dismissed" : "continuing", runId
+    ).toArray();
+    if (claimed.length !== 1) return Response.json({ continued: false, reason: "already handled" });
+    if (action === "dismiss") return Response.json({ continued: false, dismissed: true });
+
+    let steps: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }> = [];
+    try {
+      steps = JSON.parse(String(row["steps_json"] ?? "[]"));
+    } catch { /* continue with no prior steps rather than refusing to continue at all */ }
+
+    const continuedRunId = crypto.randomUUID();
+    this.ctx.storage.sql.exec(
+      `UPDATE interrupted_runs SET continued_run_id = ? WHERE run_id = ?`, continuedRunId, runId
+    );
+
+    const res = await this.fetch(new Request("http://agent-do/script/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        spaceId: row["space_id"], tenantId: row["tenant_id"], agentId: row["agent_id"],
+        sessionId: row["session_id"], projectId: row["project_id"] ?? undefined,
+        userId: row["user_id"] ?? undefined, callerRole: row["caller_role"] ?? undefined,
+        model: row["model"] ?? undefined, goal: row["goal"],
+        runId: continuedRunId,
+        // THE point of this route — same key as the original, so completed actions replay
+        // instead of re-executing.
+        ledgerKey: runId,
+        resumeSteps: steps,
+      }),
+    }));
+
+    this.ctx.storage.sql.exec(
+      `UPDATE interrupted_runs SET status = 'continued' WHERE run_id = ?`, runId
+    );
+    const payload = await res.json().catch(() => ({}));
+    return Response.json({ continued: true, run_id: continuedRunId, result: payload });
+  }
+
+  /**
    * Continue a run that was waiting on a human, now that the approval has been resolved.
    *
    * Deliberately re-enters the loop rather than restoring an in-memory continuation: DO
@@ -2941,11 +3131,15 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!row) return Response.json({ resumed: false, reason: "no suspended run for this approval" });
 
     // Claim it before doing any work — two concurrent resumes must not both re-enter the loop.
+    // RETURNING rather than rowsWritten — see handleContinueInterruptedRun for why that counter
+    // cannot be read as "rows changed". This works today only because no index on suspended_runs
+    // happens to contain `status`; adding one would silently break every approval resume.
     const claimed = this.ctx.storage.sql.exec(
-      `UPDATE suspended_runs SET status = 'resuming' WHERE approval_id = ? AND status = 'suspended'`,
+      `UPDATE suspended_runs SET status = 'resuming' WHERE approval_id = ? AND status = 'suspended'
+       RETURNING approval_id`,
       approvalId
-    );
-    if (claimed.rowsWritten !== 1) {
+    ).toArray();
+    if (claimed.length !== 1) {
       return Response.json({ resumed: false, reason: "already claimed" });
     }
 

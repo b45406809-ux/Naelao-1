@@ -19,6 +19,8 @@ import {
   type Message,
   type LiveRunStep,
   type PendingApproval,
+  getInterruptedRun,
+  type InterruptedRun,
 } from "@/lib/api";
 import type { SessionCredentials } from "@/lib/api";
 import {
@@ -39,6 +41,7 @@ import { DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
 import { ContextUsageMeter } from "./ContextUsageMeter";
 import { SubthreadPanel, SubthreadEntry } from "./SubthreadPanel";
 import { LiveActivityLine, ActivitySummary } from "./ActivityFeed";
+import { InterruptedRunCard } from "./InterruptedRunCard";
 import { InlineApprovalCard } from "./InlineApprovalCard";
 import { InlineConnectorCard } from "./InlineConnectorCard";
 import { ComposerDock } from "./ComposerDock";
@@ -175,6 +178,22 @@ export function Chat({
   // exactly the double/triple-reply bug. This ref is the single gate: whichever call site reaches
   // a given runId first wins, and every other attempt for that same runId is a no-op.
   const attachedRunIdRef = React.useRef<string | null>(null);
+  // The standing "this didn't finish — continue?" offer for this thread. Server-backed, so it is
+  // still here after a refresh: the offer is the only way to pick the work back up without
+  // redoing side effects that already happened.
+  const [interrupted, setInterrupted] = React.useState<InterruptedRun | null>(null);
+  const refreshInterrupted = React.useCallback(
+    async (sid: string) => {
+      if (!session) return;
+      try {
+        setInterrupted(await getInterruptedRun(spaceId, sid, session));
+      } catch {
+        // Leave whatever is already shown. Clearing it on a transient read failure would tell the
+        // user there is nothing to continue, which is the one wrong answer here.
+      }
+    },
+    [spaceId, session]
+  );
   // Maps a resumed-run's own id (handleResumeRun mints a fresh one) back to the message that held
   // the approval it continues — set by watchForResume once the continuation actually starts, read
   // by finalizeAnswer so that run's eventual answer is folded INTO that same bubble instead of
@@ -355,6 +374,9 @@ export function Chat({
             finalizeAnswer(runId, run.final_answer, latestActivity, run.pending_approval, run.deferred_approvals);
           } else if (run.status === "failed" || run.status === "cancelled") {
             setError(run.error ?? "The agent run failed");
+            // The run left a checkpoint; show the offer to continue it rather than only an error
+            // the user can do nothing with except retype their request.
+            void refreshInterrupted(sid);
             // A run can fail on something UNRELATED while still carrying a real, still-open
             // approval it parked earlier — that approval must not vanish along with the error
             // banner, since it's a completely separate, still-actionable thing.
@@ -383,7 +405,7 @@ export function Chat({
         }
       }, POLL_INTERVAL_MS);
     },
-    [spaceId, session, stopPolling, finalizeAnswer]
+    [spaceId, session, stopPolling, finalizeAnswer, refreshInterrupted]
   );
 
   const streamRun = React.useCallback(
@@ -442,6 +464,7 @@ export function Chat({
               finalizeAnswer(data.run_id ?? runId, answerText, activitySteps, data.pending_approval, data.deferred_approvals);
             } else if (status === "failed" || status === "cancelled") {
               setError(data.error ?? "The agent run failed");
+              void refreshInterrupted(sid);
               // Same "a real, still-open approval must not vanish along with an unrelated
               // failure" rule as the plain-polling fallback below.
               if (data.deferred_approvals?.length) {
@@ -535,6 +558,14 @@ export function Chat({
   // §A1.27: reattach to an in-flight run on mount (a reload, or a remount from navigating away
   // and back within the same tab) instead of only showing history with no sign a run is still
   // going. Runs once chatSessionId is resolved (i.e. init() above has finished).
+  // The durable continue-offer is read on every mount — that is what makes it survive a refresh
+  // or a closed tab. Separate from the in-flight-run reattach below: a thread can perfectly well
+  // have an unfinished run to continue and nothing currently running.
+  React.useEffect(() => {
+    if (!chatSessionId) return;
+    void refreshInterrupted(chatSessionId);
+  }, [chatSessionId, refreshInterrupted]);
+
   React.useEffect(() => {
     if (!chatSessionId) return;
     const activeRunId = getActiveRunId(spaceId, sessionKey);
@@ -783,6 +814,27 @@ export function Chat({
                   <span className="typing-dot" />
                 </div>
               )}
+            </div>
+          )}
+          {/* The durable offer to continue. Rendered independently of `error`, which is
+              in-page state and disappears on reload — this is the part that has to still be
+              here tomorrow. */}
+          {interrupted && chatSessionId && (
+            <div className="msg-row">
+              <InterruptedRunCard
+                interrupted={interrupted}
+                spaceId={spaceId}
+                sessionId={chatSessionId}
+                session={session}
+                onContinued={(newRunId) => {
+                  setInterrupted(null);
+                  setError(null);
+                  setIsLoading(true);
+                  storeActiveRunId(spaceId, sessionKey, newRunId);
+                  attachToRun(chatSessionId, newRunId);
+                }}
+                onDismissed={() => setInterrupted(null)}
+              />
             </div>
           )}
           {error && (

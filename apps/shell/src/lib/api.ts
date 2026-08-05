@@ -1392,3 +1392,44 @@ export async function completeOnboarding(
     session,
   });
 }
+
+// ── Interrupted runs ─────────────────────────────────────────────────────────
+// A run that failed leaves a standing offer to CONTINUE it. Read from the server rather than
+// held in the page, so the offer survives a refresh — the work is already done and paid for;
+// losing the only way to pick it up because someone reloaded would be the real failure.
+
+export interface InterruptedRun {
+  run_id: string;
+  goal: string;
+  reason: string;
+  /** How much the run had already completed before it stopped — what a Continue picks up from. */
+  steps_completed: number;
+  created_at: number;
+}
+
+export async function getInterruptedRun(
+  spaceId: string,
+  sessionId: string,
+  session: SessionCredentials
+): Promise<InterruptedRun | null> {
+  const res = await apiFetch<{ interrupted: InterruptedRun | null }>(
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/interrupted`,
+    { session }
+  );
+  return res.interrupted ?? null;
+}
+
+/** Continue re-enters the loop under the original run's ledger key, so actions that already
+ *  executed replay instead of running a second time. Dismiss just closes the offer. */
+export async function resolveInterruptedRun(
+  spaceId: string,
+  sessionId: string,
+  runId: string,
+  action: "continue" | "dismiss",
+  session: SessionCredentials
+): Promise<{ continued: boolean; run_id?: string }> {
+  return apiFetch<{ continued: boolean; run_id?: string }>(
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/interrupted`,
+    { method: "POST", body: JSON.stringify({ run_id: runId, action }), session }
+  );
+}

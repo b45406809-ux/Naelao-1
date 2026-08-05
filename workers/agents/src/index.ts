@@ -1165,6 +1165,47 @@ async function fetchRunOrTaskStatus(
   };
 }
 
+// ── Interrupted runs: the standing offer to CONTINUE a run that went wrong ────
+//
+//   GET  /spaces/:spaceId/sessions/:sessionId/agent/interrupted
+//   POST /spaces/:spaceId/sessions/:sessionId/agent/interrupted   {run_id, action}
+//
+// Continuing re-enters the loop under the ORIGINAL run's ledger key, so actions that already
+// executed replay from the ledger instead of running twice. A plain "try again" starts a fresh
+// run with a fresh key and redoes everything — which is how pressing Try again on a failed run
+// created a second project.
+//
+// One route with an `action` field rather than a /continue + /dismiss pair: a dynamic segment
+// followed by a static suffix is the shape that has repeatedly corrupted Hono's router here.
+
+app.get("/spaces/:spaceId/sessions/:sessionId/agent/interrupted", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const { spaceId, sessionId } = c.req.param();
+  const space = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ?")
+    .bind(spaceId, tenantId).first<{ id: string }>();
+  if (!space) throw notFound("Space");
+  const stub = await getAgentDO(c.env, tenantId, sessionId);
+  return stub.fetch(`http://agent-do/script/interrupted?sessionId=${encodeURIComponent(sessionId)}`);
+});
+
+app.post("/spaces/:spaceId/sessions/:sessionId/agent/interrupted", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const { spaceId, sessionId } = c.req.param();
+  const space = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ?")
+    .bind(spaceId, tenantId).first<{ id: string }>();
+  if (!space) throw notFound("Space");
+  const body = await c.req
+    .json<{ run_id?: string; action?: string }>()
+    .catch(() => ({}) as { run_id?: string; action?: string });
+  if (!body.run_id) return c.json({ error: "run_id is required" }, 400);
+  const stub = await getAgentDO(c.env, tenantId, sessionId);
+  return stub.fetch("http://agent-do/script/interrupted", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ runId: body.run_id, action: body.action ?? "continue" }),
+  });
+});
+
 // ── GET /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId ────────────────
 
 app.get(

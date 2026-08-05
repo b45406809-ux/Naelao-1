@@ -235,6 +235,14 @@ export interface LoopResult {
     expires_at?: number;
     steps_completed: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
   }>;
+  /**
+   * The ungated work this run completed, on EVERY exit — success, failure or exhaustion.
+   *
+   * A failed run used to hand back an error and nothing else, so the only thing a caller could
+   * offer was "start over", which redoes side effects that already happened. With this, a failure
+   * is resumable: the caller checkpoints these steps and a Continue picks up from them.
+   */
+  steps_completed?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
 }
 
 // ── Engine bindings (dependency-injected so the engine is testable + DO-agnostic) ──────

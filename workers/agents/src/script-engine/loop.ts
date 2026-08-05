@@ -370,10 +370,18 @@ export async function runScriptLoop(
    *  exit the run takes — so a run that answered around a parked action still reports it, rather
    *  than the outstanding work quietly disappearing with the reply. */
   let deferredOut: NonNullable<LoopResult["deferred_approvals"]> = [];
+  /** The ungated work this run actually completed, attached to EVERY exit — including a failure.
+   *
+   *  Without it a failed run is unresumable: the caller has an error and nothing else, so the only
+   *  offer it can make is "start over", which redoes side effects that already happened. This is
+   *  the same payload the suspend path already hands back as `pending_approval.steps_completed`;
+   *  a run that fails deserves it just as much as a run that stops for a human. */
+  let stepsOut: NonNullable<LoopResult["steps_completed"]> = [];
   const finish = (r: LoopResultCore): LoopResult => ({
     ...r,
     trace,
     ...(deferredOut.length > 0 ? { deferred_approvals: deferredOut } : {}),
+    ...(stepsOut.length > 0 ? { steps_completed: stepsOut } : {}),
   });
 
   /** A run that stopped at the gate, waiting on a human. Deliberately NOT an error result: the
@@ -515,6 +523,9 @@ export async function runScriptLoop(
       const priorSteps: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }> = [
         ...(opts.resumeSteps ?? []),
       ];
+      // Same array, exposed on every exit by finish() — so a run that fails can be continued
+      // from what it had already done rather than restarted from nothing.
+      stepsOut = priorSteps;
       // Actions parked mid-run because they need a human. The run continues around them; each one
       // carries its own checkpoint so it can be picked up alone when the answer arrives.
       const deferred: NonNullable<LoopResult["deferred_approvals"]> = [];
