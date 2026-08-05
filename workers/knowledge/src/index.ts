@@ -686,7 +686,10 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
           sparse_score: 0,
         };
       });
-      await safeKvPut(c.env.KB_CACHE, cacheKey, JSON.stringify(results), { expirationTtl: 3600 });
+      // Same rule as the legacy path below: never cache an empty result.
+      if (results.length > 0) {
+        await safeKvPut(c.env.KB_CACHE, cacheKey, JSON.stringify(results), { expirationTtl: 3600 });
+      }
       return c.json({ data: results, cached: false, retrieval_mode: "autorag" });
     } catch {
       // Best-effort — fall through to the legacy hybrid pipeline below rather than erroring.
@@ -771,7 +774,16 @@ app.get("/spaces/:spaceId/kb/search", async (c) => {
   });
 
   // ── Cache results (G-BE02: safeKvPut validates size before write) ────────
-  await safeKvPut(c.env.KB_CACHE, cacheKey, JSON.stringify(results), { expirationTtl: 3600 });
+  //
+  // Only a NON-empty result is cached. An empty one usually means the vectors are not indexed
+  // yet — Vectorize indexes asynchronously — and caching that for an hour makes a document
+  // someone just uploaded invisible long after it became searchable. Seen live: a search run
+  // seconds after an upload cached the miss, and every later search returned `cached: true` with
+  // nothing in it, which reads exactly like ingestion is broken when it is not. A miss is cheap
+  // to recompute; a wrong "there is nothing here" is not.
+  if (results.length > 0) {
+    await safeKvPut(c.env.KB_CACHE, cacheKey, JSON.stringify(results), { expirationTtl: 3600 });
+  }
 
   return c.json({ data: results, cached: false, retrieval_mode: "legacy" });
 });
