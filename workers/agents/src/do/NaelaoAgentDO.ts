@@ -2523,6 +2523,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // caller could spoof at the script-args level (this is a header the router sets from verified
     // claims for every proxied request, same trust boundary as x-naelao-tenant-id above).
     const callerRole = request.headers.get("x-naelao-role") ?? undefined;
+    // Set only by the agents worker, from a server-side business_memberships lookup — never a
+    // client-supplied value. Absent for builder callers and system wakes.
+    const businessRole = request.headers.get("x-naelao-business-role") ?? undefined;
     // Prefer the caller's own run id. /agent/run generates one, returns it to the client, and
     // exposes GET .../runs/:runId/trace — but it never sent it here, so the trace was persisted
     // under a DIFFERENT, internal-only id and that endpoint could never find anything. Falling
@@ -2626,7 +2629,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // posture, so a space set to yolo no longer grants un-gated autonomy to a run made on
       // behalf of a user who couldn't approve those actions themself. Pure logic + tests in
       // script-engine/assistant-access.ts.
-      const plan = resolveAssistantApprovalPlan(policy, callerRole);
+      //
+      // businessRole is what stops that downgrade from locking a business OWNER out of the yolo
+      // they set on their own business — resolved server-side from business_memberships by the
+      // agents worker, never taken from the client.
+      const plan = resolveAssistantApprovalPlan(policy, callerRole, businessRole);
       requiresApprovalFor = plan.requiresApprovalFor;
       approvalMode = plan.approvalMode;
     }

@@ -96,6 +96,34 @@ Worth stating, because the gap analysis reads one-directional otherwise:
 
 ## Recommended order
 
-1. **Telegram channel** — smallest change, largest practical unlock for a $0-budget business.
-2. **Skill outcome tracking** — closes the self-improvement loop we already half-built.
+1. ~~**Telegram channel**~~ — **DONE 2026-08-05.** Adapter, secret-token verification, `notify.telegram`
+   and the connect UI. While wiring it, found that **no channel could reply at all**: `/internal/notify`
+   handled email and returned `delivered:false` for everything else, so Slack/Discord/WhatsApp
+   inbound worked and outbound was a stub. All four now send for real.
+2. **Skill outcome tracking** — closes the self-improvement loop we already half-built. Still open.
 3. Everything else on this page is either already ours or deliberately declined.
+
+---
+
+## Addendum: what a live end-to-end run actually showed (2026-08-05)
+
+Ran a real web-studio business on production — signup → business creation → provisioning → agent
+runs — rather than reasoning about it. Three things worth recording:
+
+**The pipeline structure is real.** All four projects built with the right agent bindings, the
+onboarding checklist returned its seven real prompts, and 15 skills seeded.
+
+**Two bugs surfaced that no test caught.** `yolo` was downgraded for every `product_end_user`,
+including a business's own OWNER — so an owner who set their business to autonomous still had every
+action gated with nobody but themself to approve it. Same class as the owner-vs-admin bugs already
+fixed at the route and UI layers, one layer deeper. Fixed by resolving the caller's business role
+server-side and passing it into the approval plan; a plain member is still downgraded.
+
+**The skills cannot execute on the current plan.** Every seeded skill is a stored script needing a
+Tier-2 V8 isolate, and `worker_loaders` is commented out in `workers/agents/wrangler.toml` (CF
+Workers Paid only). The live error is exact: *"Unable to execute quote-job due to unavailability of
+Tier 2: no worker_loaders binding configured in this environment."* So behavioural proof of the
+find→quote→build→deliver cycle is **blocked on the $5/month plan**, not on anything in the code.
+Everything around the skills — gating, classification, checkpointing, continuation — verified working
+live, including the repeat-guard correctly reporting a cached *failure* rather than a fabricated
+success on the continuation pass.

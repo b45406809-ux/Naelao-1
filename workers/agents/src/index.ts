@@ -414,6 +414,14 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   const spaceId = c.req.param("spaceId");
   const sessionId = c.req.param("sessionId");
 
+  // A product end user can be the OWNER of their own business, not just a customer of it. Without
+  // resolving that, the F-36 clamp downgraded yolo for them unconditionally — so an owner who set
+  // their own business to autonomous still had every action gated with nobody but themself to
+  // approve it. Resolved from business_memberships server-side; a builder caller skips the lookup.
+  const businessRole = callerRole === "product_end_user"
+    ? await resolveCallerBusinessRole(c, spaceId)
+    : undefined;
+
   const rawBody = await c.req.json<{ goal?: string; agent_definition_id?: string; project_id?: string; model?: string; reasoning_effort?: string }>();
   const resolvedGoal = await resolveRunGoal(c.env, tenantId, spaceId, sessionId, rawBody.goal);
   if (!resolvedGoal) {
@@ -671,6 +679,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         userId,
         projectId: rawBody.project_id,
         callerRole,
+        businessRole,
         // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
         sessionCreditCeiling,
         // Model switcher capability config — already validated above against whichever model
@@ -716,6 +725,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         "content-type": "application/json",
         ...(userId ? { "x-naelao-user-id": userId } : {}),
         ...(callerRole ? { "x-naelao-role": callerRole } : {}),
+        ...(businessRole ? { "x-naelao-business-role": businessRole } : {}),
       },
       body: JSON.stringify({
         goal: body.goal,
@@ -1727,6 +1737,8 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
     userId?: string;
     projectId?: string;
     callerRole?: string;
+    /** Resolved server-side in /agent/run — see resolveCallerBusinessRole. */
+    businessRole?: string;
     sessionCreditCeiling?: number;
     reasoningEffort?: string;
   }>();
@@ -1743,6 +1755,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           "content-type": "application/json",
           ...(body.userId ? { "x-naelao-user-id": body.userId } : {}),
           ...(body.callerRole ? { "x-naelao-role": body.callerRole } : {}),
+          ...(body.businessRole ? { "x-naelao-business-role": body.businessRole } : {}),
         },
         body: JSON.stringify({
           goal: body.goal,
@@ -3103,6 +3116,31 @@ app.get("/spaces/:spaceId/channels/unanswered", async (c) => {
 // to the same resolveEndUserBusinessRole floor every other end-user-reachable route uses — since
 // the agents worker doesn't share spaces worker's business-auth.ts module, this calls the spaces
 // worker's own /internal/business-role endpoint (added for exactly this cross-worker check).
+/**
+ * This end user's role in THIS business ("owner" | "admin" | "member"), or undefined when they
+ * aren't a member (or the lookup fails — fail soft: the caller only uses this to decide whether
+ * yolo applies, and undefined keeps the safe always_ask posture).
+ */
+async function resolveCallerBusinessRole(
+  c: { env: AgentsEnv; req: { header: (h: string) => string | undefined } },
+  spaceId: string
+): Promise<string | undefined> {
+  const { tenantId, userId } = getCallerIdentity(c);
+  if (!c.env.SPACES_WORKER || !userId || !tenantId) return undefined;
+  try {
+    const token = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
+    const resp = await c.env.SPACES_WORKER.fetch(new Request(
+      `http://spaces-worker/internal/business-role?spaceId=${encodeURIComponent(spaceId)}&endUserId=${encodeURIComponent(userId)}`,
+      { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token } }
+    ));
+    if (!resp.ok) return undefined;
+    const { role } = await resp.json<{ role?: string }>().catch(() => ({ role: undefined }));
+    return role;
+  } catch {
+    return undefined;
+  }
+}
+
 async function requireEndUserBusinessMembership(
   c: { env: AgentsEnv; req: { header: (h: string) => string | undefined } },
   spaceId: string,

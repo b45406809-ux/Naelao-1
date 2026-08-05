@@ -4049,6 +4049,75 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     API-key shape, not an OAuth client secret), and a working `WHOP_OAUTH_CLIENT_SECRET` is
     already configured — do not overwrite a working credential without confirmation.
 
+93. **Channels made real (they could not reply at all), Telegram added, the webdev store made
+    deterministic, and a live end-to-end run that found two more bugs — plus an OpenClaw/Hermes
+    gap analysis in `docs/COMPETITIVE_2026-08-05_openclaw_hermes.md`.**
+    - **Reported bug: the Channels panel could not connect anything.** It listed connected channels
+      and offered no way to add one — the only connect route was `POST /channels/:channel/connect`,
+      builder-only and left out of the router's end-user allowlist. New `POST /spaces/:spaceId/
+      assistant/channels` (same path as the existing GET, `action` in the body — a dynamic segment
+      followed by a static suffix is the shape that has repeatedly corrupted this codebase's Hono
+      route tables), gated by `requireEndUserBusinessMembership` at a NEW admin floor: changing how
+      a business is reached from outside is not a plain member action. Owner outranks admin (the
+      item 90 bug, avoided here rather than repeated). Returns the webhook URL, since connecting on
+      our side is only half of it. New `ChannelConnect` component in the shell.
+    - **Unreported and worse: NO channel could reply.** `/internal/notify` handled email and
+      returned `delivered:false` for everything else, so a customer could message a business on
+      Slack/Discord/WhatsApp, the agent would run and produce a real answer, and the reply never
+      left the building. Slack, Discord, WhatsApp and Telegram now send for real, resolving the
+      space's own bot token from the vault at send time (`CHANNEL_SEND_CREDENTIAL` — a DIFFERENT
+      secret from the inbound-verification one). Slack's 200-with-`ok:false` is treated as the
+      failure it is. New `CREDENTIALS_WORKER` binding on the notifications worker.
+    - **Telegram** (`ChannelType` gained a 5th member): free, no business verification, no
+      per-message billing, no 24-hour reply window — the opposite of WhatsApp on every axis that
+      matters to a $0-budget business, and the top gap the OpenClaw/Hermes analysis identified.
+      Auth is unlike every other adapter: Telegram does not sign payloads, it echoes back a secret
+      token the owner chose at `setWebhook` time, so this is a shared bearer secret compared in
+      constant time, not a signature. Keys on the CHAT id (a group reply must go to the
+      conversation, not the sender) and dedupes on `chat:message_id` since message_id is only
+      unique per chat. Signal/iMessage deliberately still absent — both need a phone number bound
+      to a long-running local process, the single-operator assumption a multi-tenant platform
+      cannot make.
+    - **Whop store auto-provisioning** is now a deterministic `store-provision` skill rather than an
+      instruction to improvise MCP calls. Observed live: a small model told to "create the four
+      packages" reaches for a neighbouring tool, or creates two of four and reports success. The
+      skill lists what exists first (so a retry finishes rather than duplicates), prices each tier
+      at its FLOOR (a range cannot be one product price), and reports `store_ready:false` naming
+      exactly which tier failed rather than calling a half-built store ready.
+    - **Behavioural proof: run live on production, and the answer is honest — the skills cannot
+      execute on the current plan.** Real signup → business → provisioning → agent runs. The
+      structure is real (all four projects with correct agent bindings, the 7-prompt onboarding
+      checklist, 15 skills seeded). But every seeded skill is a stored script needing a Tier-2 V8
+      isolate, and `worker_loaders` is commented out in `workers/agents/wrangler.toml`. The live
+      error is exact: *"Unable to execute quote-job due to unavailability of Tier 2: no
+      worker_loaders binding configured in this environment."* **The find→quote→build→deliver
+      cycle is blocked on the $5/mo CF Workers Paid plan, not on anything in the code.**
+      Everything AROUND the skills verified working live: the approval gate, the failure
+      classification (`step_exhaustion`, via the exact `"no terminal action"` mapping fixed the
+      same day), the durable checkpoint (5 steps completed), Continue re-entering under the
+      original run id, and the repeat-guard correctly reporting a cached FAILURE rather than a
+      fabricated success.
+    - **A real bug the live run found: `yolo` was downgraded for EVERY `product_end_user`,
+      including a business's own owner.** `resolveAssistantApprovalPlan`'s
+      `YOLO_SELF_AUTHORIZING_ROLES` is `{owner, admin}` — builder space roles — so a business owner
+      who flipped their own business to autonomous still had every action gated, with nobody but
+      themself to approve it. Correct when `product_end_user` meant "a customer of the business";
+      wrong since Phase C made them its owner. Same class as items 79/90, one layer deeper. Fixed
+      by resolving the caller's business role server-side (`resolveCallerBusinessRole`, one
+      `/internal/business-role` lookup, only for end-user callers) and threading it as
+      `x-naelao-business-role` through BOTH dispatch paths into the plan. A plain member is still
+      downgraded; an unresolvable role fails soft to always_ask; a `viewer` is never promoted by a
+      business role.
+    - **Test businesses removed** — the seven from prior verification runs, plus this pass's own.
+      "Test 1" and "Webdev" left alone (not mine to delete).
+    2451/2451 tests pass (35 new: `channel-connect-business-gate`, `channel-outbound-delivery`,
+    store-provision behaviour, the yolo/business-owner cases), `npx turbo run typecheck` clean (76
+    tasks). Deployed: `naelao-agents`, `naelao-notifications`, `naelao-provisioner`,
+    `naelao-spaces`, `apps/shell`.
+    **Three stale test assertions fixed, all mine, none regressions:** telegram used as the
+    "invalid channel" example in two places, and a notifications test asserting slack was
+    unwired.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
