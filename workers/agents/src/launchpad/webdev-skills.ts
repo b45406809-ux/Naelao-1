@@ -224,6 +224,88 @@ export async function run(args, ctx) {
  * Reads real files rather than asking the model to remember — a status report assembled from
  * recollection is the kind that quietly loses a customer.
  */
+/**
+ * Provision the studio's Whop store from the published tiers.
+ *
+ * The template's first-contact goal used to tell the assistant to "create the four packages using
+ * the connected Whop account", leaving it to improvise a sequence of MCP calls. On a small model
+ * that is exactly where things go wrong — observed live: it reaches for a neighbouring tool, or
+ * creates two of four and reports success. Making it one deterministic script means the store
+ * either gets created correctly or reports precisely which tier failed and why.
+ *
+ * Idempotent by name: it lists what already exists first and skips those, so re-running after a
+ * partial failure finishes the job instead of duplicating the products that worked.
+ */
+const STORE_PROVISION = `
+const TIERS = ${TIERS_JSON};
+
+export async function run(args, ctx) {
+  const server = String(args.server || "whop");
+  const dryRun = args.dry_run === true;
+
+  // What is already there. A store that half-exists (a previous run failed partway) is the normal
+  // case worth handling, not an edge case — without this, a retry duplicates every product that
+  // succeeded the first time.
+  let existingNames = [];
+  try {
+    const listed = await ctx.run("mcp.call", { server, tool: args.list_tool || "list_products", params: {} });
+    const items = (listed && (listed.products || listed.data || listed.items)) || [];
+    existingNames = items.map((p) => String((p && (p.name || p.title)) || "").trim().toLowerCase()).filter(Boolean);
+  } catch (e) {
+    // Not fatal on its own — an account with no products yet can legitimately fail to list. Say so
+    // and carry on rather than refusing to provision anything.
+    existingNames = [];
+  }
+
+  const created = [];
+  const skipped = [];
+  const failed = [];
+
+  for (const tier of TIERS) {
+    const label = tier.name + " Website";
+    if (existingNames.includes(label.toLowerCase())) {
+      skipped.push({ tier: tier.id, name: label, reason: "already in the store" });
+      continue;
+    }
+    if (dryRun) {
+      created.push({ tier: tier.id, name: label, price_usd: tier.price_usd_min, dry_run: true });
+      continue;
+    }
+    try {
+      const result = await ctx.run("mcp.call", {
+        server,
+        tool: args.create_tool || "create_product",
+        params: {
+          name: label,
+          description: tier.summary + "\\n\\nIncludes: " + tier.includes.join(", "),
+          // Whop prices in the smallest currency unit. The listed price is the FLOOR of the tier —
+          // a range can't be a single product price, and quoting above the floor is the quote
+          // skill's job after scoping. Anything else would advertise a price the studio can't honour.
+          price: tier.price_usd_min * 100,
+          currency: "usd",
+          ...(args.params || {}),
+        },
+      });
+      created.push({ tier: tier.id, name: label, price_usd: tier.price_usd_min, result });
+    } catch (e) {
+      failed.push({ tier: tier.id, name: label, error: String((e && e.message) || e) });
+    }
+  }
+
+  return {
+    store_ready: failed.length === 0,
+    created,
+    skipped,
+    failed,
+    // The honest summary line to relay. A partially-provisioned store reported as "done" is worse
+    // than one reported as broken — the owner finds out when a customer can't buy.
+    summary: failed.length === 0
+      ? "Store has all " + TIERS.length + " packages (" + created.length + " created, " + skipped.length + " already there)."
+      : failed.length + " of " + TIERS.length + " packages could not be created — tell the owner exactly which, and why.",
+    note: "Prices listed are each tier's starting price. Standard/Premium/Enterprise are ranges — quote above the floor after scoping.",
+  };
+}`;
+
 const PIPELINE_STATUS = `
 export async function run(args, ctx) {
   let files = [];
@@ -337,6 +419,17 @@ export const LAUNCHPAD_WEBDEV_SKILLS: readonly ScalingSkill[] = [
       "Draft a cold-outreach email to a prospective customer, with opt-out wording included and a " +
       "click-to-WhatsApp link the PROSPECT opens. Drafts only — it cannot send.",
     tags: ["outreach", "cold email", "prospect", "lead", "sales", "pitch", "whatsapp", "find customers"],
+  },
+  {
+    name: "store-provision",
+    domain: "sales",
+    code: STORE_PROVISION,
+    description:
+      "Create the studio's four packages (Basic $10, Standard $20+, Premium $120+, Enterprise $250+) " +
+      "on the connected Whop account, from the published price list. Idempotent — skips packages " +
+      "that already exist, and names exactly which ones failed rather than reporting a half-built " +
+      "store as ready.",
+    tags: ["store", "storefront", "whop", "products", "packages", "set up shop", "publish prices", "listings"],
   },
   {
     name: "pipeline-status",

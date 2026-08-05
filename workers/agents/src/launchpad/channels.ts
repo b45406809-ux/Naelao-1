@@ -15,7 +15,7 @@
  * Pure and dependency-free so it is unit-testable.
  */
 
-export type ChannelType = "email" | "slack" | "discord" | "whatsapp";
+export type ChannelType = "email" | "slack" | "discord" | "whatsapp" | "telegram";
 
 export interface NormalizedInbound {
   channel: ChannelType;
@@ -250,11 +250,69 @@ const whatsappAdapter: ChannelAdapter = {
   },
 };
 
+
+/**
+ * Telegram — the channel a business with no money can actually start on.
+ *
+ * Deliberately added ahead of Signal/iMessage (which OpenClaw also ships): those need a real phone
+ * number bound to a long-running local process, which is exactly the single-operator assumption a
+ * multi-tenant platform can't make. Telegram is a plain HTTPS webhook, free, with no per-message
+ * billing, no business verification and no 24-hour reply window — the opposite of WhatsApp on
+ * every axis that matters to a $0-budget business.
+ *
+ * Auth is different from every other adapter here and worth being explicit about: Telegram does
+ * not sign its payloads. What it offers instead is a secret token the bot owner chooses when
+ * registering the webhook, echoed back on every request in X-Telegram-Bot-Api-Secret-Token. So the
+ * `secret` stored for this channel is that token, compared in constant time — it is a shared
+ * bearer secret, not a signature over the body, and anyone who learns it can forge messages. That
+ * is Telegram's own design, not a shortcut taken here.
+ */
+const telegramAdapter: ChannelAdapter = {
+  type: "telegram",
+  normalizeInbound(raw) {
+    // An update carries exactly one of many possible payloads. Only real text messages are
+    // actionable — edits, joins, polls and callback queries are not something to answer.
+    const message = raw["message"] as Record<string, unknown> | undefined;
+    if (!message) return null;
+    const text = typeof message["text"] === "string" ? message["text"] : "";
+    if (!text.trim()) return null;
+
+    const from = message["from"] as Record<string, unknown> | undefined;
+    const chat = message["chat"] as Record<string, unknown> | undefined;
+    // Prefer the CHAT id, not the user id: it is what a reply has to be addressed to, and in a
+    // group the two differ. Falling back to the sender keeps a malformed update from being
+    // silently dropped.
+    const conversationId = chat?.["id"] ?? from?.["id"];
+    if (conversationId === undefined || conversationId === null) return null;
+
+    const messageId = message["message_id"];
+    const date = message["date"];
+    return {
+      channel: "telegram",
+      channel_user_id: String(conversationId),
+      text,
+      // message_id is only unique per chat, so the dedupe key has to carry both.
+      external_id: `${String(conversationId)}:${String(messageId ?? "")}`,
+      timestamp: typeof date === "number" ? date * 1000 : Date.now(),
+    };
+  },
+  formatOutbound(msg) {
+    return { text: msg.text };
+  },
+  async verifySignature({ headers, secret }) {
+    if (!secret) return false;
+    const provided = headers["x-telegram-bot-api-secret-token"];
+    if (!provided) return false;
+    return timingSafeEqual(provided, secret);
+  },
+};
+
 const ADAPTERS: Record<ChannelType, ChannelAdapter> = {
   email: emailAdapter,
   slack: slackAdapter,
   discord: discordAdapter,
   whatsapp: whatsappAdapter,
+  telegram: telegramAdapter,
 };
 
 export function getAdapter(type: string): ChannelAdapter | undefined {
@@ -262,7 +320,7 @@ export function getAdapter(type: string): ChannelAdapter | undefined {
 }
 
 export function isChannelType(t: string): t is ChannelType {
-  return t === "email" || t === "slack" || t === "discord" || t === "whatsapp";
+  return t === "email" || t === "slack" || t === "discord" || t === "whatsapp" || t === "telegram";
 }
 
 /**

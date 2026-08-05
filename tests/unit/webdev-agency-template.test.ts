@@ -71,10 +71,14 @@ describe("the web studio template", () => {
     expect(prompts.indexOf(connect!)).toBeLessThan(prompts.indexOf(key!));
   });
 
-  it("tells the assistant to build the store from the real connected account, and to admit failure", () => {
+  it("routes store setup through the deterministic skill, not improvised MCP calls", () => {
+    // Observed live: a small model told to "create the packages using the connected account"
+    // reaches for a neighbouring tool, or creates two of four and reports success. One named skill
+    // removes the improvisation.
     const goal = template!.bootstrap!.first_contact!.goal;
-    expect(goal).toMatch(/mcp-connector/);
-    expect(goal).toMatch(/rather than reporting success/);
+    expect(goal).toMatch(/store-provision/);
+    expect(goal).toMatch(/Do NOT hand-build/);
+    expect(goal).toMatch(/rather than reporting the store is ready/);
     // Outreach approval is stated in the first contact, not left to the autonomy setting.
     expect(goal).toMatch(/until they approve/);
   });
@@ -110,14 +114,16 @@ describe("the web studio agents", () => {
 });
 
 describe("the web studio skills", () => {
-  it("seeds all five, idempotently", async () => {
+  it("seeds all six, idempotently", async () => {
     const store = new Set<string>();
     const lib = {
       async exists(name: string) { return store.has(name); },
       async create({ name }: { name: string }) { store.add(name); },
     };
     const first = await seedWebdevSkills(lib as never);
-    expect(first.sort()).toEqual(["build-brief", "handoff-to-project", "outreach-draft", "pipeline-status", "quote-job"]);
+    expect(first.sort()).toEqual([
+      "build-brief", "handoff-to-project", "outreach-draft", "pipeline-status", "quote-job", "store-provision",
+    ]);
     // Re-running provisioning must not duplicate or throw.
     expect(await seedWebdevSkills(lib as never)).toEqual([]);
   });
@@ -171,5 +177,81 @@ describe("quote-job pricing behaviour", () => {
     const res = await runQuote("a booking system and a gallery");
     expect(res.tier).toBe("premium");
     expect(res.unknowns.length).toBeGreaterThan(0);
+  });
+});
+
+// The store provisioner runs as a stored script too. Exercised against a fake MCP surface so the
+// idempotency and partial-failure behaviour is actually tested — a half-built store reported as
+// ready is the failure that only shows up when a customer can't buy.
+describe("store-provision", () => {
+  function runStore(opts: {
+    existing?: string[];
+    failOn?: string[];
+    listThrows?: boolean;
+    args?: Record<string, unknown>;
+  } = {}) {
+    const calls: Array<{ tool: string; params: Record<string, unknown> }> = [];
+    const src = LAUNCHPAD_WEBDEV_SKILLS.find((s) => s.name === "store-provision")!.code;
+    const ctx = {
+      async run(op: string, params: Record<string, unknown>) {
+        const tool = String(params["tool"]);
+        if (tool === "list_products") {
+          if (opts.listThrows) throw new Error("no products endpoint");
+          return { products: (opts.existing ?? []).map((name) => ({ name })) };
+        }
+        const p = params["params"] as Record<string, unknown>;
+        calls.push({ tool, params: p });
+        if ((opts.failOn ?? []).some((f) => String(p["name"]).toLowerCase().includes(f))) {
+          throw new Error("Whop rejected it: insufficient permission");
+        }
+        return { id: `prod_${calls.length}` };
+      },
+    };
+    return import(`data:text/javascript,${encodeURIComponent(src)}`).then((mod) =>
+      mod.run(opts.args ?? {}, ctx).then((r: Record<string, unknown>) => ({ result: r, calls }))
+    );
+  }
+
+  it("creates one product per published tier, at that tier's floor price in cents", async () => {
+    const { result, calls } = await runStore();
+    expect(result["store_ready"]).toBe(true);
+    expect(calls).toHaveLength(WEBDEV_TIERS.length);
+    // The floor, not the ceiling: a range can't be one product price, and advertising the top of
+    // the range is a price the studio then has to honour.
+    const basic = calls.find((c) => String(c.params["name"]).startsWith("Basic"))!;
+    expect(basic.params["price"]).toBe(1000);
+    const enterprise = calls.find((c) => String(c.params["name"]).startsWith("Enterprise"))!;
+    expect(enterprise.params["price"]).toBe(25000);
+  });
+
+  it("skips what already exists, so a retry finishes rather than duplicates", async () => {
+    const { result, calls } = await runStore({ existing: ["Basic Website", "Standard Website"] });
+    expect((result["skipped"] as unknown[]).length).toBe(2);
+    expect(calls).toHaveLength(WEBDEV_TIERS.length - 2);
+    expect(result["store_ready"]).toBe(true);
+  });
+
+  it("reports a partially-built store as NOT ready, naming what failed", async () => {
+    const { result } = await runStore({ failOn: ["premium"] });
+    expect(result["store_ready"]).toBe(false);
+    const failed = result["failed"] as Array<{ tier: string; error: string }>;
+    expect(failed).toHaveLength(1);
+    expect(failed[0]!.tier).toBe("premium");
+    expect(failed[0]!.error).toMatch(/insufficient permission/);
+    expect(String(result["summary"])).toMatch(/could not be created/);
+  });
+
+  it("still provisions when the account has no listable products yet", async () => {
+    // A brand-new Whop account can legitimately fail to list. Refusing to provision because of
+    // that would leave every new studio with an empty store.
+    const { result, calls } = await runStore({ listThrows: true });
+    expect(calls).toHaveLength(WEBDEV_TIERS.length);
+    expect(result["store_ready"]).toBe(true);
+  });
+
+  it("supports a dry run that touches nothing", async () => {
+    const { result, calls } = await runStore({ args: { dry_run: true } });
+    expect(calls).toHaveLength(0);
+    expect((result["created"] as unknown[]).length).toBe(WEBDEV_TIERS.length);
   });
 });

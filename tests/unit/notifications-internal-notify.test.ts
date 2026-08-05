@@ -79,14 +79,27 @@ describe("POST /internal/notify", () => {
     expect(await res.json()).toMatchObject({ delivered: false, channel: "email" });
   });
 
-  it("honestly reports non-email channels as not wired for synchronous delivery, rather than a silent no-op", async () => {
+  it("reports a chat channel it cannot reply on honestly, naming the missing credential", async () => {
+    // Slack/Discord/Telegram/WhatsApp DO have a real send path now (see
+    // channel-outbound-delivery.test.ts). With no CREDENTIALS_WORKER bound there is no way to
+    // resolve the space's bot token, so this must fail loudly rather than silently no-op.
     const env = makeEnv();
     const res = await notificationsWorker.fetch(
       req({ channel: "slack", space_id: "space-1", channel_name: "#general", message: "hi" }),
       env as never, execCtx
     );
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(502);
     expect(await res.json()).toMatchObject({ delivered: false, channel: "slack" });
+  });
+
+  it("still reports honestly for push channels, which have no synchronous path at all", async () => {
+    const env = makeEnv();
+    const res = await notificationsWorker.fetch(
+      req({ channel: "fcm", space_id: "space-1", token: "t", payload: {} }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ delivered: false, channel: "fcm" });
   });
 
   it("400s when an email notification has no 'to' address", async () => {

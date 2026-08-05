@@ -39,6 +39,7 @@ import {
 import { modelLabel } from "@/components/ModelSelector";
 import { ApprovedActionsEditor } from "@/components/ApprovedActionsEditor";
 import { SettingsSection, SettingsRow } from "@/components/SettingsSection";
+import { ChannelConnect } from "@/components/ChannelConnect";
 import { canManageSpaceSettings } from "@/lib/roles";
 
 type ApprovalMode = AssistantPolicy["approval_mode"];
@@ -263,18 +264,22 @@ export default function AssistantSettingsPage() {
         </p>
       </SettingsSection>
 
-      <SettingsSection title="Where it can be reached" desc="Connected channels the assistant answers on, besides this app.">
-        {channels.length === 0 ? (
-          <p style={{ fontSize: 12.5, color: "var(--text3)" }}>
-            No channels connected yet. Connecting Slack, Discord, email or WhatsApp lets customers reach the assistant
-            directly.
-          </p>
+      <SettingsSection
+        title="Where it can be reached"
+        desc="Channels customers can message the assistant on, besides this app."
+      >
+        {creds && activeSpaceId ? (
+          <ChannelConnect
+            spaceId={activeSpaceId}
+            session={creds}
+            channels={channels}
+            canManage={canEdit}
+            onChanged={() => {
+              void listAssistantChannels(activeSpaceId, creds).then(setChannels).catch(() => undefined);
+            }}
+          />
         ) : (
-          channels.map((c) => (
-            <SettingsRow key={c.channel} label={<span style={{ textTransform: "capitalize" }}>{c.channel}</span>}>
-              <Badge color={c.enabled ? "green" : "amber"}>{c.enabled ? "Connected" : "Off"}</Badge>
-            </SettingsRow>
-          ))
+          <p style={{ fontSize: 12.5, color: "var(--text3)" }}>Loading…</p>
         )}
       </SettingsSection>
 

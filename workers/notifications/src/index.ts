@@ -1,5 +1,5 @@
 // G-N01: Notifications worker — email + in-app notification consumer
-import { badRequest, errorResponse, notFound, requestId } from "@naelao/http";
+import { badRequest, errorResponse, notFound, requestId, mintInternalToken } from "@naelao/http";
 import { Hono } from "hono";
 
 // ── Env ───────────────────────────────────────────────────────────────────────
@@ -16,6 +16,124 @@ export interface NotificationsEnv {
   APNS_PRIVATE_KEY_BASE64?: string;
   APNS_BUNDLE_ID?: string;
   APNS_HOST?: string; // "api.push.apple.com" prod, "api.sandbox.push.apple.com" sandbox
+  /** Needed to resolve a space's own bot token / webhook URL for chat-channel replies. Optional:
+   *  without it those channels degrade to delivered:false rather than crashing. */
+  CREDENTIALS_WORKER?: Fetcher;
+  PLATFORM_SECRET?: string;
+}
+
+/** Per-channel credential name in the vault — the token this worker needs to SEND, which is a
+ *  different secret from the one used to VERIFY inbound (see CHANNEL_SECRET_CREDENTIAL in the
+ *  agents worker). Slack/Discord/Telegram all reply through a bot token or webhook URL the owner
+ *  configures; nothing here is a platform-wide key. */
+const CHANNEL_SEND_CREDENTIAL: Record<string, string> = {
+  slack: "SLACK_BOT_TOKEN",
+  discord: "DISCORD_BOT_TOKEN",
+  telegram: "TELEGRAM_BOT_TOKEN",
+  whatsapp: "WHATSAPP_ACCESS_TOKEN",
+};
+
+/**
+ * Read a space's own channel credential out of the vault.
+ *
+ * Resolved at send time rather than cached: a rotated token has to take effect immediately, and a
+ * reply is already a non-hot path. Returns null (never throws) so a missing credential degrades to
+ * an honest delivered:false instead of failing the caller's whole run.
+ */
+async function resolveChannelCredential(
+  env: NotificationsEnv,
+  tenantId: string,
+  spaceId: string,
+  name: string
+): Promise<string | null> {
+  if (!env.CREDENTIALS_WORKER || !env.PLATFORM_SECRET || !spaceId) return null;
+  try {
+    const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
+    const resp = await env.CREDENTIALS_WORKER.fetch(new Request(
+      `http://credentials-worker/v1/internal/spaces/${spaceId}/credentials/${encodeURIComponent(name)}/plaintext`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-naelao-tenant-id": tenantId,
+          "x-naelao-internal-token": token,
+        },
+        body: "{}",
+      }
+    ));
+    if (!resp.ok) return null;
+    const { value } = await resp.json<{ value?: string }>();
+    return value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** One reply, out to a chat channel. Returns why it didn't go rather than throwing. */
+async function sendChatMessage(
+  env: NotificationsEnv,
+  opts: { channel: string; tenantId: string; spaceId: string; to: string; message: string }
+): Promise<{ delivered: boolean; reason?: string; status?: number }> {
+  const { channel, to, message } = opts;
+  const credName = CHANNEL_SEND_CREDENTIAL[channel];
+  if (!credName) return { delivered: false, reason: `no send path for channel '${channel}'` };
+  if (!to) return { delivered: false, reason: "missing recipient" };
+
+  const credential = await resolveChannelCredential(env, opts.tenantId, opts.spaceId, credName);
+  if (!credential) {
+    return { delivered: false, reason: `${channel} is connected for receiving but has no ${credName} to reply with` };
+  }
+
+  try {
+    let resp: Response;
+    if (channel === "telegram") {
+      // `to` is the chat id the message came from, not a username.
+      resp = await fetch(`https://api.telegram.org/bot${credential}/sendMessage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: to, text: message }),
+      });
+    } else if (channel === "slack") {
+      resp = await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${credential}` },
+        body: JSON.stringify({ channel: to, text: message }),
+      });
+      // Slack answers 200 with ok:false for real failures (bad token, not in channel), so the
+      // HTTP status alone would report a silent drop as a success.
+      const payload = await resp.clone().json<{ ok?: boolean; error?: string }>()
+        .catch(() => ({ ok: false }) as { ok?: boolean; error?: string });
+      if (!payload.ok) return { delivered: false, reason: `slack: ${payload.error ?? "rejected"}`, status: resp.status };
+    } else if (channel === "discord") {
+      resp = await fetch(`https://discord.com/api/v10/channels/${encodeURIComponent(to)}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bot ${credential}` },
+        body: JSON.stringify({ content: message }),
+      });
+    } else if (channel === "whatsapp") {
+      // `to` is the customer's phone number; the credential is the Meta Cloud API access token,
+      // and the phone-number id it posts through rides in the same vault entry as "<id>:<token>"
+      // when the owner configured one — otherwise there is no route to send on.
+      const [phoneNumberId, accessToken] = credential.includes(":")
+        ? [credential.slice(0, credential.indexOf(":")), credential.slice(credential.indexOf(":") + 1)]
+        : [null, credential];
+      if (!phoneNumberId) {
+        return { delivered: false, reason: "whatsapp needs WHATSAPP_ACCESS_TOKEN as '<phone_number_id>:<token>'" };
+      }
+      resp = await fetch(`https://graph.facebook.com/v21.0/${phoneNumberId}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ messaging_product: "whatsapp", to, type: "text", text: { body: message } }),
+      });
+    } else {
+      return { delivered: false, reason: `no send path for channel '${channel}'` };
+    }
+
+    if (!resp.ok) return { delivered: false, reason: `${channel} returned ${resp.status}`, status: resp.status };
+    return { delivered: true };
+  } catch (err) {
+    return { delivered: false, reason: `${channel} send failed: ${(err as Error).message}` };
+  }
 }
 
 function validateEnv(env: NotificationsEnv): void {
@@ -422,6 +540,8 @@ app.post("/internal/notify", async (c) => {
     subject?: string;
     body?: string;
     html?: string;
+    /** Chat channels carry their text here rather than in `body`. */
+    message?: string;
   }>();
 
   if (body.channel === "email") {
@@ -438,8 +558,27 @@ app.post("/internal/notify", async (c) => {
     return c.json({ delivered: true, channel: "email" });
   }
 
-  // Non-email channels: not yet wired for synchronous delivery. Honest failure, not a silent
-  // no-op — callers already treat delivered:false as a real signal.
+  // Chat channels. Until now every one of these returned delivered:false unconditionally, which
+  // meant a customer could message a business on Slack/Discord/WhatsApp, the agent would run and
+  // produce a real answer, and the reply would never leave the building — the inbound half of
+  // every channel worked and the outbound half did not exist.
+  const chatChannel = String(body.channel ?? "");
+  if (CHANNEL_SEND_CREDENTIAL[chatChannel]) {
+    const result = await sendChatMessage(c.env, {
+      channel: chatChannel,
+      tenantId,
+      spaceId: body.space_id ?? "",
+      to: String(body.to ?? ""),
+      message: String(body.message ?? body.body ?? ""),
+    });
+    return c.json(
+      { delivered: result.delivered, channel: chatChannel, ...(result.reason ? { reason: result.reason } : {}) },
+      result.delivered ? 200 : 502
+    );
+  }
+
+  // Push (apns/fcm) still isn't wired synchronously. Honest failure, not a silent no-op — callers
+  // already treat delivered:false as a real signal.
   return c.json({ delivered: false, channel: body.channel ?? "unknown", reason: "channel not wired for synchronous delivery" });
 });
 

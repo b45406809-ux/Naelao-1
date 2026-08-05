@@ -771,6 +771,28 @@ export async function listAssistantChannels(spaceId: string, session: SessionCre
   return res.data;
 }
 
+export interface ChannelConnectResult {
+  connected?: boolean;
+  channel: string;
+  enabled?: boolean;
+  /** Paste this into the provider's own dashboard — connecting on our side isn't enough on its
+   *  own for messages to actually arrive. */
+  webhook_url?: string;
+}
+
+/** Connect a channel, or turn one off/back on. Owner/admin only, enforced server-side. */
+export async function updateAssistantChannel(
+  spaceId: string,
+  session: SessionCredentials,
+  body: { action: "connect" | "disconnect" | "enable"; channel: string; secret?: string; project_id?: string }
+): Promise<ChannelConnectResult> {
+  return apiFetch<ChannelConnectResult>(`/v1/spaces/${spaceId}/assistant/channels`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    session,
+  });
+}
+
 export interface SubAgentSummary {
   id: string;
   goal: string;

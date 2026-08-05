@@ -2647,6 +2647,9 @@ const CHANNEL_SECRET_CREDENTIAL: Record<ChannelType, string> = {
   discord: "DISCORD_PUBLIC_KEY",
   email: "EMAIL_SIGNING_SECRET",
   whatsapp: "WHATSAPP_APP_SECRET",
+  // Telegram doesn't sign payloads — this is the secret token the bot owner sets when registering
+  // the webhook, echoed back on every request. See telegramAdapter's own note.
+  telegram: "TELEGRAM_WEBHOOK_SECRET",
 };
 
 // POST /channels/:channel/connect — store the channel's signing secret in the vault and mark
@@ -3100,7 +3103,14 @@ app.get("/spaces/:spaceId/channels/unanswered", async (c) => {
 // to the same resolveEndUserBusinessRole floor every other end-user-reachable route uses — since
 // the agents worker doesn't share spaces worker's business-auth.ts module, this calls the spaces
 // worker's own /internal/business-role endpoint (added for exactly this cross-worker check).
-async function requireEndUserBusinessMembership(c: { env: AgentsEnv; req: { header: (h: string) => string | undefined } }, spaceId: string): Promise<boolean> {
+async function requireEndUserBusinessMembership(
+  c: { env: AgentsEnv; req: { header: (h: string) => string | undefined } },
+  spaceId: string,
+  /** Minimum business role. Reads are fine for any member; anything that changes how the business
+   *  can be reached from the outside world (connecting a channel) is an owner/admin action, the
+   *  same floor requireBusinessMembership applies to its own writes on the spaces worker. */
+  minRole: "member" | "admin" = "member"
+): Promise<boolean> {
   const { tenantId, userId, role } = getCallerIdentity(c);
   if (role !== "product_end_user") return true;
   if (!c.env.SPACES_WORKER || !userId) return false;
@@ -3110,7 +3120,13 @@ async function requireEndUserBusinessMembership(c: { env: AgentsEnv; req: { head
       `http://spaces-worker/internal/business-role?spaceId=${encodeURIComponent(spaceId)}&endUserId=${encodeURIComponent(userId)}`,
       { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token } }
     ));
-    return resp.ok;
+    if (!resp.ok) return false;
+    if (minRole === "member") return true;
+    // owner outranks admin — the creator of a business is inserted as 'owner', and an exact
+    // === "admin" check here would lock them out of their own business (the bug item 90 fixed in
+    // the shell's own UI for exactly this reason).
+    const { role: businessRole } = await resp.json<{ role?: string }>().catch(() => ({ role: undefined }));
+    return businessRole === "admin" || businessRole === "owner";
   } catch {
     return false;
   }
@@ -3139,6 +3155,79 @@ app.get("/spaces/:spaceId/assistant/channels", async (c) => {
     "SELECT channel, enabled, created_at FROM channel_links WHERE space_id = ? ORDER BY channel"
   ).bind(spaceId).all();
   return c.json({ data: results });
+});
+
+/**
+ * POST /spaces/:spaceId/assistant/channels — connect, disconnect or re-enable a channel.
+ *
+ * Until now a business owner could SEE the Channels panel and never do anything with it: the only
+ * connect route was POST /channels/:channel/connect, which the router leaves out of the end-user
+ * allowlist, so the panel listed channels and offered no way to add one. This is the per-business
+ * counterpart, gated the way every other business-owner write is — identity at the router,
+ * real authorization here — and at the admin floor, since changing how a business can be reached
+ * from the outside world is not a plain member action.
+ *
+ * Deliberately ONE route with `action` in the body rather than /channels/:channel/connect-style
+ * siblings: a dynamic segment followed by a static suffix is the shape that has repeatedly
+ * corrupted this codebase's Hono route tables for UNRELATED routes (items 40/52/60).
+ */
+app.post("/spaces/:spaceId/assistant/channels", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = await requireVerifiedTenant(c);
+  if (!(await requireEndUserBusinessMembership(c, spaceId, "admin"))) {
+    throw forbidden("Only a business owner or admin can change how this business is reached");
+  }
+  const { userId } = getCallerIdentity(c);
+
+  type ChannelActionBody = {
+    action?: "connect" | "disconnect" | "enable";
+    channel?: string;
+    secret?: string;
+    project_id?: string;
+  };
+  const body = await c.req.json<ChannelActionBody>().catch(() => ({}) as ChannelActionBody);
+
+  const channel = String(body.channel ?? "");
+  if (!isChannelType(channel)) throw badRequest("channel must be one of: email, slack, discord, whatsapp");
+  const action = body.action ?? "connect";
+
+  if (action === "disconnect" || action === "enable") {
+    // Deliberately does NOT delete the vaulted signing secret: disabling is reversible and a
+    // re-enable shouldn't force the owner back through their provider's dashboard to re-copy it.
+    await c.env.PLATFORM_DB.prepare(
+      "UPDATE channel_links SET enabled = ? WHERE space_id = ? AND channel = ?"
+    ).bind(action === "enable" ? 1 : 0, spaceId, channel).run();
+    return c.json({ channel, enabled: action === "enable" });
+  }
+
+  if (!c.env.CREDENTIALS_WORKER) return c.json({ error_code: "unavailable", message: "credentials not bound" }, 503);
+  if (!body.secret) throw badRequest("secret is required (the signing secret or public key from the provider)");
+
+  const credResp = await storeConnectorCredential(c.env, {
+    tenantId,
+    spaceId,
+    userId,
+    name: CHANNEL_SECRET_CREDENTIAL[channel],
+    value: body.secret,
+    description: `${channel} channel signing secret`,
+  });
+  if (!credResp.ok && credResp.status !== 409) {
+    return c.json({ error_code: "credential_store_failed", message: await credResp.text() }, 502);
+  }
+
+  await c.env.PLATFORM_DB.prepare(
+    `INSERT INTO channel_links (space_id, tenant_id, channel, enabled, project_id) VALUES (?, ?, ?, 1, ?)
+     ON CONFLICT (space_id, channel) DO UPDATE SET enabled = 1, project_id = excluded.project_id`
+  ).bind(spaceId, tenantId, channel, body.project_id ?? null).run();
+
+  return c.json({
+    connected: true,
+    channel,
+    project_id: body.project_id ?? null,
+    // The owner still has to paste this into the provider's own dashboard — returning it is the
+    // difference between "connected" and "actually receiving messages".
+    webhook_url: `${(c.env.PUBLIC_AGENTS_URL ?? "").replace(/\/$/, "")}/channels/${channel}/inbound/${spaceId}`,
+  }, 201);
 });
 
 // GET /spaces/:spaceId/assistant/sub-agents?parent_run_id= — poll a run's sub-agent fan-out
