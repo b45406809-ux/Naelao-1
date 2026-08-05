@@ -20,6 +20,10 @@
  * See: docs/spec-appendix/A1-script-agents-and-space-assistants.md
  */
 
+// The web studio's price list lives with its skills, so the storefront the assistant provisions
+// and the skill that quotes a job read the SAME numbers.
+import { WEBDEV_TIERS } from "./webdev-skills.js";
+
 /** An agent definition exactly in the §11 shape (stored in SpaceDO.agent_definitions). */
 export interface LaunchpadAgentDefinition {
   id: string;
@@ -140,6 +144,25 @@ export interface LaunchpadTemplate {
    * its connector/shim ships. "Whop first, everything else coming soon" lives as this flag.
    */
   coming_soon?: boolean;
+  /**
+   * The template's published price list, when it sells a fixed set of packages.
+   *
+   * One source of truth for two consumers that must not disagree: the storefront the assistant
+   * provisions, and whatever skill prices a job. A quote naming a number the store cannot
+   * actually sell is a customer-facing error, so they read the same list rather than each
+   * carrying their own copy.
+   *
+   * A range (min !== max) means the tier is genuinely scoped per job — the agent is expected to
+   * quote within it and say what it is still unsure of, not to pick the midpoint silently.
+   */
+  pricing_tiers?: Array<{
+    id: string;
+    name: string;
+    price_usd_min: number;
+    price_usd_max: number;
+    summary: string;
+    includes: string[];
+  }>;
 }
 
 export interface LaunchpadSpaceType {
@@ -219,6 +242,73 @@ export const LAUNCHPAD_CORE_AGENTS: LaunchpadAgentDefinition[] = [
     allowed_skills: ["web-search", "email-tool", "file-manager", "social-post", "content-generate-image", "content-generate-video", "mcp-connector"],
     trigger: { type: "schedule", cron: "0 9 * * *" },
     requires_approval_for: ["content_publish", "broadcast_send"],
+    max_spend_per_action_usd: 0,
+    resource_tier: "workspace",
+  },
+  // ── Web studio agents ──
+  // Two specialists rather than one: finding a customer and building their site are different
+  // jobs with different risk. Outreach reaches strangers and is gated; a build touches only the
+  // project's own workspace and is not.
+  {
+    id: "launchpad-leadgen-v1",
+    name: "Lead Generation Agent",
+    description: "Finds local businesses without a decent website and drafts outreach for the owner to approve",
+    system_prompt:
+      "You find customers for a small web studio that builds cheap, fast websites.\n\n" +
+      "HOW YOU WORK. Use the `web-search` prebuilt to find local businesses whose web presence is " +
+      "weak — no site at all, a dead link, a social page standing in for a website, or something " +
+      "clearly broken on mobile. Record what you actually observed, and cite where you saw it. " +
+      "Never invent a business, a contact address, or a problem with someone's site: a pitch " +
+      "built on a made-up flaw is worse than no pitch.\n\n" +
+      "OUTREACH IS DRAFTED, NEVER SENT BY YOU. Use the `outreach-draft` skill to write each " +
+      "message, collect them into a batch, and send the owner ONE approval request through the " +
+      "`notifications` prebuilt covering the whole batch. The owner approves before anything " +
+      "leaves. Email is the channel. Where you have a phone number, include the click-to-WhatsApp " +
+      "link the draft produces — the prospect opens it; you never message anyone on WhatsApp " +
+      "first, because their opening it is what makes the conversation permitted.\n\n" +
+      "RULES THAT ARE NOT NEGOTIABLE. Every message carries an opt-out line. Anyone who replies " +
+      "STOP, unsubscribe, or anything equivalent goes on the do-not-contact list and is never " +
+      "contacted again — record it immediately. Contact a given business ONCE; one follow-up only " +
+      "if they replied. Stay inside the daily cap you were given. If you are unsure whether an " +
+      "approach is acceptable, ask the owner rather than sending.\n\n" +
+      "WHEN SOMEONE SAYS YES. Write the lead to the Development project's workspace using the " +
+      "`build-brief` skill, and tell the Space Assistant. Do not start building — that is the " +
+      "development agent's job.",
+    model: "claude-haiku-4-5-20251001",
+    allowed_skills: ["web-search", "outreach-draft", "quote-job", "build-brief", "email-tool", "file-manager", "notifications"],
+    trigger: { type: "schedule", cron: "0 8 * * 1-5" },
+    // Every way a message can reach a stranger is gated, regardless of autonomy mode.
+    requires_approval_for: ["outreach_send", "broadcast_send", "email_send"],
+    max_spend_per_action_usd: 0,
+    resource_tier: "workspace",
+  },
+  {
+    id: "launchpad-webdev-v1",
+    name: "Web Development Agent",
+    description: "Builds the customer's site from the accepted brief and reports back when it is ready to review",
+    system_prompt:
+      "You build small business websites for a studio whose whole promise is cheap and fast.\n\n" +
+      "START FROM THE BRIEF, NOT THE CHAT. Read the accepted job's brief file from the project " +
+      "workspace (`r2-workspace`/`file-manager`). If it is missing something you genuinely need — " +
+      "the business name, what they do, how to contact them — stop and tell the Space Assistant " +
+      "exactly what is missing. Do not invent content for someone's real business: a plausible " +
+      "invented menu or an invented address is worse than an unfinished page, because the " +
+      "customer may publish it.\n\n" +
+      "WHAT YOU BUILD. Plain, self-contained HTML and CSS, written into the project workspace. " +
+      "Mobile-first — most of these customers' visitors are on a phone. Keep it fast: no heavy " +
+      "frameworks for a one-page site. Match the tier that was sold and do not quietly exceed it; " +
+      "if the customer's request has grown past what they paid for, say so and let the owner " +
+      "decide rather than absorbing it.\n\n" +
+      "USE WHAT EXISTS. Run script.find before writing something from scratch — a layout that " +
+      "worked for the last restaurant probably works for this one. When you solve something new " +
+      "and it works, distill it so the next build is cheaper.\n\n" +
+      "WHEN IT IS READY. Tell the Space Assistant through the `notifications` prebuilt: which " +
+      "job, what you built, where the files are, and anything you had to guess. The assistant " +
+      "handles telling the customer — you do not contact them directly.",
+    model: "claude-haiku-4-5-20251001",
+    allowed_skills: ["file-manager", "code-exec", "web-search", "build-brief", "pipeline-status", "notifications"],
+    trigger: { type: "webhook", event: "brief.accepted", source: "projects" },
+    requires_approval_for: ["site_publish", "domain_purchase"],
     max_spend_per_action_usd: 0,
     resource_tier: "workspace",
   },
@@ -425,6 +515,114 @@ export const LAUNCHPAD_TEMPLATES: LaunchpadTemplate[] = [
           "Then send ONE short message that covers: what you found (real numbers, not placeholders), the 2-3 highest-leverage things you propose doing first and why, anything you need from them (an app to connect, a decision to make), and how they approve or change any of it. " +
           "Respect their configured autonomy setting: if they chose 'Ask me first', present the plan as proposals awaiting approval rather than things already underway. " +
           "Be honest about what you cannot see or do yet rather than overstating. Keep it short enough to read on a phone.",
+      },
+    },
+  },
+  // Ultra-cheap web studio — the growth-layer's flagship "start from nothing" business
+  // (appendix BF.3). Sells on Whop at four published tiers; the pipeline runs
+  // find a customer -> quote -> build -> deliver, with the three stages as separate projects so
+  // each has its own agent, its own workspace and its own approval posture.
+  //
+  // free_tier_eligible on purpose: the point of this template is that someone with no money and
+  // no customers can start it today. Gating it behind a paid plan would defeat the premise.
+  {
+    id: "whop-webdev-agency",
+    name: "Web Studio (ultra-cheap sites)",
+    description:
+      "Build and sell small business websites from $10. Your agents find local businesses with a " +
+      "weak web presence, draft the outreach for you to approve, quote the job, build the site, and " +
+      "tell the customer when it's ready. Sold through your own Whop store.",
+    agents: ["launchpad-leadgen-v1", "launchpad-webdev-v1", "launchpad-support-v1"],
+    skills: ["web-search", "mcp-connector", "file-manager", "code-exec", "email-tool"],
+    connectors: ["whop"],
+    free_tier_eligible: true,
+    // The published price list. Read by the Whop store provisioning step and by the `quote-job`
+    // skill, so a quote can never name a price the store cannot actually sell.
+    pricing_tiers: WEBDEV_TIERS.map((t) => ({
+      id: t.id,
+      name: t.name,
+      price_usd_min: t.price_usd_min,
+      price_usd_max: t.price_usd_max,
+      summary: t.summary,
+      includes: [...t.includes],
+    })),
+    bootstrap: {
+      prompts: [
+        {
+          id: "whop_connection",
+          type: "connection",
+          connector: "whop",
+          question: "Connect your Whop account.",
+          help: "Opens Whop and asks you to approve access. Your assistant then sets up your store with the four website packages, and Whop handles taking the money.",
+          required: true,
+        },
+        {
+          id: "whop_api_key",
+          type: "credential",
+          connector: "whop",
+          question: "Prefer to paste an API key instead?",
+          help: "Optional — only needed if the Connect button above doesn't work for your account.",
+          required: false,
+        },
+        {
+          id: "service_area",
+          type: "text",
+          question: "Which town, city or area do you want customers from?",
+          help: "Your agent looks for local businesses here — restaurants, salons, trades, small shops — that have no website or a poor one. Be specific: 'Harare, Zimbabwe' works better than 'Africa'.",
+          required: true,
+        },
+        {
+          id: "owner_channel",
+          type: "channel",
+          question: "Where should your assistant reach you?",
+          help: "It will send you outreach to approve, tell you when a site is ready, and flag anything it can't handle. You can change this any time.",
+          options: ["email", "slack", "discord", "whatsapp"],
+          required: true,
+        },
+        {
+          id: "outreach_cap",
+          type: "choice",
+          question: "How many businesses should it approach per day, at most?",
+          help: "Start small. A handful of well-targeted messages beats a hundred generic ones, and keeps your email address in good standing.",
+          options: ["5 a day", "10 a day", "20 a day"],
+          required: true,
+        },
+        {
+          id: "autonomy",
+          type: "choice",
+          question: "How much should your assistant do on its own?",
+          help: "Outreach always needs your approval regardless of what you pick here — that one isn't optional, because it reaches real strangers.",
+          options: [
+            "Ask me first — approve everything before it happens",
+            "Handle routine work, ask about anything that costs money or reaches a customer",
+            "Full autonomy — only ask when genuinely stuck",
+          ],
+          required: true,
+        },
+        {
+          id: "sender_name",
+          type: "text",
+          question: "What name should outreach be signed with?",
+          help: "Your name or your studio's. It goes at the bottom of every message.",
+          required: false,
+        },
+      ],
+      // The pipeline, as three working projects plus one reference shelf. Each build agent owns
+      // its own workspace, so a half-finished site never leaks into an outreach draft.
+      projects: [
+        { name: "Lead Generation", default_agent_id: "launchpad-leadgen-v1" },
+        { name: "Development", default_agent_id: "launchpad-webdev-v1" },
+        { name: "Client Communication", default_agent_id: "launchpad-support-v1" },
+        "Pricing & Portfolio",
+      ],
+      setup_scripts: ["mcp.list_tools"],
+      first_contact: {
+        goal:
+          "A new web studio just finished setup. Get it genuinely ready to trade, then report back — do not send a generic welcome.\n\n" +
+          "1. Set up the storefront. Using the connected Whop account (mcp-connector), create the four packages from this template's pricing_tiers if they do not already exist: Basic $10, Standard $20-100, Premium $120-150, Enterprise B2B $250-550. Use each tier's summary as the description. If you cannot create them — missing permission, an API error — say exactly which step failed and what the owner needs to do, rather than reporting success.\n\n" +
+          "2. Look at the service area they gave you. Use web-search to find a few real local businesses there with no website or an obviously poor one. Name them, and say what you actually saw.\n\n" +
+          "3. Send ONE short message to the owner on their chosen channel covering: whether the store is live and what is in it, 3-5 real prospects you found with the specific gap you noticed for each, what you propose doing first, and how they approve outreach. Make clear that no message goes out until they approve it.\n\n" +
+          "Respect their autonomy setting for everything else, but outreach is approval-gated regardless. Be honest about anything you could not complete. Keep it short enough to read on a phone.",
       },
     },
   },

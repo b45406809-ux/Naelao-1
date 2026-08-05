@@ -34,6 +34,7 @@ import {
 import { SkillLibrary } from "../../agents/src/script-engine/skill-library.js";
 import { seedScalingSkills } from "../../agents/src/launchpad/scaling-skills.js";
 import { seedGrowthSkills } from "../../agents/src/launchpad/growth-skills.js";
+import { seedWebdevSkills } from "../../agents/src/launchpad/webdev-skills.js";
 import { seedTemplateProjects, normalizeProjectSeeds } from "../../agents/src/launchpad/bootstrap.js";
 import { inheritTemplateSkills } from "../../agents/src/script-engine/federation.js";
 import type { AgentConfig } from "../../agents/src/script-engine/index.js";
@@ -166,6 +167,18 @@ export async function installLaunchpadAgents(
     if (seeded.length > 0) console.log(`[provisioner] seeded ${seeded.length} growth skill(s) into ${spaceId}`);
   } catch (err) {
     console.warn(`[provisioner] growth-skill seed failed for ${spaceId}:`, (err as Error).message);
+  }
+
+  // Web-studio skills (quoting, build briefs, outreach drafting, pipeline status). Seeded for
+  // every Launchpad space rather than only the web-studio template: they are tagged, so
+  // script.find surfaces them exactly when a job looks like one, and an unused skill costs
+  // nothing. Same separate try/catch so one set failing never blocks another.
+  try {
+    const spaceLib = new SkillLibrary(env.SCRIPTS_R2, spaceId);
+    const seeded = await seedWebdevSkills(spaceLib);
+    if (seeded.length > 0) console.log(`[provisioner] seeded ${seeded.length} web-studio skill(s) into ${spaceId}`);
+  } catch (err) {
+    console.warn(`[provisioner] webdev-skill seed failed for ${spaceId}:`, (err as Error).message);
   }
 }
 
