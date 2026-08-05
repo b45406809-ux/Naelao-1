@@ -31,7 +31,7 @@ import {
 import { startConnectorConnect, submitManualConnectorKey } from "@/lib/connectorActions";
 import { modelLabel } from "./ModelSelector";
 
-type DockPanel = "model" | "apps" | "knowledge" | "tips" | "members";
+type DockPanel = "compose" | "model" | "apps" | "knowledge" | "uploads" | "tips" | "members";
 
 const LEVEL_LABELS: Record<string, string> = {
   off: "Off", on: "On", low: "Low", medium: "Medium", high: "High", max: "Max",
@@ -69,6 +69,9 @@ const ICONS = {
   close: "M5 5l10 10M15 5L5 15",
   check: "M4 10.5l4 4 8-9",
   chevron: "M6 8l4 4 4-4",
+  compose: "M3.5 15.5V17h1.5l8.6-8.6-1.5-1.5L3.5 15.5zM15.6 6.4a.8.8 0 000-1.1l-1-1a.8.8 0 00-1.1 0l-1 1 2.1 2.1 1-1z",
+  upload: "M10 13.5V3.5M6.5 7L10 3.5 13.5 7M3.5 13v2.5A1.5 1.5 0 005 17h10a1.5 1.5 0 001.5-1.5V13",
+  cube: "M10 2.5l6.5 3.7v7.6L10 17.5l-6.5-3.7V6.2zM10 2.5v15M3.5 6.2l6.5 3.8 6.5-3.8",
 };
 
 export function ComposerDock({
@@ -131,7 +134,7 @@ export function ComposerDock({
   }, [spaceId, session, isBusinessSpace]);
 
   React.useEffect(() => {
-    if (panel !== "knowledge") return;
+    if (panel !== "knowledge" && panel !== "uploads") return;
     listAssistantFiles(spaceId, session).then(setFiles).catch(() => {});
   }, [panel, spaceId, session]);
 
@@ -416,7 +419,9 @@ export function ComposerDock({
                 style={{ textAlign: "left", cursor: onUseTip ? "pointer" : "default", fontFamily: "inherit" }}
                 onClick={() => {
                   onUseTip?.(tip.example);
-                  setPanel(null);
+                  // Straight into the composer — dropping text into an input the user cannot
+                  // see would look like the click did nothing.
+                  setPanel(onUseTip ? "compose" : null);
                 }}
               >
                 <div className="dock-tip-dot" />
@@ -459,32 +464,98 @@ export function ComposerDock({
         </div>
       )}
 
-      {children}
+      {/* Uploads — add something new, or point the assistant at something already uploaded.
+          The list is the same knowledge shelf the Knowledge panel reads; this view is about
+          getting things IN, which is why the upload control leads. */}
+      {panel === "uploads" && (
+        <div className="dock-panel">
+          <div className="dock-panel-head">
+            <span className="dock-panel-title">Uploads</span>
+            <button type="button" className="dock-close" onClick={() => setPanel(null)} aria-label="Close">
+              <Icon path={ICONS.close} size={13} />
+            </button>
+          </div>
+          <div className="dock-panel-body">
+            <div className="dock-row">
+              <div className="dock-row-icon"><Icon path={ICONS.upload} /></div>
+              <div className="dock-row-main">
+                <div className="dock-row-title">Upload a file</div>
+                <div className="dock-row-desc">Text documents. The assistant can read it straight away.</div>
+              </div>
+              <div className="dock-row-action">
+                <button type="button" className="dock-pill" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
+                  {uploading ? "Uploading…" : "Choose"}
+                </button>
+              </div>
+            </div>
+            {files.length > 0 && (
+              <>
+                <div className="dock-panel-sub">Uploaded before</div>
+                {files.slice(0, 20).map((f) => (
+                  <div key={f.path} className="dock-row">
+                    <div className="dock-row-icon"><Icon path={ICONS.book} /></div>
+                    <div className="dock-row-main">
+                      <div className="dock-row-title">{f.path.split("/").pop()}</div>
+                      <div className="dock-row-desc">{f.size ? `${Math.max(1, Math.round(f.size / 1024))} KB` : "Already available to the assistant"}</div>
+                    </div>
+                    {onUseTip && (
+                      <div className="dock-row-action">
+                        <button
+                          type="button"
+                          className="dock-pill"
+                          onClick={() => { onUseTip(`Using ${f.path.split("/").pop()}: `); setPanel("compose"); }}
+                        >
+                          Use
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </>
+            )}
+            {files.length === 0 && !uploading && (
+              <p className="dock-empty">Nothing uploaded yet.</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* The message input is a panel like any other — the dock is only a toolbar until you
+          open it. It grows with what you type, up to the dock's own ceiling, then scrolls. */}
+      {panel === "compose" && <div className="dock-compose">{children}</div>}
 
       <div className="dock-bar">
+        {/* The primary pill opens the composer, mirroring the reference where the input is a
+            panel like any other rather than permanent furniture. The model moved to an icon
+            button beside it — it is a setting, not the main action. */}
         <button
           type="button"
-          className={`dock-primary${panel === "model" ? " open" : ""}`}
-          onClick={() => toggle("model")}
-          title="Change the model this conversation uses"
+          className={`dock-primary${panel === "compose" ? " open" : ""}`}
+          onClick={() => toggle("compose")}
+          title="Write a message"
         >
-          <Icon path={ICONS.spark} />
-          <span>{modelLabel(model)}</span>
-          {capability.reasoningLevels.length > 0 && reasoningLevel && (
-            <span style={{ fontSize: 10, fontWeight: 600, color: "var(--accent)", background: "var(--accent-dim)", borderRadius: 5, padding: "1px 5px" }}>
-              {LEVEL_LABELS[reasoningLevel] ?? reasoningLevel}
-            </span>
-          )}
+          <Icon path={ICONS.compose} />
+          <span>{panel === "compose" ? "Close" : "Message"}</span>
         </button>
 
         <div className="dock-sep" />
 
+        <button type="button" className={`dock-btn${panel === "model" ? " open" : ""}`} onClick={() => toggle("model")} title={`Model: ${modelLabel(model)}`}>
+          <Icon path={ICONS.cube} />
+          {capability.reasoningLevels.length > 0 && reasoningLevel && <span className="dock-btn-dot" />}
+        </button>
         <button type="button" className={`dock-btn${panel === "apps" ? " open" : ""}`} onClick={() => toggle("apps")} title="Connected apps">
           <Icon path={ICONS.plug} />
           {connectedCount > 0 && <span className="dock-btn-dot" />}
         </button>
         <button type="button" className={`dock-btn${panel === "knowledge" ? " open" : ""}`} onClick={() => toggle("knowledge")} title="Knowledge and files">
           <Icon path={ICONS.book} />
+        </button>
+
+        <div className="dock-sep" />
+
+        <button type="button" className={`dock-btn${panel === "uploads" ? " open" : ""}`} onClick={() => toggle("uploads")} title="Uploads">
+          <Icon path={ICONS.upload} />
         </button>
         <button type="button" className={`dock-btn${panel === "tips" ? " open" : ""}`} onClick={() => toggle("tips")} title="Tips for a better answer">
           <Icon path={ICONS.bulb} />

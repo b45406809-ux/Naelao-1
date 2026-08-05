@@ -178,6 +178,16 @@ export function Chat({
   // exactly the double/triple-reply bug. This ref is the single gate: whichever call site reaches
   // a given runId first wins, and every other attempt for that same runId is a no-op.
   const attachedRunIdRef = React.useRef<string | null>(null);
+  const inputRef = React.useRef<HTMLTextAreaElement>(null);
+  // Grow the composer with its content up to the ceiling .dock-compose sets, then let it scroll.
+  // Driven off `input` rather than onChange so a value put there by something else — a tip card,
+  // an upload — resizes too, and so clearing it after a send snaps back to one line.
+  React.useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [input]);
   // The standing "this didn't finish — continue?" offer for this thread. Server-backed, so it is
   // still here after a refresh: the offer is the only way to pick the work back up without
   // redoing side effects that already happened.
@@ -912,6 +922,7 @@ export function Chat({
                   placeholder="Message…"
                   value={input}
                   disabled={isLoading}
+                  ref={inputRef}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
