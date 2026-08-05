@@ -110,14 +110,14 @@ describe("the web studio agents", () => {
 });
 
 describe("the web studio skills", () => {
-  it("seeds all four, idempotently", async () => {
+  it("seeds all five, idempotently", async () => {
     const store = new Set<string>();
     const lib = {
       async exists(name: string) { return store.has(name); },
       async create({ name }: { name: string }) { store.add(name); },
     };
     const first = await seedWebdevSkills(lib as never);
-    expect(first.sort()).toEqual(["build-brief", "outreach-draft", "pipeline-status", "quote-job"]);
+    expect(first.sort()).toEqual(["build-brief", "handoff-to-project", "outreach-draft", "pipeline-status", "quote-job"]);
     // Re-running provisioning must not duplicate or throw.
     expect(await seedWebdevSkills(lib as never)).toEqual([]);
   });

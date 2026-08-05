@@ -48,6 +48,17 @@ export type NaelaoEventType =
   | "business_wallet.revenue_received"
   | "business_wallet.payout_requested"
   | "business_wallet.payout_completed"
+  // A file in a project's workspace was written or removed by an agent. This is what makes a
+  // handoff between projects possible without inventing a second mechanism: one project's agent
+  // records what it found (a lead, a spec, a finished build) as an ordinary file, that write
+  // fires this, and a no-code rule picks it up and wakes the agent that owns the next stage.
+  //
+  // The file IS the handoff. Passing the work as an event payload instead would mean the
+  // receiving agent's only record of the job is a message it has to remember; a file is state
+  // both sides can re-read, and survives the run that produced it.
+  //
+  // Payload: { path, operation: "write" | "delete", agent_id }.
+  | "workspace.file_changed"
   | (string & {});
 
 export interface EventEnvelope {

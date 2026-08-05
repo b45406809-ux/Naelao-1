@@ -55,13 +55,21 @@ export function normalizeProjectSeeds(
  * project failing never aborts the rest, and never fails the caller's own operation. Returns the
  * names actually created so the caller can report/log real results rather than assumed ones.
  */
+/** A project this seeder created. The id is present whenever the create response carried one —
+ *  a caller that needs to reference the project later (an event rule naming a handoff target)
+ *  has no other way to learn it. */
+export interface SeededProject {
+  name: string;
+  id?: string;
+}
+
 export async function seedTemplateProjects(
   deps: BootstrapDeps,
   spaceId: string,
   tenantId: string,
   seeds: NormalizedProjectSeed[]
-): Promise<string[]> {
-  const created: string[] = [];
+): Promise<SeededProject[]> {
+  const created: SeededProject[] = [];
   for (const seed of seeds) {
     try {
       const res = await deps.postToSpaces(`/spaces/${spaceId}/projects`, {
@@ -71,11 +79,13 @@ export async function seedTemplateProjects(
       // A non-ok here is usually the UNIQUE(space_id, name) constraint on a re-run — expected and
       // safe to skip, not an error worth failing the provision over.
       if (!res.ok) continue;
-      created.push(seed.name);
-
-      if (!seed.default_agent_id) continue;
+      // The id is read for every project, not only bound ones: a caller wiring the pipeline
+      // between projects (event rules naming a target) needs the id of the reference shelves too,
+      // and it was already in this response — just discarded.
       const project = (await res.json().catch(() => ({}))) as { id?: string };
-      if (!project.id) continue;
+      created.push({ name: seed.name, ...(project.id ? { id: project.id } : {}) });
+
+      if (!seed.default_agent_id || !project.id) continue;
       try {
         await deps.postToSpaces(`/spaces/${spaceId}/threads`, {
           space_id: spaceId,

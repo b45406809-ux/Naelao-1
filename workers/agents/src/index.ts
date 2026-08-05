@@ -3362,7 +3362,7 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
   //    structural pass at creation time for every path (including the end-user shell, which
   //    never reaches this endpoint) — one implementation so the two can't drift.
   const bootstrapInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
-  const createdProjects = await seedTemplateProjects(
+  const seededProjects = await seedTemplateProjects(
     {
       postToSpaces: async (path, body) =>
         c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker${path}`, {
@@ -3375,6 +3375,9 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
     tenantId,
     projectSeeds
   );
+  // This endpoint's callers only ever wanted the names; the ids exist for the provisioner, which
+  // uses them to wire event rules between projects. Response shape unchanged.
+  const createdProjects = seededProjects.map((p) => p.name);
 
   // 1b. Stamp the template's project-template presets (a customer_bot preset arrives with its own
   //     execution ceiling, spend cap and STOP/human-takeover rules already wired — exactly what an

@@ -45,7 +45,7 @@ describe("seedTemplateProjects — the structural bootstrap the provisioner now 
       { name: "Content", default_agent_id: "launchpad-content-v1" },
     ]);
 
-    expect(created).toEqual(["Members", "Support", "Content"]);
+    expect(created.map((p) => p.name)).toEqual(["Members", "Support", "Content"]);
 
     const projectCalls = calls.filter((c) => c.path.endsWith("/projects"));
     const threadCalls = calls.filter((c) => c.path.endsWith("/threads"));
@@ -66,7 +66,7 @@ describe("seedTemplateProjects — the structural bootstrap the provisioner now 
     const first = await seedTemplateProjects(deps, "space-1", "tenant-1", seeds);
     const second = await seedTemplateProjects(deps, "space-1", "tenant-1", seeds);
 
-    expect(first).toEqual(["Support"]);
+    expect(first.map((p) => p.name)).toEqual(["Support"]);
     // Second run reports nothing created, and — critically — seeds no SECOND starter thread.
     expect(second).toEqual([]);
     expect(calls.filter((c) => c.path.endsWith("/threads"))).toHaveLength(1);
@@ -89,7 +89,7 @@ describe("seedTemplateProjects — the structural bootstrap the provisioner now 
       { name: "Second" },
       { name: "Third" },
     ]);
-    expect(created).toEqual(["Second", "Third"]);
+    expect(created.map((p) => p.name)).toEqual(["Second", "Third"]);
   });
 
   it("normalizes spacetype.ts's mixed string | object seed forms", () => {

@@ -1775,6 +1775,37 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       };
     }
 
+    // A workspace write is what makes a handoff between projects possible: the agent that owns
+    // one stage records its result as a file, and a no-code rule wakes whoever owns the next.
+    // Only wired for a PROJECT-scoped run — the Space Assistant's own space-wide workspace is
+    // scratch space, not a pipeline, and firing on every note it writes would be noise.
+    if (this.env.SPACES_WORKER && projectId) {
+      const spacesWorker = this.env.SPACES_WORKER;
+      env.onWorkspaceChange = (change) => {
+        // Fire-and-forget in both directions: the write already succeeded, so a failure to
+        // announce it must not surface as a failed write.
+        void (async () => {
+          try {
+            await spacesWorker.fetch(new Request(
+              `http://spaces-worker/internal/spaces/${spaceId}/events/fire`,
+              {
+                method: "POST",
+                headers: await this.internalHeaders(tenantId, { "content-type": "application/json" }),
+                body: JSON.stringify({
+                  type: "workspace.file_changed",
+                  space_id: spaceId,
+                  project_id: projectId,
+                  payload: { path: change.path, operation: change.operation, agent_id: agentId },
+                }),
+              }
+            ));
+          } catch {
+            /* best-effort */
+          }
+        })();
+      };
+    }
+
     // Exactly-once record of executed actions (see ActionLedger). Always wired — unlike the
     // gateways around it there is no binding to be missing; the store is this DO's own SQLite.
     env.actionLedger = {

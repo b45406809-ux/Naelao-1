@@ -589,6 +589,20 @@ export interface ScriptEngineEnv {
   /** Exactly-once record of executed actions — present when the host provides one. See
    *  ActionLedger for why "the model can see it already ran" is not on its own a guarantee. */
   actionLedger?: ActionLedger;
+  /**
+   * Called after a project workspace file is written or removed, so the host can fire a
+   * `workspace.file_changed` event.
+   *
+   * This is what turns a file into a handoff between projects: the lead-generation agent records
+   * a customer, that write fires the event, and a no-code rule wakes the agent that owns the next
+   * stage. Passing the work as an event payload instead would leave the receiving agent with only
+   * a message to remember — a file is state both sides can re-read, and it outlives the run that
+   * produced it.
+   *
+   * Fire-and-forget by contract: the write has already succeeded by the time this is called, and
+   * a listener failing must never turn it into a failure. Absent when the host wires no events.
+   */
+  onWorkspaceChange?: (change: { path: string; operation: "write" | "delete" }) => void;
   /** Generic named-lock primitive — present when CONCURRENCY_DO is wired up (the `lock`
    *  prebuilt reports itself degraded, not unavailable, when absent — see LockGateway). */
   lockGateway?: LockGateway;

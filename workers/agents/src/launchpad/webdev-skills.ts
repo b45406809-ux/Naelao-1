@@ -256,6 +256,59 @@ export async function run(args, ctx) {
   return { ok: true, jobs, count: jobs.length };
 }`;
 
+/**
+ * Hand a piece of work from one project to the agent that owns the next stage.
+ *
+ * This is what an event rule runs when a workspace file changes. It reads the file that
+ * changed — the file IS the handoff, so the receiving agent gets state it can re-read rather
+ * than a message it has to remember — and consults the target project's agent with it.
+ *
+ * Refuses rather than guessing when it is pointed nowhere: a handoff that silently goes to the
+ * wrong project is worse than one that visibly did not happen.
+ */
+const HANDOFF_TO_PROJECT = `
+export async function run(args, ctx) {
+  const targetProject = String(args.target_project_id || "").trim();
+  const targetAgent = String(args.target_agent_id || "").trim();
+  if (!targetProject || !targetAgent) {
+    return { handed_off: false, error: "handoff-to-project requires { target_project_id, target_agent_id }. Configure them on the trigger rule." };
+  }
+
+  // The path the event carried. A rule may also pin one explicitly.
+  const path = String(args.path || args.file_path || "").trim();
+  let contents = null;
+  if (path) {
+    try {
+      const read = await ctx.run("read_file", { path });
+      contents = read && (read.content ?? read.output ?? null);
+    } catch (e) {
+      // A missing file is worth reporting, not worth failing over — the target agent can still
+      // be told which path to look at.
+      contents = null;
+    }
+  }
+
+  const summary = args.message
+    ? String(args.message)
+    : [
+        "New work has been handed to you from another project.",
+        path ? ("It is recorded at: " + path) : "",
+        contents ? ("Its current contents:\\n" + String(contents).slice(0, 4000)) : "",
+        "Read it, do your part, and write your result back to the workspace so the next stage can pick it up.",
+      ].filter(Boolean).join("\\n\\n");
+
+  try {
+    const res = await ctx.run("agent.consult", {
+      agent_id: targetAgent,
+      project_id: targetProject,
+      message: summary,
+    });
+    return { handed_off: res && res.ok !== false, path, target_project_id: targetProject, target_agent_id: targetAgent, result: res };
+  } catch (e) {
+    return { handed_off: false, path, error: String((e && e.message) || e) };
+  }
+}`;
+
 export const LAUNCHPAD_WEBDEV_SKILLS: readonly ScalingSkill[] = [
   {
     name: "quote-job",
@@ -292,6 +345,16 @@ export const LAUNCHPAD_WEBDEV_SKILLS: readonly ScalingSkill[] = [
     description:
       "Where every open website job stands, read from the briefs on file rather than from memory.",
     tags: ["pipeline", "status", "jobs", "orders", "progress", "what is in flight", "workload"],
+  },
+  {
+    name: "handoff-to-project",
+    domain: "delivery",
+    code: HANDOFF_TO_PROJECT,
+    description:
+      "Hand work from one project to the agent that owns the next stage, carrying the file that " +
+      "changed. Wired to a workspace.file_changed rule so a lead recorded in one project starts " +
+      "the build in another without anyone watching.",
+    tags: ["handoff", "hand off", "pass to", "next stage", "pipeline", "trigger", "another project", "delegate"],
   },
 ];
 

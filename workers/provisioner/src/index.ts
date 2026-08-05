@@ -35,7 +35,7 @@ import { SkillLibrary } from "../../agents/src/script-engine/skill-library.js";
 import { seedScalingSkills } from "../../agents/src/launchpad/scaling-skills.js";
 import { seedGrowthSkills } from "../../agents/src/launchpad/growth-skills.js";
 import { seedWebdevSkills } from "../../agents/src/launchpad/webdev-skills.js";
-import { seedTemplateProjects, normalizeProjectSeeds } from "../../agents/src/launchpad/bootstrap.js";
+import { seedTemplateProjects, normalizeProjectSeeds, type SeededProject } from "../../agents/src/launchpad/bootstrap.js";
 import { inheritTemplateSkills } from "../../agents/src/script-engine/federation.js";
 import type { AgentConfig } from "../../agents/src/script-engine/index.js";
 import type { NaelaoSpaceTypeManifestV2 } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
@@ -294,6 +294,82 @@ async function installAgentTrigger(
  * seedLaunchpadAssistantPolicy right above it; a failure here degrades to "no proactive review
  * until the builder configures one," never blocks provisioning.
  */
+/**
+ * Wire the web studio's pipeline so work moves between projects on its own.
+ *
+ * The chain, entirely out of pieces that already existed: an agent writes a file to its project
+ * workspace -> `workspace.file_changed` fires -> this rule matches -> the `handoff-to-project`
+ * skill reads that file and consults the agent that owns the next stage. Nothing new in the
+ * engine; the file is the handoff, and a no-code rule is what carries it across.
+ *
+ * Project-scoped on both ends. A rule scoped to Lead Generation can only ever match events from
+ * Lead Generation (matchesEvent enforces that structurally), and its target is named explicitly
+ * rather than inferred — a handoff that silently lands in the wrong project is worse than one
+ * that visibly did not happen.
+ *
+ * Best-effort, like every other provisioning seed: a business with no rules still works, the
+ * owner just moves work between projects by asking.
+ */
+export async function seedWebStudioHandoffRules(
+  spaceId: string,
+  tenantId: string,
+  projectIds: Record<string, string>,
+  env: Env
+): Promise<void> {
+  const leadGen = projectIds["Lead Generation"];
+  const development = projectIds["Development"];
+  const clientComms = projectIds["Client Communication"];
+  // Nothing to wire if the projects this depends on are not both there — say nothing rather
+  // than create a rule pointing at a project that does not exist.
+  if (!leadGen || !development) return;
+
+  const rules: Array<Record<string, unknown>> = [
+    {
+      // A lead written in Lead Generation starts the build.
+      // Flat script_name/params — the create route's own shape, not the nested TriggerAction the
+      // rule is stored as. Caught live: the nested form was rejected as a bad request.
+      event_type: "workspace.file_changed",
+      project_id: leadGen,
+      condition: { type: "always" },
+      script_name: "handoff-to-project",
+      params: { target_project_id: development, target_agent_id: "launchpad-webdev-v1" },
+      priority: 10,
+    },
+  ];
+  if (clientComms) {
+    rules.push({
+      // A finished build tells the customer.
+      event_type: "workspace.file_changed",
+      project_id: development,
+      condition: { type: "always" },
+      script_name: "handoff-to-project",
+      params: { target_project_id: clientComms, target_agent_id: "launchpad-support-v1" },
+      priority: 10,
+    });
+  }
+
+  for (const rule of rules) {
+    try {
+      const resp = await env.SPACES_WORKER.fetch(
+        new Request(`http://spaces-worker/spaces/${spaceId}/event-triggers`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-naelao-tenant-id": tenantId,
+            "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+          },
+          body: JSON.stringify(rule),
+        })
+      );
+      if (!resp.ok) {
+        console.warn(`[provisioner] handoff rule seed failed for ${spaceId}: ${await resp.text()}`);
+      }
+    } catch (err) {
+      console.warn(`[provisioner] handoff rule seed threw for ${spaceId}:`, (err as Error).message);
+    }
+  }
+}
+
 export async function seedDefaultRevenueReviewCron(spaceId: string, tenantId: string, env: Env): Promise<void> {
   try {
     const resp = await env.SPACES_WORKER.fetch(
@@ -775,7 +851,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
         // this fix: a real whop-seller business went 'active' with only the auto-provisioned
         // "Wallet" project). Best-effort by design: a template's projects failing to seed must
         // never roll back an otherwise-successful provision.
-        let projectsCreated: string[] = [];
+        let projectsCreated: SeededProject[] = [];
         try {
           projectsCreated = await seedTemplateProjects(
             {
@@ -803,6 +879,16 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
           console.warn(`[provisioner] template project seeding failed for ${spaceId}:`, (err as Error).message);
         }
 
+        // With the projects in place, wire the pipeline between them: a file written in one
+        // project wakes the agent that owns the next stage. Only does anything for a template
+        // whose projects it recognises (see seedWebStudioHandoffRules).
+        await seedWebStudioHandoffRules(
+          spaceId,
+          tenantId,
+          Object.fromEntries(projectsCreated.filter((p) => p.id).map((p) => [p.name, p.id!])),
+          env
+        );
+
         // Default proactive wake-up (see seedDefaultRevenueReviewCron's own doc comment) — every
         // templated Launchpad business gets one, not just spaces with a channel/connector already
         // configured.
@@ -827,7 +913,7 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
           projects,
           setup_scripts,
           created_at: now,
-          projects_created: projectsCreated,
+          projects_created: projectsCreated.map((p) => p.name),
         });
       }
       provisioned.push("bootstrap");
