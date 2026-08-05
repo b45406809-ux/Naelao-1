@@ -3928,6 +3928,127 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     never becomes the reported error), `npx turbo run typecheck` clean (76 tasks), `naelao-agents`
     (bare `wrangler deploy`) and `apps/shell` both deployed.
 
+92. **Four things shipped in one session: a durable "Continue" offer replacing retry-from-scratch,
+    the ultra-cheap webdev-agency Whop template, the knowledge-base upload path (which had never
+    once worked), and cross-project handoff. Then the assistant was given real situational
+    awareness — it previously woke with no idea what had happened while it wasn't looking.**
+    - **Retry created duplicate work — FIXED, and the first design was replaced on user
+      direction.** A failed run offered "Try again", which mints a fresh run id and therefore a
+      fresh action-ledger key, so every already-completed action ran a second time (the reported
+      symptom: two identical projects). The first fix keyed the ledger on `(sessionId, goal)` with
+      a 30-minute reuse window; the user interrupted the deploy and asked for something explicit
+      instead — a retry dialog that stays in the chat, survives a refresh, and disappears only
+      when answered. Reverted the heuristic and built that: a new `interrupted_runs` table
+      (`NaelaoAgentDO`), `GET/POST /spaces/:id/sessions/:id/agent/interrupted`, and
+      `InterruptedRunCard` in the shell. Continue re-enters under the **original** run id, so the
+      ledger short-circuits what already succeeded. `LoopResult.steps_completed` was added and is
+      attached at every exit path via one `finish()` closure so no exit is left uncheckpointed.
+      **A real bug found live, not in tests:** the claim check used `rowsWritten !== 1`, but that
+      counter measures rows touched for BILLING including index entries — the index contains
+      `status`, so a single-row UPDATE reported 2, and Continue consumed the offer while reporting
+      it had done nothing. Now `UPDATE ... RETURNING`. `handleResumeRun` had the same pattern and
+      only worked by accident (no index there contains `status`); fixed too. **Never trust
+      `rowsWritten` as a changed-row count.**
+    - **Knowledge-base upload had never worked** (reported as a `Symbol.iterator` error).
+      `packages/rag/src/embed.ts` declared Cloudflare's embedding response as
+      `Array<{embedding: number[]}>`; the real shape is `{data: number[][], shape, pooling,
+      usage}` — a flat array of arrays. Verified against the live API, not assumed. `embed.ts` had
+      **zero test coverage**, which is why this survived. Two more layers were broken behind it:
+      an empty search result was cached for an hour (so a fresh upload stayed invisible, and
+      `cached: true` with 0 results reads as "ingestion is broken"), and the account had **zero
+      Vectorize metadata indexes** — v2 requires one per filtered property or no filter ever
+      matches. Created `space_id`/`project_id` on `naelao-kb-vectors` + `naelao-kb-prod`,
+      `spaceId`/`userId` on `naelao-agent-memory`, `spaceId` on `naelao-agent-scripts`.
+      **Metadata indexes only apply to vectors written after they exist** — anything ingested
+      before must be re-uploaded. Verified live end to end: upload → indexed → search returns the
+      real chunk (dense score 0.66).
+    - **Webdev agency template** (`whop-webdev-agency`, `free_tier_eligible: true`).
+      `WEBDEV_TIERS` is one const read by both storefront provisioning and quoting so prices can't
+      drift: basic $10 / standard $20-100 / premium $120-150 / enterprise $250-550. Five seeded
+      skills (`webdev-skills.ts`) — `quote-job` is deterministic keyword scoring that takes the
+      HIGHEST matching tier and refuses a brief too thin to price; `outreach-draft` produces
+      DRAFTS only, always with an opt-out, and a click-to-WhatsApp link the **prospect** opens
+      (that is the Meta-policy opt-in — the agent never initiates). Two new agents
+      (`launchpad-leadgen-v1` on a weekday cron with outreach gated,
+      `launchpad-webdev-v1` on `brief.accepted`), four bootstrap projects, and a `first_contact`
+      goal that tells the assistant to read the connected Whop account before proposing anything.
+      Per the user's answers: email-first outreach in HITL batches, hard caps, STOP honoured.
+    - **Cross-project handoff** (built now, fires once the $5 Workers Paid plan enables tiers
+      2-4). `r2-workspace`'s write/delete call a new `ScriptEngineEnv.onWorkspaceChange`, which
+      fires a `workspace.file_changed` event through the **existing** `event_triggers` machinery —
+      no new trigger type. So a lead written in Lead Generation wakes the Development project's
+      own agent. Wired **only when `projectId` is present**, so the Space Assistant's space-wide
+      workspace doesn't fire on every file it touches. **A real contract bug caught live:** the
+      first seeding attempt posted a nested `{action: {script_name, params}}` rule and was
+      rejected — the create route wants those FLAT. The test had captured the body without
+      asserting the contract, so it passed; it now asserts the real shape.
+    - **Situational awareness (the session's last and largest piece).** The assistant is woken by
+      a heartbeat, a cron, a channel message — and each arrived knowing only its goal. A project
+      could stall for a week and it would report everything was fine, because nothing told it
+      otherwise. New `classifyFailure` (`packages/events/src/failure-classification.ts`) splits
+      failures into kinds that demand genuinely different responses: `quota_exhausted` (clears by
+      itself — do NOT rebuild or retry in a loop, that burns the next window too),
+      `budget_ceiling` (the owner's own setting — don't route around it), `context_overflow` and
+      `step_exhaustion` (the agent's own to fix — narrower goals, lean on the journal),
+      `rate_limited`, `model_unavailable`, `tool_error`, `unknown`. `agent_activity_log` gained
+      `failure_kind`/`session_id`/`run_id`/`trigger_source` (SpaceDO migration v36 — plain
+      `ALTER ADD COLUMN`, deliberately NOT a table rebuild: a failed wake-up IS a `run_failed`,
+      so the `event_type` CHECK constraint is untouched). New `GET /agent-diagnostics` rolls it
+      into one bounded summary (counts, why runs failed, per-project shape, resumable stalls with
+      the ids to continue them, unread notifications) capped at 8 projects / 6 stalls. New
+      `business-diagnostics` prebuilt gives the assistant that summary plus `failures` /
+      `stalled_work` / `limits` drill-downs it calls only where the summary showed something
+      wrong — summary-first is the whole design, since a brief that grows with the business stops
+      being a brief. All four ops are read-only and in the guided-mode auto-approved list (gating
+      them would mean asking permission before being allowed to discover anything is wrong).
+      **Two background failures were invisible to everyone:** a heartbeat's response was discarded
+      and its drain runs inside the DO, so a dead background loop left no trace anywhere; a
+      scheduled job's `consecutive_failures` lives in D1 and is read only by the sweep itself.
+      Both now record through `recordWakeFailure`, **awaited** — a promise left dangling after a
+      Worker handler returns may never run, and dropping the only record of a dead loop is exactly
+      what this exists to prevent. Scheduled and polled wake-ups carry a short brief when there is
+      something to say and **nothing at all when there isn't** (a brief on every hourly tick would
+      spend real tokens saying "everything is fine" on a ~65-run/day budget). Both assistant
+      profiles gained "Knowing What Happened While You Weren't Looking" and "When You Run Out Of
+      Room". **Two real bugs caught by writing the tests and by live verification:**
+      `classifyFailure` returned `unknown` for its own kind names — which is exactly how the
+      rollup re-reads a stored classification, so every piece of guidance derived from it was
+      wrong; and `"no terminal action"` (the loop's own wording when a model spends its turns
+      without choosing a terminal action) was landing in `unknown` rather than `step_exhaustion`,
+      found by running a real agent against production and reading what it recorded.
+    - **Live-verified against production**, not just tests: registered a disposable builder,
+      created a real product, confirmed migration v36 applies cleanly on a real DO, ran a real
+      agent run and confirmed `session_id`/`run_id`/`trigger_source` carry real values with
+      `run_id` matching the API's own response, then drove a real failure and confirmed the
+      rollup groups it with a real 0.5 error rate and the Continue card carries the classification
+      and explanation. The assistant discovered and called `diagnostics.overview` on its own.
+      Verification product deleted afterwards. **Note on small-model behaviour observed live:**
+      llama-3.3-70b sometimes picks a neighbouring tool (it reached for `business_wallet.history`
+      when asked about run counts) — it reported honestly that it couldn't get the answer rather
+      than fabricating one, which is the right failure, but tool selection on this model is not
+      reliable enough to assume a named script will be the one called.
+    - **Still open, not silently dropped:** the WhatsApp channel setup the user asked for
+      (channel machinery exists; needs number/credential wiring + setup UI); Whop store
+      auto-provisioning on OAuth connect (the template instructs it, never executed against a real
+      connected account); and behavioural proof of the template — no agent has run a full
+      find→quote→build→deliver cycle, which needs a real Whop OAuth click and more than the
+      ~65 runs/day budget allows. `/agent-diagnostics` is deliberately builder-only (it spans
+      every thread in a business including other members'); a business owner reaches the same
+      information by asking their assistant, which now actually works.
+    2420/2420 tests pass (41 new across `failure-classification`, `agent-diagnostics-rollup`
+    — driven through the REAL SpaceDO migrations — `business-diagnostics-prebuilt`,
+    `wake-up-brief`, `interrupted-run-continue`, `webdev-agency-template`, `rag-embed-shape`,
+    `cross-project-handoff`), `npx turbo run typecheck` clean (76 tasks). Deployed:
+    `naelao-agents`, `naelao-spaces`, `naelao-provisioner`, `naelao-knowledge`, `apps/shell`.
+    **Test businesses left under the live `launchpad` product** (harmless, no end-user-reachable
+    delete route): "Dock UI Test", "Dashboard Test Co", "Dock Panels", "Pixel Studio",
+    "Handoff Studio", "Handoff Verify", "Handoff Verify 2".
+    **Security note carried forward:** the user pasted a Whop owner API key, client id and client
+    secret in plaintext in chat. They were never used. Both should be treated as compromised and
+    rotated in the Whop dashboard. The value labelled "client secret" is in `apik_...` format (an
+    API-key shape, not an OAuth client secret), and a working `WHOP_OAUTH_CLIENT_SECRET` is
+    already configured — do not overwrite a working credential without confirmation.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

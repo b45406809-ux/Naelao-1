@@ -119,7 +119,11 @@ const RULES: Rule[] = [
     clears_on_its_own: false,
     agent_actionable: true,
     summary: "The run used every step without reaching an answer. Narrower goals, or fewer tools per run, get further.",
-    patterns: [/without reaching an answer/i, /step[_ ]exhaust/i, /max[_ ]?steps/i],
+    // "no terminal action" is the loop's own wording for a model that spent its turns without
+    // ever choosing answer/give_up — the same situation as running out of steps, and equally
+    // fixable by narrowing the goal. Seen live; it was landing in `unknown`, which told the
+    // assistant it had less to work with than it actually did.
+    patterns: [/without reaching an answer/i, /step[_ ]exhaust/i, /max[_ ]?steps/i, /no terminal action/i],
   },
   {
     kind: "approval_pending",

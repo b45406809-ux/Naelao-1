@@ -35,12 +35,18 @@ describe("classifyFailure", () => {
     expect(rate.agent_actionable).toBe(false);
   });
 
-  it("recognises the loop's own exhaustion message verbatim", () => {
-    // This exact string is what runScriptLoop produces; a change to it should fail here loudly
-    // rather than silently degrading every stalled run to 'unknown'.
-    const c = classifyFailure("Ran 6 step(s) without reaching an answer (completed: project.create)");
-    expect(c.kind).toBe("step_exhaustion");
-    expect(c.agent_actionable).toBe(true);
+  it("recognises both of the loop's own exhaustion messages verbatim", () => {
+    // These exact strings are what runScriptLoop produces; a change to either should fail here
+    // loudly rather than silently degrading every stalled run to 'unknown'. The second one was
+    // found by running a real agent against production and reading what it actually recorded.
+    for (const text of [
+      "Ran 6 step(s) without reaching an answer (completed: project.create)",
+      "no terminal action",
+    ]) {
+      const c = classifyFailure(text);
+      expect(c.kind).toBe("step_exhaustion");
+      expect(c.agent_actionable).toBe(true);
+    }
   });
 
   it("classifies from an HTTP status when there is no useful text", () => {
