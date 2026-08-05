@@ -64,6 +64,11 @@ export function InterruptedRunCard({
         <span className="interrupted-title">This didn&apos;t finish</span>
       </div>
       <p className="interrupted-reason">{interrupted.reason}</p>
+      {/* What the error actually means, in words. A raw provider string ("4006") leaves the person
+          with no way to judge whether continuing now is even worth trying. */}
+      {interrupted.explanation && (
+        <p className="interrupted-explain">{interrupted.explanation}</p>
+      )}
       <p className="interrupted-note">
         {done > 0
           ? `${done} step${done === 1 ? "" : "s"} already completed. Continuing picks up from there — it won't redo them.`
@@ -77,7 +82,11 @@ export function InterruptedRunCard({
           onClick={() => void resolve("continue")}
           disabled={busy !== null}
         >
-          {busy === "continue" ? "Continuing…" : "Continue"}
+          {busy === "continue"
+            ? "Continuing…"
+            : interrupted.clears_on_its_own
+              ? "Try again now"
+              : "Continue"}
         </button>
         <button
           type="button"

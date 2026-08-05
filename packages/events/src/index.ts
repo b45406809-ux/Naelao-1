@@ -478,3 +478,6 @@ export function isCronDue(
 
 // ── Business Feature Projects registry (F-34/F-41) ──────────────────────────────
 export * from "./business-feature-kinds.js";
+
+// ── Failure classification — what stopped a run, and can anything be done about it ──
+export * from "./failure-classification.js";

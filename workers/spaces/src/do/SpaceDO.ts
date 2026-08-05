@@ -5,7 +5,7 @@ import type { MessageRole } from "@naelao/types";
 import {
   selectMatchingRules, evaluateCondition, buildFireParams,
   findPossibleDuplicateProjects, isPresenceFresh, PRESENCE_FRESHNESS_WINDOW_MS,
-  getBusinessFeatureKind, isKnownProjectKind, roleMeetsMinimum,
+  getBusinessFeatureKind, isKnownProjectKind, roleMeetsMinimum, isFailureKind,
 } from "@naelao/events";
 import type { TriggerRule, TriggerCondition, EventEnvelope, ConditionContext } from "@naelao/events";
 import { mintInternalToken, broadcastSpaceEvent } from "@naelao/http";
@@ -985,6 +985,28 @@ const MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    // Failure diagnostics. agent_activity_log already recorded THAT a run failed, but not what
+    // kind of failure it was or which thread to resume — so an assistant reading it could see
+    // "3 runs failed" and do nothing useful with that. These four columns are what turn the log
+    // into something actionable: the classification (see @naelao/events classifyFailure), and the
+    // ids needed to actually go and continue the interrupted work.
+    //
+    // Deliberately ALTER ... ADD COLUMN rather than a table rebuild: the event_type CHECK
+    // constraint stays exactly as it is, because a failed wake-up IS a failed run — 'run_failed'
+    // plus a failure_kind says everything a new event type would have, without SQLite's
+    // can't-alter-a-CHECK-in-place rebuild (migrations 0052/0065 hit that; not worth it here).
+    version: 36,
+    description: "agent_activity_log failure diagnostics — classification + ids to resume from",
+    up: `
+      ALTER TABLE agent_activity_log ADD COLUMN failure_kind TEXT;
+      ALTER TABLE agent_activity_log ADD COLUMN session_id TEXT;
+      ALTER TABLE agent_activity_log ADD COLUMN run_id TEXT;
+      ALTER TABLE agent_activity_log ADD COLUMN trigger_source TEXT;
+      CREATE INDEX IF NOT EXISTS idx_agent_activity_failure
+        ON agent_activity_log(space_id, failure_kind, created_at DESC);
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1404,6 +1426,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // the already-existing agent_activity_log (no separate ingestion).
       if (method === "GET" && url.pathname === "/agent-signals") {
         return this.computeAgentSignals(url.searchParams);
+      }
+      // GET /agent-diagnostics?window_hours= — the whole-business summary the Space Assistant
+      // reads on a wake-up (counts, failure kinds, per-project shape, resumable stalls).
+      if (method === "GET" && url.pathname === "/agent-diagnostics") {
+        return this.computeAgentDiagnostics(url.searchParams);
       }
       // POST /signal-events — internal only (NaelaoAgentDO posts one row per detected implicit
       // signal — user frustration / agent-forgot markers). Same await-not-bare-return rationale
@@ -2976,17 +3003,28 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       summary?: string;
       tokens_used?: number | null;
       cost_credits?: number | null;
+      /** Classification from @naelao/events classifyFailure — set by the agent DO at the moment
+       *  of failure, so the diagnostics rollup never has to re-parse free text. */
+      failure_kind?: string | null;
+      /** The thread and run this happened in, so a reader can actually go and continue it. */
+      session_id?: string | null;
+      run_id?: string | null;
+      /** What woke this run: chat, heartbeat, scheduled_job, connector_poll, trigger. */
+      trigger_source?: string | null;
     }>().catch(() => null);
     if (!body?.space_id || !body.agent_id || !body.event_type) {
       return Response.json({ error_code: "bad_request", message: "space_id, agent_id, event_type are required" }, { status: 400 });
     }
     execute(
       this.ctx.storage.sql as never,
-      `INSERT INTO agent_activity_log (id, space_id, project_id, thread_id, agent_id, event_type, summary, tokens_used, cost_credits)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO agent_activity_log (id, space_id, project_id, thread_id, agent_id, event_type, summary, tokens_used, cost_credits,
+                                       failure_kind, session_id, run_id, trigger_source)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       crypto.randomUUID(), body.space_id, body.project_id ?? null, body.thread_id ?? null,
       body.agent_id, body.event_type, (body.summary ?? "").slice(0, 2000),
-      body.tokens_used ?? null, body.cost_credits ?? null
+      body.tokens_used ?? null, body.cost_credits ?? null,
+      isFailureKind(body.failure_kind) ? body.failure_kind : null,
+      body.session_id ?? null, body.run_id ?? null, body.trigger_source ?? null
     );
     return Response.json({ ok: true }, { status: 201 });
   }
@@ -2996,17 +3034,25 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private listAgentActivity(params: URLSearchParams): Response {
     const projectId = params.get("project_id");
     const limit = Math.min(Math.max(parseInt(params.get("limit") ?? "50", 10) || 50, 1), 200);
-    const rows = projectId
-      ? queryAll(
-          this.ctx.storage.sql as never,
-          "SELECT * FROM agent_activity_log WHERE project_id = ? ORDER BY created_at DESC LIMIT ?",
-          projectId, limit
-        )
-      : queryAll(
-          this.ctx.storage.sql as never,
-          "SELECT * FROM agent_activity_log ORDER BY created_at DESC LIMIT ?",
-          limit
-        );
+    // failure_kind / event_type are the drill-down the diagnostics summary points at: the summary
+    // says "4 tool_error failures in Lead Generation", and this is how the assistant then reads
+    // those four rows specifically instead of paging the whole log looking for them.
+    const failureKind = params.get("failure_kind");
+    const eventType = params.get("event_type");
+
+    const where: string[] = [];
+    const binds: Array<string | number> = [];
+    if (projectId) { where.push("project_id = ?"); binds.push(projectId); }
+    if (failureKind && isFailureKind(failureKind)) { where.push("failure_kind = ?"); binds.push(failureKind); }
+    if (eventType) { where.push("event_type = ?"); binds.push(eventType); }
+    binds.push(limit);
+
+    const rows = queryAll(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM agent_activity_log${where.length ? ` WHERE ${where.join(" AND ")}` : ""}
+       ORDER BY created_at DESC LIMIT ?`,
+      ...binds
+    );
     return Response.json({ data: rows, count: rows.length });
   }
 
@@ -3179,6 +3225,154 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       total_cost_credits: completedRow?.total_cost ?? 0,
       approvals_requested: byType.get("approval_requested")?.cnt ?? 0,
       regenerations,
+    });
+  }
+
+  /**
+   * GET /agent-diagnostics?window_hours= — the whole business in one bounded summary.
+   *
+   * The Space Assistant is woken by a heartbeat, a cron, a channel message — and each of those
+   * used to arrive with no idea what had happened since last time. It could read
+   * /agent-activity, but that is raw rows: "48 events" is not something to act on, and reading
+   * enough of them to find the pattern costs more context than the whole wake-up is worth.
+   *
+   * So this is deliberately a SUMMARY, not a feed. Counts, the failure kinds that actually
+   * occurred, the per-project shape of it, and — the part that makes it actionable — the ids
+   * needed to go deeper: which thread stopped, which run to continue, which project to read.
+   * Drilling down is a separate, explicit call the assistant makes only where it sees something
+   * wrong (GET /agent-activity?failure_kind=, project_journal.read, the interrupted-run route).
+   *
+   * Everything is capped: at most 8 projects, 6 recent failures, 5 stalls. A brief that grows
+   * with the business stops being a brief.
+   */
+  private computeAgentDiagnostics(params: URLSearchParams): Response {
+    const windowHours = Math.min(Math.max(parseInt(params.get("window_hours") ?? "24", 10) || 24, 1), 24 * 30);
+    const since = `datetime('now', '-${windowHours} hours')`;
+    const sql = this.ctx.storage.sql as never;
+
+    const byType = queryAll<{ event_type: string; cnt: number; tokens: number | null; credits: number | null }>(
+      sql,
+      `SELECT event_type, COUNT(*) as cnt, SUM(tokens_used) as tokens, SUM(cost_credits) as credits
+         FROM agent_activity_log WHERE created_at >= ${since} GROUP BY event_type`
+    );
+    const counts: Record<string, number> = {};
+    let totalTokens = 0;
+    let totalCredits = 0;
+    for (const r of byType) {
+      counts[r.event_type] = r.cnt;
+      totalTokens += r.tokens ?? 0;
+      totalCredits += r.credits ?? 0;
+    }
+
+    // Why runs failed, most common first. This is the single most useful line in the brief: an
+    // agent that knows its failures were all quota_exhausted behaves very differently from one
+    // whose failures were all tool_error, and neither behaviour is reachable from a bare count.
+    const failures = queryAll<{ failure_kind: string | null; cnt: number }>(
+      sql,
+      `SELECT failure_kind, COUNT(*) as cnt FROM agent_activity_log
+        WHERE event_type = 'run_failed' AND created_at >= ${since}
+        GROUP BY failure_kind ORDER BY cnt DESC LIMIT 8`
+    ).map((r) => ({ kind: r.failure_kind ?? "unknown", count: r.cnt }));
+
+    // Where the work is, per project — including which projects are burning tokens without
+    // finishing anything, which is exactly the "which project thread stopped and why" question.
+    const projects = queryAll<{
+      project_id: string | null; completed: number; failed: number; tokens: number | null; credits: number | null;
+    }>(
+      sql,
+      `SELECT project_id,
+              SUM(CASE WHEN event_type = 'run_completed' THEN 1 ELSE 0 END) as completed,
+              SUM(CASE WHEN event_type = 'run_failed'    THEN 1 ELSE 0 END) as failed,
+              SUM(tokens_used) as tokens, SUM(cost_credits) as credits
+         FROM agent_activity_log
+        WHERE created_at >= ${since} AND event_type IN ('run_completed','run_failed')
+        GROUP BY project_id
+        ORDER BY (failed * 3 + completed) DESC LIMIT 8`
+    );
+
+    // Project names, so the brief reads as "Lead Generation stalled" and not a bare uuid the
+    // assistant would have to spend another call resolving.
+    const nameById = new Map<string, string>();
+    for (const p of queryAll<{ id: string; name: string }>(sql, `SELECT id, name FROM projects`)) {
+      nameById.set(p.id, p.name);
+    }
+
+    // The stalls worth resuming: the most recent failures that still name a thread. Capped hard —
+    // this is a pointer list, not a log.
+    const stalls = queryAll<{
+      project_id: string | null; thread_id: string | null; session_id: string | null; run_id: string | null;
+      failure_kind: string | null; summary: string; trigger_source: string | null; created_at: string;
+      tokens_used: number | null;
+    }>(
+      sql,
+      `SELECT project_id, thread_id, session_id, run_id, failure_kind, summary, trigger_source, created_at, tokens_used
+         FROM agent_activity_log
+        WHERE event_type = 'run_failed' AND created_at >= ${since}
+        ORDER BY created_at DESC LIMIT 6`
+    ).map((r) => ({
+      project_id: r.project_id,
+      project_name: r.project_id ? nameById.get(r.project_id) ?? null : null,
+      thread_id: r.thread_id,
+      session_id: r.session_id,
+      run_id: r.run_id,
+      failure_kind: r.failure_kind ?? "unknown",
+      // The summary is already capped at 2000 on write; 240 is what fits a brief without turning
+      // it into a log dump. The full text stays available via /agent-activity.
+      summary: (r.summary ?? "").slice(0, 240),
+      woken_by: r.trigger_source,
+      tokens_used: r.tokens_used,
+      at: r.created_at,
+    }));
+
+    // How many wake-ups never got anywhere. A recurring "the heartbeat fired and immediately hit
+    // a limit" pattern is invisible in a per-run view and obvious here.
+    const wakeFailures = queryAll<{ trigger_source: string | null; cnt: number }>(
+      sql,
+      `SELECT trigger_source, COUNT(*) as cnt FROM agent_activity_log
+        WHERE event_type = 'run_failed' AND created_at >= ${since}
+          AND trigger_source IS NOT NULL AND trigger_source != 'chat'
+        GROUP BY trigger_source ORDER BY cnt DESC LIMIT 5`
+    ).map((r) => ({ trigger: r.trigger_source ?? "unknown", failed_runs: r.cnt }));
+
+    const unreadNotifications = queryOne<{ cnt: number }>(
+      sql, `SELECT COUNT(*) as cnt FROM notifications WHERE status = 'unread'`
+    )?.cnt ?? 0;
+    const criticalUnread = queryOne<{ cnt: number }>(
+      sql, `SELECT COUNT(*) as cnt FROM notifications WHERE status = 'unread' AND severity = 'critical'`
+    )?.cnt ?? 0;
+
+    const runsCompleted = counts["run_completed"] ?? 0;
+    const runsFailed = counts["run_failed"] ?? 0;
+    const runsTotal = runsCompleted + runsFailed;
+
+    return Response.json({
+      window_hours: windowHours,
+      runs: {
+        total: runsTotal,
+        completed: runsCompleted,
+        failed: runsFailed,
+        error_rate: runsTotal > 0 ? Number((runsFailed / runsTotal).toFixed(3)) : 0,
+      },
+      spend: { tokens_used: totalTokens, credits: totalCredits },
+      approvals: {
+        requested: counts["approval_requested"] ?? 0,
+        resolved: counts["approval_resolved"] ?? 0,
+        // A gap here means work is parked on a person who hasn't answered.
+        outstanding: Math.max(0, (counts["approval_requested"] ?? 0) - (counts["approval_resolved"] ?? 0)),
+      },
+      moderation_blocked: counts["moderation_blocked"] ?? 0,
+      failures_by_kind: failures,
+      wake_failures: wakeFailures,
+      projects: projects.map((p) => ({
+        project_id: p.project_id,
+        name: p.project_id ? nameById.get(p.project_id) ?? null : "(space assistant)",
+        completed: p.completed,
+        failed: p.failed,
+        tokens_used: p.tokens ?? 0,
+        credits: p.credits ?? 0,
+      })),
+      recent_stalls: stalls,
+      notifications: { unread: unreadNotifications, unread_critical: criticalUnread },
     });
   }
 

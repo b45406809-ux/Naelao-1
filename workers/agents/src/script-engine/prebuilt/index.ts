@@ -35,6 +35,7 @@ import { conversation } from "./conversation.js";
 import { lock } from "./lock.js";
 import { workspaceAdmin } from "./workspace-admin.js";
 import { projectCoordination } from "./project-coordination.js";
+import { businessDiagnostics } from "./business-diagnostics.js";
 import { localMachine } from "./local-machine.js";
 import { workspace } from "./workspace.js";
 import { wallet } from "./wallet.js";
@@ -103,6 +104,7 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // own header for why this is a separate script from workspace-admin (general, not Launchpad-
   // specific business scaffolding).
   [projectCoordination.name]: projectCoordination,
+  [businessDiagnostics.name]: businessDiagnostics,
   // Local-machine-as-container (§A1.17 Phase M) — grant-checked read/write/exec on a builder's
   // own machine via the Naelao Local Agent tunnel. No default access; see local-machine.ts.
   [localMachine.name]: localMachine,
@@ -161,5 +163,6 @@ export {
   lock,
   workspaceAdmin,
   projectCoordination,
+  businessDiagnostics,
   localMachine,
 };

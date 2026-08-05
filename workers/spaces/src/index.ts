@@ -1894,6 +1894,26 @@ app.get("/spaces/:spaceId/agent-signals", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// GET /spaces/:spaceId/agent-diagnostics — the whole-business summary an assistant reads on a
+// wake-up (see SpaceDO.computeAgentDiagnostics). Gated exactly like agent-activity above: the
+// internal-HMAC gate authenticates the calling worker, and a product_end_user caller is refused
+// because this spans every thread in the business, including other people's. The Space Assistant
+// reaches it through the business-diagnostics prebuilt, whose spacesCall sets no role header —
+// same path agent-activity's own writer already uses.
+app.use("/spaces/:spaceId/agent-diagnostics", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.get("/spaces/:spaceId/agent-diagnostics", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  if (getCallerIdentity(c).role === "product_end_user") {
+    return c.json({ error_code: "forbidden", message: "This is a builder-only view" }, 403);
+  }
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const qs = new URL(c.req.url).search;
+  const res = await forwardToSpaceDO(stub, `/agent-diagnostics${qs}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 app.use("/internal/spaces/:spaceId/signal-events", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
 app.post("/internal/spaces/:spaceId/signal-events", async (c) => {
   const spaceId = c.req.param("spaceId");

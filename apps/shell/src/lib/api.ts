@@ -1405,6 +1405,13 @@ export interface InterruptedRun {
   /** How much the run had already completed before it stopped — what a Continue picks up from. */
   steps_completed: number;
   created_at: number;
+  /** Classified server-side (@naelao/events classifyFailure) from the reason text. */
+  failure_kind?: string;
+  /** True when simply waiting is likely enough — the model allowance resetting, a rate window
+   *  passing. Changes the card's advice from "continue" to "try again now". */
+  clears_on_its_own?: boolean;
+  /** What the error means, in words, since a raw provider string tells a person nothing. */
+  explanation?: string;
 }
 
 export async function getInterruptedRun(

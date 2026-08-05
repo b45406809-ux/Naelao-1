@@ -15,6 +15,7 @@ import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
 import { tokensToCredits, infraTimeToCredits, capabilityForModel } from "@naelao/billing-core";
+import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest } from "../shared/ai-client.js";
 import {
   ScriptToolSurface,
@@ -2788,23 +2789,39 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // and in addition to the billing debit branches above (this is a separate concern — a
       // builder-readable log, not a payer's balance). Computed the same way the debit branches
       // already compute credits, just not tied to any one payer.
+      // What woke this run. Carried into the log so the diagnostics rollup can say "the heartbeat
+      // fired four times and hit a limit every time" — a pattern that is invisible per-run.
+      const triggerSource = typeof body.context?.["trigger"] === "string"
+        ? String(body.context["trigger"])
+        : "chat";
+      const failed = result.result?.ok === false;
+      const failureText = result.result?.error ? String(result.result.error) : "";
+
       void this.logAgentActivity(spaceId, tenantId, agentId, result.result?.ok ? "run_completed" : "run_failed", {
         projectId: projectId ?? null,
         threadId: sessionId,
+        sessionId,
+        runId,
+        triggerSource,
+        ...(failed ? { failureKind: classifyFailure(failureText).kind } : {}),
         summary: result.result?.ok
           ? (typeof result.result.output === "string" ? result.result.output.slice(0, 500) : `Goal: ${body.goal.slice(0, 200)}`)
-          : (result.result?.error ? String(result.result.error).slice(0, 500) : "Run did not complete successfully"),
+          : (failureText ? failureText.slice(0, 500) : "Run did not complete successfully"),
         tokensUsed: result.result?.tokens_used ?? null,
         costCredits: result.result?.input_tokens || result.result?.output_tokens
           ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, body.model ?? "claude-haiku-4-5-20251001")
           : (result.result?.tokens_used ?? null),
       });
-      if (result.result?.ok === false) {
+      if (failed) {
+        // The classification decides how loudly to say it. A quota that resets on its own is a
+        // heads-up; a tool that keeps throwing is something the owner should actually look at.
+        // Notifying at 'warning' for both trains people to ignore the whole channel.
+        const classification = classifyFailure(failureText);
         void this.createSpaceNotification(spaceId, tenantId, {
           kind: "run_failed",
           title: `'${agentId}' couldn't finish: ${body.goal.slice(0, 80)}`,
-          body: result.result?.error ? String(result.result.error).slice(0, 500) : "Run did not complete successfully",
-          severity: "warning",
+          body: `${failureText ? failureText.slice(0, 400) : "Run did not complete successfully"}\n\n${classification.summary}`,
+          severity: classification.clears_on_its_own ? "info" : "warning",
           projectId: projectId ?? null,
           sourceAgentId: agentId,
         });
@@ -2815,6 +2832,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const errMessage = err instanceof Error ? err.message : String(err);
       void this.logAgentActivity(spaceId, tenantId, agentId, "run_failed", {
         projectId: projectId ?? null, threadId: sessionId, summary: errMessage.slice(0, 500),
+        sessionId, runId,
+        failureKind: classifyFailure(errMessage).kind,
+        triggerSource: typeof body.context?.["trigger"] === "string" ? String(body.context["trigger"]) : "chat",
       });
       return Response.json(
         { error: errMessage },
@@ -3058,11 +3078,20 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       try {
         completed = (JSON.parse(String(row["steps_json"] ?? "[]")) as unknown[]).length;
       } catch { /* a malformed checkpoint still deserves to offer a continue */ }
+      // Classified on read rather than stored: the reason text is already here, classifyFailure is
+      // deterministic, and this way an interrupted run written before the classifier existed still
+      // gets a useful answer instead of a null column.
+      const classification = classifyFailure(String(row["reason"] ?? ""));
       return Response.json({
         interrupted: {
           run_id: row["run_id"],
           goal: row["goal"],
           reason: row["reason"],
+          failure_kind: classification.kind,
+          // Lets the card say "this clears by itself, try again shortly" instead of showing a raw
+          // provider error and leaving the person to guess whether continuing is even worth it.
+          clears_on_its_own: classification.clears_on_its_own,
+          explanation: classification.summary,
           steps_completed: completed,
           created_at: row["created_at"],
         },
@@ -3358,7 +3387,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     tenantId: string,
     agentId: string,
     eventType: "run_completed" | "run_failed" | "approval_requested" | "moderation_blocked",
-    opts: { projectId?: string | null; threadId?: string | null; summary?: string; tokensUsed?: number | null; costCredits?: number | null } = {}
+    opts: {
+      projectId?: string | null; threadId?: string | null; summary?: string;
+      tokensUsed?: number | null; costCredits?: number | null;
+      /** Classified at the moment of failure (see @naelao/events classifyFailure) rather than
+       *  re-parsed from free text later — the diagnostics rollup groups on this, and the wake-up
+       *  brief's whole usefulness rests on it being right. */
+      failureKind?: string | null;
+      /** The thread and run, so a reader can go and continue the exact interrupted work. */
+      sessionId?: string | null; runId?: string | null;
+      /** What woke this run: chat, heartbeat, scheduled_job, connector_poll, trigger. */
+      triggerSource?: string | null;
+    } = {}
   ): Promise<void> {
     if (!this.env.SPACES_WORKER || !tenantId) return;
     try {
@@ -3376,6 +3416,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             summary: opts.summary ?? "",
             tokens_used: opts.tokensUsed ?? null,
             cost_credits: opts.costCredits ?? null,
+            failure_kind: opts.failureKind ?? null,
+            session_id: opts.sessionId ?? null,
+            run_id: opts.runId ?? null,
+            trigger_source: opts.triggerSource ?? null,
           }),
         }
       ));
