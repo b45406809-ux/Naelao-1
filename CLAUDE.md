@@ -4182,6 +4182,70 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       defensively rather than confirmed against their published schema, same "confirm once real
       access exists" precedent as the rest of this file.
 
+95. **Channel setup is now scan-to-connect: one Naelao app per channel + a pairing QR, replacing
+    BYO-app-per-space.** Prompted by the OpenClaw comparison — their Web Gateway shows a QR you
+    scan and you're done in 60 seconds, while ours asked a non-technical owner to open a developer
+    console, create an app, find a signing secret, paste it, then copy a webhook URL back into the
+    provider. Every step is somewhere they stop, and none of it was work they should ever have
+    done: it existed only because the platform had no app of its own.
+    - **`launchpad/channel-pairing.ts`**: a short-lived (15 min) single-use `cp_`+32-hex token
+      (sized to fit Telegram's 64-char `start` payload, the tightest constraint any channel
+      imposes) + per-channel URL builders. Telegram is a deep link whose start payload IS the
+      token; Slack/Discord are ordinary OAuth install flows with the token as `state`; WhatsApp
+      prefills a message the OWNER sends — that direction is load-bearing, since a person starting
+      the conversation is what Meta's policy treats as opt-in, so it needs no application. Email
+      is explicitly not pairable (AgentMail provisions it automatically) and says so rather than
+      failing obscurely. Every channel degrades honestly to "isn't set up on this platform yet"
+      and points at the BYO path.
+    - **New `channel_pairings` table** (migration 0070). `channel_links` answers "does this space
+      have Slack?", keyed by space; platform-app pairing needs the reverse — a message arrives at
+      Naelao's OWN bot carrying only a Telegram chat id or Slack team id, with no space in the URL
+      to look it up with. New `POST /channels/platform-inbound/:channel` (one per channel for the
+      whole platform, not one per business) verifies against the PLATFORM secret, recognises a
+      pairing message BEFORE treating it as conversation (otherwise the assistant would answer a
+      raw token as though it were a customer's question), and resolves the business from the
+      binding. `GET /channels/pair-callback/:channel` handles the Slack/Discord return, recording
+      nothing unless the code exchange actually confirms a workspace/guild — Slack answers 200
+      with `ok:false` on failure, so trusting the status alone would record an install that never
+      happened. Both public at the router, same posture as the connector callback (the single-use
+      token IS the auth).
+    - **Outbound needed a matching fix**: a paired channel has no per-space token, so
+      `sendChatMessage` now falls back to the platform one. Without it inbound would work and
+      every reply would silently go nowhere — the exact bug class item 93 already fixed once.
+    - **The QR encoder (`packages/ui/src/qr.ts`) is hand-written** (byte mode, ECC M, versions
+      1-10, ~213 chars max; throws rather than truncating, since a QR encoding half a URL looks
+      like it worked). **Two bugs in it are worth recording because both produced grids that
+      looked perfect and decoded as nothing:** the format-info placement was bit-REVERSED (low
+      bits belong at the TOP of column 8 and the RIGHT of row 8 — reversing it yields a valid
+      format string for a DIFFERENT mask), and `rsGenerator` built the polynomial with its `x` and
+      `α^i` terms swapped, producing the REVERSED generator. The second is the instructive one: a
+      "the generator divides the result exactly" property test passed happily, because division by
+      a reversed polynomial is still division. Only a real reference value catches it — the test
+      now pins the published degree-10 and degree-7 generator coefficients. Correctness is proven
+      by round-tripping through `jsqr` (the algorithm a phone runs) plus a codeword-level
+      differential against `qrcode-generator`; both are devDependencies only. **A third trap
+      worth remembering: at 1 pixel per module jsqr returns null on a perfectly valid code** —
+      a detector measures finder-pattern run lengths and there is nothing to measure. That harness
+      bug looks exactly like an encoder bug.
+    - Shell UI: `ChannelConnect` now leads with the QR + plain-language steps (checked in tests to
+      contain no mention of webhooks, signing secrets or API keys), with the old paste-a-secret
+      flow collapsed under "Set up your own app instead".
+    - **Live-verified end to end on production** by temporarily configuring a platform bot:
+      pair → `/start <token>` bound a real `channel_pairings` row with the right space and
+      `paired_by`; the next message from that chat routed to the business; the same token replayed
+      from a different chat was refused; an unpaired stranger was refused; a wrong signature got
+      401. Test rows and the temporary secrets were removed afterwards, so the platform is back to
+      degrading honestly. 2532/2532 tests pass (36 new), `npx turbo run typecheck` clean (76
+      tasks), `naelao-agents`/`naelao-router`/`naelao-notifications`/`apps/shell` deployed,
+      migration 0070 applied to live D1.
+    - **Not done — needs the operator, not code:** no platform app exists yet on any channel.
+      Telegram is one BotFather conversation (`TELEGRAM_BOT_USERNAME` + `TELEGRAM_BOT_TOKEN` +
+      a `TELEGRAM_WEBHOOK_SECRET` of your choosing, then one `setWebhook` call pointing at
+      `/v1/channels/platform-inbound/telegram`) and is by far the highest-value one to do first.
+      Slack and Discord each need an app registered with `/v1/channels/pair-callback/{channel}` as
+      a redirect URI. WhatsApp needs a Meta Business number. Until each is configured the pair
+      button reports honestly and the BYO path still works.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
