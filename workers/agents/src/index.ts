@@ -47,6 +47,10 @@ import { startPipedreamConnect, getPipedreamAccountStatus } from "./connectors/p
 import { listDirectory, resolveConnectTarget } from "./connectors/directory.js";
 import { isChannelType, getAdapter, type ChannelType } from "./launchpad/channels.js";
 import {
+  isPairableChannel, issuePairingToken, consumePairingToken, buildPairing,
+  extractPairingToken, PAIRING_TTL_SECONDS, type PairableChannel,
+} from "./launchpad/channel-pairing.js";
+import {
   agentMailConfigured, createInbox, createInboundWebhook, sendFromInbox,
   verifySvixSignature, parseInboundMessageReceived, uniqueInboxUsername,
 } from "./channels/agentmail.js";
@@ -215,6 +219,28 @@ export interface AgentsEnv {
    *  so no Naelao DNS zone is needed — see channels/agentmail.ts). A Workers Secret; unset = the
    *  whole email feature degrades honestly (send falls back to Resend, no inbound). */
   AGENTMAIL_API_KEY?: string;
+  /**
+   * Scan-to-connect: Naelao's OWN app on each channel (launchpad/channel-pairing.ts). These are
+   * PLATFORM credentials — one registration by us, then every business pairs by scanning a code
+   * instead of building a bot. All optional: a channel with nothing configured reports honestly
+   * that it can't be paired and the BYO per-space path still works.
+   */
+  TELEGRAM_BOT_USERNAME?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+  SLACK_CLIENT_ID?: string;
+  SLACK_CLIENT_SECRET?: string;
+  DISCORD_CLIENT_ID?: string;
+  DISCORD_CLIENT_SECRET?: string;
+  /** The platform WhatsApp Business number, digits only — what wa.me links point at. */
+  WHATSAPP_PHONE_NUMBER?: string;
+  /** Meta's own id for that number, which the send API addresses (not the same as the number). */
+  WHATSAPP_PHONE_NUMBER_ID?: string;
+  WHATSAPP_ACCESS_TOKEN?: string;
+  /** Platform-app inbound verification secrets, the counterparts to the per-space vaulted ones. */
+  TELEGRAM_WEBHOOK_SECRET?: string;
+  SLACK_SIGNING_SECRET?: string;
+  DISCORD_PUBLIC_KEY?: string;
+  WHATSAPP_APP_SECRET?: string;
   /** §A1.27: already bound in wrangler.toml (naelao-billing); added here so the context-usage
    *  endpoint can read the day/week/month llm_tokens summary. */
   BILLING_WORKER?: Fetcher;
@@ -2912,6 +2938,295 @@ app.post("/spaces/:spaceId/projects/from-template", async (c) => {
   }, 201);
 });
 
+// ── Scan-to-connect: one Naelao app per channel, paired with a QR ─────────────────────────────
+//
+// See launchpad/channel-pairing.ts for why. In short: the BYO-app-per-space path asked a
+// non-technical owner to create a bot in a developer console, copy a signing secret, and paste a
+// webhook URL. This is the default instead — tap a link (or scan it, since the app is already
+// open on their phone) and the channel is bound to their business.
+//
+// The per-space BYO path below is untouched. This is the easy road, not the only one.
+
+/**
+ * Resolve which business an inbound message on the PLATFORM app belongs to.
+ *
+ * The per-space route has the space in its URL; here there is nothing but the channel's own id
+ * for the conversation, so the binding table is the only way back.
+ */
+async function resolvePairedSpace(
+  env: AgentsEnv,
+  channel: string,
+  externalId: string
+): Promise<{ spaceId: string; tenantId: string; projectId: string | null } | null> {
+  const row = await env.PLATFORM_DB.prepare(
+    "SELECT space_id, tenant_id, project_id FROM channel_pairings WHERE channel = ? AND external_id = ?"
+  ).bind(channel, externalId).first<{ space_id: string; tenant_id: string; project_id: string | null }>();
+  if (!row) return null;
+  return { spaceId: row.space_id, tenantId: row.tenant_id, projectId: row.project_id };
+}
+
+/** Record a binding and make sure the space also has a channel_links row, so the Channels panel
+ *  and the heartbeat roster both see the channel as connected. */
+async function bindPairedChannel(
+  env: AgentsEnv,
+  ticket: { spaceId: string; tenantId: string; channel: string; projectId?: string | undefined; userId: string },
+  externalId: string
+): Promise<void> {
+  await env.PLATFORM_DB.prepare(
+    `INSERT INTO channel_pairings (channel, external_id, space_id, tenant_id, project_id, paired_by)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT (channel, external_id) DO UPDATE SET
+       space_id = excluded.space_id, tenant_id = excluded.tenant_id,
+       project_id = excluded.project_id, paired_by = excluded.paired_by`
+  ).bind(ticket.channel, externalId, ticket.spaceId, ticket.tenantId, ticket.projectId ?? null, ticket.userId).run();
+
+  await env.PLATFORM_DB.prepare(
+    `INSERT INTO channel_links (space_id, tenant_id, channel, enabled, project_id) VALUES (?, ?, ?, 1, ?)
+     ON CONFLICT (space_id, channel) DO UPDATE SET enabled = 1`
+  ).bind(ticket.spaceId, ticket.tenantId, ticket.channel, ticket.projectId ?? null).run();
+}
+
+/**
+ * POST /spaces/:spaceId/assistant/channels handles this via action:"pair" — see that route. This
+ * is the shared body so the builder-facing route can offer the same thing.
+ */
+async function startPairing(
+  env: AgentsEnv,
+  ticket: { spaceId: string; tenantId: string; channel: PairableChannel; projectId?: string | undefined; userId: string }
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const pairing = buildPairing(env, ticket.channel, "cp_" + "0".repeat(32));
+  // Check configuration BEFORE minting a token, so a channel we can't pair doesn't leave a
+  // pointless entry in KV and a link that goes nowhere.
+  if (!pairing.ok) {
+    return { status: 503, body: { error_code: "channel_not_configured", message: pairing.message } };
+  }
+  const token = await issuePairingToken(env.AGENT_CACHE, ticket);
+  const real = buildPairing(env, ticket.channel, token);
+  if (!real.ok) return { status: 503, body: { error_code: "channel_not_configured", message: real.message } };
+  return {
+    status: 200,
+    body: {
+      channel: ticket.channel,
+      pair_url: real.url,
+      mode: real.mode,
+      completion: real.completion,
+      steps: real.steps,
+      expires_in_seconds: PAIRING_TTL_SECONDS,
+    },
+  };
+}
+
+/**
+ * POST /channels/platform-inbound/:channel — the Naelao app's own webhook, one per channel for
+ * the whole platform rather than one per business.
+ *
+ * UNAUTHENTICATED at the HTTP layer, like the per-space route: the channel's signature scheme is
+ * the auth, verified here against the PLATFORM secret rather than a per-space one. Two things
+ * happen here that the per-space route never has to do — recognise a pairing message before
+ * treating it as conversation, and find the business from the conversation id.
+ */
+app.post("/channels/platform-inbound/:channel", async (c) => {
+  const channel = c.req.param("channel");
+  if (!isChannelType(channel) || !isPairableChannel(channel)) return c.json({ ok: true, skipped: "unknown_channel" });
+  const adapter = getAdapter(channel)!;
+
+  const rawBody = await c.req.text();
+  const secret = (c.env as unknown as Record<string, string | undefined>)[PLATFORM_CHANNEL_SECRET[channel]] ?? "";
+  if (!secret) return c.json({ ok: true, skipped: "channel_not_configured" });
+
+  const headers: Record<string, string> = {};
+  c.req.raw.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
+  if (!(await adapter.verifySignature({ rawBody, headers, secret }))) {
+    return c.json({ error_code: "invalid_signature" }, 401);
+  }
+
+  let parsed: Record<string, unknown> = {};
+  try {
+    parsed = JSON.parse(rawBody) as Record<string, unknown>;
+  } catch {
+    return c.json({ ok: true, skipped: "unparseable" });
+  }
+  if (channel === "slack" && parsed["type"] === "url_verification") {
+    return c.json({ challenge: parsed["challenge"] });
+  }
+  const raw = channel === "slack" && parsed["event"] ? (parsed["event"] as Record<string, unknown>) : parsed;
+
+  const inbound = adapter.normalizeInbound(raw);
+  if (!inbound) return c.json({ ok: true, skipped: "not_a_message" });
+
+  // A pairing message looks like an ordinary message and must never be treated as one — the token
+  // would otherwise be handed to the assistant as a customer's question.
+  const token = extractPairingToken(inbound.text);
+  if (token) {
+    const ticket = await consumePairingToken(c.env.AGENT_CACHE, token);
+    if (!ticket || ticket.channel !== channel) {
+      await replyOnPlatformChannel(c.env, channel, inbound.channel_user_id,
+        "That connection link has expired or was already used. Generate a new one and try again.");
+      return c.json({ ok: true, paired: false });
+    }
+    await bindPairedChannel(c.env, ticket, inbound.channel_user_id);
+    await replyOnPlatformChannel(c.env, channel, inbound.channel_user_id,
+      "Connected. Messages here now reach your business — go ahead and say something.");
+    return c.json({ ok: true, paired: true });
+  }
+
+  const paired = await resolvePairedSpace(c.env, channel, inbound.channel_user_id);
+  if (!paired) {
+    // Someone found the bot without pairing. Say so rather than silently ignoring them.
+    await replyOnPlatformChannel(c.env, channel, inbound.channel_user_id,
+      "This chat isn't connected to a business yet. Open your Naelao dashboard, choose Channels, and scan the code there.");
+    return c.json({ ok: true, skipped: "unpaired" });
+  }
+
+  const space = await c.env.PLATFORM_DB.prepare(
+    "SELECT status FROM spaces WHERE id = ?"
+  ).bind(paired.spaceId).first<{ status: string }>();
+  if (!space || space.status !== "active") return c.json({ ok: true, skipped: "space_inactive" });
+
+  try {
+    const stub = await getAgentDOForSpace(c.env, paired.tenantId, paired.spaceId, "naelao-agent", c.get("requestId"));
+    await stub.fetch(new Request(`http://agent-do/channels/${channel}/inbound`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        raw,
+        projectId: paired.projectId ?? undefined,
+        spaceId: paired.spaceId,
+        tenantId: paired.tenantId,
+        apiKey: "",
+      }),
+    }));
+  } catch (err) {
+    console.error(`[channels] platform inbound forward failed channel=${channel}:`, (err as Error).message);
+  }
+  return c.json({ ok: true });
+});
+
+/**
+ * GET /channels/pair-callback/:channel — where Slack and Discord send the browser back.
+ *
+ * PUBLIC, like the connector provider-connect callback: the single-use `state` token IS the auth,
+ * since the provider redirects a raw browser here with nothing else attached. The install is only
+ * recorded after the code exchange actually returns a workspace/guild id — a user who backs out
+ * of the consent screen must not leave a binding claiming success.
+ */
+app.get("/channels/pair-callback/:channel", async (c) => {
+  const channel = c.req.param("channel");
+  if (!isChannelType(channel) || !isPairableChannel(channel)) return c.text("Unknown channel", 404);
+
+  const state = c.req.query("state") ?? "";
+  const code = c.req.query("code") ?? "";
+  const ticket = await consumePairingToken(c.env.AGENT_CACHE, state);
+  if (!ticket || ticket.channel !== channel) {
+    return c.html(pairingPage("This connection link has expired or was already used.",
+      "Go back to Channels and start again — it only takes a moment."));
+  }
+  if (!code) {
+    return c.html(pairingPage("Connection cancelled.", "Nothing was changed. You can try again whenever you like."));
+  }
+
+  try {
+    const externalId = await exchangeInstall(c.env, channel, code);
+    if (!externalId) {
+      return c.html(pairingPage("That didn't complete.", "The provider didn't confirm the install. Try again from Channels."));
+    }
+    await bindPairedChannel(c.env, ticket, externalId);
+    return c.html(pairingPage("Connected.",
+      `Your assistant is now reachable on ${channel === "slack" ? "Slack" : "Discord"}. You can close this tab.`));
+  } catch (err) {
+    return c.html(pairingPage("That didn't complete.", (err as Error).message.slice(0, 200)));
+  }
+});
+
+/** Exchange an OAuth code for the workspace/guild the app was installed into. Returns the id to
+ *  bind, or null when the provider didn't actually confirm an install. */
+async function exchangeInstall(env: AgentsEnv, channel: PairableChannel, code: string): Promise<string | null> {
+  const redirectUri = `${(env.PUBLIC_AGENTS_URL ?? "").replace(/\/$/, "")}/channels/pair-callback/${channel}`;
+  if (channel === "slack") {
+    if (!env.SLACK_CLIENT_ID || !env.SLACK_CLIENT_SECRET) throw new Error("Slack isn't configured on this platform.");
+    const resp = await fetch("https://slack.com/api/oauth.v2.access", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: env.SLACK_CLIENT_ID, client_secret: env.SLACK_CLIENT_SECRET, code, redirect_uri: redirectUri,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    // Slack answers 200 with ok:false on failure — treating the status alone as success would
+    // record a binding for an install that never happened.
+    type SlackInstall = { ok?: boolean; error?: string; team?: { id?: string } };
+    const json = await resp.json<SlackInstall>().catch(() => ({}) as SlackInstall);
+    if (!json.ok) throw new Error(json.error ?? "Slack rejected the install.");
+    return json.team?.id ?? null;
+  }
+
+  if (!env.DISCORD_CLIENT_ID || !env.DISCORD_CLIENT_SECRET) throw new Error("Discord isn't configured on this platform.");
+  const resp = await fetch("https://discord.com/api/oauth2/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: env.DISCORD_CLIENT_ID, client_secret: env.DISCORD_CLIENT_SECRET,
+      grant_type: "authorization_code", code, redirect_uri: redirectUri,
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  type DiscordInstall = { guild?: { id?: string }; error_description?: string };
+  const json = await resp.json<DiscordInstall>().catch(() => ({}) as DiscordInstall);
+  if (!resp.ok) throw new Error(json.error_description ?? "Discord rejected the install.");
+  return json.guild?.id ?? null;
+}
+
+/** A plain confirmation page. The owner lands here from their own browser, so it has to say what
+ *  happened without assuming they know what an OAuth callback is. */
+function pairingPage(heading: string, detail: string): string {
+  const esc = (t: string) => t.replace(/[<>&]/g, (ch) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[ch]!);
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(heading)}</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;background:#f6f7f9;color:#111}
+.card{background:#fff;padding:32px;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.1);max-width:26rem;text-align:center}
+h1{font-size:20px;margin:0 0 8px}p{margin:0;color:#555}</style>
+<div class="card"><h1>${esc(heading)}</h1><p>${esc(detail)}</p></div>`;
+}
+
+/** Send a short message back on the platform app — used for pairing confirmations, which have to
+ *  land in the same chat the owner is looking at. Best-effort: a failed confirmation must never
+ *  undo a binding that actually succeeded. */
+async function replyOnPlatformChannel(
+  env: AgentsEnv,
+  channel: PairableChannel,
+  conversationId: string,
+  text: string
+): Promise<void> {
+  try {
+    if (channel === "telegram" && env.TELEGRAM_BOT_TOKEN) {
+      await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: conversationId, text }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } else if (channel === "whatsapp" && env.WHATSAPP_ACCESS_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID) {
+      await fetch(`https://graph.facebook.com/v21.0/${env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` },
+        body: JSON.stringify({ messaging_product: "whatsapp", to: conversationId, text: { body: text } }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    }
+  } catch (err) {
+    console.error(`[channels] pairing reply failed on ${channel}:`, (err as Error).message);
+  }
+}
+
+/** Where each channel's PLATFORM-app verification secret lives in the worker env. Distinct from
+ *  CHANNEL_SECRET_CREDENTIAL, which names a per-space vaulted secret for the BYO path. */
+const PLATFORM_CHANNEL_SECRET: Record<PairableChannel, string> = {
+  telegram: "TELEGRAM_WEBHOOK_SECRET",
+  slack: "SLACK_SIGNING_SECRET",
+  discord: "DISCORD_PUBLIC_KEY",
+  whatsapp: "WHATSAPP_APP_SECRET",
+};
+
 // POST /channels/:channel/inbound/:spaceId — generic, signature-verified channel ingress.
 // UNAUTHENTICATED at the HTTP layer (Slack/Discord/email providers can't carry a JWT); the
 // channel's own signature scheme IS the auth (ChannelAdapter.verifySignature). Mirrors the
@@ -3297,7 +3612,7 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   const { userId } = getCallerIdentity(c);
 
   type ChannelActionBody = {
-    action?: "connect" | "disconnect" | "enable";
+    action?: "pair" | "connect" | "disconnect" | "enable";
     channel?: string;
     secret?: string;
     project_id?: string;
@@ -3305,8 +3620,24 @@ app.post("/spaces/:spaceId/assistant/channels", async (c) => {
   const body = await c.req.json<ChannelActionBody>().catch(() => ({}) as ChannelActionBody);
 
   const channel = String(body.channel ?? "");
-  if (!isChannelType(channel)) throw badRequest("channel must be one of: email, slack, discord, whatsapp");
+  if (!isChannelType(channel)) throw badRequest("channel must be one of: email, slack, discord, whatsapp, telegram");
   const action = body.action ?? "connect";
+
+  // The default path: hand back a link (and something to scan) for Naelao's OWN app on that
+  // channel, instead of asking the owner to go and create a bot. "connect" below is still there
+  // for a business that wants its own app — it is the advanced option now, not the only one.
+  if (action === "pair") {
+    if (!isPairableChannel(channel)) {
+      return c.json({
+        error_code: "not_pairable",
+        message: "Email is provisioned automatically — there is nothing to pair.",
+      }, 400);
+    }
+    const { status, body: out } = await startPairing(c.env, {
+      spaceId, tenantId, channel, projectId: body.project_id, userId,
+    });
+    return c.json(out, status as 200 | 503);
+  }
 
   if (action === "disconnect" || action === "enable") {
     // Deliberately does NOT delete the vaulted signing secret: disabling is reversible and a

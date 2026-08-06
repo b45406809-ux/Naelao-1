@@ -11,4 +11,6 @@ export * from "./components/SpaceSwitcher";
 export * from "./components/Sidebar";
 export * from "./components/TopBar";
 export * from "./components/PageView";
+export * from "./components/QrCode";
+export { qrSvg, encodeQr } from "./qr";
 export * from "./useTheme";

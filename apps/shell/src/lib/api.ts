@@ -781,6 +781,29 @@ export interface ChannelConnectResult {
 }
 
 /** Connect a channel, or turn one off/back on. Owner/admin only, enforced server-side. */
+/** What the server hands back for action:"pair" — a link to open (or scan) plus human steps. */
+export interface ChannelPairing {
+  channel: string;
+  pair_url: string;
+  mode: "scan" | "redirect";
+  completion: "message" | "callback";
+  steps: string[];
+  expires_in_seconds: number;
+}
+
+export async function pairAssistantChannel(
+  spaceId: string,
+  session: SessionCredentials,
+  channel: string,
+  projectId?: string
+): Promise<ChannelPairing> {
+  return apiFetch<ChannelPairing>(`/v1/spaces/${spaceId}/assistant/channels`, {
+    method: "POST",
+    body: JSON.stringify({ action: "pair", channel, ...(projectId ? { project_id: projectId } : {}) }),
+    session,
+  });
+}
+
 export async function updateAssistantChannel(
   spaceId: string,
   session: SessionCredentials,

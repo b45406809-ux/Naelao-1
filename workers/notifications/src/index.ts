@@ -20,6 +20,15 @@ export interface NotificationsEnv {
    *  without it those channels degrade to delivered:false rather than crashing. */
   CREDENTIALS_WORKER?: Fetcher;
   PLATFORM_SECRET?: string;
+  /**
+   * Platform-app bot tokens, used when a business PAIRED a channel rather than bringing its own
+   * app — there is no per-space credential in that case, because the connection belongs to
+   * Naelao's app. Names match CHANNEL_SEND_CREDENTIAL so the lookup can fall through by key.
+   */
+  TELEGRAM_BOT_TOKEN?: string;
+  SLACK_BOT_TOKEN?: string;
+  DISCORD_BOT_TOKEN?: string;
+  WHATSAPP_ACCESS_TOKEN?: string;
 }
 
 /** Per-channel credential name in the vault — the token this worker needs to SEND, which is a
@@ -79,7 +88,14 @@ async function sendChatMessage(
   if (!credName) return { delivered: false, reason: `no send path for channel '${channel}'` };
   if (!to) return { delivered: false, reason: "missing recipient" };
 
-  const credential = await resolveChannelCredential(env, opts.tenantId, opts.spaceId, credName);
+  // A business that PAIRED a channel (scanned a code against Naelao's own app) has no per-space
+  // token of its own — the platform app owns the connection. Falling back to the platform token
+  // is what makes a paired channel able to REPLY at all; without it, inbound would work and every
+  // answer would silently go nowhere.
+  const credential =
+    (await resolveChannelCredential(env, opts.tenantId, opts.spaceId, credName)) ??
+    (env as unknown as Record<string, string | undefined>)[credName] ??
+    null;
   if (!credential) {
     return { delivered: false, reason: `${channel} is connected for receiving but has no ${credName} to reply with` };
   }

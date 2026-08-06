@@ -312,6 +312,26 @@ app.all("/v1/channels/:channel/inbound/:spaceId", async (c) => {
   );
 });
 
+// Scan-to-connect (launchpad/channel-pairing.ts): the same public posture, for Naelao's OWN app on
+// each channel. There is no :spaceId here on purpose — a message arriving at the platform bot
+// carries only the channel's id for the conversation, and the agents worker resolves the business
+// from its pairing table. `pair-callback` is where Slack and Discord send the browser back after
+// an install; its single-use `state` token is the auth, exactly like the connector callback.
+app.all("/v1/channels/platform-inbound/:channel", async (c) => {
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.AGENTS_WORKER.fetch(
+    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+  );
+});
+app.all("/v1/channels/pair-callback/:channel", async (c) => {
+  const u = new URL(c.req.url);
+  u.pathname = u.pathname.replace(/^\/v1(?=\/|$)/, "") || "/";
+  return c.env.AGENTS_WORKER.fetch(
+    new Request(u.toString(), { method: c.req.method, headers: c.req.raw.headers, body: c.req.raw.body })
+  );
+});
+
 // ── F-2: Public Lemon Squeezy webhook ingress (unauthenticated; the LS HMAC signature is the auth) ──
 // The entire money-in path (orders, subscriptions, credit packs, wallet top-ups, refunds) depends
 // on this: a buyer pays at Lemon Squeezy → LS POSTs the event here → the billing worker verifies
