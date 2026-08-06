@@ -25,6 +25,7 @@ import type {
 } from "./types.js";
 import { SkillLibrary } from "./skill-library.js";
 import { fingerprintSimilarity } from "./fingerprint.js";
+import { assessSkillHealth, healthConfidenceMultiplier } from "./skill-health.js";
 
 export const FIND_CONFIDENCE_FLOOR = 0.5;
 
@@ -85,6 +86,7 @@ export async function scriptFind(
       name: c.name,
       metadata: c.metadata,
       semantic_similarity: c.semantic_similarity,
+      relevance: 0,
       confidence: 0,
     }));
   } else {
@@ -102,7 +104,13 @@ export async function scriptFind(
       const overlap = [...qTokens].filter((t) => hayTokens.has(t)).length;
       const sim = qTokens.size === 0 ? 0 : overlap / qTokens.size;
       if (sim > 0 || hay.includes(q)) {
-        scored.push({ name, metadata, semantic_similarity: Math.max(sim, hay.includes(q) ? 0.6 : 0), confidence: 0 });
+        scored.push({
+          name,
+          metadata,
+          semantic_similarity: Math.max(sim, hay.includes(q) ? 0.6 : 0),
+          relevance: 0,
+          confidence: 0,
+        });
       }
     }
     ranked = scored;
@@ -115,8 +123,18 @@ export async function scriptFind(
       // Fold fingerprint compatibility into confidence so incompatible scripts rank lower.
       c.semantic_similarity = c.semantic_similarity * (0.5 + 0.5 * fpSim);
     }
-    // Step 5: sort key.
-    c.confidence = c.metadata.stability_score * c.semantic_similarity;
+    // Step 5: sort key, in two parts that answer two different questions.
+    //
+    // `relevance` is the original one — is this skill about the right thing. `stability_score`
+    // is a LIFETIME ratio, so it cannot express recency: 20 successes and 4 failures scores the
+    // same whether those failures are spread over a year or are the last four in a row. Health
+    // (skill-health.ts) is that missing layer, and it only ever affects `confidence` — the
+    // ranking — never relevance. A broken skill is demoted hard so anything that works wins,
+    // but it stays fully relevant and fully findable, because an agent cannot repair a skill it
+    // can't see, and its own recorded error is the best input to that repair.
+    c.health = assessSkillHealth(c.metadata);
+    c.relevance = c.metadata.stability_score * c.semantic_similarity;
+    c.confidence = c.relevance * healthConfidenceMultiplier(c.health.state);
   }
 
   ranked.sort((a, b) => b.confidence - a.confidence);

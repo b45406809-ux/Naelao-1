@@ -37,6 +37,33 @@ export interface ScriptParameter {
   default?: unknown;
 }
 
+/**
+ * One recorded run of a stored skill (see `ScriptMetadata.recent_outcomes`). The error is kept
+ * on failures only, truncated — it is the input a repair is aimed at, not a log line.
+ */
+export interface SkillOutcome {
+  ok: boolean;
+  at: number;
+  error?: string;
+}
+
+/** Recency verdict for a stored skill. Derived in skill-health.ts (all the logic lives there;
+ *  the shape lives here so `FindCandidate` can carry it without a circular import). */
+export type SkillHealthState = "unproven" | "proven" | "degrading" | "broken";
+
+export interface SkillHealth {
+  state: SkillHealthState;
+  /** Failures at the head of the recent window — the streak, which is what actually predicts
+   *  the next run. */
+  consecutive_failures: number;
+  recent_runs: number;
+  recent_failures: number;
+  /** The most recent failure's error, when there is one. What a repair is aimed at. */
+  last_error?: string;
+  /** One sentence written for the model, not for a dashboard. */
+  recommendation: string;
+}
+
 /** Why and how a version came to be (one entry per version in patch_history). */
 export interface PatchRecord {
   version: number;
@@ -105,6 +132,15 @@ export interface ScriptMetadata {
   patch_history: PatchRecord[];
   /** Derived signal in [0,1]; gates L1 candidacy and sorts script.find results. */
   stability_score: number;
+  /**
+   * Bounded rolling window of the most recent runs, newest first (see skill-health.ts).
+   * `stability_score` is a lifetime ratio and cannot express recency — 20 successes and 4
+   * failures scores the same whether those failures are spread over a year or are the last
+   * four in a row. This is what makes "failed its last three runs, and here is what it said"
+   * knowable, which is the difference between demoting a skill and repairing it.
+   * Optional: absent on scripts written before this existed, which read as unproven.
+   */
+  recent_outcomes?: SkillOutcome[];
 
   // Provenance
   /** "prebuilt" = bundled platform script; "distilled" = authored by an agent at L4;
@@ -161,8 +197,22 @@ export interface FindCandidate {
   name: string;
   metadata: ScriptMetadata;
   semantic_similarity: number;
-  /** stability_score × semantic_similarity (the sort key). */
+  /**
+   * stability_score × semantic_similarity — "is this skill about the right thing?", with no
+   * recency judgment folded in. The GATE tests THIS against the confidence floor, because a
+   * broken skill is still the relevant one: reading it as "nothing found" would send the agent
+   * off to write a second skill for a job it already has one for, instead of fixing that one.
+   */
+  relevance: number;
+  /** relevance × health multiplier — "and can I trust it as it stands?". The sort key, so
+   *  anything that actually works out-ranks something that has been failing. */
   confidence: number;
+  /**
+   * Recency verdict derived from `metadata.recent_outcomes` (skill-health.ts). Carried on the
+   * candidate so the GATE can refuse to auto-run something broken and the reasoner can see WHY
+   * — without either re-deriving it from raw counters.
+   */
+  health?: SkillHealth;
 }
 
 /** Escalation level chosen by GATE (spec §5). */

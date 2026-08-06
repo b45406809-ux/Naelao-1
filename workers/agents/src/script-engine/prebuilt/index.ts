@@ -36,6 +36,7 @@ import { lock } from "./lock.js";
 import { workspaceAdmin } from "./workspace-admin.js";
 import { projectCoordination } from "./project-coordination.js";
 import { businessDiagnostics } from "./business-diagnostics.js";
+import { skillManager } from "./skill-manager.js";
 import { localMachine } from "./local-machine.js";
 import { workspace } from "./workspace.js";
 import { wallet } from "./wallet.js";
@@ -105,6 +106,9 @@ export const PREBUILT_SCRIPTS: Record<string, PrebuiltScript> = {
   // specific business scaffolding).
   [projectCoordination.name]: projectCoordination,
   [businessDiagnostics.name]: businessDiagnostics,
+  // The agent's own skill library: what is working, what is broken and why, and what to do
+  // about it (skill-health.ts derives the verdict; this is where the agent acts on it).
+  [skillManager.name]: skillManager,
   // Local-machine-as-container (§A1.17 Phase M) — grant-checked read/write/exec on a builder's
   // own machine via the Naelao Local Agent tunnel. No default access; see local-machine.ts.
   [localMachine.name]: localMachine,

@@ -33,6 +33,7 @@ import { ScriptToolSurface } from "./tool-surface.js";
 import { runObserve } from "./observe.js";
 import { fingerprintSimilarity, isMatch, isPartial } from "./fingerprint.js";
 import { FIND_CONFIDENCE_FLOOR } from "./script-find.js";
+import { assessSkillHealth, isSafeToAutoRun } from "./skill-health.js";
 
 /**
  * LEGACY FALLBACK ONLY (spec §11). The enforced source of truth is the structural
@@ -432,19 +433,34 @@ export async function runScriptLoop(
 
   // 4. GATE — choose escalation level.
   let level: EscalationLevel;
-  if (top && top.confidence >= cfg.confidenceFloor) {
+  // Why the top candidate is being repaired rather than run, when that's the case. Carried into
+  // the reasoner as the repair target so a patch is aimed at the real error, not guessed at.
+  let repairReason: string | undefined;
+  // Tested on RELEVANCE, not confidence: the floor answers "is there a skill about this at all?",
+  // which health has no business changing. Testing the health-adjusted number here would read a
+  // broken-but-obviously-relevant skill as "nothing found" and send the agent off to write a
+  // SECOND skill for a job it already has one for, instead of fixing the one it has.
+  if (top && top.relevance >= cfg.confidenceFloor) {
     const fpSim = fingerprintSimilarity(snapshot, top.metadata.fingerprint_schema);
-    if (top.metadata.stability_score > cfg.stabilityFloorForL1 && isMatch(fpSim, cfg.fingerprintTolerance)) {
+    // A skill that has been failing must never run unattended, however good its lifetime
+    // record looks — that is exactly how a broken skill kept getting picked and kept failing.
+    // It still runs, but with the model in the loop and its own recorded error in hand.
+    const health = top.health ?? assessSkillHealth(top.metadata);
+    if (!isSafeToAutoRun(health.state)) {
+      repairReason = health.recommendation;
+      level = top.metadata.patch_history.length < cfg.maxPatchesBeforeL3 ? "L2" : "L3";
+    } else if (top.metadata.stability_score > cfg.stabilityFloorForL1 && isMatch(fpSim, cfg.fingerprintTolerance)) {
       level = "L1";
     } else if (isPartial(fpSim, cfg.fingerprintTolerance) && top.metadata.patch_history.length < cfg.maxPatchesBeforeL3) {
       level = "L2";
+      repairReason = "fingerprint drift (partial match)";
     } else {
       level = "L3";
     }
   } else {
     level = "L4";
   }
-  notes.push(`gate → ${level}`);
+  notes.push(`gate → ${level}` + (repairReason ? ` (repair: ${repairReason})` : ""));
   pushTrace({ phase: "gate", detail: level, ok: true });
 
   // 5-7. EXECUTE / VERIFY / DISTILL per level.
@@ -475,7 +491,7 @@ export async function runScriptLoop(
         candidates,
         availableOperations: tools.availableOperations(),
         ...(opts.conversation ? { conversation: opts.conversation } : {}),
-        repairTarget: { name: top!.name, failureReason: "fingerprint drift (partial match)" },
+        repairTarget: { name: top!.name, failureReason: repairReason ?? "fingerprint drift (partial match)" },
       });
       const usage = usageOf(reasoner);
       pushTrace({
@@ -560,7 +576,7 @@ export async function runScriptLoop(
           availableOperations: tools.availableOperations(),
           ...(opts.conversation ? { conversation: opts.conversation } : {}),
           ...(level === "L3" && top
-            ? { repairTarget: { name: top.name, failureReason: "stale / re-derive" } }
+            ? { repairTarget: { name: top.name, failureReason: repairReason ?? "stale / re-derive" } }
             : {}),
           ...(priorSteps.length > 0 ? { priorSteps } : {}),
           ...(isFinalStep ? { finalStep: true } : {}),

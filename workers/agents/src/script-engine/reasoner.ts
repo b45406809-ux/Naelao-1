@@ -55,6 +55,8 @@ Prefer "run" with an existing operation when one fits. Only "distill" when the c
 
 When "final_step" is true this is your LAST turn — there is no step after this one. You MUST reply with "answer" (or "give_up" if you truly cannot). Do not choose "run": it will not be executed. If work already succeeded in "steps_so_far", answer by telling the user plainly what was done. Reporting completed work is always better than saying nothing.
 
+Each candidate script carries a "health" record: how it has actually been going lately, and what it said the last time it failed. Trust it over the description. If a candidate is "broken" or "degrading", do NOT run it unchanged — running something that just failed three times will fail a fourth. Either "patch" it, aiming the fix at its "last_error", or pick a different approach. A "proven" skill can be run as-is; an "unproven" one can be run, but check what it returns rather than assuming it worked. When you patch a skill, fix the cause named in "last_error" — do not rewrite it wholesale on a guess.
+
 "conversation" is the thread you are replying in: "recent_messages" verbatim, plus "earlier_summary" when older messages have been compacted away. Use it — the user should never have to repeat something they already told you.
 
 When "conversation.compacted" is true you are NOT seeing the whole conversation. Older messages were replaced by a summary and detail has been lost. This matters more than it sounds: if the user refers to something that is not in the summary or the recent messages, the correct move is to run conversation.search to find it in the full transcript. Do NOT assume it never happened, and do NOT answer from the partial record as though it were complete. Only say you cannot find something after actually searching for it.`;
@@ -233,6 +235,20 @@ export class GatewayReasoner implements Reasoner {
         description: c.metadata.description,
         parameters: c.metadata.parameters,
         confidence: Number(c.confidence.toFixed(3)),
+        // A candidate's track record, INCLUDING what it said the last time it failed. Without
+        // this the model cannot tell a skill that has worked forty times from one that has
+        // failed its last three runs — they differ only by a confidence decimal, which is not
+        // enough to decide "patch this" over "run this". See skill-health.ts.
+        ...(c.health
+          ? {
+              health: {
+                state: c.health.state,
+                consecutive_failures: c.health.consecutive_failures,
+                ...(c.health.last_error ? { last_error: c.health.last_error } : {}),
+                note: c.health.recommendation,
+              },
+            }
+          : {}),
       })),
       available_operations: input.availableOperations,
       repair_target: input.repairTarget ?? null,

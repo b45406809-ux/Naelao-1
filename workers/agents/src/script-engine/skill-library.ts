@@ -16,6 +16,7 @@
  */
 
 import type { ScriptMetadata, StoredScript, PatchRecord } from "./types.js";
+import { recordRecentOutcome } from "./skill-health.js";
 
 /** Derive stability_score in [0,1] from health counters (spec §4 "Health"). */
 export function computeStabilityScore(m: Pick<ScriptMetadata, "success_count" | "failure_count" | "patch_history">): number {
@@ -233,13 +234,24 @@ export class SkillLibrary {
     return [...names];
   }
 
-  /** Record the outcome of a run, updating health counters + stability (no new version). */
-  async recordOutcome(name: string, success: boolean): Promise<void> {
+  /**
+   * Record the outcome of a run, updating health counters + stability (no new version).
+   *
+   * `error` is what makes this a diagnosis rather than a tally: it lands in the bounded recent
+   * window (skill-health.ts), which is what lets a later run see "this failed its last three
+   * runs, and here is what it said" and repair the skill instead of re-running it.
+   */
+  async recordOutcome(name: string, success: boolean, error?: string): Promise<void> {
     const current = await this.readMetadata(name);
     if (!current) return;
     if (success) current.success_count += 1;
     else current.failure_count += 1;
     current.stability_score = computeStabilityScore(current);
+    current.recent_outcomes = recordRecentOutcome(current.recent_outcomes, {
+      ok: success,
+      at: Date.now(),
+      error,
+    });
     current.updated_at = Date.now();
     await this.bucket.put(`${this.dir(name)}/SCRIPT.md`, JSON.stringify(current, null, 2));
   }

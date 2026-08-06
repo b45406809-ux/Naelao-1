@@ -271,7 +271,9 @@ export class ScriptToolSurface {
       };
     }
     const result = await runStoredScript(this.env, stored, params);
-    await this.library.recordOutcome(name, result.ok);
+    // The error, not just the boolean: it is what a later repair is aimed at, and what lets the
+    // next run see "failed its last three times, and here is why" instead of a lower number.
+    await this.library.recordOutcome(name, result.ok, result.error);
     return result;
   }
 }
