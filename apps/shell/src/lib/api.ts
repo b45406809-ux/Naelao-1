@@ -1298,6 +1298,40 @@ export async function getConnectorStatus(spaceId: string, session: SessionCreden
   return res.connectors ?? [];
 }
 
+/** One app from the full provider directory (every Composio toolkit + Pipedream app), as opposed
+ *  to the curated catalogue `ConnectorInfo` describes. `curated_as` means we already ship a
+ *  purpose-built connector for it — the UI should point there instead. */
+export interface DirectoryApp {
+  id: string;
+  provider: "composio" | "pipedream";
+  slug: string;
+  name: string;
+  description?: string;
+  logo?: string;
+  categories: string[];
+  auth?: string;
+  curated_as?: string;
+}
+
+export interface DirectoryPage {
+  apps: DirectoryApp[];
+  next_cursor?: string;
+  providers: Array<{ provider: string; available: boolean; reason?: string }>;
+}
+
+export async function getConnectorDirectory(
+  spaceId: string,
+  session: SessionCredentials,
+  opts: { q?: string | undefined; cursor?: string | undefined; limit?: number | undefined } = {}
+): Promise<DirectoryPage> {
+  const params = new URLSearchParams();
+  if (opts.q) params.set("q", opts.q);
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  if (opts.limit) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  return apiFetch(`/v1/spaces/${spaceId}/connectors/directory${qs ? `?${qs}` : ""}`, { session });
+}
+
 export async function connectPlatform(
   spaceId: string,
   session: SessionCredentials,

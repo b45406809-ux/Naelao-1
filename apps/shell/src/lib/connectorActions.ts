@@ -30,6 +30,21 @@ export async function startConnectorConnect(
   return { needsManualKey: true };
 }
 
+/**
+ * Connect an app from the full provider directory rather than the curated catalogue. Always a
+ * hosted redirect — that is the entire point of the directory: Composio and Pipedream run the
+ * OAuth dance with their own registered app credentials, so there is no key for anyone to find.
+ */
+export async function startDirectoryConnect(
+  spaceId: string,
+  session: SessionCredentials,
+  appId: string,
+  returnUrl: string
+): Promise<void> {
+  const { connect_url } = await startProviderConnect(spaceId, session, appId, returnUrl);
+  window.location.href = connect_url;
+}
+
 export async function submitManualConnectorKey(
   spaceId: string,
   session: SessionCredentials,

@@ -371,6 +371,26 @@ function comingSoon(
 
 /** Coming-soon Composio-routed placeholder — no builder credential at all once flipped on, just
  *  an `auth_config_id_env` to provision. Kept `coming_soon` until that Auth Config exists. */
+/** A Composio-routed connector that is live. `auth_config_id_env` names an OPTIONAL override:
+ *  when that env var holds a hand-registered Auth Config we use it, otherwise Composio creates one
+ *  on demand with its own managed credentials (connectors/directory.ts). */
+function availableComposio(
+  id: string,
+  name: string,
+  category: ConnectorCategory,
+  toolkit_slug: string,
+  auth_config_id_env: string,
+  summary: string,
+  operations: ConnectorOperation[]
+): ConnectorDefinition {
+  return {
+    id, name, category, status: "available", summary,
+    auth: { type: "none", credential_name: "" },
+    composio: { toolkit_slug, auth_config_id_env },
+    operations,
+  };
+}
+
 function comingSoonComposio(
   id: string,
   name: string,
@@ -395,10 +415,31 @@ export const CONNECTOR_CATALOGUE: ConnectorDefinition[] = [
   INSTAGRAM,
   TIKTOK,
   NOTION,
-  // CRM / ads / advanced email — Composio-routed, data-only until an Auth Config is provisioned.
-  comingSoonComposio("hubspot", "HubSpot", "crm", "hubspot", "COMPOSIO_HUBSPOT_AUTH_CONFIG_ID", "CRM/lead pipeline — deals, contacts, pipeline stages."),
-  comingSoonComposio("google-ads", "Google Ads", "ads", "googleads", "COMPOSIO_GOOGLE_ADS_AUTH_CONFIG_ID", "Campaign performance, budgets, ad group management."),
-  comingSoonComposio("meta-ads", "Meta Ads", "ads", "facebook_ads", "COMPOSIO_META_ADS_AUTH_CONFIG_ID", "Meta (Facebook/Instagram) ad campaign management."),
+  // CRM / ads. These were coming_soon for exactly one reason — "until an Auth Config is
+  // provisioned" — and Composio's managed auth removed it: the connect route now creates a config
+  // on demand using Composio's own registered app (see connectors/directory.ts). Each of the three
+  // below was verified live to produce a real Connect Link before being flipped.
+  availableComposio("hubspot", "HubSpot", "crm", "hubspot", "COMPOSIO_HUBSPOT_AUTH_CONFIG_ID", "CRM/lead pipeline — deals, contacts, pipeline stages.", [
+    { name: "list_contacts", description: "List CRM contacts.", kind: "read" },
+    { name: "create_contact", description: "Create a CRM contact.", kind: "write" },
+    { name: "list_deals", description: "List deals and their pipeline stages.", kind: "read" },
+    { name: "update_deal", description: "Move a deal or edit its properties.", kind: "write" },
+  ]),
+  availableComposio("google-ads", "Google Ads", "ads", "googleads", "COMPOSIO_GOOGLE_ADS_AUTH_CONFIG_ID", "Campaign performance, budgets, ad group management.", [
+    { name: "list_campaigns", description: "List campaigns and their status.", kind: "read" },
+    { name: "get_campaign_performance", description: "Read spend, clicks and conversions for a campaign.", kind: "read" },
+    { name: "update_campaign_budget", description: "Change a campaign's daily budget.", kind: "write" },
+  ]),
+  // Slug corrected from "facebook_ads", which Composio rejects as a nonexistent toolkit — the real
+  // one is "metaads". Found by connecting it for real rather than by reading the file.
+  availableComposio("meta-ads", "Meta Ads", "ads", "metaads", "COMPOSIO_META_ADS_AUTH_CONFIG_ID", "Meta (Facebook/Instagram) ad campaign management.", [
+    { name: "list_campaigns", description: "List ad campaigns and their status.", kind: "read" },
+    { name: "get_campaign_insights", description: "Read spend, reach and results for a campaign.", kind: "read" },
+    { name: "update_campaign_budget", description: "Change a campaign's budget.", kind: "write" },
+  ]),
+  // Stays coming_soon, and for a real reason rather than an unprovisioned config: Composio
+  // reports it has no managed credentials for this toolkit, so one-click connect genuinely can't
+  // work until we register our own OAuth app for it.
   comingSoonComposio("agentmail", "AgentMail", "email", "agent_mail", "COMPOSIO_AGENTMAIL_AUTH_CONFIG_ID", "Dedicated agent-managed inbox — beyond the built-in business-email default."),
   // Course / product platforms
   comingSoon("stan-store", "Stan Store", "course_product", "Link-in-bio storefront, courses and bookings.", "STAN_API_KEY"),

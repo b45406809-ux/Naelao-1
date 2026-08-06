@@ -152,3 +152,81 @@ export async function getPipedreamAccountStatus(params: {
   });
   return healthy ? "ACTIVE" : "NONE";
 }
+
+// ── Directory: every app Pipedream can reach ─────────────────────────────────────────────────
+//
+// The counterpart to composio.ts's toolkit directory. Pipedream needs no per-app Auth Config at
+// all — Connect takes an app slug directly — so every app it lists has always been connectable;
+// what was missing was any way for a user to SEE the list. 3,000+ apps, all with Pipedream-managed
+// OAuth, previously reachable only by someone adding a row to CONNECTOR_CATALOGUE by hand.
+
+export interface PipedreamApp {
+  slug: string;
+  name: string;
+  description?: string;
+  logo?: string;
+  categories: string[];
+  /** Pipedream reports this as e.g. "oauth" / "keys" / "none". */
+  auth_type?: string;
+}
+
+export interface PipedreamAppPage {
+  apps: PipedreamApp[];
+  next_cursor?: string;
+}
+
+/**
+ * One page of Pipedream's app directory. Parsed defensively (see this file's header on unverified
+ * field names): an entry with no readable slug is skipped rather than rendered as a Connect button
+ * that cannot work.
+ */
+export async function listPipedreamApps(params: {
+  clientId: string;
+  clientSecret: string;
+  search?: string | undefined;
+  cursor?: string | undefined;
+  limit?: number | undefined;
+}): Promise<PipedreamAppPage> {
+  const token = await getPipedreamAccessToken(params.clientId, params.clientSecret);
+  const url = new URL(`${PIPEDREAM_API_BASE}/apps`);
+  if (params.search) url.searchParams.set("q", params.search);
+  if (params.cursor) url.searchParams.set("after", params.cursor);
+  url.searchParams.set("limit", String(Math.min(Math.max(params.limit ?? 50, 1), 100)));
+
+  const resp = await fetch(url.toString(), {
+    headers: { authorization: `Bearer ${token}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  const json = await resp.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  if (!resp.ok) {
+    throw new Error(pick(json, "error", "message") || `Pipedream app listing failed: ${resp.status}`);
+  }
+  const items = (Array.isArray(json["data"]) ? json["data"] : Array.isArray(json["apps"]) ? json["apps"] : []) as Array<
+    Record<string, unknown>
+  >;
+  const apps: PipedreamApp[] = [];
+  for (const raw of items) {
+    const slug = pick(raw, "name_slug", "slug", "app_slug");
+    if (!slug) continue;
+    const description = pick(raw, "description");
+    const logo = pick(raw, "img_src", "logo", "icon");
+    const authType = pick(raw, "auth_type", "authType");
+    const categories = Array.isArray(raw["categories"])
+      ? (raw["categories"] as unknown[]).map((c) => (typeof c === "string" ? c : "")).filter(Boolean)
+      : [];
+    apps.push({
+      slug,
+      name: pick(raw, "name") || slug,
+      ...(description ? { description } : {}),
+      ...(logo ? { logo } : {}),
+      categories,
+      ...(authType ? { auth_type: authType } : {}),
+    });
+  }
+  const pageInfo = (json["page_info"] as Record<string, unknown> | undefined) ?? {};
+  const nextCursor = pick(pageInfo, "end_cursor", "endCursor") || pick(json, "next_cursor");
+  // A cursor equal to nothing, or a short page, means we are at the end — never hand back a
+  // cursor that would just replay the same page.
+  const hasMore = apps.length >= (params.limit ?? 50);
+  return { apps, ...(nextCursor && hasMore ? { next_cursor: nextCursor } : {}) };
+}

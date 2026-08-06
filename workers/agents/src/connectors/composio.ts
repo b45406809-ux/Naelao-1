@@ -119,6 +119,20 @@ export interface ProviderConnectTicket {
   returnUrl: string;
   platform: string;
   connectionId: string;
+  /**
+   * What `platform` was resolved to at START time (directory.ts). Carried rather than re-derived
+   * in the callback so the two halves of a flow can never disagree — and because a directory app
+   * has no catalogue row for the callback to look up at all.
+   *
+   * Optional: a ticket minted before this existed (10-minute TTL, so at most one deploy's worth)
+   * still parses, and the callback falls back to catalogue lookup for those.
+   */
+  provider?: "composio" | "pipedream";
+  /** The name the MCP server is registered under — the curated connector id, or a directory
+   *  app's bare slug. */
+  connectorId?: string;
+  /** The provider's own app/toolkit slug, needed to poll Pipedream's connection status. */
+  appSlug?: string;
 }
 
 const PROVIDER_TICKET_TTL_SECONDS = 600;
@@ -146,4 +160,139 @@ export async function consumeProviderConnectTicket(kv: KVNamespace, ticket: stri
   } catch {
     return null;
   }
+}
+
+// ── Directory: every app Composio can reach, not just the ones we curated ─────────────────────
+//
+// CONNECTOR_CATALOGUE is a hand-written list — good for the handful of apps a Launchpad business
+// is steered toward, useless as an answer to "what CAN I connect?". Composio brokers 500+ app
+// toolkits, and a user has no way to discover them from a file they can't see.
+//
+// The thing that used to make listing them pointless was `auth_config_id_env`: our connect flow
+// needed a pre-registered Auth Config per app, created by hand in Composio's dashboard, so a
+// listed-but-unconfigured app would have been a Connect button that 503s. `use_composio_managed_auth`
+// removes that — Composio will run the OAuth dance with ITS OWN registered app credentials, and
+// the auth config can be created over the API on first use. So every listed toolkit is genuinely
+// connectable, and the curated list becomes a recommendation rather than a boundary.
+
+/** Composio's auth-config API moved to v3.1 while toolkits stayed on v3 (their own reference
+ *  docs, 2026-08). Keeping both explicit rather than assuming one base for everything. */
+const COMPOSIO_API_V31 = "https://backend.composio.dev/api/v3.1";
+
+export interface ComposioToolkit {
+  slug: string;
+  name: string;
+  description?: string;
+  logo?: string;
+  categories: string[];
+  /** "OAUTH2", "API_KEY", … when Composio reports it. Absent when it doesn't. */
+  auth_scheme?: string;
+}
+
+export interface ComposioToolkitPage {
+  toolkits: ComposioToolkit[];
+  next_cursor?: string;
+}
+
+function strArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v
+    .map((x) => (typeof x === "string" ? x : typeof x === "object" && x ? pick(x as Record<string, unknown>, "slug", "name", "id") : ""))
+    .filter((s): s is string => Boolean(s));
+}
+
+/**
+ * One page of Composio's toolkit directory. Parsed defensively (same posture as the rest of this
+ * file — see the header): a toolkit whose slug we can't read is skipped rather than surfaced as a
+ * broken Connect button.
+ */
+export async function listComposioToolkits(params: {
+  apiKey: string;
+  search?: string | undefined;
+  cursor?: string | undefined;
+  limit?: number | undefined;
+}): Promise<ComposioToolkitPage> {
+  const url = new URL(`${COMPOSIO_API_BASE}/toolkits`);
+  if (params.search) url.searchParams.set("search", params.search);
+  if (params.cursor) url.searchParams.set("cursor", params.cursor);
+  url.searchParams.set("limit", String(Math.min(Math.max(params.limit ?? 50, 1), 100)));
+
+  const resp = await fetch(url.toString(), {
+    headers: { "x-api-key": params.apiKey },
+    signal: AbortSignal.timeout(15_000),
+  });
+  const json = await resp.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  if (!resp.ok) {
+    throw new Error(pick(json, "error", "message") || `Composio toolkit listing failed: ${resp.status}`);
+  }
+  const items = (Array.isArray(json["items"]) ? json["items"] : Array.isArray(json["data"]) ? json["data"] : []) as Array<
+    Record<string, unknown>
+  >;
+  const toolkits: ComposioToolkit[] = [];
+  for (const raw of items) {
+    const slug = pick(raw, "slug", "key", "name_slug");
+    if (!slug) continue;
+    const meta = (raw["meta"] as Record<string, unknown> | undefined) ?? raw;
+    const description = pick(meta, "description", "short_description");
+    const logo = pick(meta, "logo", "logo_url", "logoUrl", "icon");
+    const authScheme = pick(raw, "auth_scheme", "authScheme") || strArray(raw["auth_schemes"])[0] || "";
+    toolkits.push({
+      slug,
+      name: pick(raw, "name") || slug,
+      ...(description ? { description } : {}),
+      ...(logo ? { logo } : {}),
+      categories: strArray(meta["categories"] ?? raw["categories"]),
+      ...(authScheme ? { auth_scheme: authScheme } : {}),
+    });
+  }
+  const nextCursor = pick(json, "next_cursor", "nextCursor");
+  return { toolkits, ...(nextCursor ? { next_cursor: nextCursor } : {}) };
+}
+
+/**
+ * Get (creating if needed) an Auth Config for a toolkit using COMPOSIO'S OWN registered OAuth
+ * app credentials, so connecting an app needs no dashboard work from us first. This is what makes
+ * the whole directory connectable rather than browsable.
+ *
+ * Idempotent by caching the resulting `ac_…` id in KV, keyed by toolkit — creating a second one
+ * for the same toolkit would work but would quietly accumulate config objects in the Composio
+ * account, and the two would drift once one of them was edited by hand.
+ *
+ * Throws (rather than returning a placeholder) when Composio has no managed app for the toolkit —
+ * a real, specific failure the caller surfaces to the user, not a Connect button that dead-ends.
+ */
+export async function ensureComposioAuthConfig(params: {
+  apiKey: string;
+  toolkitSlug: string;
+  cache?: KVNamespace | undefined;
+}): Promise<string> {
+  const cacheKey = `composio-auth-config:${params.toolkitSlug.toLowerCase()}`;
+  if (params.cache) {
+    const cached = await params.cache.get(cacheKey);
+    if (cached) return cached;
+  }
+
+  const resp = await fetch(`${COMPOSIO_API_V31}/auth_configs`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "x-api-key": params.apiKey },
+    body: JSON.stringify({
+      toolkit: { slug: params.toolkitSlug },
+      auth_config: { type: "use_composio_managed_auth", name: `naelao-${params.toolkitSlug}` },
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const json = await resp.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  if (!resp.ok) {
+    const err = (json["error"] as Record<string, unknown> | undefined) ?? json;
+    throw new Error(pick(err, "message", "error") || `Composio auth-config creation failed: ${resp.status}`);
+  }
+  const authConfig = (json["auth_config"] as Record<string, unknown> | undefined) ?? (json["data"] as Record<string, unknown> | undefined) ?? json;
+  const id = pick(authConfig, "id", "auth_config_id", "authConfigId");
+  if (!id) {
+    throw new Error(`Composio did not return an auth config id for ${params.toolkitSlug}`);
+  }
+  // Cached without an expiry: an auth config is a durable object in the Composio account, and a
+  // stale-but-valid id is exactly what we want on a later connect.
+  if (params.cache) await params.cache.put(cacheKey, id);
+  return id;
 }

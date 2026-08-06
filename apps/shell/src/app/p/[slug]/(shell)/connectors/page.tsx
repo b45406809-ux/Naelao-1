@@ -12,8 +12,8 @@ import * as React from "react";
 import { Button, FormInput, useToast, Toast } from "@naelao/ui";
 import { useProductAuth } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
-import { getConnectorStatus, connectorProvider, type ConnectorInfo } from "@/lib/api";
-import { startConnectorConnect, submitManualConnectorKey, consumeConnectorReturnMarker } from "@/lib/connectorActions";
+import { getConnectorStatus, getConnectorDirectory, connectorProvider, type ConnectorInfo, type DirectoryApp } from "@/lib/api";
+import { startConnectorConnect, startDirectoryConnect, submitManualConnectorKey, consumeConnectorReturnMarker } from "@/lib/connectorActions";
 
 type ProviderFilter = "all" | "composio" | "pipedream";
 
@@ -32,6 +32,13 @@ export default function ConnectorsPage() {
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [manualKeyFor, setManualKeyFor] = React.useState<string | null>(null);
   const [manualKeyValue, setManualKeyValue] = React.useState("");
+  // The full provider directory — everything reachable, as opposed to the curated recommendations
+  // above it. Searched server-side (there are thousands), so this is its own request rather than
+  // a filter over an already-loaded list.
+  const [directory, setDirectory] = React.useState<DirectoryApp[] | null>(null);
+  const [directoryNote, setDirectoryNote] = React.useState<string | null>(null);
+  const [directoryLoading, setDirectoryLoading] = React.useState(false);
+  const [showDirectory, setShowDirectory] = React.useState(false);
 
   const refresh = React.useCallback(async () => {
     if (!creds) return;
@@ -78,6 +85,43 @@ export default function ConnectorsPage() {
       // Composio/OAuth: the browser is already navigating away, nothing else to do here.
     } catch (err) {
       show(err instanceof Error ? err.message : `Failed to start connecting ${c.name}`);
+      setBusyId(null);
+    }
+  }
+
+  const loadDirectory = React.useCallback(async () => {
+    if (!creds) return;
+    setDirectoryLoading(true);
+    try {
+      const page = await getConnectorDirectory(activeSpaceId, creds, { q: query.trim() || undefined, limit: 60 });
+      // Anything we already ship a purpose-built connector for is listed above — showing it twice
+      // would offer a generic brokered connection alongside the better one.
+      setDirectory(page.apps.filter((a) => !a.curated_as));
+      const off = page.providers.filter((p) => !p.available);
+      setDirectoryNote(
+        off.length === page.providers.length
+          ? "The app directory isn't switched on for this platform yet."
+          : off.length > 0
+            ? `${off.map((p) => p.provider).join(" and ")} is unavailable right now, so this list is incomplete.`
+            : null
+      );
+    } catch (err) {
+      setDirectory([]);
+      setDirectoryNote(err instanceof Error ? err.message : "Couldn't load the app directory.");
+    } finally {
+      setDirectoryLoading(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSpaceId, session, query]);
+
+  async function handleDirectoryConnect(app: DirectoryApp) {
+    if (!creds) return;
+    setBusyId(app.id);
+    try {
+      await startDirectoryConnect(activeSpaceId, creds, app.id, window.location.href);
+      // The browser is navigating away; leave the button busy.
+    } catch (err) {
+      show(err instanceof Error ? err.message : `Failed to start connecting ${app.name}`);
       setBusyId(null);
     }
   }
@@ -196,6 +240,67 @@ export default function ConnectorsPage() {
               )}
             </React.Fragment>
           ))}
+        </div>
+      )}
+
+
+      <div className="section-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <span>Everything else</span>
+        {!showDirectory && (
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => { setShowDirectory(true); void loadDirectory(); }}
+          >
+            Browse all apps
+          </button>
+        )}
+      </div>
+      <p style={{ color: "var(--text3)", fontSize: 13, marginBottom: 12 }}>
+        The list above is what we recommend. Thousands more apps are reachable through the same
+        one-click sign-in — search for one by name.
+      </p>
+
+      {showDirectory && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+            <Button size="sm" onClick={() => void loadDirectory()} disabled={directoryLoading}>
+              {directoryLoading ? "Searching…" : query.trim() ? `Search "${query.trim()}"` : "Refresh"}
+            </Button>
+          </div>
+
+          {directoryNote && (
+            <p style={{ color: "var(--text3)", fontSize: 12, marginBottom: 12 }}>{directoryNote}</p>
+          )}
+
+          {directoryLoading && directory === null ? (
+            <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading the app directory…</p>
+          ) : directory && directory.length === 0 ? (
+            <p style={{ color: "var(--text3)", fontSize: 13 }}>
+              {query.trim() ? `No apps match "${query.trim()}".` : "No apps available."}
+            </p>
+          ) : directory ? (
+            <div className="settings-block">
+              {directory.map((a) => (
+                <div className="settings-row" key={a.id}>
+                  <div>
+                    <div className="settings-row-label">
+                      {a.name}
+                      <span style={{ marginLeft: 8, fontSize: 10, color: "var(--text3)", textTransform: "uppercase", letterSpacing: 0.4 }}>
+                        {a.provider}
+                      </span>
+                    </div>
+                    <div className="settings-row-sub">
+                      {a.description || a.categories.slice(0, 3).join(" · ") || a.slug}
+                    </div>
+                  </div>
+                  <Button size="sm" onClick={() => void handleDirectoryConnect(a)} disabled={busyId === a.id}>
+                    {busyId === a.id ? "Connecting…" : "Connect"}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </div>
       )}
 

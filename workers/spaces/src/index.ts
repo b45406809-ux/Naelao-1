@@ -1432,6 +1432,24 @@ app.get("/spaces/:spaceId/connectors/status", async (c) =>
   proxyToAgentsWorker(c, `/connectors/status?space_id=${encodeURIComponent(c.req.param("spaceId"))}`, "GET")
 );
 
+// Everything the platform can reach, not just the curated dozen (connectors/directory.ts).
+// Read-only and identical for every tenant, so "member" is the right floor — connecting one is
+// still gated by /connectors/provider-connect-start's own admin check. Registered as a static
+// sibling of `status`, deliberately NOT as `/directory/:provider` — a dynamic segment followed by
+// a static suffix is the shape that has repeatedly corrupted this file's route table.
+app.use("/spaces/:spaceId/connectors/directory", requireBusinessMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/connectors/directory", async (c) => {
+  const params = new URLSearchParams();
+  const q = c.req.query("q");
+  const cursor = c.req.query("cursor");
+  const limit = c.req.query("limit");
+  if (q) params.set("q", q);
+  if (cursor) params.set("cursor", cursor);
+  if (limit) params.set("limit", limit);
+  const qs = params.toString();
+  return proxyToAgentsWorker(c, `/connectors/directory${qs ? `?${qs}` : ""}`, "GET");
+});
+
 app.post("/spaces/:spaceId/connectors/connect", async (c) => {
   const body = await c.req.json<{ platform?: string; api_key?: string }>().catch(() => ({}) as Record<string, never>);
   const platform = body.platform ?? "";

@@ -564,6 +564,10 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/connectors\/status$/,
   /^\/spaces\/([^/]+)\/connectors\/connect$/,
   /^\/spaces\/([^/]+)\/connectors\/oauth-start$/,
+  // The full provider directory (every Composio toolkit + Pipedream app, not just the curated
+  // dozen) — a member-level read; connecting one is still admin-gated by provider-connect-start
+  // below, same identity-here-authorization-there split.
+  /^\/spaces\/([^/]+)\/connectors\/directory$/,
   // Composio "click Install" hosted-connect flow (G-1/G-3 growth layer): same admin-level write
   // gate as connect/oauth-start above (requireBusinessMembership on the spaces worker).
   /^\/spaces\/([^/]+)\/connectors\/provider-connect-start$/,
