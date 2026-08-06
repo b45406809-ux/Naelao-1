@@ -4118,6 +4118,70 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     "invalid channel" example in two places, and a notifications test asserting slack was
     unwired.
 
+94. **Skill self-improvement (the last open gap from the OpenClaw/Hermes analysis) and a real
+    connector directory are now BUILT.** Two independent pieces, both live-verified.
+    - **The skill gap as previously written was slightly wrong, and the correction matters.**
+      Outcomes WERE recorded and `script.find` WAS sorted by them. The real problem: `stability_score`
+      is a LIFETIME ratio, which cannot express recency — 20 successes and 4 failures scores 0.83
+      whether those failures are spread over a year or are the last four runs in a row. A skill that
+      broke yesterday kept being offered as proven, kept being picked, and kept failing. New
+      `script-engine/skill-health.ts` adds the recency layer: `ScriptMetadata.recent_outcomes`, a
+      bounded (10) window carrying the ERROR of each failure, and `assessSkillHealth` →
+      `unproven | proven | degrading | broken`. Three consumers: `script.find` demotes a failing
+      skill (never hides it — an agent cannot repair what it can't see); the GATE refuses to
+      auto-run one at L1 and routes it to L2/L3 repair carrying its own `last_error` as the
+      `repairTarget.failureReason`; and the reasoner's candidate projection now includes the health
+      record, with a `DECISION_INSTRUCTIONS` paragraph telling it to patch rather than re-run.
+      **A real design bug caught by writing the test:** demoting a broken skill pushed it under
+      `FIND_CONFIDENCE_FLOOR`, so the loop read "nothing relevant found" and went to L4 (write a
+      NEW skill) instead of repairing the one it had. Fixed by splitting the score into
+      `FindCandidate.relevance` (stability × similarity — what the GATE's floor tests, "is there a
+      skill about this at all") and `confidence` (relevance × health — the sort key, "and can I
+      trust it as it stands"). Health must never affect relevance.
+    - **New `skill-manager` prebuilt** gives the agent agency over its own library, since the
+      automatic half can't decide to fix a skill nobody is currently reaching for:
+      `skill.health` (assessment naming what's broken/degrading/promotable), `skill.inspect`
+      (real errors + patch history), `skill.rollback`, `skill.retire` (deletes the Vectorize
+      embedding too — otherwise it stays findable-but-unresolvable), `skill.promote` (delegates to
+      the already-existing `/skills/promote` route, which owns the template lookup + threshold —
+      one gate, not two that drift). Reads auto-approved in guided mode; gating them would mean
+      asking permission before being allowed to discover something is wrong. Both assistant profiles
+      gained a "Your Own Skills" section.
+    - **Connector directory (`connectors/directory.ts`): every app the platform can reach, not just
+      the curated dozen.** `CONNECTOR_CATALOGUE` is ~12 hand-written rows; Composio + Pipedream
+      broker ~3,500 apps between them and a user could reach none of them without someone editing a
+      TypeScript file. **The thing that made this a real boundary rather than a missing screen was
+      Composio's per-app Auth Config**, registered by hand in their dashboard
+      (`auth_config_id_env`). Their `use_composio_managed_auth` (verified against their live API
+      docs, `POST /api/v3.1/auth_configs`) lets Composio run the OAuth dance with ITS OWN app
+      credentials and the config can be created over the API on first connect — so that env var is
+      now an OVERRIDE for connectors where we want our own OAuth app, not a precondition.
+      Pipedream never needed one; only the listing was missing. New `GET /connectors/directory`
+      (KV-cached 1h, per-provider cursors merged into one opaque token, a provider that is down or
+      unconfigured reported as such rather than silently contributing nothing), spaces-worker
+      wrapper at member level, router allowlist entry, and a "Browse all apps" section in the
+      shell's Connectors page. Directory ids are namespaced `{provider}:{slug}`; a curated
+      connector always wins over a directory entry, **but only when it is actually `available`** —
+      otherwise a `coming_soon` row would swallow a genuinely connectable app and turn it into a
+      refusal (the same rule applied in both `resolveConnectTarget` and `curatedIdFor`).
+    - **Live verification found three things reading the file would not have:** `hubspot` and
+      `googleads` connect fine through managed auth (both flipped from `coming_soon` to
+      `available`, each verified to produce a real Connect Link); `meta-ads` had the WRONG toolkit
+      slug — `facebook_ads`, which Composio rejects as nonexistent, real one is `metaads`; and
+      `agentmail` stays `coming_soon` for a real reason — Composio reports no managed credentials
+      for that toolkit, so one-click connect genuinely cannot work until we register our own OAuth
+      app. The catalogue's own `validateConnectorCatalogue` caught the flip (an available connector
+      must declare operations) — a good validator doing its job. Full end-to-end proof on
+      production: a real signed-up end user created a business, browsed the directory through the
+      router (both providers live), and got real Connect Links for BOTH an app never in our
+      catalogue (Asana) and one that had been permanently coming_soon (HubSpot). Test business
+      soft-deleted afterwards. 2496/2496 tests pass (45 new), `npx turbo run typecheck` clean (76
+      tasks), `naelao-agents`/`naelao-spaces`/`naelao-router`/`apps/shell` all deployed.
+    - **Not done:** an actual OAuth click-through by a human (the Connect Links were generated and
+      verified, not followed to consent); Pipedream's `/apps` response field names are still parsed
+      defensively rather than confirmed against their published schema, same "confirm once real
+      access exists" precedent as the rest of this file.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

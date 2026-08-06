@@ -56,19 +56,25 @@ Signal and iMessage are deliberately **not** worth it: both need a real phone nu
 long-running local process (`signal-cli`, a Mac), which is exactly the single-operator assumption
 we can't make.
 
-### 2. Self-improvement is open-loop
+### 2. ~~Self-improvement is open-loop~~ — CLOSED 2026-08-06
 
-We create skills (`distill`) and we version them. What we do **not** do is close the loop:
-nothing measures whether a written skill actually worked, nothing promotes a good one, nothing
-retires a bad one. `stability_score` exists as a field and is not driven by outcomes.
+The gap as originally written was slightly wrong, and worth correcting rather than deleting:
+outcomes WERE recorded and `script.find` WAS sorted by them. The real problem was that
+`stability_score` is a **lifetime ratio**, which cannot express recency — 20 successes and 4
+failures scores 0.83 whether those failures are spread across a year or are the last four runs
+in a row. A skill that broke yesterday kept being offered as proven, kept being picked, and kept
+failing.
 
-Hermes's pitch — "creates skills from experience, improves them during use" — is the loop we
-half-have. The missing half is small and concrete: record each skill's run outcomes, and let the
-agent see that record when `script.find` surfaces it. A skill that has failed its last four runs
-should not be offered as if it were reliable.
+Closed by adding the recency layer (`script-engine/skill-health.ts`): a bounded window of recent
+runs including the error each failure gave, and a verdict derived from it. Three consumers —
+`script.find` demotes a failing skill without hiding it (an agent cannot repair what it can't
+see), the GATE refuses to auto-run one and routes it to repair carrying its own last error, and
+the reasoner sees the record per candidate so it can choose `patch` over `run` itself.
 
-This is also the honest reading of the SkillOpt-Lite research already tracked in `HX4`: the
-validation gate is the piece we never built.
+That automatic half stops a broken skill being picked; it cannot decide to fix one nobody is
+currently reaching for. The new `skill-manager` prebuilt is that: `skill.health` / `skill.inspect`
+/ `skill.rollback` / `skill.retire` / `skill.promote`, with reads auto-approved in guided mode
+(gating them would mean asking permission before being allowed to discover something is wrong).
 
 ### 3. Agent-initiated persistence ("nudge itself to remember")
 
@@ -100,7 +106,8 @@ Worth stating, because the gap analysis reads one-directional otherwise:
    and the connect UI. While wiring it, found that **no channel could reply at all**: `/internal/notify`
    handled email and returned `delivered:false` for everything else, so Slack/Discord/WhatsApp
    inbound worked and outbound was a stub. All four now send for real.
-2. **Skill outcome tracking** — closes the self-improvement loop we already half-built. Still open.
+2. ~~**Skill outcome tracking**~~ — **DONE 2026-08-06.** See gap 2 above; the missing piece turned
+   out to be recency rather than measurement, plus giving the agent a way to act on it.
 3. Everything else on this page is either already ours or deliberately declined.
 
 ---
