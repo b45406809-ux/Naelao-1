@@ -39,6 +39,9 @@ export default function ConnectorsPage() {
   const [directoryNote, setDirectoryNote] = React.useState<string | null>(null);
   const [directoryLoading, setDirectoryLoading] = React.useState(false);
   const [showDirectory, setShowDirectory] = React.useState(false);
+  // The providers page 100 apps each at a time. Without carrying the cursor the page showed one
+  // batch and stopped, which reads as "that's all there is" rather than "there are thousands".
+  const [directoryCursor, setDirectoryCursor] = React.useState<string | null>(null);
 
   const refresh = React.useCallback(async () => {
     if (!creds) return;
@@ -89,30 +92,46 @@ export default function ConnectorsPage() {
     }
   }
 
-  const loadDirectory = React.useCallback(async () => {
-    if (!creds) return;
-    setDirectoryLoading(true);
-    try {
-      const page = await getConnectorDirectory(activeSpaceId, creds, { q: query.trim() || undefined, limit: 60 });
-      // Anything we already ship a purpose-built connector for is listed above — showing it twice
-      // would offer a generic brokered connection alongside the better one.
-      setDirectory(page.apps.filter((a) => !a.curated_as));
-      const off = page.providers.filter((p) => !p.available);
-      setDirectoryNote(
-        off.length === page.providers.length
-          ? "The app directory isn't switched on for this platform yet."
-          : off.length > 0
-            ? `${off.map((p) => p.provider).join(" and ")} is unavailable right now, so this list is incomplete.`
-            : null
-      );
-    } catch (err) {
-      setDirectory([]);
-      setDirectoryNote(err instanceof Error ? err.message : "Couldn't load the app directory.");
-    } finally {
-      setDirectoryLoading(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSpaceId, session, query]);
+  /** `append` continues from the last cursor; otherwise this starts a fresh search. */
+  const loadDirectory = React.useCallback(
+    async (append = false) => {
+      if (!creds) return;
+      setDirectoryLoading(true);
+      try {
+        const page = await getConnectorDirectory(activeSpaceId, creds, {
+          q: query.trim() || undefined,
+          limit: 100,
+          ...(append && directoryCursor ? { cursor: directoryCursor } : {}),
+        });
+        // Anything we already ship a purpose-built connector for is listed above — showing it
+        // twice would offer a generic brokered connection alongside the better one.
+        const fresh = page.apps.filter((a) => !a.curated_as);
+        setDirectory((prev) => {
+          if (!append || !prev) return fresh;
+          // Both providers can offer the same app, and a later page can repeat one the merge
+          // already emitted — dedupe on arrival rather than rendering it twice.
+          const seen = new Set(prev.map((a) => a.slug));
+          return [...prev, ...fresh.filter((a) => !seen.has(a.slug))];
+        });
+        setDirectoryCursor(page.next_cursor ?? null);
+        const off = page.providers.filter((p) => !p.available);
+        setDirectoryNote(
+          off.length === page.providers.length
+            ? "The app directory isn't switched on for this platform yet."
+            : off.length > 0
+              ? `${off.map((p) => p.provider).join(" and ")} is unavailable right now, so this list is incomplete.`
+              : null
+        );
+      } catch (err) {
+        if (!append) setDirectory([]);
+        setDirectoryNote(err instanceof Error ? err.message : "Couldn't load the app directory.");
+      } finally {
+        setDirectoryLoading(false);
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [activeSpaceId, session, query, directoryCursor]
+  );
 
   async function handleDirectoryConnect(app: DirectoryApp) {
     if (!creds) return;
@@ -250,23 +269,35 @@ export default function ConnectorsPage() {
           <button
             type="button"
             className="btn btn-secondary btn-sm"
-            onClick={() => { setShowDirectory(true); void loadDirectory(); }}
+            onClick={() => { setShowDirectory(true); void loadDirectory(false); }}
           >
             Browse all apps
           </button>
         )}
       </div>
       <p style={{ color: "var(--text3)", fontSize: 13, marginBottom: 12 }}>
-        The list above is what we recommend. Thousands more apps are reachable through the same
-        one-click sign-in — search for one by name.
+        The list above is what we recommend. Thousands more are reachable through the same
+        one-click sign-in — searching by name is far quicker than scrolling.
       </p>
 
       {showDirectory && (
         <div style={{ marginBottom: 24 }}>
           <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-            <Button size="sm" onClick={() => void loadDirectory()} disabled={directoryLoading}>
+            <Button
+              size="sm"
+              onClick={() => {
+                setDirectoryCursor(null);
+                void loadDirectory(false);
+              }}
+              disabled={directoryLoading}
+            >
               {directoryLoading ? "Searching…" : query.trim() ? `Search "${query.trim()}"` : "Refresh"}
             </Button>
+            {directory && (
+              <span style={{ fontSize: 12, color: "var(--text3)", alignSelf: "center" }}>
+                {directory.length} shown{directoryCursor ? " — more available" : ""}
+              </span>
+            )}
           </div>
 
           {directoryNote && (
@@ -301,6 +332,14 @@ export default function ConnectorsPage() {
               ))}
             </div>
           ) : null}
+
+          {directory && directoryCursor && (
+            <div style={{ marginTop: 12, textAlign: "center" }}>
+              <Button size="sm" onClick={() => void loadDirectory(true)} disabled={directoryLoading}>
+                {directoryLoading ? "Loading…" : "Load more apps"}
+              </Button>
+            </div>
+          )}
         </div>
       )}
 

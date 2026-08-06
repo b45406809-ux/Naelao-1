@@ -86,8 +86,21 @@ export interface PairingEnv {
   TELEGRAM_BOT_USERNAME?: string | undefined;
   SLACK_CLIENT_ID?: string | undefined;
   DISCORD_CLIENT_ID?: string | undefined;
-  /** The platform's WhatsApp Business number in international format, digits only. */
+  /** The platform's WhatsApp Business number in international format, digits only (Meta Cloud
+   *  API transport). */
   WHATSAPP_PHONE_NUMBER?: string | undefined;
+  /**
+   * Twilio as an alternative WhatsApp transport. Same channel, same pairing, same inbox — the
+   * difference is what the operator has to obtain. Meta's Cloud API needs a verified Business
+   * account; Twilio's sandbox is free and instant, which is the difference between a platform
+   * offering WhatsApp at all and not.
+   *
+   * The sandbox is SHARED, so joining it requires its own code alongside our pairing token —
+   * hence TWILIO_WHATSAPP_JOIN_CODE. A production Twilio sender needs no join code and that
+   * field is simply left unset.
+   */
+  TWILIO_WHATSAPP_NUMBER?: string | undefined;
+  TWILIO_WHATSAPP_JOIN_CODE?: string | undefined;
   /** Public origin of this worker, used as the OAuth redirect target. */
   PUBLIC_AGENTS_URL?: string | undefined;
 }
@@ -189,18 +202,33 @@ export function buildPairing(env: PairingEnv, channel: PairableChannel, token: s
     }
 
     case "whatsapp": {
-      if (!env.WHATSAPP_PHONE_NUMBER) return notConfigured("WhatsApp");
+      // Twilio first when configured: it is the transport a platform can actually have today.
+      const number = env.TWILIO_WHATSAPP_NUMBER ?? env.WHATSAPP_PHONE_NUMBER;
+      if (!number) {
+        return {
+          ok: false,
+          reason: "not_configured",
+          message:
+            "WhatsApp isn't set up on this platform yet, so there's nothing to scan. " +
+            "You can still connect your own WhatsApp app from the advanced setup.",
+        };
+      }
       // The owner messages US. That direction matters beyond convenience: a person starting the
       // conversation is what Meta's policy treats as opt-in, so there is nothing to apply for.
+      // On Twilio's shared sandbox the message also has to carry its join code — the token alone
+      // would reach a number that has no idea who is talking to it.
+      const body = env.TWILIO_WHATSAPP_NUMBER && env.TWILIO_WHATSAPP_JOIN_CODE
+        ? `join ${env.TWILIO_WHATSAPP_JOIN_CODE} ${token}`
+        : token;
       return {
         ok: true,
-        url: `https://wa.me/${env.WHATSAPP_PHONE_NUMBER}?text=${encodeURIComponent(token)}`,
+        url: `https://wa.me/${number}?text=${encodeURIComponent(body)}`,
         mode: "scan",
         completion: "message",
         steps: [
           "Scan this with your phone's camera, or tap the link if you're already on your phone.",
-          "WhatsApp opens with a code already typed out.",
-          "Send it. Your business is connected — replies come back to this same chat.",
+          "WhatsApp opens with a message already typed out.",
+          "Send it as-is. Your business is connected — replies come back to this same chat.",
         ],
       };
     }

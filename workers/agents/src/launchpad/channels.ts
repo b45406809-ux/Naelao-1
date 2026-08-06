@@ -37,6 +37,13 @@ export interface SignatureInput {
   headers: Record<string, string>;
   /** The space's per-channel signing secret (Slack signing secret / Discord public key / …). */
   secret: string;
+  /**
+   * The URL the provider believes it called. Twilio signs the URL along with the body, and the
+   * worker cannot read it off the request: naelao-router rewrites the path before forwarding, so
+   * `c.req.url` here is not what Twilio hashed. Supplied explicitly by the caller instead.
+   * Ignored by every other adapter.
+   */
+  url?: string;
 }
 
 export interface ChannelAdapter {
@@ -304,6 +311,63 @@ const telegramAdapter: ChannelAdapter = {
     const provided = headers["x-telegram-bot-api-secret-token"];
     if (!provided) return false;
     return timingSafeEqual(provided, secret);
+  },
+};
+
+/**
+ * WhatsApp over Twilio, as an alternative to Meta's Cloud API.
+ *
+ * Both are "WhatsApp" as far as the rest of the platform is concerned — same channel, same
+ * pairing, same inbox. They differ only in what the operator has to obtain. Meta's Cloud API
+ * needs a verified Business account and a registered number; Twilio's sandbox is free, instant,
+ * and joined by scanning a QR with a prefilled message, which is the same shape our pairing
+ * already uses. That difference is the whole reason this exists: a platform with no WhatsApp
+ * number can offer none of this, and "apply for a Business account" is not a 60-second answer.
+ *
+ * Two things differ mechanically from Meta and both matter:
+ *  - Inbound is FORM-ENCODED, not JSON (the same shape as Twilio's SMS webhook).
+ *  - The signature covers the URL as well as the body, so it can't be checked against the
+ *    request this worker received — see SignatureInput.url.
+ */
+export const twilioWhatsappAdapter: ChannelAdapter = {
+  type: "whatsapp",
+  normalizeInbound(raw) {
+    // Twilio addresses are "whatsapp:+15551234567"; strip the scheme so a paired conversation id
+    // looks the same whichever transport delivered it.
+    const from = (str(raw, "From") ?? "").replace(/^whatsapp:/, "");
+    const text = str(raw, "Body") ?? "";
+    const id = str(raw, "MessageSid") ?? str(raw, "SmsMessageSid") ?? "";
+    if (!from || !text.trim() || !id) return null;
+    return { channel: "whatsapp", channel_user_id: from, text, external_id: id, timestamp: Date.now() };
+  },
+  formatOutbound(msg) {
+    return { Body: msg.text };
+  },
+  /**
+   * Twilio's scheme: HMAC-SHA1 over the full URL with every POST parameter appended in key order,
+   * base64-encoded, compared against X-Twilio-Signature. The secret is the account's auth token.
+   */
+  async verifySignature({ rawBody, headers, secret, url }) {
+    const provided = headers["x-twilio-signature"];
+    if (!provided || !secret || !url) return false;
+    try {
+      const params = new URLSearchParams(rawBody);
+      const keys = [...new Set([...params.keys()])].sort();
+      let payload = url;
+      for (const k of keys) payload += k + (params.get(k) ?? "");
+      const key = await crypto.subtle.importKey(
+        "raw",
+        new TextEncoder().encode(secret),
+        { name: "HMAC", hash: "SHA-1" },
+        false,
+        ["sign"]
+      );
+      const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+      const expected = btoa(String.fromCharCode(...new Uint8Array(sig)));
+      return timingSafeEqual(expected, provided);
+    } catch {
+      return false;
+    }
   },
 };
 

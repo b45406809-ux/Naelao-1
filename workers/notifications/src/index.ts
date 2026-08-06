@@ -29,6 +29,10 @@ export interface NotificationsEnv {
   SLACK_BOT_TOKEN?: string;
   DISCORD_BOT_TOKEN?: string;
   WHATSAPP_ACCESS_TOKEN?: string;
+  /** Twilio as an alternative WhatsApp transport — platform-level, like the bot tokens above. */
+  TWILIO_ACCOUNT_SID?: string;
+  TWILIO_AUTH_TOKEN?: string;
+  TWILIO_WHATSAPP_NUMBER?: string;
 }
 
 /** Per-channel credential name in the vault — the token this worker needs to SEND, which is a
@@ -92,19 +96,26 @@ async function sendChatMessage(
   // token of its own — the platform app owns the connection. Falling back to the platform token
   // is what makes a paired channel able to REPLY at all; without it, inbound would work and every
   // answer would silently go nowhere.
+  // Twilio-backed WhatsApp authenticates with an account SID + auth token rather than a single
+  // credential, so it is resolved separately — and BEFORE the gate below, which would otherwise
+  // reject a perfectly working channel for lacking a Meta token it does not use.
+  const viaTwilio =
+    channel === "whatsapp" && Boolean(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_WHATSAPP_NUMBER);
+
   const credential =
     (await resolveChannelCredential(env, opts.tenantId, opts.spaceId, credName)) ??
     (env as unknown as Record<string, string | undefined>)[credName] ??
     null;
-  if (!credential) {
+  if (!credential && !viaTwilio) {
     return { delivered: false, reason: `${channel} is connected for receiving but has no ${credName} to reply with` };
   }
 
+  const cred = credential ?? "";
   try {
     let resp: Response;
     if (channel === "telegram") {
       // `to` is the chat id the message came from, not a username.
-      resp = await fetch(`https://api.telegram.org/bot${credential}/sendMessage`, {
+      resp = await fetch(`https://api.telegram.org/bot${cred}/sendMessage`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ chat_id: to, text: message }),
@@ -112,7 +123,7 @@ async function sendChatMessage(
     } else if (channel === "slack") {
       resp = await fetch("https://slack.com/api/chat.postMessage", {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${credential}` },
+        headers: { "content-type": "application/json", authorization: `Bearer ${cred}` },
         body: JSON.stringify({ channel: to, text: message }),
       });
       // Slack answers 200 with ok:false for real failures (bad token, not in channel), so the
@@ -123,16 +134,33 @@ async function sendChatMessage(
     } else if (channel === "discord") {
       resp = await fetch(`https://discord.com/api/v10/channels/${encodeURIComponent(to)}/messages`, {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bot ${credential}` },
+        headers: { "content-type": "application/json", authorization: `Bot ${cred}` },
         body: JSON.stringify({ content: message }),
+      });
+    } else if (viaTwilio) {
+      // Twilio transport (see launchpad/channel-pairing.ts): checked FIRST, because when the
+      // platform is running WhatsApp through Twilio there is no Meta phone-number id to send
+      // through and the Meta branch below would report a configuration error for a channel that
+      // is in fact working.
+      resp = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`,
+        },
+        body: new URLSearchParams({
+          From: `whatsapp:+${(env.TWILIO_WHATSAPP_NUMBER ?? "").replace(/^\+/, "")}`,
+          To: `whatsapp:+${to.replace(/^\+/, "")}`,
+          Body: message,
+        }),
       });
     } else if (channel === "whatsapp") {
       // `to` is the customer's phone number; the credential is the Meta Cloud API access token,
       // and the phone-number id it posts through rides in the same vault entry as "<id>:<token>"
       // when the owner configured one — otherwise there is no route to send on.
-      const [phoneNumberId, accessToken] = credential.includes(":")
-        ? [credential.slice(0, credential.indexOf(":")), credential.slice(credential.indexOf(":") + 1)]
-        : [null, credential];
+      const [phoneNumberId, accessToken] = cred.includes(":")
+        ? [cred.slice(0, cred.indexOf(":")), cred.slice(cred.indexOf(":") + 1)]
+        : [null, cred];
       if (!phoneNumberId) {
         return { delivered: false, reason: "whatsapp needs WHATSAPP_ACCESS_TOKEN as '<phone_number_id>:<token>'" };
       }

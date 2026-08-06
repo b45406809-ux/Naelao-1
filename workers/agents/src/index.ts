@@ -45,7 +45,7 @@ import {
 } from "./connectors/composio.js";
 import { startPipedreamConnect, getPipedreamAccountStatus } from "./connectors/pipedream.js";
 import { listDirectory, resolveConnectTarget } from "./connectors/directory.js";
-import { isChannelType, getAdapter, type ChannelType } from "./launchpad/channels.js";
+import { isChannelType, getAdapter, twilioWhatsappAdapter, type ChannelType } from "./launchpad/channels.js";
 import {
   isPairableChannel, issuePairingToken, consumePairingToken, buildPairing,
   extractPairingToken, PAIRING_TTL_SECONDS, type PairableChannel,
@@ -236,6 +236,13 @@ export interface AgentsEnv {
   /** Meta's own id for that number, which the send API addresses (not the same as the number). */
   WHATSAPP_PHONE_NUMBER_ID?: string;
   WHATSAPP_ACCESS_TOKEN?: string;
+  /** Twilio as an alternative WhatsApp transport — see launchpad/channel-pairing.ts. Free and
+   *  instant where Meta's Cloud API needs a verified Business account, so this is usually the one
+   *  a platform can actually have. TWILIO_WHATSAPP_JOIN_CODE applies only to the shared sandbox. */
+  TWILIO_ACCOUNT_SID?: string;
+  TWILIO_AUTH_TOKEN?: string;
+  TWILIO_WHATSAPP_NUMBER?: string;
+  TWILIO_WHATSAPP_JOIN_CODE?: string;
   /** Platform-app inbound verification secrets, the counterparts to the per-space vaulted ones. */
   TELEGRAM_WEBHOOK_SECRET?: string;
   SLACK_SIGNING_SECRET?: string;
@@ -3031,27 +3038,44 @@ app.post("/channels/platform-inbound/:channel", async (c) => {
   const adapter = getAdapter(channel)!;
 
   const rawBody = await c.req.text();
-  const secret = (c.env as unknown as Record<string, string | undefined>)[PLATFORM_CHANNEL_SECRET[channel]] ?? "";
+
+  // WhatsApp can arrive over either transport. Which one is live is decided by which platform
+  // credentials exist, not by anything in the request — they differ in body encoding AND in how
+  // the signature is computed, so this has to be resolved before either is touched.
+  const viaTwilio = channel === "whatsapp" && Boolean(c.env.TWILIO_AUTH_TOKEN && c.env.TWILIO_WHATSAPP_NUMBER);
+  const activeAdapter = viaTwilio ? twilioWhatsappAdapter : adapter;
+  const secret = viaTwilio
+    ? (c.env.TWILIO_AUTH_TOKEN ?? "")
+    : (c.env as unknown as Record<string, string | undefined>)[PLATFORM_CHANNEL_SECRET[channel]] ?? "";
   if (!secret) return c.json({ ok: true, skipped: "channel_not_configured" });
 
   const headers: Record<string, string> = {};
   c.req.raw.headers.forEach((v, k) => { headers[k.toLowerCase()] = v; });
-  if (!(await adapter.verifySignature({ rawBody, headers, secret }))) {
+  // Twilio signs the URL together with the body, and this worker cannot read the URL Twilio used:
+  // naelao-router rewrites the path before forwarding. Reconstruct it from our own public origin,
+  // which is what the operator configures as the webhook.
+  const signedUrl = `${(c.env.PUBLIC_AGENTS_URL ?? "").replace(/\/$/, "")}/channels/platform-inbound/${channel}`;
+  if (!(await activeAdapter.verifySignature({ rawBody, headers, secret, url: signedUrl }))) {
     return c.json({ error_code: "invalid_signature" }, 401);
   }
 
   let parsed: Record<string, unknown> = {};
-  try {
-    parsed = JSON.parse(rawBody) as Record<string, unknown>;
-  } catch {
-    return c.json({ ok: true, skipped: "unparseable" });
+  if (viaTwilio) {
+    // Twilio posts form-encoded, the same shape as its SMS webhook — never JSON.
+    parsed = Object.fromEntries(new URLSearchParams(rawBody));
+  } else {
+    try {
+      parsed = JSON.parse(rawBody) as Record<string, unknown>;
+    } catch {
+      return c.json({ ok: true, skipped: "unparseable" });
+    }
   }
   if (channel === "slack" && parsed["type"] === "url_verification") {
     return c.json({ challenge: parsed["challenge"] });
   }
   const raw = channel === "slack" && parsed["event"] ? (parsed["event"] as Record<string, unknown>) : parsed;
 
-  const inbound = adapter.normalizeInbound(raw);
+  const inbound = activeAdapter.normalizeInbound(raw);
   if (!inbound) return c.json({ ok: true, skipped: "not_a_message" });
 
   // A pairing message looks like an ordinary message and must never be treated as one — the token
@@ -3203,6 +3227,20 @@ async function replyOnPlatformChannel(
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ chat_id: conversationId, text }),
+        signal: AbortSignal.timeout(10_000),
+      });
+    } else if (channel === "whatsapp" && env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_WHATSAPP_NUMBER) {
+      await fetch(`https://api.twilio.com/2010-04-01/Accounts/${env.TWILIO_ACCOUNT_SID}/Messages.json`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          authorization: `Basic ${btoa(`${env.TWILIO_ACCOUNT_SID}:${env.TWILIO_AUTH_TOKEN}`)}`,
+        },
+        body: new URLSearchParams({
+          From: `whatsapp:+${env.TWILIO_WHATSAPP_NUMBER.replace(/^\+/, "")}`,
+          To: `whatsapp:+${conversationId.replace(/^\+/, "")}`,
+          Body: text,
+        }),
         signal: AbortSignal.timeout(10_000),
       });
     } else if (channel === "whatsapp" && env.WHATSAPP_ACCESS_TOKEN && env.WHATSAPP_PHONE_NUMBER_ID) {

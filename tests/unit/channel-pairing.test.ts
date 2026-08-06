@@ -11,6 +11,7 @@ import { describe, it, expect } from "vitest";
 import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
 import { mintInternalToken } from "@naelao/http";
+import { twilioWhatsappAdapter } from "../../workers/agents/src/launchpad/channels.js";
 import {
   buildPairing,
   issuePairingToken,
@@ -251,6 +252,99 @@ describe("POST /channels/platform-inbound/:channel", () => {
     const { env } = makeEnv({ TELEGRAM_WEBHOOK_SECRET: undefined });
     const res = await postInbound(env, "telegram", telegramUpdate(999, "hi"));
     expect(await res.json()).toMatchObject({ skipped: "channel_not_configured" });
+  });
+});
+
+
+describe("WhatsApp over Twilio", () => {
+  // Meta's Cloud API needs a verified Business account; Twilio's sandbox is free and instant. Both
+  // are "WhatsApp" to the rest of the platform — the transport is chosen by which credentials the
+  // operator actually has, which is the difference between offering WhatsApp at all and not.
+  it("carries the sandbox join code alongside the pairing token", () => {
+    // The sandbox number is SHARED. A message with only our token reaches a number that has no
+    // idea who is talking to it.
+    const r = buildPairing(
+      { TWILIO_WHATSAPP_NUMBER: "14155238886", TWILIO_WHATSAPP_JOIN_CODE: "swift-cat" },
+      "whatsapp",
+      "cp_" + "a".repeat(32)
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const text = decodeURIComponent(new URL(r.url).searchParams.get("text") ?? "");
+    expect(text).toBe(`join swift-cat cp_${"a".repeat(32)}`);
+    // And the token is still findable in it, which is what the inbound route relies on.
+    expect(extractPairingToken(text)).toBe("cp_" + "a".repeat(32));
+  });
+
+  it("omits the join code on a production sender, which doesn't use one", () => {
+    const r = buildPairing({ TWILIO_WHATSAPP_NUMBER: "15551230000" }, "whatsapp", "cp_" + "b".repeat(32));
+    expect(r.ok && decodeURIComponent(new URL(r.url).searchParams.get("text") ?? "")).toBe("cp_" + "b".repeat(32));
+  });
+
+  it("prefers Twilio over a Meta number when both are configured", () => {
+    const r = buildPairing(
+      { TWILIO_WHATSAPP_NUMBER: "14155238886", WHATSAPP_PHONE_NUMBER: "15559999999" },
+      "whatsapp",
+      "cp_" + "c".repeat(32)
+    );
+    expect(r.ok && r.url).toContain("wa.me/14155238886");
+  });
+
+  it("normalizes Twilio's form-encoded inbound, stripping the whatsapp: scheme", () => {
+    // The conversation id has to look the same whichever transport delivered it, or a business
+    // paired over one couldn't be found by the other.
+    const inbound = twilioWhatsappAdapter.normalizeInbound({
+      From: "whatsapp:+15551234567",
+      To: "whatsapp:+14155238886",
+      Body: "do you ship to Ireland?",
+      MessageSid: "SM123",
+    });
+    expect(inbound).toMatchObject({
+      channel: "whatsapp",
+      channel_user_id: "+15551234567",
+      text: "do you ship to Ireland?",
+      external_id: "SM123",
+    });
+  });
+
+  it("ignores a status callback, which carries no body", () => {
+    expect(twilioWhatsappAdapter.normalizeInbound({ MessageSid: "SM1", MessageStatus: "delivered" })).toBeNull();
+  });
+
+  it("verifies Twilio's signature over the URL AND the sorted parameters", async () => {
+    // Signing the URL is why this can't be checked against the request the worker received —
+    // naelao-router rewrites the path before forwarding.
+    const url = "https://agents.naelao.com/channels/platform-inbound/whatsapp";
+    const token = "twilio-auth-token";
+    const params = new URLSearchParams({ From: "whatsapp:+1555", Body: "hi", MessageSid: "SM1" });
+    const rawBody = params.toString();
+
+    let payload = url;
+    for (const k of [...params.keys()].sort()) payload += k + params.get(k)!;
+    const key = await crypto.subtle.importKey(
+      "raw", new TextEncoder().encode(token), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]
+    );
+    const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload));
+    const valid = btoa(String.fromCharCode(...new Uint8Array(sig)));
+
+    expect(await twilioWhatsappAdapter.verifySignature({
+      rawBody, headers: { "x-twilio-signature": valid }, secret: token, url,
+    })).toBe(true);
+
+    // A signature computed for a different URL must not pass — that is the whole point of the
+    // URL being part of the payload.
+    expect(await twilioWhatsappAdapter.verifySignature({
+      rawBody, headers: { "x-twilio-signature": valid }, secret: token, url: url + "x",
+    })).toBe(false);
+
+    expect(await twilioWhatsappAdapter.verifySignature({
+      rawBody, headers: { "x-twilio-signature": "wrong" }, secret: token, url,
+    })).toBe(false);
+
+    // No URL supplied means we cannot check it — fail closed rather than skip verification.
+    expect(await twilioWhatsappAdapter.verifySignature({
+      rawBody, headers: { "x-twilio-signature": valid }, secret: token,
+    })).toBe(false);
   });
 });
 
