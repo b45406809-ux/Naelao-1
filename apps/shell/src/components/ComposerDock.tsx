@@ -23,12 +23,14 @@ import {
   createKbDocument,
   listAssistantFiles,
   listBusinessMembers,
+  getConnectorDirectory,
   type ConnectorInfo,
+  type DirectoryApp,
   type WorkspaceFile,
   type BusinessMember,
   type SessionCredentials,
 } from "@/lib/api";
-import { startConnectorConnect, submitManualConnectorKey } from "@/lib/connectorActions";
+import { startConnectorConnect, startDirectoryConnect, submitManualConnectorKey } from "@/lib/connectorActions";
 import { modelLabel } from "./ModelSelector";
 
 type DockPanel = "compose" | "model" | "apps" | "knowledge" | "uploads" | "tips" | "members";
@@ -115,6 +117,13 @@ export function ComposerDock({
   const [files, setFiles] = React.useState<WorkspaceFile[]>([]);
   const [members, setMembers] = React.useState<BusinessMember[]>([]);
   const [uploading, setUploading] = React.useState(false);
+  // Searching the full provider directory from here, not just the dozen curated recommendations.
+  // This panel used to render `connectors` alone, so an app we hadn't hand-added to the catalogue
+  // simply did not exist as far as this UI was concerned — the same gap the Connectors page had.
+  // Server-side search rather than a filter, because there are several thousand of them.
+  const [appQuery, setAppQuery] = React.useState("");
+  const [directory, setDirectory] = React.useState<DirectoryApp[] | null>(null);
+  const [directorySearching, setDirectorySearching] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const rootRef = React.useRef<HTMLDivElement>(null);
 
@@ -142,6 +151,36 @@ export function ComposerDock({
     if (panel !== "apps" || !sessionId) return;
     getConnectorMode(spaceId, sessionId, session).then(setModes).catch(() => {});
   }, [panel, spaceId, sessionId, session]);
+
+  // Debounced directory search. Fires only while the panel is open and only past two characters —
+  // one letter would match most of three thousand apps, which is a slower way of showing nothing
+  // useful. Anything already curated above is filtered out so the same app isn't offered twice
+  // with the better path listed second.
+  React.useEffect(() => {
+    if (panel !== "apps") return;
+    const q = appQuery.trim();
+    if (q.length < 2) { setDirectory(null); return; }
+    let cancelled = false;
+    setDirectorySearching(true);
+    const timer = setTimeout(() => {
+      getConnectorDirectory(spaceId, session, { q, limit: 40 })
+        .then((page) => { if (!cancelled) setDirectory(page.apps.filter((a) => !a.curated_as)); })
+        .catch(() => { if (!cancelled) setDirectory([]); })
+        .finally(() => { if (!cancelled) setDirectorySearching(false); });
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [panel, appQuery, spaceId, session]);
+
+  async function handleDirectoryConnect(app: DirectoryApp) {
+    setBusyId(app.id);
+    try {
+      await startDirectoryConnect(spaceId, session, app.id, window.location.href);
+      // The browser is navigating away to the provider's own consent page; leave it busy.
+    } catch (err) {
+      onNotice?.(err instanceof Error ? err.message : `Failed to start connecting ${app.name}`);
+      setBusyId(null);
+    }
+  }
 
   // Escape closes whatever is open; a click outside the dock does the same.
   React.useEffect(() => {
@@ -302,6 +341,47 @@ export function ComposerDock({
             <span className="dock-panel-note">{connectedCount} of {availableApps.length} connected</span>
           </div>
           <div className="dock-panel-body">
+            <div style={{ padding: "0 12px 8px" }}>
+              <input
+                className="form-input"
+                type="text"
+                placeholder="Search all apps — Airtable, Jira, Shopify…"
+                value={appQuery}
+                onChange={(e) => setAppQuery(e.target.value)}
+                style={{ width: "100%", fontSize: 12.5 }}
+              />
+            </div>
+
+            {appQuery.trim().length >= 2 && (
+              <>
+                {directorySearching && (
+                  <div style={{ fontSize: 12.5, color: "var(--text3)", padding: "6px 12px" }}>Searching…</div>
+                )}
+                {!directorySearching && directory?.length === 0 && (
+                  <div style={{ fontSize: 12.5, color: "var(--text3)", padding: "6px 12px" }}>
+                    Nothing matching “{appQuery.trim()}”.
+                  </div>
+                )}
+                {directory?.map((a) => (
+                  <div key={a.id} className="dock-row">
+                    <div className="dock-row-icon"><Icon path={ICONS.plug} size={15} /></div>
+                    <div className="dock-row-main">
+                      <div className="dock-row-title">{a.name}</div>
+                      <div className="dock-row-desc">
+                        {a.description?.slice(0, 90) || `Connect through ${a.provider} — sign in, no API key`}
+                      </div>
+                    </div>
+                    <div className="dock-row-action">
+                      <button type="button" className="dock-pill" disabled={busyId === a.id} onClick={() => void handleDirectoryConnect(a)}>
+                        {busyId === a.id ? "…" : "Connect"}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                <div className="dock-panel-note" style={{ padding: "8px 12px 2px" }}>Recommended</div>
+              </>
+            )}
+
             {availableApps.length === 0 ? (
               <div style={{ fontSize: 12.5, color: "var(--text3)", padding: "6px 12px" }}>Loading…</div>
             ) : (

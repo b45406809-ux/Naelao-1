@@ -133,6 +133,29 @@ export default function ConnectorsPage() {
     [activeSpaceId, session, query, directoryCursor]
   );
 
+  // Typing a name searches EVERYTHING, not just the dozen recommendations above.
+  //
+  // Before this, the search box filtered the curated list only, and the full directory sat behind
+  // a separate "Browse all apps" button. So searching for an app we happen not to curate — most
+  // of them — returned nothing, which reads as "this platform can't reach it" when in fact it is
+  // one of several thousand the providers broker. A search that can only find what you already
+  // know about is not a search.
+  //
+  // Deliberately NOT a dependency on `loadDirectory`: that callback closes over `directoryCursor`,
+  // so depending on it would re-fire this effect every time a page was appended and restart the
+  // search from scratch. The ref keeps the latest implementation without the identity churn.
+  const loadDirectoryRef = React.useRef(loadDirectory);
+  loadDirectoryRef.current = loadDirectory;
+  React.useEffect(() => {
+    if (query.trim().length < 2) return;
+    const timer = setTimeout(() => {
+      setShowDirectory(true);
+      setDirectoryCursor(null);
+      void loadDirectoryRef.current(false);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [query, activeSpaceId]);
+
   async function handleDirectoryConnect(app: DirectoryApp) {
     if (!creds) return;
     setBusyId(app.id);
@@ -189,7 +212,7 @@ export default function ConnectorsPage() {
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
         <div className="search-bar" style={{ margin: 0, maxWidth: 260, flex: 1 }}>
           <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor"><circle cx="7" cy="7" r="4.5" /><line x1="10.5" y1="10.5" x2="14" y2="14" /></svg>
-          <input type="text" placeholder="Search connectors…" value={query} onChange={(e) => setQuery(e.target.value)} style={{ fontSize: 13 }} />
+          <input type="text" placeholder="Search all apps…" value={query} onChange={(e) => setQuery(e.target.value)} style={{ fontSize: 13 }} />
         </div>
         <div style={{ display: "flex", gap: 4 }}>
           {(["composio", "pipedream", "all"] as ProviderFilter[]).map((p) => (
