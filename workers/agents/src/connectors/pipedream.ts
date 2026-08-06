@@ -168,6 +168,14 @@ export interface PipedreamApp {
   categories: string[];
   /** Pipedream reports this as e.g. "oauth" / "keys" / "none". */
   auth_type?: string;
+  /**
+   * Pipedream's own prominence weighting, when it sends one. Unlike Composio's `sort_by=usage`
+   * this is a response FIELD rather than a query parameter, so it can only reorder within a page
+   * we already fetched — and it is read defensively (see this file's header): if Pipedream stops
+   * sending it, or never did under this name, the ordering simply falls back to the alphabetical
+   * one it already had rather than breaking.
+   */
+  popularity?: number;
 }
 
 export interface PipedreamAppPage {
@@ -214,6 +222,8 @@ export async function listPipedreamApps(params: {
     const categories = Array.isArray(raw["categories"])
       ? (raw["categories"] as unknown[]).map((c) => (typeof c === "string" ? c : "")).filter(Boolean)
       : [];
+    const weight = raw["featured_weight"] ?? raw["featuredWeight"] ?? raw["sort_order"];
+    const popularity = typeof weight === "number" && Number.isFinite(weight) ? weight : undefined;
     apps.push({
       slug,
       name: pick(raw, "name") || slug,
@@ -221,6 +231,7 @@ export async function listPipedreamApps(params: {
       ...(logo ? { logo } : {}),
       categories,
       ...(authType ? { auth_type: authType } : {}),
+      ...(popularity !== undefined ? { popularity } : {}),
     });
   }
   const pageInfo = (json["page_info"] as Record<string, unknown> | undefined) ?? {};

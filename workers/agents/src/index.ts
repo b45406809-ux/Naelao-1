@@ -44,7 +44,7 @@ import {
   ensureComposioAuthConfig,
 } from "./connectors/composio.js";
 import { startPipedreamConnect, getPipedreamAccountStatus } from "./connectors/pipedream.js";
-import { listDirectory, resolveConnectTarget } from "./connectors/directory.js";
+import { listDirectory, resolveConnectTarget, curatedLogos } from "./connectors/directory.js";
 import { isChannelType, getAdapter, twilioWhatsappAdapter, type ChannelType } from "./launchpad/channels.js";
 import {
   isPairableChannel, issuePairingToken, consumePairingToken, buildPairing,
@@ -2031,12 +2031,15 @@ app.get("/connectors/directory", async (c) => {
   const search = c.req.query("q")?.trim() || undefined;
   const cursor = c.req.query("cursor") || undefined;
   const limit = Number(c.req.query("limit") ?? 40) || 40;
+  // Default `popular`: alphabetical opened the directory on "0codekit" and buried Gmail hundreds
+  // of entries down, which makes a genuinely rich catalogue look like junk.
+  const sort = c.req.query("sort") === "name" ? "name" : "popular";
 
-  const cacheKey = `connector-directory:v1:${search ?? ""}:${cursor ?? ""}:${limit}`;
+  const cacheKey = `connector-directory:v3:${sort}:${search ?? ""}:${cursor ?? ""}:${limit}`;
   const cached = await c.env.AGENT_CACHE.get(cacheKey);
   if (cached) return c.json({ ...(safeParse(cached) as Record<string, unknown>), cached: true });
 
-  const page = await listDirectory(c.env, { search, cursor, limit });
+  const page = await listDirectory(c.env, { search, cursor, limit, sort });
   // Only cache a page that actually has something in it — caching an empty result from a
   // transient provider failure for an hour would make a working directory look permanently dead.
   if (page.apps.length > 0) {
@@ -2102,9 +2105,15 @@ app.get("/connectors/status", async (c) => {
     }
   }
 
+  // Real provider logos for the curated connectors, so the app grid doesn't mix polished
+  // directory cards with letter-initial placeholders. Day-cached and best-effort — see
+  // curatedLogos(); a lookup failure costs an icon, never the list.
+  const logos: Record<string, string> = await curatedLogos({ ...c.env, cache: c.env.AGENT_CACHE }).catch(() => ({}));
+
   return c.json({
     connectors: CONNECTOR_CATALOGUE.map((conn) => ({
       ...conn,
+      ...(logos[conn.id] ? { logo: logos[conn.id] } : {}),
       connected: conn.scope_model === "user"
         ? ownUserCredentialNames.has(conn.auth.credential_name)
         : connectedNames.has(conn.id),

@@ -211,9 +211,16 @@ export async function listComposioToolkits(params: {
   search?: string | undefined;
   cursor?: string | undefined;
   limit?: number | undefined;
+  /**
+   * Composio's own documented ordering. `usage` ranks by how much its whole user base actually
+   * reaches for a toolkit, which is a far better first page than the alphabetical default — that
+   * opened the directory on "0codekit" and buried Gmail several hundred entries down.
+   */
+  sort?: "usage" | "alphabetically" | undefined;
 }): Promise<ComposioToolkitPage> {
   const url = new URL(`${COMPOSIO_API_BASE}/toolkits`);
   if (params.search) url.searchParams.set("search", params.search);
+  if (params.sort) url.searchParams.set("sort_by", params.sort);
   if (params.cursor) url.searchParams.set("cursor", params.cursor);
   url.searchParams.set("limit", String(Math.min(Math.max(params.limit ?? 50, 1), 100)));
 
@@ -247,6 +254,39 @@ export async function listComposioToolkits(params: {
   }
   const nextCursor = pick(json, "next_cursor", "nextCursor");
   return { toolkits, ...(nextCursor ? { next_cursor: nextCursor } : {}) };
+}
+
+/**
+ * One toolkit by its exact slug.
+ *
+ * Distinct from searching for it: `search` matches names and descriptions, so asking for
+ * "instagram" can return a page of adjacent tools with the one we actually want past the limit.
+ * That is precisely how the curated logo lookup silently missed several apps whose slug we already
+ * knew exactly. Returns null rather than throwing when Composio doesn't have it — a missing logo
+ * must never be an error.
+ */
+export async function getComposioToolkit(params: {
+  apiKey: string;
+  slug: string;
+}): Promise<ComposioToolkit | null> {
+  const resp = await fetch(`${COMPOSIO_API_BASE}/toolkits/${encodeURIComponent(params.slug)}`, {
+    headers: { "x-api-key": params.apiKey },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!resp.ok) return null;
+  const raw = await resp.json<Record<string, unknown>>().catch(() => null);
+  if (!raw) return null;
+  const slug = pick(raw, "slug", "key", "name_slug") || params.slug;
+  const meta = (raw["meta"] as Record<string, unknown> | undefined) ?? raw;
+  const description = pick(meta, "description", "short_description");
+  const logo = pick(meta, "logo", "logo_url", "logoUrl", "icon");
+  return {
+    slug,
+    name: pick(raw, "name") || slug,
+    ...(description ? { description } : {}),
+    ...(logo ? { logo } : {}),
+    categories: strArray(meta["categories"] ?? raw["categories"]),
+  };
 }
 
 /**

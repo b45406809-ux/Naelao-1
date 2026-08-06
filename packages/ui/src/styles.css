@@ -417,6 +417,17 @@
 .app-card-footer{display:flex;align-items:center;justify-content:space-between}
 .installed-badge{display:flex;align-items:center;gap:4px;font-size:12px;color:#16a34a;font-weight:500}
 .installed-badge svg{width:12px;height:12px;stroke:currentColor}
+/* Directory of connectable apps. Responsive rather than the fixed grid-3/grid-4 above, because
+   this list is thousands long and is browsed at every width. */
+.app-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.app-card{display:flex;flex-direction:column}
+.app-card.connected{border-color:rgba(22,163,74,0.35)}
+.app-card-desc{flex:1;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* Real provider logos, on a neutral plate so a transparent PNG stays legible in both themes. */
+.app-card-logo{width:36px;height:36px;border-radius:9px;object-fit:contain;background:#fff;padding:5px;flex-shrink:0;border:1px solid var(--border)}
+/* Fallback when a provider sends no logo, or the URL fails to load: the app's own initial. */
+.app-card-initial{width:36px;height:36px;border-radius:9px;background:var(--accent-dim);color:var(--accent);display:flex;align-items:center;justify-content:center;flex-shrink:0;font-size:15px;font-weight:600;text-transform:uppercase}
+.app-card-tag{font-size:10px;letter-spacing:0.05em;text-transform:uppercase;color:var(--text3)}
 
 /* analytics */
 .chart-bar-wrap{display:flex;align-items:flex-end;gap:6px;height:80px}

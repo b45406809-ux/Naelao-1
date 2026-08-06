@@ -1263,6 +1263,9 @@ export interface ConnectorInfo {
   status: "available" | "coming_soon";
   summary: string;
   connected?: boolean;
+  /** Real provider logo, resolved server-side from whichever provider brokers this app. Absent
+   *  for a connector neither brokers (Whop, Gumroad) — the card falls back to its initial. */
+  logo?: string;
   oauth?: unknown;
   composio?: unknown;
   /** Pipedream Connect — the second hosted "click Install" provider (item 57), e.g. Notion.
@@ -1334,6 +1337,9 @@ export interface DirectoryApp {
   categories: string[];
   auth?: string;
   curated_as?: string;
+  /** Position in the provider's own popularity ordering, 0 = most reached for. Present only in
+   *  the default `popular` sort, and only for a provider that actually ranks. */
+  rank?: number;
 }
 
 export interface DirectoryPage {
@@ -1345,12 +1351,19 @@ export interface DirectoryPage {
 export async function getConnectorDirectory(
   spaceId: string,
   session: SessionCredentials,
-  opts: { q?: string | undefined; cursor?: string | undefined; limit?: number | undefined } = {}
+  opts: {
+    q?: string | undefined;
+    cursor?: string | undefined;
+    limit?: number | undefined;
+    /** Default `popular` — alphabetical opens the directory on "0codekit". */
+    sort?: "popular" | "name" | undefined;
+  } = {}
 ): Promise<DirectoryPage> {
   const params = new URLSearchParams();
   if (opts.q) params.set("q", opts.q);
   if (opts.cursor) params.set("cursor", opts.cursor);
   if (opts.limit) params.set("limit", String(opts.limit));
+  if (opts.sort) params.set("sort", opts.sort);
   const qs = params.toString();
   return apiFetch(`/v1/spaces/${spaceId}/connectors/directory${qs ? `?${qs}` : ""}`, { session });
 }

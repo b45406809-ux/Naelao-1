@@ -364,7 +364,14 @@ export function ComposerDock({
                 )}
                 {directory?.map((a) => (
                   <div key={a.id} className="dock-row">
-                    <div className="dock-row-icon"><Icon path={ICONS.plug} size={15} /></div>
+                    <div className="dock-row-icon">
+                      {a.logo ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={a.logo} alt="" loading="lazy" style={{ width: 15, height: 15, objectFit: "contain", borderRadius: 3 }} />
+                      ) : (
+                        <Icon path={ICONS.plug} size={15} />
+                      )}
+                    </div>
                     <div className="dock-row-main">
                       <div className="dock-row-title">{a.name}</div>
                       <div className="dock-row-desc">
@@ -387,7 +394,14 @@ export function ComposerDock({
             ) : (
               availableApps.map((c) => (
                 <div key={c.id} className={`dock-row${c.connected ? " active" : ""}`} style={{ flexWrap: "wrap" }}>
-                  <div className="dock-row-icon"><Icon path={ICONS.plug} size={15} /></div>
+                  <div className="dock-row-icon">
+                    {c.logo ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={c.logo} alt="" loading="lazy" style={{ width: 15, height: 15, objectFit: "contain", borderRadius: 3 }} />
+                    ) : (
+                      <Icon path={ICONS.plug} size={15} />
+                    )}
+                  </div>
                   <div className="dock-row-main">
                     <div className="dock-row-title">{c.name}</div>
                     <div className="dock-row-desc">

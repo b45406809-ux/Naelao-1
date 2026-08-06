@@ -1443,9 +1443,11 @@ app.get("/spaces/:spaceId/connectors/directory", async (c) => {
   const q = c.req.query("q");
   const cursor = c.req.query("cursor");
   const limit = c.req.query("limit");
+  const sort = c.req.query("sort");
   if (q) params.set("q", q);
   if (cursor) params.set("cursor", cursor);
   if (limit) params.set("limit", limit);
+  if (sort) params.set("sort", sort);
   const qs = params.toString();
   return proxyToAgentsWorker(c, `/connectors/directory${qs ? `?${qs}` : ""}`, "GET");
 });

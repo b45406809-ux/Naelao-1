@@ -27,7 +27,7 @@
  */
 
 import { CONNECTOR_CATALOGUE, getConnector, type ConnectorCategory } from "./catalogue.js";
-import { listComposioToolkits } from "./composio.js";
+import { listComposioToolkits, getComposioToolkit } from "./composio.js";
 import { listPipedreamApps } from "./pipedream.js";
 
 export type DirectoryProvider = "composio" | "pipedream";
@@ -47,7 +47,25 @@ export interface DirectoryApp {
   /** True when this app is ALSO a curated connector — the UI should point at that one, which has
    *  real declared operations and (sometimes) a purpose-built MCP shim. */
   curated_as?: string;
+  /**
+   * Position within the provider's own popularity ordering, 0 = most popular. Present only in
+   * `sort: "popular"` mode and only for a provider that actually ranks — it is the provider's
+   * rank, not a score we invented, and an app without one simply sorts after those that have one.
+   */
+  rank?: number;
 }
+
+/**
+ * How the merged directory is ordered.
+ *
+ * `popular` is the default a browsing user should see: alphabetical order opens the directory on
+ * "0codekit" and buries Gmail several hundred entries down, which makes a genuinely rich catalogue
+ * look like junk. Composio ranks server-side (`sort_by=usage`, its own documented parameter over
+ * its whole user base); Pipedream ranks only within the page we fetched, from a weight it may or
+ * may not send. Neither number is ours, and neither is shown to the user as a figure — it only
+ * decides order.
+ */
+export type DirectorySort = "popular" | "name";
 
 export function directoryAppId(provider: DirectoryProvider, slug: string): string {
   return `${provider}:${slug}`;
@@ -81,12 +99,37 @@ function curatedIndex(): Map<string, string> {
 }
 
 /**
+ * The same index keyed on the bare slug, so a curated connector routed through ONE provider still
+ * matches the OTHER provider's entry for the same app.
+ *
+ * Notion is the live case: we curate it through Pipedream, and Composio also has a `notion`
+ * toolkit. Matching only on `{provider}:{slug}` left the Composio entry unmarked, so the grid
+ * showed Notion twice — once as our real connector and once as a generic brokered one.
+ *
+ * This is still an EXACT slug match, not the fuzzy name match the provider-keyed index exists to
+ * avoid: "notion" only ever matches "notion", never "notion_calendar".
+ */
+let curatedBySlug: Map<string, string> | null = null;
+function curatedSlugIndex(): Map<string, string> {
+  if (curatedBySlug) return curatedBySlug;
+  const map = new Map<string, string>();
+  for (const c of CONNECTOR_CATALOGUE) {
+    const slug = c.composio?.toolkit_slug ?? c.pipedream?.app_slug;
+    if (slug) map.set(slug.toLowerCase(), c.id);
+  }
+  curatedBySlug = map;
+  return map;
+}
+
+/**
  * Does a curated connector already cover this app? Matched on the provider slug the curated entry
  * itself declares — never on a fuzzy name match, which would mislabel (say) a "Notion Calendar"
  * toolkit as our Notion connector.
  */
 function curatedIdFor(provider: DirectoryProvider, slug: string): string | undefined {
-  const id = curatedIndex().get(directoryAppId(provider, slug.toLowerCase()));
+  const id =
+    curatedIndex().get(directoryAppId(provider, slug.toLowerCase())) ??
+    curatedSlugIndex().get(slug.toLowerCase());
   // Only an AVAILABLE connector counts — `curated_as` means "there is a better path for this app",
   // which isn't true of a coming_soon entry. Marking one would hide a genuinely connectable app
   // from the directory in favour of a button that refuses. Same rule as resolveConnectTarget.
@@ -119,9 +162,15 @@ export interface DirectoryEnv {
  */
 export async function listDirectory(
   env: DirectoryEnv,
-  opts: { search?: string | undefined; cursor?: string | undefined; limit?: number | undefined } = {}
+  opts: {
+    search?: string | undefined;
+    cursor?: string | undefined;
+    limit?: number | undefined;
+    sort?: DirectorySort | undefined;
+  } = {}
 ): Promise<DirectoryPage> {
   const limit = Math.min(Math.max(opts.limit ?? 40, 1), 100);
+  const sort: DirectorySort = opts.sort ?? "popular";
   const cursors = decodeCursor(opts.cursor);
   const providers: DirectoryPage["providers"] = [];
   const apps: DirectoryApp[] = [];
@@ -133,7 +182,13 @@ export async function listDirectory(
 
   const [composioRes, pipedreamRes] = await Promise.allSettled([
     composioKey && cursors.composio !== "END"
-      ? listComposioToolkits({ apiKey: composioKey, search: opts.search, cursor: cursors.composio, limit })
+      ? listComposioToolkits({
+          apiKey: composioKey,
+          search: opts.search,
+          cursor: cursors.composio,
+          limit,
+          sort: sort === "popular" ? "usage" : "alphabetically",
+        })
       : Promise.resolve(null),
     pdId && pdSecret && cursors.pipedream !== "END"
       ? listPipedreamApps({ clientId: pdId, clientSecret: pdSecret, search: opts.search, cursor: cursors.pipedream, limit })
@@ -148,9 +203,17 @@ export async function listDirectory(
     providers.push({ provider: "composio", available: true });
     const page = composioRes.value;
     if (page) {
-      for (const t of page.toolkits) {
-        apps.push(toDirectoryApp("composio", t.slug, t.name, t.description, t.logo, t.categories, t.auth_scheme));
-      }
+      // Composio returns these ALREADY ordered by its own usage metric, so an entry's position in
+      // the page is its rank — there is no score to read, and inventing one would be worse.
+      page.toolkits.forEach((t, i) => {
+        // Composio's own meta-toolkit ranks near the top of its usage list because agents call it
+        // for tool management. It is not an app a business connects, so listing it just puts a
+        // confusing entry on the first screen.
+        if (t.slug.toLowerCase() === "composio") return;
+        const app = toDirectoryApp("composio", t.slug, t.name, t.description, t.logo, t.categories, t.auth_scheme);
+        if (sort === "popular") app.rank = i;
+        apps.push(app);
+      });
       if (page.next_cursor) nextCursors["composio"] = page.next_cursor;
     }
   }
@@ -163,8 +226,19 @@ export async function listDirectory(
     providers.push({ provider: "pipedream", available: true });
     const page = pipedreamRes.value;
     if (page) {
+      // Pipedream has no usage sort, so ranking here can only reorder the page we already have,
+      // using the weight it sends when it sends one. Ranked entries are offset past Composio's so
+      // the merged first screen leads with the provider that ranks across its WHOLE catalogue
+      // rather than interleaving two incomparable scales.
+      const ranked = [...page.apps]
+        .filter((a) => a.popularity !== undefined)
+        .sort((x, y) => (y.popularity ?? 0) - (x.popularity ?? 0));
+      const rankOf = new Map(ranked.map((a, i) => [a.slug, i]));
       for (const a of page.apps) {
-        apps.push(toDirectoryApp("pipedream", a.slug, a.name, a.description, a.logo, a.categories, a.auth_type));
+        const app = toDirectoryApp("pipedream", a.slug, a.name, a.description, a.logo, a.categories, a.auth_type);
+        const r = rankOf.get(a.slug);
+        if (sort === "popular" && r !== undefined) app.rank = limit + r;
+        apps.push(app);
       }
       if (page.next_cursor) nextCursors["pipedream"] = page.next_cursor;
     }
@@ -175,14 +249,31 @@ export async function listDirectory(
   // provider (Notion is a curated Pipedream connector and also a Composio toolkit) — the user
   // would then be offered a generic brokered connection instead of the one with real declared
   // operations. So a curated entry always wins; otherwise first-seen is a fine tie-break.
+  //
+  // Since the slug index above marks BOTH providers' entries for a curated app, "is it curated"
+  // no longer separates them — so the tie-break prefers the entry from the provider the curated
+  // connector actually declares. That is the one whose logo and metadata describe the connection
+  // we would really open.
+  const exactlyCurated = (a: DirectoryApp) => curatedIndex().has(directoryAppId(a.provider, a.slug.toLowerCase()));
+  const preference = (a: DirectoryApp | undefined) =>
+    a === undefined ? -1 : exactlyCurated(a) ? 2 : a.curated_as ? 1 : 0;
   const bySlug = new Map<string, DirectoryApp>();
   for (const a of apps) {
     const key = a.slug.toLowerCase();
-    const existing = bySlug.get(key);
-    if (!existing || (!existing.curated_as && a.curated_as)) bySlug.set(key, a);
+    if (preference(a) > preference(bySlug.get(key))) bySlug.set(key, a);
   }
   const deduped = [...bySlug.values()];
-  deduped.sort((a, b) => a.name.localeCompare(b.name));
+  if (sort === "popular") {
+    // An app the provider ranked always precedes one it didn't; ties and unranked entries fall
+    // back to alphabetical, so the tail of the list is still navigable rather than arbitrary.
+    deduped.sort((a, b) => {
+      const ra = a.rank ?? Number.MAX_SAFE_INTEGER;
+      const rb = b.rank ?? Number.MAX_SAFE_INTEGER;
+      return ra !== rb ? ra - rb : a.name.localeCompare(b.name);
+    });
+  } else {
+    deduped.sort((a, b) => a.name.localeCompare(b.name));
+  }
 
   const nextCursor = Object.keys(nextCursors).length > 0 ? encodeCursor(nextCursors) : undefined;
   return { apps: deduped, ...(nextCursor ? { next_cursor: nextCursor } : {}), providers };
@@ -228,6 +319,73 @@ function decodeCursor(cursor: string | undefined): { composio?: string; pipedrea
   } catch {
     return {};
   }
+}
+
+/**
+ * Real logos for the CURATED connectors.
+ *
+ * A curated connector is a TypeScript declaration, so it has no logo of its own, and hand-pasting
+ * image URLs into the catalogue would rot the first time a provider reorganised its CDN. But every
+ * curated connector names the provider slug it routes through — and that provider already serves a
+ * logo for it. So this looks them up and caches the result.
+ *
+ * Cached for a day, and cached even when EMPTY: a connector neither provider brokers (Whop,
+ * Gumroad, Higgsfield) will never have a logo here, and re-asking both providers about it on every
+ * page load would be pure waste. The card falls back to the app's initial, which is honest.
+ *
+ * Degrades to "no logos" rather than failing: a grid of initials is a cosmetic loss, and blocking
+ * the app list on a logo lookup would not be.
+ */
+export async function curatedLogos(
+  env: DirectoryEnv & { cache?: KVNamespace | undefined }
+): Promise<Record<string, string>> {
+  const CACHE_KEY = "connector-curated-logos:v2";
+  if (env.cache) {
+    const hit = await env.cache.get(CACHE_KEY);
+    if (hit) {
+      try {
+        return JSON.parse(hit) as Record<string, string>;
+      } catch {
+        /* fall through and rebuild */
+      }
+    }
+  }
+
+  const out: Record<string, string> = {};
+  // One search per curated connector, run in parallel and individually allowed to fail. The
+  // catalogue is a dozen entries by design — this is not a fan-out that grows with the directory.
+  const lookups = CONNECTOR_CATALOGUE.filter((c) => c.composio || c.pipedream).map(async (c) => {
+    const slug = (c.composio?.toolkit_slug ?? c.pipedream?.app_slug ?? "").toLowerCase();
+    if (!slug) return;
+    try {
+      if (c.composio && env.COMPOSIO_API_KEY) {
+        // Exact slug, not a search: searching for "instagram" returns a page of adjacent tools
+        // and the one we actually want can fall past the limit, which is how several of these
+        // silently ended up with no logo despite the slug being known exactly.
+        const hit = await getComposioToolkit({ apiKey: env.COMPOSIO_API_KEY, slug });
+        if (hit?.logo) out[c.id] = hit.logo;
+        return;
+      }
+      if (c.pipedream && env.PIPEDREAM_CLIENT_ID && env.PIPEDREAM_CLIENT_SECRET) {
+        const page = await listPipedreamApps({
+          clientId: env.PIPEDREAM_CLIENT_ID,
+          clientSecret: env.PIPEDREAM_CLIENT_SECRET,
+          search: slug,
+          limit: 10,
+        });
+        const hit = page.apps.find((a) => a.slug.toLowerCase() === slug);
+        if (hit?.logo) out[c.id] = hit.logo;
+      }
+    } catch {
+      // One provider hiccup costs one logo, not the whole grid.
+    }
+  });
+  await Promise.allSettled(lookups);
+
+  if (env.cache) {
+    await env.cache.put(CACHE_KEY, JSON.stringify(out), { expirationTtl: 86_400 });
+  }
+  return out;
 }
 
 /** Categories the curated catalogue uses, for a UI that wants to filter both lists together. */

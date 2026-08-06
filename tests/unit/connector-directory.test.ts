@@ -243,3 +243,139 @@ describe("listDirectory", () => {
     expect(pipedreamListCalls).toBe(1);
   });
 });
+
+describe("listDirectory ordering", () => {
+  // Alphabetical opened the directory on "0codekit" and buried Gmail hundreds of entries down,
+  // which makes a genuinely rich catalogue look like junk. The ordering is the whole difference
+  // between a browsable app store and a raw dump.
+
+  it("asks Composio for its own usage ordering by default, and preserves it", async () => {
+    let sortParam: string | null = null;
+    mockFetch((url) => {
+      if (url.includes("backend.composio.dev")) {
+        sortParam = new URL(url).searchParams.get("sort_by");
+        // Returned in Composio's usage order — position IS the rank; there is no score to read.
+        return json({ items: [{ slug: "gmail", name: "Gmail" }, { slug: "github", name: "GitHub" }] });
+      }
+      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
+      return json({ data: [{ name_slug: "aaa_alphabetically_first", name: "AAA" }] });
+    });
+
+    const page = await listDirectory({
+      COMPOSIO_API_KEY: "k",
+      PIPEDREAM_CLIENT_ID: "id",
+      PIPEDREAM_CLIENT_SECRET: "s",
+    });
+
+    expect(sortParam).toBe("usage");
+    // Gmail leads despite "AAA" winning on name — that is the point.
+    expect(page.apps.map((a) => a.slug)).toEqual(["gmail", "github", "aaa_alphabetically_first"]);
+    expect(page.apps[0]?.rank).toBe(0);
+    expect(page.apps[1]?.rank).toBe(1);
+  });
+
+  it("sorts by name, and asks Composio for the same, when explicitly requested", async () => {
+    let sortParam: string | null = null;
+    mockFetch((url) => {
+      if (url.includes("backend.composio.dev")) {
+        sortParam = new URL(url).searchParams.get("sort_by");
+        return json({ items: [{ slug: "gmail", name: "Gmail" }] });
+      }
+      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
+      return json({ data: [{ name_slug: "airtable", name: "Airtable" }] });
+    });
+
+    const page = await listDirectory(
+      { COMPOSIO_API_KEY: "k", PIPEDREAM_CLIENT_ID: "id", PIPEDREAM_CLIENT_SECRET: "s" },
+      { sort: "name" }
+    );
+
+    expect(sortParam).toBe("alphabetically");
+    expect(page.apps.map((a) => a.name)).toEqual(["Airtable", "Gmail"]);
+    // No rank is claimed in name order — it would be a number that means nothing.
+    expect(page.apps.every((a) => a.rank === undefined)).toBe(true);
+  });
+
+  it("still orders sensibly when Pipedream sends no popularity weight at all", async () => {
+    // The weight is read defensively; if Pipedream never sends it, unranked entries must fall
+    // back to alphabetical rather than arriving in whatever order the response happened to use.
+    mockFetch((url) => {
+      if (url.includes("backend.composio.dev")) return json({ items: [] });
+      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
+      return json({ data: [{ name_slug: "zoom", name: "Zoom" }, { name_slug: "airtable", name: "Airtable" }] });
+    });
+
+    const page = await listDirectory({
+      COMPOSIO_API_KEY: "k",
+      PIPEDREAM_CLIENT_ID: "id",
+      PIPEDREAM_CLIENT_SECRET: "s",
+    });
+
+    expect(page.apps.map((a) => a.name)).toEqual(["Airtable", "Zoom"]);
+  });
+
+  it("uses Pipedream's own weight when it does send one", async () => {
+    mockFetch((url) => {
+      if (url.includes("backend.composio.dev")) return json({ items: [] });
+      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
+      return json({
+        data: [
+          { name_slug: "airtable", name: "Airtable", featured_weight: 1 },
+          { name_slug: "zoom", name: "Zoom", featured_weight: 99 },
+        ],
+      });
+    });
+
+    const page = await listDirectory({
+      COMPOSIO_API_KEY: "k",
+      PIPEDREAM_CLIENT_ID: "id",
+      PIPEDREAM_CLIENT_SECRET: "s",
+    });
+
+    // Heavier weight wins over the alphabetical order it would otherwise have had.
+    expect(page.apps.map((a) => a.name)).toEqual(["Zoom", "Airtable"]);
+  });
+
+  it("marks a curated app even when the OTHER provider is the one listing it", async () => {
+    // We curate Notion through Pipedream; Composio also has a `notion` toolkit. Matching only on
+    // `{provider}:{slug}` left Composio's entry unmarked, so the grid rendered Notion twice —
+    // once as our real connector and once as a generic brokered one.
+    mockFetch((url) => {
+      if (url.includes("backend.composio.dev")) return json({ items: [{ slug: "notion", name: "Notion" }] });
+      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
+      return json({ data: [] });
+    });
+
+    const page = await listDirectory({
+      COMPOSIO_API_KEY: "k",
+      PIPEDREAM_CLIENT_ID: "id",
+      PIPEDREAM_CLIENT_SECRET: "s",
+    });
+
+    expect(page.apps).toHaveLength(1);
+    expect(page.apps[0]?.curated_as).toBe("notion");
+    // The logo still comes through — the UI harvests it for the curated card, which has none.
+    expect(page.apps[0]?.logo).toBeUndefined();
+    expect(page.apps[0]?.provider).toBe("composio");
+  });
+
+  it("never offers Composio's own management toolkit as a business app", async () => {
+    // It ranks near the top of Composio's usage list because AGENTS call it, not because a
+    // business would ever connect it — a confusing first card on the most-used screen.
+    mockFetch((url) => {
+      if (url.includes("backend.composio.dev")) {
+        return json({ items: [{ slug: "composio", name: "Composio" }, { slug: "gmail", name: "Gmail" }] });
+      }
+      if (url.includes("/oauth/token")) return json({ access_token: "t", expires_in: 3600 });
+      return json({ data: [] });
+    });
+
+    const page = await listDirectory({
+      COMPOSIO_API_KEY: "k",
+      PIPEDREAM_CLIENT_ID: "id",
+      PIPEDREAM_CLIENT_SECRET: "s",
+    });
+
+    expect(page.apps.map((a) => a.slug)).toEqual(["gmail"]);
+  });
+});
