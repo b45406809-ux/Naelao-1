@@ -1067,6 +1067,15 @@ api.all("/spaces/:spaceId/sessions/:sessionId/compact", async (c) =>
 api.all("/spaces/:spaceId/sessions/:sessionId/connector-mode", async (c) =>
   proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
 );
+// Chat uploads (files attached in this conversation, read directly by the agent — see the
+// agents-worker route's own header for how this differs from knowledge-base ingestion). Same
+// explicit-before-catch-all registration as every other agents-worker sub-path above.
+api.all("/spaces/:spaceId/sessions/:sessionId/uploads/*", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
+api.all("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) =>
+  proxyTo(c.env.AGENTS_WORKER, c.get("claims"), c.req.raw, c.env.PLATFORM_SECRET)
+);
 
 // Session + message CRUD (session create/get, message get/post, feedback) → spaces worker,
 // which owns this via SpaceDO. proxyTo already mints the x-naelao-internal-token

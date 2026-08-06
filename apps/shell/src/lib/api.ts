@@ -439,6 +439,45 @@ export async function listApprovals(spaceId: string, session: SessionCredentials
   return (res.approvals ?? []).filter((a) => a.status === "pending");
 }
 
+/** An approval tagged with which business it belongs to — see listAllApprovals's own header for
+ *  why this exists. */
+export interface PendingApprovalWithBusiness extends PendingApproval {
+  business_id: string;
+  business_name: string;
+}
+
+/** Live-reported bug: approvals are per-space (HITLApprovalDO is addressed `hitl:{spaceId}`,
+ *  one instance per business), but the sidebar badge and the Approvals page only ever checked
+ *  `activeSpaceId` — whichever business the switcher happened to be pointed at. A gated action
+ *  parked under Business A was completely invisible while looking at Business B: no badge, no
+ *  entry in the Approvals list, nothing — reported live as "the agent said it's waiting for
+ *  approval but there's nothing anywhere to approve." Fixed by checking every business the
+ *  person belongs to, not just the one currently in view. A handful of businesses per end user
+ *  is the normal case (unlike the platform-wide enumeration this codebase deliberately avoids
+ *  elsewhere), so a small parallel fan-out here is the right trade, not a scale risk.
+ *
+ *  `productSpaceId` is included too (tagged with `business_name: "Assistant"`) since a "team"-mode
+ *  product (no businesses concept) can itself have pending approvals at the root — and even on a
+ *  business-first product, the assistant can still open one there before any business exists. */
+export async function listAllApprovals(
+  productSpaceId: string,
+  productName: string,
+  businesses: Business[],
+  session: SessionCredentials
+): Promise<PendingApprovalWithBusiness[]> {
+  const targets = [
+    { id: productSpaceId, name: productName },
+    ...businesses.map((b) => ({ id: b.id, name: b.name })),
+  ];
+  const results = await Promise.allSettled(
+    targets.map(async (t) => {
+      const items = await listApprovals(t.id, session);
+      return items.map((a) => ({ ...a, business_id: t.id, business_name: t.name }));
+    })
+  );
+  return results.flatMap((r) => (r.status === "fulfilled" ? r.value : []));
+}
+
 export async function approveAction(spaceId: string, approvalId: string, session: SessionCredentials): Promise<void> {
   await apiFetch(`/v1/spaces/${spaceId}/sessions/inbox/approvals/${approvalId}/approve`, { method: "PUT", session });
 }
@@ -1175,6 +1214,83 @@ export async function createKbDocument(
 
 export async function deleteKbDocument(spaceId: string, docId: string, session: SessionCredentials): Promise<void> {
   await apiFetch(`/v1/spaces/${spaceId}/kb/documents/${encodeURIComponent(docId)}`, { method: "DELETE", session });
+}
+
+export interface KbSearchResult {
+  chunk_id: string;
+  doc_id: string;
+  chunk_index: number;
+  content: string;
+  score: number;
+}
+
+export async function searchKb(
+  spaceId: string,
+  session: SessionCredentials,
+  query: string,
+  projectId?: string
+): Promise<KbSearchResult[]> {
+  const params = new URLSearchParams({ q: query });
+  if (projectId) params.set("project_id", projectId);
+  const res = await apiFetch<{ data: KbSearchResult[] }>(`/v1/spaces/${spaceId}/kb/search?${params.toString()}`, { session });
+  return res.data ?? [];
+}
+
+// ── Chat uploads (input-bar attachments the agent reads directly — NOT knowledge-base
+// ingestion; see the agents-worker route's own header for the distinction) ────────────────────
+
+export interface ChatUpload {
+  name: string;
+  key: string;
+  size: number;
+  content_type: string;
+  uploaded?: string;
+}
+
+export async function uploadChatFiles(
+  spaceId: string,
+  sessionId: string,
+  files: File[],
+  session: SessionCredentials,
+  projectId?: string
+): Promise<ChatUpload[]> {
+  const form = new FormData();
+  for (const f of files) form.append("files", f);
+  if (projectId) form.append("project_id", projectId);
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${session.sessionToken}`,
+    "x-naelao-end-user-id": session.endUserId,
+  };
+  const res = await fetch(`${API_URL}/v1/spaces/${spaceId}/sessions/${sessionId}/uploads`, {
+    method: "POST", headers, body: form,
+  });
+  const body = (await res.json()) as { uploaded?: ChatUpload[]; message?: string; error_code?: string };
+  if (!res.ok) throw new ApiError(body.message ?? "Upload failed", res.status, body.error_code);
+  return body.uploaded ?? [];
+}
+
+export async function listChatUploads(
+  spaceId: string,
+  sessionId: string,
+  session: SessionCredentials,
+  projectId?: string
+): Promise<ChatUpload[]> {
+  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  const res = await apiFetch<{ files: ChatUpload[] }>(`/v1/spaces/${spaceId}/sessions/${sessionId}/uploads${qs}`, { session });
+  return res.files ?? [];
+}
+
+export async function deleteChatUpload(
+  spaceId: string,
+  sessionId: string,
+  filename: string,
+  session: SessionCredentials,
+  projectId?: string
+): Promise<void> {
+  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  await apiFetch(`/v1/spaces/${spaceId}/sessions/${sessionId}/uploads/${encodeURIComponent(filename)}${qs}`, {
+    method: "DELETE", session,
+  });
 }
 
 // ── Business Wallet (Whop sub-merchant model): the business's OWN bank account ────────────────

@@ -21,6 +21,7 @@ import {
   type PendingApproval,
   getInterruptedRun,
   type InterruptedRun,
+  type ChatUpload,
 } from "@/lib/api";
 import type { SessionCredentials } from "@/lib/api";
 import {
@@ -626,9 +627,26 @@ export function Chat({
     return () => window.clearInterval(timer);
   }, [chatSessionId, refreshSessionApprovals]);
 
+  // Lazy session creation: the very first send in a fresh thread/Home mints the session here, not
+  // on mount — mirrors Claude's own "/new" behavior and means a session only ever exists once
+  // there's a real message (or a real upload — see pendingUploads below) to attach it to. Shared
+  // between `send` and the composer's upload handler, since an upload attached before the first
+  // message needs a real session id to know where in the workspace it landed.
+  const ensureSessionId = React.useCallback(async (): Promise<string> => {
+    if (chatSessionId) return chatSessionId;
+    const started = await startSession(spaceId, session);
+    storeChatSessionId(spaceId, started.id, sessionKey);
+    setChatSessionId(started.id);
+    return started.id;
+  }, [chatSessionId, spaceId, session, sessionKey]);
+
+  // Files attached via the dock's Uploads panel before the message that references them is sent.
+  // Cleared once folded into an outgoing goal — see `send` below.
+  const [pendingUploads, setPendingUploads] = React.useState<ChatUpload[]>([]);
+
   const send = React.useCallback(async (text: string) => {
     const trimmed = text.trim();
-    if (!trimmed || isLoading) return;
+    if ((!trimmed && pendingUploads.length === 0) || isLoading) return;
     setError(null);
     setIsLoading(true);
     setStreamingContent("");
@@ -636,17 +654,15 @@ export function Chat({
     const optimistic: Message = { id: `optimistic_${Date.now()}`, role: "user", content: trimmed, created_at: new Date().toISOString() };
     setMessages((prev) => [...prev, optimistic]);
     try {
-      // Lazy session creation: the very first send in a fresh thread/Home mints the session here,
-      // not on mount — mirrors Claude's own "/new" behavior and means a session only ever exists
-      // once there's a real message to attach it to.
-      let sid = chatSessionId;
-      if (!sid) {
-        const started = await startSession(spaceId, session);
-        sid = started.id;
-        storeChatSessionId(spaceId, sid, sessionKey);
-        setChatSessionId(sid);
-      }
-      const { agentRunId } = await sendMessage(spaceId, sid, trimmed, session, {
+      const sid = await ensureSessionId();
+      // A path relative to the agent's OWN r2-workspace root (see workspacePrefix() /
+      // uploadsPrefix() on the agents worker) — the model can read it directly with
+      // r2-workspace.read_file without needing to discover its own session id first.
+      const goal = pendingUploads.length > 0
+        ? `Attached files (in the workspace, read with r2-workspace.read_file): ${pendingUploads.map((u) => `uploads/${sid}/${u.name}`).join(", ")}\n\n${trimmed}`
+        : trimmed;
+      setPendingUploads([]);
+      const { agentRunId } = await sendMessage(spaceId, sid, goal, session, {
         model: selectedModel,
         ...(selectedReasoningLevel ? { reasoningEffort: selectedReasoningLevel } : {}),
       });
@@ -657,7 +673,7 @@ export function Chat({
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       setError(err instanceof Error ? err.message : "Failed to send message");
     }
-  }, [isLoading, chatSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, selectedReasoningLevel]);
+  }, [isLoading, pendingUploads, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, selectedReasoningLevel]);
 
   const handleSubmit = React.useCallback(async () => {
     const trimmed = input.trim();
@@ -914,8 +930,27 @@ export function Chat({
               window.setTimeout(() => setUploadNotice((cur) => (cur === msg ? null : cur)), 4000);
             }}
             onUseTip={(text) => setInput(text)}
+            ensureSessionId={ensureSessionId}
+            pendingUploads={pendingUploads}
+            onUploadsChange={setPendingUploads}
           >
             <div className="input-container">
+              {pendingUploads.length > 0 && (
+                <div className="pending-uploads">
+                  {pendingUploads.map((u) => (
+                    <span key={u.key} className="pending-upload-chip">
+                      {u.name}
+                      <button
+                        type="button"
+                        aria-label={`Remove ${u.name}`}
+                        onClick={() => setPendingUploads((prev) => prev.filter((p) => p.key !== u.key))}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="input-top">
                 <textarea
                   className="msg-input"

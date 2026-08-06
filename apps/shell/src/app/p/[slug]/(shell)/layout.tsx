@@ -21,7 +21,7 @@ import {
   listProjects,
   listSessions,
   listMyBusinesses,
-  listApprovals,
+  listAllApprovals,
   type ShellManifest,
   type ProductUserMe,
   type Project,
@@ -136,7 +136,6 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
     // The sidebar's recent list is assistant SESSIONS (what Home starts), not structural project
     // threads — those belong to a project and are reached through /projects/:id.
     listSessions(activeSpaceId, creds, 5).then(setSessions).catch(() => {});
-    listApprovals(activeSpaceId, creds).then((a) => setPendingApprovals(a.length)).catch(() => {});
     // The switcher's own entry list is always the product-root's businesses, regardless of which
     // one is currently active — deliberately NOT activeSpaceId.
     listMyBusinesses(product.space_id, creds)
@@ -144,17 +143,33 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
       // Left unset on failure (not "loaded with zero") — a transient load error must not be
       // mistaken for "this account genuinely has no businesses" and force a redirect loop.
       .catch(() => {});
-    // Live-reported bug: this count only ever loaded once per business switch — a new approval
-    // opened mid-conversation (e.g. an assistant reply that parked a gated action) never made the
-    // sidebar badge appear until the user happened to navigate away and back. A light periodic
-    // re-check while this page is open is a real fix, not just the inline card added elsewhere:
-    // it's also what makes an approval opened by a background/scheduled run visible at all.
-    const approvalPoll = window.setInterval(() => {
-      listApprovals(activeSpaceId, creds).then((a) => setPendingApprovals(a.length)).catch(() => {});
-    }, 30_000);
-    return () => window.clearInterval(approvalPoll);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, activeSpaceId, product.space_id, product.slug]);
+
+  // Live-reported bug: a pending approval is per-BUSINESS (HITLApprovalDO is addressed
+  // `hitl:{spaceId}`), but this used to only ever check `activeSpaceId` — whichever business the
+  // switcher happened to be pointed at. An approval parked under a business you weren't currently
+  // viewing was completely invisible: no badge, nothing on the Approvals page, no way to find it
+  // short of switching to every business one at a time and hoping. Now checked across every
+  // business the person belongs to, once the list has actually loaded — not just the active one.
+  // Separate effect from the one above (rather than folded into it) because it genuinely needs
+  // `businesses` to be populated first, not just kicked off in parallel with it.
+  React.useEffect(() => {
+    if (!creds || !businessesLoaded) return;
+    const productName = manifest?.space_name ?? product.product_name;
+    const refresh = () => {
+      listAllApprovals(product.space_id, productName, businesses, creds)
+        .then((a) => setPendingApprovals(a.length))
+        .catch(() => {});
+    };
+    refresh();
+    // A new approval can open mid-conversation, or from a background/scheduled run entirely
+    // outside this session — a light periodic re-check is what makes either visible without a
+    // manual reload.
+    const approvalPoll = window.setInterval(refresh, 30_000);
+    return () => window.clearInterval(approvalPoll);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, businessesLoaded, businesses, product.space_id, product.product_name, manifest?.space_name]);
 
   // Business-first gate: a hybrid/tenant product's Home/Projects/Threads/Assistant/Agents/
   // Knowledge are meaningless at the product root — everything belongs to a business. A user with

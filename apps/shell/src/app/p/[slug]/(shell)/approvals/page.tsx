@@ -12,8 +12,15 @@ export const runtime = "edge";
 import * as React from "react";
 import { Button, Badge, Card, CardTitle, CardDesc, useToast, Toast } from "@naelao/ui";
 import { useProductAuth } from "@/lib/auth-provider";
+import { useProduct } from "@/lib/product-context";
 import { useActiveSpace } from "@/lib/active-space-context";
-import { listApprovals, approveAction, rejectAction, type PendingApproval } from "@/lib/api";
+import {
+  listAllApprovals,
+  listMyBusinesses,
+  approveAction,
+  rejectAction,
+  type PendingApprovalWithBusiness,
+} from "@/lib/api";
 
 /** Arguments are shown, not hidden behind a name: approving "commerce.payout" without seeing the
  *  amount and destination is not an informed decision. */
@@ -39,9 +46,13 @@ function timeLeft(expiresAt: number): string {
 
 export default function ApprovalsPage() {
   const { session } = useProductAuth();
-  const { activeSpaceId } = useActiveSpace();
+  const product = useProduct();
+  // Kept for "jump to this business" on an item card — no longer used to SCOPE the list itself.
+  // See listAllApprovals's own header: an approval is per-business, and only checking whichever
+  // one happens to be active is the exact bug this page exists to not have.
+  const { setActiveSpace } = useActiveSpace();
   const { toast, show } = useToast();
-  const [items, setItems] = React.useState<PendingApproval[]>([]);
+  const [items, setItems] = React.useState<PendingApprovalWithBusiness[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [failed, setFailed] = React.useState(false);
   const [busyId, setBusyId] = React.useState<string | null>(null);
@@ -52,7 +63,8 @@ export default function ApprovalsPage() {
     if (!creds) return;
     setLoading(true);
     try {
-      setItems(await listApprovals(activeSpaceId, creds));
+      const businesses = await listMyBusinesses(product.space_id, creds);
+      setItems(await listAllApprovals(product.space_id, product.product_name, businesses, creds));
       setFailed(false);
     } catch {
       // Distinct from "nothing pending" — telling someone there's nothing to approve when the
@@ -62,18 +74,20 @@ export default function ApprovalsPage() {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSpaceId, session]);
+  }, [product.space_id, product.product_name, session]);
 
   React.useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  async function decide(approval: PendingApproval, approve: boolean) {
+  async function decide(approval: PendingApprovalWithBusiness, approve: boolean) {
     if (!creds) return;
     setBusyId(approval.id);
     try {
-      if (approve) await approveAction(activeSpaceId, approval.id, creds);
-      else await rejectAction(activeSpaceId, approval.id, "Declined by the owner", creds);
+      // The approval's OWN business, not whatever happens to be active in the switcher right now
+      // — see listAllApprovals's header for why that distinction is the whole point of this page.
+      if (approve) await approveAction(approval.business_id, approval.id, creds);
+      else await rejectAction(approval.business_id, approval.id, "Declined by the owner", creds);
       show(approve ? "Approved — the agent is picking it back up now." : "Declined.");
       await refresh();
     } catch (err) {
@@ -116,6 +130,18 @@ export default function ApprovalsPage() {
               <Card key={a.id}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
                   <div style={{ minWidth: 0 }}>
+                    <button
+                      type="button"
+                      onClick={() => setActiveSpace(a.business_id, a.business_name)}
+                      style={{
+                        border: "none", background: "none", padding: 0, cursor: "pointer",
+                        fontSize: 11, letterSpacing: "0.03em", textTransform: "uppercase",
+                        color: "var(--accent)", marginBottom: 4, display: "block",
+                      }}
+                      title="Switch to this business"
+                    >
+                      {a.business_name}
+                    </button>
                     <CardTitle>{a.tool_name}</CardTitle>
                     <CardDesc>{a.action_description}</CardDesc>
                   </div>

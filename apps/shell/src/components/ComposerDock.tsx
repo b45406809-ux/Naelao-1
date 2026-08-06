@@ -20,20 +20,26 @@ import {
   getConnectorStatus,
   getConnectorMode,
   setConnectorMode,
-  createKbDocument,
-  listAssistantFiles,
+  uploadChatFiles,
+  listChatUploads,
+  deleteChatUpload,
   listBusinessMembers,
   getConnectorDirectory,
   type ConnectorInfo,
   type DirectoryApp,
-  type WorkspaceFile,
+  type ChatUpload,
   type BusinessMember,
   type SessionCredentials,
 } from "@/lib/api";
 import { startConnectorConnect, startDirectoryConnect, submitManualConnectorKey } from "@/lib/connectorActions";
 import { modelLabel } from "./ModelSelector";
 
-type DockPanel = "compose" | "model" | "apps" | "knowledge" | "uploads" | "tips" | "members";
+type DockPanel = "compose" | "model" | "apps" | "uploads" | "tips" | "members";
+
+/** Matches the server's own cap (workers/agents/src/index.ts's MAX_UPLOAD_FILES) — enforced
+ *  again here so the UI refuses before spending a round trip on a request the server would
+ *  reject anyway. */
+const MAX_UPLOAD_FILES = 6;
 
 const LEVEL_LABELS: Record<string, string> = {
   off: "Off", on: "On", low: "Low", medium: "Medium", high: "High", max: "Max",
@@ -90,6 +96,9 @@ export function ComposerDock({
   isBusinessSpace,
   onNotice,
   onUseTip,
+  ensureSessionId,
+  pendingUploads,
+  onUploadsChange,
   children,
 }: {
   spaceId: string;
@@ -104,17 +113,30 @@ export function ComposerDock({
   onNotice?: (message: string) => void;
   /** A tip card is clickable: it drops its example straight into the composer. */
   onUseTip?: (text: string) => void;
+  /** Mints (or reuses) the real session id an upload needs to know where in the workspace it
+   *  landed — a fresh thread/Home has no session yet (lazy creation), so attaching a file before
+   *  the first message still needs somewhere real to put it. */
+  ensureSessionId?: () => Promise<string>;
+  /** Files attached for the message not yet sent — owned by the parent (Chat.tsx) so a chip can
+   *  render above the composer too, not just inside this panel. */
+  pendingUploads?: ChatUpload[];
+  onUploadsChange?: (uploads: ChatUpload[]) => void;
   /** The message input itself. The dock owns the whole stack — panel above, input in the middle,
    *  toolbar below — so an open panel pushes the input down as one unit instead of overlaying it. */
   children?: React.ReactNode;
 }) {
-  const [panel, setPanel] = React.useState<DockPanel | null>(null);
+  // "compose" (the plain text input) is the resting state, never a fully-closed one — a dock with
+  // every panel toggled off used to render nothing but the icon row, with no visible way to type
+  // at all. Toggling a panel off now always lands back on "compose" instead of null.
+  const [panel, setPanel] = React.useState<DockPanel>("compose");
   const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
   const [modes, setModes] = React.useState<Record<string, "business" | "personal">>({});
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [manualKeyFor, setManualKeyFor] = React.useState<string | null>(null);
   const [manualKeyValue, setManualKeyValue] = React.useState("");
-  const [files, setFiles] = React.useState<WorkspaceFile[]>([]);
+  // Uploaded-before files for the CURRENT session — distinct from `pendingUploads` (this turn's
+  // not-yet-sent attachments), fetched once a real session id exists.
+  const [priorUploads, setPriorUploads] = React.useState<ChatUpload[]>([]);
   const [members, setMembers] = React.useState<BusinessMember[]>([]);
   const [uploading, setUploading] = React.useState(false);
   // Searching the full provider directory from here, not just the dozen curated recommendations.
@@ -127,7 +149,7 @@ export function ComposerDock({
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const rootRef = React.useRef<HTMLDivElement>(null);
 
-  const toggle = (next: DockPanel) => setPanel((cur) => (cur === next ? null : next));
+  const toggle = (next: DockPanel) => setPanel((cur) => (cur === next ? "compose" : next));
 
   // Connectors and members feed the bar itself (the connected dot, the avatar stack), so they load
   // once on mount rather than only when their panel opens.
@@ -143,9 +165,9 @@ export function ComposerDock({
   }, [spaceId, session, isBusinessSpace]);
 
   React.useEffect(() => {
-    if (panel !== "knowledge" && panel !== "uploads") return;
-    listAssistantFiles(spaceId, session).then(setFiles).catch(() => {});
-  }, [panel, spaceId, session]);
+    if (panel !== "uploads" || !sessionId) { setPriorUploads([]); return; }
+    listChatUploads(spaceId, sessionId, session, projectId).then(setPriorUploads).catch(() => {});
+  }, [panel, spaceId, sessionId, projectId, session]);
 
   React.useEffect(() => {
     if (panel !== "apps" || !sessionId) return;
@@ -182,12 +204,13 @@ export function ComposerDock({
     }
   }
 
-  // Escape closes whatever is open; a click outside the dock does the same.
+  // Escape returns to the text tab; a click outside the dock does the same. Neither ever leaves
+  // the dock with nothing open — see the `panel` state's own comment.
   React.useEffect(() => {
-    if (!panel) return;
-    function onKey(e: KeyboardEvent) { if (e.key === "Escape") setPanel(null); }
+    if (panel === "compose") return;
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") setPanel("compose"); }
     function onDocClick(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setPanel(null);
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setPanel("compose");
     }
     document.addEventListener("keydown", onKey);
     document.addEventListener("mousedown", onDocClick);
@@ -237,30 +260,38 @@ export function ComposerDock({
     }
   }
 
+  /** Attach files for THIS turn — read directly by the agent from the workspace, never knowledge-
+   *  base ingestion (that's a separate, curated, cross-session store — see the Knowledge page).
+   *  Any format, up to 6 at once; the server enforces the same limit and a per-file size cap. */
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
+    const chosen = Array.from(e.target.files ?? []);
     e.target.value = "";
-    if (!file) return;
-    const looksText = /^text\//.test(file.type) || file.type === "" || /\.(md|txt|csv|json|ts|tsx|js|jsx|py|yaml|yml|log)$/i.test(file.name);
-    if (!looksText || file.size > 2_000_000) {
-      onNotice?.(`Can't attach "${file.name}" — only text files up to 2MB are supported here.`);
+    if (chosen.length === 0) return;
+    const alreadyPending = pendingUploads?.length ?? 0;
+    if (alreadyPending + chosen.length > MAX_UPLOAD_FILES) {
+      onNotice?.(`Attach at most ${MAX_UPLOAD_FILES} files to one message.`);
       return;
     }
+    if (!ensureSessionId || !onUploadsChange) return;
     setUploading(true);
     try {
-      const content = await file.text();
-      await createKbDocument(spaceId, session, {
-        title: file.name,
-        content,
-        content_type: "text",
-        ...(projectId ? { project_id: projectId } : {}),
-      });
-      onNotice?.(`Added "${file.name}" to the knowledge base.`);
-      setFiles(await listAssistantFiles(spaceId, session).catch(() => files));
+      const sid = await ensureSessionId();
+      const uploaded = await uploadChatFiles(spaceId, sid, chosen, session, projectId);
+      onUploadsChange([...(pendingUploads ?? []), ...uploaded]);
     } catch (err) {
-      onNotice?.(err instanceof Error ? err.message : `Failed to attach "${file.name}"`);
+      onNotice?.(err instanceof Error ? err.message : "Upload failed");
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function handleDeletePriorUpload(name: string) {
+    if (!sessionId) return;
+    try {
+      await deleteChatUpload(spaceId, sessionId, name, session, projectId);
+      setPriorUploads((prev) => prev.filter((f) => f.name !== name));
+    } catch (err) {
+      onNotice?.(err instanceof Error ? err.message : `Couldn't remove "${name}"`);
     }
   }
 
@@ -272,7 +303,7 @@ export function ComposerDock({
 
   return (
     <div className="composer-dock" ref={rootRef}>
-      <input ref={fileInputRef} type="file" style={{ display: "none" }} onChange={handleFile} />
+      <input ref={fileInputRef} type="file" multiple style={{ display: "none" }} onChange={handleFile} />
 
       {panel === "model" && (
         <div className="dock-panel">
@@ -453,35 +484,6 @@ export function ComposerDock({
         </div>
       )}
 
-      {panel === "knowledge" && (
-        <div className="dock-panel">
-          <div className="dock-panel-head">
-            <span className="dock-panel-title">Knowledge</span>
-            <button type="button" className="dock-pill" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
-              {uploading ? "Adding…" : "Attach a file"}
-            </button>
-          </div>
-          <div className="dock-panel-body">
-            {files.length === 0 ? (
-              <div style={{ fontSize: 12.5, color: "var(--text3)", padding: "6px 12px", lineHeight: 1.6 }}>
-                Nothing attached yet. Add a text file — notes, a price list, a policy — and the assistant can read
-                it while it works. Text files up to 2MB.
-              </div>
-            ) : (
-              files.slice(0, 30).map((f) => (
-                <div key={f.path} className="dock-row">
-                  <div className="dock-row-icon"><Icon path={ICONS.book} size={15} /></div>
-                  <div className="dock-row-main">
-                    <div className="dock-row-title">{f.path}</div>
-                    <div className="dock-row-desc">{Math.max(1, Math.round(f.size / 1024))} KB</div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      )}
-
       {panel === "tips" && (
         <div className="dock-panel">
           <div className="dock-panel-head">
@@ -515,7 +517,7 @@ export function ComposerDock({
                   onUseTip?.(tip.example);
                   // Straight into the composer — dropping text into an input the user cannot
                   // see would look like the click did nothing.
-                  setPanel(onUseTip ? "compose" : null);
+                  setPanel("compose");
                 }}
               >
                 <div className="dock-tip-dot" />
@@ -561,54 +563,73 @@ export function ComposerDock({
       {/* Uploads — add something new, or point the assistant at something already uploaded.
           The list is the same knowledge shelf the Knowledge panel reads; this view is about
           getting things IN, which is why the upload control leads. */}
+      {/* Chat uploads — files for THIS conversation, read directly by the agent from the
+          workspace. Not knowledge-base ingestion (that's a separate, curated, cross-session
+          store — see the Knowledge page): a screenshot to build a UI from, a spreadsheet to
+          summarise, any format, up to 6 at once. */}
       {panel === "uploads" && (
         <div className="dock-panel">
           <div className="dock-panel-head">
             <span className="dock-panel-title">Uploads</span>
-            <button type="button" className="dock-close" onClick={() => setPanel(null)} aria-label="Close">
-              <Icon path={ICONS.close} size={13} />
-            </button>
+            <span className="dock-panel-note">Any file, up to {MAX_UPLOAD_FILES} at once</span>
           </div>
           <div className="dock-panel-body">
             <div className="dock-row">
               <div className="dock-row-icon"><Icon path={ICONS.upload} /></div>
               <div className="dock-row-main">
-                <div className="dock-row-title">Upload a file</div>
-                <div className="dock-row-desc">Text documents. The assistant can read it straight away.</div>
+                <div className="dock-row-title">Attach files to this message</div>
+                <div className="dock-row-desc">The agent reads them directly — any format, up to 20MB each.</div>
               </div>
               <div className="dock-row-action">
                 <button type="button" className="dock-pill" disabled={uploading} onClick={() => fileInputRef.current?.click()}>
-                  {uploading ? "Uploading…" : "Choose"}
+                  {uploading ? "Uploading…" : "Choose files"}
                 </button>
               </div>
             </div>
-            {files.length > 0 && (
+            {(pendingUploads?.length ?? 0) > 0 && (
               <>
-                <div className="dock-panel-sub">Uploaded before</div>
-                {files.slice(0, 20).map((f) => (
-                  <div key={f.path} className="dock-row">
-                    <div className="dock-row-icon"><Icon path={ICONS.book} /></div>
+                <div className="dock-panel-sub">Attached to this message</div>
+                {pendingUploads!.map((f) => (
+                  <div key={f.key} className="dock-row">
+                    <div className="dock-row-icon"><Icon path={ICONS.upload} size={15} /></div>
                     <div className="dock-row-main">
-                      <div className="dock-row-title">{f.path.split("/").pop()}</div>
-                      <div className="dock-row-desc">{f.size ? `${Math.max(1, Math.round(f.size / 1024))} KB` : "Already available to the assistant"}</div>
+                      <div className="dock-row-title">{f.name}</div>
+                      <div className="dock-row-desc">{Math.max(1, Math.round(f.size / 1024))} KB</div>
                     </div>
-                    {onUseTip && (
-                      <div className="dock-row-action">
-                        <button
-                          type="button"
-                          className="dock-pill"
-                          onClick={() => { onUseTip(`Using ${f.path.split("/").pop()}: `); setPanel("compose"); }}
-                        >
-                          Use
-                        </button>
-                      </div>
-                    )}
+                    <div className="dock-row-action">
+                      <button
+                        type="button"
+                        className="dock-pill"
+                        onClick={() => onUploadsChange?.(pendingUploads!.filter((p) => p.key !== f.key))}
+                      >
+                        Remove
+                      </button>
+                    </div>
                   </div>
                 ))}
               </>
             )}
-            {files.length === 0 && !uploading && (
-              <p className="dock-empty">Nothing uploaded yet.</p>
+            {priorUploads.length > 0 && (
+              <>
+                <div className="dock-panel-sub">Uploaded earlier in this conversation</div>
+                {priorUploads.map((f) => (
+                  <div key={f.key} className="dock-row">
+                    <div className="dock-row-icon"><Icon path={ICONS.upload} size={15} /></div>
+                    <div className="dock-row-main">
+                      <div className="dock-row-title">{f.name}</div>
+                      <div className="dock-row-desc">{Math.max(1, Math.round(f.size / 1024))} KB — still readable by the agent</div>
+                    </div>
+                    <div className="dock-row-action">
+                      <button type="button" className="dock-pill" onClick={() => void handleDeletePriorUpload(f.name)}>
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+            {(pendingUploads?.length ?? 0) === 0 && priorUploads.length === 0 && !uploading && (
+              <p className="dock-empty">Nothing attached yet.</p>
             )}
           </div>
         </div>
@@ -625,11 +646,11 @@ export function ComposerDock({
         <button
           type="button"
           className={`dock-primary${panel === "compose" ? " open" : ""}`}
-          onClick={() => toggle("compose")}
+          onClick={() => setPanel("compose")}
           title="Write a message"
         >
           <Icon path={ICONS.compose} />
-          <span>{panel === "compose" ? "Close" : "Message"}</span>
+          <span>Message</span>
         </button>
 
         <div className="dock-sep" />
@@ -641,9 +662,6 @@ export function ComposerDock({
         <button type="button" className={`dock-btn${panel === "apps" ? " open" : ""}`} onClick={() => toggle("apps")} title="Connected apps">
           <Icon path={ICONS.plug} />
           {connectedCount > 0 && <span className="dock-btn-dot" />}
-        </button>
-        <button type="button" className={`dock-btn${panel === "knowledge" ? " open" : ""}`} onClick={() => toggle("knowledge")} title="Knowledge and files">
-          <Icon path={ICONS.book} />
         </button>
 
         <div className="dock-sep" />

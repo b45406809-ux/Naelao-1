@@ -684,3 +684,7 @@
 .dock-compose .msg-input{max-height:220px;overflow-y:auto}
 .dock-panel-sub{font-size:10px;font-weight:600;letter-spacing:0.07em;text-transform:uppercase;color:var(--text3);padding:12px 4px 7px}
 .dock-empty{font-size:12.5px;color:var(--text3);padding:10px 4px 4px;margin:0}
+.pending-uploads{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px 0}
+.pending-upload-chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 6px 4px 10px;border-radius:999px;background:var(--surface2,#f6f7f9);border:1px solid var(--border);color:var(--text2)}
+.pending-upload-chip button{border:none;background:none;color:var(--text3);cursor:pointer;font-size:15px;line-height:1;padding:0 2px}
+.pending-upload-chip button:hover{color:var(--text)}

@@ -3795,6 +3795,107 @@ app.get("/spaces/:spaceId/assistant/capabilities", async (c) => {
   return c.json({ prebuilts, skills, prebuilt_count: prebuilts.length, skill_count: skills.length });
 });
 
+// Chat uploads — files a person attaches in the input bar, for the AI to use directly in THIS
+// conversation (a screenshot to build a UI from, a spreadsheet to summarise), never a knowledge-
+// base ingestion. Deliberately a different mechanism from `knowledge-base`'s document store: KB
+// entries are curated, chunked, embedded, and searchable across the whole space/project; an
+// upload is a raw file the agent reads with ordinary filesystem tools (r2-workspace) scoped to
+// the ONE conversation that attached it.
+//
+// Stored under `{workspacePrefix}uploads/{sessionId}/{filename}` — the SAME prefix a run's own
+// `env.projectId` resolves to (see workspacePrefix() in script-engine/types.ts), so a project
+// thread's agent and a space-wide assistant session naturally land in the right filesystem
+// without this route needing to duplicate that logic. The model is told its own session id in
+// the reasoner payload (see profiles.ts) so it can name `uploads/{sessionId}/...` directly, or
+// just call `r2-workspace.list_directory` on `uploads/{sessionId}/` without knowing the exact
+// name in advance.
+const MAX_UPLOAD_FILES = 6;
+const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // 20MB/file — generous for images/docs, bounded against R2 abuse.
+
+function uploadsPrefix(spaceId: string, sessionId: string, projectId?: string): string {
+  const base = projectId ? `spaces/${spaceId}/projects/${projectId}/workspace/` : `spaces/${spaceId}/workspace/`;
+  return `${base}uploads/${sessionId}/`;
+}
+
+/** Strips path separators and traversal so an upload can never escape its own session prefix or
+ *  overwrite an unrelated key — the same discipline r2-workspace.ts's key() enforces for
+ *  agent-authored paths, applied here to a human-supplied filename instead. */
+function safeUploadName(name: string): string {
+  const base = name.split(/[/\\]/).pop() ?? "file";
+  const cleaned = base.replace(/\.\./g, "_").trim();
+  return cleaned.length > 0 ? cleaned.slice(0, 200) : "file";
+}
+
+app.post("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
+  const { spaceId, sessionId } = c.req.param();
+  await requireVerifiedTenant(c);
+  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
+
+  let form: Record<string, string | File | (string | File)[]>;
+  try {
+    form = await c.req.parseBody({ all: true });
+  } catch {
+    return c.json({ error_code: "bad_request", message: "Expected multipart/form-data with a 'files' field" }, 400);
+  }
+  const projectId = typeof form.project_id === "string" && form.project_id ? form.project_id : undefined;
+  const raw = form.files;
+  const incoming = (Array.isArray(raw) ? raw : raw ? [raw] : []).filter((f): f is File => f instanceof File);
+  if (incoming.length === 0) return c.json({ error_code: "bad_request", message: "No files attached" }, 400);
+  if (incoming.length > MAX_UPLOAD_FILES) {
+    return c.json({ error_code: "too_many_files", message: `Attach at most ${MAX_UPLOAD_FILES} files at once` }, 400);
+  }
+  const oversized = incoming.find((f) => f.size > MAX_UPLOAD_BYTES);
+  if (oversized) {
+    return c.json({
+      error_code: "file_too_large",
+      message: `"${oversized.name}" is over the ${MAX_UPLOAD_BYTES / 1024 / 1024}MB limit`,
+    }, 400);
+  }
+
+  const prefix = uploadsPrefix(spaceId, sessionId, projectId);
+  const uploaded: Array<{ name: string; key: string; size: number; content_type: string }> = [];
+  for (const file of incoming) {
+    const name = safeUploadName(file.name || "file");
+    const key = `${prefix}${name}`;
+    const bytes = await file.arrayBuffer();
+    await c.env.SCRIPTS_R2.put(key, bytes, {
+      httpMetadata: { contentType: file.type || "application/octet-stream" },
+    });
+    uploaded.push({ name, key, size: bytes.byteLength, content_type: file.type || "application/octet-stream" });
+  }
+  return c.json({ uploaded, count: uploaded.length }, 201);
+});
+
+app.get("/spaces/:spaceId/sessions/:sessionId/uploads", async (c) => {
+  const { spaceId, sessionId } = c.req.param();
+  await requireVerifiedTenant(c);
+  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
+  const projectId = c.req.query("project_id") || undefined;
+  const prefix = uploadsPrefix(spaceId, sessionId, projectId);
+  const listed = await c.env.SCRIPTS_R2.list({ prefix, limit: MAX_UPLOAD_FILES + 10 });
+  const files = listed.objects.map((o) => ({
+    name: o.key.slice(prefix.length),
+    key: o.key,
+    size: o.size,
+    content_type: o.httpMetadata?.contentType ?? "application/octet-stream",
+    uploaded: o.uploaded.toISOString(),
+  }));
+  return c.json({ files, count: files.length });
+});
+
+app.delete("/spaces/:spaceId/sessions/:sessionId/uploads/:filename", async (c) => {
+  const { spaceId, sessionId, filename } = c.req.param();
+  await requireVerifiedTenant(c);
+  if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
+  if (!c.env.SCRIPTS_R2) return c.json({ error_code: "unavailable", message: "Workspace storage not bound" }, 503);
+  const projectId = c.req.query("project_id") || undefined;
+  const prefix = uploadsPrefix(spaceId, sessionId, projectId);
+  await c.env.SCRIPTS_R2.delete(`${prefix}${safeUploadName(filename)}`);
+  return c.json({ deleted: true });
+});
+
 // Admin hands a thread back to the bot (or takes it over themselves) — the human-takeover
 // toggle. A customer can also trigger takeover via a project_rule ("talk to a human").
 app.post("/spaces/:spaceId/channels/sessions/:sessionId/resume", async (c) => {
