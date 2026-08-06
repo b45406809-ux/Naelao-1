@@ -4246,6 +4246,58 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       a redirect URI. WhatsApp needs a Meta Business number. Until each is configured the pair
       button reports honestly and the BYO path still works.
 
+96. **Two reported gaps closed: the app directory stopped at one page, and WhatsApp had no QR.
+    Also, a corrected read of how OpenClaw actually connects each channel.**
+    - **Directory pagination was a UI gap, not a backend one.** `GET /connectors/directory` was
+      already paging correctly (100 per provider per page, per-provider cursors merged into one
+      opaque token, verified live across two pages). `apps/shell` fetched ONE page at `limit: 60`
+      and stopped, which reads as "that's all there is" rather than "there are thousands". Added
+      load-more with cursor carry-through, dedupe across pages (both providers can offer the same
+      app, and a later page can repeat one the merge already emitted), and a shown-count so the
+      number stops looking like a total.
+    - **WhatsApp now runs on Twilio as well as Meta.** The "isn't set up on this platform yet"
+      message was correct — no platform WhatsApp number existed — but unlike Telegram there is no
+      two-minute fix: Meta's Cloud API needs a verified Business account. Twilio's sandbox needs
+      neither, is free and instant, and is joined by scanning a QR with a prefilled message, which
+      is the SAME shape `buildPairing` already produces. So `whatsapp` is now one channel with two
+      transports, selected by which platform credentials exist (`TWILIO_ACCOUNT_SID` +
+      `TWILIO_AUTH_TOKEN` + `TWILIO_WHATSAPP_NUMBER`, plus `TWILIO_WHATSAPP_JOIN_CODE` for the
+      shared sandbox — a production sender needs no join code and leaves it unset). Twilio is
+      preferred when both are configured.
+      **Two mechanical differences, both load-bearing:** Twilio posts FORM-ENCODED, not JSON; and
+      its signature (HMAC-SHA1, base64) covers the URL together with the sorted POST params — which
+      cannot be read off the request in the worker, because naelao-router rewrites the path before
+      forwarding. `SignatureInput` gained an optional `url`, reconstructed from `PUBLIC_AGENTS_URL`,
+      and verification fails CLOSED when it's absent rather than skipping the check.
+      **A real gap the Twilio path exposed in outbound:** `sendChatMessage`'s credential gate
+      returned early for lacking `WHATSAPP_ACCESS_TOKEN`, so the Twilio branch could never have
+      been reached — Twilio authenticates with an account SID + auth token, not one credential.
+    - **OpenClaw's per-channel model, checked against their own docs — the comparison is not what
+      it looks like.** Their WhatsApp is **Baileys**: a reverse-engineered WhatsApp Web client, QR
+      scanned via Linked Devices, running as the operator's PERSONAL account with credentials in
+      `~/.openclaw/auth/whatsapp/creds.json`. That is genuinely 60 seconds, and it is only possible
+      because it assumes a single operator on their own machine — it needs a long-lived process
+      (a DO holds an outbound connection ~15 min max), caps at WhatsApp's 4 linked devices, drops
+      when the phone loses internet, and puts a real account at ban risk. For a multi-tenant
+      platform holding customers' accounts that is a bad trade, which is why this went to Twilio
+      instead. **For every OTHER channel our model is already the easier one**: OpenClaw asks the
+      user for a BotFather token (Telegram), a developer-portal bot token plus Message Content
+      Intent (Discord), and TWO tokens with Socket Mode and event subscriptions (Slack). We ask for
+      none of those — platform app plus a deep link or an OAuth install.
+    - **Live-verified on production** by temporarily configuring a Twilio sandbox: WhatsApp pairing
+      returned a real `wa.me/...?text=join%20<code>%20cp_...` link, a correctly-signed form-encoded
+      inbound paired the chat, and a bogus signature got 401. Test rows and temporary secrets
+      removed afterwards. **Worth remembering: CF Worker secrets propagate across isolates
+      unevenly for a minute or two** — during that window the same request alternates between the
+      new behaviour and `channel_not_configured`, which looks exactly like a signature-verification
+      hole and is not. 2538/2538 tests pass (6 new), `npx turbo run typecheck` clean (76 tasks),
+      `naelao-agents`/`naelao-notifications`/`apps/shell` deployed.
+    - **Still operator work, not code:** no platform app exists on any channel. Telegram remains
+      the cheapest first move (one BotFather conversation). For WhatsApp, a Twilio account +
+      sandbox is now the fast path; `TWILIO_WHATSAPP_JOIN_CODE` is the sandbox's own code and the
+      webhook must point at `${PUBLIC_AGENTS_URL}/channels/platform-inbound/whatsapp` — NOT the
+      router, since the router rewrites the path and the signature covers the URL.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
