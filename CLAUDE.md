@@ -4544,6 +4544,28 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     and the client-side per-(space,model) chat preference exist — a project-level or per-agent-
     template effort setting would be a real, separate follow-up).
 
+101. **Dashboard: the mockup's Analytics page (`apps/launchpad/src/index.html`'s `#analytics-view`
+     — KPI cards, a 7/30/90-day credit-usage bar chart, per-agent usage table) is now EMBEDDED
+     into `apps/shell`'s `/dashboard` overview, not just linked to from it.** The real dedicated
+     `/analytics` page (item 73) already existed and already reads the real
+     `GET /business-analytics` rollup — this pass reuses that SAME endpoint and adds a compact
+     "Analytics" section directly on the Dashboard: 4 KPI cards (credits used w/ vs-prior-period
+     delta, agent runs, success rate, tokens used), a mini 7/30/90-day credit bar chart, a
+     "Background activity" panel (heartbeat wake-ups that did real work vs failed, Projects/
+     Threads counts), and a top-5 per-agent usage table — fetched on its own effect (keyed on the
+     window toggle) so switching 7d/30d/90d doesn't re-trigger the whole page's other panels or
+     their loading flag. A "Full page →" link stays for the complete `/analytics` view (structure
+     breakdown, full per-agent table). Also, small dashboard polish in the same pass: the KPI
+     `Stat` tiles for "Waiting on you" (when non-zero), "Members", and "Connected apps" are now
+     real links to `/approvals`, the business management page, and `/connectors` respectively —
+     previously plain non-interactive numbers with nowhere to go. No backend changes — pure
+     frontend reuse of an already-tested, already-gated endpoint. 2651/2651 tests pass (frontend-
+     only change, no new backend surface), `npx turbo run typecheck` clean, `apps/shell` rebuilt
+     and deployed to `naelao-shell.pages.dev` production, live-verified by fetching the exact
+     deployed `/dashboard` page chunk and confirming it byte-matches the local build's new
+     strings ("Background activity", "Wake-ups that did real work", "Full page", "Waiting on
+     you").
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

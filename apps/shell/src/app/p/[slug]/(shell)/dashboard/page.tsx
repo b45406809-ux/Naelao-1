@@ -49,6 +49,7 @@ import {
   listBusinessOrders,
   getConnectorStatus,
   listApprovals,
+  getBusinessAnalytics,
   type AssistantPolicy,
   type MemoryFact,
   type AssistantCapabilities,
@@ -65,6 +66,7 @@ import {
   type LaunchpadOrder,
   type ConnectorInfo,
   type PendingApproval,
+  type BusinessAnalytics,
 } from "@/lib/api";
 import { relativeTime } from "@/lib/relativeTime";
 import { ApprovedActionsEditor } from "@/components/ApprovedActionsEditor";
@@ -105,6 +107,14 @@ function walletBadge(status: WhopWalletBalance["status"] | undefined): BadgeColo
   return "blue";
 }
 
+function pctChange(n: number | null): string {
+  if (n === null) return "";
+  const sign = n > 0 ? "↑" : n < 0 ? "↓" : "→";
+  return `${sign} ${Math.abs(n)}% vs prior period`;
+}
+
+type AnalyticsWindow = "7d" | "30d" | "90d";
+
 // A KPI tile — the real @naelao/ui Card, non-interactive (no hover/click affordance; these are
 // numbers to read, not buttons).
 function Stat({
@@ -112,14 +122,18 @@ function Stat({
   value,
   sub,
   badge,
+  href,
 }: {
   label: string;
   value: string;
   sub?: string | undefined;
   badge?: { color: BadgeColor; text: string } | undefined;
+  /** When set, the whole tile becomes a real link (e.g. "Waiting on you" -> /approvals) — only
+   *  worth doing for a number that has somewhere useful to go, never every tile. */
+  href?: string | undefined;
 }) {
-  return (
-    <Card interactive={false}>
+  const body = (
+    <Card interactive={Boolean(href)}>
       <CardLabel>{label}</CardLabel>
       <CardValue>{value}</CardValue>
       {badge ? (
@@ -131,6 +145,7 @@ function Stat({
       ) : null}
     </Card>
   );
+  return href ? <Link href={href} style={{ textDecoration: "none", color: "inherit" }}>{body}</Link> : body;
 }
 
 function SectionHeading({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
@@ -215,6 +230,15 @@ export default function DashboardPage() {
   const [currentModel, setCurrentModel] = React.useState<string | null>(null);
   const [currentEffort, setCurrentEffort] = React.useState<string | null>(null);
 
+  // Analytics — the same real GET /business-analytics rollup the dedicated /analytics page reads,
+  // embedded here so the headline numbers don't need a navigation away from the overview. Fetched
+  // on its own effect (keyed on the window toggle too) so switching 7d/30d/90d doesn't re-trigger
+  // the whole page's "Loading…" flag or re-fetch every other panel.
+  const [analytics, setAnalytics] = React.useState<BusinessAnalytics | null>(null);
+  const [analyticsWindow, setAnalyticsWindow] = React.useState<AnalyticsWindow>("7d");
+  const [analyticsLoading, setAnalyticsLoading] = React.useState(true);
+  const [analyticsError, setAnalyticsError] = React.useState(false);
+
   const [loading, setLoading] = React.useState(true);
   const [savingPolicy, setSavingPolicy] = React.useState(false);
   const [savingModel, setSavingModel] = React.useState(false);
@@ -289,6 +313,19 @@ export default function DashboardPage() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [creds, activeSpaceId, isBusinessSpace, product.space_id]);
+
+  const [analyticsRetryTick, setAnalyticsRetryTick] = React.useState(0);
+  React.useEffect(() => {
+    if (!creds || !activeSpaceId) return;
+    let cancelled = false;
+    setAnalyticsLoading(true);
+    setAnalyticsError(false);
+    getBusinessAnalytics(activeSpaceId, creds, analyticsWindow)
+      .then((v) => { if (!cancelled) setAnalytics(v); })
+      .catch(() => { if (!cancelled) setAnalyticsError(true); })
+      .finally(() => { if (!cancelled) setAnalyticsLoading(false); });
+    return () => { cancelled = true; };
+  }, [creds, activeSpaceId, analyticsWindow, analyticsRetryTick]);
 
   // item 79: the guided/autonomous toggle and model picker are real writes, not display-only —
   // gated to the same floor requireBusinessMembership enforces server-side. A plain member (or a
@@ -442,16 +479,175 @@ export default function DashboardPage() {
             sub={revenue ? `${revenue.order_count} order${revenue.order_count === 1 ? "" : "s"}` : undefined}
           />
         )}
-        {isBusinessSpace && <Stat label="Members" value={String(members.length)} />}
         {isBusinessSpace && (
-          <Stat label="Connected apps" value={String(connectedApps)} sub={availableApps > 0 ? `of ${availableApps} available` : undefined} />
+          <Stat label="Members" value={String(members.length)} href={`/p/${product.slug}/spaces/${activeSpaceId}`} />
+        )}
+        {isBusinessSpace && (
+          <Stat
+            label="Connected apps"
+            value={String(connectedApps)}
+            sub={availableApps > 0 ? `of ${availableApps} available` : undefined}
+            href={`/p/${product.slug}/connectors`}
+          />
         )}
         <Stat
           label="Waiting on you"
           value={String(approvals.length)}
           badge={approvals.length > 0 ? { color: "amber", text: "Needs a decision" } : undefined}
+          href={approvals.length > 0 ? `/p/${product.slug}/approvals` : undefined}
         />
       </div>
+
+      {/* Analytics — the same real GET /business-analytics rollup the dedicated /analytics page
+          renders, embedded here so credit usage, run success, and background activity are visible
+          without leaving the overview. */}
+      <SectionHeading
+        action={
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ display: "flex", gap: 4 }}>
+              {(["7d", "30d", "90d"] as AnalyticsWindow[]).map((w) => (
+                <button
+                  key={w}
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  style={analyticsWindow === w ? { background: "var(--accent-dim)", color: "var(--accent)", borderColor: "var(--accent)" } : undefined}
+                  onClick={() => setAnalyticsWindow(w)}
+                >
+                  {w}
+                </button>
+              ))}
+            </div>
+            <Link href={`/p/${product.slug}/analytics`} style={{ fontSize: 12, color: "var(--accent)", textDecoration: "none" }}>
+              Full page →
+            </Link>
+          </div>
+        }
+      >
+        Analytics
+      </SectionHeading>
+
+      {analyticsLoading && !analytics && <div style={{ fontSize: 12.5, color: "var(--text3)", marginBottom: 10 }}>Loading…</div>}
+      {analyticsError && (
+        <div style={{ fontSize: 12.5, color: "#dc2626", marginBottom: 10 }}>
+          Couldn&apos;t load analytics.{" "}
+          <button type="button" className="btn btn-ghost btn-sm" onClick={() => setAnalyticsRetryTick((t) => t + 1)}>
+            Retry
+          </button>
+        </div>
+      )}
+
+      {analytics && (
+        <>
+          <div className="grid-4" style={{ marginBottom: 20 }}>
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Credits used</div>
+              <div className="card-value">{analytics.credits.used.toLocaleString()}</div>
+              {analytics.credits.vs_prior_period !== null && (
+                <div className="card-sub" style={{ color: analytics.credits.vs_prior_period > 0 ? "#16a34a" : "#dc2626" }}>
+                  {pctChange(analytics.credits.vs_prior_period)}
+                </div>
+              )}
+            </div>
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Agent runs</div>
+              <div className="card-value">{analytics.runs.total.toLocaleString()}</div>
+              <div className="card-sub">Across {analytics.by_agent.length} agent{analytics.by_agent.length === 1 ? "" : "s"}</div>
+            </div>
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Success rate</div>
+              <div className="card-value">{analytics.runs.success_rate !== null ? `${Math.round(analytics.runs.success_rate * 100)}%` : "—"}</div>
+              <div className="card-sub">{analytics.runs.failed} failed of {analytics.runs.total}</div>
+            </div>
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Tokens used</div>
+              <div className="card-value">{analytics.tokens_used >= 1000 ? `${(analytics.tokens_used / 1000).toFixed(1)}k` : analytics.tokens_used}</div>
+              <div className="card-sub">This period</div>
+            </div>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.4fr) minmax(0, 1fr)", gap: 14, marginBottom: 8, alignItems: "stretch" }}>
+            <div className="card" style={{ cursor: "default", padding: "16px 18px 12px", display: "flex", flexDirection: "column" }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text2)", marginBottom: 10 }}>
+                Credit usage — last {analytics.window_days} days
+              </div>
+              {analytics.daily.every((d) => d.credits === 0) ? (
+                <div style={{ color: "var(--text3)", fontSize: 12, padding: "16px 0", textAlign: "center" }}>No activity yet in this window.</div>
+              ) : (
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 76, flex: 1 }}>
+                  {analytics.daily.map((d) => {
+                    const maxCredits = Math.max(1, ...analytics.daily.map((x) => x.credits));
+                    return (
+                      <div key={d.day} title={`${d.day}: ${d.credits} credits, ${d.runs} runs`} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center" }}>
+                        <div
+                          style={{
+                            width: "100%",
+                            borderRadius: 3,
+                            background: "var(--accent)",
+                            opacity: d.credits > 0 ? 1 : 0.15,
+                            height: Math.max(2, (d.credits / maxCredits) * 68),
+                          }}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="settings-block" style={{ marginBottom: 0 }}>
+              <div className="settings-row" style={{ borderBottom: "1px solid var(--border)" }}>
+                <div className="settings-row-label" style={{ marginBottom: 0 }}>Background activity</div>
+              </div>
+              <div className="settings-row">
+                <div>
+                  <div className="settings-row-label" style={{ fontSize: 12.5 }}>Wake-ups that did real work</div>
+                </div>
+                <span className="badge badge-green">{analytics.heartbeats.completed_with_work}</span>
+              </div>
+              <div className="settings-row">
+                <div>
+                  <div className="settings-row-label" style={{ fontSize: 12.5 }}>Failed wake-ups</div>
+                </div>
+                <span className={`badge ${analytics.heartbeats.failed > 0 ? "badge-amber" : "badge-green"}`}>{analytics.heartbeats.failed}</span>
+              </div>
+              <div className="settings-row">
+                <div>
+                  <div className="settings-row-label" style={{ fontSize: 12.5 }}>Projects / Threads</div>
+                </div>
+                <span style={{ fontSize: 12, color: "var(--text2)" }}>
+                  {analytics.structure.projects} / {analytics.structure.threads}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {analytics.by_agent.length > 0 && (
+            <div style={{ marginBottom: 8, overflowX: "auto" }}>
+              <table className="data-table">
+                <thead>
+                  <tr><th>Agent</th><th>Runs</th><th>Credits</th><th>Success rate</th></tr>
+                </thead>
+                <tbody>
+                  {analytics.by_agent.slice(0, 5).map((a) => (
+                    <tr key={a.agent_id}>
+                      <td className="cell-primary">{a.agent_id}</td>
+                      <td>{a.runs}</td>
+                      <td>{a.credits}</td>
+                      <td>
+                        {a.success_rate !== null ? (
+                          <span className={`badge ${a.success_rate >= 0.95 ? "badge-green" : a.success_rate >= 0.8 ? "badge-amber" : "badge-red"}`}>
+                            {Math.round(a.success_rate * 100)}%
+                          </span>
+                        ) : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
 
       {isBusinessSpace && (
         <>
