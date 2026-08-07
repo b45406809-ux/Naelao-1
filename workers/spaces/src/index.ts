@@ -1842,6 +1842,22 @@ app.get("/spaces/:spaceId/agent-activity", async (c) => {
   return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
 });
 
+// GET /spaces/:spaceId/business-analytics?window=7d|30d|90d — the end-user-facing Analytics page
+// (apps/shell). Unlike agent-activity above (builder-only, individual summaries + session ids),
+// this is pure aggregate — see SpaceDO.computeBusinessAnalytics's own header — so it's gated at
+// "member", the same floor /pricing uses, not rejected outright for a product_end_user caller.
+app.use("/spaces/:spaceId/business-analytics", requireInternalHmac((c) => (c as unknown as { env: Env }).env.PLATFORM_SECRET));
+app.use("/spaces/:spaceId/business-analytics", requireBusinessMembership({ GET: "member" }));
+app.get("/spaces/:spaceId/business-analytics", async (c) => {
+  const spaceId = c.req.param("spaceId");
+  const tenantId = c.req.header("x-naelao-tenant-id") ?? getCallerIdentity(c).tenantId;
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+  const stub = await spaceDoStub(c.env, spaceId, tenantId);
+  const qs = new URL(c.req.url).search;
+  const res = await forwardToSpaceDO(stub, `/business-analytics${qs}`, "GET");
+  return new Response(res.body, { status: res.status, headers: { "content-type": "application/json" } });
+});
+
 // ── Notifications inbox ──────────────────────────────────────────────────────
 // Unlike agent-activity (builder-only technical audit trail), this IS end-user-facing — a
 // business admin reading their own business's inbox — so the public route is

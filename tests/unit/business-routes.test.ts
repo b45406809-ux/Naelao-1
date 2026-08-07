@@ -212,6 +212,80 @@ describe("GET /spaces/:productSpaceId/template-activity", () => {
   });
 });
 
+describe("GET /spaces/:spaceId/business-analytics", () => {
+  async function seedActivity(env: ReturnType<typeof makeEnv>, spaceId: string, tenantId: string, rows: Array<Record<string, unknown>>) {
+    const headers = await internalHeaders(tenantId);
+    for (const row of rows) {
+      const res = await spacesWorker.fetch(
+        req(`/internal/spaces/${spaceId}/agent-activity`, headers, { method: "POST", body: JSON.stringify({ space_id: spaceId, agent_id: "naelao-agent", ...row }) }),
+        env as never, execCtx
+      );
+      expect(res.status).toBe(201);
+    }
+  }
+
+  it("aggregates runs/credits pure — never leaks a session id or summary to a plain member", async () => {
+    const env = makeEnv();
+    const biz = await createBusiness(env, "alice", "Alice's Shop");
+    await seedActivity(env, biz.space_id, biz.tenant_id, [
+      { event_type: "run_completed", cost_credits: 10, tokens_used: 500, session_id: "sess-secret-1", summary: "did a private thing" },
+      { event_type: "run_completed", cost_credits: 15, tokens_used: 700 },
+      { event_type: "run_failed", cost_credits: 2, tokens_used: 100, failure_kind: "tool_error" },
+    ]);
+
+    const headers = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const res = await spacesWorker.fetch(req(`/spaces/${biz.space_id}/business-analytics`, headers), env as never, execCtx);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      runs: { total: number; completed: number; failed: number; success_rate: number | null };
+      credits: { used: number };
+    };
+    expect(body.runs.total).toBe(3);
+    expect(body.runs.completed).toBe(2);
+    expect(body.runs.failed).toBe(1);
+    expect(body.credits.used).toBe(27);
+    const raw = JSON.stringify(body);
+    expect(raw).not.toMatch(/sess-secret-1|private thing/);
+  });
+
+  it("a plain member (not admin/owner) can still read it — pure aggregate, safe for anyone", async () => {
+    const env = makeEnv();
+    const biz = await createBusiness(env, "alice", "Alice's Shop");
+    // Bob is invited as a plain member via a direct D1 insert (simpler than the full invite flow
+    // for this test's purpose — just needs SOME non-owner membership row to exist).
+    await env.PLATFORM_DB.prepare(
+      "INSERT INTO business_memberships (business_space_id, product_space_id, end_user_id, role, status) VALUES (?, 'prod-1', 'bob', 'member', 'active')"
+    ).bind(biz.space_id).run();
+
+    const headers = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "bob" });
+    const res = await spacesWorker.fetch(req(`/spaces/${biz.space_id}/business-analytics`, headers), env as never, execCtx);
+    expect(res.status).toBe(200);
+  });
+
+  it("rejects a non-member entirely", async () => {
+    const env = makeEnv();
+    const biz = await createBusiness(env, "alice", "Alice's Shop");
+    const headers = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "stranger" });
+    const res = await spacesWorker.fetch(req(`/spaces/${biz.space_id}/business-analytics`, headers), env as never, execCtx);
+    expect(res.status).toBe(403);
+  });
+
+  it("counts heartbeat/scheduled failures separately from chat, without a fabricated pass count", async () => {
+    const env = makeEnv();
+    const biz = await createBusiness(env, "alice", "Alice's Shop");
+    await seedActivity(env, biz.space_id, biz.tenant_id, [
+      { event_type: "run_failed", trigger_source: "heartbeat", cost_credits: 0 },
+      { event_type: "run_failed", trigger_source: "scheduled_job", cost_credits: 0 },
+      { event_type: "run_completed", trigger_source: "chat", cost_credits: 5 },
+    ]);
+    const headers = await internalHeaders(biz.tenant_id, { "x-naelao-role": "product_end_user", "x-naelao-user-id": "alice" });
+    const res = await spacesWorker.fetch(req(`/spaces/${biz.space_id}/business-analytics`, headers), env as never, execCtx);
+    const body = (await res.json()) as { heartbeats: { failed: number; completed_with_work: number } };
+    expect(body.heartbeats.failed).toBe(2);
+    expect(body.heartbeats.completed_with_work).toBe(0);
+  });
+});
+
 describe("Business invites — create + accept round trip", () => {
   it("an owner invites, a different end user accepts, and becomes a real member", async () => {
     const env = makeEnv();

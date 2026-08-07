@@ -1432,6 +1432,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       if (method === "GET" && url.pathname === "/agent-diagnostics") {
         return this.computeAgentDiagnostics(url.searchParams);
       }
+      // GET /business-analytics?window=7d|30d|90d — the end-user-facing Analytics page's data.
+      // Unlike agent-activity/agent-diagnostics (builder-only: individual summaries and session
+      // ids that could surface one member's escalation to another), this is PURE AGGREGATE —
+      // counts, sums, and per-day/per-agent rollups with no session/thread/summary text attached
+      // — so it's safe for any business member to read, not just an admin. Same "aggregate is
+      // safe, raw rows aren't" precedent as /template-activity.
+      if (method === "GET" && url.pathname === "/business-analytics") {
+        return this.computeBusinessAnalytics(url.searchParams);
+      }
       // POST /signal-events — internal only (NaelaoAgentDO posts one row per detected implicit
       // signal — user frustration / agent-forgot markers). Same await-not-bare-return rationale
       // as recordAgentActivity above.
@@ -3373,6 +3382,140 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       })),
       recent_stalls: stalls,
       notifications: { unread: unreadNotifications, unread_critical: criticalUnread },
+    });
+  }
+
+  // GET /business-analytics?window=7d|30d|90d — the Analytics page's data (apps/shell's Settings-
+  // adjacent business dashboard, mirroring the mockup's Analytics view). Pure aggregate — counts,
+  // sums, and per-day/per-agent rollups, never a raw row with a session id, thread id, or summary
+  // text attached — which is what makes this safe for ANY business member, unlike the
+  // builder-only agent-activity/agent-diagnostics endpoints this shares its table with.
+  //
+  // "Heartbeat pass/fail": only FAILURES are ever logged for an idle heartbeat tick (see
+  // handleAgentTick in workers/agents — a heartbeat with nothing to do writes nothing, since
+  // logging a no-op tick for every space every hour platform-wide would dwarf the table for zero
+  // signal). So "passes" here honestly means "wake-ups that did real work and it completed", not
+  // "every tick that happened to run" — there is no record of a silent, work-free tick succeeding,
+  // and this deliberately does not invent one.
+  private computeBusinessAnalytics(params: URLSearchParams): Response {
+    const windowDays = params.get("window") === "30d" ? 30 : params.get("window") === "90d" ? 90 : 7;
+    const since = `datetime('now', '-${windowDays} days')`;
+    const prevSince = `datetime('now', '-${windowDays * 2} days')`;
+    const sql = this.ctx.storage.sql as never;
+
+    const byType = queryAll<{ event_type: string; cnt: number; tokens: number | null; credits: number | null }>(
+      sql,
+      `SELECT event_type, COUNT(*) as cnt, SUM(tokens_used) as tokens, SUM(cost_credits) as credits
+         FROM agent_activity_log WHERE created_at >= ${since} GROUP BY event_type`
+    );
+    const counts: Record<string, number> = {};
+    let totalTokens = 0;
+    let totalCredits = 0;
+    for (const r of byType) {
+      counts[r.event_type] = r.cnt;
+      totalTokens += r.tokens ?? 0;
+      totalCredits += r.credits ?? 0;
+    }
+    const runsCompleted = counts["run_completed"] ?? 0;
+    const runsFailed = counts["run_failed"] ?? 0;
+    const runsTotal = runsCompleted + runsFailed;
+
+    // Prior window, for the "vs last period" deltas the mockup's cards show — a real comparison,
+    // not a fabricated percentage.
+    const prevCredits = queryOne<{ credits: number | null }>(
+      sql,
+      `SELECT SUM(cost_credits) as credits FROM agent_activity_log
+        WHERE created_at >= ${prevSince} AND created_at < ${since}`
+    )?.credits ?? 0;
+    const prevRuns = queryOne<{ cnt: number }>(
+      sql,
+      `SELECT COUNT(*) as cnt FROM agent_activity_log
+        WHERE created_at >= ${prevSince} AND created_at < ${since} AND event_type IN ('run_completed','run_failed')`
+    )?.cnt ?? 0;
+
+    // Per-agent breakdown for the mockup's "Usage by Agent" table — runs/credits/success rate.
+    // No avg-duration column exists on this table (nothing measures wall time per run today), so
+    // this deliberately omits that field rather than fabricating one.
+    const byAgent = queryAll<{ agent_id: string; completed: number; failed: number; credits: number | null; tokens: number | null }>(
+      sql,
+      `SELECT agent_id,
+              SUM(CASE WHEN event_type = 'run_completed' THEN 1 ELSE 0 END) as completed,
+              SUM(CASE WHEN event_type = 'run_failed'    THEN 1 ELSE 0 END) as failed,
+              SUM(cost_credits) as credits, SUM(tokens_used) as tokens
+         FROM agent_activity_log
+        WHERE created_at >= ${since} AND event_type IN ('run_completed','run_failed')
+        GROUP BY agent_id ORDER BY (completed + failed) DESC LIMIT 12`
+    );
+
+    // Daily credit usage for the bar chart — one row per day even when a day had zero activity,
+    // computed in application code rather than a SQL date-series generator DO SQLite doesn't have.
+    const dailyRows = queryAll<{ day: string; credits: number | null; runs: number }>(
+      sql,
+      `SELECT substr(created_at, 1, 10) as day, SUM(cost_credits) as credits, COUNT(*) as runs
+         FROM agent_activity_log
+        WHERE created_at >= ${since} AND event_type IN ('run_completed','run_failed')
+        GROUP BY day`
+    );
+    const dailyByDay = new Map(dailyRows.map((r) => [r.day, { credits: r.credits ?? 0, runs: r.runs }]));
+    const daily: { day: string; credits: number; runs: number }[] = [];
+    const bucketDays = Math.min(windowDays, 30); // cap the series at 30 points even for the 90d window
+    const step = windowDays / bucketDays;
+    for (let i = bucketDays - 1; i >= 0; i--) {
+      const d = new Date(Date.now() - Math.round(i * step) * 24 * 60 * 60 * 1000);
+      const key = d.toISOString().slice(0, 10);
+      const found = dailyByDay.get(key);
+      daily.push({ day: key, credits: found?.credits ?? 0, runs: found?.runs ?? 0 });
+    }
+
+    // Heartbeat/scheduled wake-ups: failures by trigger, honestly labeled per the header comment
+    // above (no fabricated "pass" count for a silent no-op tick).
+    const wakeFailures = queryAll<{ trigger_source: string | null; cnt: number }>(
+      sql,
+      `SELECT trigger_source, COUNT(*) as cnt FROM agent_activity_log
+        WHERE event_type = 'run_failed' AND created_at >= ${since}
+          AND trigger_source IS NOT NULL AND trigger_source != 'chat'
+        GROUP BY trigger_source ORDER BY cnt DESC LIMIT 8`
+    ).map((r) => ({ trigger: r.trigger_source ?? "unknown", failed: r.cnt }));
+    const wakeCompleted = queryOne<{ cnt: number }>(
+      sql,
+      `SELECT COUNT(*) as cnt FROM agent_activity_log
+        WHERE event_type = 'run_completed' AND created_at >= ${since}
+          AND trigger_source IS NOT NULL AND trigger_source != 'chat'`
+    )?.cnt ?? 0;
+    const wakeFailedTotal = wakeFailures.reduce((sum, w) => sum + w.failed, 0);
+
+    const projectsTotal = queryOne<{ cnt: number }>(sql, `SELECT COUNT(*) as cnt FROM projects WHERE status != 'archived'`)?.cnt ?? 0;
+    const threadsTotal = queryOne<{ cnt: number }>(sql, `SELECT COUNT(*) as cnt FROM threads`)?.cnt ?? 0;
+
+    return Response.json({
+      window_days: windowDays,
+      runs: {
+        total: runsTotal,
+        completed: runsCompleted,
+        failed: runsFailed,
+        success_rate: runsTotal > 0 ? Number((runsCompleted / runsTotal).toFixed(3)) : null,
+        vs_prior_period: prevRuns > 0 ? Number((((runsTotal - prevRuns) / prevRuns) * 100).toFixed(1)) : null,
+      },
+      credits: {
+        used: totalCredits,
+        vs_prior_period: prevCredits > 0 ? Number((((totalCredits - prevCredits) / prevCredits) * 100).toFixed(1)) : null,
+      },
+      tokens_used: totalTokens,
+      by_agent: byAgent.map((a) => ({
+        agent_id: a.agent_id,
+        runs: a.completed + a.failed,
+        completed: a.completed,
+        failed: a.failed,
+        success_rate: (a.completed + a.failed) > 0 ? Number((a.completed / (a.completed + a.failed)).toFixed(3)) : null,
+        credits: a.credits ?? 0,
+      })),
+      daily,
+      heartbeats: {
+        completed_with_work: wakeCompleted,
+        failed: wakeFailedTotal,
+        by_trigger: wakeFailures,
+      },
+      structure: { projects: projectsTotal, threads: threadsTotal },
     });
   }
 

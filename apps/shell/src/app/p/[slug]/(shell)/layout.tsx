@@ -46,6 +46,7 @@ const DEFAULT_MORE_NAV: SidebarNavEntry[] = [
   // waiting: a permanently-visible empty inbox trains people to ignore it, which defeats the one
   // job it has.
   { key: "agents", icon: "agents", label: "Agents" },
+  { key: "analytics", icon: "analytics", label: "Analytics" },
   { key: "knowledge", icon: "knowledge", label: "Knowledge" },
   // Real third-party apps (Composio/Pipedream-routed + bespoke OAuth/manual-key) the assistant
   // and project agents can reach over MCP — see connectors/page.tsx.

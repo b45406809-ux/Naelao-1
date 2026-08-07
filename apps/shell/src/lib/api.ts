@@ -964,6 +964,24 @@ export async function getTemplateActivity(productSpaceId: string, session: Sessi
   return res.data ?? [];
 }
 
+export interface BusinessAnalytics {
+  window_days: number;
+  runs: { total: number; completed: number; failed: number; success_rate: number | null; vs_prior_period: number | null };
+  credits: { used: number; vs_prior_period: number | null };
+  tokens_used: number;
+  by_agent: Array<{ agent_id: string; runs: number; completed: number; failed: number; success_rate: number | null; credits: number }>;
+  daily: Array<{ day: string; credits: number; runs: number }>;
+  heartbeats: { completed_with_work: number; failed: number; by_trigger: Array<{ trigger: string; failed: number }> };
+  structure: { projects: number; threads: number };
+}
+
+/** Analytics page — pure aggregate rollups of agent_activity_log, safe for any business member
+ *  (see the route's own header on the spaces worker for why this differs from the builder-only
+ *  agent-activity/agent-diagnostics endpoints it shares a table with). */
+export async function getBusinessAnalytics(spaceId: string, session: SessionCredentials, window: "7d" | "30d" | "90d" = "7d"): Promise<BusinessAnalytics> {
+  return apiFetch(`/v1/spaces/${spaceId}/business-analytics?window=${window}`, { session });
+}
+
 /** POST /v1/spaces/:productSpaceId/businesses — create a new business under this product.
  *  Only reachable when the product's membershipModel allows it (shell/manifest surfaces this via
  *  allow_public_signup + auth_provider today; a dedicated membershipModel field is a small
