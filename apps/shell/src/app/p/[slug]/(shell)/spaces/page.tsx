@@ -16,7 +16,15 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Button, Badge, Card, CardTitle, CardDesc, Modal, FormInput, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
-import { getShellManifest, listMyBusinesses, createBusiness, type ShellManifest, type Business } from "@/lib/api";
+import {
+  getShellManifest,
+  listMyBusinesses,
+  createBusiness,
+  getTemplateActivity,
+  type ShellManifest,
+  type Business,
+  type TemplateActivity,
+} from "@/lib/api";
 
 // Phase F (§A1.17): a sentinel selection meaning "no template — the assistant helps build this
 // business from scratch," distinct from an empty Set (which used to mean the same thing but
@@ -46,14 +54,17 @@ export default function DiscoverPage() {
   // owns businesses that they own none, with a 2.8s toast as the only clue. Telling a user their
   // work is gone is much worse than telling them a page didn't load.
   const [businessesFailed, setBusinessesFailed] = React.useState(false);
+  const [query, setQuery] = React.useState("");
+  const [templateActivity, setTemplateActivity] = React.useState<TemplateActivity[]>([]);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
   const refresh = React.useCallback(async () => {
     if (!creds) return;
     setLoading(true);
-    // allSettled, not all: the manifest drives the template catalogue and the businesses call
-    // drives the list above it. They fail independently and one must never take out the other.
+    // allSettled, not all: each of these fails independently (the manifest drives the template
+    // catalogue, businesses drives the list, activity is a nice-to-have showcase) and one must
+    // never take out the others.
     const [m, b] = await Promise.allSettled([
       getShellManifest(product.space_id, creds),
       listMyBusinesses(product.space_id, creds),
@@ -67,6 +78,9 @@ export default function DiscoverPage() {
     }
     if (m.status === "rejected" && b.status === "rejected") show("Couldn't load Discover");
     setLoading(false);
+    // Genuinely optional — a failure here just means the showcase section doesn't render, never
+    // an error the user sees.
+    getTemplateActivity(product.space_id, creds).then(setTemplateActivity).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product.space_id, session]);
 
@@ -127,13 +141,6 @@ export default function DiscoverPage() {
     setCreateError(null);
   }
 
-  // Quick-nav tree on the left (per the launchpad mockup's Spaces page) — real businesses only,
-  // never the SpaceType-picker grid the mockup's page also had (explicitly out of scope: builders
-  // configure a Product's SpaceType once at creation, not something an end user picks per-space —
-  // see CLAUDE.md item 7). It's a shortcut alongside the card grid below, not a replacement for
-  // it: the grid is still what you'd use to actually start something new.
-  const showTree = !loading && !businessesFailed && businesses.length > 0;
-
   const canCreate = manifest?.membership_model === "tenant" || manifest?.membership_model === "hybrid";
   // Phase F: render from the real, coming_soon-aware catalog (shell/manifest's template_catalog,
   // already intersected server-side with the builder's business_templates narrowing) instead of a
@@ -146,59 +153,19 @@ export default function DiscoverPage() {
   // sense inside one — explains why they landed here instead of where they clicked.
   const firstRun = useSearchParams().get("onboarding") === "1" && !loading && businesses.length === 0;
 
+  const filteredBusinesses = query.trim()
+    ? businesses.filter((b) => b.name.toLowerCase().includes(query.trim().toLowerCase()))
+    : businesses;
+
+  // Showcase rows: activity joined against real template names, sorted by how many businesses are
+  // actually running each one. A template with zero active businesses simply doesn't appear —
+  // there's nothing honest to say about it yet.
+  const showcaseRows = templateActivity
+    .map((a) => ({ ...a, name: availableTemplates.find((t) => t.id === a.template_id)?.name ?? a.template_id }))
+    .filter((r) => r.active_count > 0);
+
   return (
-    <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-      {showTree && (
-        <div
-          style={{
-            width: 200,
-            flexShrink: 0,
-            borderRight: "1px solid var(--border)",
-            overflowY: "auto",
-            padding: "14px 10px",
-          }}
-        >
-          <div style={{ fontSize: "10.5px", fontWeight: 500, color: "var(--text3)", letterSpacing: "0.07em", textTransform: "uppercase", padding: "2px 6px 8px" }}>
-            Your businesses
-          </div>
-          {businesses.map((b) => (
-            <Link
-              key={b.id}
-              href={b.onboarding_status != null && b.onboarding_status !== "complete" ? `/p/${product.slug}/spaces/${b.id}/onboarding` : `/p/${product.slug}/spaces/${b.id}`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "6px 8px",
-                borderRadius: 8,
-                fontSize: 12.5,
-                color: "var(--text2)",
-                textDecoration: "none",
-              }}
-            >
-              <div
-                style={{
-                  width: 18,
-                  height: 18,
-                  borderRadius: 5,
-                  background: b.space_status === "active" ? "var(--accent)" : "var(--text3)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  flexShrink: 0,
-                  fontSize: 8,
-                  color: "#fff",
-                  fontWeight: 600,
-                }}
-              >
-                {b.name.slice(0, 2).toUpperCase()}
-              </div>
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</span>
-            </Link>
-          ))}
-        </div>
-      )}
-      <div className="page-view" style={{ flex: 1, overflowY: "auto" }}>
+    <div className="page-view">
       {firstRun && (
         <div
           style={{
@@ -223,8 +190,18 @@ export default function DiscoverPage() {
         {canCreate && <Button onClick={() => openCreate()}>New business</Button>}
       </div>
 
+      {!loading && !businessesFailed && businesses.length > 0 && (
+        <div className="search-bar" style={{ marginBottom: 16 }}>
+          <FormInput
+            placeholder="Search your businesses…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </div>
+      )}
+
       <div className="section-label">
-        Your businesses{!loading && !businessesFailed && businesses.length > 0 ? ` (${businesses.length})` : ""}
+        Your businesses{!loading && !businessesFailed && businesses.length > 0 ? ` (${filteredBusinesses.length}${query.trim() ? ` of ${businesses.length}` : ""})` : ""}
       </div>
       {loading ? (
         <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading…</p>
@@ -247,9 +224,11 @@ export default function DiscoverPage() {
             // decode. Say what it means for them.
             : "You don't run any businesses here yet. Your workspace lives in this product directly."}
         </p>
+      ) : filteredBusinesses.length === 0 ? (
+        <p style={{ color: "var(--text3)", fontSize: 13 }}>No business matches &ldquo;{query}&rdquo;.</p>
       ) : (
         <div className="grid-3">
-          {businesses.map((b) => {
+          {filteredBusinesses.map((b) => {
             // A business created but never configured does nothing at all — its assistant has no
             // account to read and no way to reach its owner. That's the single most useful thing
             // this page can tell someone, so it gets the card's primary action.
@@ -280,6 +259,31 @@ export default function DiscoverPage() {
             );
           })}
         </div>
+      )}
+
+      {/* What other businesses are doing — aggregate counts only, never a name or a figure that
+          would identify or expose anyone (see the route's own header for why this is safe to
+          show cross-tenant). A signal that a template is a real, chosen thing, not a leaderboard
+          to compete on — no buying or selling here, just visibility into what's out there. */}
+      {showcaseRows.length > 0 && (
+        <>
+          <div className="section-label" style={{ marginTop: 26 }}>
+            What other businesses are doing
+          </div>
+          <div className="grid-3">
+            {showcaseRows.map((r) => (
+              <Card key={r.template_id} interactive={false}>
+                <CardTitle>{r.name.replace(/-/g, " ")}</CardTitle>
+                <CardDesc>
+                  {r.active_count} business{r.active_count === 1 ? "" : "es"} running this template
+                </CardDesc>
+                {r.created_last_30d > 0 && (
+                  <Badge color="green">{r.created_last_30d} new this month</Badge>
+                )}
+              </Card>
+            ))}
+          </div>
+        </>
       )}
 
       {canCreate && availableTemplates.length > 0 && (
@@ -419,7 +423,6 @@ export default function DiscoverPage() {
         </form>
       </Modal>
       <Toast toast={toast} />
-      </div>
     </div>
   );
 }

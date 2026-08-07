@@ -165,6 +165,53 @@ describe("GET /spaces/:productSpaceId/my-businesses", () => {
   });
 });
 
+describe("GET /spaces/:productSpaceId/template-activity", () => {
+  it("aggregates active businesses per template across DIFFERENT tenants, revealing no PII", async () => {
+    const env = makeEnv();
+    const alice = await createBusiness(env, "alice", "Alice's Shop");
+    const bob = await createBusiness(env, "bob", "Bob's Shop");
+    const carol = await createBusiness(env, "carol", "Carol's Shop");
+    await env.PLATFORM_DB.prepare("UPDATE spaces SET config_json = ? WHERE id = ?")
+      .bind(JSON.stringify({ template_id: "whop-seller" }), alice.space_id).run();
+    await env.PLATFORM_DB.prepare("UPDATE spaces SET config_json = ? WHERE id = ?")
+      .bind(JSON.stringify({ template_id: "whop-seller" }), bob.space_id).run();
+    await env.PLATFORM_DB.prepare("UPDATE spaces SET config_json = ? WHERE id = ?")
+      .bind(JSON.stringify({ template_id: "webdev-agency" }), carol.space_id).run();
+
+    const headers = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "dave" });
+    const res = await spacesWorker.fetch(req("/spaces/prod-1/template-activity", headers), env as never, execCtx);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: Array<{ template_id: string; active_count: number }> };
+    const raw = JSON.stringify(body);
+    // The whole point: dave (who owns none of these) can see the SHAPE, never who or how much.
+    expect(raw).not.toMatch(/Alice|Bob|Carol/);
+    const byId = Object.fromEntries(body.data.map((r) => [r.template_id, r.active_count]));
+    expect(byId["whop-seller"]).toBe(2);
+    expect(byId["webdev-agency"]).toBe(1);
+  });
+
+  it("excludes an archived/deleted business from the count", async () => {
+    const env = makeEnv();
+    const alice = await createBusiness(env, "alice", "Alice's Shop");
+    await env.PLATFORM_DB.prepare("UPDATE spaces SET config_json = ?, status = 'archived' WHERE id = ?")
+      .bind(JSON.stringify({ template_id: "whop-seller" }), alice.space_id).run();
+
+    const headers = await internalHeaders("builder-tenant", { "x-naelao-role": "product_end_user", "x-naelao-user-id": "dave" });
+    const res = await spacesWorker.fetch(req("/spaces/prod-1/template-activity", headers), env as never, execCtx);
+    const body = (await res.json()) as { data: Array<{ template_id: string }> };
+    expect(body.data.find((r) => r.template_id === "whop-seller")).toBeUndefined();
+  });
+
+  it("rejects with no verified tenant", async () => {
+    const env = makeEnv();
+    const res = await spacesWorker.fetch(
+      new Request("https://spaces.naelao.com/spaces/prod-1/template-activity"),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
 describe("Business invites — create + accept round trip", () => {
   it("an owner invites, a different end user accepts, and becomes a real member", async () => {
     const env = makeEnv();

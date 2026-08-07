@@ -3404,6 +3404,37 @@ app.get("/products/by-slug/:slug", async (c) => {
   });
 });
 
+// GET /spaces/:productSpaceId/template-activity — Discover's "what other businesses are doing"
+// showcase (CLAUDE.md appendix BF.4's Business Network, scoped down: no opt-in feed, no
+// skill-sharing, no buying or selling — just an honest signal that a template is a real, chosen
+// thing, not a stat this pass invented). The QUERY itself is deliberately cross-tenant (other
+// tenants' activity is the whole point) and deliberately an AGGREGATE COUNT ONLY: no business
+// name, no owner, no revenue, no PII of any kind crosses the tenant boundary, matching this
+// codebase's own standing rule that a business-network-style feature never leaks individual
+// figures regardless of plan. `:productSpaceId` in the path carries no filtering weight in the
+// SQL below — it exists only so a product_end_user's nps_ session (which is verified per-product,
+// via naelao-router's PRODUCT_END_USER_PATH_PATTERNS) has a product to verify against, the same
+// reason /spaces/:productSpaceId/my-businesses is namespaced the same way for an account-wide
+// list.
+app.get("/spaces/:productSpaceId/template-activity", async (c) => {
+  const { tenantId } = getCallerIdentity(c);
+  if (!tenantId) return c.json({ error_code: "unauthorized", message: "Missing tenant" }, 401);
+
+  const { results } = await c.env.PLATFORM_DB.prepare(
+    `SELECT json_extract(config_json, '$.template_id') AS template_id,
+            COUNT(*) AS active_count,
+            SUM(CASE WHEN created_at >= datetime('now', '-30 days') THEN 1 ELSE 0 END) AS created_last_30d
+       FROM spaces
+      WHERE status = 'active'
+        AND parent_space_id IS NOT NULL
+        AND json_extract(config_json, '$.template_id') IS NOT NULL
+      GROUP BY template_id
+      ORDER BY active_count DESC`
+  ).all<{ template_id: string; active_count: number; created_last_30d: number }>();
+
+  return c.json({ data: results });
+});
+
 // ── Three-Tier Platform Model, Phase 6: Product Shell data layer ────────────────────────────
 // GET /spaces/:spaceId/shell/manifest — a SAFE PROJECTION of the SpaceType manifest for a
 // browser client (the manifest-driven Product Shell in apps/portal). Deliberately excludes

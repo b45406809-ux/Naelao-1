@@ -951,6 +951,19 @@ export async function listMyBusinesses(productSpaceId: string, session: SessionC
   return res.data;
 }
 
+export interface TemplateActivity {
+  template_id: string;
+  active_count: number;
+  created_last_30d: number;
+}
+
+/** Discover's "what other businesses are doing" showcase — aggregate counts only, no names, no
+ *  revenue, cross-tenant. See the route's own header on the spaces worker for why this is safe. */
+export async function getTemplateActivity(productSpaceId: string, session: SessionCredentials): Promise<TemplateActivity[]> {
+  const res = await apiFetch<{ data: TemplateActivity[] }>(`/v1/spaces/${productSpaceId}/template-activity`, { session });
+  return res.data ?? [];
+}
+
 /** POST /v1/spaces/:productSpaceId/businesses — create a new business under this product.
  *  Only reachable when the product's membershipModel allows it (shell/manifest surfaces this via
  *  allow_public_signup + auth_provider today; a dedicated membershipModel field is a small

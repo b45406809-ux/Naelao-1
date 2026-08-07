@@ -553,6 +553,11 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   /^\/spaces\/([^/]+)\/presence$/,
   /^\/spaces\/([^/]+)\/businesses$/,
   /^\/spaces\/([^/]+)\/my-businesses$/,
+  // Discover's "what other businesses are doing" showcase — cross-tenant AGGREGATE COUNTS only
+  // (see the route's own header on the spaces worker). No requireBusinessMembership needed: the
+  // productSpaceId in the path only identifies which product's session to verify, the query
+  // itself carries no tenant filter to authorize against.
+  /^\/spaces\/([^/]+)\/template-activity$/,
   /^\/spaces\/([^/]+)\/invites(\/|$)/,
   /^\/spaces\/([^/]+)\/business-members(\/|$)/,
   // Phase E (§A1.17): pricing display + checkout initiation. All three are additionally gated by
