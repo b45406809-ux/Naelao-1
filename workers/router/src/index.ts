@@ -599,6 +599,9 @@ const PRODUCT_END_USER_PATH_PATTERNS: RegExp[] = [
   // Composio "click Install" hosted-connect flow (G-1/G-3 growth layer): same admin-level write
   // gate as connect/oauth-start above (requireBusinessMembership on the spaces worker).
   /^\/spaces\/([^/]+)\/connectors\/provider-connect-start$/,
+  // Naelao Agent Templates: browsing is member-level, instantiating a real agent from one is
+  // admin-level — both enforced by requireBusinessMembership on the spaces worker.
+  /^\/spaces\/([^/]+)\/agent-templates$/,
   // First-run business setup wizard — the end user's own path into the template bootstrap the
   // builder dashboard has always driven. Additionally gated by requireBusinessMembership on the
   // spaces worker (member GET / admin POST), same identity-here-authorization-there split.

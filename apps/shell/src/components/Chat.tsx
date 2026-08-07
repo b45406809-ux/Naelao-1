@@ -22,6 +22,9 @@ import {
   getInterruptedRun,
   type InterruptedRun,
   type ChatUpload,
+  getProject,
+  listAgentDefinitions,
+  type AgentDefinitionSummary,
 } from "@/lib/api";
 import type { SessionCredentials } from "@/lib/api";
 import {
@@ -95,6 +98,7 @@ export function Chat({
   sessionId,
   initialMessage,
   threadId,
+  projectId,
 }: {
   spaceId: string;
   session: SessionCredentials;
@@ -114,6 +118,10 @@ export function Chat({
    *  a Home/assistant session has no separate agent to consult, so there's no second lane to
    *  show (§A1.18 thread model: "this is fine in assistant sessions"). */
   threadId?: string;
+  /** The PROJECT this thread lives in, when there is one — distinct from threadId (a structural
+   *  id) because this is what the Naelao Agent Templates switcher and upload workspace scoping
+   *  both key off. Absent for an assistant session, same as threadId. */
+  projectId?: string;
 }) {
   // Only used to label/scope the composer dock. Compared against the space this Chat was actually
   // given: the dock's member stack must never describe a DIFFERENT space than the conversation
@@ -148,6 +156,34 @@ export function Chat({
     },
     [spaceId]
   );
+  // Naelao Agent Templates switcher — which of THIS PROJECT's bound agents handles the next
+  // message. Only meaningful in a project thread (projectId set) with more than one agent
+  // actually bound; an assistant session or a project with just its default agent has nothing to
+  // switch between, so agentOptions stays empty and ComposerDock renders no pill for it at all.
+  const [agentOptions, setAgentOptions] = React.useState<Array<{ id: string; name: string }>>([]);
+  const [selectedAgentId, setSelectedAgentId] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (!projectId) { setAgentOptions([]); setSelectedAgentId(null); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const [project, defs] = await Promise.all([
+          getProject(spaceId, projectId, session),
+          listAgentDefinitions(spaceId, session),
+        ]);
+        if (cancelled) return;
+        const allowedIds = project.allowed_agent_ids?.length ? project.allowed_agent_ids : (project.default_agent_id ? [project.default_agent_id] : []);
+        if (allowedIds.length < 2) { setAgentOptions([]); setSelectedAgentId(null); return; }
+        const nameById = new Map(defs.map((d: AgentDefinitionSummary) => [d.id.includes(":") ? d.id.slice(d.id.indexOf(":") + 1) : d.id, d.name ?? d.id]));
+        setAgentOptions(allowedIds.map((id) => ({ id, name: nameById.get(id) ?? id })));
+        setSelectedAgentId(project.default_agent_id ?? allowedIds[0] ?? null);
+      } catch {
+        setAgentOptions([]);
+        setSelectedAgentId(null);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [projectId, spaceId, session]);
   // The in-flight run's "currently doing X" trail (script-engine/loop.ts's TraceStep, live via
   // NaelaoAgentDO's in-memory progress map) — reset per send, attached to the completed message
   // once the run resolves so the tool-call/thinking summary stays visible under that turn.
@@ -665,6 +701,7 @@ export function Chat({
       const { agentRunId } = await sendMessage(spaceId, sid, goal, session, {
         model: selectedModel,
         ...(selectedReasoningLevel ? { reasoningEffort: selectedReasoningLevel } : {}),
+        ...(selectedAgentId ? { agentDefinitionId: selectedAgentId } : {}),
       });
       storeActiveRunId(spaceId, agentRunId, sessionKey);
       attachToRun(sid, agentRunId);
@@ -673,7 +710,7 @@ export function Chat({
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       setError(err instanceof Error ? err.message : "Failed to send message");
     }
-  }, [isLoading, pendingUploads, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, selectedReasoningLevel]);
+  }, [isLoading, pendingUploads, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, selectedReasoningLevel, selectedAgentId]);
 
   const handleSubmit = React.useCallback(async () => {
     const trimmed = input.trim();
@@ -918,6 +955,7 @@ export function Chat({
         <div className="chat-input-area">
           <ComposerDock
             spaceId={spaceId}
+            {...(projectId ? { projectId } : {})}
             {...(chatSessionId ? { sessionId: chatSessionId } : {})}
             session={session}
             model={selectedModel}
@@ -925,6 +963,9 @@ export function Chat({
             onModelChange={handleModelChange}
             spaceName={activeSpaceName ?? undefined}
             isBusinessSpace={dockIsBusinessSpace}
+            agentOptions={agentOptions}
+            selectedAgentId={selectedAgentId}
+            onAgentChange={setSelectedAgentId}
             onNotice={(msg) => {
               setUploadNotice(msg);
               window.setTimeout(() => setUploadNotice((cur) => (cur === msg ? null : cur)), 4000);

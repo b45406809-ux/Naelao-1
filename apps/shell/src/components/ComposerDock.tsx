@@ -34,7 +34,7 @@ import {
 import { startConnectorConnect, startDirectoryConnect, submitManualConnectorKey } from "@/lib/connectorActions";
 import { modelLabel } from "./ModelSelector";
 
-type DockPanel = "compose" | "model" | "apps" | "uploads" | "tips" | "members";
+type DockPanel = "compose" | "model" | "agent" | "apps" | "uploads" | "tips" | "members";
 
 /** Matches the server's own cap (workers/agents/src/index.ts's MAX_UPLOAD_FILES) — enforced
  *  again here so the UI refuses before spending a round trip on a request the server would
@@ -80,6 +80,7 @@ const ICONS = {
   compose: "M3.5 15.5V17h1.5l8.6-8.6-1.5-1.5L3.5 15.5zM15.6 6.4a.8.8 0 000-1.1l-1-1a.8.8 0 00-1.1 0l-1 1 2.1 2.1 1-1z",
   upload: "M10 13.5V3.5M6.5 7L10 3.5 13.5 7M3.5 13v2.5A1.5 1.5 0 005 17h10a1.5 1.5 0 001.5-1.5V13",
   cube: "M10 2.5l6.5 3.7v7.6L10 17.5l-6.5-3.7V6.2zM10 2.5v15M3.5 6.2l6.5 3.8 6.5-3.8",
+  agent: "M10 4V2M6 4h8a2 2 0 012 2v6a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2zM7.5 8.5v1M12.5 8.5v1M8 13.5h4M3 8h1M16 8h1",
 };
 
 export function ComposerDock({
@@ -99,6 +100,9 @@ export function ComposerDock({
   ensureSessionId,
   pendingUploads,
   onUploadsChange,
+  agentOptions,
+  selectedAgentId,
+  onAgentChange,
   children,
 }: {
   spaceId: string;
@@ -121,6 +125,12 @@ export function ComposerDock({
    *  render above the composer too, not just inside this panel. */
   pendingUploads?: ChatUpload[];
   onUploadsChange?: (uploads: ChatUpload[]) => void;
+  /** Naelao Agent Templates switcher — the project thread's own bound agents, when there's more
+   *  than one to pick between (Chat.tsx resolves this; empty in an assistant session or a project
+   *  with only its default agent, which is when no pill/button renders at all). */
+  agentOptions?: Array<{ id: string; name: string }>;
+  selectedAgentId?: string | null;
+  onAgentChange?: (agentId: string) => void;
   /** The message input itself. The dock owns the whole stack — panel above, input in the middle,
    *  toolbar below — so an open panel pushes the input down as one unit instead of overlaying it. */
   children?: React.ReactNode;
@@ -361,6 +371,37 @@ export function ComposerDock({
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {panel === "agent" && agentOptions && (
+        <div className="dock-panel">
+          <div className="dock-panel-head">
+            <span className="dock-panel-title">Naelao Agent Templates — this project</span>
+            <span className="dock-panel-note">who answers your next message</span>
+          </div>
+          <div className="dock-panel-body">
+            {agentOptions.map((a) => {
+              const isActive = a.id === selectedAgentId;
+              return (
+                <div key={a.id} className={`dock-row${isActive ? " active" : ""}`}>
+                  <div className="dock-row-icon"><Icon path={ICONS.agent} size={15} /></div>
+                  <div className="dock-row-main">
+                    <div className="dock-row-title">{a.name}</div>
+                  </div>
+                  <div className="dock-row-action">
+                    {isActive ? (
+                      <span className="dock-pill on"><Icon path={ICONS.check} size={11} />Active</span>
+                    ) : (
+                      <button type="button" className="dock-pill" onClick={() => { onAgentChange?.(a.id); setPanel("compose"); }}>
+                        Use this agent
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -659,6 +700,16 @@ export function ComposerDock({
           <Icon path={ICONS.cube} />
           {capability.reasoningLevels.length > 0 && reasoningLevel && <span className="dock-btn-dot" />}
         </button>
+        {agentOptions && agentOptions.length > 0 && (
+          <button
+            type="button"
+            className={`dock-btn${panel === "agent" ? " open" : ""}`}
+            onClick={() => toggle("agent")}
+            title={`Agent: ${agentOptions.find((a) => a.id === selectedAgentId)?.name ?? "default"}`}
+          >
+            <Icon path={ICONS.agent} />
+          </button>
+        )}
         <button type="button" className={`dock-btn${panel === "apps" ? " open" : ""}`} onClick={() => toggle("apps")} title="Connected apps">
           <Icon path={ICONS.plug} />
           {connectedCount > 0 && <span className="dock-btn-dot" />}

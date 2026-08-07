@@ -45,6 +45,7 @@ export default function ProjectThreadPage() {
       title={thread?.title ?? "Thread"}
       supportContact={supportContact}
       threadId={params.threadId}
+      projectId={params.projectId}
     />
   );
 }

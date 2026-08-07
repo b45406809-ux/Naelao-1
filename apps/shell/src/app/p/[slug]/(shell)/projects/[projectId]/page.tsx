@@ -16,7 +16,7 @@ export const runtime = "edge";
 import * as React from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { Button, Card, CardLabel, CardValue, FormInput, FormSelect, FormTextarea, useToast, Toast } from "@naelao/ui";
+import { Button, Card, CardLabel, CardValue, CardTitle, CardDesc, Modal, FormInput, FormSelect, FormTextarea, useToast, Toast } from "@naelao/ui";
 import { relativeTime } from "@/lib/relativeTime";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
@@ -31,10 +31,13 @@ import {
   listKbDocuments,
   createKbDocument,
   deleteKbDocument,
+  listAgentTemplates,
+  instantiateAgentTemplate,
   type Project,
   type ThreadSummary,
   type AgentDefinitionSummary,
   type KbDocument,
+  type AgentTemplateSummary,
 } from "@/lib/api";
 import { ProjectKindPanel } from "@/components/ProjectKindPanel";
 import { AgentPolicyPanel } from "@/components/AgentPolicyPanel";
@@ -59,6 +62,12 @@ export default function ProjectDetailPage() {
   const [creating, setCreating] = React.useState(false);
   const [threadQuery, setThreadQuery] = React.useState("");
   const settingsRef = React.useRef<HTMLDivElement>(null);
+
+  // Naelao Agent Templates — add a real, differently-configured agent to this project.
+  const [templatePickerOpen, setTemplatePickerOpen] = React.useState(false);
+  const [templates, setTemplates] = React.useState<AgentTemplateSummary[]>([]);
+  const [templatesLoading, setTemplatesLoading] = React.useState(false);
+  const [instantiating, setInstantiating] = React.useState(false);
 
   const [docs, setDocs] = React.useState<KbDocument[]>([]);
   const [docsLoading, setDocsLoading] = React.useState(true);
@@ -123,6 +132,34 @@ export default function ProjectDetailPage() {
     void refresh();
     void refreshDocs();
   }, [refresh, refreshDocs]);
+
+  async function openTemplatePicker() {
+    setTemplatePickerOpen(true);
+    if (templates.length > 0 || !creds) return;
+    setTemplatesLoading(true);
+    try {
+      setTemplates(await listAgentTemplates(activeSpaceId, creds));
+    } catch {
+      show("Couldn't load agent templates");
+    } finally {
+      setTemplatesLoading(false);
+    }
+  }
+
+  async function handleAddFromTemplate(t: AgentTemplateSummary) {
+    if (!creds || instantiating) return;
+    setInstantiating(true);
+    try {
+      await instantiateAgentTemplate(activeSpaceId, creds, { template_id: t.id, project_id: params.projectId });
+      setTemplatePickerOpen(false);
+      show(`${t.name} added to this project`);
+      void refresh();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Couldn't add this agent");
+    } finally {
+      setInstantiating(false);
+    }
+  }
 
   async function handleNewThread() {
     if (!creds) return;
@@ -377,12 +414,49 @@ export default function ProjectDetailPage() {
               )}
             </div>
           ))}
+          <button
+            type="button"
+            className="card"
+            onClick={() => void openTemplatePicker()}
+            style={{ borderStyle: "dashed", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 6, minHeight: 90, cursor: "pointer", font: "inherit" }}
+          >
+            <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="var(--accent)" width={16} height={16}><path d="M8 3.5v9M3.5 8h9" /></svg>
+            <div style={{ fontSize: 12, color: "var(--accent)" }}>Add agent from template</div>
+          </button>
           <Link href={`/p/${product.slug}/agents`} className="card" style={{ borderStyle: "dashed", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 6, minHeight: 90, textDecoration: "none" }}>
             <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="var(--text3)" width={16} height={16}><circle cx="8" cy="8" r="6" /></svg>
             <div style={{ fontSize: 12, color: "var(--text3)" }}>View all agents</div>
           </Link>
         </div>
       )}
+
+      <Modal open={templatePickerOpen} onClose={() => setTemplatePickerOpen(false)} title="Add an agent from a template">
+        <p style={{ fontSize: 12.5, color: "var(--text3)", margin: "0 0 12px" }}>
+          Each template is a real, distinct configuration — tool list, autonomy, and vertical
+          instructions — not a label on the same generic agent. It joins this project's agent
+          switcher immediately.
+        </p>
+        {templatesLoading ? (
+          <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading…</p>
+        ) : (
+          <div className="app-grid">
+            {templates.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className="card app-card"
+                disabled={instantiating}
+                onClick={() => void handleAddFromTemplate(t)}
+                style={{ textAlign: "left", cursor: instantiating ? "default" : "pointer", font: "inherit" }}
+              >
+                <CardTitle>{t.name}</CardTitle>
+                <CardDesc>{t.description}</CardDesc>
+                <span className="app-card-tag">{t.category}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </Modal>
 
       <div className="section-label" ref={settingsRef} style={{ marginTop: 24, scrollMarginTop: 16 }}>Settings</div>
       <div className="settings-block">

@@ -337,6 +337,10 @@ export async function getMessages(spaceId: string, sessionId: string, session: S
 export interface RunModelOptions {
   model?: string;
   reasoningEffort?: string;
+  /** Which project agent (a bare or `${spaceId}:` composite agent_definition id) should handle
+   *  this run — the project thread agent switcher's own selection. Omitted for an assistant
+   *  session (no second agent to pick) or when the default binding is fine. */
+  agentDefinitionId?: string;
 }
 
 /** Persists the user's message, then kicks off an agent run. */
@@ -364,6 +368,7 @@ export async function sendMessage(
         goal: content,
         ...(modelOptions?.model ? { model: modelOptions.model } : {}),
         ...(modelOptions?.reasoningEffort ? { reasoning_effort: modelOptions.reasoningEffort } : {}),
+        ...(modelOptions?.agentDefinitionId ? { agent_definition_id: modelOptions.agentDefinitionId } : {}),
       }),
       session,
     }
@@ -732,6 +737,34 @@ export async function listAgentDefinitions(spaceId: string, session: SessionCred
     { session }
   );
   return Array.isArray(res) ? res : res.data ?? [];
+}
+
+export interface AgentTemplateSummary {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  category: string;
+  prebuilt_scripts: string[];
+  approval_mode: string;
+}
+
+/** The browsable Naelao Agent Templates catalogue — real, distinct configurations (tool list,
+ *  autonomy default, vertical instructions), not a cosmetic label on the same generic agent. */
+export async function listAgentTemplates(spaceId: string, session: SessionCredentials): Promise<AgentTemplateSummary[]> {
+  const res = await apiFetch<{ templates: AgentTemplateSummary[] }>(`/v1/spaces/${spaceId}/agent-templates`, { session });
+  return res.templates ?? [];
+}
+
+/** Instantiate a template as a real agent_definition — writes its own config, seeds its own
+ *  approval policy, and (when project_id is given) binds it into that project's
+ *  allowed_agent_ids so it shows up in the project's own agent switcher immediately. */
+export async function instantiateAgentTemplate(
+  spaceId: string,
+  session: SessionCredentials,
+  params: { template_id: string; name?: string; project_id?: string }
+): Promise<{ agent_id: string; agent_definition_id: string; template_id: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/agent-templates`, { method: "POST", body: JSON.stringify(params), session });
 }
 
 /** A single project agent's own approval-policy override — falls back to the space-wide

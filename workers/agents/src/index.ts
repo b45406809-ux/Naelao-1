@@ -57,6 +57,8 @@ import {
 import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
 import { seedTemplateProjects, seedGeneralProject } from "./launchpad/bootstrap.js";
 import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
+import { findAgentTemplate, agentTemplateSummaries, agentTemplateToConfig } from "./agent-templates.js";
+import { writeAgentConfig } from "./script-engine/agent-config.js";
 
 function safeParse(s: string): unknown {
   try { return JSON.parse(s); } catch { return {}; }
@@ -2965,6 +2967,109 @@ app.post("/spaces/:spaceId/projects/from-template", async (c) => {
       ? { next_step: `POST /channels/${template.suggested_channel}/connect { space_id, secret, project_id: "${result.projectId}" }` }
       : {}),
   }, 201);
+});
+
+// ── Naelao Agent Templates ────────────────────────────────────────────────────
+// GET /agent-templates — the browsable catalogue (safe projection, no system_prompt/instructions
+// text, same precedent as GET /catalog/shell's agent_catalog). Global, not space-scoped.
+app.get("/agent-templates", async (c) => {
+  await requireVerifiedTenant(c);
+  return c.json({ templates: agentTemplateSummaries() });
+});
+
+/**
+ * Instantiate one AGENT_TEMPLATES entry as a real, standalone agent_definition in a space:
+ * writes its 4 R2 config files (agents.md/system-prompt.md/scripts.json/skills.json), registers
+ * it in SpaceDO's agent_definitions index, seeds its own per-agent approval policy from the
+ * template's default, and — when a project id is given — binds it into that project's
+ * allowed_agent_ids so it shows up as a real choice in the project's own agent switcher.
+ * Mirrors applyProjectTemplate's own shape/sequencing exactly.
+ */
+async function applyAgentTemplate(
+  env: AgentsEnv,
+  spaceId: string,
+  tenantId: string,
+  templateId: string,
+  name?: string,
+  projectId?: string,
+  callerUserId?: string
+): Promise<{ agentId: string; agentDefinitionId: string } | { error: string; status: number }> {
+  const template = findAgentTemplate(templateId);
+  if (!template) return { error: "unknown agent template", status: 404 };
+  if (!env.SCRIPTS_R2) return { error: "Agent config storage is not bound", status: 503 };
+
+  const agentId = `${template.id}-${crypto.randomUUID().slice(0, 8)}`;
+  await writeAgentConfig(env.SCRIPTS_R2, spaceId, agentId, agentTemplateToConfig(template));
+
+  const internalToken = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
+  const headers = {
+    "content-type": "application/json",
+    "x-naelao-tenant-id": tenantId,
+    "x-naelao-internal-token": internalToken,
+    ...(callerUserId ? { "x-naelao-user-id": callerUserId } : {}),
+  };
+
+  const registerResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/agent-definitions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      id: `${spaceId}:${agentId}`,
+      space_id: spaceId,
+      name: name?.trim() || template.name,
+      description: template.description,
+      config: { agent_id: agentId, config_path: `spaces/${spaceId}/agents/${agentId}/`, template_id: template.id },
+    }),
+  }));
+  if (!registerResp.ok) return { error: await registerResp.text(), status: 502 };
+
+  // Best-effort: an agent that fails to get its own seeded policy just inherits the space-wide
+  // assistant_policy default (the existing fallback every per-agent policy read already has),
+  // never a reason to fail the whole instantiation.
+  await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/agents/${agentId}/policy`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify({ approval_mode: template.approval_mode, auto_approved_actions: template.auto_approved_actions }),
+  })).catch(() => {});
+
+  if (projectId) {
+    try {
+      const projResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}`, { headers }));
+      if (projResp.ok) {
+        const proj = await projResp.json<{ allowed_agent_ids?: string[] | null; default_agent_id?: string | null }>();
+        const allowed = new Set(proj.allowed_agent_ids ?? []);
+        allowed.add(agentId);
+        if (proj.default_agent_id) allowed.add(proj.default_agent_id);
+        await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${projectId}`, {
+          method: "PATCH", headers, body: JSON.stringify({ allowed_agent_ids: [...allowed] }),
+        }));
+      }
+    } catch { /* binding to a project is a convenience, not load-bearing — the agent still exists either way */ }
+  }
+
+  return { agentId, agentDefinitionId: `${spaceId}:${agentId}` };
+}
+
+// POST /agent-templates/instantiate  { space_id, template_id, name?, project_id? }
+// A dedicated create action rather than a REST-y /agent-templates/:id/instantiate — a dynamic
+// segment followed by a static suffix is the shape that has repeatedly corrupted this codebase's
+// Hono route tables (see the record-install route's own writeup); a POST with the id in the body
+// carries zero risk of that. Trusts the tenant only — real end-user authorization (admin of the
+// business) happens at the spaces-worker wrapper that calls this, same as connectors/:platform/
+// connect above.
+app.post("/agent-templates/instantiate", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const { userId } = getCallerIdentity(c);
+  const body = await c.req
+    .json<{ space_id?: string; template_id?: string; name?: string; project_id?: string }>()
+    .catch(() => ({}) as { space_id?: string; template_id?: string; name?: string; project_id?: string });
+  if (!body.space_id) throw badRequest("space_id is required");
+  if (!body.template_id) throw badRequest("template_id is required");
+
+  const result = await applyAgentTemplate(c.env, body.space_id, tenantId, body.template_id, body.name, body.project_id, userId || undefined);
+  if ("error" in result) {
+    return c.json({ error_code: "agent_template_failed", message: result.error }, result.status as 404 | 502 | 503);
+  }
+  return c.json({ agent_id: result.agentId, agent_definition_id: result.agentDefinitionId, template_id: body.template_id }, 201);
 });
 
 // ── Scan-to-connect: one Naelao app per channel, paired with a QR ─────────────────────────────

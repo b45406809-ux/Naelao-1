@@ -1508,6 +1508,25 @@ app.post("/spaces/:spaceId/connectors/provider-connect-start", async (c) => {
   });
 });
 
+// ── Naelao Agent Templates ────────────────────────────────────────────────────
+// Browsing the catalogue needs no per-space check (it's a global, static list, same as
+// connectors/directory above) — "member" is the floor. Creating a real agent from one changes
+// what a project's agent switcher offers, so that's admin-only, same posture as connectors/
+// provider-connect-start. POST carries template_id in the BODY, not a URL segment — see
+// applyAgentTemplate's own comment on the agents worker for why.
+app.use("/spaces/:spaceId/agent-templates", requireBusinessMembership({ GET: "member", POST: "admin" }));
+app.get("/spaces/:spaceId/agent-templates", async (c) => proxyToAgentsWorker(c, "/agent-templates", "GET"));
+app.post("/spaces/:spaceId/agent-templates", async (c) => {
+  const body = await c.req.json<{ template_id?: string; name?: string; project_id?: string }>().catch(() => ({}) as Record<string, never>);
+  if (!body.template_id) return c.json({ error_code: "bad_request", message: "template_id is required" }, 400);
+  return proxyToAgentsWorker(c, "/agent-templates/instantiate", "POST", {
+    space_id: c.req.param("spaceId"),
+    template_id: body.template_id,
+    ...(body.name ? { name: body.name } : {}),
+    ...(body.project_id ? { project_id: body.project_id } : {}),
+  });
+});
+
 // ── Business setup wizard (first-run onboarding) ─────────────────────────────
 // The end user's own path into the bootstrap the builder dashboard has always driven. Same
 // two-gate pattern as connectors/local-grants above: identity at the router, real per-business
