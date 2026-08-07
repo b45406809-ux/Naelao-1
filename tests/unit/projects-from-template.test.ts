@@ -111,4 +111,78 @@ describe("POST /spaces/:spaceId/projects/from-template — generalized beyond cu
     const res = await app.fetch(await req("does-not-exist"), env);
     expect(res.status).toBe(404);
   });
+
+  // Real, previously-live bug (same class as CLAUDE.md item 78's assistant-scaffolding fix):
+  // applyProjectTemplate minted its own internal token but never forwarded the CALLER's identity,
+  // so SpaceDO's createProject always saw `created_by: undefined` — a project made through this
+  // route defaulted to private-by-default with no owner, invisible to the very person who asked
+  // for it. Fixed by threading the caller's x-naelao-user-id through.
+  it("forwards the caller's x-naelao-user-id so the created project isn't ownerless", async () => {
+    const projectCalls: Array<{ path: string; method: string; headers: Record<string, string> }> = [];
+    const spacesFetch = vi.fn(async (input: RequestInfo) => {
+      const httpReq = input as Request;
+      const url = new URL(httpReq.url);
+      projectCalls.push({ path: url.pathname, method: httpReq.method, headers: Object.fromEntries(httpReq.headers.entries()) });
+      if (url.pathname === `/spaces/${SPACE_ID}/projects` && httpReq.method === "POST") {
+        return Response.json({ id: "proj-1", name: "General" }, { status: 201 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    const env = {
+      ANTHROPIC_API_KEY: "test-anthropic-key",
+      PLATFORM_SECRET: SECRET,
+      WHOP_API_KEY: "test-whop-key",
+      NAELAO_WHOP_COMPANY_ID: "test-company",
+      SPACES_WORKER: { fetch: spacesFetch },
+    } as unknown as AgentsEnv;
+
+    const httpReq = new Request(`https://agents.naelao.com/spaces/${SPACE_ID}/projects/from-template`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": TENANT_ID,
+        "x-naelao-user-id": "end-user-42",
+        "x-naelao-internal-token": await mintInternalToken(SECRET, TENANT_ID),
+      },
+      body: JSON.stringify({ template_id: "whatsapp-support-bot" }),
+    });
+    const res = await app.fetch(httpReq, env);
+    expect(res.status).toBe(201);
+    const createCall = projectCalls.find((c) => c.path === `/spaces/${SPACE_ID}/projects` && c.method === "POST");
+    expect(createCall?.headers["x-naelao-user-id"]).toBe("end-user-42");
+  });
+
+  it("omits x-naelao-user-id for a system caller (bootstrap, no acting user) rather than sending an empty header", async () => {
+    const projectCalls: Array<{ path: string; method: string; headers: Record<string, string> }> = [];
+    const spacesFetch = vi.fn(async (input: RequestInfo) => {
+      const httpReq = input as Request;
+      const url = new URL(httpReq.url);
+      projectCalls.push({ path: url.pathname, method: httpReq.method, headers: Object.fromEntries(httpReq.headers.entries()) });
+      if (url.pathname === `/spaces/${SPACE_ID}/projects` && httpReq.method === "POST") {
+        return Response.json({ id: "proj-1", name: "General" }, { status: 201 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    const env = {
+      ANTHROPIC_API_KEY: "test-anthropic-key",
+      PLATFORM_SECRET: SECRET,
+      WHOP_API_KEY: "test-whop-key",
+      NAELAO_WHOP_COMPANY_ID: "test-company",
+      SPACES_WORKER: { fetch: spacesFetch },
+    } as unknown as AgentsEnv;
+
+    // No x-naelao-user-id header at all — the system-caller case.
+    const httpReq = new Request(`https://agents.naelao.com/spaces/${SPACE_ID}/projects/from-template`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": TENANT_ID,
+        "x-naelao-internal-token": await mintInternalToken(SECRET, TENANT_ID),
+      },
+      body: JSON.stringify({ template_id: "whatsapp-support-bot" }),
+    });
+    await app.fetch(httpReq, env);
+    const createCall = projectCalls.find((c) => c.path === `/spaces/${SPACE_ID}/projects` && c.method === "POST");
+    expect(createCall?.headers["x-naelao-user-id"]).toBeUndefined();
+  });
 });

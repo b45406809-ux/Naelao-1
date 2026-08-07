@@ -28,6 +28,11 @@ export interface SidebarProps {
   projects?: SidebarListEntry[];
   onOpenProject?: (id: string) => void;
   onNewProject?: () => void;
+  /** Shown as a trailing "… more projects" row whenever `projects` is longer than the sidebar's
+   *  own display cap — same shape as `onMoreThreads` below, which this was missing entirely
+   *  (every project rendered unbounded, with no way to see the rest once a business had more
+   *  than fit comfortably in the panel). */
+  onMoreProjects?: () => void;
   threads?: SidebarListEntry[];
   onOpenThread?: (id: string) => void;
   onNewThread2?: () => void;
@@ -49,6 +54,12 @@ export interface SidebarProps {
   onToggleCollapse?: () => void;
 }
 
+/** How many projects render before the sidebar collapses the rest behind "… more projects" —
+ *  same idea as the Sessions section only ever fetching 5, kept as a display cap here (rather
+ *  than a fetch cap) since the caller already has the full list for other purposes (the active-
+ *  project highlight, the create-dialog's duplicate-name check). */
+const PROJECTS_SHOWN = 5;
+
 export function Sidebar({
   brandName = "Naelao",
   activeKey,
@@ -59,6 +70,7 @@ export function Sidebar({
   projects,
   onOpenProject,
   onNewProject,
+  onMoreProjects,
   threads,
   onOpenThread,
   onMoreThreads,
@@ -183,9 +195,12 @@ export function Sidebar({
           </div>
           {projectsOpen && (
             <div>
-              {projects.map((p) => (
+              {projects.slice(0, PROJECTS_SHOWN).map((p) => (
                 <HistoryItem key={p.id} icon="projects" label={p.label} meta={p.meta} onClick={() => onOpenProject?.(p.id)} />
               ))}
+              {projects.length > PROJECTS_SHOWN && onMoreProjects && (
+                <HistoryItem icon="projects" label="… more projects" muted onClick={onMoreProjects} />
+              )}
             </div>
           )}
         </>

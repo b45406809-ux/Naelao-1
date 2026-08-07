@@ -252,8 +252,9 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
         moreNav={moreNav}
         projects={projects.map((p) => ({ id: p.id, label: p.name }))}
         onOpenProject={(id) => router.push(`/p/${product.slug}/projects/${id}`)}
+        onMoreProjects={() => router.push(`/p/${product.slug}/projects/all`)}
         {...(canUseWorkspace
-          ? { onNewThread: handleNewSession, onNewProject: () => router.push(`/p/${product.slug}/projects`) }
+          ? { onNewThread: handleNewSession, onNewProject: () => router.push(`/p/${product.slug}/projects/all`) }
           : {})}
         threads={sessions.map((s) => ({ id: s.id, label: s.title ?? "Untitled conversation" }))}
         onOpenThread={(id) => router.push(`/p/${product.slug}/sessions/${id}`)}

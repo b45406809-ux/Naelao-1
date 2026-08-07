@@ -621,6 +621,22 @@ export async function createProject(spaceId: string, session: SessionCredentials
   });
 }
 
+/** One call, fully configured — the project row (kind, execution ceiling, spend cap, agent
+ *  binding) plus its starter rules/scheduled jobs, from any entry in the manifest's
+ *  `project_template_catalog`. The same mechanism a business's own onboarding already uses. */
+export async function createProjectFromTemplate(
+  spaceId: string,
+  session: SessionCredentials,
+  templateId: string,
+  name?: string
+): Promise<{ project_id: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/projects/from-template`, {
+    method: "POST",
+    body: JSON.stringify({ template_id: templateId, ...(name ? { name } : {}) }),
+    session,
+  });
+}
+
 export async function getProject(spaceId: string, projectId: string, session: SessionCredentials): Promise<Project> {
   return apiFetch(`/v1/spaces/${spaceId}/projects/${projectId}`, { session });
 }

@@ -104,13 +104,18 @@ describe("POST /spaces/:spaceId/bootstrap/complete — pre-wired projects + star
     const body = await res.json() as { projects_created: string[] };
     expect(body.projects_created).toEqual(["Products", "Orders", "Support"]);
 
+    // The trailing General entry is seedGeneralProject's own retroactive-coverage call (§65) —
+    // bootstrap/complete is the one other place every business genuinely passes through, so it
+    // seeds the default project here too, not just at provision time.
     expect(projectCalls).toEqual([
       { name: "Products" },
       { name: "Orders", default_agent_id: "launchpad-fulfillment-v1" },
       { name: "Support", default_agent_id: "launchpad-support-v1" },
+      { name: "General", description: expect.any(String), default_agent_id: "naelao-agent", visibility: "public" },
     ]);
 
-    // Only the two bound projects get a starter thread — "Products" (unbound) does not.
+    // Only the two bound TEMPLATE projects get a starter thread — "Products" (unbound) does not,
+    // and General never does either (seedGeneralProject only creates the project itself).
     expect(threadCalls).toHaveLength(2);
     expect(threadCalls.map((t) => t.title)).toEqual(["Orders", "Support"]);
   });
@@ -126,7 +131,11 @@ describe("POST /spaces/:spaceId/bootstrap/complete — pre-wired projects + star
     const { env, projectCalls, threadCalls } = makeEnv({ projects: ["Inbox", "FAQ"], setup_scripts: [] });
     const res = await app.fetch(await bootstrapReq(), env);
     expect(res.status).toBe(200);
-    expect(projectCalls).toEqual([{ name: "Inbox" }, { name: "FAQ" }]);
+    expect(projectCalls).toEqual([
+      { name: "Inbox" },
+      { name: "FAQ" },
+      { name: "General", description: expect.any(String), default_agent_id: "naelao-agent", visibility: "public" },
+    ]);
     expect(threadCalls).toHaveLength(0);
   });
 });

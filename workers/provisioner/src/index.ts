@@ -35,7 +35,7 @@ import { SkillLibrary } from "../../agents/src/script-engine/skill-library.js";
 import { seedScalingSkills } from "../../agents/src/launchpad/scaling-skills.js";
 import { seedGrowthSkills } from "../../agents/src/launchpad/growth-skills.js";
 import { seedWebdevSkills } from "../../agents/src/launchpad/webdev-skills.js";
-import { seedTemplateProjects, normalizeProjectSeeds, type SeededProject } from "../../agents/src/launchpad/bootstrap.js";
+import { seedTemplateProjects, seedGeneralProject, normalizeProjectSeeds, type SeededProject } from "../../agents/src/launchpad/bootstrap.js";
 import { inheritTemplateSkills } from "../../agents/src/script-engine/federation.js";
 import type { AgentConfig } from "../../agents/src/script-engine/index.js";
 import type { NaelaoSpaceTypeManifestV2 } from "../../spaces/src/do/SpaceTypeRegistryDO.js";
@@ -820,6 +820,40 @@ export async function provisionSpace(msg: ProvisionMessage, env: Env): Promise<v
         throw new Error(`wallet seed failed for ${spaceId} — refusing to activate a space with no payer for agent runs`);
       }
       provisioned.push("wallet");
+    }
+
+    // Step 9a-bis: every business (templated or blank/"build from scratch") gets one ordinary
+    // "General" project to land in — /projects (bare, no id) redirects straight into it instead
+    // of showing a picker first. Deliberately OUTSIDE the `effectiveTemplateIds.length > 0` gate
+    // below (unlike seedTemplateProjects, which only applies to a templated business): a blank
+    // business gets no template-specific projects by design, but should never have ZERO projects
+    // to work in. Best-effort, matching every other convenience seed here (wallet is the one
+    // exception that throws, because agent runs are structurally unusable without a payer —
+    // a missing General project just means a bare product root a little longer, not a broken one).
+    if (manifest.backend.scriptAgentsEnabled) {
+      const postToSpaces = async (path: string, body: unknown) =>
+        env.SPACES_WORKER.fetch(
+          new Request(`http://spaces-worker${path}`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+            },
+            body: JSON.stringify(body),
+          })
+        );
+      const getFromSpaces = async (path: string) =>
+        env.SPACES_WORKER.fetch(
+          new Request(`http://spaces-worker${path}`, {
+            headers: {
+              "x-naelao-tenant-id": tenantId,
+              "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+            },
+          })
+        );
+      const generalId = await seedGeneralProject({ postToSpaces, getFromSpaces }, spaceId);
+      if (generalId) provisioned.push("general-project");
     }
 
     // Step 9b: Template bootstrap — inherit the shared template skill library (federated

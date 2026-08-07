@@ -55,7 +55,7 @@ import {
   verifySvixSignature, parseInboundMessageReceived, uniqueInboxUsername,
 } from "./channels/agentmail.js";
 import { PROJECT_TEMPLATES, getProjectTemplate } from "./launchpad/project-templates.js";
-import { seedTemplateProjects } from "./launchpad/bootstrap.js";
+import { seedTemplateProjects, seedGeneralProject } from "./launchpad/bootstrap.js";
 import { PREBUILT_SCRIPTS } from "./script-engine/prebuilt/index.js";
 
 function safeParse(s: string): unknown {
@@ -2870,7 +2870,14 @@ async function applyProjectTemplate(
   spaceId: string,
   tenantId: string,
   templateId: string,
-  name?: string
+  name?: string,
+  // The person who asked for this, when there is one — absent for a system/onboarding-time
+  // stamp with no acting user. Forwarded as x-naelao-user-id so SpaceDO's createProject can set
+  // `created_by`, without which the new project defaults to private and is invisible to the
+  // very person who just created it (the same bug item 78 found and fixed for the assistant's
+  // own workspace-admin/project-coordination prebuilts — this route is a separate code path
+  // that had the identical gap: it never forwarded the caller's identity at all).
+  callerUserId?: string
 ): Promise<{ projectId: string } | { error: string; status: number }> {
   const template = getProjectTemplate(templateId);
   if (!template) return { error: "unknown project template", status: 404 };
@@ -2879,7 +2886,12 @@ async function applyProjectTemplate(
   //    createProject validates default_agent_id is a member of allowed_agent_ids when both
   //    are set, same as a builder setting them by hand).
   const internalToken = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
-  const headers = { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": internalToken };
+  const headers = {
+    "content-type": "application/json",
+    "x-naelao-tenant-id": tenantId,
+    "x-naelao-internal-token": internalToken,
+    ...(callerUserId ? { "x-naelao-user-id": callerUserId } : {}),
+  };
   const createResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects`, {
     method: "POST",
     headers,
@@ -2932,13 +2944,14 @@ async function applyProjectTemplate(
 app.post("/spaces/:spaceId/projects/from-template", async (c) => {
   const spaceId = c.req.param("spaceId");
   const tenantId = await requireVerifiedTenant(c);
+  const { userId } = getCallerIdentity(c);
 
   type FromTemplateBody = { template_id: string; name?: string };
   const body = await c.req.json<FromTemplateBody>().catch(() => ({ template_id: "" }) as FromTemplateBody);
   const template = getProjectTemplate(body.template_id);
   if (!template) throw notFound("Project template");
 
-  const result = await applyProjectTemplate(c.env, spaceId, tenantId, body.template_id, body.name);
+  const result = await applyProjectTemplate(c.env, spaceId, tenantId, body.template_id, body.name, userId || undefined);
   if ("error" in result) {
     return c.json({ error_code: "project_template_failed", message: result.error }, result.status as 404 | 502);
   }
@@ -4113,6 +4126,7 @@ async function persistOnboardingAnswers(
 app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
   const tenantId = await requireVerifiedTenant(c);
   const spaceId = c.req.param("spaceId");
+  const { userId: bootstrapCallerUserId } = getCallerIdentity(c);
 
   const body = await c.req.json<{ answers?: Record<string, unknown> }>().catch(() => ({}) as { answers?: Record<string, unknown> });
   const { cfg, onboarding } = await loadSpaceOnboarding(c.env, spaceId, tenantId);
@@ -4163,22 +4177,26 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
   //    structural pass at creation time for every path (including the end-user shell, which
   //    never reaches this endpoint) — one implementation so the two can't drift.
   const bootstrapInternalToken = await mintInternalToken(c.env.PLATFORM_SECRET, tenantId);
-  const seededProjects = await seedTemplateProjects(
-    {
-      postToSpaces: async (path, body) =>
-        c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker${path}`, {
-          method: "POST",
-          headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": bootstrapInternalToken },
-          body: JSON.stringify(body),
-        })),
-    },
-    spaceId,
-    tenantId,
-    projectSeeds
-  );
+  const bootstrapDeps = {
+    postToSpaces: async (path: string, body: unknown) =>
+      c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": bootstrapInternalToken },
+        body: JSON.stringify(body),
+      })),
+    getFromSpaces: async (path: string) =>
+      c.env.SPACES_WORKER.fetch(new Request(`http://spaces-worker${path}`, {
+        headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": bootstrapInternalToken },
+      })),
+  };
+  const seededProjects = await seedTemplateProjects(bootstrapDeps, spaceId, tenantId, projectSeeds);
   // This endpoint's callers only ever wanted the names; the ids exist for the provisioner, which
   // uses them to wire event rules between projects. Response shape unchanged.
   const createdProjects = seededProjects.map((p) => p.name);
+  // Retroactive coverage for a business that predates the General-project provisioner seed (or
+  // whose seed failed best-effort at creation time) — bootstrap/complete is the one other place
+  // every business genuinely passes through, templated or not.
+  await seedGeneralProject(bootstrapDeps, spaceId);
 
   // 1b. Stamp the template's project-template presets (a customer_bot preset arrives with its own
   //     execution ceiling, spend cap and STOP/human-takeover rules already wired — exactly what an
@@ -4190,7 +4208,7 @@ app.post("/spaces/:spaceId/bootstrap/complete", async (c) => {
   for (const tid of bootstrapTemplateIds) {
     for (const presetId of getLaunchpadTemplate(tid)?.bootstrap?.project_templates ?? []) {
       try {
-        const result = await applyProjectTemplate(c.env, spaceId, tenantId, presetId);
+        const result = await applyProjectTemplate(c.env, spaceId, tenantId, presetId, undefined, bootstrapCallerUserId || undefined);
         if ("projectId" in result) appliedProjectTemplates.push(presetId);
       } catch (err) {
         console.warn(`[bootstrap] project template '${presetId}' failed for ${spaceId}:`, (err as Error).message);

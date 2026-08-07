@@ -13,7 +13,7 @@ export const runtime = "edge";
 import * as React from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Button, Badge, Card, CardTitle, CardDesc, Modal, FormInput, Toggle, useToast, Toast } from "@naelao/ui";
+import { Button, Badge, Card, CardTitle, CardDesc, Modal, FormInput, useToast, Toast } from "@naelao/ui";
 import { useProduct } from "@/lib/product-context";
 import { useProductAuth } from "@/lib/auth-provider";
 import { getShellManifest, listMyBusinesses, createBusiness, type ShellManifest, type Business } from "@/lib/api";
@@ -378,27 +378,36 @@ export default function DiscoverPage() {
         <form onSubmit={handleCreate} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <FormInput placeholder="What's it called?" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
           <div className="section-label" style={{ marginTop: 8 }}>
-            Template
+            Template — tap to select, tap again to deselect
           </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
-            <Toggle on={selectedTemplates.has(CUSTOM_BUSINESS)} onChange={() => toggleTemplate(CUSTOM_BUSINESS)} label="Custom" />
-            Custom — build from scratch with the assistant
-          </label>
-          {availableTemplates.map((t) =>
-            t.coming_soon ? (
-              <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, opacity: 0.5 }}>
-                <Toggle on={false} onChange={() => {}} disabled label={t.name} />
-                {t.name}
-                <Badge color="amber">Coming soon</Badge>
-              </label>
-            ) : (
-              <label key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13 }}>
-                <Toggle on={selectedTemplates.has(t.id)} onChange={() => toggleTemplate(t.id)} label={t.name} />
-                {t.name}
-                {!t.free_tier_eligible && <Badge color="amber">Requires plan upgrade</Badge>}
-              </label>
-            )
-          )}
+          <div className="app-grid">
+            <button
+              type="button"
+              className={`card app-card${selectedTemplates.has(CUSTOM_BUSINESS) ? " connected" : ""}`}
+              onClick={() => toggleTemplate(CUSTOM_BUSINESS)}
+              style={{ textAlign: "left", cursor: "pointer", font: "inherit", borderStyle: "dashed" }}
+            >
+              <CardTitle>Custom</CardTitle>
+              <div className="app-card-desc card-desc">Build from scratch with the assistant.</div>
+            </button>
+            {availableTemplates.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={`card app-card${selectedTemplates.has(t.id) ? " connected" : ""}`}
+                disabled={t.coming_soon}
+                onClick={() => toggleTemplate(t.id)}
+                style={{ textAlign: "left", cursor: t.coming_soon ? "default" : "pointer", font: "inherit", opacity: t.coming_soon ? 0.55 : 1 }}
+              >
+                <CardTitle>{t.name}</CardTitle>
+                <div className="app-card-desc card-desc">Preconfigured workspaces, agents and setup — ready to run.</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {t.coming_soon && <Badge color="amber">Coming soon</Badge>}
+                  {!t.coming_soon && !t.free_tier_eligible && <Badge color="amber">Requires plan upgrade</Badge>}
+                </div>
+              </button>
+            ))}
+          </div>
           {selectedTemplates.has(CUSTOM_BUSINESS) && (
             <p style={{ fontSize: 12, color: "var(--text3)" }}>The assistant will help you design and set up this business.</p>
           )}

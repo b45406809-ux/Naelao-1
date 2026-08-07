@@ -37,6 +37,12 @@ export interface BootstrapDeps {
   /** POST a JSON body to a spaces-worker path, already carrying the caller's internal-token
    *  headers. Returns the Response so the caller's own auth/retry conventions stay theirs. */
   postToSpaces(path: string, body: unknown): Promise<Response>;
+  /** GET a spaces-worker path with the same auth as postToSpaces — only seedGeneralProject uses
+   *  this, to look up an already-existing General project by name after a UNIQUE-constraint
+   *  create failure, without inventing a new backend route just for that lookup. Optional so
+   *  every existing BootstrapDeps caller (which only ever POSTs) doesn't need updating for a
+   *  capability it never uses. */
+  getFromSpaces?(path: string): Promise<Response>;
 }
 
 /** Normalize spacetype.ts's mixed `string | {name, default_agent_id?}` seed form to one shape. */
@@ -61,6 +67,54 @@ export function normalizeProjectSeeds(
 export interface SeededProject {
   name: string;
   id?: string;
+}
+
+/** The name every business's default project gets — see seedGeneralProject's own header for why
+ *  this needs to be a shared constant rather than a string repeated at each call site. */
+export const GENERAL_PROJECT_NAME = "General";
+
+/**
+ * Every business gets one ordinary, always-there project to land in — the thing `/projects`
+ * (bare, no id) now redirects straight into instead of showing a picker first. Bound to the
+ * Space Assistant like any other default-agent project, so a fresh business is immediately
+ * chattable inside a real project rather than only at the product root.
+ *
+ * Idempotent by construction (SpaceDO's UNIQUE(space_id, name), same as seedTemplateProjects) —
+ * safe to call unconditionally at provision time regardless of whether the business also seeds
+ * template-specific projects, and safe to call again from bootstrap/complete without duplicating.
+ * Returns the project id when one now exists (created just now, or already did), or undefined on
+ * a genuine failure — best-effort by design, matching every other provisioning-time seed in this
+ * codebase: a business must never fail to activate because this one convenience project didn't
+ * get created.
+ */
+export async function seedGeneralProject(deps: BootstrapDeps, spaceId: string): Promise<string | undefined> {
+  try {
+    const res = await deps.postToSpaces(`/spaces/${spaceId}/projects`, {
+      name: GENERAL_PROJECT_NAME,
+      description: "Your default workspace — chat and files land here unless you create another project.",
+      default_agent_id: "naelao-agent",
+      // Explicit, not left to default: this is the business-wide landing project every member
+      // should land in, not a private project scoped to whichever caller happens to trigger the
+      // seed (a system caller with no created_by would otherwise create a project only the
+      // space's own owner/admin could see — see Phase T1's private-by-default rule).
+      visibility: "public",
+    });
+    if (res.ok) {
+      const project = (await res.json().catch(() => ({}))) as { id?: string };
+      return project.id;
+    }
+    // Not ok almost always means the UNIQUE(space_id, name) constraint fired because one already
+    // exists (a re-run, or bootstrap/complete running after the provisioner already seeded one) —
+    // look it up rather than treating that as a failure.
+    if (!deps.getFromSpaces) return undefined;
+    const listRes = await deps.getFromSpaces(`/spaces/${spaceId}/projects`);
+    if (!listRes.ok) return undefined;
+    const body = (await listRes.json().catch(() => ({}))) as { data?: Array<{ id: string; name: string }> };
+    return body.data?.find((p) => p.name === GENERAL_PROJECT_NAME)?.id;
+  } catch (err) {
+    console.warn(`[bootstrap] General project seed failed for ${spaceId}:`, (err as Error).message);
+    return undefined;
+  }
 }
 
 export async function seedTemplateProjects(
