@@ -449,7 +449,10 @@ export default function ProjectDetailPage() {
                 onClick={() => void handleAddFromTemplate(t)}
                 style={{ textAlign: "left", cursor: instantiating ? "default" : "pointer", font: "inherit" }}
               >
-                <CardTitle>{t.name}</CardTitle>
+                <div className="app-card-header">
+                  <div className="app-card-initial">{t.name.slice(0, 1)}</div>
+                  <CardTitle>{t.name}</CardTitle>
+                </div>
                 <CardDesc>{t.description}</CardDesc>
                 <span className="app-card-tag">{t.category}</span>
               </button>

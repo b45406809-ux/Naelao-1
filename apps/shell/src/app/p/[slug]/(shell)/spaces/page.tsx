@@ -21,6 +21,8 @@ import {
   listMyBusinesses,
   createBusiness,
   getTemplateActivity,
+  getBusinessRevenue,
+  getBusinessAnalytics,
   type ShellManifest,
   type Business,
   type TemplateActivity,
@@ -35,6 +37,25 @@ const COST_TIER_BADGE: Record<CostTier, "green" | "blue" | "amber"> = { economy:
 // business from scratch," distinct from an empty Set (which used to mean the same thing but
 // wasn't a labeled choice). Never sent to the backend as a template id.
 const CUSTOM_BUSINESS = "__custom__";
+
+// "Top Businesses" — ranked ONLY across the signed-in user's own businesses (listMyBusinesses
+// already scopes to businesses they're a member of), never other tenants' — a cross-tenant
+// revenue leaderboard would be a real privacy violation (see the "what other businesses are
+// doing" showcase above, which is deliberately anonymized aggregate counts only, no figures).
+// This is a portfolio view for someone who runs more than one business, not a competitive ranking.
+interface LeaderboardRow {
+  business: Business;
+  revenueNetCents: number;
+  currency: string;
+  creditsUsed30d: number;
+  runs30d: number;
+  successRate: number | null;
+  failed: boolean;
+}
+
+function formatCents(cents: number, currency: string): string {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: currency || "USD" }).format(cents / 100);
+}
 
 export default function DiscoverPage() {
   const product = useProduct();
@@ -62,6 +83,8 @@ export default function DiscoverPage() {
   const [query, setQuery] = React.useState("");
   const [templateActivity, setTemplateActivity] = React.useState<TemplateActivity[]>([]);
   const [showAllModels, setShowAllModels] = React.useState(false);
+  const [leaderboard, setLeaderboard] = React.useState<LeaderboardRow[] | null>(null);
+  const [leaderboardLoading, setLeaderboardLoading] = React.useState(false);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -93,6 +116,59 @@ export default function DiscoverPage() {
   React.useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // Leaderboard: once the business list itself has loaded, fetch each ACTIVE business's revenue
+  // (current-month storefront orders — real for a template that sells through Launchpad's own
+  // checkout, honestly 0 for one that doesn't) and 30-day agent activity in parallel. Each
+  // business fetch fails independently (allSettled) — one business's endpoint erroring must never
+  // blank the whole leaderboard for every other business. A provisioning/errored business is
+  // skipped rather than fetched, since its analytics routes aren't meaningfully queryable yet.
+  React.useEffect(() => {
+    if (!creds) return;
+    const active = businesses.filter((b) => b.space_status === "active");
+    if (active.length === 0) {
+      setLeaderboard(null);
+      return;
+    }
+    // Fetched from a single active business too — the ranked LIST only renders at 2+ (a
+    // "leaderboard" of one is nothing to compare against), but the portfolio summary row above it
+    // is real and useful even for one business.
+    let cancelled = false;
+    setLeaderboardLoading(true);
+    Promise.allSettled(
+      active.map(async (business) => {
+        const [rev, analytics] = await Promise.allSettled([
+          getBusinessRevenue(business.id, creds),
+          getBusinessAnalytics(business.id, creds, "30d"),
+        ]);
+        const row: LeaderboardRow = {
+          business,
+          revenueNetCents: rev.status === "fulfilled" ? rev.value.net_cents : 0,
+          currency: rev.status === "fulfilled" ? rev.value.currency : "USD",
+          creditsUsed30d: analytics.status === "fulfilled" ? analytics.value.credits.used : 0,
+          runs30d: analytics.status === "fulfilled" ? analytics.value.runs.total : 0,
+          successRate: analytics.status === "fulfilled" ? analytics.value.runs.success_rate : null,
+          failed: rev.status === "rejected" && analytics.status === "rejected",
+        };
+        return row;
+      })
+    ).then((results) => {
+      if (cancelled) return;
+      const rows = results
+        .filter((r): r is PromiseFulfilledResult<LeaderboardRow> => r.status === "fulfilled")
+        .map((r) => r.value)
+        // Revenue first (the ask was "revenue and analytics"), credits used as the activity
+        // tiebreak for businesses with no storefront revenue at all — never both zero and still
+        // ranked as if one clearly outperformed the other.
+        .sort((a, b) => b.revenueNetCents - a.revenueNetCents || b.creditsUsed30d - a.creditsUsed30d);
+      setLeaderboard(rows);
+      setLeaderboardLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [businesses, session]);
 
   function toggleTemplate(id: string) {
     setSelectedTemplates((prev) => {
@@ -170,6 +246,14 @@ export default function DiscoverPage() {
     .map((a) => ({ ...a, name: availableTemplates.find((t) => t.id === a.template_id)?.name ?? a.template_id }))
     .filter((r) => r.active_count > 0);
 
+  const needsSetupCount = businesses.filter((b) => b.onboarding_status != null && b.onboarding_status !== "complete").length;
+  // Portfolio totals across every business the leaderboard fetch could reach — real for however
+  // many loaded successfully, never padded to look like it covers ones that failed or are still
+  // provisioning.
+  const portfolioRevenueCents = leaderboard?.reduce((sum, r) => sum + r.revenueNetCents, 0) ?? 0;
+  const portfolioCurrency = leaderboard?.find((r) => r.revenueNetCents > 0)?.currency ?? "USD";
+  const portfolioRuns30d = leaderboard?.reduce((sum, r) => sum + r.runs30d, 0) ?? 0;
+
   return (
     <div className="page-view">
       {firstRun && (
@@ -195,6 +279,32 @@ export default function DiscoverPage() {
         </div>
         {canCreate && <Button onClick={() => openCreate()}>New business</Button>}
       </div>
+
+      {/* Portfolio at a glance — real numbers whenever the leaderboard fetch reached at least one
+          business, never fabricated for one that failed or hasn't loaded yet. */}
+      {!loading && !businessesFailed && businesses.length > 0 && (
+        <div className="grid-4" style={{ marginBottom: 18 }}>
+          <div className="card" style={{ cursor: "default" }}>
+            <div className="card-label">Businesses</div>
+            <div className="card-value">{businesses.length}</div>
+          </div>
+          <div className="card" style={{ cursor: "default" }}>
+            <div className="card-label">Needs setup</div>
+            <div className="card-value" style={{ color: needsSetupCount > 0 ? "#d97706" : undefined }}>{needsSetupCount}</div>
+          </div>
+          <div className="card" style={{ cursor: "default" }}>
+            <div className="card-label">This month&rsquo;s revenue</div>
+            <div className="card-value" style={{ fontSize: portfolioRevenueCents > 0 ? undefined : 15 }}>
+              {leaderboardLoading && leaderboard === null ? "…" : portfolioRevenueCents > 0 ? formatCents(portfolioRevenueCents, portfolioCurrency) : "$0.00"}
+            </div>
+            <div className="card-sub">Across all businesses</div>
+          </div>
+          <div className="card" style={{ cursor: "default" }}>
+            <div className="card-label">Agent runs (30d)</div>
+            <div className="card-value">{leaderboardLoading && leaderboard === null ? "…" : portfolioRuns30d.toLocaleString()}</div>
+          </div>
+        </div>
+      )}
 
       {!loading && !businessesFailed && businesses.length > 0 && (
         <div className="search-bar" style={{ marginBottom: 16 }}>
@@ -267,6 +377,67 @@ export default function DiscoverPage() {
         </div>
       )}
 
+      {/* Top Businesses — a portfolio leaderboard across the SIGNED-IN USER'S OWN businesses only
+          (never other tenants' — that's the anonymized showcase below, which deliberately shows
+          no figures at all). Real for anyone running more than one business: which one is
+          actually earning, which one is actually being used. */}
+      {leaderboardLoading && !leaderboard && (
+        <>
+          <div className="section-label" style={{ marginTop: 26 }}>Top businesses</div>
+          <p style={{ color: "var(--text3)", fontSize: 13 }}>Ranking your businesses…</p>
+        </>
+      )}
+      {leaderboard && leaderboard.length > 0 && (
+        <>
+          <div className="section-label" style={{ marginTop: 26 }}>
+            Top businesses — this month&rsquo;s revenue &amp; last 30 days&rsquo; activity
+          </div>
+          <div className="settings-block">
+            {leaderboard.map((row, i) => {
+              const hasRevenue = row.revenueNetCents > 0;
+              return (
+                <Link
+                  key={row.business.id}
+                  href={`/p/${product.slug}/spaces/${row.business.id}`}
+                  className="settings-row"
+                  style={{ textDecoration: "none", color: "inherit", cursor: "pointer" }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                    <span
+                      style={{
+                        width: 24, height: 24, borderRadius: "50%", flexShrink: 0,
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontSize: 11, fontWeight: 700,
+                        background: i === 0 ? "var(--accent)" : "var(--surface2)",
+                        color: i === 0 ? "#fff" : "var(--text3)",
+                      }}
+                    >
+                      {i + 1}
+                    </span>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="settings-row-label" style={{ marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {row.business.name}
+                      </div>
+                      <div className="settings-row-sub">
+                        {row.runs30d} run{row.runs30d === 1 ? "" : "s"} · {row.creditsUsed30d.toLocaleString()} credits
+                        {row.successRate !== null ? ` · ${Math.round(row.successRate * 100)}% success` : ""}
+                        {row.failed ? " · couldn't load fully" : ""}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right", flexShrink: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 600, color: hasRevenue ? "#16a34a" : "var(--text3)" }}>
+                      {hasRevenue ? formatCents(row.revenueNetCents, row.currency) : "No revenue yet"}
+                    </div>
+                    <div style={{ fontSize: 10.5, color: "var(--text3)" }}>this month</div>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        </>
+      )}
+
       {/* What other businesses are doing — aggregate counts only, never a name or a figure that
           would identify or expose anyone (see the route's own header for why this is safe to
           show cross-tenant). A signal that a template is a real, chosen thing, not a leaderboard
@@ -305,7 +476,10 @@ export default function DiscoverPage() {
                 onClick={t.coming_soon ? undefined : () => openCreate(t.id)}
                 style={t.coming_soon ? { opacity: 0.55, cursor: "default" } : { cursor: "pointer" }}
               >
-                <CardTitle>{t.name}</CardTitle>
+                <div className="app-card-header">
+                  <div className="app-card-initial">{t.name.slice(0, 1)}</div>
+                  <CardTitle>{t.name}</CardTitle>
+                </div>
                 <CardDesc>
                   {t.coming_soon
                     ? "Not available yet."
@@ -319,8 +493,11 @@ export default function DiscoverPage() {
                 </div>
               </Card>
             ))}
-            <Card interactive onClick={() => openCreate(CUSTOM_BUSINESS)} style={{ cursor: "pointer" }}>
-              <CardTitle>Custom</CardTitle>
+            <Card interactive onClick={() => openCreate(CUSTOM_BUSINESS)} style={{ cursor: "pointer", borderStyle: "dashed" }}>
+              <div className="app-card-header">
+                <div className="app-card-initial" style={{ background: "var(--surface2)", color: "var(--text3)" }}>+</div>
+                <CardTitle>Custom</CardTitle>
+              </div>
               <CardDesc>Start from scratch — your assistant helps you design and set it up.</CardDesc>
             </Card>
           </div>
@@ -446,7 +623,10 @@ export default function DiscoverPage() {
               onClick={() => toggleTemplate(CUSTOM_BUSINESS)}
               style={{ textAlign: "left", cursor: "pointer", font: "inherit", borderStyle: "dashed" }}
             >
-              <CardTitle>Custom</CardTitle>
+              <div className="app-card-header">
+                <div className="app-card-initial" style={{ background: "var(--surface2)", color: "var(--text3)" }}>+</div>
+                <CardTitle>Custom</CardTitle>
+              </div>
               <div className="app-card-desc card-desc">Build from scratch with the assistant.</div>
             </button>
             {availableTemplates.map((t) => (
@@ -458,7 +638,10 @@ export default function DiscoverPage() {
                 onClick={() => toggleTemplate(t.id)}
                 style={{ textAlign: "left", cursor: t.coming_soon ? "default" : "pointer", font: "inherit", opacity: t.coming_soon ? 0.55 : 1 }}
               >
-                <CardTitle>{t.name}</CardTitle>
+                <div className="app-card-header">
+                  <div className="app-card-initial">{t.name.slice(0, 1)}</div>
+                  <CardTitle>{t.name}</CardTitle>
+                </div>
                 <div className="app-card-desc card-desc">Preconfigured workspaces, agents and setup — ready to run.</div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                   {t.coming_soon && <Badge color="amber">Coming soon</Badge>}

@@ -174,7 +174,10 @@ export default function ProjectsAllPage() {
                   onClick={() => void handleCreateFromTemplate(t)}
                   style={{ textAlign: "left", cursor: creating ? "default" : "pointer", font: "inherit" }}
                 >
-                  <CardTitle>{t.name}</CardTitle>
+                  <div className="app-card-header">
+                    <div className="app-card-initial">{t.name.slice(0, 1)}</div>
+                    <CardTitle>{t.name}</CardTitle>
+                  </div>
                   <div className="app-card-desc card-desc">{t.description}</div>
                   <span className="app-card-tag">{t.kind.replace(/_/g, " ")}</span>
                 </button>
@@ -186,7 +189,10 @@ export default function ProjectsAllPage() {
                 onClick={() => setPickedTemplate("blank")}
                 style={{ textAlign: "left", cursor: creating ? "default" : "pointer", font: "inherit", borderStyle: "dashed" }}
               >
-                <CardTitle>Blank project</CardTitle>
+                <div className="app-card-header">
+                  <div className="app-card-initial" style={{ background: "var(--surface2)", color: "var(--text3)" }}>+</div>
+                  <CardTitle>Blank project</CardTitle>
+                </div>
                 <div className="app-card-desc card-desc">Start from scratch — name it and configure it yourself later.</div>
               </button>
             </div>

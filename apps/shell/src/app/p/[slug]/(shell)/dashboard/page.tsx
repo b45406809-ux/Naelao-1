@@ -565,61 +565,94 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1.4fr) minmax(0, 1fr)", gap: 14, marginBottom: 8, alignItems: "stretch" }}>
-            <div className="card" style={{ cursor: "default", padding: "16px 18px 12px", display: "flex", flexDirection: "column" }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text2)", marginBottom: 10 }}>
-                Credit usage — last {analytics.window_days} days
-              </div>
-              {analytics.daily.every((d) => d.credits === 0) ? (
-                <div style={{ color: "var(--text3)", fontSize: 12, padding: "16px 0", textAlign: "center" }}>No activity yet in this window.</div>
-              ) : (
-                <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 76, flex: 1 }}>
-                  {analytics.daily.map((d) => {
-                    const maxCredits = Math.max(1, ...analytics.daily.map((x) => x.credits));
-                    return (
-                      <div key={d.day} title={`${d.day}: ${d.credits} credits, ${d.runs} runs`} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center" }}>
-                        <div
-                          style={{
-                            width: "100%",
-                            borderRadius: 3,
-                            background: "var(--accent)",
-                            opacity: d.credits > 0 ? 1 : 0.15,
-                            height: Math.max(2, (d.credits / maxCredits) * 68),
-                          }}
-                        />
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
+          <div className="card" style={{ cursor: "default", padding: "16px 18px 12px", marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text2)", marginBottom: 10 }}>
+              Credit usage — last {analytics.window_days} days
             </div>
+            {analytics.daily.every((d) => d.credits === 0) ? (
+              <div style={{ color: "var(--text3)", fontSize: 12, padding: "16px 0", textAlign: "center" }}>No activity yet in this window.</div>
+            ) : (
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 76 }}>
+                {analytics.daily.map((d) => {
+                  const maxCredits = Math.max(1, ...analytics.daily.map((x) => x.credits));
+                  return (
+                    <div key={d.day} title={`${d.day}: ${d.credits} credits, ${d.runs} runs`} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center" }}>
+                      <div
+                        style={{
+                          width: "100%",
+                          borderRadius: 3,
+                          background: "var(--accent)",
+                          opacity: d.credits > 0 ? 1 : 0.15,
+                          height: Math.max(2, (d.credits / maxCredits) * 68),
+                        }}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
 
-            <div className="settings-block" style={{ marginBottom: 0 }}>
-              <div className="settings-row" style={{ borderBottom: "1px solid var(--border)" }}>
-                <div className="settings-row-label" style={{ marginBottom: 0 }}>Background activity</div>
+          {/* Structure + heartbeats — pulled out of a buried settings-block into real stat tiles.
+              The assistant wakes on its own via heartbeats/crons whether or not anyone is watching;
+              this is what makes that background work (and when it's failing) actually visible,
+              alongside how much workspace (projects/threads) it's operating across. */}
+          <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text3)", letterSpacing: "0.04em", textTransform: "uppercase", margin: "0 0 8px" }}>
+            Background activity — heartbeats &amp; workspace
+          </div>
+          <div className="grid-4" style={{ marginBottom: 10 }}>
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Projects</div>
+              <div className="card-value">{analytics.structure.projects}</div>
+              <div className="card-sub">Workspaces in this business</div>
+            </div>
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Threads</div>
+              <div className="card-value">{analytics.structure.threads}</div>
+              <div className="card-sub">Across all projects</div>
+            </div>
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Heartbeats — did work</div>
+              <div className="card-value" style={{ color: analytics.heartbeats.completed_with_work > 0 ? "#16a34a" : undefined }}>
+                {analytics.heartbeats.completed_with_work}
               </div>
-              <div className="settings-row">
-                <div>
-                  <div className="settings-row-label" style={{ fontSize: 12.5 }}>Wake-ups that did real work</div>
-                </div>
-                <span className="badge badge-green">{analytics.heartbeats.completed_with_work}</span>
+              <div className="card-sub">Wake-ups that took real action</div>
+            </div>
+            <div className="card" style={{ cursor: "default" }}>
+              <div className="card-label">Heartbeats — failed</div>
+              <div className="card-value" style={{ color: analytics.heartbeats.failed > 0 ? "#dc2626" : undefined }}>
+                {analytics.heartbeats.failed}
               </div>
-              <div className="settings-row">
-                <div>
-                  <div className="settings-row-label" style={{ fontSize: 12.5 }}>Failed wake-ups</div>
-                </div>
-                <span className={`badge ${analytics.heartbeats.failed > 0 ? "badge-amber" : "badge-green"}`}>{analytics.heartbeats.failed}</span>
-              </div>
-              <div className="settings-row">
-                <div>
-                  <div className="settings-row-label" style={{ fontSize: 12.5 }}>Projects / Threads</div>
-                </div>
-                <span style={{ fontSize: 12, color: "var(--text2)" }}>
-                  {analytics.structure.projects} / {analytics.structure.threads}
-                </span>
+              <div className="card-sub">
+                {analytics.heartbeats.failed + analytics.heartbeats.completed_with_work > 0
+                  ? `${Math.round((analytics.heartbeats.failed / Math.max(1, analytics.heartbeats.failed + analytics.heartbeats.completed_with_work)) * 100)}% of wake-ups`
+                  : "No wake-ups yet"}
               </div>
             </div>
           </div>
+
+          {/* Per-trigger failure breakdown — which KIND of wake-up (channel heartbeat, scheduled
+              job, connector poll, digest) is actually failing, not just an aggregate count. Only
+              rendered when something has actually failed — an all-green row for every trigger
+              would just be noise on top of the tile above. */}
+          {analytics.heartbeats.by_trigger.some((t) => t.failed > 0) && (
+            <div className="settings-block" style={{ marginBottom: 20 }}>
+              <div className="settings-row" style={{ borderBottom: "1px solid var(--border)" }}>
+                <div className="settings-row-label" style={{ marginBottom: 0 }}>Failures by trigger</div>
+              </div>
+              {analytics.heartbeats.by_trigger
+                .filter((t) => t.failed > 0)
+                .sort((a, b) => b.failed - a.failed)
+                .map((t) => (
+                  <div className="settings-row" key={t.trigger}>
+                    <div className="settings-row-label" style={{ fontSize: 12.5, marginBottom: 0, textTransform: "capitalize" }}>
+                      {t.trigger.replace(/_/g, " ")}
+                    </div>
+                    <span className="badge badge-amber">{t.failed} failed</span>
+                  </div>
+                ))}
+            </div>
+          )}
 
           {analytics.by_agent.length > 0 && (
             <div style={{ marginBottom: 8, overflowX: "auto" }}>

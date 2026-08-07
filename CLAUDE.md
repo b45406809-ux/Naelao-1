@@ -4566,6 +4566,34 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      strings ("Background activity", "Wake-ups that did real work", "Full page", "Waiting on
      you").
 
+102. **Dashboard heartbeat detail + a portfolio leaderboard/summary on Discover + template-grid
+     icon polish — user-directed UI batch, no backend changes.** Dashboard's embedded Analytics
+     section (item 101) buried heartbeat pass/fail and structure counts inside a small
+     settings-block text row; pulled them into real stat tiles (Projects, Threads, Heartbeats —
+     did work, Heartbeats — failed, with a computed failure %) plus a new "Failures by trigger"
+     breakdown table (`heartbeats.by_trigger`, already returned by `GET /business-analytics` but
+     never rendered — only shown when at least one trigger has actually failed, never an all-green
+     row of noise). Discover page: a new "Top businesses" leaderboard ranks the SIGNED-IN USER'S
+     OWN businesses only (never cross-tenant — that would be a real privacy violation, unlike the
+     pre-existing anonymized "what other businesses are doing" showcase) by this-month revenue
+     (`GET /revenue`) then 30-day credits as a tiebreak (`GET /business-analytics`), each business
+     fetched independently via `Promise.allSettled` so one endpoint erroring never blanks the
+     whole list; only renders as a ranked list at 2+ active businesses (a "leaderboard" of one is
+     nothing to compare against), but the same fetch also powers a new portfolio KPI row
+     (businesses / needs-setup / this month's total revenue / 30-day agent runs) shown for any
+     nonzero business count. Both the "Start a business" cards and the create-business/new-project/
+     add-agent-from-template grid dialogs (all pre-existing `.app-grid`/`.app-card` UI from earlier
+     passes — items 65/67/80 already built these as grids, not new this pass) gained the same
+     colored initial-letter icon header (`app-card-header`/`app-card-initial`) the connectors page
+     already established, for visual consistency across every template picker in the shell.
+     `apps/shell` rebuilt via `next-on-pages` (`NEXT_PUBLIC_API_URL` set in the same command per
+     the documented gotcha) and deployed to `naelao-shell.pages.dev` production (`--branch=main`);
+     verified by grepping the exact compiled edge-function files for each touched route
+     (`spaces.func.js`, `dashboard.func.js`, `projects/all.func.js`) for the new strings/classes
+     before and confirming all three live routes return 200. `npx turbo run typecheck` clean (76
+     tasks). No backend/worker changes this pass — every number rendered was already served by
+     existing, previously-tested endpoints (`GET /business-analytics`, `GET /revenue`).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
