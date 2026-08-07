@@ -24,7 +24,10 @@ import {
   type ChatUpload,
   getProject,
   listAgentDefinitions,
+  listAgentTemplates,
+  instantiateAgentTemplate,
   type AgentDefinitionSummary,
+  type AgentTemplateSummary,
 } from "@/lib/api";
 import type { SessionCredentials } from "@/lib/api";
 import {
@@ -156,41 +159,90 @@ export function Chat({
     },
     [spaceId]
   );
-  // Naelao Agent Templates switcher — which of THIS PROJECT's bound agents handles the next
-  // message. Only meaningful in a project thread (projectId set) with more than one agent
-  // actually bound; an assistant session or a project with just its default agent has nothing to
-  // switch between, so agentOptions stays empty and ComposerDock renders no pill for it at all.
+  // Naelao Agent Templates switcher — which agent handles the next message in THIS PROJECT
+  // thread. Meaningful only in a project thread (projectId set); an assistant session has no
+  // separate agent to switch to, so agentOptions stays empty and ComposerDock renders no button.
+  //
+  // Was gated on "2+ agents already bound to the project" — which meant it never showed at all
+  // for the overwhelmingly common case (a fresh project, 0 explicitly bound agents, everything
+  // implicitly answered by the Space Assistant). Reported live: "I don't see the switcher" in a
+  // brand-new project thread. Now it always shows in a project thread: a synthetic "Space
+  // Assistant (default)" entry stands in for "nothing explicitly bound" (id "" — ComposerDock's
+  // active-check and this component's onAgentChange both treat "" as "clear the override, use the
+  // default"), and the FULL template catalogue is offered inline so a user can go from "nothing
+  // bound" to "using Customer Support" without a separate trip to the Agents/Projects pages.
   const [agentOptions, setAgentOptions] = React.useState<Array<{ id: string; name: string }>>([]);
   const [selectedAgentId, setSelectedAgentId] = React.useState<string | null>(null);
+  const [availableTemplates, setAvailableTemplates] = React.useState<AgentTemplateSummary[]>([]);
+  const [addingTemplateId, setAddingTemplateId] = React.useState<string | null>(null);
+  // Transient feedback for the input bar's Upload button and the agent-template add action — not
+  // an error, just a small "added/failed" confirmation that fades after a few seconds. Declared
+  // here (rather than down by liveActivity, where it used to live) because handleAddAgentTemplate
+  // below needs it in scope.
+  const [uploadNotice, setUploadNotice] = React.useState<string | null>(null);
+
+  const refreshAgentBindings = React.useCallback(async () => {
+    if (!projectId) return;
+    const [project, defs] = await Promise.all([
+      getProject(spaceId, projectId, session),
+      listAgentDefinitions(spaceId, session),
+    ]);
+    const allowedIds = project.allowed_agent_ids?.length ? project.allowed_agent_ids : (project.default_agent_id ? [project.default_agent_id] : []);
+    if (allowedIds.length === 0) {
+      setAgentOptions([{ id: "", name: "Space Assistant (default)" }]);
+      setSelectedAgentId(null);
+      return;
+    }
+    const nameById = new Map(defs.map((d: AgentDefinitionSummary) => [d.id.includes(":") ? d.id.slice(d.id.indexOf(":") + 1) : d.id, d.name ?? d.id]));
+    setAgentOptions(allowedIds.map((id) => ({ id, name: nameById.get(id) ?? id })));
+    setSelectedAgentId(project.default_agent_id ?? allowedIds[0] ?? null);
+  }, [projectId, spaceId, session]);
+
   React.useEffect(() => {
-    if (!projectId) { setAgentOptions([]); setSelectedAgentId(null); return; }
+    if (!projectId) { setAgentOptions([]); setSelectedAgentId(null); setAvailableTemplates([]); return; }
     let cancelled = false;
     (async () => {
       try {
-        const [project, defs] = await Promise.all([
-          getProject(spaceId, projectId, session),
-          listAgentDefinitions(spaceId, session),
-        ]);
-        if (cancelled) return;
-        const allowedIds = project.allowed_agent_ids?.length ? project.allowed_agent_ids : (project.default_agent_id ? [project.default_agent_id] : []);
-        if (allowedIds.length < 2) { setAgentOptions([]); setSelectedAgentId(null); return; }
-        const nameById = new Map(defs.map((d: AgentDefinitionSummary) => [d.id.includes(":") ? d.id.slice(d.id.indexOf(":") + 1) : d.id, d.name ?? d.id]));
-        setAgentOptions(allowedIds.map((id) => ({ id, name: nameById.get(id) ?? id })));
-        setSelectedAgentId(project.default_agent_id ?? allowedIds[0] ?? null);
+        await refreshAgentBindings();
       } catch {
-        setAgentOptions([]);
-        setSelectedAgentId(null);
+        if (!cancelled) { setAgentOptions([]); setSelectedAgentId(null); }
+      }
+      try {
+        const templates = await listAgentTemplates(spaceId, session);
+        if (!cancelled) setAvailableTemplates(templates);
+      } catch {
+        if (!cancelled) setAvailableTemplates([]);
       }
     })();
     return () => { cancelled = true; };
-  }, [projectId, spaceId, session]);
+  }, [projectId, spaceId, session, refreshAgentBindings]);
+
+  const handleAddAgentTemplate = React.useCallback(
+    async (templateId: string) => {
+      if (!projectId || addingTemplateId) return;
+      setAddingTemplateId(templateId);
+      const templateName = availableTemplates.find((t) => t.id === templateId)?.name ?? "Agent";
+      try {
+        const result = await instantiateAgentTemplate(spaceId, session, { template_id: templateId, project_id: projectId });
+        await refreshAgentBindings();
+        setSelectedAgentId(result.agent_id);
+        const msg = `${templateName} added — it will answer your next message.`;
+        setUploadNotice(msg);
+        window.setTimeout(() => setUploadNotice((cur) => (cur === msg ? null : cur)), 5000);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : `Couldn't add ${templateName}`;
+        setUploadNotice(msg);
+        window.setTimeout(() => setUploadNotice((cur) => (cur === msg ? null : cur)), 5000);
+      } finally {
+        setAddingTemplateId(null);
+      }
+    },
+    [projectId, spaceId, session, addingTemplateId, availableTemplates, refreshAgentBindings]
+  );
   // The in-flight run's "currently doing X" trail (script-engine/loop.ts's TraceStep, live via
   // NaelaoAgentDO's in-memory progress map) — reset per send, attached to the completed message
   // once the run resolves so the tool-call/thinking summary stays visible under that turn.
   const [liveActivity, setLiveActivity] = React.useState<LiveRunStep[]>([]);
-  // Transient feedback for the input bar's Upload button (InputBarExtras.tsx) — not an error,
-  // just a small "added/failed" confirmation that fades after a few seconds.
-  const [uploadNotice, setUploadNotice] = React.useState<string | null>(null);
   // Real, previously-reported bug: a message's own pendingApproval/deferredApprovals are CLIENT-
   // ONLY (never persisted — see Message's own doc), attached only during the exact live poll/SSE
   // session that watched a run reach a gate. Navigate away, reload, or approve from the separate
@@ -1040,8 +1092,11 @@ export function Chat({
             spaceName={activeSpaceName ?? undefined}
             isBusinessSpace={dockIsBusinessSpace}
             agentOptions={agentOptions}
-            selectedAgentId={selectedAgentId}
-            onAgentChange={setSelectedAgentId}
+            selectedAgentId={selectedAgentId ?? ""}
+            onAgentChange={(id) => setSelectedAgentId(id === "" ? null : id)}
+            availableTemplates={availableTemplates}
+            addingTemplateId={addingTemplateId}
+            onAddTemplate={handleAddAgentTemplate}
             onNotice={(msg) => {
               setUploadNotice(msg);
               window.setTimeout(() => setUploadNotice((cur) => (cur === msg ? null : cur)), 4000);

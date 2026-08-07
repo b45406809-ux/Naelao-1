@@ -4420,6 +4420,34 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     2619/2619 tests pass (11 new), `npx turbo run typecheck` clean (76 tasks), `naelao-agents` and
     `apps/shell` deployed and verified live end to end in a browser.
 
+99. **Naelao Agent Templates switcher (item 68's own feature) was hidden in the single most common
+    case — FIXED.** Reported live: "I'm in a project thread, I don't see the switcher." Root
+    cause: `Chat.tsx` only populated `agentOptions` — and the dock only rendered its button at
+    all — when a project already had 2+ agents explicitly bound
+    (`project.allowed_agent_ids.length >= 2`). Every ordinary project (the default "General"
+    project every business gets, or any project nobody has visited the Agents page for yet) has
+    ZERO agents explicitly bound and is implicitly answered by the Space Assistant — so the
+    switcher this feature exists to provide was invisible for the overwhelming majority of real
+    project threads, including the one the report came from. Confirmed live (curled the deployed
+    `naelao-agents` worker's real `/agent-templates` route — the backend was never in question).
+    Fixed by removing the precondition rather than lowering it: the dock button now shows in
+    EVERY project thread (gated on `projectId` alone, matching "not in an assistant session"
+    exactly as before); when nothing is explicitly bound, `agentOptions` carries one synthetic
+    `"Space Assistant (default)"` entry (id `""`, both `ComposerDock`'s active-check and
+    `Chat.tsx`'s `onAgentChange` treat it as "clear the override") so the panel always shows
+    something rather than nothing; and the FULL template catalogue is now offered inline in the
+    same panel with an "Add & use" button per template (`instantiateAgentTemplate(..., {project_id})`
+    then an immediate `refreshAgentBindings()` + auto-select) — closing the actual gap, which
+    wasn't just visibility but that reaching a template previously needed a separate trip to the
+    Agents page and then the Projects page before a thread's own switcher had anything to switch
+    to. No backend change — `GET /spaces/:id/agent-templates` and `POST
+    /spaces/:id/agent-templates` (instantiate) already existed and were already correct; this was
+    entirely a frontend gating bug in `Chat.tsx`/`ComposerDock.tsx`. 2619/2619 tests pass (no
+    regressions — this path had no prior unit coverage, frontend-only), `npx turbo run typecheck`
+    clean (76 tasks), `apps/shell` rebuilt and deployed to production, verified by grepping the
+    exact deployed bundle for the new "Add a template to this project" string before and after
+    upload.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

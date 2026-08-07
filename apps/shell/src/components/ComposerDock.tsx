@@ -30,6 +30,7 @@ import {
   type ChatUpload,
   type BusinessMember,
   type SessionCredentials,
+  type AgentTemplateSummary,
 } from "@/lib/api";
 import { startConnectorConnect, startDirectoryConnect, submitManualConnectorKey } from "@/lib/connectorActions";
 import { modelLabel } from "./ModelSelector";
@@ -103,6 +104,9 @@ export function ComposerDock({
   agentOptions,
   selectedAgentId,
   onAgentChange,
+  availableTemplates,
+  addingTemplateId,
+  onAddTemplate,
   children,
 }: {
   spaceId: string;
@@ -131,6 +135,14 @@ export function ComposerDock({
   agentOptions?: Array<{ id: string; name: string }>;
   selectedAgentId?: string | null;
   onAgentChange?: (agentId: string) => void;
+  /** The full Naelao Agent Templates catalogue, offered to ADD to this project directly from the
+   *  panel — without this, a project with nothing bound yet had no path from "the switcher" to
+   *  actually having something to switch to except a separate trip to the Agents/Projects pages. */
+  availableTemplates?: AgentTemplateSummary[];
+  /** The template currently being instantiated, if any — disables its own row's button and shows
+   *  "Adding…" rather than letting a slow request look like a dead click. */
+  addingTemplateId?: string | null;
+  onAddTemplate?: (templateId: string) => void;
   /** The message input itself. The dock owns the whole stack — panel above, input in the middle,
    *  toolbar below — so an open panel pushes the input down as one unit instead of overlaying it. */
   children?: React.ReactNode;
@@ -375,33 +387,70 @@ export function ComposerDock({
         </div>
       )}
 
-      {panel === "agent" && agentOptions && (
+      {panel === "agent" && (
         <div className="dock-panel">
           <div className="dock-panel-head">
             <span className="dock-panel-title">Naelao Agent Templates — this project</span>
             <span className="dock-panel-note">who answers your next message</span>
           </div>
           <div className="dock-panel-body">
-            {agentOptions.map((a) => {
-              const isActive = a.id === selectedAgentId;
-              return (
-                <div key={a.id} className={`dock-row${isActive ? " active" : ""}`}>
-                  <div className="dock-row-icon"><Icon path={ICONS.agent} size={15} /></div>
-                  <div className="dock-row-main">
-                    <div className="dock-row-title">{a.name}</div>
-                  </div>
-                  <div className="dock-row-action">
-                    {isActive ? (
-                      <span className="dock-pill on"><Icon path={ICONS.check} size={11} />Active</span>
-                    ) : (
-                      <button type="button" className="dock-pill" onClick={() => { onAgentChange?.(a.id); setPanel("compose"); }}>
-                        Use this agent
-                      </button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+            {(!agentOptions || agentOptions.length === 0) && (!availableTemplates || availableTemplates.length === 0) ? (
+              <p style={{ padding: "8px 12px", fontSize: 12.5, color: "var(--text3)" }}>Loading…</p>
+            ) : (
+              <>
+                {agentOptions?.map((a) => {
+                  const isActive = a.id === selectedAgentId;
+                  return (
+                    <div key={a.id} className={`dock-row${isActive ? " active" : ""}`}>
+                      <div className="dock-row-icon"><Icon path={ICONS.agent} size={15} /></div>
+                      <div className="dock-row-main">
+                        <div className="dock-row-title">{a.name}</div>
+                      </div>
+                      <div className="dock-row-action">
+                        {isActive ? (
+                          <span className="dock-pill on"><Icon path={ICONS.check} size={11} />Active</span>
+                        ) : (
+                          <button type="button" className="dock-pill" onClick={() => { onAgentChange?.(a.id); setPanel("compose"); }}>
+                            Use this agent
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {availableTemplates && availableTemplates.length > 0 && (
+                  <>
+                    <div className="dock-panel-head" style={{ marginTop: agentOptions && agentOptions.length > 0 ? 6 : 0 }}>
+                      <span className="dock-panel-title" style={{ fontSize: 11.5 }}>Add a template to this project</span>
+                      <span className="dock-panel-note">its own tools, autonomy, and instructions</span>
+                    </div>
+                    {availableTemplates.map((t) => {
+                      const isAdding = addingTemplateId === t.id;
+                      return (
+                        <div key={t.id} className="dock-row">
+                          <div className="dock-row-icon"><Icon path={ICONS.agent} size={15} /></div>
+                          <div className="dock-row-main">
+                            <div className="dock-row-title">{t.name}</div>
+                            <div className="dock-row-desc">{t.description}</div>
+                          </div>
+                          <div className="dock-row-action">
+                            <button
+                              type="button"
+                              className="dock-pill"
+                              disabled={!!addingTemplateId}
+                              onClick={() => onAddTemplate?.(t.id)}
+                            >
+                              {isAdding ? "Adding…" : "Add & use"}
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
+              </>
+            )}
           </div>
         </div>
       )}
@@ -700,12 +749,12 @@ export function ComposerDock({
           <Icon path={ICONS.cube} />
           {capability.reasoningLevels.length > 0 && reasoningLevel && <span className="dock-btn-dot" />}
         </button>
-        {agentOptions && agentOptions.length > 0 && (
+        {projectId && (
           <button
             type="button"
             className={`dock-btn${panel === "agent" ? " open" : ""}`}
             onClick={() => toggle("agent")}
-            title={`Agent: ${agentOptions.find((a) => a.id === selectedAgentId)?.name ?? "default"}`}
+            title={`Agent: ${agentOptions?.find((a) => a.id === selectedAgentId)?.name ?? "default"}`}
           >
             <Icon path={ICONS.agent} />
           </button>
