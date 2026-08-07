@@ -4298,6 +4298,72 @@ appendixes are authoritative** and override the early framing. Always confirm ag
       webhook must point at `${PUBLIC_AGENTS_URL}/channels/platform-inbound/whatsapp` — NOT the
       router, since the router rewrites the path and the signature covers the URL.
 
+97. **The agent loop is no longer capped at six steps — it now runs as long as the task honestly
+    needs, bounded by real resources instead of an arbitrary count. Researched against OpenClaw
+    first, then built both halves, because raising the cap alone would have made things worse.**
+    - **The finding.** OpenClaw (deepwiki + its docs) has NO step cap: its loop runs until the model
+      stops requesting tools, with *preflight compaction* against the model's token budget before
+      every turn and automatic compaction-on-overflow as recovery. Ours was
+      `for (step = 0; step < (opts.maxSteps ?? 6); step++)` and the interactive chat path never
+      overrode that six — so every message a user sent got six turns, whatever they asked for.
+    - **Why raising the number alone would have been worse.** `steps_so_far` grew unbounded in the
+      reasoner payload at ~500 tokens per observation, and this platform's default model is served
+      with a REAL 24k window (`@cf/meta/llama-3.3-70b-instruct-fp8-fast` — the account's own model
+      API, against a nominal 128k). A bare cap raise moves the failure from "gave up at six" to
+      "overflowed the context around step twenty-five and every call failed", which is strictly
+      worse for being opaque.
+    - **New `script-engine/step-context.ts`** folds the older half of a run's own history into one
+      line per step — what ran, with what arguments, how it went — sized from the resolved model's
+      real window. Deliberately DETERMINISTIC, not model-written (OpenClaw asks a model to
+      summarise): an extra LLM round-trip on every long run costs real money on a ~65-run/day free
+      allowance, and a summariser outage would silently lose the record of work that happened. What
+      a model needs from an old step is structural and can be rendered exactly, for free, with no
+      way for a hallucinated summary to claim a failed action succeeded. Arguments are kept, not
+      just names — "project.create ran" doesn't stop a repeat, "it created *that* project" does.
+      Truncation happens in a COPY: the original array backs resume checkpoints and deferred
+      approvals, which need the real values.
+    - **New `script-engine/loop-budget.ts`** replaces the step count with what is actually scarce:
+      a real token ceiling (from the provider's own usage counts), a wall clock (a person is
+      waiting), stall detection (a model failing the same way six times will fail a seventh), and a
+      50-step runaway ceiling that should never be what fires. The load-bearing part is `final`:
+      one turn before any budget runs out the model is TOLD, and answers with what it has —
+      without that, hitting a budget is indistinguishable from failing, which is exactly how a run
+      that had genuinely created a project came to be reported as an error (item 91).
+      The deadline margin is sized from the slowest step observed, not a fixed guess.
+    - **Context-overflow recovery**: a provider overflow error is now distinguished from every
+      other failure (`isContextOverflowError`, matched on message text since no shared error code
+      exists across Anthropic/OpenAI-compatible/Workers AI), halves the history budget and retries,
+      up to twice. It used to be a dead-end `give_up`.
+    - **Sub-agents un-throttled too**: `budgetToMaxSteps` capped at 10, so a child on the default
+      20k token budget hit a step ceiling long before spending its allowance — a sub-agent strictly
+      less capable than its parent, for no reason anyone chose. Now 3-40, with tokens binding.
+    - **Two further real bugs, both found by a LIVE run rather than by review** (trace fetched from
+      production, not reasoned about):
+      (1) An agent whose only tool was gated parked one approval, spent its stall budget re-picking
+      the same blocked action, and — because no tool had ever *succeeded* — skipped the closing
+      summary entirely and returned "no terminal action". The user saw a dead end when the truth
+      was "I need you to approve list_files". The summary path is now gated on "did anything happen
+      at all", not "did a tool succeed", and the error message leads with what is waiting.
+      (2) `list_files`/`read_file` — pure reads of the business's OWN storage — were not in the
+      guided-mode auto-approved defaults, so the assistant could not take a single step without a
+      human. Added, same "safe by construction" rationale as item 86's web-search fix.
+      NOTE: that list is snapshotted into each space's stored `assistant_policy` at provision time,
+      so this only helps NEWLY created businesses; an existing one needs its owner to approve once
+      or flip to Autonomous.
+    - **Live-verified on production, not just in tests.** A read-only audit goal ran **11 reasoning
+      turns in one run** (old cap: 6 total), executed 5 tool calls, self-corrected a wrong op name
+      (`mcp.list_servers` → `list_servers`), parked 4 approvals and carried on around each, and
+      composed an accurate final answer. Full trace read back from the live `run_traces` endpoint.
+      The blocked-on-approval fix was separately confirmed live: the same goal that previously
+      dead-ended now answers *"the list_files operation is still waiting for human approval."*
+      Test approvals were rejected afterwards so the owner's inbox was left clean.
+    - **Where we now beat OpenClaw**, beyond parity: durable approvals that suspend a run and
+      resume it 24h later; an action ledger that short-circuits already-completed work on a retry;
+      stall detection and a deadline (they document neither); and an honest exhaustion message that
+      names *why* it stopped rather than only that it did.
+    2608/2608 tests pass (30 new in `agent-loop-unbounded.test.ts`), `npx turbo run typecheck` clean
+    (76 tasks), `naelao-agents` deployed via bare `wrangler deploy` (item 83's documented trap).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

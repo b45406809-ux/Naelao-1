@@ -668,6 +668,14 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   "web-search.fetch_page",
   "web-search.extract_content",
   "web-search.grounded_answer",
+  // Looking at the business's own workspace files. Caught on a live production run: the assistant
+  // was asked to inspect a handful of files, and `list_files` — a pure directory read of the
+  // business's OWN storage — was gated, so it could not take a single step without a human. It
+  // spent its whole budget re-picking the same blocked action and ended with nothing. Reading is
+  // how an agent orients itself; requiring permission for it makes multi-step work impossible for
+  // zero risk. write_file/delete_file stay gated — those change the business's data.
+  "list_files",
+  "read_file",
   // Read-only lookup of the business's own mailbox record. email.send (reaches the outside world)
   // and email.provision (creates a billable AgentMail resource) stay gated, same posture as
   // business_wallet.balance being auto-approved while a payout is not.

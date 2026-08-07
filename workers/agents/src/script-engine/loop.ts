@@ -31,6 +31,8 @@ type LoopResultCore = Omit<LoopResult, "trace">;
 type PushTrace = (step: Omit<TraceStep, "seq" | "ts">) => void;
 import { ScriptToolSurface } from "./tool-surface.js";
 import { runObserve } from "./observe.js";
+import { assessBudget, resolveLoopBudget, isContextOverflowError, type LoopBudget } from "./loop-budget.js";
+import { compactSteps, stepLimitsForModel, squeezeStepLimits } from "./step-context.js";
 import { fingerprintSimilarity, isMatch, isPartial } from "./fingerprint.js";
 import { FIND_CONFIDENCE_FLOOR } from "./script-find.js";
 import { assessSkillHealth, isSafeToAutoRun } from "./skill-health.js";
@@ -173,6 +175,15 @@ export interface Reasoner {
      */
     priorSteps?: Array<{ name: string; params: Record<string, unknown>; ok: boolean; output?: unknown; error?: string }>;
     /**
+     * One line per step folded out of `priorSteps` to keep the payload inside the model's context
+     * window — what ran, with what arguments, and how it went (step-context.ts).
+     *
+     * This is what lets the loop run past the point where raw history would overflow. Without it
+     * the step count could not exceed roughly a dozen on the small-window models this platform
+     * actually runs on, which is the real reason the loop used to be capped at six.
+     */
+    earlierSteps?: string[];
+    /**
      * The thread's own conversation so far, bounded and possibly compacted.
      *
      * Without it the agent has no memory of the thread it is replying in: it cannot resolve
@@ -219,12 +230,30 @@ export const DEFAULT_ESCALATION: EscalationConfig = {
 /** See RunLoopOptions.approvalMode. */
 export type ApprovalMode = "gate_listed" | "gate_unless_listed";
 
+/**
+ * Context window assumed when the caller doesn't say which model is running.
+ *
+ * Deliberately the SMALL end of the range this platform actually serves, not a comfortable
+ * average: the cost of assuming too little is a slightly shorter history than necessary, and the
+ * cost of assuming too much is every call failing on overflow. `contextWindowTokens` should
+ * always be passed in practice (NaelaoAgentDO resolves it from the run's real model).
+ */
+const DEFAULT_ASSUMED_CONTEXT_WINDOW = 24_000;
+
+/** How many times a context-overflow error may force a harder squeeze before it's taken at face
+ *  value. Two is enough to halve the history twice; a third failure is not a sizing problem. */
+const MAX_OVERFLOW_RETRIES = 2;
+
 export interface RunLoopOptions {
   goal: string;
   startupObserve: string;
   observeArgs?: Record<string, unknown>;
   escalation?: Partial<EscalationConfig>;
-  /** Cap on EXECUTE attempts within one pass (prevents runaway). */
+  /**
+   * Runaway ceiling on EXECUTE attempts within one pass. NOT an operating limit — see
+   * loop-budget.ts's DEFAULT_LOOP_BUDGET. Sub-agents set their own, derived from their token
+   * budget; the interactive path leaves it at the default and is bounded by tokens and time.
+   */
   maxSteps?: number;
   /**
    * Real per-token budget ceiling for this pass (spec: sub-agent budgets must be enforced
@@ -234,6 +263,27 @@ export interface RunLoopOptions {
    * (the normal builder-workspace default; sub-agents always set this from their own budget).
    */
   maxTokens?: number;
+  /**
+   * Epoch ms after which no new step may start.
+   *
+   * The interactive path sets this because a person is waiting on the other end of a request; the
+   * durable path leaves it off, since a Cloudflare Workflow step has no wall-time limit and the
+   * enclosing job owns that decision. One turn before the deadline the model is told to wrap up,
+   * so running out of time produces a real answer about what was done rather than a timeout.
+   */
+  deadlineAt?: number;
+  /** Consecutive steps with no successful tool result before the loop stops and asks for a
+   *  summary. See LoopBudget.maxStallSteps. */
+  maxStallSteps?: number;
+  /**
+   * The real context window of the model this run is using, in tokens — used to size how much of
+   * the run's own history is carried forward each turn (step-context.ts).
+   *
+   * Load-bearing rather than a nicety: this platform's default model is served with a 24k window
+   * against a nominal 128k (billing-core's MODEL_CONTEXT_WINDOWS, read from the account's own
+   * model API). Sizing history against the nominal figure would overflow it.
+   */
+  contextWindowTokens?: number;
   /**
    * Action names interpreted according to `approvalMode` (default "gate_listed"):
    *   - "gate_listed": these are the actions that REQUIRE approval (agents.md's
@@ -530,7 +580,28 @@ export async function runScriptLoop(
     case "L3":
     case "L4": {
       // Full re-derivation (L3) or live first-principles reasoning then distill (L4).
-      const maxSteps = opts.maxSteps ?? 6;
+      //
+      // This used to be `for (step = 0; step < (opts.maxSteps ?? 6); step++)`, and the interactive
+      // chat path never overrode that six. It is now bounded by what is actually scarce — tokens,
+      // wall clock, and progress — with a runaway ceiling far above real use (loop-budget.ts), and
+      // the history is compacted each turn so a long run can't overflow the model's context
+      // (step-context.ts). Those two together are what make "as many steps as the task needs"
+      // possible rather than just permitted.
+      const budget = resolveLoopBudget({
+        ...(opts.maxSteps !== undefined ? { maxSteps: opts.maxSteps } : {}),
+        ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
+        ...(opts.deadlineAt !== undefined ? { deadlineAt: opts.deadlineAt } : {}),
+        ...(opts.maxStallSteps !== undefined ? { maxStallSteps: opts.maxStallSteps } : {}),
+      });
+      let stepLimits = stepLimitsForModel(opts.contextWindowTokens ?? DEFAULT_ASSUMED_CONTEXT_WINDOW);
+      /** Consecutive steps that produced no successful tool result — see LoopBudget.maxStallSteps. */
+      let stallSteps = 0;
+      /** Longest single step so far, so the deadline check knows whether another one fits. */
+      let longestStepMs = 0;
+      /** How many times a context-overflow error has forced a harder squeeze this run. */
+      let overflowRetries = 0;
+      /** Why the loop stopped taking steps, for the message the user eventually reads. */
+      let exhaustionReason = "";
       let lastDecision: ReasonDecision | null = null;
       const usageAcc = { input: 0, output: 0 };
       // What this run has already done, fed back into every subsequent decide() call. Seeded from
@@ -553,21 +624,42 @@ export async function runScriptLoop(
        *  below. Only ever set once the outcome is actually known (never for a merely "pending"
        *  gate, which never reaches here). */
       const attemptedCalls = new Map<string, { ok: boolean; output?: unknown; error?: string }>();
-      for (let step = 0; step < maxSteps; step++) {
-        // Real per-token budget ceiling (sub-agent budgets — spec: enforce actual reasoner
-        // spend, not a step-count proxy). Never starts a step it can't afford.
-        if (opts.maxTokens && usageAcc.input + usageAcc.output >= opts.maxTokens) {
-          notes.push(`${level} token budget ${opts.maxTokens} reached before step ${step + 1}`);
+      for (let step = 0; ; step++) {
+        const assessment = assessBudget(budget, {
+          step,
+          tokensUsed: usageAcc.input + usageAcc.output,
+          stallSteps,
+          now: Date.now(),
+          longestStepMs,
+        });
+        if (assessment.verdict === "exhausted") {
+          exhaustionReason = assessment.reason;
+          notes.push(`${level} stopped taking steps: ${assessment.reason}`);
           break;
         }
-        await reportProgress(opts, { phase: "reason", detail: `Thinking (step ${step + 1}/${maxSteps})…` });
+        // One turn left before some budget runs out, so the model is told to finish now. Without
+        // this a model that keeps choosing `run` simply falls off the end and the user is told the
+        // agent "never reached an answer" — even when the work itself succeeded. Reported live: a
+        // project was created, the loop then burned its remaining steps and surfaced an error, so
+        // the user retried and created a second one.
+        const isFinalStep = assessment.verdict === "final";
+        // Recorded even though the run may well answer normally from here: if it does NOT, this is
+        // the only place that knows why it was down to its last turn, and "ran out of time" versus
+        // "ran out of budget" versus "made no progress" are three different things for a reader.
+        if (isFinalStep) exhaustionReason = assessment.reason;
+        await reportProgress(opts, {
+          phase: "reason",
+          detail: isFinalStep ? "Wrapping up…" : `Thinking (step ${step + 1})…`,
+        });
         const reasonStart = Date.now();
-        // On the last step there is no step after this one to answer in, so the model is told to
-        // finish now. Without this a model that keeps choosing `run` simply falls off the end of
-        // the loop and the user is told the agent "never reached an answer" — even when the work
-        // itself succeeded. Reported live: a project was created, then the loop burned its
-        // remaining steps and surfaced an error, so the user retried and created a second one.
-        const isFinalStep = step === maxSteps - 1;
+        // Fold the older half of this run's history into one line per step, so a long run stays
+        // inside the model's real context window instead of overflowing it somewhere past step
+        // twenty. The full `priorSteps` array is untouched — checkpoints and deferred approvals
+        // need the real results.
+        const stepContext = compactSteps(priorSteps, stepLimits);
+        if (stepContext.compacted) {
+          notes.push(`${level} folded ${stepContext.omitted} earlier step(s) to fit the context window`);
+        }
         const decision = await reasoner.decide({
           goal: opts.goal,
           level,
@@ -578,12 +670,26 @@ export async function runScriptLoop(
           ...(level === "L3" && top
             ? { repairTarget: { name: top.name, failureReason: repairReason ?? "stale / re-derive" } }
             : {}),
-          ...(priorSteps.length > 0 ? { priorSteps } : {}),
+          ...(stepContext.recent.length > 0 ? { priorSteps: stepContext.recent } : {}),
+          ...(stepContext.digest.length > 0 ? { earlierSteps: stepContext.digest } : {}),
           ...(isFinalStep ? { finalStep: true } : {}),
         });
+        longestStepMs = Math.max(longestStepMs, Date.now() - reasonStart);
         const stepUsage = usageOf(reasoner);
         usageAcc.input += stepUsage.input;
         usageAcc.output += stepUsage.output;
+
+        // The model's context overflowed anyway — a candidate list, an observation snapshot or a
+        // single enormous conversation can push a payload over even after the steps are compacted.
+        // That has a real recovery (carry less and try again), unlike every other provider error,
+        // so it is not allowed to end the run the way a give_up otherwise would.
+        if (decision.action === "give_up" && isContextOverflowError(decision.reason) && overflowRetries < MAX_OVERFLOW_RETRIES) {
+          overflowRetries++;
+          stepLimits = squeezeStepLimits(stepLimits);
+          notes.push(`${level} hit the model's context limit; carrying less history and retrying (attempt ${overflowRetries})`);
+          pushTrace({ phase: "reason", detail: "context overflow → compacting harder", ok: false });
+          continue;
+        }
         lastDecision = decision;
         pushTrace({
           phase: "reason",
@@ -600,7 +706,7 @@ export async function runScriptLoop(
           // there's no step left to report it in — so it isn't run, and the loop drops straight
           // into the summary path below with whatever already succeeded.
           if (isFinalStep) {
-            notes.push(`${level} chose ${decision.name} on the final step; not run — summarising instead`);
+            notes.push(`${level} chose ${decision.name} on the final step (${assessment.reason}); not run — summarising instead`);
             break;
           }
 
@@ -622,6 +728,7 @@ export async function runScriptLoop(
               ok: false,
               error: "still waiting on a human for this one — do something else, or answer with what you have",
             });
+            stallSteps++;
             continue;
           }
 
@@ -649,6 +756,10 @@ export async function runScriptLoop(
                       "(already failed in this task with the same arguments — retrying will not help; try something different or answer describing the failure)",
                   }),
             });
+            // Re-issuing a call it has already made is the single clearest sign a model is going
+            // in circles. It costs a real reasoning turn and produces nothing new, so it counts
+            // against the stall budget however the original attempt went.
+            stallSteps++;
             continue;
           }
 
@@ -678,6 +789,7 @@ export async function runScriptLoop(
                 "the task needs that doesn't depend on it, then answer describing what you did and " +
                 "what is still waiting. Do not retry this call.",
             });
+            stallSteps++;
             continue;
           }
           if (gate.verdict === "denied") {
@@ -685,6 +797,13 @@ export async function runScriptLoop(
           }
           await reportProgress(opts, { phase: "run", name: decision.name, detail: `Running ${decision.name}` });
           const result = await runOnce(decision.name, decision.params);
+          // A slow tool eats the wall clock exactly as a slow model does, so the deadline margin
+          // has to be measured over the whole turn, not just the reasoning half of it.
+          longestStepMs = Math.max(longestStepMs, Date.now() - reasonStart);
+          // Progress is a tool call that actually worked. Anything else — a failure, a repeat, an
+          // action parked for a human — leaves the run no closer to done than it was, and enough
+          // of those in a row is the signal to stop and report rather than keep paying.
+          stallSteps = result.ok ? 0 : stallSteps + 1;
           notes.push(`${level} run ${decision.name}: ${result.ok ? "ok" : "fail"}`);
           pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
           // The real outcome, recorded for the repeat guard above — see its own comment for why
@@ -718,8 +837,7 @@ export async function runScriptLoop(
           return finish(withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes, pushTrace, runOnce), usageAcc));
         }
       }
-      notes.push(`${level} exhausted ${maxSteps} steps`);
-      // Ran out of steps without ever composing an answer.
+      // Ran out of budget without ever composing an answer.
       //
       // A raw tool payload is still never returned as "the answer" — there is no reliable way to
       // tell a receipt (`{written: true}`) from a result worth reading (`{content: "..."}`), and
@@ -733,10 +851,17 @@ export async function runScriptLoop(
       // So: ask the model for the summary it failed to write, restricted to a terminal decision.
       // That is not guessing at a payload — it is the same model, with the same observations,
       // asked only to say what happened. If it still won't answer, the honest error stands.
-      if (lastGoodRun) {
+      //
+      // The condition is "did anything happen at all", NOT "did a tool succeed". Caught on a live
+      // production run: an agent whose only tool was gated parked one approval, spent its stall
+      // budget re-picking the same parked action, and — because no run had ever SUCCEEDED — skipped
+      // this block entirely and returned "no terminal action". The user saw a dead-end failure when
+      // the truth was "I need you to approve list_files", which is both actionable and true.
+      if (priorSteps.length > 0) {
         const ran = priorSteps.filter((p) => p.ok).map((p) => p.name).join(", ");
         notes.push(`${level} ran ${priorSteps.length} step(s) but never composed an answer`);
         try {
+          const closing = compactSteps(priorSteps, stepLimits);
           const summary = await reasoner.decide({
             goal: opts.goal,
             level,
@@ -744,7 +869,8 @@ export async function runScriptLoop(
             candidates,
             availableOperations: tools.availableOperations(),
             ...(opts.conversation ? { conversation: opts.conversation } : {}),
-            priorSteps,
+            priorSteps: closing.recent,
+            ...(closing.digest.length > 0 ? { earlierSteps: closing.digest } : {}),
             finalStep: true,
           });
           const summaryUsage = usageOf(reasoner);
@@ -762,12 +888,23 @@ export async function runScriptLoop(
           // Never let the recovery attempt itself become the failure the user sees.
           notes.push(`${level} summary attempt failed: ${err instanceof Error ? err.message : String(err)}`);
         }
+        // Waiting on a human is the single most actionable thing this message can say, so it leads.
+        // Without it the reader is told the agent failed, when what actually happened is that it is
+        // blocked on them.
+        const waiting = deferred.map((d) => d.action_name).join(", ");
         return finish(withTokenUsage({
           level,
-          script_name: lastGoodRun.name,
+          ...(lastGoodRun ? { script_name: lastGoodRun.name } : {}),
           result: {
             ok: false,
-            error: `Ran ${priorSteps.length} step(s) without reaching an answer (completed: ${ran || "none"})`,
+            // Names WHY it stopped, not just that it did. "Ran 6 steps without reaching an answer"
+            // told a user nothing they could act on; "ran out of time" and "made no progress for
+            // several steps" are different problems with different responses.
+            error:
+              (waiting ? `Waiting on your approval for: ${waiting}. ` : "") +
+              `Ran ${priorSteps.length} step(s) without reaching an answer` +
+              (exhaustionReason ? ` — ${exhaustionReason}` : "") +
+              ` (completed: ${ran || "none"})`,
             tier: 1 as const,
             duration_ms: 0,
             tokens_used: 0,

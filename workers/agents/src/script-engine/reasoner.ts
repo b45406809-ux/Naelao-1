@@ -11,6 +11,7 @@
  */
 
 import { renderConversationForReasoner } from "./conversation-context.js";
+import { renderStepsForReasoner } from "./step-context.js";
 import type { Reasoner, ReasonDecision, ReasonerUsage } from "./loop.js";
 import type { Embedder } from "./types.js";
 import {
@@ -53,6 +54,10 @@ Prefer "run" with an existing operation when one fits. Only "distill" when the c
 
 "steps_so_far" lists what you have ALREADY run in this task and what each returned. Read it before deciding: do not repeat a call that already succeeded, use its result to inform the next step, and when you have enough to respond, finish with "answer" — a task is only complete once you have answered, not once a tool has run. If a tool failed twice, do not try it a third time; either take a different approach or "give_up" with the real reason.
 
+On a long task the older half of "steps_so_far" is folded into "earlier_steps" — one line per step recording what ran, with what arguments, and how it went. Those steps ARE DONE. Their full results are gone from your context, but the fact that they happened is not in doubt: never run one again to remind yourself what it returned. Re-run something from "earlier_steps" only when the goal genuinely needs a fresh value.
+
+You are not on a short leash. Keep working until the goal is actually met — chain as many steps as the task honestly needs, checking each result before deciding the next. Do not rush to "answer" with a half-finished job just because several steps have gone by; equally, do not keep calling tools once you already have what you need.
+
 When "final_step" is true this is your LAST turn — there is no step after this one. You MUST reply with "answer" (or "give_up" if you truly cannot). Do not choose "run": it will not be executed. If work already succeeded in "steps_so_far", answer by telling the user plainly what was done. Reporting completed work is always better than saying nothing.
 
 Each candidate script carries a "health" record: how it has actually been going lately, and what it said the last time it failed. Trust it over the description. If a candidate is "broken" or "degrading", do NOT run it unchanged — running something that just failed three times will fail a fourth. Either "patch" it, aiming the fix at its "last_error", or pick a different approach. A "proven" skill can be run as-is; an "unproven" one can be run, but check what it returns rather than assuming it worked. When you patch a skill, fix the cause named in "last_error" — do not rewrite it wholesale on a guess.
@@ -61,13 +66,18 @@ Each candidate script carries a "health" record: how it has actually been going 
 
 When "conversation.compacted" is true you are NOT seeing the whole conversation. Older messages were replaced by a summary and detail has been lost. This matters more than it sounds: if the user refers to something that is not in the summary or the recent messages, the correct move is to run conversation.search to find it in the full transcript. Do NOT assume it never happened, and do NOT answer from the partial record as though it were complete. Only say you cannot find something after actually searching for it.`;
 
-/** Cap a single tool result so one oversized payload can't dominate the reasoning context.
- *  2000 chars is generous for a decision-making observation and small enough that several fit. */
-function truncateObservation(output: unknown): unknown {
-  const text = typeof output === "string" ? output : JSON.stringify(output ?? null);
-  if (text === undefined || text === null) return null;
-  return text.length > 2000 ? `${text.slice(0, 2000)}… [truncated, ${text.length} chars total]` : text;
-}
+/**
+ * Backstop cap on a single tool result so one oversized payload can't dominate the reasoning
+ * context. 2000 chars is generous for a decision-making observation and small enough that several
+ * fit.
+ *
+ * A backstop rather than the primary control: the loop already truncates against the resolved
+ * model's own context window before it hands steps over (step-context.ts), because the component
+ * that owns the budget has to be the one that costs what it sends. On a small-window model the
+ * loop's cap is tighter than this one, so this never fires; it exists for callers that build a
+ * payload without going through the loop.
+ */
+const REASONER_OBSERVATION_CHARS = 2000;
 
 function extractJson(text: string): unknown {
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
@@ -255,16 +265,11 @@ export class GatewayReasoner implements Reasoner {
       // What has already been tried in THIS run and what came back. Without it the model
       // re-decides from scratch every step — it would happily call the same operation again
       // forever, and could never use a lookup's result to decide what to do next.
-      steps_so_far: (input.priorSteps ?? []).map((s) => ({
-        ran: s.name,
-        params: s.params,
-        ok: s.ok,
-        // Tool output is UNTRUSTED data (it can contain text from a customer, a web page, a
-        // third-party API). It's presented as an observation, never as instructions — the system
-        // prompt says so explicitly — and truncated so one large result can't crowd out the rest
-        // of the reasoning payload or blow the model's context window.
-        ...(s.ok ? { result: truncateObservation(s.output) } : { error: String(s.error ?? "failed").slice(0, 500) }),
-      })),
+      //
+      // On a long run the older half of that history is folded into `earlier_steps`, a one-line
+      // record per step, so the loop can keep going past the point where the raw history would
+      // have overflowed the model's context. See step-context.ts.
+      ...renderStepsForReasoner(input.priorSteps ?? [], input.earlierSteps ?? [], REASONER_OBSERVATION_CHARS),
       // Last step — see DECISION_INSTRUCTIONS' own note. Only present when true, so an ordinary
       // step's payload is byte-identical to before.
       ...(input.finalStep ? { final_step: true } : {}),

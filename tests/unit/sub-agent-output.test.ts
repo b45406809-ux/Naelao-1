@@ -49,10 +49,13 @@ describe("safeJsonParse", () => {
 
 describe("budgetToMaxSteps — per-child budget isolation", () => {
   it("scales roughly with the requested budget, clamped to a sane range", () => {
-    expect(budgetToMaxSteps(2000)).toBe(1);
-    expect(budgetToMaxSteps(20_000)).toBe(10);
-    expect(budgetToMaxSteps(1_000_000)).toBe(10); // clamped — no runaway child
-    expect(budgetToMaxSteps(0)).toBe(1); // never zero steps
+    // Loosened deliberately when the loop stopped being bounded by a step count: the TOKEN budget
+    // is what should bind, and the old cap of 10 meant a child on the default 20k allowance hit a
+    // step ceiling long before spending it — a sub-agent strictly less capable than its parent.
+    expect(budgetToMaxSteps(2000)).toBe(3); // floor — a child always gets room to actually try
+    expect(budgetToMaxSteps(20_000)).toBe(20);
+    expect(budgetToMaxSteps(1_000_000)).toBe(40); // clamped — no runaway child
+    expect(budgetToMaxSteps(0)).toBe(3); // never zero steps
   });
 
   it("two children with different budgets get independently sized ceilings", () => {

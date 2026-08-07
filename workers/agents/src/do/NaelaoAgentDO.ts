@@ -14,7 +14,7 @@ import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
-import { tokensToCredits, infraTimeToCredits, capabilityForModel } from "@naelao/billing-core";
+import { tokensToCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
 import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest } from "../shared/ai-client.js";
 import {
@@ -129,6 +129,20 @@ const APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
 /** How long the run holds its request open before suspending. Long enough that someone already
  *  looking at the approval sees an uninterrupted run; short enough not to burn the invocation. */
 const APPROVAL_INLINE_WAIT_MS = 20_000;
+/**
+ * How long a single script-native run may keep taking new steps.
+ *
+ * The loop is no longer bounded by a step count (see script-engine/loop-budget.ts), so something
+ * has to represent "a person is waiting." Ten minutes is far beyond any turn observed in practice
+ * and well inside what a Durable Object holding an active outbound connection can sustain, so in
+ * normal use it never fires — it exists so a pathological run ends with a real answer about what it
+ * managed to do rather than hanging. A caller with its own budget (a sub-agent, a durable job whose
+ * enclosing Workflow step has no wall-time limit of its own) overrides it via `context.deadline_ms`.
+ */
+const RUN_WALL_CLOCK_MS = 10 * 60 * 1000;
+/** The same clock for a channel reply, where the loop is draining a queue of waiting customers
+ *  rather than serving one person's request. */
+const CHANNEL_REPLY_WALL_CLOCK_MS = 2 * 60 * 1000;
 // G-BB41: 64KB cap per tool response (down from 100KB) to limit context bloat
 const MAX_TOOL_OUTPUT_BYTES = 64 * 1024;
 const TIMEOUT_MS = 30_000; // 30 seconds
@@ -2663,6 +2677,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     try {
       const maxStepsFromContext = body.context?.["max_steps"];
       const maxTokensFromContext = body.context?.["max_tokens"];
+      const deadlineMsFromContext = body.context?.["deadline_ms"];
       const onProgress = this.composeProgressReporters([
         this.buildLiveProgressReporter(runId),
         this.buildSubAgentProgressReporter(body.context),
@@ -2683,6 +2698,14 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(body.resumeSteps?.length ? { resumeSteps: body.resumeSteps } : {}),
         ...(typeof maxStepsFromContext === "number" ? { maxSteps: maxStepsFromContext } : {}),
         ...(typeof maxTokensFromContext === "number" ? { maxTokens: maxTokensFromContext } : {}),
+        // How much of its own history the run may carry each turn. Resolved from the model
+        // ACTUALLY running, because the platform's default is served with a 24k window against a
+        // nominal 128k — sizing against the wrong figure overflows it (see step-context.ts).
+        contextWindowTokens: contextWindowForModel(body.model ?? DEFAULT_WORKING_MODEL),
+        // A person is waiting on the other end of this request, so the loop gets a wall clock. One
+        // turn before it expires the model is told to wrap up, which turns "ran out of time" into a
+        // real answer about what was done rather than a stalled request.
+        deadlineAt: Date.now() + (typeof deadlineMsFromContext === "number" ? deadlineMsFromContext : RUN_WALL_CLOCK_MS),
         ...(onProgress ? { onProgress } : {}),
       });
 
@@ -4685,6 +4708,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           startupObserve: config.scripts.startup_observe,
           requiresApprovalFor,
           sessionId: msg.session_id,
+          contextWindowTokens: contextWindowForModel(model),
+          // A customer is waiting on a channel reply, and this loop drains a queue of them — so it
+          // gets a tighter clock than an interactive turn. Answering one message thoroughly while
+          // the rest of the inbox goes cold is the wrong trade here.
+          deadlineAt: Date.now() + CHANNEL_REPLY_WALL_CLOCK_MS,
           // This customer's earlier messages on this channel — without it every inbound message
           // is answered as if it were the first thing they ever said.
           ...(() => {
