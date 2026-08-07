@@ -158,4 +158,69 @@ describe("SpaceDO — threads (spec-canonical, sub-agent/channel subthreads)", (
       expect(list.json.count).toBe(0);
     });
   });
+
+  // Reported live: a thread created and chatted in from inside a project also showed up in the
+  // flat Sessions sidebar, as if it were a separate top-level conversation. Root cause: the chat
+  // session backing a project thread's messages was created with no link back to the thread at
+  // all, so it was indistinguishable from a real assistant/Home session in the sessions list.
+  describe("a project thread's own chat session (§A1.18 thread model, gap fix)", () => {
+    it("POST /sessions with thread_id links the session to the thread", async () => {
+      const thread = await call(spaceDO, "/threads", "POST", { space_id: "space1", project_id: "proj1", title: "New thread" });
+      expect(thread.json.session_id).toBeNull();
+
+      const created = await call(spaceDO, "/sessions", "POST", {
+        space_id: "space1", tenant_id: "tenant1", thread_id: thread.json.id,
+      });
+      expect(created.status).toBe(201);
+
+      const got = await call(spaceDO, `/threads/${thread.json.id}`, "GET");
+      expect(got.json.session_id).toBe(created.json.id);
+    });
+
+    it("a thread-linked session is excluded from GET /sessions (the flat recent-conversations list)", async () => {
+      const thread = await call(spaceDO, "/threads", "POST", { space_id: "space1", title: "New thread" });
+      const threadSession = await call(spaceDO, "/sessions", "POST", {
+        space_id: "space1", tenant_id: "tenant1", thread_id: thread.json.id,
+      });
+      // An ordinary assistant/Home session, with no thread_id — must still show up normally.
+      const homeSession = await call(spaceDO, "/sessions", "POST", { space_id: "space1", tenant_id: "tenant1" });
+
+      const list = await call(spaceDO, "/sessions", "GET");
+      const ids = list.json.data.map((s: any) => s.id);
+      expect(ids).toContain(homeSession.json.id);
+      expect(ids).not.toContain(threadSession.json.id);
+    });
+
+    it("a thread-linked session is still excluded from the end_user_id-scoped list", async () => {
+      const thread = await call(spaceDO, "/threads", "POST", { space_id: "space1", title: "New thread" });
+      const threadSession = await call(spaceDO, "/sessions", "POST", {
+        space_id: "space1", tenant_id: "tenant1", end_user_id: "user1", thread_id: thread.json.id,
+      });
+      const homeSession = await call(spaceDO, "/sessions", "POST", {
+        space_id: "space1", tenant_id: "tenant1", end_user_id: "user1",
+      });
+
+      const list = await call(spaceDO, "/sessions?end_user_id=user1", "GET");
+      const ids = list.json.data.map((s: any) => s.id);
+      expect(ids).toContain(homeSession.json.id);
+      expect(ids).not.toContain(threadSession.json.id);
+    });
+
+    it("never clobbers an existing link — a second thread_id session-create for the same thread doesn't relink it", async () => {
+      const thread = await call(spaceDO, "/threads", "POST", { space_id: "space1", title: "New thread" });
+      const first = await call(spaceDO, "/sessions", "POST", { space_id: "space1", tenant_id: "tenant1", thread_id: thread.json.id });
+      const second = await call(spaceDO, "/sessions", "POST", { space_id: "space1", tenant_id: "tenant1", thread_id: thread.json.id });
+      expect(second.status).toBe(201); // creating the session itself always succeeds
+
+      const got = await call(spaceDO, `/threads/${thread.json.id}`, "GET");
+      expect(got.json.session_id).toBe(first.json.id); // still the FIRST session, not overwritten
+    });
+
+    it("thread_id for a thread that doesn't exist doesn't fail session creation", async () => {
+      const created = await call(spaceDO, "/sessions", "POST", {
+        space_id: "space1", tenant_id: "tenant1", thread_id: "nonexistent-thread",
+      });
+      expect(created.status).toBe(201);
+    });
+  });
 });

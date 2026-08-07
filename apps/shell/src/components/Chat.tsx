@@ -138,6 +138,11 @@ export function Chat({
   const [isLoading, setIsLoading] = React.useState(false);
   const [streamingContent, setStreamingContent] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
+  // A transient network/gateway hiccup being retried, live — Claude Code CLI's own "retrying…
+  // (attempt x/10)" style, so a blip that clears itself a second later never has to read as an
+  // outright failure the user must retype their message over. Cleared the moment a call succeeds
+  // or the retry budget is genuinely exhausted (at which point `error` takes over instead).
+  const [retryStatus, setRetryStatus] = React.useState<{ attempt: number; max: number } | null>(null);
   const [initializing, setInitializing] = React.useState(true);
   const [panelOpen, setPanelOpen] = React.useState(true);
   const [panelTab, setPanelTab] = React.useState<ThreadPanelTab>("stats");
@@ -456,21 +461,29 @@ export function Chat({
       // approval card too). `settled` is the single gate: only the FIRST tick to observe a
       // terminal status is allowed to finalize; every later overlapping tick is a no-op.
       let settled = false;
+      // A retry sequence inside one tick's pollRun call can genuinely outlast POLL_INTERVAL_MS
+      // (see apiFetch's own backoff) — without this, a struggling backend would get a NEW,
+      // independently-retrying poll call layered on every 1.5s on top of the ones still winding
+      // down, compounding load on exactly the thing that's already having trouble.
+      let inFlight = false;
       pollDeadlineRef.current = Date.now() + MAX_POLL_DURATION_MS;
       pollTimerRef.current = setInterval(async () => {
-        if (settled) return;
+        if (settled || inFlight) return;
         if (Date.now() > pollDeadlineRef.current) {
           if (settled) return;
           settled = true;
           stopPolling();
           setIsLoading(false);
           setStreamingContent("");
+          setRetryStatus(null);
           setError("Timed out waiting for a response");
           return;
         }
+        inFlight = true;
         try {
-          const run = await pollRun(spaceId, sid, runId, session);
+          const run = await pollRun(spaceId, sid, runId, session, (attempt, max) => setRetryStatus({ attempt, max }));
           if (settled) return;
+          setRetryStatus(null);
           setLastRun(run);
           if (run.live_steps) {
             latestActivity = run.live_steps;
@@ -514,14 +527,18 @@ export function Chat({
             }
           }
         } catch (err) {
-          if (settled) return;
-          settled = true;
-          stopPolling();
-          setStreamingContent("");
-          setIsLoading(false);
-          setLiveActivity([]);
-          clearActiveRunId(spaceId, sessionKey);
-          setError(err instanceof Error ? err.message : "Polling failed");
+          if (!settled) {
+            settled = true;
+            stopPolling();
+            setStreamingContent("");
+            setIsLoading(false);
+            setLiveActivity([]);
+            setRetryStatus(null);
+            clearActiveRunId(spaceId, sessionKey);
+            setError(err instanceof Error ? err.message : "Polling failed");
+          }
+        } finally {
+          inFlight = false;
         }
       }, POLL_INTERVAL_MS);
     },
@@ -743,11 +760,15 @@ export function Chat({
   // message needs a real session id to know where in the workspace it landed.
   const ensureSessionId = React.useCallback(async (): Promise<string> => {
     if (chatSessionId) return chatSessionId;
-    const started = await startSession(spaceId, session);
+    // Link a project thread's session back to the thread server-side, so it never shows up as a
+    // second, unrelated conversation in the flat Sessions sidebar (SpaceDO's listSessions
+    // excludes anything linked this way) — an assistant/Home session has no threadId and links
+    // to nothing, unchanged from before.
+    const started = await startSession(spaceId, session, undefined, threadId);
     storeChatSessionId(spaceId, started.id, sessionKey);
     setChatSessionId(started.id);
     return started.id;
-  }, [chatSessionId, spaceId, session, sessionKey]);
+  }, [chatSessionId, spaceId, session, sessionKey, threadId]);
 
   // Files attached via the dock's Uploads panel before the message that references them is sent.
   // Cleared once folded into an outgoing goal — see `send` below.
@@ -757,6 +778,7 @@ export function Chat({
     const trimmed = text.trim();
     if ((!trimmed && pendingUploads.length === 0) || isLoading) return;
     setError(null);
+    setRetryStatus(null);
     setIsLoading(true);
     setStreamingContent("");
     setLiveActivity([]);
@@ -771,16 +793,25 @@ export function Chat({
         ? `Attached files (in the workspace, read with r2-workspace.read_file): ${pendingUploads.map((u) => `uploads/${sid}/${u.name}`).join(", ")}\n\n${trimmed}`
         : trimmed;
       setPendingUploads([]);
-      const { agentRunId } = await sendMessage(spaceId, sid, goal, session, {
-        model: selectedModel,
-        effort: selectedEffort,
-        ...(selectedReasoningLevel ? { reasoningEffort: selectedReasoningLevel } : {}),
-        ...(selectedAgentId ? { agentDefinitionId: selectedAgentId } : {}),
-      });
+      const { agentRunId } = await sendMessage(
+        spaceId,
+        sid,
+        goal,
+        session,
+        {
+          model: selectedModel,
+          effort: selectedEffort,
+          ...(selectedReasoningLevel ? { reasoningEffort: selectedReasoningLevel } : {}),
+          ...(selectedAgentId ? { agentDefinitionId: selectedAgentId } : {}),
+        },
+        (attempt, max) => setRetryStatus({ attempt, max })
+      );
+      setRetryStatus(null);
       storeActiveRunId(spaceId, agentRunId, sessionKey);
       attachToRun(sid, agentRunId);
     } catch (err) {
       setIsLoading(false);
+      setRetryStatus(null);
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       setError(err instanceof Error ? err.message : "Failed to send message");
     }
@@ -996,7 +1027,23 @@ export function Chat({
               </div>
             ))}
 
-          {isLoading && streamingContent && (
+          {/* A transient network/gateway hiccup being retried automatically — shown INSTEAD of
+              the ordinary typing/activity indicator (not alongside it) while it's happening, so
+              there's one clear status line rather than two competing ones. Cleared the moment
+              the retry succeeds or genuinely exhausts (at which point `error` takes over). */}
+          {isLoading && retryStatus && (
+            <div className="msg-row">
+              <div className="ai-icon">
+                <svg viewBox="0 0 14 14">
+                  <path d="M7 1L12.5 4.25V10.75L7 14L1.5 10.75V4.25L7 1Z" />
+                </svg>
+              </div>
+              <div className="bubble" style={{ color: "var(--text3)", fontStyle: "italic" }}>
+                Request failed, retrying ({retryStatus.attempt}/{retryStatus.max})…
+              </div>
+            </div>
+          )}
+          {isLoading && !retryStatus && streamingContent && (
             <div className="msg-row">
               <div className="ai-icon">
                 <svg viewBox="0 0 14 14">
@@ -1009,7 +1056,7 @@ export function Chat({
               </div>
             </div>
           )}
-          {isLoading && !streamingContent && (
+          {isLoading && !retryStatus && !streamingContent && (
             <div className="msg-row">
               <div className="ai-icon">
                 <svg viewBox="0 0 14 14">

@@ -28,11 +28,45 @@ export class ApiError extends Error {
   }
 }
 
+// Retry a genuinely transient failure — a dropped connection, or the backend momentarily
+// unavailable — rather than surfacing it as an immediate error. Mirrors Claude Code's own CLI
+// behavior on a flaky API call ("retrying… (attempt x/10)") rather than making the user retype
+// their message over a blip that clears itself a second later.
+//
+// Deliberately NOT applied to a 4xx response: a bad request, an expired session, a missing
+// resource, an insufficient-credit refusal will fail exactly the same way every time, and
+// retrying one ten times just delays a real error the user needs to see now. Only a network-level
+// throw (offline, DNS, connection reset) and 5xx/429 responses are worth retrying.
+const DEFAULT_FETCH_RETRIES = 10;
+
+function isTransientStatus(status: number): boolean {
+  return status >= 500 || status === 429;
+}
+
+function retryDelayMs(attempt: number): number {
+  // 400, 800, 1200, 1600, 2000, 2400, 2800, then capped at 3000 — a real backoff, not a hammer,
+  // without making a full 10-attempt exhaustion take an absurd amount of time either.
+  return Math.min(400 * (attempt + 1), 3000);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function apiFetch<T>(
   path: string,
-  options: RequestInit & { session?: SessionCredentials } = {}
+  options: RequestInit & {
+    session?: SessionCredentials;
+    /** Called once per retry attempt (never on the first try) — the caller's hook for showing
+     *  "Request failed, retrying (x/10)…" or similar, rather than a silent multi-second stall. */
+    onRetry?: (attempt: number, max: number) => void;
+    /** Override the retry ceiling — 0 disables retrying entirely (a caller that already retries
+     *  at its own cadence, e.g. a polling loop, may want this). Defaults to 10. */
+    retries?: number;
+  } = {}
 ): Promise<T> {
-  const { session, ...fetchOptions } = options;
+  const { session, onRetry, retries, ...fetchOptions } = options;
+  const maxRetries = retries ?? DEFAULT_FETCH_RETRIES;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(fetchOptions.headers as Record<string, string> | undefined),
@@ -42,22 +76,39 @@ async function apiFetch<T>(
     headers["x-naelao-end-user-id"] = session.endUserId;
   }
 
-  const res = await fetch(`${API_URL}${path}`, { ...fetchOptions, headers });
-
-  if (!res.ok) {
-    let message = `API error ${res.status}`;
-    let errorCode: string | undefined;
+  for (let attempt = 0; ; attempt++) {
+    let res: Response;
     try {
-      const body = (await res.json()) as { message?: string; error_code?: string };
-      message = body.message ?? body.error_code ?? message;
-      errorCode = body.error_code;
-    } catch {
-      // use default message
+      res = await fetch(`${API_URL}${path}`, { ...fetchOptions, headers });
+    } catch (err) {
+      if (attempt < maxRetries) {
+        onRetry?.(attempt + 1, maxRetries);
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+      throw err instanceof Error ? err : new Error(String(err));
     }
-    throw new ApiError(message, res.status, errorCode);
+
+    if (!res.ok) {
+      if (isTransientStatus(res.status) && attempt < maxRetries) {
+        onRetry?.(attempt + 1, maxRetries);
+        await sleep(retryDelayMs(attempt));
+        continue;
+      }
+      let message = `API error ${res.status}`;
+      let errorCode: string | undefined;
+      try {
+        const body = (await res.json()) as { message?: string; error_code?: string };
+        message = body.message ?? body.error_code ?? message;
+        errorCode = body.error_code;
+      } catch {
+        // use default message
+      }
+      throw new ApiError(message, res.status, errorCode);
+    }
+    if (res.status === 204) return undefined as unknown as T;
+    return res.json() as Promise<T>;
   }
-  if (res.status === 204) return undefined as unknown as T;
-  return res.json() as Promise<T>;
 }
 
 // ── Public, pre-login lookups ────────────────────────────────────────────────
@@ -286,13 +337,20 @@ export interface AgentRun {
 
 /** POST /v1/spaces/:spaceId/sessions — start a new chat session.
  *  `title` rides in the session's own metadata (SpaceDO has no title column) so the recent-
- *  sessions list can label a conversation without an N+1 fetch of every session's first message. */
+ *  sessions list can label a conversation without an N+1 fetch of every session's first message.
+ *  `threadId`, when this session is the chat transport for a structural project thread (not a
+ *  bare assistant/Home conversation), links the two server-side (threads.session_id) — without
+ *  it the thread's own session was indistinguishable from a top-level conversation and leaked
+ *  into the flat Sessions sidebar as an apparent duplicate. */
 export async function startSession(
   spaceId: string,
   session: SessionCredentials,
-  title?: string
+  title?: string,
+  threadId?: string
 ): Promise<{ id: string; space_id: string }> {
-  const body = title ? { metadata: { title } } : {};
+  const body: Record<string, unknown> = {};
+  if (title) body.metadata = { title };
+  if (threadId) body.thread_id = threadId;
   return apiFetch(`/v1/spaces/${spaceId}/sessions`, { method: "POST", body: JSON.stringify(body), session });
 }
 
@@ -354,18 +412,23 @@ export interface RunModelOptions {
   agentDefinitionId?: string;
 }
 
-/** Persists the user's message, then kicks off an agent run. */
+/** Persists the user's message, then kicks off an agent run.
+ *  `onRetry`, when given, is called on every transient-failure retry attempt (network hiccup or
+ *  a 5xx/429 from the gateway) — the caller's hook for showing "Request failed, retrying (x/10)…"
+ *  instead of a multi-second silent stall or an immediate, unnecessary error. */
 export async function sendMessage(
   spaceId: string,
   sessionId: string,
   content: string,
   session: SessionCredentials,
-  modelOptions?: RunModelOptions
+  modelOptions?: RunModelOptions,
+  onRetry?: (attempt: number, max: number) => void
 ): Promise<{ userMessage: Message; agentRunId: string }> {
   const userMessage = await apiFetch<Message>(`/v1/spaces/${spaceId}/sessions/${sessionId}/messages`, {
     method: "POST",
     body: JSON.stringify({ role: "user", content }),
     session,
+    ...(onRetry ? { onRetry } : {}),
   });
   // §A1.17 Phase Q: pass `goal` explicitly (the message just persisted above) — the backend
   // will still derive it from the session's latest user message if this is ever omitted, but
@@ -383,6 +446,7 @@ export async function sendMessage(
         ...(modelOptions?.agentDefinitionId ? { agent_definition_id: modelOptions.agentDefinitionId } : {}),
       }),
       session,
+      ...(onRetry ? { onRetry } : {}),
     }
   );
   return { userMessage, agentRunId: agentRun.id ?? agentRun.run_id ?? agentRun.task_id ?? "" };
@@ -407,11 +471,17 @@ export async function getStreamUrl(spaceId: string, sessionId: string, runId: st
   }
 }
 
-/** Polling fallback for environments without SSE. */
-export async function pollRun(spaceId: string, sessionId: string, runId: string, session: SessionCredentials): Promise<AgentRun> {
+/** Polling fallback for environments without SSE. `onRetry` — see sendMessage's own doc. */
+export async function pollRun(
+  spaceId: string,
+  sessionId: string,
+  runId: string,
+  session: SessionCredentials,
+  onRetry?: (attempt: number, max: number) => void
+): Promise<AgentRun> {
   const res = await apiFetch<{ id: string; status: string; final_answer?: string; error?: string; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>(
     `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}`,
-    { session }
+    { session, ...(onRetry ? { onRetry } : {}) }
   );
   return {
     id: res.id,

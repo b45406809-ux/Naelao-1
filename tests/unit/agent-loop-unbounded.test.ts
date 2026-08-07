@@ -101,6 +101,52 @@ describe("the loop runs as many steps as the task needs", () => {
     expect(last.earlierSteps).toBeUndefined();
   });
 
+  it("reports real progress on every turn, not just the final one", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const { reasoner, seen } = multiStepReasoner(3);
+
+    await runScriptLoop(env, tools, reasoner, ["r2-workspace"], LOOP_OPTS);
+
+    // Every turn — including the first, before anything has happened — carries a progress
+    // object. This used to only ever appear once, and only as `final_step`, on the very last
+    // possible turn.
+    expect(seen.every((s) => s.progress !== undefined)).toBe(true);
+    expect(seen[0]!.progress).toMatchObject({ step: 1, successful_actions: 0, failed_actions: 0, stall_steps: 0 });
+    // By the 4th call (after 3 successful tool calls), the model can see all three actually
+    // succeeded — real counts, not just "you're on step 4".
+    expect(seen[3]!.progress).toMatchObject({ step: 4, successful_actions: 3, failed_actions: 0 });
+    // The runaway ceiling is reported so the model knows how much room exists, but it is never
+    // mistaken for a target — DECISION_INSTRUCTIONS says so explicitly.
+    expect(seen[0]!.progress!.max_steps).toBe(DEFAULT_LOOP_BUDGET.maxSteps);
+  });
+
+  it("lets the model stop itself early with a real explanation, using its own progress", async () => {
+    const env = makeEnv();
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    let calls = 0;
+    const reasoner: Reasoner = {
+      async decide(input) {
+        calls++;
+        // A model that fails twice, SEES its own progress (2 failed, 0 succeeded, still far from
+        // any external limit), and decides on its own — not because it was told to stop — that
+        // this approach isn't working. Nothing here is `finalStep`.
+        if (calls <= 2) return { action: "run", name: "does_not_exist", params: {} };
+        expect(input.finalStep).toBeFalsy();
+        expect(input.progress).toMatchObject({ successful_actions: 0, failed_actions: 2 });
+        return { action: "give_up", reason: "tried does_not_exist twice, it isn't a real operation — need a different approach" };
+      },
+    };
+
+    const result = await runScriptLoop(env, tools, reasoner, ["r2-workspace"], LOOP_OPTS);
+
+    expect(result.result?.ok).toBe(false);
+    expect(result.result?.error).toContain("isn't a real operation");
+    // Stopped itself after 3 turns, nowhere near the 50-step runaway ceiling — a self-directed
+    // stop, not an externally forced one.
+    expect(calls).toBe(3);
+  });
+
   it("folds older steps into a digest rather than overflowing a small context window", async () => {
     const env = makeEnv();
     const tools = new ScriptToolSurface(env, ["r2-workspace"]);

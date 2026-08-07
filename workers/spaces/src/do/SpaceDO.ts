@@ -1614,6 +1614,17 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       tenant_id: string;
       end_user_id?: string;
       metadata?: Record<string, unknown>;
+      /**
+       * When this session is the chat transport for a structural project thread (not a bare
+       * assistant/Home conversation), the caller passes the thread's own id so the two can be
+       * linked via `threads.session_id` (added for exactly this purpose — see that migration's
+       * own comment). Without this, a project thread's chat session was indistinguishable from an
+       * ordinary top-level conversation: it showed up in the flat `listSessions` "recent
+       * conversations" list as if it were one, which is what a user reported as a project thread
+       * mysteriously appearing in the Sessions sidebar. `listSessions` below excludes any session
+       * linked this way.
+       */
+      thread_id?: string;
     }>();
 
     // G-F03: Fast-path deny for recently banned/blocked users before touching SQLite
@@ -1648,6 +1659,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       now
     );
 
+    // Link this session to its owning thread, when it has one. `AND session_id IS NULL` makes
+    // this idempotent-safe (never clobbers a link that already exists) rather than a hard
+    // dependency of session creation — a thread that doesn't exist, or a race with another
+    // request, must never turn a successful session-create into a failure.
+    if (body.thread_id) {
+      try {
+        execute(
+          this.ctx.storage.sql as never,
+          "UPDATE threads SET session_id = ?, updated_at = ? WHERE id = ? AND session_id IS NULL",
+          id,
+          now,
+          body.thread_id
+        );
+      } catch {
+        /* the session itself was created successfully; the thread link is a convenience */
+      }
+    }
+
     return Response.json(
       { id, space_id: body.space_id, status: "active", created_at: now },
       { status: 201 }
@@ -1681,19 +1710,25 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // strictly scoped to that end_user_id's own sessions — this is a signed-in end user's own
   // "recent conversations" list, never a space-wide browse (that stays /threads, builder-only).
   // A builder-JWT caller omitting end_user_id gets the space-wide recent list.
+  //
+  // Excludes any session already linked to a structural project thread (threads.session_id) —
+  // that is a project thread's own chat transport, not a standalone assistant conversation, and
+  // listing it here duplicated it: a thread created and chatted in from inside a project also
+  // showed up in the flat Sessions sidebar as if it were a second, unrelated conversation.
   private listSessions(params: URLSearchParams): Response {
     const endUserId = params.get("end_user_id");
     const limit = Math.min(Math.max(Number(params.get("limit")) || 20, 1), 100);
+    const notThreadLinked = "id NOT IN (SELECT session_id FROM threads WHERE session_id IS NOT NULL)";
     const rows = endUserId
       ? queryAll<SessionRow>(
           this.ctx.storage.sql as never,
-          "SELECT * FROM sessions WHERE end_user_id = ? ORDER BY updated_at DESC LIMIT ?",
+          `SELECT * FROM sessions WHERE end_user_id = ? AND ${notThreadLinked} ORDER BY updated_at DESC LIMIT ?`,
           endUserId,
           limit
         )
       : queryAll<SessionRow>(
           this.ctx.storage.sql as never,
-          "SELECT * FROM sessions ORDER BY updated_at DESC LIMIT ?",
+          `SELECT * FROM sessions WHERE ${notThreadLinked} ORDER BY updated_at DESC LIMIT ?`,
           limit
         );
     return Response.json({ data: rows, count: rows.length });

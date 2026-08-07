@@ -4594,6 +4594,87 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      tasks). No backend/worker changes this pass — every number rendered was already served by
      existing, previously-tested endpoints (`GET /business-analytics`, `GET /revenue`).
 
+103. **Self-directed loop stopping (real-time progress visibility), a real project-thread/session
+     conflation bug fixed, and automatic request-retry-with-visible-feedback — three
+     user-reported items, all BUILT.**
+     - **The loop previously told the model it was almost out of budget only via `final_step`, on
+       the very last possible turn — it had NO visibility into its own progress before that.** A
+       model that kept failing had no way to notice and stop itself; the only way a run ever ended
+       early was being cut off externally with a generic, unhelpful message. New
+       `Reasoner.decide()` `progress` field (`script-engine/loop.ts`) — step / max_steps (the
+       runaway ceiling, explicitly NOT a target), successful_actions, failed_actions, stall_steps /
+       max_stall_steps, tokens_used / max_tokens — computed fresh and passed on EVERY L3/L4 turn,
+       not just the final one. `DECISION_INSTRUCTIONS` (`reasoner.ts`) now tells the model
+       explicitly: use this to judge whether you're converging; if failed actions are climbing or
+       the stall streak is closing in on its limit with nothing to show, `give_up` on your OWN
+       initiative, right now, with a SPECIFIC explanation of what you tried and why it didn't work
+       — don't wait to be cut off. This is additive to the existing `final_step` mechanism (item 91
+       in the appendix numbering / CLAUDE.md's own step-budget work), not a replacement — an
+       externally-forced stop still happens if the model doesn't act on the signal itself. 2 new
+       tests in `agent-loop-unbounded.test.ts`: progress is reported correctly turn-by-turn (not
+       just once), and a model that sees 2 failed attempts stops itself after 3 turns total with a
+       real reason — nowhere near the 50-step ceiling, proving the stop was self-directed, not
+       externally forced.
+     - **Reported live: a thread created and chatted in inside a project also appeared in the flat
+       Sessions sidebar, as if it were a separate, unrelated conversation — and the thread then
+       seemed to "disappear" from the project.** Root cause, confirmed by reading the code rather
+       than guessed: `Chat.tsx`'s lazy session creation (`ensureSessionId`) called `startSession()`
+       with NO link back to the thread it belonged to, so the resulting session was
+       indistinguishable from an ordinary Home/assistant conversation — and SpaceDO's
+       `listSessions()` had no way to exclude it, since `threads.session_id` (added in an earlier
+       pass, §A1.18 thread model) was only ever populated by the assistant's own consult-subthread
+       flow, never by the ordinary "open a project thread and chat" path any real user actually
+       takes. Fixed end to end: `POST /sessions` now accepts an optional `thread_id`
+       (`SpaceDO.createSession`), linking `threads.session_id` at creation time (`AND session_id IS
+       NULL` guard — never clobbers an existing link, never fails session creation if the thread
+       lookup fails); `listSessions` now excludes `id IN (SELECT session_id FROM threads WHERE
+       session_id IS NOT NULL)` on both the space-wide and end-user-scoped branches.
+       `apps/shell`'s `startSession()`/`Chat.tsx`'s `ensureSessionId` thread the prop through.
+       `ProjectThreadPage` now waits for the thread to load before mounting `Chat` (previously
+       rendered immediately with no `session_id` known yet, which meant a thread with an ALREADY-
+       linked session — reopened later, or from a different tab — got a second, unlinked session
+       minted every time instead of reusing the real one) and passes `sessionId={thread.session_id}`
+       when one already exists, bypassing Chat's client-side cache in favor of the real server link.
+       Also added a defensive `window.addEventListener("focus", refresh)` to both the project page's
+       thread list and the Sessions page (regaining focus/tab-switch re-fetches, so neither list can
+       read as stale after time away) — a safety net for the "disappeared" half of the report, since
+       no concrete backend bug was found there beyond the conflation itself. 5 new tests in
+       `spacedo-threads.test.ts`: link-on-create, exclusion from both list variants, "never
+       clobbers an existing link", "a nonexistent thread_id doesn't fail session creation".
+     - **Automatic retry with visible feedback on a transient request failure**
+       (`apps/shell/src/lib/api.ts`'s `apiFetch`), mirroring Claude Code CLI's own "retrying…
+       (attempt x/10)" convention rather than the prior behavior of surfacing an immediate,
+       possibly spurious error on any network blip or momentary 5xx. Retries ONLY a network-level
+       throw (offline, DNS, connection reset — the request almost certainly never reached the
+       server) or a 5xx/429 response, up to 10 attempts with a capped linear backoff
+       (400ms→3000ms); a 4xx is never retried, since a bad request/expired session/insufficient-
+       credit refusal will fail exactly the same way every time and retrying it ten times only
+       delays a real error the user needs to see now. `onRetry(attempt, max)` threaded through
+       `sendMessage` and `pollRun` (the two calls in the hot path of sending a message and watching
+       for a reply) into a new `Chat.tsx` `retryStatus` state, rendered as "Request failed,
+       retrying (x/10)…" in place of the ordinary typing/activity indicator while it's happening.
+       The polling loop also gained an `inFlight` guard (a retry sequence inside one tick's
+       `pollRun` call can genuinely outlast `POLL_INTERVAL_MS`, and without this a struggling
+       backend would get a NEW, independently-retrying poll layered on every 1.5s on top of ones
+       still winding down — a self-inflicted thundering herd against the very thing already having
+       trouble). No dedicated vitest coverage for this file — consistent with this codebase's
+       standing convention that `apps/shell` is verified via typecheck + `next build` + deployed-
+       bundle content grep, not a frontend unit-test suite (no existing test file imports this
+       module either).
+     2658/2658 tests pass (7 new), `npx turbo run typecheck` clean (76 tasks), `apps/shell`
+     verified via a clean `next build`. Deployed: `naelao-agents` (bare `wrangler deploy`, item
+     83's documented `--env production` trap), `naelao-spaces`, `apps/shell` (rebuilt +
+     `--branch=main`) — all confirmed live (200s on the shell's `/p/launchpad/spaces` and the
+     router's `by-slug/launchpad`, and the agents worker's own 401-not-500 on an auth-gated route
+     confirming a healthy deploy). **Not done this pass:** a full live end-to-end click-through of
+     the session/thread fix specifically (create a real business, open a project thread, confirm
+     it never appears in Sessions) — `naelao-spaces` has `workers_dev = false` (item 21's
+     hardening) so it can't be curled directly, and a full signup→business→chat round trip through
+     the router wasn't run for a fix already covered by 5 unit tests driving the real `SpaceDO`
+     class through its real fetch dispatcher (the same code path production uses, verified via
+     `node:sqlite` against real migrations, per this file's own standing precedent for what that
+     harness catches and doesn't).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

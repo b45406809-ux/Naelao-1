@@ -201,6 +201,36 @@ export interface Reasoner {
      * the user as a failure of work that actually happened.
      */
     finalStep?: boolean;
+    /**
+     * The loop's own real-time progress on THIS run — passed on EVERY L3/L4 turn, not just the
+     * final one. Previously the model had no way to see this at all: it found out it was almost
+     * out of budget only via `finalStep` on the very last turn, and was never told how many of its
+     * own actions had actually succeeded versus failed along the way. That meant the only way a
+     * run ever stopped early was by being cut off externally (a generic "ran out of steps"), never
+     * by the model itself recognizing "I've tried three approaches to this and none worked" and
+     * saying so.
+     *
+     * With this, a model that notices several actions in a row have failed or gone nowhere can
+     * `give_up` on its own initiative, WITH a real explanation of what it tried — which is a much
+     * more useful thing for a person to read than a budget-exhaustion message they can't act on.
+     * It can also see it still has plenty of room left and keep working confidently rather than
+     * rushing to answer early.
+     */
+    progress?: {
+      /** 1-based: which step this is. */
+      step: number;
+      /** The runaway ceiling (loop-budget.ts) — NOT a target to spend, just where the hard stop is. */
+      max_steps: number;
+      /** Actions that actually ran and succeeded so far this run. */
+      successful_actions: number;
+      /** Actions that ran and failed, INCLUDING ones parked pending human approval. */
+      failed_actions: number;
+      /** Consecutive steps in a row with no successful result — see LoopBudget.maxStallSteps. */
+      stall_steps: number;
+      max_stall_steps: number;
+      tokens_used: number;
+      max_tokens?: number;
+    };
   }): Promise<ReasonDecision>;
   /** Token usage from the most recently completed decide() call, when the backing LLM
    *  client reports it. Optional — reasoners that can't report it (e.g. test fakes) leave
@@ -660,6 +690,10 @@ export async function runScriptLoop(
         if (stepContext.compacted) {
           notes.push(`${level} folded ${stepContext.omitted} earlier step(s) to fit the context window`);
         }
+        // Real-time progress, recomputed fresh every turn from what has actually happened so far —
+        // see the field's own doc on Reasoner.decide for why this is passed on every step rather
+        // than only the final one.
+        const successfulActions = priorSteps.filter((p) => p.ok).length;
         const decision = await reasoner.decide({
           goal: opts.goal,
           level,
@@ -673,6 +707,16 @@ export async function runScriptLoop(
           ...(stepContext.recent.length > 0 ? { priorSteps: stepContext.recent } : {}),
           ...(stepContext.digest.length > 0 ? { earlierSteps: stepContext.digest } : {}),
           ...(isFinalStep ? { finalStep: true } : {}),
+          progress: {
+            step: step + 1,
+            max_steps: budget.maxSteps,
+            successful_actions: successfulActions,
+            failed_actions: priorSteps.length - successfulActions,
+            stall_steps: stallSteps,
+            max_stall_steps: budget.maxStallSteps,
+            tokens_used: usageAcc.input + usageAcc.output,
+            ...(budget.maxTokens !== undefined ? { max_tokens: budget.maxTokens } : {}),
+          },
         });
         longestStepMs = Math.max(longestStepMs, Date.now() - reasonStart);
         const stepUsage = usageOf(reasoner);

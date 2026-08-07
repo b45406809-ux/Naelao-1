@@ -23,13 +23,24 @@ export default function SessionsPage() {
   const [sessions, setSessions] = React.useState<SessionSummary[]>([]);
   const [loading, setLoading] = React.useState(true);
 
-  React.useEffect(() => {
+  const refresh = React.useCallback(() => {
     if (!session) return;
     listSessions(activeSpaceId, { sessionToken: session.session_token, endUserId: session.end_user_id }, 100)
       .then(setSessions)
       .catch(() => setSessions([]))
       .finally(() => setLoading(false));
   }, [activeSpaceId, session]);
+
+  React.useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  // Regaining focus (tab switch, browser back) re-fetches — a session started elsewhere while
+  // this tab was in the background should show up without a manual reload.
+  React.useEffect(() => {
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [refresh]);
 
   return (
     <div className="page-view">

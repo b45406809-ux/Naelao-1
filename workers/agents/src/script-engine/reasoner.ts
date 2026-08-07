@@ -127,6 +127,8 @@ You are not on a short leash. Keep working until the goal is actually met — ch
 
 When "final_step" is true this is your LAST turn — there is no step after this one. You MUST reply with "answer" (or "give_up" if you truly cannot). Do not choose "run": it will not be executed. If work already succeeded in "steps_so_far", answer by telling the user plainly what was done. Reporting completed work is always better than saying nothing.
 
+"progress" reports where you genuinely stand in this task right now: how many steps you have taken against the ceiling, how many of your actions have actually succeeded versus failed, and your current stall streak against the limit that stops the run. This is not a countdown to race against and "max_steps" is not a target — it is a runaway ceiling, far above what real work needs. Use it to judge whether you are actually converging. If "failed_actions" is climbing relative to "successful_actions", or "stall_steps" is getting close to "max_stall_steps" with nothing to show for it, that is a real signal: change your approach, or — if you have genuinely tried what is reasonable for this goal and it is not working — call "give_up" right now, on your OWN initiative, with a specific explanation of what you tried and why it did not work. Do not wait for "final_step" to say this. Stopping yourself early with a real, concrete reason is always more useful to the person reading your answer than being cut off later with a generic "ran out of budget" — they can act on "I tried X, Y and Z, here is what's blocking it" in a way they cannot act on a budget message. Equally, if progress looks healthy, keep working with confidence instead of rushing to answer or give up prematurely.
+
 Each candidate script carries a "health" record: how it has actually been going lately, and what it said the last time it failed. Trust it over the description. If a candidate is "broken" or "degrading", do NOT run it unchanged — running something that just failed three times will fail a fourth. Either "patch" it, aiming the fix at its "last_error", or pick a different approach. A "proven" skill can be run as-is; an "unproven" one can be run, but check what it returns rather than assuming it worked. When you patch a skill, fix the cause named in "last_error" — do not rewrite it wholesale on a guess.
 
 "conversation" is the thread you are replying in: "recent_messages" verbatim, plus "earlier_summary" when older messages have been compacted away. Use it — the user should never have to repeat something they already told you.
@@ -406,6 +408,10 @@ export class GatewayReasoner implements Reasoner {
       // Last step — see DECISION_INSTRUCTIONS' own note. Only present when true, so an ordinary
       // step's payload is byte-identical to before.
       ...(input.finalStep ? { final_step: true } : {}),
+      // Real-time self-progress — see Reasoner.decide's own doc and DECISION_INSTRUCTIONS' note.
+      // Present on every L3/L4 turn so the model can judge for itself whether it is converging,
+      // not just discover on the last possible turn that it never was.
+      ...(input.progress ? { progress: input.progress } : {}),
     });
 
     const query = {

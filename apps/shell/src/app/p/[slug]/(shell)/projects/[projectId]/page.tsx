@@ -133,6 +133,17 @@ export default function ProjectDetailPage() {
     void refreshDocs();
   }, [refresh, refreshDocs]);
 
+  // Defensive re-fetch on regaining focus: a thread created from this project's own "New Thread"
+  // button navigates straight into it, so coming back here (tab switch, browser back) should
+  // never show a stale list from before that thread existed.
+  React.useEffect(() => {
+    function onFocus() {
+      void refresh();
+    }
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refresh]);
+
   async function openTemplatePicker() {
     setTemplatePickerOpen(true);
     if (templates.length > 0 || !creds) return;
