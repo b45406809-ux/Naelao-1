@@ -11,11 +11,16 @@ import { describe, it, expect } from "vitest";
 import { seedTemplateProjects, normalizeProjectSeeds } from "../../workers/agents/src/launchpad/bootstrap.js";
 import { getLaunchpadTemplate, validateLaunchpadSpaceType, LAUNCHPAD_TEMPLATES } from "../../workers/agents/src/launchpad/spacetype.js";
 
-/** A postToSpaces double that records every call and mimics SpaceDO's real behaviors: it returns
- *  a project id on create, and enforces UNIQUE(space_id, name) by failing a duplicate name. */
+/** A postToSpaces double that records every call and mimics SpaceDO's REAL behavior — which this
+ *  fake used to get wrong (returning 409 on a duplicate name) and is exactly why the "idempotent"
+ *  test below passed while production had a real, live-reported bug: SpaceDO's createProject
+ *  ALWAYS returns 201/ok, even on a duplicate name, because it uses `ON CONFLICT(space_id, name)
+ *  DO NOTHING` rather than rejecting — the row (and its real id) still comes back correctly, the
+ *  only signal a caller gets is the `created` field this bug prompted adding. Modeling the fake
+ *  as a 409 hid the real bug from this whole test file for as long as it existed. */
 function makeSpacesDouble() {
   const calls: Array<{ path: string; body: any }> = [];
-  const createdNames = new Set<string>();
+  const projectIds = new Map<string, string>();
   let nextId = 1;
   return {
     calls,
@@ -23,12 +28,10 @@ function makeSpacesDouble() {
       async postToSpaces(path: string, body: any): Promise<Response> {
         calls.push({ path, body });
         if (path.endsWith("/projects")) {
-          if (createdNames.has(body.name)) {
-            // What SpaceDO's UNIQUE index really does on a re-run.
-            return new Response(JSON.stringify({ error_code: "conflict" }), { status: 409 });
-          }
-          createdNames.add(body.name);
-          return new Response(JSON.stringify({ id: `proj-${nextId++}`, name: body.name }), { status: 201 });
+          const already = projectIds.has(body.name);
+          const id = already ? projectIds.get(body.name)! : `proj-${nextId++}`;
+          if (!already) projectIds.set(body.name, id);
+          return new Response(JSON.stringify({ id, name: body.name, created: !already }), { status: 201 });
         }
         return new Response(JSON.stringify({ id: `thread-${nextId++}` }), { status: 201 });
       },
@@ -67,8 +70,10 @@ describe("seedTemplateProjects — the structural bootstrap the provisioner now 
     const second = await seedTemplateProjects(deps, "space-1", "tenant-1", seeds);
 
     expect(first.map((p) => p.name)).toEqual(["Support"]);
-    // Second run reports nothing created, and — critically — seeds no SECOND starter thread.
-    expect(second).toEqual([]);
+    // Second run still resolves the (already-existing) project's real id — a caller wiring event
+    // rules between projects needs that regardless of newness — but critically seeds NO second
+    // starter thread for it, which is the actual bug this test exists to catch.
+    expect(second.map((p) => p.name)).toEqual(["Support"]);
     expect(calls.filter((c) => c.path.endsWith("/threads"))).toHaveLength(1);
   });
 

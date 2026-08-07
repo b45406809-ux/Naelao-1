@@ -2926,10 +2926,20 @@ async function applyProjectTemplate(
     }),
   }));
   if (!createResp.ok) return { error: await createResp.text(), status: 502 };
-  const project = await createResp.json<{ id: string; name: string }>();
+  const project = await createResp.json<{ id: string; name: string; created?: boolean }>();
+  // Same fix as seedTemplateProjects (bootstrap.ts): this endpoint used to ALWAYS return ok/201
+  // even when `ON CONFLICT(space_id, name) DO NOTHING` silently no-op'd on a name that already
+  // existed — this function's own comment at its call site claimed a re-run would be "skipped...
+  // since [createProject] returns an error rather than duplicating", which was never actually
+  // true. `created` (added specifically to close this) is what makes that real: a re-run against
+  // an already-existing project of this name reconfigures it (idempotent — a plain overwrite) but
+  // does NOT re-seed rules/scheduled jobs, which are plain inserts with no dedup of their own and
+  // would otherwise double (or triple, on every re-run) every time bootstrap/complete runs again.
+  const alreadyExisted = project.created === false;
 
   // 2. Configure the rest (kind, execution ceiling, spend cap, thread cap, suggested channel —
-  //    only customer_bot templates set channel_config).
+  //    only customer_bot templates set channel_config). Safe to re-apply even on an already-
+  //    existing project — it's a plain overwrite of the same fields, not an additive insert.
   const configResp = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}`, {
     method: "PATCH",
     headers,
@@ -2945,20 +2955,22 @@ async function applyProjectTemplate(
   }));
   if (!configResp.ok) return { error: await configResp.text(), status: 502 };
 
-  // 3. Seed the starter rules (customer_bot's reactive no-code triggers — STOP/opt-out,
-  //    human-takeover, canned replies).
-  for (const rule of template.rules ?? []) {
-    await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}/rules`, {
-      method: "POST", headers, body: JSON.stringify(rule),
-    }));
-  }
+  if (!alreadyExisted) {
+    // 3. Seed the starter rules (customer_bot's reactive no-code triggers — STOP/opt-out,
+    //    human-takeover, canned replies).
+    for (const rule of template.rules ?? []) {
+      await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/projects/${project.id}/rules`, {
+        method: "POST", headers, body: JSON.stringify(rule),
+      }));
+    }
 
-  // 4. Seed the scheduled jobs (workspace templates' schedule/observation-driven work — e.g.
-  //    a weekly community digest). Scoped to this project via project_id.
-  for (const job of template.scheduled_jobs ?? []) {
-    await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/scheduled-jobs`, {
-      method: "POST", headers, body: JSON.stringify({ ...job, project_id: project.id }),
-    }));
+    // 4. Seed the scheduled jobs (workspace templates' schedule/observation-driven work — e.g.
+    //    a weekly community digest). Scoped to this project via project_id.
+    for (const job of template.scheduled_jobs ?? []) {
+      await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/scheduled-jobs`, {
+        method: "POST", headers, body: JSON.stringify({ ...job, project_id: project.id }),
+      }));
+    }
   }
 
   return { projectId: project.id };

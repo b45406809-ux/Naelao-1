@@ -185,4 +185,91 @@ describe("POST /spaces/:spaceId/projects/from-template — generalized beyond cu
     const createCall = projectCalls.find((c) => c.path === `/spaces/${SPACE_ID}/projects` && c.method === "POST");
     expect(createCall?.headers["x-naelao-user-id"]).toBeUndefined();
   });
+
+  // Live-reported bug (2026-08-07): a new business came with 2 starter threads per prebuilt
+  // project. Root cause traced to seedTemplateProjects (bootstrap.ts) — this file's own
+  // applyProjectTemplate had the identical bug one layer further: createProject ALWAYS returns
+  // 201/ok even when its ON CONFLICT(space_id, name) DO NOTHING silently no-op'd on a name that
+  // already existed, so a re-run (bootstrap/complete can genuinely run twice — once implicitly,
+  // once via a retry or a user revisiting the wizard) never actually skipped re-seeding rules and
+  // scheduled jobs, both of which are plain inserts with no dedup of their own. `created: false`
+  // (the new field this bug prompted) is what makes a re-run's config PATCH still apply (harmless
+  // — an idempotent overwrite) while skipping the rule/job inserts entirely.
+  it("a re-run against an already-existing project (created: false) reconfigures but does NOT re-seed rules or scheduled jobs", async () => {
+    const projectCalls: Array<{ path: string; method: string; body: unknown }> = [];
+    const spacesFetch = vi.fn(async (input: RequestInfo) => {
+      const req2 = input as Request;
+      const url = new URL(req2.url);
+      const body = req2.method === "GET" ? undefined : await req2.json().catch(() => undefined);
+      projectCalls.push({ path: url.pathname, method: req2.method, body });
+      if (url.pathname === `/spaces/${SPACE_ID}/projects` && req2.method === "POST") {
+        // The already-existed case: the row is real (an id genuinely exists), just not new.
+        return Response.json({ id: "proj-1", name: (body as { name: string }).name, created: false }, { status: 201 });
+      }
+      if (url.pathname === `/spaces/${SPACE_ID}/projects/proj-1` && req2.method === "PATCH") {
+        return Response.json({ id: "proj-1" }, { status: 200 });
+      }
+      if (url.pathname === `/spaces/${SPACE_ID}/projects/proj-1/rules` && req2.method === "POST") {
+        return Response.json({ id: "rule-1" }, { status: 201 });
+      }
+      if (url.pathname === `/spaces/${SPACE_ID}/scheduled-jobs` && req2.method === "POST") {
+        return Response.json({ id: "job-1" }, { status: 201 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const env = {
+      ANTHROPIC_API_KEY: "test-anthropic-key",
+      PLATFORM_SECRET: SECRET,
+      WHOP_API_KEY: "test-whop-key",
+      NAELAO_WHOP_COMPANY_ID: "test-company",
+      SPACES_WORKER: { fetch: spacesFetch },
+    } as unknown as AgentsEnv;
+
+    // whatsapp-support-bot has both rules AND (per the templates it draws from) is the kind that
+    // seeds rules; community-member-monitoring seeds a scheduled job — whatsapp-support-bot is
+    // enough on its own to prove rules are skipped; reuse it for the job-skip assertion too by
+    // checking scheduled-jobs calls stay at 0 regardless (it seeds none even when new).
+    const res = await app.fetch(await req("whatsapp-support-bot"), env);
+    expect(res.status).toBe(201);
+
+    // The config PATCH still happened — a re-run reconfigures, it just doesn't re-seed.
+    const patchCalls = projectCalls.filter((c) => c.method === "PATCH");
+    expect(patchCalls).toHaveLength(1);
+
+    const ruleCalls = projectCalls.filter((c) => c.path.endsWith("/rules"));
+    expect(ruleCalls).toHaveLength(0);
+    const jobCalls = projectCalls.filter((c) => c.path.endsWith("/scheduled-jobs"));
+    expect(jobCalls).toHaveLength(0);
+  });
+
+  it("a genuinely new project (created: true, the explicit form) still seeds rules normally", async () => {
+    const projectCalls: Array<{ path: string; method: string }> = [];
+    const spacesFetch = vi.fn(async (input: RequestInfo) => {
+      const req2 = input as Request;
+      const url = new URL(req2.url);
+      projectCalls.push({ path: url.pathname, method: req2.method });
+      if (url.pathname === `/spaces/${SPACE_ID}/projects` && req2.method === "POST") {
+        return Response.json({ id: "proj-1", name: "WhatsApp Support", created: true }, { status: 201 });
+      }
+      if (url.pathname === `/spaces/${SPACE_ID}/projects/proj-1` && req2.method === "PATCH") {
+        return Response.json({ id: "proj-1" }, { status: 200 });
+      }
+      if (url.pathname === `/spaces/${SPACE_ID}/projects/proj-1/rules` && req2.method === "POST") {
+        return Response.json({ id: "rule-1" }, { status: 201 });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const env = {
+      ANTHROPIC_API_KEY: "test-anthropic-key",
+      PLATFORM_SECRET: SECRET,
+      WHOP_API_KEY: "test-whop-key",
+      NAELAO_WHOP_COMPANY_ID: "test-company",
+      SPACES_WORKER: { fetch: spacesFetch },
+    } as unknown as AgentsEnv;
+
+    const res = await app.fetch(await req("whatsapp-support-bot"), env);
+    expect(res.status).toBe(201);
+    const ruleCalls = projectCalls.filter((c) => c.path.endsWith("/rules"));
+    expect(ruleCalls.length).toBeGreaterThan(0);
+  });
 });

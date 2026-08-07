@@ -781,21 +781,11 @@ export function ComposerDock({
       {panel === "compose" && <div className="dock-compose">{children}</div>}
 
       <div className="dock-bar">
-        {/* The primary pill opens the composer, mirroring the reference where the input is a
-            panel like any other rather than permanent furniture. The model moved to an icon
-            button beside it — it is a setting, not the main action. */}
-        <button
-          type="button"
-          className={`dock-primary${panel === "compose" ? " open" : ""}`}
-          onClick={() => setPanel("compose")}
-          title="Write a message"
-        >
-          <Icon path={ICONS.compose} />
-          <span>Message</span>
-        </button>
-
-        <div className="dock-sep" />
-
+        {/* No dedicated "Message"/compose button — compose is already the dock's default panel
+           (useState above), and every other panel's own toggle button already returns here when
+           clicked a second time (see `toggle`), plus Escape and clicking outside the dock (see the
+           effects below) — so a separate button+icon whose only job was "go back to the default"
+           was pure redundancy, not a second way to reach something otherwise unreachable. */}
         <button type="button" className={`dock-btn${panel === "model" ? " open" : ""}`} onClick={() => toggle("model")} title={`Model: ${modelLabel(model)}`}>
           <Icon path={ICONS.cube} />
           {capability.reasoningLevels.length > 0 && reasoningLevel && <span className="dock-btn-dot" />}

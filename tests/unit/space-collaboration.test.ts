@@ -105,6 +105,23 @@ describe("SpaceDO — project deduplication", () => {
     expect(res.json.possible_duplicates).toEqual([]);
   });
 
+  // Live-reported bug (2026-08-07): a new business came with 2 starter threads per prebuilt
+  // project. Root cause: this endpoint ALWAYS returned 201/ok on `ON CONFLICT DO NOTHING`, so a
+  // caller re-seeding the same template (the provisioner at creation time, then bootstrap/complete
+  // again once an end user finished onboarding) could never tell a genuine create apart from a
+  // silent no-op — every re-run looked identical to the first, so it re-seeded a starter thread
+  // every time. `created` is what makes that distinguishable, driven against the REAL DO (not a
+  // fake) so this can't drift from the actual contract the way the bootstrap fake's own 409
+  // assumption once did.
+  it("a genuine create reports created:true; a same-name re-create reports created:false with the SAME id", async () => {
+    const first = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "Support" });
+    expect(first.json.created).toBe(true);
+
+    const second = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "Support" });
+    expect(second.json.created).toBe(false);
+    expect(second.json.id).toBe(first.json.id);
+  });
+
   it("an archived project is not flagged as a duplicate candidate", async () => {
     const first = await call(spaceDO, "/projects", "POST", { space_id: "space1", name: "Support" });
     await call(spaceDO, `/projects/${first.json.id}`, "PATCH", { status: "archived" });

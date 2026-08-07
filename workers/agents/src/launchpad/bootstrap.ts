@@ -136,10 +136,17 @@ export async function seedTemplateProjects(
       // The id is read for every project, not only bound ones: a caller wiring the pipeline
       // between projects (event rules naming a target) needs the id of the reference shelves too,
       // and it was already in this response — just discarded.
-      const project = (await res.json().catch(() => ({}))) as { id?: string };
+      const project = (await res.json().catch(() => ({}))) as { id?: string; created?: boolean };
       created.push({ name: seed.name, ...(project.id ? { id: project.id } : {}) });
 
-      if (!seed.default_agent_id || !project.id) continue;
+      // Live-reported bug: this endpoint ALWAYS returns 201/ok even when `ON CONFLICT(space_id,
+      // name) DO NOTHING` silently no-op'd on a name that already existed — this function's OWN
+      // re-run (the provisioner seeds structurally at creation time, then bootstrap/complete seeds
+      // the SAME templates again once an end user finishes the onboarding wizard) was therefore
+      // never actually skipped by the `!res.ok` check above, and a starter thread got created a
+      // second time for every already-existing project. `created` (added specifically to close
+      // this) is what makes the skip real: no starter thread for a project that already existed.
+      if (!seed.default_agent_id || !project.id || project.created === false) continue;
       try {
         await deps.postToSpaces(`/spaces/${spaceId}/threads`, {
           space_id: spaceId,

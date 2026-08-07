@@ -49,6 +49,37 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
     event: WorkflowEvent<AgentTaskParams>,
     step: WorkflowStep,
   ): Promise<void> {
+    // Outer safety net for the SAME bug class the run-agent step's own try/catch fixes below: if
+    // step 1 ("mark-processing") or step 3 ("update-result") exhausts ITS retries and rethrows —
+    // a TaskDO genuinely being unreachable, say — that exception would otherwise also propagate
+    // out of `run()` uncaught, leaving the task stuck exactly like the run-agent case did. This is
+    // a last-resort, non-step (plain fetch, no Serializable<T> constraint, no retry policy of its
+    // own) direct write, so it can still run even when the step machinery itself is what failed.
+    try {
+      await this.runSteps(event, step);
+    } catch (err) {
+      try {
+        const stub = this.env.TASK_DO.get(this.env.TASK_DO.idFromName(event.payload.taskDoName));
+        await stub.fetch(`http://task-do/tasks/${event.payload.taskId}/status`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            status: "failed",
+            result: null,
+            error: err instanceof Error ? err.message : String(err),
+          }),
+        });
+      } catch {
+        // Genuinely nothing more can be done — TaskDO itself is unreachable. The task stays
+        // "processing"; this is the one failure mode this file cannot self-heal.
+      }
+    }
+  }
+
+  private async runSteps(
+    event: WorkflowEvent<AgentTaskParams>,
+    step: WorkflowStep,
+  ): Promise<void> {
     const p = event.payload;
 
     const retry = {
@@ -84,85 +115,139 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
     // retrying a non-idempotent step is the opposite of providing it. The ledger check below is
     // what makes a REPLAY (a Workflow restart, where step results are memoized) safe; a fresh
     // attempt at a run that already half-happened is not something we can make safe by hoping.
-    const runResult = await step.do("run-agent", { retries: { limit: 0, delay: 0 } }, async () => {
-      const stepStarted = Date.now();
+    // Live-reported bug (2026-08-07): "Timed out waiting for a response" on EVERY message,
+    // reproduced directly against production — a task that failed (in this case the account's
+    // Workers AI daily neuron allocation being exhausted, but genuinely ANY failure here has the
+    // same effect) stayed in TaskDO status "processing" forever. Root cause: `step.do` rethrows
+    // once its own retries are exhausted, and that exception was never caught — it propagated
+    // straight out of `run()`, so step 3 ("update-result") never executed and the task's status
+    // was never written as "failed". The client polls, never observes a terminal status, and
+    // times out after MAX_POLL_DURATION_MS; a page refresh reattaches to the same forever-
+    // "processing" run and hangs again identically. Wrapping the step call itself is the fix:
+    // whatever the failure, it becomes a normal `runResult.error` value and step 3 always runs.
+    let runResult: {
+      final_answer: string | undefined; error: string | undefined; status: string | undefined;
+      pending_approval_json: string | undefined; deferred_approvals_json: string | undefined;
+    };
+    try {
+      runResult = await step.do("run-agent", { retries: { limit: 0, delay: 0 } }, async () => {
+        const stepStarted = Date.now();
 
-      // Ledger check — the Orchestrator pattern, using the TaskDO row we already write as the
-      // ledger rather than inventing a second store. If this task already reached a terminal
-      // state, the run happened; return what was recorded instead of doing it again.
-      const already = await this.recordedResult(p);
-      if (already) return already;
-      // Go-live audit F1: /internal/tasks/:taskId/run is HMAC-gated (verified tenant must match
-      // the body's tenantId) — mint the same signed internal token naelao-router's proxyTo and
-      // every other internal caller uses. Without this the workflow's own run would now 403.
-      const internalToken = await mintInternalToken(this.env.PLATFORM_SECRET, p.tenantId);
-      const resp = await this.env.AGENTS_WORKER.fetch(
-        `https://agents-worker/internal/tasks/${p.taskId}/run`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-naelao-tenant-id": p.tenantId,
-            "x-naelao-internal-token": internalToken,
-          },
-          body: JSON.stringify({
-            taskId: p.taskId,
-            spaceId: p.spaceId,
-            sessionId: p.sessionId,
-            tenantId: p.tenantId,
-            goal: p.goal,
-            agentId: p.agentId,
-            model: p.model,
-            userId: p.userId,
-            projectId: p.projectId,
-            callerRole: p.callerRole,
-            sessionCreditCeiling: p.sessionCreditCeiling,
-            reasoningEffort: p.reasoningEffort,
-            effort: p.effort,
-          }),
+        // Ledger check — the Orchestrator pattern, using the TaskDO row we already write as the
+        // ledger rather than inventing a second store. If this task already reached a terminal
+        // state, the run happened; return what was recorded instead of doing it again.
+        const already = await this.recordedResult(p);
+        if (already) return already;
+        // Go-live audit F1: /internal/tasks/:taskId/run is HMAC-gated (verified tenant must match
+        // the body's tenantId) — mint the same signed internal token naelao-router's proxyTo and
+        // every other internal caller uses. Without this the workflow's own run would now 403.
+        const internalToken = await mintInternalToken(this.env.PLATFORM_SECRET, p.tenantId);
+        const resp = await this.env.AGENTS_WORKER.fetch(
+          `https://agents-worker/internal/tasks/${p.taskId}/run`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-naelao-tenant-id": p.tenantId,
+              "x-naelao-internal-token": internalToken,
+            },
+            body: JSON.stringify({
+              taskId: p.taskId,
+              spaceId: p.spaceId,
+              sessionId: p.sessionId,
+              tenantId: p.tenantId,
+              goal: p.goal,
+              agentId: p.agentId,
+              model: p.model,
+              userId: p.userId,
+              projectId: p.projectId,
+              callerRole: p.callerRole,
+              sessionCreditCeiling: p.sessionCreditCeiling,
+              reasoningEffort: p.reasoningEffort,
+              effort: p.effort,
+            }),
+          }
+        );
+
+        // §A1.26: this step's own async-dispatch orchestration overhead (distinct from the run's
+        // own isolate/container/LLM billing, which settleRunBilling handles inside the agent DO).
+        await reportWorkflowStepInfraUsage(this.env, p.tenantId, p.spaceId, Date.now() - stepStarted, `workflow:${event.instanceId}:run-agent`);
+
+        if (!resp.ok) {
+          // Return an error RESULT rather than throwing here — /internal/tasks/:taskId/run passes
+          // a non-2xx DO response through verbatim (unnormalized), and that raw body can still
+          // legitimately carry deferred_approvals if the run parked one before hitting whatever
+          // then made the overall call non-ok (e.g. a second-turn reasoning failure). Throwing
+          // immediately discarded that unconditionally — the exact class of loss the comment on
+          // deferred_approvals below already exists to prevent for the 200-with-error-status case.
+          // Falls back to the raw response text as the error when the body isn't the JSON shape
+          // this expects (e.g. a plain-text 500 from an upstream outage).
+          const text = await resp.text();
+          let parsedError: string | undefined;
+          let pendingApprovalJson: string | undefined;
+          let deferredApprovalsJson: string | undefined;
+          try {
+            const errBody = JSON.parse(text) as {
+              error?: string;
+              message?: string;
+              pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
+              deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
+            };
+            parsedError = errBody.error ?? errBody.message;
+            pendingApprovalJson = errBody.pending_approval ? JSON.stringify(errBody.pending_approval) : undefined;
+            deferredApprovalsJson = errBody.deferred_approvals?.length ? JSON.stringify(errBody.deferred_approvals) : undefined;
+          } catch {
+            // Not JSON, or not the shape above — the raw text below is still a real error message.
+          }
+          return {
+            final_answer: undefined,
+            error: parsedError ?? `Agent run failed (${resp.status}): ${text}`,
+            status: undefined,
+            pending_approval_json: pendingApprovalJson,
+            deferred_approvals_json: deferredApprovalsJson,
+          };
         }
-      );
 
-      // §A1.26: this step's own async-dispatch orchestration overhead (distinct from the run's
-      // own isolate/container/LLM billing, which settleRunBilling handles inside the agent DO).
-      await reportWorkflowStepInfraUsage(this.env, p.tenantId, p.spaceId, Date.now() - stepStarted, `workflow:${event.instanceId}:run-agent`);
-
-      if (!resp.ok) {
-        const text = await resp.text();
-        throw new Error(`Agent run failed (${resp.status}): ${text}`);
-      }
-
-      // A-2 cutover bugfix: /internal/tasks/:taskId/run's response is normalized by
-      // normalizeScriptRunResult (agents worker index.ts), which carries BOTH finalAnswer
-      // (camelCase) and final_answer (snake_case) precisely because this call site used to read
-      // only `final_answer` off a response that actually carried `finalAnswer` — a real,
-      // previously-undetected bug (the key was always undefined at runtime, so every
-      // TaskDO-completed async run silently stored an empty result). Read both defensively.
-      const body = await resp.json<{
-        finalAnswer?: string;
-        final_answer?: string;
-        error?: string;
-        status?: string;
-        pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
-        // Live-reported bug (2026-07-29): a run that parked a real approval and continued (rather
-        // than fully suspending) carried this array in the direct-DO response, but this step never
-        // read it at all — every async-dispatched (the DEFAULT) run silently dropped it, so the
-        // approval genuinely existed (visible in HITLApprovalDO/the /approvals page) while the chat
-        // UI showed nothing about it whatsoever.
-        deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
-      }>();
-      return {
-        final_answer: body.finalAnswer ?? body.final_answer,
-        error: body.error,
-        status: body.status,
-        // CF Workflow step results must be Serializable<T>, which a bare Record<string, unknown>
-        // (the params object's own type) doesn't satisfy — pre-stringified here, parsed back only
-        // inside the plain (non-step) "update-result" callback below where that constraint
-        // doesn't apply.
-        pending_approval_json: body.pending_approval ? JSON.stringify(body.pending_approval) : undefined,
-        deferred_approvals_json: body.deferred_approvals?.length ? JSON.stringify(body.deferred_approvals) : undefined,
+        // A-2 cutover bugfix: /internal/tasks/:taskId/run's response is normalized by
+        // normalizeScriptRunResult (agents worker index.ts), which carries BOTH finalAnswer
+        // (camelCase) and final_answer (snake_case) precisely because this call site used to read
+        // only `final_answer` off a response that actually carried `finalAnswer` — a real,
+        // previously-undetected bug (the key was always undefined at runtime, so every
+        // TaskDO-completed async run silently stored an empty result). Read both defensively.
+        const body = await resp.json<{
+          finalAnswer?: string;
+          final_answer?: string;
+          error?: string;
+          status?: string;
+          pending_approval?: { approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number };
+          // Live-reported bug (2026-07-29): a run that parked a real approval and continued (rather
+          // than fully suspending) carried this array in the direct-DO response, but this step never
+          // read it at all — every async-dispatched (the DEFAULT) run silently dropped it, so the
+          // approval genuinely existed (visible in HITLApprovalDO/the /approvals page) while the chat
+          // UI showed nothing about it whatsoever.
+          deferred_approvals?: Array<{ approval_id: string; action_name: string; params?: Record<string, unknown>; expires_at?: number }>;
+        }>();
+        return {
+          final_answer: body.finalAnswer ?? body.final_answer,
+          error: body.error,
+          status: body.status,
+          // CF Workflow step results must be Serializable<T>, which a bare Record<string, unknown>
+          // (the params object's own type) doesn't satisfy — pre-stringified here, parsed back only
+          // inside the plain (non-step) "update-result" callback below where that constraint
+          // doesn't apply.
+          pending_approval_json: body.pending_approval ? JSON.stringify(body.pending_approval) : undefined,
+          deferred_approvals_json: body.deferred_approvals?.length ? JSON.stringify(body.deferred_approvals) : undefined,
+        };
+      });
+    } catch (err) {
+      runResult = {
+        final_answer: undefined,
+        error: err instanceof Error ? err.message : String(err),
+        status: undefined,
+        pending_approval_json: undefined,
+        deferred_approvals_json: undefined,
       };
-    });
+    }
 
     // ── Step 3: Update task with result ───────────────────────────────────────
     await step.do("update-result", retry, async () => {

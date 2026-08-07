@@ -4675,6 +4675,128 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      `node:sqlite` against real migrations, per this file's own standing precedent for what that
      harness catches and doesn't).
 
+104. **A "Timed out" hang on EVERY message (reproduced live) traced to a real Workflow bug and
+     fixed; a second real bug (2 starter threads per prebuilt project) found and fixed one layer
+     deeper than item 103's own already-fixed instance; the ComposerDock "Message" button removed;
+     and a broad direct-API self-test pass (bounded by the account's exhausted Workers AI quota)
+     found no further backend defects.**
+     - **Root cause of the hang, reproduced against production before touching code:** dispatched a
+       real async `/agent/run` and polled it — it stayed `"running"` forever; the underlying failure
+       (`4006: daily neuron allocation exhausted`, this account's Workers AI free tier — an infra
+       limit, not a bug) never reached TaskDO. In `AgentTaskWorkflow.ts`, the `run-agent` step
+       deliberately has ZERO retries (an agent run is not idempotent — see the step's own comment),
+       so when it threw, that exception propagated straight out of `run()` uncaught, and step 3
+       ("update-result", the ONLY place that ever writes a terminal status) never ran. A client
+       polls for `MAX_POLL_DURATION_MS`, times out, and a page refresh just reattaches to the same
+       forever-`"processing"` task and hangs identically — exactly the reported "every message, even
+       hello, and it reruns on refresh." Fixed: the `run-agent` step call is now wrapped so ANY
+       failure — a non-ok HTTP response OR a thrown network error — becomes a normal `runResult`
+       with `.error` set, so step 3 always runs; a second outer try/catch around the whole
+       step-1-through-3 sequence is a last-resort direct (non-step) TaskDO write for the rarer case
+       where step 1 or step 3 ITSELF exhausts its own retries. **A related, second real bug fixed in
+       the same code path:** the non-ok branch used to throw immediately without reading the
+       response body, discarding any `deferred_approvals` the run had genuinely parked before
+       hitting the failure — now parses the body defensively and preserves them, matching the
+       existing (200-with-error-status) precedent for the exact same class of loss. 5 new tests in
+       `agent-task-workflow-failure-handling.test.ts`, driving the REAL `AgentTaskWorkflow` class
+       through a fake `WorkflowStep` mirroring CF's own retry/rethrow contract — not a
+       reimplementation of its logic. Live-verified after deploy: the same reproduction now resolves
+       to `status:"failed"` with the real `4006` message on the very first poll, instead of hanging.
+       **The underlying neuron-quota exhaustion itself is NOT fixed by this** (see Live Deployment
+       Facts) — this closes the "hangs forever and gives no signal" failure mode; the account still
+       needs its daily allocation to reset (or the $5/mo Workers Paid plan) before chat actually
+       answers.
+     - **"Why does a new business come with 2 threads for each prebuilt project" — root-caused to
+       the EXACT same underlying defect item 89 had already documented as a real, unfixed gap, one
+       layer removed from where item 103 fixed its own instance.** `SpaceDO.createProject` has
+       always used `ON CONFLICT(space_id, name) DO NOTHING` and returned 201 EITHER way, with no
+       field distinguishing a genuine insert from a silent no-op. `seedTemplateProjects`
+       (`launchpad/bootstrap.ts`) runs BOTH at provision time (the provisioner) AND again when an
+       end user finishes the onboarding wizard (`bootstrap/complete`, reached via the spaces
+       worker's `/onboarding` wrapper — its own header comment claiming the end-user shell "never
+       reaches this endpoint" was simply wrong, contradicted by the very wrapper item 69 built) — so
+       the second pass's `if (!res.ok) continue` skip-on-duplicate check never actually fired, and a
+       starter thread was created a second time for every already-existing project. Fixed at the
+       root: `createProject`'s response now carries a real `created: boolean`
+       (`!alreadyExisted`, a value the handler already computed internally and simply never
+       returned) — closing item 89's own documented gap for real, not just for this symptom.
+       `seedTemplateProjects` now skips the starter-thread create when `project.created === false`
+       (`=== false`, not `!created`, so an older deployed worker missing the field during a rolling
+       deploy degrades to the prior, non-regressive behavior rather than wrongly skipping a NEW
+       thread). Found and fixed the identical bug ONE MORE layer removed while investigating: this
+       file's `applyProjectTemplate` (used by both `bootstrap/complete`'s project-template presets
+       AND the end-user-reachable `/projects/from-template` route) had the SAME assumption baked
+       into its own header comment ("the create step... returns an error rather than duplicating" —
+       never true), so a re-run would re-seed RULES and SCHEDULED JOBS unconditionally — both plain
+       inserts with no dedup of their own. Fixed the same way: config PATCH still re-applies on a
+       re-run (idempotent, a harmless overwrite) but rule/job seeding is now skipped when
+       `created === false`. **A real, previously-passing test was itself hiding the production bug**
+       — `template-bootstrap-execution.test.ts`'s fake `postToSpaces` modeled a duplicate-name
+       create as a `409`, which is NOT what the real `SpaceDO` does (confirmed by reading the real
+       handler) — exactly the "test double diverges from the real contract" class this file already
+       documents repeatedly (`config_schema`/`schema_json`, the credentials-worker stub, etc.).
+       Fixed the fake to match reality (201 + `created` either way) and the "idempotent" test that
+       had been silently passing against the wrong contract failed immediately, confirming the fix
+       was real and necessary, not cosmetic. New tests: `space-collaboration.test.ts` drives the
+       REAL `SpaceDO` (not a fake) for `created:true`-then-`false`-with-the-same-id;
+       `projects-from-template.test.ts` gained two cases (a re-run skips rules/jobs but still
+       reconfigures; a genuinely new project still seeds normally). Live-verified directly against
+       the deployed `naelao-spaces`: creating the same project name twice now returns `created:true`
+       then `created:false` with the identical id.
+     - **ComposerDock's "Message" pill (button + icon) removed** — reported as unnecessary since
+       compose is already the dock's default panel. Confirmed safe to remove outright rather than
+       shrink: every OTHER panel's own toggle button already returns to compose when clicked a
+       second time (`toggle()`'s own fallback), plus `Escape` and clicking outside the dock both
+       already revert to compose — so the dedicated button's only job was reaching a state every
+       other interaction already reaches. Removed the button and its now-dead `.dock-primary` CSS
+       (including a `max-width` override in the mobile media query). **A real process gap this
+       caught**: the source edit had been made and typechecked earlier but never actually
+       rebuilt/deployed — caught by grepping the LIVE deployed bundle for the removed markup (found
+       it still present), which is why "typecheck passed" is not the same claim as "shipped" and
+       both must be verified independently before calling a frontend change done.
+     - **Broad direct-API self-test pass** (signup → business creation → provisioning →
+       projects/threads/onboarding/connectors/notifications/model-config/business-wallet/revenue/
+       KB/business-members, ~20 real endpoints exercised against the live `launchpad` product with a
+       disposable end user) found no further backend defects — three apparent findings during the
+       pass turned out to be mistakes in the ad-hoc test calls themselves, not product bugs (a wrong
+       field name reading the connector-directory response's `apps` key as `connectors`/`data`; a
+       plural `notification_ids` sent where the real contract is a singular `notification_id`;
+       calling `PATCH /model-config` with only `effort` and no `model`, which every REAL caller in
+       `apps/shell` already always sends together — confirmed by checking all 4 real call sites, not
+       assumed) — worth recording as a reminder that an ad-hoc probe script diverging from the real
+       contract produces the exact same false-confidence risk as a test file's fake doing the same,
+       just faster to mis-read.
+     - **OpenClaw comparison**: `docs/COMPETITIVE_2026-08-05_openclaw_hermes.md` (item 96, two days
+       old) already covers this thoroughly — Telegram and skill self-improvement (the two real gaps
+       it found) are both already closed; re-read rather than re-derived. Fresh research this pass
+       (GitHub issues, security advisories) surfaced OpenClaw's disclosed CVE-2026-25253 (an
+       unauthenticated `gatewayUrl` query param auto-connects a WebSocket and exfiltrates the
+       operator's own auth token, then disables approval prompts via `exec.approvals.set` before
+       executing arbitrary commands) — checked our own OAuth `return_url` handling for the same
+       *class* of risk (an attacker-crafted link a victim's authenticated browser acts on) and found
+       it structurally different: `return_url` is set server-side by an ALREADY-authenticated caller
+       for their OWN redirect (never read from an unauthenticated query param on page load), and no
+       credential ever reaches the browser in that flow (item 53's own design) — not the same
+       vulnerability shape, no fix needed. Also confirms our own architecture (a business's assistant
+       policy can only be changed via `PATCH /assistant-policy`, gated by verified business-admin
+       role, never a client-supplied redirect target) has no analogous "attacker flips the approval
+       gate remotely" path.
+     - **CF Browser Rendering (the actual screenshot/HTML-fetch self-test method, already built as
+       `infra/scripts/shell-interact.mjs`) was rate-limited (429, `retry-after: 10`) for this
+       account for the entire pass despite multiple retries spaced by real intervening work** — not
+       used successfully this pass; direct API-level testing (arguably more rigorous for backend
+       correctness, though it can't catch pure visual/CSS regressions) filled the gap instead, which
+       is how the un-deployed frontend build above was actually caught.
+     2671/2671 tests pass (5 new), `npx turbo run typecheck` clean (76 tasks). Deployed:
+     `naelao-agents` (bare `wrangler deploy`, item 83's documented trap), `naelao-spaces`,
+     `apps/shell` (rebuilt with the actual fix confirmed present in the build output before
+     deploying, then reconfirmed as the newest production Pages deployment via the CF API — the
+     static-chunk-grep verification method itself proved unreliable for Next.js's dynamically
+     code-split chunks and was abandoned in favor of the Pages deployments API). **Not done this
+     pass:** a live browser screenshot of the fix (CF Browser Rendering rate-limited throughout);
+     the Workers AI daily quota is still exhausted, so no real chat message could be end-to-end
+     verified to actually ANSWER, only to fail fast and honestly instead of hanging.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

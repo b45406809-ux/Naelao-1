@@ -2528,7 +2528,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       ? { ...row, allowed_agent_ids: safeJsonParseAgentIds(row.allowed_agent_ids) }
       : { id, name: body.name, status: "active", default_agent_id: body.default_agent_id ?? null, max_threads: body.max_threads ?? 0, allowed_agent_ids: body.allowed_agent_ids ?? null, created_at: now };
     return Response.json(
-      { ...responseRow, possible_duplicates: possibleDuplicates },
+      // `created` distinguishes a genuine insert from the `ON CONFLICT(space_id, name) DO NOTHING`
+      // no-op on a name collision — this endpoint always returned 201 either way, with no field a
+      // caller could use to tell them apart. Real, previously-documented-but-unfixed bug: a
+      // template's bootstrap (seedTemplateProjects) runs both at provision time AND again when an
+      // end user finishes the onboarding wizard (bootstrap/complete) — the second pass's project
+      // "creates" all silently succeeded as no-ops, and since `res.ok` was true either way, the
+      // caller had no way to skip re-seeding a starter thread for each one, producing exactly two
+      // starter threads per templated project. `created` is what closes that for real.
+      { ...responseRow, possible_duplicates: possibleDuplicates, created: !alreadyExisted },
       { status: 201 }
     );
   }
