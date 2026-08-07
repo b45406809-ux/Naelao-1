@@ -365,7 +365,12 @@ export function registerProductEndUserRoutes(app: Hono<any>): void { // eslint-d
     const resolved = await loadProductAuthConfig(env, productId);
     if (!resolved) return c.json({ error_code: "not_found", message: "Product not found" }, 404);
 
-    const body = await c.req.json<{ email: string }>();
+    // Live-reported bug: an empty or malformed body (no email field at all, a truncated request,
+    // a bare probe with no `-d`) threw an unhandled SyntaxError here and surfaced as a raw 500 —
+    // exactly the kind of response this route's own ALWAYS_OK constant-response design exists to
+    // avoid leaking anything from. Defensive parse, same convention as every other body-parsing
+    // route in this codebase.
+    const body = await c.req.json<{ email?: string }>().catch(() => ({}) as { email?: string });
     const email = (body.email ?? "").trim().toLowerCase();
     const ALWAYS_OK = c.json({ ok: true, message: "If that account exists and isn't yet verified, a new verification link has been sent." });
     if (!email) return ALWAYS_OK;
