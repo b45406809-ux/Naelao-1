@@ -15,7 +15,7 @@ export const runtime = "edge";
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { useProduct } from "@/lib/product-context";
-import { useProductAuth } from "@/lib/auth-provider";
+import { useSessionCredentials } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
 import { listProjects } from "@/lib/api";
 
@@ -24,19 +24,18 @@ const GENERAL_PROJECT_NAME = "General";
 export default function ProjectsRootPage() {
   const product = useProduct();
   const { activeSpaceId } = useActiveSpace();
-  const { session } = useProductAuth();
+  const creds = useSessionCredentials();
   const router = useRouter();
 
   React.useEffect(() => {
-    if (!session) return;
-    const creds = { sessionToken: session.session_token, endUserId: session.end_user_id };
+    if (!creds) return;
     listProjects(activeSpaceId, creds)
       .then((projects) => {
         const general = projects.find((p) => p.name === GENERAL_PROJECT_NAME);
         router.replace(`/p/${product.slug}/projects/${general ? general.id : "all"}`);
       })
       .catch(() => router.replace(`/p/${product.slug}/projects/all`));
-  }, [activeSpaceId, session, product.slug, router]);
+  }, [activeSpaceId, creds, product.slug, router]);
 
   return (
     <div style={{ minHeight: "60vh", display: "flex", alignItems: "center", justifyContent: "center" }}>

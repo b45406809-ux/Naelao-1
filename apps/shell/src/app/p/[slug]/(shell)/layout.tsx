@@ -303,12 +303,13 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
               justifyContent: "space-between",
               gap: 12,
               padding: "8px 16px",
-              background: "var(--accent-soft, #fef3c7)",
-              borderBottom: "1px solid var(--border)",
+              background: "#fde68a",
+              borderBottom: "1px solid #b45309",
               fontSize: 12.5,
+              color: "#78350f",
             }}
           >
-            <span>
+            <span style={{ color: "#78350f" }}>
               Verify your email to unlock your free starting credits
               {me.credits_balance === 0 ? " — your account has 0 credits until then." : "."}
             </span>
@@ -316,11 +317,13 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
               type="button"
               onClick={() => router.push(`/p/${product.slug}/verify-email`)}
               style={{
-                background: "none",
+                background: "#78350f",
                 border: "none",
-                color: "var(--accent)",
+                borderRadius: 6,
+                color: "#fde68a",
                 fontWeight: 600,
                 fontSize: 12.5,
+                padding: "4px 10px",
                 cursor: "pointer",
                 whiteSpace: "nowrap",
               }}

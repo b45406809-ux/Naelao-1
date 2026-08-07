@@ -8,6 +8,14 @@ export interface NotificationsEnv {
   ENVIRONMENT: string;
   RESEND_API_KEY: string;
   RESEND_API_URL: string;
+  /** Domain-verification gap, live-confirmed 2026-08-07 (`wrangler tail`): this account owns
+   *  ZERO DNS zones (CLAUDE.md Live Deployment Facts), so `naelao.com` — the address every send
+   *  used to hardcode — was never verified in Resend and every real send 403'd
+   *  ("The naelao.com domain is not verified"), silently swallowed by every caller's own
+   *  best-effort try/catch. `onboarding@resend.dev` is Resend's own zero-setup sender that needs
+   *  no domain verification and works today; a real branded domain can replace it here the
+   *  moment one is registered and verified, with no code change. */
+  RESEND_FROM_ADDRESS?: string;
   WEBHOOK_SIGNING_SECRET: string;
   PLATFORM_DB: D1Database;
   // G-P11/G-P12: APNs push notification credentials (optional — push disabled if absent)
@@ -391,14 +399,18 @@ async function sendEmailNow(
       Authorization: `Bearer ${env.RESEND_API_KEY}`,
     },
     body: JSON.stringify({
-      from: "noreply@naelao.com",
+      from: env.RESEND_FROM_ADDRESS || "onboarding@resend.dev",
       to: msg.email,
       subject,
       html,
     }),
   });
 
-  if (!res.ok) return { ok: false, status: res.status };
+  if (!res.ok) {
+    // eslint-disable-next-line no-console -- diagnostic only, Resend never echoes secrets back
+    console.error("resend send failed", res.status, await res.text().catch(() => ""));
+    return { ok: false, status: res.status };
+  }
 
   // Audit row in the `notifications` table (migration 0010: id, tenant_id, user_id NOT NULL,
   // type, title, body, ...) — this previously used columns (`status`, `subject`) that don't
