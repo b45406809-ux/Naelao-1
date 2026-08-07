@@ -18,10 +18,17 @@ export default function SessionPage() {
   const { activeSpaceId, supportContact } = useActiveSpace();
   const { session } = useProductAuth();
 
-  // Home mints the session and passes the opening line through the URL, which Chat then sends on
-  // mount — so the landing page never needs its own copy of the chat machinery. Stripped from the
-  // address bar immediately so a reload can't re-send it.
-  const initial = searchParams.get("q");
+  // Home mints the session and passes the opening line through the URL, which Chat then sends once
+  // it is ready — so the landing page never needs its own copy of the chat machinery.
+  //
+  // Latched on the FIRST render and never re-read. This is load-bearing, not tidiness: the effect
+  // below strips `q` from the address bar immediately (so a reload can't re-send), Next syncs that
+  // replaceState back into useSearchParams, and Chat cannot send until its history has loaded a
+  // beat later. Reading `searchParams` live meant the message was retracted before Chat was ready
+  // for it — so the user typed a line on Home, landed in an empty conversation, and nothing ever
+  // ran. Reported as "/new just creates a session and nothing happens", and reproduced exactly:
+  // POST /sessions succeeded, POST /agent/run never fired.
+  const [initial] = React.useState(() => searchParams.get("q"));
   React.useEffect(() => {
     if (!initial) return;
     const url = new URL(window.location.href);

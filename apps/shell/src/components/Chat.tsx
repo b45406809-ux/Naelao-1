@@ -723,12 +723,50 @@ export function Chat({
   // page. Guarded by a ref, not just the empty-history check: React 18 StrictMode double-invokes
   // effects in development, and "send the user's first message twice" is not a dev-only annoyance
   // — it would bill two real agent runs.
+  // Edit-and-ask-again on the last thing the user said. Scoped to the last message deliberately:
+  // editing an earlier one would have to discard every exchange after it, and a destructive
+  // rewrite of the conversation is not what someone fixing a typo is asking for.
+  const [editingId, setEditingId] = React.useState<string | null>(null);
+  const [editDraft, setEditDraft] = React.useState("");
+  const lastUserMessageId = React.useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) if (messages[i]!.role === "user") return messages[i]!.id;
+    return null;
+  }, [messages]);
+
+  const submitEdit = React.useCallback(
+    async (messageId: string) => {
+      const text = editDraft.trim();
+      if (!text) return;
+      setEditingId(null);
+      // Drop the edited message and everything after it from the view, then ask again. The server
+      // transcript still holds the original — this is a re-ask, not a rewrite of history, and
+      // saying so honestly is better than pretending the first attempt never happened.
+      setMessages((prev) => {
+        const idx = prev.findIndex((m) => m.id === messageId);
+        return idx === -1 ? prev : prev.slice(0, idx);
+      });
+      await send(text);
+    },
+    [editDraft, send]
+  );
+
   const initialSentRef = React.useRef(false);
+  // Latched separately from the prop. The caller strips the message from the URL as soon as it has
+  // handed it over, so by the time this surface is ready to send, the prop may already have gone
+  // back to undefined — which is exactly how a user's first message came to be dropped in silence.
+  // Defence in depth alongside the page's own latch: whoever passes it, the first non-empty value
+  // wins and cannot be retracted.
+  const pendingInitialRef = React.useRef<string | null>(null);
+  if (initialMessage && !pendingInitialRef.current && !initialSentRef.current) {
+    pendingInitialRef.current = initialMessage;
+  }
   React.useEffect(() => {
-    if (!initialMessage || initializing || initialSentRef.current) return;
+    const pending = pendingInitialRef.current;
+    if (!pending || initializing || initialSentRef.current) return;
     if (messages.length > 0) return;
     initialSentRef.current = true;
-    void send(initialMessage);
+    pendingInitialRef.current = null;
+    void send(pending);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires once when the surface is ready.
   }, [initialMessage, initializing]);
 
@@ -788,7 +826,45 @@ export function Chat({
                       {authorLabel(m)}
                     </div>
                   )}
-                  <div className={["bubble", m.role === "user" ? "user" : ""].filter(Boolean).join(" ")}>{m.content}</div>
+                  {editingId === m.id ? (
+                    <div className="bubble user" style={{ display: "grid", gap: 6, minWidth: 260 }}>
+                      <textarea
+                        className="msg-input"
+                        value={editDraft}
+                        onChange={(e) => setEditDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void submitEdit(m.id); }
+                          if (e.key === "Escape") setEditingId(null);
+                        }}
+                        rows={2}
+                        style={{ background: "transparent", color: "inherit", border: "none", resize: "vertical", width: "100%" }}
+                        autoFocus
+                      />
+                      <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setEditingId(null)}>Cancel</button>
+                        <button type="button" className="btn btn-primary btn-sm" disabled={!editDraft.trim()} onClick={() => void submitEdit(m.id)}>
+                          Send
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className={["bubble", m.role === "user" ? "user" : ""].filter(Boolean).join(" ")}>{m.content}</div>
+                  )}
+                  {/* Edit and re-ask. Only the LAST thing you said — editing something further back
+                      would silently discard every exchange after it, which is a destructive act
+                      dressed up as a typo fix. */}
+                  {m.role === "user" && m.id === lastUserMessageId && editingId !== m.id && !isLoading && (
+                    <div style={{ textAlign: "right", marginTop: 2 }}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => { setEditingId(m.id); setEditDraft(m.content); }}
+                        title="Edit this message and ask again"
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  )}
                   {/* Claude-Code-style collapsed tool-call/thinking summary for this turn — see
                       ActivityFeed.tsx. Renders nothing for a trivial answer-only turn. */}
                   {m.role !== "user" && m.activity && <ActivitySummary steps={m.activity} />}

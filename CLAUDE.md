@@ -4364,6 +4364,62 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     2608/2608 tests pass (30 new in `agent-loop-unbounded.test.ts`), `npx turbo run typecheck` clean
     (76 tasks), `naelao-agents` deployed via bare `wrangler deploy` (item 83's documented trap).
 
+98. **The assistant had never once been told who it was, `/new` silently dropped the user's first
+    message, and a completed run 404'd on its own status poll. All three reported by the user, all
+    three root-caused against live behaviour rather than guessed at.**
+    - **The agent's own system prompt reached the model in no run, ever.** `loadAgentConfig` read
+      `system-prompt.md` from R2 on every call and used it only to parse approval gates;
+      `GatewayReasoner` hardcoded `system: DECISION_INSTRUCTIONS`. Every word of
+      `LAUNCHPAD_ASSISTANT_PROFILE` — the business-building methodology, the wallet rules, "read the
+      project journal first" — written, stored, never delivered. Asked what business it ran, the
+      assistant said "that information is not provided in the given context", which was true.
+      New `ReasonerDeps.agentPrompt` + `composeSystemPrompt` (identity, protocol, then a one-line
+      identity anchor — recency wins on small models), wired at both reasoner sites.
+      **That alone was not enough, and the reason is worth keeping.** A direct gateway call proved
+      llama-3.3 follows a plain system prompt correctly, yet the SAME identity inside the real
+      request still produced "I am an AI assistant, and I am not running a business for you" — the
+      real request also carries a 4.3k-char protocol and five tool schemas, and `tool_choice:
+      "required"` pulls attention onto the machinery. Fixed by ALSO carrying a bounded
+      `who_you_are` digest in the payload the model is answering about. Verified live: it now
+      answers "I am the Naelao Agent, a business-builder Space Assistant for your Launchpad
+      Space…". Diagnostic worth reusing: when a prompt "should" work, test the model in isolation
+      first — it separates delivery from attention in one call.
+    - **`/new` created a session and nothing happened.** Home passes the opening line as `?q=`; the
+      session page stripped `q` from the URL on mount, Next syncs that `replaceState` back into
+      `useSearchParams`, and Chat cannot send until its history has loaded a beat later — so the
+      message was retracted before the surface was ready for it. Reproduced exactly in a real
+      browser: `POST /sessions` 201, then **no `POST /agent/run` at all**, 0 messages. Fixed by
+      latching `q` on first render (`useState` initialiser) plus a second latch inside Chat, so
+      whoever hands the message over, the first non-empty value wins and cannot be withdrawn.
+    - **"API error 404 when I click Continue."** `handleContinueInterruptedRun` runs the
+      continuation synchronously to completion and returns the answer — but the client then polls
+      `GET /runs/:runId`, and a script-native run writes no `agent_runs` row while a run dispatched
+      straight into the DO has no TaskDO task, so the entry was deleted the instant it finished and
+      the run existed nowhere. A run that had SUCCEEDED was reported as not existing. `liveRuns`
+      entries now carry a terminal state and linger 10 minutes (TTL + a 50-entry cap, unresolved
+      runs never pruned); suspended runs are retained too, so polling one says "awaiting approval"
+      instead of 404. A pre-existing test asserted the 404 — it was pinning the bug, and now
+      asserts the answer.
+    - **Malformed decisions silently burned a turn.** Workers AI models emit
+      `{"type":"function","name":"run","parameters":{…}}` — valid JSON with no `action` field.
+      `extractJson` parsed it happily, the loop matched no branch, and simply took another step:
+      no error, no signal to the model, and enough of them in a row ends as "without reaching an
+      answer (completed: none)". New `coerceDecision` accepts the real shape and the near-misses
+      these models actually produce, treats unrecognised prose as an answer, and the loop now
+      reports an unusable decision back to the model and counts it against the stall budget.
+    - **Edit and re-ask** on the last message you sent (scoped to the last one deliberately —
+      editing further back would have to discard every exchange after it).
+    - **New `infra/scripts/shell-interact.mjs`**: drives the real shell in a real browser, typing
+      through React's own native value setter and dispatching real key events, with an injected
+      fetch probe that reports every API call and status back through the rendered DOM. That probe
+      is what found the `/new` bug — the symptom was "nothing happens", and only the absent
+      `POST /agent/run` identified it. Playwright is genuinely unusable here: Chromium cannot
+      complete TLS through the sandbox proxy with `--proxy-server`, Playwright's own `proxy`
+      option, or `--disable-http2` (all tried); CF Browser Rendering runs Chrome inside
+      Cloudflare's network instead. Its cap is ~60s total, and it caches — bust with a query param.
+    2619/2619 tests pass (11 new), `npx turbo run typecheck` clean (76 tasks), `naelao-agents` and
+    `apps/shell` deployed and verified live end to end in a browser.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

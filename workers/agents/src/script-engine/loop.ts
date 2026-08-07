@@ -836,6 +836,22 @@ export async function runScriptLoop(
         if (decision.action === "answer" || decision.action === "give_up") {
           return finish(withTokenUsage(await applyTerminalDecision(level, decision, tools, opts.goal, notes, pushTrace, runOnce), usageAcc));
         }
+
+        // An action this loop cannot act on. Previously this just fell off the end of the body and
+        // silently took another turn — a wasted step with no error anywhere, and the model got no
+        // signal that its reply was unusable, so it would produce the same thing again. Now it is
+        // told, and it counts against the stall budget like any other non-progress.
+        notes.push(`${level} ignored an unusable decision: ${JSON.stringify((decision as { action?: unknown }).action)}`);
+        pushTrace({ phase: "reason", detail: "unusable decision", ok: false });
+        priorSteps.push({
+          name: "(invalid decision)",
+          params: {},
+          ok: false,
+          error:
+            "your last reply was not one of the five allowed actions. Reply with exactly one of " +
+            "run / distill / patch / answer / give_up, and nothing else.",
+        });
+        stallSteps++;
       }
       // Ran out of budget without ever composing an answer.
       //

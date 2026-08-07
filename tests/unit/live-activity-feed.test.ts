@@ -95,10 +95,15 @@ describe("NaelaoAgentDO — live activity feed", () => {
     const finalResp = await runPromise;
     expect(finalResp.status).toBe(200);
 
-    // The run has resolved — the live-progress window is over. No `agent_runs` row exists for a
-    // script-native run either, so this route goes back to reporting "not found" exactly as it
-    // did before this feature existed.
+    // The run has resolved — and it must STILL be answerable. This used to assert 404, pinning
+    // the behaviour a user reported as "API error 404 when I click continue": a script-native run
+    // has no `agent_runs` row, and one dispatched straight into this DO has no TaskDO task, so
+    // dropping the entry the moment it finished meant the run existed nowhere and the client's
+    // very next poll was told it did not exist — on a run that had actually succeeded.
     const afterResp = await spaceDO.fetch(new Request(`http://agent-do/runs/${runId}`));
-    expect(afterResp.status).toBe(404);
+    expect(afterResp.status).toBe(200);
+    const afterBody = await afterResp.json<{ status: string; final_answer?: string }>();
+    expect(afterBody.status).toBe("completed");
+    expect(afterBody.final_answer).toBe("done");
   });
 });

@@ -140,6 +140,15 @@ const APPROVAL_INLINE_WAIT_MS = 20_000;
  * enclosing Workflow step has no wall-time limit of its own) overrides it via `context.deadline_ms`.
  */
 const RUN_WALL_CLOCK_MS = 10 * 60 * 1000;
+/** The outcome of a resolved run, retained briefly so a client polling just after completion gets
+ *  the answer rather than a 404. See NaelaoAgentDO.finishLiveRun. */
+interface FinishedRunState {
+  status: string;
+  final_answer?: string;
+  error?: string;
+  pending_approval?: unknown;
+  deferred_approvals?: unknown;
+}
 /** The same clock for a channel reply, where the loop is draining a queue of waiting customers
  *  rather than serving one person's request. */
 const CHANNEL_REPLY_WALL_CLOCK_MS = 2 * 60 * 1000;
@@ -2330,8 +2339,35 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    * durably records the same information once the run completes; this is only for the window
    * while it hasn't yet.
    */
-  private liveRuns = new Map<string, { steps: Array<Omit<TraceStep, "ts"> & { ts: number }>; updatedAt: number }>();
+  private liveRuns = new Map<
+    string,
+    {
+      steps: Array<Omit<TraceStep, "ts"> & { ts: number }>;
+      updatedAt: number;
+      /**
+       * Set once the run resolves, and the entry then LINGERS rather than being deleted.
+       *
+       * A script-native run writes no `agent_runs` row, and a run dispatched straight into this DO
+       * (the Continue-an-interrupted-run path, and every sub-agent) has no TaskDO task either — so
+       * the moment the entry was deleted the run existed nowhere and `GET /runs/:runId` answered
+       * 404. Reported live as "API error 404 when I click continue": the continuation had actually
+       * SUCCEEDED, and the client polling for its result was told it did not exist.
+       */
+      terminal?: {
+        status: string;
+        final_answer?: string;
+        error?: string;
+        pending_approval?: unknown;
+        deferred_approvals?: unknown;
+      };
+    }
+  >();
   private static readonly MAX_LIVE_STEPS = 60;
+  /** How long a resolved run stays answerable after finishing. Clients poll within seconds; this is
+   *  long enough to cover a slow tab or a retry, short enough that the map cannot grow unbounded. */
+  private static readonly FINISHED_RUN_TTL_MS = 10 * 60 * 1000;
+  /** Hard cap on retained entries, so a busy DO can't accumulate them faster than the TTL prunes. */
+  private static readonly MAX_RETAINED_RUNS = 50;
 
   /** Turns a client-requested (model, level) pair into a GatewayReasoner-ready ReasoningRequest,
    *  or undefined when the model has no reasoning capability, no level was requested, or the
@@ -2355,6 +2391,36 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private buildLiveProgressReporter(runId: string): (checkpoint: Omit<TraceStep, "seq" | "ts">) => void {
     return (checkpoint) => this.recordLiveProgress(runId, checkpoint);
   }
+
+  /**
+   * Mark a run resolved and keep its answer available for a short window.
+   *
+   * This used to be a plain `delete`, which is what produced the reported "API error 404 on
+   * Continue": the continuation ran, succeeded, returned — and the client's very next poll found
+   * the run nowhere, because a script-native run has no `agent_runs` row and a direct DO dispatch
+   * has no TaskDO task. Retaining the terminal result is cheaper and more honest than teaching
+   * three separate clients to stop polling.
+   */
+  private finishLiveRun(runId: string, terminal: FinishedRunState): void {
+    const entry = this.liveRuns.get(runId) ?? { steps: [], updatedAt: Date.now() };
+    entry.terminal = terminal;
+    entry.updatedAt = Date.now();
+    this.liveRuns.set(runId, entry);
+    this.pruneLiveRuns();
+  }
+
+  /** Drop resolved entries past their TTL, and the oldest resolved ones if the map is still over
+   *  its cap. An unresolved run is never pruned — it is still executing. */
+  private pruneLiveRuns(): void {
+    const now = Date.now();
+    for (const [id, e] of this.liveRuns) {
+      if (e.terminal && now - e.updatedAt > NaelaoAgentDO.FINISHED_RUN_TTL_MS) this.liveRuns.delete(id);
+    }
+    if (this.liveRuns.size <= NaelaoAgentDO.MAX_RETAINED_RUNS) return;
+    const resolved = [...this.liveRuns.entries()].filter(([, e]) => e.terminal).sort((a, b) => a[1].updatedAt - b[1].updatedAt);
+    for (const [id] of resolved.slice(0, this.liveRuns.size - NaelaoAgentDO.MAX_RETAINED_RUNS)) this.liveRuns.delete(id);
+  }
+
 
   /** Combines any number of onProgress reporters (live-progress + sub-agent-parent-callback,
    *  when both apply) into one — each fires independently and a throwing one never blocks the
@@ -2672,6 +2738,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ...(body.model ? { model: body.model } : {}),
       fallbacks: this.resolveFailoverChain(body.model ?? "claude-haiku-4-5-20251001", body.apiKey ?? ""),
       ...(reasoningRequest ? { reasoning: reasoningRequest } : {}),
+      // The agent's OWN identity and instructions. Loaded from R2 on every run since the script
+      // engine was built, and never once handed to the model — see ReasonerDeps.agentPrompt.
+      ...(config.systemPrompt ? { agentPrompt: config.systemPrompt } : {}),
     });
 
     try {
@@ -2738,6 +2807,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           summary: `Waiting for approval to run '${result.pending_approval.action_name}'`,
         });
         this.persistRunTrace(runId, tenantId, result.trace);
+        // Retained like any other resolved run, so a client polling a suspended run is told it is
+        // waiting on a human rather than getting a 404 that reads as "your message vanished".
+        this.finishLiveRun(runId, {
+          status: "awaiting_approval",
+          pending_approval: result.pending_approval,
+          ...(result.deferred_approvals?.length ? { deferred_approvals: result.deferred_approvals } : {}),
+        });
         return Response.json(result);
       }
 
@@ -2857,6 +2933,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         });
       }
 
+      // Keep this run answerable for a short window. A script-native run has no `agent_runs` row,
+      // and one dispatched straight into this DO (Continue, sub-agents) has no TaskDO task either
+      // — so deleting the entry here is what made the client's next poll 404 on a run that had
+      // actually succeeded.
+      this.finishLiveRun(runId, {
+        status: result.result?.ok === false ? "failed" : "completed",
+        ...(typeof result.result?.output === "string" ? { final_answer: result.result.output } : {}),
+        ...(result.result?.error ? { error: String(result.result.error) } : {}),
+        ...(result.deferred_approvals?.length ? { deferred_approvals: result.deferred_approvals } : {}),
+      });
       return Response.json(result);
     } catch (err) {
       const errMessage = err instanceof Error ? err.message : String(err);
@@ -2866,16 +2952,17 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         failureKind: classifyFailure(errMessage).kind,
         triggerSource: typeof body.context?.["trigger"] === "string" ? String(body.context["trigger"]) : "chat",
       });
+      this.finishLiveRun(runId, { status: "failed", error: errMessage });
       return Response.json(
         { error: errMessage },
         { status: 500 }
       );
     } finally {
-      // The run has fully resolved (success, suspended-for-approval, or thrown) — no more
-      // onProgress calls will fire for this runId, so the live-progress window is over. Suspended
-      // runs are deliberately cleared too: `pending_approval`/deferred already carry their own
-      // status (awaiting_approval) that the client reads independently of this ephemeral feed.
-      this.liveRuns.delete(runId);
+      // Every normal exit above records a terminal state, which keeps the entry (briefly) rather
+      // than dropping it. Anything that reaches here WITHOUT one left the run unresolved — there
+      // is nothing to report and no more onProgress will fire, so the live window is over.
+      const entry = this.liveRuns.get(runId);
+      if (entry && !entry.terminal) this.liveRuns.delete(runId);
     }
   }
 
@@ -4534,6 +4621,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       ctx: { spaceId, agentId, model },
       model,
       fallbacks: this.resolveFailoverChain(model, body.apiKey ?? ""),
+      // Same gap as the interactive path: a customer messaging a business on Slack/WhatsApp was
+      // being answered by a model that had never been told what business it was answering for.
+      ...(config.systemPrompt ? { agentPrompt: config.systemPrompt } : {}),
     });
 
     // Resolve config + rules once per distinct project among this batch (not per message).
@@ -5551,6 +5641,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // falling through — synthesizing a "running" status with the steps recorded so far.
     const live = this.liveRuns.get(runId);
     if (live) {
+      // Resolved but still retained — answer with the real outcome. Without this the client's
+      // next poll after a synchronous run 404s even though the run succeeded (see finishLiveRun).
+      if (live.terminal) {
+        return Response.json({ id: runId, live_steps: live.steps, ...live.terminal });
+      }
       return Response.json({
         id: runId,
         status: "running",
