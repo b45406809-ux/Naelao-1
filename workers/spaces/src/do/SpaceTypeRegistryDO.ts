@@ -416,6 +416,12 @@ export interface SpaceTypeProductConfig {
    *  from before this feature existed. */
   modelConfig?: {
     model?: string;
+    /** The escalation-budget dial (billing-core/effort.ts's EffortLevel) — how far a run on this
+     *  business's own default model may reach for a more capable (pricier) model when it
+     *  delegates work to a sub-agent. Validated against the CHOSEN model at the PATCH route (an
+     *  effort level a model doesn't offer is rejected, same posture as `model` above). Unset ->
+     *  "low", the safest default for a business that's never configured this. */
+    effort?: string;
   };
 
   /** §A1 Harness Excellence Phase HX2: session token-budget guard. Same config_json-override

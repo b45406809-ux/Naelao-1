@@ -19,8 +19,8 @@ import { useActiveSpace } from "@/lib/active-space-context";
 import { listSessions, startSession, getOnboarding, type SessionSummary } from "@/lib/api";
 import { relativeTime } from "@/lib/relativeTime";
 import { ComposerDock } from "@/components/ComposerDock";
-import { getPreferredModel, storePreferredModel, getPreferredReasoningLevel, storePreferredReasoningLevel } from "@/lib/modelPreference";
-import { DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
+import { getPreferredModel, storePreferredModel, getPreferredEffort, storePreferredEffort } from "@/lib/modelPreference";
+import { DEFAULT_WORKING_MODEL, nativeReasoningForEffort, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
 
 /** Openers that reflect what this assistant is actually for — running the business — rather than
  *  generic "ask me anything" filler. Every one is answerable from what it can already see. */
@@ -78,9 +78,12 @@ export default function HomePage() {
   // The model choice made here is the same per-space preference the chat itself reads, so picking
   // one before the first message carries straight into the session it mints.
   const [dockModel, setDockModel] = React.useState<string>(() => getPreferredModel(activeSpaceId) ?? DEFAULT_WORKING_MODEL);
-  const [dockReasoning, setDockReasoning] = React.useState<string | null>(
-    () => getPreferredReasoningLevel(activeSpaceId, getPreferredModel(activeSpaceId) ?? DEFAULT_WORKING_MODEL)
-  );
+  const [dockEffort, setDockEffort] = React.useState<EffortLevel>(() => {
+    const model = getPreferredModel(activeSpaceId) ?? DEFAULT_WORKING_MODEL;
+    const stored = getPreferredEffort(activeSpaceId, model);
+    return stored && isValidEffortLevel(model, stored) ? (stored as EffortLevel) : "low";
+  });
+  const dockReasoning = React.useMemo(() => nativeReasoningForEffort(dockModel, dockEffort), [dockModel, dockEffort]);
   const [dockNotice, setDockNotice] = React.useState<string | null>(null);
   const [setupPending, setSetupPending] = React.useState(false);
   const inputRef = React.useRef<HTMLTextAreaElement>(null);
@@ -166,11 +169,16 @@ export default function HomePage() {
               session={creds}
               model={dockModel}
               reasoningLevel={dockReasoning}
-              onModelChange={(m, level) => {
+              onModelChange={(m) => {
                 setDockModel(m);
-                setDockReasoning(level);
                 storePreferredModel(activeSpaceId, m);
-                if (level) storePreferredReasoningLevel(activeSpaceId, m, level);
+                const stored = getPreferredEffort(activeSpaceId, m);
+                setDockEffort(stored && isValidEffortLevel(m, stored) ? (stored as EffortLevel) : "low");
+              }}
+              effort={dockEffort}
+              onEffortChange={(effort) => {
+                setDockEffort(effort);
+                storePreferredEffort(activeSpaceId, dockModel, effort);
               }}
               spaceName={activeSpaceName ?? undefined}
               isBusinessSpace={isBusinessSpace}

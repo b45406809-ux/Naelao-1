@@ -17,7 +17,7 @@ export const runtime = "edge";
 import * as React from "react";
 import Link from "next/link";
 import { Badge } from "@naelao/ui";
-import { ALLOWED_MODELS, DEFAULT_WORKING_MODEL, capabilityForModel } from "@naelao/billing-core";
+import { ALLOWED_MODELS, DEFAULT_WORKING_MODEL, capabilityForModel, effortOptionsForModel, isValidEffortLevel } from "@naelao/billing-core";
 import { useProduct } from "@/lib/product-context";
 import { useSessionCredentials } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
@@ -76,6 +76,7 @@ export default function AssistantSettingsPage() {
 
   const [policy, setPolicy] = React.useState<AssistantPolicy | null>(null);
   const [model, setModel] = React.useState<string | null>(null);
+  const [effort, setEffort] = React.useState<string | null>(null);
   const [business, setBusiness] = React.useState<Business | null>(null);
   const [capabilities, setCapabilities] = React.useState<AssistantCapabilities | null>(null);
   const [crons, setCrons] = React.useState<ScheduledJob[]>([]);
@@ -94,7 +95,7 @@ export default function AssistantSettingsPage() {
 
     const calls = [
       settle(getAssistantPolicy(activeSpaceId, creds), setPolicy),
-      settle(getShellManifest(activeSpaceId, creds).then((m) => m.model ?? null), setModel),
+      settle(getShellManifest(activeSpaceId, creds), (m) => { setModel(m.model ?? null); setEffort(m.effort ?? null); }),
       settle(getAssistantCapabilities(activeSpaceId, creds), setCapabilities),
       settle(listScheduledJobs(activeSpaceId, creds), setCrons),
       settle(listAssistantChannels(activeSpaceId, creds), setChannels),
@@ -135,11 +136,31 @@ export default function AssistantSettingsPage() {
     setSaving(true);
     setError(null);
     try {
-      const res = await updateModelConfig(activeSpaceId, creds, next);
+      // A level valid for the previous model may not exist on the new one's own ladder — drop it
+      // rather than carry over blindly, same rule as the chat dock's own model switch.
+      const nextEffort = effort && isValidEffortLevel(next, effort) ? effort : undefined;
+      const res = await updateModelConfig(activeSpaceId, creds, next, nextEffort);
       setModel(res.model);
+      if (res.effort) setEffort(res.effort);
+      else if (!nextEffort) setEffort(null);
       flash("Model updated");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't change the model");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveEffort(next: string) {
+    if (!activeSpaceId || !creds) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await updateModelConfig(activeSpaceId, creds, activeModel, next);
+      setEffort(res.effort ?? next);
+      flash("Effort updated");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Couldn't change the effort setting");
     } finally {
       setSaving(false);
     }
@@ -261,6 +282,32 @@ export default function AssistantSettingsPage() {
         <p style={{ fontSize: 11.5, color: "var(--text3)", marginTop: 10, lineHeight: 1.6 }}>
           This is the business-wide default. You can also pick a different model for one conversation from the bar
           under the message box — that choice only affects that chat.
+        </p>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Effort"
+        desc="How far this business's default model is allowed to reach for help. If it delegates work to another agent, this caps how expensive that can get — see each option below."
+      >
+        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+          {effortOptionsForModel(activeModel).map((opt) => {
+            const active = (effort ?? "low") === opt.level;
+            return (
+              <button
+                key={opt.level}
+                type="button"
+                className={`dock-pill${active ? " on" : ""}`}
+                style={{ flex: 1, justifyContent: "center", padding: "8px 0" }}
+                disabled={!canEdit || saving || active}
+                onClick={() => void saveEffort(opt.level)}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+        <p style={{ fontSize: 11.5, color: "var(--text3)", lineHeight: 1.6 }}>
+          {effortOptionsForModel(activeModel).find((o) => o.level === (effort ?? "low"))?.description}
         </p>
       </SettingsSection>
 

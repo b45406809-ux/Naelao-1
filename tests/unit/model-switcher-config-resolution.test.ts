@@ -212,4 +212,77 @@ describe("POST /agent/run — resolves the configured model, not the dead spacet
       expect((calls[0]!.body as { reasoningEffort?: string }).reasoningEffort).toBeUndefined();
     });
   });
+
+  // The escalation-budget dial (billing-core/effort.ts) — a separate field from reasoning_effort,
+  // validated the same way (against whichever model this run actually resolves to).
+  describe("effort — the escalation-budget dial", () => {
+    it("rejects a level the resolved model doesn't offer", async () => {
+      const { env } = makeAgentsEnv("{}"); // DEFAULT_WORKING_MODEL only offers low/medium
+      const res = await runReq(env, "hello", { effort: "ultra" });
+      expect(res.status).toBe(400);
+    });
+
+    it("accepts and forwards a level the resolved model offers", async () => {
+      const { env, calls } = makeAgentsEnv("{}");
+      const res = await runReq(env, "hello", { effort: "medium" });
+      expect(res.status).toBe(200);
+      expect((calls[0]!.body as { effort?: string }).effort).toBe("medium");
+    });
+
+    it("defaults to the business's own stored effort when the request omits one", async () => {
+      const { env, calls } = makeAgentsEnv(JSON.stringify({ productConfig: { modelConfig: { model: "@cf/openai/gpt-oss-120b", effort: "high" } } }));
+      const res = await runReq(env, "hello");
+      expect(res.status).toBe(200);
+      expect((calls[0]!.body as { effort?: string }).effort).toBe("high");
+    });
+
+    it("defaults to \"low\" when nothing is configured at all", async () => {
+      const { env, calls } = makeAgentsEnv("{}");
+      const res = await runReq(env, "hello");
+      expect(res.status).toBe(200);
+      expect((calls[0]!.body as { effort?: string }).effort).toBe("low");
+    });
+
+    it("an explicit request-level effort overrides the business's stored default", async () => {
+      const { env, calls } = makeAgentsEnv(JSON.stringify({ productConfig: { modelConfig: { model: "@cf/openai/gpt-oss-120b", effort: "high" } } }));
+      const res = await runReq(env, "hello", { effort: "low" });
+      expect(res.status).toBe(200);
+      expect((calls[0]!.body as { effort?: string }).effort).toBe("low");
+    });
+  });
+});
+
+describe("PATCH /spaces/:spaceId/model-config — effort validated alongside model", () => {
+  it("rejects an effort level the chosen model doesn't offer", async () => {
+    const env = makeSpacesEnv();
+    const created = await (await spacesWorker.fetch(
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+    const res = await spacesWorker.fetch(
+      req(`/spaces/${created.id}/model-config`, {
+        method: "PATCH", tenant: "tenant-1",
+        body: { model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", effort: "ultra" },
+      }),
+      env as never, execCtx
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("accepts and persists a valid model+effort pair, readable back from shell/manifest's projection", async () => {
+    const env = makeSpacesEnv();
+    const created = await (await spacesWorker.fetch(
+      req("/builder/products", { method: "POST", tenant: "tenant-1", body: { name: "A", spacetype_id: "launchpad" } }), env as never, execCtx
+    )).json() as { id: string };
+    const ok = await spacesWorker.fetch(
+      req(`/spaces/${created.id}/model-config`, {
+        method: "PATCH", tenant: "tenant-1",
+        body: { model: "@cf/openai/gpt-oss-120b", effort: "high" },
+      }),
+      env as never, execCtx
+    );
+    expect(ok.status).toBe(200);
+    const body = await ok.json() as { model: string; effort?: string };
+    expect(body.model).toBe("@cf/openai/gpt-oss-120b");
+    expect(body.effort).toBe("high");
+  });
 });

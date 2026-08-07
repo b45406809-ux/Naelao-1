@@ -53,3 +53,30 @@ export function storePreferredReasoningLevel(spaceId: string, model: string, lev
     /* ignore */
   }
 }
+
+// Effort (billing-core's EffortLevel) supersedes the raw reasoning-level preference above as the
+// thing a person actually sets — the model's own native reasoning param is now DERIVED from
+// Effort (nativeReasoningForEffort), not chosen directly. Still stored per (space, model), same
+// reasoning as reasoningStorageKey: a level valid for one model may not exist on another's ladder.
+
+function effortStorageKey(spaceId: string, model: string): string {
+  return `naelao_preferred_effort:${spaceId}:${model}`;
+}
+
+export function getPreferredEffort(spaceId: string, model: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return localStorage.getItem(effortStorageKey(spaceId, model));
+  } catch {
+    return null;
+  }
+}
+
+export function storePreferredEffort(spaceId: string, model: string, effort: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(effortStorageKey(spaceId, model), effort);
+  } catch {
+    /* ignore */
+  }
+}

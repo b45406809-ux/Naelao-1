@@ -9,7 +9,7 @@
 import { Hono } from "hono";
 import { errorResponse, requestId, notFound, badRequest, unauthorized, forbidden, mintInternalToken, verifyInternalToken } from "@naelao/http";
 import { EntitlementsChecker, getPlanLimits } from "@naelao/entitlements";
-import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL, isValidReasoningLevel, capabilityForModel } from "@naelao/billing-core";
+import { contextWindowForModel, isAllowedModel, ALLOWED_MODELS, DEFAULT_WORKING_MODEL, isValidReasoningLevel, capabilityForModel, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
 import { getDOName } from "@naelao/crypto";
 import { detectPromptInjection, detectPolicyViolations } from "@naelao/moderation";
 import { parseMentions, creatableFeatureKindsForRole, detectImplicitSignals, classifyFailure, type MentionableAgent } from "@naelao/events";
@@ -459,7 +459,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     ? await resolveCallerBusinessRole(c, spaceId)
     : undefined;
 
-  const rawBody = await c.req.json<{ goal?: string; agent_definition_id?: string; project_id?: string; model?: string; reasoning_effort?: string }>();
+  const rawBody = await c.req.json<{ goal?: string; agent_definition_id?: string; project_id?: string; model?: string; reasoning_effort?: string; effort?: string }>();
   const resolvedGoal = await resolveRunGoal(c.env, tenantId, spaceId, sessionId, rawBody.goal);
   if (!resolvedGoal) {
     throw badRequest("goal is required and must be a string (or the session must already have a user message)");
@@ -553,7 +553,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     throw badRequest(`model must be one of ${ALLOWED_MODELS.join(", ")}`);
   }
 
-  let modelConfig: { model?: string } = {};
+  let modelConfig: { model?: string; effort?: string } = {};
   // §A1 Harness Excellence Phase HX2: same config_json-override read as modelConfig above —
   // resolved once here (spaceRow is already fetched) rather than a second cross-worker round
   // trip, and threaded into the DO call below so enforceRunGates can gate on it without needing
@@ -561,7 +561,7 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   let sessionCreditCeiling: number | undefined;
   try {
     const cfg = JSON.parse(spaceRow.config_json || "{}") as {
-      productConfig?: { modelConfig?: { model?: string }; limits?: { sessionCreditCeiling?: number } };
+      productConfig?: { modelConfig?: { model?: string; effort?: string }; limits?: { sessionCreditCeiling?: number } };
     };
     modelConfig = cfg.productConfig?.modelConfig ?? {};
     sessionCreditCeiling = cfg.productConfig?.limits?.sessionCreditCeiling;
@@ -579,6 +579,21 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   if (rawBody.reasoning_effort && !isValidReasoningLevel(effectiveModelForReasoning, rawBody.reasoning_effort)) {
     throw badRequest(`reasoning_effort '${rawBody.reasoning_effort}' is not offered by model '${effectiveModelForReasoning}'`);
   }
+
+  // Effort — the escalation-budget dial (billing-core/effort.ts). Validated the same way as
+  // reasoning_effort above: a client-supplied level that the resolved model doesn't offer is
+  // rejected outright rather than silently dropped or clamped, so a caller learns immediately
+  // rather than getting a quietly different budget than it asked for. Falls back to the space's
+  // own stored default (productConfig.modelConfig.effort, set via PATCH .../model-config), and
+  // finally to "low" — the safest default for a space that's never configured this at all.
+  if (rawBody.effort && !isValidEffortLevel(effectiveModelForReasoning, rawBody.effort)) {
+    throw badRequest(`effort '${rawBody.effort}' is not offered by model '${effectiveModelForReasoning}'`);
+  }
+  const effectiveEffort: EffortLevel =
+    (rawBody.effort as EffortLevel | undefined) ??
+    (modelConfig.effort && isValidEffortLevel(effectiveModelForReasoning, modelConfig.effort)
+      ? (modelConfig.effort as EffortLevel)
+      : "low");
 
   // A-2 cutover: the script-native engine addresses agents by their R2-config `agentId`
   // ("naelao-agent" by default), not a SpaceType/D1 concept. `agent_definition_id` (used by
@@ -722,6 +737,8 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         // Model switcher capability config — already validated above against whichever model
         // actually runs, so this is passed through as-is rather than re-checked at the DO.
         reasoningEffort: rawBody.reasoning_effort,
+        // Escalation-budget dial — see effectiveEffort's own comment above.
+        effort: effectiveEffort,
       },
     });
 
@@ -779,6 +796,8 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         // Model switcher capability config — already validated above against whichever model
         // actually runs.
         reasoningEffort: rawBody.reasoning_effort,
+        // Escalation-budget dial — see effectiveEffort's own comment above.
+        effort: effectiveEffort,
         // The id returned to the client below. Without sending it, the DO minted its own and
         // persisted the run trace under that instead — so GET .../runs/:runId/trace (HX1's
         // builder-facing observability) could never find a trace for any id a caller actually had.
@@ -1778,6 +1797,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
     businessRole?: string;
     sessionCreditCeiling?: number;
     reasoningEffort?: string;
+    effort?: string;
   }>();
   if (body.tenantId !== headerTenantId) {
     return c.json({ error_code: "forbidden", message: "tenantId does not match the verified internal token" }, 403);
@@ -1808,6 +1828,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           projectId: body.projectId,
           sessionCreditCeiling: body.sessionCreditCeiling,
           reasoningEffort: body.reasoningEffort,
+          effort: body.effort,
         }),
       })
     );

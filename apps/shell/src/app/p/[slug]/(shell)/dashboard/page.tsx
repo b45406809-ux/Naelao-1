@@ -24,7 +24,7 @@ export const runtime = "edge";
 import * as React from "react";
 import Link from "next/link";
 import { Card, CardLabel, CardValue, CardSub, Badge, type BadgeColor } from "@naelao/ui";
-import { ALLOWED_MODELS } from "@naelao/billing-core";
+import { ALLOWED_MODELS, effortOptionsForModel, isValidEffortLevel } from "@naelao/billing-core";
 import { useProduct } from "@/lib/product-context";
 import { useSessionCredentials } from "@/lib/auth-provider";
 import { useActiveSpace } from "@/lib/active-space-context";
@@ -213,6 +213,7 @@ export default function DashboardPage() {
   const [connectors, setConnectors] = React.useState<ConnectorInfo[]>([]);
   const [approvals, setApprovals] = React.useState<PendingApproval[]>([]);
   const [currentModel, setCurrentModel] = React.useState<string | null>(null);
+  const [currentEffort, setCurrentEffort] = React.useState<string | null>(null);
 
   const [loading, setLoading] = React.useState(true);
   const [savingPolicy, setSavingPolicy] = React.useState(false);
@@ -249,6 +250,7 @@ export default function DashboardPage() {
         .then((m) => {
           if (cancelled) return;
           setCurrentModel(m.model ?? null);
+          setCurrentEffort(m.effort ?? null);
           const commerce = m.ui.sidebar_items.some((item) => item.id === "revenue");
           setHasCommerce(commerce);
           if (!commerce || !isBusinessSpace) return;
@@ -346,10 +348,26 @@ export default function DashboardPage() {
     setSavingModel(true);
     setControlError(null);
     try {
-      const next = await updateModelConfig(activeSpaceId, creds, model);
+      const keepEffort = currentEffort && isValidEffortLevel(model, currentEffort) ? currentEffort : undefined;
+      const next = await updateModelConfig(activeSpaceId, creds, model, keepEffort);
       setCurrentModel(next.model);
+      setCurrentEffort(next.effort ?? keepEffort ?? null);
     } catch (err) {
       setControlError(err instanceof Error ? err.message : "Couldn't update the model");
+    } finally {
+      setSavingModel(false);
+    }
+  }
+
+  async function setEffort(effort: string) {
+    if (!activeSpaceId || !creds) return;
+    setSavingModel(true);
+    setControlError(null);
+    try {
+      const next = await updateModelConfig(activeSpaceId, creds, currentModel ?? DEFAULT_MODEL, effort);
+      setCurrentEffort(next.effort ?? effort);
+    } catch (err) {
+      setControlError(err instanceof Error ? err.message : "Couldn't update the effort setting");
     } finally {
       setSavingModel(false);
     }
@@ -591,6 +609,34 @@ export default function DashboardPage() {
                 </span>
               )}
             </div>
+          </div>
+
+          <div style={{ marginTop: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <span style={{ fontSize: 12.5 }}>Effort</span>
+              {canManageAssistant ? (
+                <select
+                  value={currentEffort ?? "low"}
+                  disabled={savingModel}
+                  onChange={(e) => void setEffort(e.target.value)}
+                  style={{
+                    fontSize: 11.5, padding: "3px 6px", borderRadius: 6, border: "1px solid var(--border)",
+                    background: "var(--bg)", color: "var(--text1)", maxWidth: 220,
+                  }}
+                >
+                  {effortOptionsForModel(currentModel ?? DEFAULT_MODEL).map((opt) => (
+                    <option key={opt.level} value={opt.level}>{opt.label}</option>
+                  ))}
+                </select>
+              ) : (
+                <span style={{ fontSize: 11.5, color: "var(--text3)" }}>
+                  {effortOptionsForModel(currentModel ?? DEFAULT_MODEL).find((o) => o.level === (currentEffort ?? "low"))?.label ?? "Low"}
+                </span>
+              )}
+            </div>
+            <p style={{ fontSize: 10.5, color: "var(--text3)", margin: "4px 0 0", lineHeight: 1.5 }}>
+              How far it can reach for a pricier model when it delegates work.
+            </p>
           </div>
 
           {controlError && (

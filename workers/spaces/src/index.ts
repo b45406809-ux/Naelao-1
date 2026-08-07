@@ -14,7 +14,7 @@ import { requireBusinessMembership, requireBusinessMembershipForWallet, resolveE
 import { createBusinessForEndUser } from "./business-create.js";
 import { loadTemplateCatalog, loadShellCatalog } from "./template-catalog.js";
 import { registerBusinessRoutes } from "./business-routes.js";
-import { ALLOWED_MODELS, isAllowedModel } from "@naelao/billing-core";
+import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel } from "@naelao/billing-core";
 
 export { SpaceDO } from "./do/SpaceDO.js";
 export { LockDO } from "./do/LockDO.js";
@@ -1812,21 +1812,27 @@ app.patch("/spaces/:spaceId/model-config", async (c) => {
   const owned = await loadOwnedSpace(c, spaceId);
   if (!owned.ok) return c.json({ error_code: owned.error_code, message: owned.message }, owned.status);
 
-  const body = await c.req.json<{ model?: string }>().catch(() => ({}) as { model?: string });
+  const body = await c.req.json<{ model?: string; effort?: string }>().catch(() => ({}) as { model?: string; effort?: string });
   if (!body.model || !isAllowedModel(body.model)) {
     return c.json({ error_code: "bad_request", message: `model must be one of ${ALLOWED_MODELS.join(", ")}` }, 400);
+  }
+  if (body.effort && !isValidEffortLevel(body.model, body.effort)) {
+    return c.json({ error_code: "bad_request", message: `effort '${body.effort}' is not offered by model '${body.model}'` }, 400);
   }
 
   let config: { productConfig?: Partial<SpaceTypeProductConfig> } & Record<string, unknown> = {};
   if (owned.configJson) {
     try { config = JSON.parse(owned.configJson); } catch { /* start clean on malformed */ }
   }
-  config.productConfig = { ...(config.productConfig ?? {}), modelConfig: { model: body.model } };
+  config.productConfig = {
+    ...(config.productConfig ?? {}),
+    modelConfig: { model: body.model, ...(body.effort ? { effort: body.effort } : {}) },
+  };
   await c.env.PLATFORM_DB.prepare(
     "UPDATE spaces SET config_json = ?, updated_at = ? WHERE id = ? AND tenant_id = ?"
   ).bind(JSON.stringify(config), new Date().toISOString(), spaceId, owned.tenantId).run();
 
-  return c.json({ model: body.model });
+  return c.json({ model: body.model, ...(body.effort ? { effort: body.effort } : {}) });
 });
 
 // ── Builder observability surface (security audit follow-up) ────────────────
@@ -3534,6 +3540,10 @@ app.get("/spaces/:spaceId/shell/manifest", async (c) => {
     // 404s on an account with no Anthropic provider on its gateway) applies, same meaning as every
     // other unset productConfig field in this projection.
     model: pc?.modelConfig?.model ?? null,
+    // The stored escalation-budget default for this business — the shell reads it as the
+    // starting point for a session that's never chosen its own effort locally yet. Same
+    // null-means-unset convention as model above (the dispatch layer's own default is "low").
+    effort: pc?.modelConfig?.effort ?? null,
     sub_space_display: pc?.subSpaceDisplay ?? null,
     allow_public_signup: pc?.allowPublicSignup ?? false,
     auth_provider: pc?.authProvider?.provider ?? "naelao-native",

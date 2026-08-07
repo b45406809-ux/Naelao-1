@@ -21,7 +21,7 @@ export const runtime = "edge";
 import * as React from "react";
 import Link from "next/link";
 import { Badge, Button, FormInput, FormSelect, Toggle, type BadgeColor } from "@naelao/ui";
-import { ALLOWED_MODELS } from "@naelao/billing-core";
+import { ALLOWED_MODELS, effortOptionsForModel } from "@naelao/billing-core";
 import { useProduct } from "@/lib/product-context";
 import { useSessionCredentials } from "@/lib/auth-provider";
 import { useProductAuth } from "@/lib/auth-provider";
@@ -587,7 +587,9 @@ function AiTab({
   onChanged: (p: AssistantPolicy) => void;
 }) {
   const [model, setModel] = React.useState<string>("");
+  const [effort, setEffort] = React.useState<string>("low");
   const [savingModel, setSavingModel] = React.useState(false);
+  const [savingEffort, setSavingEffort] = React.useState(false);
   const [savingPolicy, setSavingPolicy] = React.useState(false);
 
   async function toggleAutonomy(autonomous: boolean) {
@@ -605,6 +607,14 @@ function AiTab({
     try {
       await updateModelConfig(spaceId, creds, model);
     } catch { /* no-op */ } finally { setSavingModel(false); }
+  }
+
+  async function saveEffort() {
+    if (!creds || !model) return;
+    setSavingEffort(true);
+    try {
+      await updateModelConfig(spaceId, creds, model, effort);
+    } catch { /* no-op */ } finally { setSavingEffort(false); }
   }
 
   return (
@@ -640,6 +650,26 @@ function AiTab({
                 ))}
               </FormSelect>
               <Button onClick={saveModel} disabled={savingModel || !model}>{savingModel ? "…" : "Save"}</Button>
+            </div>
+          ) : (
+            <span style={{ fontSize: 12, color: "var(--text2)" }}>Set by an admin</span>
+          )}
+        </div>
+        <div className="settings-row">
+          <div>
+            <div className="settings-row-label">Effort</div>
+            <div className="settings-row-sub">
+              How far the model above is allowed to reach for help — {effortOptionsForModel(model).find((o) => o.level === effort)?.description ?? "pick a model first"}
+            </div>
+          </div>
+          {canManage ? (
+            <div style={{ display: "flex", gap: 8 }}>
+              <FormSelect value={effort} onChange={(e) => setEffort(e.target.value)} style={{ maxWidth: 160 }} disabled={!model}>
+                {effortOptionsForModel(model).map((opt) => (
+                  <option key={opt.level} value={opt.level}>{opt.label}</option>
+                ))}
+              </FormSelect>
+              <Button onClick={saveEffort} disabled={savingEffort || !model}>{savingEffort ? "…" : "Save"}</Button>
             </div>
           ) : (
             <span style={{ fontSize: 12, color: "var(--text2)" }}>Set by an admin</span>

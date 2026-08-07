@@ -4448,6 +4448,102 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     exact deployed bundle for the new "Add a template to this project" string before and after
     upload.
 
+100. **Model Benchmarks + Effort — the "picked a cheap model, then it silently called an
+    expensive one to get help" problem is now closed, with real cost-tier/eval data on the
+    Discover page.** Two new `packages/billing-core` modules:
+    - `model-benchmarks.ts`: a `ModelBenchmark` per `ALLOWED_MODELS` entry — `costTier`
+      (economy/standard/premium), honestly labeled `costBasis` ("measured" only for the 3 Claude
+      ids + llama-3.3-70b, which have real per-token/derived-neuron pricing; "estimated" for
+      everything else, sourced from published parameter counts, never a fabricated $ figure), and
+      real `eval` numbers for the 7 models actually run through `docs/MODEL_EVAL_2026-07-25.md`'s
+      own harness — deliberately NOT a generic external leaderboard (LMSYS/Artificial Analysis
+      considered and rejected: neither scores against THIS platform's own agent-loop tool-calling
+      contract, which is the axis that actually matters here, per that eval doc's own "score and
+      reliability are not the same axis" finding). Rendered on the shell's Discover page as a new
+      "Model benchmarks" section (6 shown, "show all 16" expands), each card showing cost tier,
+      the model's own eval note when we have one, honest `bestFor` prose otherwise.
+    - `effort.ts`: `EffortLevel = "low"|"medium"|"high"|"ultra"`. Every model gets at least
+      low/medium (the escalation-budget distinction is real even for a model with no native
+      reasoning mode); higher tiers appear only as deep as the model's own `reasoningLevels`
+      ladder goes (0 native → 2 effort levels, 2 native → 3, 3+ native → 4) — "based on the
+      model," per the ask, not a fixed set. `nativeReasoningForEffort` derives the model's own
+      wire-level reasoning param from the chosen Effort (saturating at the model's own max once
+      Effort outpaces it), so Effort supersedes — not duplicates — the old standalone reasoning-
+      level control. `escalationCeiling(currentModel, effort)`: low pins delegation to the single
+      cheapest curated model regardless of the current model's own cost; medium allows one tier
+      up; high near-top; ultra removes the ceiling. `resolveEscalationModel(currentModel, effort,
+      {preferModel?})` is the actual enforcement primitive — with no preference, picks the best
+      affordable model (tiebreaking toward `DEFAULT_WORKING_MODEL` among same-rank candidates,
+      not raw `ALLOWED_MODELS` array order, since that array lists Claude ids first and Claude
+      isn't reachable on every deployment — a real bug caught by the escalation test itself); with
+      a preference that exceeds the ceiling, clamps to the best affordable model and returns an
+      honest `{downgraded: true, reason}` — never silently runs the expensive model, never a hard
+      refusal either, exactly the "get an error message and move down to cheaper" behavior asked
+      for.
+    - **Enforcement point**: `NaelaoAgentDO.spawnSubAgentBatch` (the real `agent.spawn` dispatch
+      path) now resolves EVERY child task's model through `resolveEscalationModel` before ever
+      constructing the child's request — a task's own `model` field is no longer passed through
+      verbatim. The resolution happens ONCE per batch (every task in one `agent.spawn` call shares
+      the parent's Effort setting) and a downgrade is reported back on that task's own result
+      (`model_used`, `effort_downgraded`, `effort_downgrade_reason`) rather than swallowed.
+    - **Wire path**: `/agent/run` accepts a new `effort` field (parallel to the existing
+      `reasoning_effort`), validated the same way (rejected outright if the resolved model doesn't
+      offer it), defaulting to the business's own stored `productConfig.modelConfig.effort` and
+      finally to `"low"` — threaded through all three dispatch paths (sync, async Workflow,
+      `/internal/tasks/:taskId/run`) into `NaelaoAgentDO.handleScriptRun`'s `body.effort`, then
+      into `buildOrchestrationHooks`'s new `currentModel`/`effort` params.
+    - **Settings**: `PATCH /spaces/:spaceId/model-config` (and the builder dashboard's
+      `PATCH /builder/products/:id`) now accept `effort` alongside `model`, validated identically,
+      stored in the same `productConfig.modelConfig` config_json override (no new table). Added an
+      Effort picker to all three existing model-config UIs (`dashboard/assistant`,
+      `dashboard/page.tsx`'s compact overview panel, and `settings/page.tsx`'s AI & Models
+      section) — each mirroring that surface's own existing Model-picker pattern rather than a
+      new one-off. `shell/manifest` projects the business's stored `effort` for the shell to read
+      (not yet consumed by the shell's own initial-state resolution, which already defaults to the
+      same "low" value — a real, deliberately deferred refinement, noted inline).
+    - **ComposerDock UI**: an "Effort" dock button sits next to the "Model" button, showing the
+      current level's own name as its label (e.g. "Low") rather than the word "Effort," per the
+      ask. Clicking it opens a `"[Model Name] Effort"` panel — a horizontal segmented picker
+      (Claude-Code-slider style) with each option's description shown below, and a back-arrow that
+      returns to the Models panel (also reachable via a new "Effort →" row inside the Models panel
+      itself, so drilling in from either direction lands in the same place). Selecting a level
+      commits, navigates back to the Models panel, and the dock's Effort button immediately shows
+      the new level. The old per-model "Reasoning effort" pill row (item 83's standalone control)
+      was removed from the Models panel — Effort now owns that, deriving the native param
+      automatically.
+    - **A real deploy-time bug, not caught by the test suite, found and fixed while shipping
+      this**: `effort.ts` computed `MAX_COST_RANK = Math.max(...ALLOWED_MODELS.map(...))` at
+      module top level, importing `ALLOWED_MODELS` back from `index.ts` — which itself re-exports
+      `effort.ts`, a genuine circular module dependency. The local `tsc`-compiled `dist/` +
+      vitest run resolved the cycle fine (live ESM bindings), but a REAL `wrangler deploy` failed
+      outright: `Cannot read properties of undefined (reading 'map')` — esbuild's bundling
+      resolved the same cycle differently, leaving `ALLOWED_MODELS` undefined at the moment
+      `effort.ts`'s top-level code ran. Fixed at the root, not by reordering exports again (the
+      first attempted fix): extracted `ALLOWED_MODELS`/`MODEL_CAPABILITIES`/`capabilityForModel`/
+      etc. into a new dependency-free leaf module, `models.ts` — `model-benchmarks.ts` and
+      `effort.ts` now import directly from `models.ts`, never from `index.ts`, so there is no
+      cycle for a bundler to resolve differently in the first place. A worthwhile general lesson
+      for this codebase: a passing local test suite does NOT prove a module graph is safe to
+      deploy when re-exports create a cycle — the only way this was actually caught was running a
+      real `wrangler deploy`.
+    2651/2651 tests pass (32 new: `model-benchmarks-and-effort.test.ts`'s 21 pure-function cases,
+    `sub-agent-effort-escalation.test.ts`'s 4 end-to-end DO-level cases proving the escalation
+    ceiling is enforced BEFORE a child is dispatched — not after — plus 9 new `/agent/run` and
+    `PATCH .../model-config` cases in `model-switcher-config-resolution.test.ts`), `npx turbo run
+    typecheck` clean (76 tasks). `naelao-agents` (bare `wrangler deploy`, item 83's documented
+    trap) and `naelao-spaces` both redeployed; `apps/shell` rebuilt and redeployed to production.
+    Live-verified against the real deployed `naelao-agents` worker with a minted internal token
+    against the live `launchpad` product: `effort: "ultra"` against a business still on
+    llama-3.3-70b (which only offers low/medium) returned a real
+    `400 {"message":"effort 'ultra' is not offered by model '@cf/meta/llama-3.3-70b-instruct-fp8-fast'"}`
+    — the validation chain is genuinely live, not just passing in tests. **Not done this pass:**
+    a live browser click-through of the new dock Effort panel (same Playwright/TLS-handshake
+    limitation as every prior UI pass — verified via the deployed bundle's content instead); the
+    shell reading a business's stored `effort` default into its own initial state (documented
+    inline as deferred); per-project/per-agent effort overrides (only the business-wide default
+    and the client-side per-(space,model) chat preference exist — a project-level or per-agent-
+    template effort setting would be a real, separate follow-up).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

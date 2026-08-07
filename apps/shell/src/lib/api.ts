@@ -100,6 +100,12 @@ export interface ShellManifest {
    *  carried it (item 79 — same "server sends it, TS type didn't know" gap as template_catalog's
    *  missing free_tier_eligible, item 65). */
   model: string | null;
+  /** The business's stored default Effort (billing-core's EffortLevel) — null means unset (the
+   *  dispatch layer's own "low" fallback applies). Not yet read by the shell's own initial-state
+   *  resolution (which defaults to "low" locally, the same value this would resolve to when
+   *  unset) — a business that's explicitly set a non-"low" default isn't picked up here until a
+   *  user first opens the Effort panel; a real, deliberately deferred refinement. */
+  effort: string | null;
   sub_space_display: unknown;
   allow_public_signup: boolean;
   auth_provider: string;
@@ -337,6 +343,11 @@ export async function getMessages(spaceId: string, sessionId: string, session: S
 export interface RunModelOptions {
   model?: string;
   reasoningEffort?: string;
+  /** The escalation-budget dial (billing-core's EffortLevel — "low"/"medium"/"high"/"ultra") —
+   *  caps which model any work THIS run delegates (a sub-agent spawn, a consult) is allowed to
+   *  use, independent of reasoningEffort (which only tunes the active model's own thinking
+   *  depth). Validated server-side against the resolved model before use. */
+  effort?: string;
   /** Which project agent (a bare or `${spaceId}:` composite agent_definition id) should handle
    *  this run — the project thread agent switcher's own selection. Omitted for an assistant
    *  session (no second agent to pick) or when the default binding is fine. */
@@ -368,6 +379,7 @@ export async function sendMessage(
         goal: content,
         ...(modelOptions?.model ? { model: modelOptions.model } : {}),
         ...(modelOptions?.reasoningEffort ? { reasoning_effort: modelOptions.reasoningEffort } : {}),
+        ...(modelOptions?.effort ? { effort: modelOptions.effort } : {}),
         ...(modelOptions?.agentDefinitionId ? { agent_definition_id: modelOptions.agentDefinitionId } : {}),
       }),
       session,
@@ -818,8 +830,17 @@ export async function updateAssistantPolicy(
 // item 79: which model this business's assistant/agents run on — a business-scoped counterpart
 // to the dashboard's own product-level model picker (Configuration tab), reachable by whoever
 // actually owns the business rather than only the platform builder account.
-export async function updateModelConfig(spaceId: string, session: SessionCredentials, model: string): Promise<{ model: string }> {
-  return apiFetch(`/v1/spaces/${spaceId}/model-config`, { method: "PATCH", body: JSON.stringify({ model }), session });
+export async function updateModelConfig(
+  spaceId: string,
+  session: SessionCredentials,
+  model: string,
+  effort?: string
+): Promise<{ model: string; effort?: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/model-config`, {
+    method: "PATCH",
+    body: JSON.stringify({ model, ...(effort ? { effort } : {}) }),
+    session,
+  });
 }
 
 export interface MemoryFact {

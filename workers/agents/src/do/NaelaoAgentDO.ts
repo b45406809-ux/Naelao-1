@@ -14,7 +14,7 @@ import type { LlmTool, LlmFunctionTool, LlmMessage, ContentBlock } from "@naelao
 import { callLlm, moderateInput, moderateOutput } from "@naelao/llm-gateway";
 import type { SystemBlock } from "@naelao/llm-gateway";
 import { moderateText } from "@naelao/moderation";
-import { tokensToCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
+import { tokensToCredits, infraTimeToCredits, capabilityForModel, contextWindowForModel, DEFAULT_WORKING_MODEL, isValidEffortLevel, resolveEscalationModel, type EffortLevel } from "@naelao/billing-core";
 import { classifyFailure } from "@naelao/events";
 import type { ReasoningRequest } from "../shared/ai-client.js";
 import {
@@ -1937,7 +1937,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // client can render an inline, expandable card at the point in the conversation where the
     // delegation happened, instead of only in a separate side panel with no correlation to any
     // specific turn.
-    consultLog?: Array<{ thread_id: string; agent_id: string; title: string; session_id?: string }>
+    consultLog?: Array<{ thread_id: string; agent_id: string; title: string; session_id?: string }>,
+    // Effort/escalation-budget policy for sub-agent spawns made BY this run — see
+    // resolveEscalationModel. currentModel is what THIS run itself is on (the baseline the
+    // ceiling is computed relative to); effort defaults to "low" the same way handleScriptRun's
+    // own caller (index.ts) already defaults an absent request to "low".
+    currentModel?: string,
+    effort?: string
   ): import("../script-engine/types.js").OrchestrationHooks {
     const hooks: import("../script-engine/types.js").OrchestrationHooks = {};
 
@@ -1963,7 +1969,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         }
 
         try {
-          return await this.spawnSubAgentBatch(tasks, spaceId, agentId, tenantId, apiKey, parentRunId, parentThreadId, projectId, agentDO, userId);
+          return await this.spawnSubAgentBatch(tasks, spaceId, agentId, tenantId, apiKey, parentRunId, parentThreadId, projectId, agentDO, userId, currentModel, effort);
         } finally {
           await this.releaseConcurrencySlot(concurrencyKey, parentRunId);
         }
@@ -2114,8 +2120,18 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     parentThreadId: string | undefined,
     projectId: string | undefined,
     agentDO: DurableObjectNamespace<NaelaoAgentDO>,
-    userId?: string
+    userId?: string,
+    currentModel?: string,
+    effort?: string
   ): Promise<{ id: string }> {
+    // Effort ceiling resolved ONCE for the whole batch — every task in one agent.spawn call
+    // shares the same parent run and the same Effort setting, so there's no reason to re-derive
+    // it per task. A downgrade is a real product decision ("you asked for something this Effort
+    // level won't allow, so this ran on X instead") — surfaced on the task's own result, never
+    // silently swallowed, per the "get an error message and move down to cheaper" ask.
+    const effortLevel: EffortLevel = isValidEffortLevel(currentModel ?? DEFAULT_WORKING_MODEL, effort ?? "low")
+      ? (effort as EffortLevel)
+      : "low";
     const spawned = await Promise.all(
       tasks.map(async (t) => {
         const subId = crypto.randomUUID();
@@ -2142,6 +2158,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           this.ctx.storage.sql.exec(`UPDATE sub_agents SET status='failed', error=?, updated_at=? WHERE id=?`, "missing goal", Date.now(), subId);
           return { id: subId, ok: false, error: "missing goal" };
         }
+        // Effort ceiling enforcement: a task can name a specific model (t["model"]) — resolve it
+        // against the parent's own Effort setting before ever dispatching. A request that exceeds
+        // the ceiling is NOT run as asked; it's clamped to the best model still within budget and
+        // the clamp is reported back on the task's own result (never silently run over-budget,
+        // never silently swallowed either).
+        const requestedModel = typeof t["model"] === "string" ? t["model"] : undefined;
+        const modelResolution = resolveEscalationModel(currentModel ?? DEFAULT_WORKING_MODEL, effortLevel, { preferModel: requestedModel });
         try {
           const doId = agentDO.idFromName(`sub:${spaceId}:${subId}`);
           const stub = agentDO.get(doId);
@@ -2163,7 +2186,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
               // handleScriptRun re-resolves the clamp, so a viewer-clamped parent can't
               // launder a mutation through a spawn.
               ...(userId ? { userId } : {}),
-              ...(typeof t["model"] === "string" ? { model: t["model"] } : {}),
+              model: modelResolution.model,
               context: {
                 parent_run_id: parentRunId,
                 sub_agent_id: subId,
@@ -2183,7 +2206,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             `UPDATE sub_agents SET status = ?, tokens_used = ?, result = ?, error = ?, updated_at = ? WHERE id = ?`,
             ok ? "done" : "failed", tokensUsed, ok ? JSON.stringify(output) : null, ok ? null : (body.result?.error ?? `HTTP ${resp.status}`), Date.now(), subId
           );
-          return { id: subId, ok, ...(ok ? { output } : { error: body.result?.error ?? `HTTP ${resp.status}` }) };
+          return {
+            id: subId,
+            ok,
+            model_used: modelResolution.model,
+            ...(modelResolution.downgraded ? { effort_downgraded: true, effort_downgrade_reason: modelResolution.reason } : {}),
+            ...(ok ? { output } : { error: body.result?.error ?? `HTTP ${resp.status}` }),
+          };
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           this.ctx.storage.sql.exec(`UPDATE sub_agents SET status='failed', error=?, updated_at=? WHERE id=?`, msg, Date.now(), subId);
@@ -2573,6 +2602,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
        *  same "validate once at the edge, degrade honestly if it somehow arrives wrong" posture
        *  every other client-supplied enum in this handler already has. */
       reasoningEffort?: string;
+      /** The escalation-budget dial (billing-core's EffortLevel) — already validated/defaulted
+       *  by the caller (index.ts's /agent/run route) against whichever model this run actually
+       *  uses. Governs which model a sub-agent spawn/consult THIS run makes is allowed to run on
+       *  — see buildOrchestrationHooks's spawnSubAgent hook and resolveEscalationModel. */
+      effort?: string;
       // §A1 Harness Excellence Phase HX2: resolved by the caller (index.ts) from
       // productConfig.limits.sessionCreditCeiling — this DO has no PLATFORM_DB binding.
       sessionCreditCeiling?: number;
@@ -2724,7 +2758,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // `tools` (§A1.17 Phase J's workflow.create/run ops need it to author/re-run stored
     // scripts) — read lazily at call time, so ordering relative to runScriptLoop is safe.
     const consultLog: Array<{ thread_id: string; agent_id: string; title: string }> = [];
-    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools, userId, consultLog);
+    engineEnv.orchestration = this.buildOrchestrationHooks(spaceId, agentId, tenantId, body.apiKey ?? "", runId, sessionId, projectId, tools, userId, consultLog, body.model, body.effort);
     const reasoningRequest = NaelaoAgentDO.resolveReasoningRequest(body.model, body.reasoningEffort);
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",

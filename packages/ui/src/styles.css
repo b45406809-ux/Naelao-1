@@ -594,6 +594,10 @@
 .dock-btn.open{background:var(--surface3);color:var(--text)}
 .dock-btn svg{width:17px;height:17px;stroke:currentColor}
 .dock-btn-dot{position:absolute;top:6px;right:6px;width:6px;height:6px;border-radius:999px;background:var(--accent)}
+/* Effort's own variant of .dock-btn — the label IS the control's live value ("Low", "Ultra", …),
+   so unlike the plain icon-only dock-btn this one needs to fit real text beside its icon. */
+.dock-btn-labeled{width:auto;padding:0 11px 0 9px;gap:5px;border-radius:999px}
+.dock-btn-labeled span{font-size:12px;font-weight:600;white-space:nowrap}
 .dock-sep{width:1px;height:22px;flex-shrink:0;background:var(--border);margin:0 8px}
 .dock-spacer{flex:1;min-width:4px}
 

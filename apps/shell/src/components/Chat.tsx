@@ -41,10 +41,10 @@ import {
 import {
   getPreferredModel,
   storePreferredModel,
-  getPreferredReasoningLevel,
-  storePreferredReasoningLevel,
+  getPreferredEffort,
+  storePreferredEffort,
 } from "@/lib/modelPreference";
-import { DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
+import { DEFAULT_WORKING_MODEL, nativeReasoningForEffort, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
 import { ContextUsageMeter } from "./ContextUsageMeter";
 import { SubthreadPanel, SubthreadEntry } from "./SubthreadPanel";
 import { LiveActivityLine, ActivitySummary } from "./ActivityFeed";
@@ -147,17 +147,38 @@ export function Chat({
   // updateModelConfig/the Dashboard tab). Lazily read from localStorage so it survives reloads;
   // falls back to the platform default the very first time this space is ever opened.
   const [selectedModel, setSelectedModel] = React.useState<string>(() => getPreferredModel(spaceId) ?? DEFAULT_WORKING_MODEL);
-  const [selectedReasoningLevel, setSelectedReasoningLevel] = React.useState<string | null>(
-    () => getPreferredReasoningLevel(spaceId, getPreferredModel(spaceId) ?? DEFAULT_WORKING_MODEL)
+  // Effort supersedes a directly-chosen reasoning level as the thing a person actually sets — the
+  // model's own native reasoning param (selectedReasoningLevel below) is DERIVED from it, never
+  // picked independently, so the two can never disagree. Defaults to "low": every model offers it,
+  // and it's the safest default for someone who hasn't thought about escalation cost yet — see
+  // effort.ts's own EFFORT_DESCRIPTIONS for what each level actually does.
+  const [selectedEffort, setSelectedEffort] = React.useState<EffortLevel>(() => {
+    const model = getPreferredModel(spaceId) ?? DEFAULT_WORKING_MODEL;
+    const stored = getPreferredEffort(spaceId, model);
+    return stored && isValidEffortLevel(model, stored) ? (stored as EffortLevel) : "low";
+  });
+  const selectedReasoningLevel = React.useMemo(
+    () => nativeReasoningForEffort(selectedModel, selectedEffort),
+    [selectedModel, selectedEffort]
   );
   const handleModelChange = React.useCallback(
-    (model: string, level: string | null) => {
+    (model: string) => {
       setSelectedModel(model);
-      setSelectedReasoningLevel(level);
       storePreferredModel(spaceId, model);
-      if (level) storePreferredReasoningLevel(spaceId, model, level);
+      // A level stored for the PREVIOUS model may not exist on the new one's own ladder (a model
+      // switch can shrink the ladder, e.g. from gpt-oss's 4 levels down to llama-3.3's 2) —
+      // re-validate rather than carry over blindly.
+      const stored = getPreferredEffort(spaceId, model);
+      setSelectedEffort(stored && isValidEffortLevel(model, stored) ? (stored as EffortLevel) : "low");
     },
     [spaceId]
+  );
+  const handleEffortChange = React.useCallback(
+    (effort: EffortLevel) => {
+      setSelectedEffort(effort);
+      storePreferredEffort(spaceId, selectedModel, effort);
+    },
+    [spaceId, selectedModel]
   );
   // Naelao Agent Templates switcher — which agent handles the next message in THIS PROJECT
   // thread. Meaningful only in a project thread (projectId set); an assistant session has no
@@ -752,6 +773,7 @@ export function Chat({
       setPendingUploads([]);
       const { agentRunId } = await sendMessage(spaceId, sid, goal, session, {
         model: selectedModel,
+        effort: selectedEffort,
         ...(selectedReasoningLevel ? { reasoningEffort: selectedReasoningLevel } : {}),
         ...(selectedAgentId ? { agentDefinitionId: selectedAgentId } : {}),
       });
@@ -762,7 +784,7 @@ export function Chat({
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       setError(err instanceof Error ? err.message : "Failed to send message");
     }
-  }, [isLoading, pendingUploads, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, selectedReasoningLevel, selectedAgentId]);
+  }, [isLoading, pendingUploads, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, selectedEffort, selectedReasoningLevel, selectedAgentId]);
 
   const handleSubmit = React.useCallback(async () => {
     const trimmed = input.trim();
@@ -1089,6 +1111,8 @@ export function Chat({
             model={selectedModel}
             reasoningLevel={selectedReasoningLevel}
             onModelChange={handleModelChange}
+            effort={selectedEffort}
+            onEffortChange={handleEffortChange}
             spaceName={activeSpaceName ?? undefined}
             isBusinessSpace={dockIsBusinessSpace}
             agentOptions={agentOptions}

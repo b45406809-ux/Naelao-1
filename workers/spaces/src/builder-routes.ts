@@ -5,7 +5,7 @@
 // instance (matching this file's existing convention of one flat app — cf-saas.ts is pure logic
 // with no routes; this is the first split-out file that DOES register routes, so it takes `app`
 // rather than mounting a sub-app, to avoid a circular import with index.ts's own Env type: this
-import { ALLOWED_MODELS, isAllowedModel } from "@naelao/billing-core";
+import { ALLOWED_MODELS, isAllowedModel, isValidEffortLevel, DEFAULT_WORKING_MODEL } from "@naelao/billing-core";
 // file declares its own minimal structural Env shape instead of importing index.ts's Env).
 //
 // AUTH: every /builder/* route accepts EITHER of two callers, resolved by resolveBuilderAuth():
@@ -295,6 +295,10 @@ export function registerBuilderRoutes(app: Hono<any>): void {
     const model = body.product_config?.modelConfig?.model;
     if (model && !isAllowedModel(model)) {
       return c.json({ error_code: "bad_request", message: `modelConfig.model must be one of ${ALLOWED_MODELS.join(", ")}` }, 400);
+    }
+    const effort = body.product_config?.modelConfig?.effort;
+    if (effort && !isValidEffortLevel(model ?? DEFAULT_WORKING_MODEL, effort)) {
+      return c.json({ error_code: "bad_request", message: `modelConfig.effort '${effort}' is not offered by model '${model ?? DEFAULT_WORKING_MODEL}'` }, 400);
     }
 
     const config = parseProductConfig(product.config_json);

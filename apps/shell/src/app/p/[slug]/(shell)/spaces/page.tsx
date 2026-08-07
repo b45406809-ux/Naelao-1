@@ -25,6 +25,11 @@ import {
   type Business,
   type TemplateActivity,
 } from "@/lib/api";
+import { listModelBenchmarks, DEFAULT_WORKING_MODEL, type CostTier } from "@naelao/billing-core";
+import { modelLabel } from "@/components/ModelSelector";
+
+const COST_TIER_LABEL: Record<CostTier, string> = { economy: "Economy", standard: "Standard", premium: "Premium" };
+const COST_TIER_BADGE: Record<CostTier, "green" | "blue" | "amber"> = { economy: "green", standard: "blue", premium: "amber" };
 
 // Phase F (§A1.17): a sentinel selection meaning "no template — the assistant helps build this
 // business from scratch," distinct from an empty Set (which used to mean the same thing but
@@ -56,6 +61,7 @@ export default function DiscoverPage() {
   const [businessesFailed, setBusinessesFailed] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const [templateActivity, setTemplateActivity] = React.useState<TemplateActivity[]>([]);
+  const [showAllModels, setShowAllModels] = React.useState(false);
 
   const creds = session ? { sessionToken: session.session_token, endUserId: session.end_user_id } : null;
 
@@ -362,6 +368,55 @@ export default function DiscoverPage() {
             Installed automatically by the template you choose — you never wire them up yourself.
           </p>
         </>
+      )}
+
+      {/* Model Benchmarks — every model an agent can actually run on, what it's good at, and what
+          it costs, so you (and your assistant, when it decides whether to delegate a step to a
+          more capable model) both know the real tradeoffs. `eval` numbers are REAL — measured on
+          THIS platform's own agent loop, not a generic leaderboard score; see each card's own
+          note for what was and wasn't measured. Set your default model and how far it's allowed
+          to escalate on the Effort control in any chat's input bar, or from a business's
+          Dashboard tab. */}
+      <div className="section-label" style={{ marginTop: 26 }}>
+        Model benchmarks
+      </div>
+      <p style={{ fontSize: 12, color: "var(--text3)", margin: "-6px 0 12px" }}>
+        What each model is good at and what it costs — measured on this platform&rsquo;s own agent
+        loop where we have real numbers, otherwise an honest estimate from the model&rsquo;s own
+        published size. The Effort control on any chat decides how far your agent is allowed to
+        reach for a more capable (and pricier) model when it needs help.
+      </p>
+      <div className="grid-3">
+        {(showAllModels ? listModelBenchmarks() : listModelBenchmarks().slice(0, 6)).map((b) => (
+          <Card key={b.id} interactive={false}>
+            <CardTitle>
+              {modelLabel(b.id)}
+              {b.id === DEFAULT_WORKING_MODEL && (
+                <span style={{ marginLeft: 6, fontSize: 10.5, color: "var(--accent)", fontWeight: 600 }}>
+                  DEFAULT
+                </span>
+              )}
+            </CardTitle>
+            <CardDesc>{b.strengths[0]}</CardDesc>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 6 }}>
+              <Badge color={COST_TIER_BADGE[b.costTier]}>{COST_TIER_LABEL[b.costTier]}</Badge>
+              {b.costBasis === "estimated" && <Badge color="blue">Estimated cost</Badge>}
+              {b.eval && (
+                <Badge color={b.eval.usable.startsWith("0") ? "amber" : "green"}>
+                  {b.eval.usable} usable · {b.eval.avgScore.toFixed(2)}/10
+                </Badge>
+              )}
+            </div>
+            <p style={{ fontSize: 11.5, color: "var(--text3)", margin: "4px 0 0" }}>
+              {b.eval ? b.eval.note : `Best for: ${b.bestFor[0]}`}
+            </p>
+          </Card>
+        ))}
+      </div>
+      {!showAllModels && listModelBenchmarks().length > 6 && (
+        <Button variant="secondary" onClick={() => setShowAllModels(true)} style={{ marginTop: 10 }}>
+          Show all {listModelBenchmarks().length} models
+        </Button>
       )}
 
       <Modal

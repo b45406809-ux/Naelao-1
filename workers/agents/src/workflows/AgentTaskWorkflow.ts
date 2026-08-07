@@ -39,6 +39,9 @@ export interface AgentTaskParams {
   /** Model switcher capability config (a chosen reasoning-effort/thinking level) — already
    *  validated by the /agent/run route against whichever model this task actually runs. */
   reasoningEffort?: string;
+  /** The escalation-budget dial (billing-core's EffortLevel) — already validated/defaulted by
+   *  the /agent/run route before this Workflow was created. */
+  effort?: string;
 }
 
 export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> {
@@ -115,6 +118,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
             callerRole: p.callerRole,
             sessionCreditCeiling: p.sessionCreditCeiling,
             reasoningEffort: p.reasoningEffort,
+            effort: p.effort,
           }),
         }
       );

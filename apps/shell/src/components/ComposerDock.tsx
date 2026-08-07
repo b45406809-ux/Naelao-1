@@ -15,7 +15,7 @@
 // plausible number.
 
 import * as React from "react";
-import { ALLOWED_MODELS, capabilityForModel } from "@naelao/billing-core";
+import { ALLOWED_MODELS, capabilityForModel, effortOptionsForModel, type EffortLevel } from "@naelao/billing-core";
 import {
   getConnectorStatus,
   getConnectorMode,
@@ -35,7 +35,7 @@ import {
 import { startConnectorConnect, startDirectoryConnect, submitManualConnectorKey } from "@/lib/connectorActions";
 import { modelLabel } from "./ModelSelector";
 
-type DockPanel = "compose" | "model" | "agent" | "apps" | "uploads" | "tips" | "members";
+type DockPanel = "compose" | "model" | "effort" | "agent" | "apps" | "uploads" | "tips" | "members";
 
 /** Matches the server's own cap (workers/agents/src/index.ts's MAX_UPLOAD_FILES) — enforced
  *  again here so the UI refuses before spending a round trip on a request the server would
@@ -45,6 +45,8 @@ const MAX_UPLOAD_FILES = 6;
 const LEVEL_LABELS: Record<string, string> = {
   off: "Off", on: "On", low: "Low", medium: "Medium", high: "High", max: "Max",
 };
+
+const EFFORT_LABELS: Record<EffortLevel, string> = { low: "Low", medium: "Medium", high: "High", ultra: "Ultra" };
 
 /** Deterministic avatar colour from an id, so the same person is the same colour every render
  *  (and across sessions) without storing anything. */
@@ -82,6 +84,8 @@ const ICONS = {
   upload: "M10 13.5V3.5M6.5 7L10 3.5 13.5 7M3.5 13v2.5A1.5 1.5 0 005 17h10a1.5 1.5 0 001.5-1.5V13",
   cube: "M10 2.5l6.5 3.7v7.6L10 17.5l-6.5-3.7V6.2zM10 2.5v15M3.5 6.2l6.5 3.8 6.5-3.8",
   agent: "M10 4V2M6 4h8a2 2 0 012 2v6a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2zM7.5 8.5v1M12.5 8.5v1M8 13.5h4M3 8h1M16 8h1",
+  gauge: "M10 11l3-4M3.5 15a6.5 6.5 0 1113 0M6 15a4 4 0 018 0",
+  back: "M12.5 4.5L6 10l6.5 5.5",
 };
 
 export function ComposerDock({
@@ -92,6 +96,8 @@ export function ComposerDock({
   model,
   reasoningLevel,
   onModelChange,
+  effort,
+  onEffortChange,
   /** Shown as the primary pill's label. The business/space name, not the product — this dock is
    *  always scoped to whatever space the conversation belongs to. */
   spaceName,
@@ -115,7 +121,15 @@ export function ComposerDock({
   session: SessionCredentials;
   model: string;
   reasoningLevel: string | null;
-  onModelChange: (model: string, reasoningLevel: string | null) => void;
+  /** Switching model no longer carries a reasoning level — Effort (below) is the sole source of
+   *  truth for the active model's reasoning depth, re-derived automatically by the caller
+   *  whenever the model changes. */
+  onModelChange: (model: string) => void;
+  /** Effort — the escalation-budget dial, always present (every model has at least low/medium),
+   *  independent of whether the active model has any native reasoning mode of its own. Defaults
+   *  to "low" upstream (Chat.tsx / modelPreference.ts), never left undefined here. */
+  effort: EffortLevel;
+  onEffortChange: (effort: EffortLevel) => void;
   spaceName?: string | undefined;
   isBusinessSpace: boolean;
   onNotice?: (message: string) => void;
@@ -355,7 +369,7 @@ export function ComposerDock({
                       <button
                         type="button"
                         className="dock-pill"
-                        onClick={() => onModelChange(m, cap.reasoningLevels.length > 0 ? (cap.reasoningLevels[0] ?? null) : null)}
+                        onClick={() => onModelChange(m)}
                       >
                         Select
                       </button>
@@ -365,24 +379,61 @@ export function ComposerDock({
               );
             })}
 
-            {capability.reasoningLevels.length > 0 && (
-              <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
-                <div className="dock-panel-note" style={{ marginBottom: 8 }}>Reasoning effort</div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {capability.reasoningLevels.map((level) => (
-                    <button
-                      key={level}
-                      type="button"
-                      className={`dock-pill${level === reasoningLevel ? " on" : ""}`}
-                      style={{ flex: 1, justifyContent: "center" }}
-                      onClick={() => onModelChange(model, level)}
-                    >
-                      {LEVEL_LABELS[level] ?? level}
-                    </button>
-                  ))}
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
+              <button
+                type="button"
+                className="dock-row"
+                style={{ width: "100%", cursor: "pointer", background: "none", border: "none", font: "inherit", textAlign: "left" }}
+                onClick={() => setPanel("effort")}
+              >
+                <div className="dock-row-icon"><Icon path={ICONS.gauge} size={15} /></div>
+                <div className="dock-row-main">
+                  <div className="dock-row-title">Effort</div>
+                  <div className="dock-row-desc">How far this model is allowed to reach for help</div>
                 </div>
-              </div>
-            )}
+                <div className="dock-row-action">
+                  <span className="dock-pill">{EFFORT_LABELS[effort] ?? effort} →</span>
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {panel === "effort" && (
+        <div className="dock-panel">
+          <div className="dock-panel-head">
+            <button
+              type="button"
+              onClick={() => setPanel("model")}
+              title="Back to models"
+              style={{ background: "none", border: "none", cursor: "pointer", padding: 4, marginRight: 2, color: "var(--text2)", display: "inline-flex" }}
+            >
+              <Icon path={ICONS.back} size={15} />
+            </button>
+            <span className="dock-panel-title">{modelLabel(model)} Effort</span>
+            <span className="dock-panel-note">how far it can reach for help</span>
+          </div>
+          <div className="dock-panel-body" style={{ padding: "4px 12px 12px" }}>
+            <div style={{ display: "flex", gap: 4, marginBottom: 10 }}>
+              {effortOptionsForModel(model).map((opt) => (
+                <button
+                  key={opt.level}
+                  type="button"
+                  className={`dock-pill${opt.level === effort ? " on" : ""}`}
+                  style={{ flex: 1, justifyContent: "center", padding: "8px 0" }}
+                  onClick={() => {
+                    onEffortChange(opt.level);
+                    setPanel("model");
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <p style={{ fontSize: 12, color: "var(--text3)", lineHeight: 1.5, margin: 0 }}>
+              {effortOptionsForModel(model).find((o) => o.level === effort)?.description}
+            </p>
           </div>
         </div>
       )}
@@ -748,6 +799,19 @@ export function ComposerDock({
         <button type="button" className={`dock-btn${panel === "model" ? " open" : ""}`} onClick={() => toggle("model")} title={`Model: ${modelLabel(model)}`}>
           <Icon path={ICONS.cube} />
           {capability.reasoningLevels.length > 0 && reasoningLevel && <span className="dock-btn-dot" />}
+        </button>
+        {/* Effort — shown as its OWN visible text ("Low" by default), not the word "Effort" —
+            it's the control's live value, the same way the Model button shows the model's own
+            name rather than the word "Model." Always present: even a model with no native
+            reasoning mode still has a real low/medium escalation-budget distinction. */}
+        <button
+          type="button"
+          className={`dock-btn dock-btn-labeled${panel === "effort" ? " open" : ""}`}
+          onClick={() => toggle("effort")}
+          title={`Effort: ${EFFORT_LABELS[effort] ?? effort} — ${effortOptionsForModel(model).find((o) => o.level === effort)?.description ?? ""}`}
+        >
+          <Icon path={ICONS.gauge} size={14} />
+          <span>{EFFORT_LABELS[effort] ?? effort}</span>
         </button>
         {projectId && (
           <button
