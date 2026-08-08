@@ -18,7 +18,8 @@
 //       [--threshold 0.5] \
 //       [--mode agent|text] \
 //       [--models "@cf/openai/gpt-oss-120b,@cf/qwen/qwen3-30b-a3b-fp8"] \
-//       [--datasets a.jsonl,b.jsonl]
+//       [--datasets a.jsonl,b.jsonl] \
+//       [--trace-only]
 //
 // MODEL MATRIX: pass --models to score the SAME dataset across several candidate models in one
 // invocation and print a comparison table. Each model is a separate eval run carrying a per-run
@@ -46,6 +47,11 @@ function parseArgs(argv) {
     else if (a === "--threshold") args.threshold = Number(argv[++i]);
     else if (a === "--mode") args.mode = argv[++i];
     else if (a === "--models") args.models = argv[++i].split(",").map((m) => m.trim()).filter(Boolean);
+    // Skip the LLM judge entirely and score from trace checks alone. The judge model is a premium
+    // one, so on a capped free tier judging costs several times what the agent runs being measured
+    // cost — this is what makes a wide model matrix affordable at all. See the eval worker's
+    // RunBody comment for the intended two-pass design.
+    else if (a === "--trace-only") args.traceOnly = true;
     else if (a === "--datasets") args.datasets = argv[++i].split(",").map((m) => m.trim()).filter(Boolean);
   }
   return args;
@@ -137,6 +143,7 @@ async function main() {
 
   const runBody = {
     mode: args.mode,
+    ...(args.traceOnly ? { trace_only: true } : {}),
     ...(args.sessionId ? { session_id: args.sessionId } : {}),
     ...(args.agentId ? { agent_definition_id: args.agentId } : {}),
   };
@@ -199,6 +206,7 @@ async function runMatrix(base, token, args) {
             mode: args.mode,
             ...(args.sessionId ? { session_id: args.sessionId } : {}),
             ...(args.agentId ? { agent_definition_id: args.agentId } : {}),
+            ...(args.traceOnly ? { trace_only: true } : {}),
             model,
           }),
         });

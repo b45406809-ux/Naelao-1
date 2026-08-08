@@ -32,6 +32,13 @@ import {
   canAuthenticateLlm,
   type GatewayOpts,
 } from "../../agents/src/shared/ai-client.js";
+import {
+  gradeTrace,
+  hasTraceGrade,
+  summarizeFailures,
+  type TraceCheck,
+  type TraceStepLike,
+} from "./trace-checks.js";
 
 interface Env {
   ENVIRONMENT: string;
@@ -57,6 +64,52 @@ interface EvalCase {
   expected_output?: string;
   criteria?: string;
   tags?: string[];
+  /**
+   * Objectively-checkable assertions graded from the run's own HX1 trace rather than by the LLM
+   * judge — see trace-checks.ts for why prose judging cannot catch a fabricated success. Optional:
+   * a case without these behaves exactly as before.
+   */
+  trace_checks?: TraceCheck[];
+  /**
+   * Set false to skip the LLM judge entirely and score purely from `trace_checks`. This is a real
+   * cost lever, not a stylistic one: a judged case spends a second inference call, and on a
+   * ~10k neuron/day free tier that roughly halves how many cases a model matrix can afford.
+   */
+  judge?: boolean;
+}
+
+/**
+ * Fetch a completed run's HX1 trace so `trace_checks` can be graded against what the agent
+ * ACTUALLY did. Deliberately a second request rather than widening the /agent/run response: that
+ * response is the hot path for every chat message in the product, and a full trace on it would be
+ * paid for by every user to serve the eval harness.
+ *
+ * Best-effort by design. A missing trace must never fail a case outright — the caller reports it
+ * as an ungraded check (an instrument gap), the same way `judge_error` is kept distinct from a
+ * genuine score of 0.
+ */
+async function fetchRunTrace(
+  env: Env,
+  tenantId: string,
+  spaceId: string,
+  sessionId: string,
+  runId: string
+): Promise<{ trace: TraceStepLike[]; error?: string }> {
+  if (!env.AGENTS_WORKER) return { trace: [], error: "AGENTS_WORKER binding not configured" };
+  try {
+    const token = await mintInternalToken(env.PLATFORM_SECRET, tenantId);
+    const resp = await env.AGENTS_WORKER.fetch(
+      new Request(
+        `http://agents-worker/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}/trace`,
+        { headers: { "x-naelao-tenant-id": tenantId, "x-naelao-internal-token": token } }
+      )
+    );
+    if (!resp.ok) return { trace: [], error: `trace HTTP ${resp.status}` };
+    const body = await resp.json<{ trace?: TraceStepLike[]; steps?: TraceStepLike[] }>();
+    return { trace: body.trace ?? body.steps ?? [] };
+  } catch (err: unknown) {
+    return { trace: [], error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 interface EvalSuite {
@@ -211,7 +264,14 @@ async function runAgentForCase(
   agentDefinitionId: string | undefined,
   evalCase: EvalCase,
   model?: string
-): Promise<{ answer: string; runId: string | null; error?: string; latency_ms: number }> {
+): Promise<{
+  answer: string;
+  runId: string | null;
+  error?: string;
+  latency_ms: number;
+  pendingApproval?: { action_name: string };
+  deferredApprovals?: Array<{ action_name: string }>;
+}> {
   const startedAt = Date.now();
   if (!env.AGENTS_WORKER) {
     return { answer: "", runId: null, error: "AGENTS_WORKER binding not configured", latency_ms: 0 };
@@ -249,12 +309,29 @@ async function runAgentForCase(
       return { answer: "", runId: null, error: `agent/run HTTP ${resp.status}: ${errText.slice(0, 500)}`, latency_ms: Date.now() - startedAt };
     }
 
-    const body = await resp.json<{ finalAnswer?: string | null; final_answer?: string | null; runId?: string; status?: string; error?: string }>();
+    const body = await resp.json<{
+      finalAnswer?: string | null;
+      final_answer?: string | null;
+      runId?: string;
+      status?: string;
+      error?: string;
+      pending_approval?: { action_name: string };
+      deferred_approvals?: Array<{ action_name: string }>;
+    }>();
     if (body.status === "failed" || body.error) {
       return { answer: "", runId: body.runId ?? null, error: body.error ?? "agent run failed", latency_ms: Date.now() - startedAt };
     }
     const answer = body.finalAnswer ?? body.final_answer ?? "";
-    return { answer, runId: body.runId ?? null, latency_ms: Date.now() - startedAt };
+    // Approvals are carried out so the `escalated` trace check can see them. A run that stopped at
+    // a gate is NOT an error (status "awaiting_approval") — it is often the CORRECT outcome for a
+    // case whose whole point is "this needs a human", and must be gradeable as such.
+    return {
+      answer,
+      runId: body.runId ?? null,
+      latency_ms: Date.now() - startedAt,
+      ...(body.pending_approval ? { pendingApproval: body.pending_approval } : {}),
+      ...(body.deferred_approvals ? { deferredApprovals: body.deferred_approvals } : {}),
+    };
   } catch (err: unknown) {
     const elapsed = Date.now() - startedAt;
     // Name the timeout explicitly: "slow model" and "broken dispatch" are different findings and a
@@ -344,7 +421,28 @@ app.post("/evals/:id/run", async (c) => {
 
   if (!suite) return c.json({ error_code: "not_found", message: "Eval suite not found" }, 404);
 
-  type RunBody = { mode?: "text" | "agent"; session_id?: string; agent_definition_id?: string; model?: string };
+  /**
+   * `trace_only` forces every case to skip the LLM judge and score purely from its trace checks,
+   * regardless of the per-case `judge` flag.
+   *
+   * This exists because the judge is the expensive half of a matrix run, not the cheap half: the
+   * configured judge model is a premium one, so judging N cases can cost several times what the N
+   * agent runs being measured cost. That makes a full judged matrix unaffordable on a capped free
+   * tier, and forces a bad trade between "measure many models" and "measure them well".
+   *
+   * The way out is two passes: a cheap trace-only pass ranks every candidate on BEHAVIOUR (did it
+   * call the right tools, did it verify, did it fabricate), then a judged pass scores answer
+   * QUALITY on the finalists only. That split is not merely a budget trick — it mirrors this
+   * platform's own eval finding that reliability and answer quality are different axes and should
+   * not be collapsed into one number.
+   */
+  type RunBody = {
+    mode?: "text" | "agent";
+    session_id?: string;
+    agent_definition_id?: string;
+    model?: string;
+    trace_only?: boolean;
+  };
   const runBody = await c.req.json<RunBody>().catch(() => ({} as RunBody));
   const mode = runBody.mode === "agent" ? "agent" : "text";
   if (mode === "agent" && !runBody.session_id) {
@@ -365,6 +463,10 @@ app.post("/evals/:id/run", async (c) => {
     agent_error?: string;
     judge_error?: string;
     latency_ms?: number;
+    /** Present only when the case carried `trace_checks` AND the trace was reachable. */
+    trace_score?: number | undefined;
+    trace_passed?: number | undefined;
+    trace_total?: number | undefined;
   }
   const results: CaseResult[] = [];
 
@@ -379,8 +481,71 @@ app.post("/evals/:id/run", async (c) => {
         results.push({ case_index: i, score: 0, correctness: 0, semantic_validity: 0, reason: agentResult.error, agent_run_id: agentResult.runId, agent_error: agentResult.error, latency_ms: agentResult.latency_ms });
         continue;
       }
+      // Trace-based grading (see trace-checks.ts). Runs BEFORE the judge so a case that opts out
+      // of judging never spends a second inference call at all.
+      const checks = evalCase.trace_checks ?? [];
+      let traceScore: number | undefined;
+      let traceDetail: string | undefined;
+      let tracePassed: number | undefined;
+      let traceTotal: number | undefined;
+      if (checks.length > 0 && agentResult.runId) {
+        const { trace, error: traceError } = await fetchRunTrace(
+          c.env, tenantId, suite.space_id, runBody.session_id!, agentResult.runId
+        );
+        if (traceError) {
+          // An unreachable trace is an instrument gap, not a model failure — leave the checks
+          // ungraded rather than scoring the model 0 for our own missing telemetry.
+          traceDetail = `trace unavailable: ${traceError}`;
+        } else {
+          const grade = gradeTrace(checks, trace, {
+            answer: agentResult.answer,
+            ...(agentResult.pendingApproval ? { pendingApproval: agentResult.pendingApproval } : {}),
+            ...(agentResult.deferredApprovals ? { deferredApprovals: agentResult.deferredApprovals } : {}),
+          });
+          if (hasTraceGrade(grade)) {
+            traceScore = grade.score;
+            tracePassed = grade.passed;
+            traceTotal = grade.total;
+            traceDetail = summarizeFailures(grade);
+          }
+        }
+      }
+
+      // `judge: false` scores purely from the trace. Guarded on there actually BEING a trace score:
+      // opting out of the judge with no usable trace grade would otherwise silently record a 0 for
+      // every case, which is the instrument-failure-as-result mistake in a new disguise.
+      if ((evalCase.judge === false || runBody.trace_only === true) && traceScore !== undefined) {
+        results.push({
+          case_index: i,
+          score: traceScore,
+          correctness: traceScore,
+          semantic_validity: traceScore,
+          reason: traceDetail ?? "trace-graded",
+          agent_run_id: agentResult.runId,
+          latency_ms: agentResult.latency_ms,
+          trace_score: traceScore,
+          trace_passed: tracePassed,
+          trace_total: traceTotal,
+        });
+        continue;
+      }
+
       const judged = await judgeAnswer(c.env, evalCase, agentResult.answer);
-      results.push({ case_index: i, ...judged, agent_run_id: agentResult.runId, latency_ms: agentResult.latency_ms });
+      // MIN, not average — the same rule judgeAnswer applies between correctness and
+      // semantic_validity, and for the same reason: a run the trace proves fabricated must not be
+      // rescued by writing well about it. Taking the worse of the two makes that impossible.
+      const composed = traceScore !== undefined && !judged.judge_error
+        ? Math.min(judged.score, traceScore)
+        : judged.score;
+      results.push({
+        case_index: i,
+        ...judged,
+        score: composed,
+        reason: traceDetail ? `${judged.reason} | trace: ${traceDetail}` : judged.reason,
+        agent_run_id: agentResult.runId,
+        latency_ms: agentResult.latency_ms,
+        ...(traceScore !== undefined ? { trace_score: traceScore, trace_passed: tracePassed, trace_total: traceTotal } : {}),
+      });
     } else {
       const judged = await judgeAnswer(c.env, evalCase, evalCase.input);
       results.push({ case_index: i, ...judged });
