@@ -3261,6 +3261,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     let prevMs = 0;
     for (const row of threadRows) {
       if (!row.thread_id) continue;
+      // Safe here specifically: agent_activity_log.created_at is written ONLY by this table's own
+      // `datetime('now')` default, i.e. SQLite's bare "YYYY-MM-DD HH:MM:SS", which V8 parses with
+      // a Z appended. Do not copy this pattern to a column an application also writes explicitly:
+      // scheduled_jobs binds new Date().toISOString() over its identical default, so the same
+      // line there produced "…Z" + "Z" = NaN and silently disabled every schedule on the platform.
       const ms = Date.parse(row.created_at + "Z");
       if (row.thread_id === prevThread && ms - prevMs <= REGEN_WINDOW_MS) regenerations++;
       prevThread = row.thread_id;

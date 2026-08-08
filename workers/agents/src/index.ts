@@ -5097,7 +5097,16 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       const { data } = await activityRes.json<{ data: Array<{ event_type: string; tokens_used: number | null; cost_credits: number | null; created_at: string }> }>();
 
       const cutoffMs = Date.now() - 24 * 60 * 60 * 1000;
-      const last24h = data.filter((e) => Date.parse(`${e.created_at}Z`) >= cutoffMs);
+      // Same parse used by the scheduled-job sweep, for the same reason: `agent_activity_log`
+      // happens to store SQLite's bare "YYYY-MM-DD HH:MM:SS", which V8 does accept with a Z
+      // appended — but `scheduled_jobs` proved that a column's DEFAULT (datetime('now')) and what
+      // the application actually binds (new Date().toISOString()) can silently disagree, and the
+      // reader is the one that breaks. parseTimestampMs handles either, and a row it cannot read
+      // is dropped rather than becoming a NaN comparison that silently filters everything out.
+      const last24h = data.filter((e) => {
+        const ms = parseTimestampMs(e.created_at);
+        return ms !== undefined && ms >= cutoffMs;
+      });
       if (last24h.length === 0) return; // nothing happened — don't send an empty digest
 
       const counts: Record<string, number> = {};
