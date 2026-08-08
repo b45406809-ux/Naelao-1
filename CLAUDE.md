@@ -4949,6 +4949,50 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      overdrawn / missing-field-rolling-deploy). `npx turbo run typecheck` clean (76 tasks).
      `naelao-spaces`, `naelao-agents` and `naelao-provisioner` deployed and live-verified.
 
+107. **Pushed past "documented as unproven" on both blockers: autonomous mode was BROKEN on the
+     only path that runs in production (now fixed and proven), and Tier 2 turned out to be
+     plan-gated in a way that lies to you.**
+     - **Autonomy never worked through the real UI.** `/agent/run` resolves the caller's role in
+       their own business (`business_memberships`) so the F-36 clamp does not downgrade a business
+       OWNER, and it passed that into the async Workflow's params — but `AgentTaskParams` never
+       declared `businessRole` and the run-agent step never forwarded it. The async path is the
+       DEFAULT for every real chat message. So an owner who set their business to Autonomous still
+       had **every action gated with nobody but themself to approve it**. Item 93 fixed this exact
+       bug on the SYNCHRONOUS dispatch and missed the one that actually runs — the second time this
+       "fixed on one path, missed the other" mistake has happened, which is why the new regression
+       test asserts the whole identity set (`businessRole`/`callerRole`/`userId`/`projectId`/
+       `businessContext`) rather than the single field that broke. Reproduced live (real owner-role
+       end user, policy `yolo`, still told "Waiting on your approval for: quote-job"), fixed, and
+       re-verified. **Proven working end to end on production**, one prompt, no human in the loop:
+       "Create a new project called Q3 Marketing Push… then confirm it exists by listing the
+       projects" → it created the project, re-read the list to verify, reported the real id, and
+       volunteered the unfinished-setup caveat unprompted. That is a multi-step autonomous action
+       with verification — the shape Polsia's whole pitch rests on.
+     - **`[[worker_loaders]]` deploys "successfully" and is silently dropped — a real trap, now
+       written into the wrangler.toml itself.** Uncommenting it and running `wrangler deploy`
+       prints a normal deployment with a new Version ID and no warning; the bindings API
+       (`GET /accounts/{id}/workers/services/naelao-agents/environments/production/bindings`) then
+       shows **no LOADER**, and a real Tier-2 script still fails with "Tier 2 is unavailable: no
+       worker_loaders binding configured in this environment". Verified both directions this
+       session. **A successful deploy is NOT evidence a binding exists.** So Tier 2-5 is genuinely
+       gated on the CF Workers Paid plan and cannot be engineered around; every seeded skill
+       (`quote-job`, `outreach-draft`, `store-provision`, …) needs it. What is NOT blocked by it:
+       the prebuilts (web search, notifications, commerce, business email, MCP connectors,
+       workspace/project admin, journal) run natively — which is exactly why the autonomous
+       project-creation proof above works today.
+     - **Test-authoring note:** `AGENTS_WORKER.fetch(url, init)` is called two-arg, not
+       `fetch(Request)`. A Request-shaped mock captures nothing and every assertion reads
+       `undefined` — the same shape-mismatch that cost time in item 106's TaskDO fake. The new
+       test was verified to genuinely catch the bug (reverting the one-line fix fails it).
+     - **A probe that looked like a bug and was not:** `GET /spaces/:spaceId/approvals` returns
+       `401 Malformed JWT` for a product end user — but the shell never calls that path. The real
+       one is `/spaces/:spaceId/sessions/inbox/approvals`, which works correctly and returned the
+       live pending approvals. Checked before reporting, per this file's own repeated lesson.
+     - Full four-way comparison, including the measured llama-3.3-70b vs gpt-oss-120b evidence and
+       what is genuinely still blocked: `docs/COMPETITIVE_2026-08-08_autonomy_matrix.md`.
+     2700/2700 tests pass (2 new), `npx turbo run typecheck` clean (76 tasks), `naelao-agents`
+     deployed and live-verified.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
