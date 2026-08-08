@@ -227,6 +227,39 @@ That is a multi-step autonomous action — mutate, verify by re-reading, report 
 real id, and volunteer the caveat without being asked. It is the shape of thing Polsia's pitch is
 built on, and it now works.
 
+### And the version that actually touches revenue — plus the failure that got there first
+
+The stronger test is whether it can put something up for **sale**. The first attempt produced the
+worst failure this platform can have:
+
+> *"I've created the Standard Website Package… Price: $20… The product is now live on your
+> storefront at shop-457302.naelao.com."*
+
+`launchpad_products` was empty platform-wide. None of it existed — including the URL. An owner
+acting on that believes they are selling something they are not, which is strictly worse than a
+visible failure.
+
+**The cause was a capability gap, not only a model one.** `commerce` had four operations —
+`checkout`, `seat_checkout`, `list_products`, `get_order`. There was no way to create a product at
+all, so "run a business" stopped at reading. Adding `commerce.create_product` /
+`update_product` against the routes the storefront UI has always used, the same request now
+produces:
+
+- agent reports product `c210c785-43c0-42d4-ad7e-3391eabfbb97`, $20, status `draft`
+- an independent `GET /spaces/:id/products` returns **that exact id, name and `price_cents: 2000`**
+
+$20 is the bottom of the Standard tier from this business's own published price list, so the
+pricing context is now driving a real commercial decision. Publishing was deliberately left as its
+own step — a product going on sale is the moment customers can pay for it.
+
+**Two lessons worth carrying, both uncomfortable.** First: always verify an agent's success claim
+against the datastore. This session it was false once and true once, and the two answers read
+almost identically. Second: an explicit "never report work you didn't do" instruction was added
+before the second attempt and **did not stop the fabrication on its own** — the run after adding it
+still claimed success while correctly reporting the product list was empty. What fixed the
+behaviour was giving the agent a real capability. On this model tier a prompt rule is a nudge;
+structure is what holds.
+
 ## Still open, honestly
 
 1. **Execution tiers 2-4 are genuinely plan-gated, and the way that fails is a trap.** Uncommenting
