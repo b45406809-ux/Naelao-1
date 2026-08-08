@@ -138,3 +138,31 @@ describe("commerce can actually put something up for sale", () => {
     ).rejects.toThrow(/403.*commerce_disabled/s);
   });
 });
+
+describe("the revenue review can see what actually sold", () => {
+  it("lists orders — the seeded daily cron asks for exactly this and had no operation for it", async () => {
+    // The recurring job every Launchpad business ships with says "check business_wallet.balance/
+    // history and any storefront/commerce orders". There was only `get_order`, which needs an id
+    // you could only have got from a list, so half that job was impossible.
+    const capture: { url?: string; method?: string } = {};
+    const env = {
+      scriptsBucket: {} as never,
+      spaceId: "space-1",
+      tenantId: "tenant-1",
+      platformSecret: PLATFORM_SECRET,
+      spacesWorker: {
+        async fetch(reqInput: Request | string, init?: RequestInit) {
+          const req = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
+          capture.url = new URL(req.url).pathname;
+          capture.method = req.method;
+          return Response.json({ data: [{ id: "o1", total_cents: 2000 }] });
+        },
+      } as unknown as Fetcher,
+    } as unknown as ScriptEngineEnv;
+
+    const out = await commerce.operations["commerce.list_orders"]!({}, { env, run: noopRun } as never);
+    expect(capture.method).toBe("GET");
+    expect(capture.url).toBe("/spaces/space-1/orders");
+    expect(out).toMatchObject({ data: [{ id: "o1", total_cents: 2000 }] });
+  });
+});

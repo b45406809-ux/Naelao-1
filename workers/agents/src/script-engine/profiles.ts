@@ -647,6 +647,7 @@ export const LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED: string[] = [
   "project.list",
   "agent.list",
   "commerce.list_products",
+  "commerce.list_orders",
   "commerce.get_order",
   "mcp.list_servers",
   "mcp.list_tools",

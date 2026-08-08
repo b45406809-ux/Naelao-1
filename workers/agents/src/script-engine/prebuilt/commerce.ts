@@ -125,6 +125,12 @@ export const commerce: PrebuiltScript = {
       spacesWrite(c, `/spaces/${c.env.spaceId}/products/${String(a["product_id"])}`, "PATCH", {
         ...(a["status"] ? { status: a["status"] } : {}),
       }),
+    // What actually sold. The seeded daily revenue-review cron asks the assistant to "check
+    // business_wallet.balance/history and any storefront/commerce orders" — and there was no
+    // operation to list orders at all, only `get_order`, which needs an id you could only have
+    // got from a list. So the one recurring job every Launchpad business ships with could not do
+    // half of what it was told to do. The route was already there; nothing exposed it.
+    "commerce.list_orders": (_a, c) => spaces(c, `/spaces/${c.env.spaceId}/orders`),
     "commerce.get_order": (a, c) => spaces(c, `/spaces/${c.env.spaceId}/orders`).then((o) => {
       const orders = (o as { data?: Array<{ id: string }> }).data ?? [];
       return orders.find((x) => x.id === a["order_id"]) ?? null;
