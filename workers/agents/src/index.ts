@@ -19,6 +19,7 @@ import { TaskDO } from "./do/TaskDO.js";
 import { ToolSandboxDO } from "./do/ToolSandboxDO.js";
 import { LocalTunnelDO } from "./do/LocalTunnelDO.js";
 import { LAUNCHPAD_TEMPLATES, LAUNCHPAD_CORE_AGENTS, getLaunchpadTemplate } from "./launchpad/spacetype.js";
+import { resolveBusinessContext, parseSpaceConfigForContext, loadBusinessContext, type BusinessContext } from "./launchpad/business-context.js";
 import { CONNECTOR_CATALOGUE, getConnector, pollableConnectorIds } from "./connectors/catalogue.js";
 import { CONTAINER_IMAGE_CATALOGUE } from "./script-engine/container-catalogue.js";
 import { isCronDue } from "@naelao/events";
@@ -559,6 +560,13 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
   // trip, and threaded into the DO call below so enforceRunGates can gate on it without needing
   // its own PLATFORM_DB binding (NaelaoAgentDO has none — see item 47's own note on this).
   let sessionCreditCeiling: number | undefined;
+  // WHICH business this run is for. The same already-parsed config_json carries `template_id` and
+  // `onboarding.status`, and spaceRow carries the name — so the agent can finally be told what it
+  // is running for zero extra queries. Before this, the reasoner payload described the agent's
+  // role but never the business, and a live run proved the consequence: asked how to win a first
+  // customer, the assistant gave generic advice naming its own internal components, because the
+  // business was the one thing it had no way to talk about. See launchpad/business-context.ts.
+  let businessContext: BusinessContext | undefined;
   try {
     const cfg = JSON.parse(spaceRow.config_json || "{}") as {
       productConfig?: { modelConfig?: { model?: string; effort?: string }; limits?: { sessionCreditCeiling?: number } };
@@ -567,6 +575,15 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
     sessionCreditCeiling = cfg.productConfig?.limits?.sessionCreditCeiling;
   } catch {
     modelConfig = {};
+  }
+  try {
+    businessContext = resolveBusinessContext({
+      spaceName: spaceRow.name,
+      config: parseSpaceConfigForContext(spaceRow.config_json),
+    });
+  } catch {
+    // Describing the business must never be what stops it from being run.
+    businessContext = undefined;
   }
 
   // A model switcher's capability-aware config card only offers levels the CHOSEN model actually
@@ -734,6 +751,9 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         businessRole,
         // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
         sessionCreditCeiling,
+        // WHICH business this is — resolved above from the space row. Sent on BOTH dispatch paths
+        // so a durable/async run knows exactly as much about the business as a sync one.
+        businessContext,
         // Model switcher capability config — already validated above against whichever model
         // actually runs, so this is passed through as-is rather than re-checked at the DO.
         reasoningEffort: rawBody.reasoning_effort,
@@ -793,6 +813,9 @@ app.post("/spaces/:spaceId/sessions/:sessionId/agent/run", async (c) => {
         model: rawBody.model ?? modelConfig.model ?? DEFAULT_WORKING_MODEL,
         // §A1 Harness Excellence Phase HX2: threaded through the same path as model above.
         sessionCreditCeiling,
+        // WHICH business this is — resolved above from the space row. Sent on BOTH dispatch paths
+        // so a durable/async run knows exactly as much about the business as a sync one.
+        businessContext,
         // Model switcher capability config — already validated above against whichever model
         // actually runs.
         reasoningEffort: rawBody.reasoning_effort,
@@ -1081,6 +1104,33 @@ async function fireScriptDirectly(
  *
  * Best-effort throughout. A diagnostics lookup failing must never stop the scheduled work itself.
  */
+/**
+ * What a proactive wake-up is FOR.
+ *
+ * The seeded recurring goal asks the assistant to review revenue and report. Reviewing is not
+ * running a business: a competitor whose whole pitch is "it evaluates the state of the business,
+ * prioritises, and executes" beats an assistant that reliably reports and never moves, however
+ * honest the report. So every proactive wake now closes with a standing instruction to actually
+ * advance the business by one real step.
+ *
+ * The approval policy is what keeps that safe, and is the thing worth being better at rather than
+ * skipping: an autonomous runner that silently spends an owner's money is not more advanced than
+ * one that asks, it is just less accountable. So "act on what you're allowed to, and where you
+ * need permission ask with a concrete proposal" is the whole instruction — a specific request the
+ * owner can answer in one tap beats both silent action and a vague "shall I do some marketing?".
+ *
+ * Deliberately short. It rides on every proactive tick, on an account whose entire model budget is
+ * a few dozen runs a day, so it earns its tokens by being three sentences rather than a doctrine.
+ */
+const ADVANCE_DIRECTIVE = [
+  "This is a recurring wake-up, not a question from the owner — nobody is waiting on a reply.",
+  "So do not stop at a summary: decide the single most valuable thing this business needs next,",
+  "and actually do it. If your approval policy already allows that action, take it now. If it",
+  "needs the owner's permission, open ONE approval with a concrete proposal (exactly what you",
+  "would do, and what it costs) rather than a vague suggestion. If the most valuable thing is",
+  "genuinely blocked, say precisely what is blocking it. Log what you did to the project journal.",
+].join(" ");
+
 async function buildWakeUpBrief(env: AgentsEnv, spaceId: string, tenantId: string): Promise<string | null> {
   if (!env.SPACES_WORKER || !tenantId) return null;
   try {
@@ -1093,7 +1143,10 @@ async function buildWakeUpBrief(env: AgentsEnv, spaceId: string, tenantId: strin
         },
       }
     ));
-    if (!res.ok) return null;
+    // A non-ok diagnostics response means "no situation report", not "no instructions": the
+    // directive below needs no lookup, so dropping it here would silently make a diagnostics
+    // outage also turn off the assistant's reason for waking up.
+    if (!res.ok) return `\n${ADVANCE_DIRECTIVE}\n`;
     const d = await res.json<{
       runs: { total: number; completed: number; failed: number };
       failures_by_kind: Array<{ kind: string; count: number }>;
@@ -1124,19 +1177,42 @@ async function buildWakeUpBrief(env: AgentsEnv, spaceId: string, tenantId: strin
     for (const s of stalled) {
       lines.push(`- '${s.project_name}' stopped (${s.failure_kind}): ${s.summary.slice(0, 120)}`);
     }
-    if (lines.length === 0) return null;
+    // Where the business actually stands, not just what broke. An assistant told only about
+    // failures has nothing to say about a healthy business that simply is not selling anything
+    // yet — which is the state most new businesses are in, and the one where doing the next
+    // useful thing matters most.
+    const business = await loadBusinessContext(env.PLATFORM_DB, spaceId, tenantId);
+    if (business?.setup_note) {
+      // Unfinished setup outranks everything else: none of the work below can run until it is
+      // done, so spending a wake-up on marketing plans for a business that cannot take payment
+      // would be busywork. The owner is the only one who can unblock it.
+      lines.unshift(
+        `- Setup for ${business.name} is still unfinished, so it cannot trade yet. That is the ` +
+        "single most valuable thing to resolve — nudge the owner with exactly what is missing " +
+        "(the notifications prebuilt), and do not plan work that depends on setup being done."
+      );
+    }
 
-    return [
-      "Since your last wake-up:",
-      ...lines,
-      "",
-      "Take this into account before doing anything else. Use diagnostics.overview for the full " +
-      "picture and diagnostics.stalled_work to pick work back up — don't restart work that already " +
-      "partly succeeded.",
-      "",
-    ].join("\n");
+    const situation = lines.length
+      ? [
+          "Since your last wake-up:",
+          ...lines,
+          "",
+          "Take this into account before doing anything else. Use diagnostics.overview for the full " +
+          "picture and diagnostics.stalled_work to pick work back up — don't restart work that already " +
+          "partly succeeded.",
+        ]
+      : [];
+
+    // The directive rides on EVERY proactive wake, including the quiet ones. Returning null on a
+    // healthy business — the previous behaviour — is exactly when the assistant most needed
+    // telling to go and do something, since there was no failure to react to and the seeded goal
+    // only ever asked it to review.
+    return [...situation, "", ADVANCE_DIRECTIVE, ""].join("\n");
   } catch {
-    return null; // never let a diagnostics lookup stop the actual scheduled work
+    // A diagnostics lookup failing must never stop the scheduled work — but the standing
+    // instruction to actually advance the business needs no lookup, so it still applies.
+    return `\n${ADVANCE_DIRECTIVE}\n`;
   }
 }
 
@@ -1796,6 +1872,9 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
     /** Resolved server-side in /agent/run — see resolveCallerBusinessRole. */
     businessRole?: string;
     sessionCreditCeiling?: number;
+    /** WHICH business this run is for — carried from /agent/run through the Workflow so the
+     *  async path is no less informed than the sync one. */
+    businessContext?: BusinessContext;
     reasoningEffort?: string;
     effort?: string;
   }>();
@@ -1827,6 +1906,7 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           userId: body.userId,
           projectId: body.projectId,
           sessionCreditCeiling: body.sessionCreditCeiling,
+          businessContext: body.businessContext,
           reasoningEffort: body.reasoningEffort,
           effort: body.effort,
         }),
@@ -4913,7 +4993,10 @@ async function handleAgentTick(env: AgentsEnv, msg: AgentTickMessage): Promise<v
       const beat = await stub.fetch(new Request("http://agent-do/channels/heartbeat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ spaceId: msg.spaceId, agentId: "naelao-agent", tenantId: msg.tenantId, apiKey: env.ANTHROPIC_API_KEY ?? "" }),
+        // The business this heartbeat is for. One indexed read per space per tick, best-effort:
+        // an inbound customer message is answered by an agent that knows what the business sells.
+        body: JSON.stringify({ spaceId: msg.spaceId, agentId: "naelao-agent", tenantId: msg.tenantId, apiKey: env.ANTHROPIC_API_KEY ?? "",
+          businessContext: await loadBusinessContext(env.PLATFORM_DB, msg.spaceId, msg.tenantId) }),
       }));
       // A heartbeat that dies used to leave no trace anywhere: the response was discarded, and the
       // drain runs entirely inside the DO so none of its own per-run logging fires for a failure

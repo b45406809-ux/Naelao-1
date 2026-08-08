@@ -14,6 +14,7 @@ import { WorkflowEntrypoint, WorkflowStep, WorkflowEvent } from "cloudflare:work
 import { mintInternalToken } from "@naelao/http";
 import type { Env } from "../env.js";
 import { reportWorkflowStepInfraUsage } from "./report-infra-usage.js";
+import type { BusinessContext } from "../launchpad/business-context.js";
 
 export interface AgentTaskParams {
   taskId: string;
@@ -36,6 +37,11 @@ export interface AgentTaskParams {
   // §A1 Harness Excellence Phase HX2: threaded through the same path as the fields above so the
   // async dispatch path's session-budget gate matches the sync path's exactly.
   sessionCreditCeiling?: number;
+  /** WHICH business this task is for (name, what it sells, setup state) — resolved by the
+   *  /agent/run route from the space row. Carried so a durable/async run is told exactly as much
+   *  about the business as a synchronous one; without it the default dispatch path would be the
+   *  one that stayed generic. See launchpad/business-context.ts. */
+  businessContext?: BusinessContext;
   /** Model switcher capability config (a chosen reasoning-effort/thinking level) — already
    *  validated by the /agent/run route against whichever model this task actually runs. */
   reasoningEffort?: string;
@@ -163,6 +169,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
               projectId: p.projectId,
               callerRole: p.callerRole,
               sessionCreditCeiling: p.sessionCreditCeiling,
+              businessContext: p.businessContext,
               reasoningEffort: p.reasoningEffort,
               effort: p.effort,
             }),

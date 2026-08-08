@@ -4797,6 +4797,102 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      the Workers AI daily quota is still exhausted, so no real chat message could be end-to-end
      verified to actually ANSWER, only to fail fast and honestly instead of hanging.
 
+105. **The Space Assistant did not know which business it was running — found by driving a real
+     business end-to-end on production, and it is the single biggest thing that was wrong with it
+     as an autonomous business runner. Now FIXED, along with two follow-on defects the fix itself
+     exposed.** Signed up a fresh end user on the live `launchpad` product, created a real
+     `whop-webdev-agency` business ("Pixel Forge Studio"), and asked what its owner would ask
+     first: *"What is this business and what should I do first to get my first paying customer?"*
+     The answer: *"This business is a digital business built using the Launchpad Space… scaffold
+     the real projects and connections using the workspace-admin, mcp-connector, commerce, and
+     storefront prebuilts."* Two failures with one cause — it did not know the business sold
+     websites, so its advice fit any business at all; and having nothing specific to say, it
+     described its own machinery by name to a non-technical owner.
+     - **Root cause.** The reasoner payload carried `who_you_are` (a digest of the agent's static
+       profile), the goal, the conversation, a technical state fingerprint and candidate scripts —
+       and nothing whatsoever about the business. The profile is the SAME text for every Launchpad
+       business on the platform, so it can establish what kind of agent this is and can never
+       establish which business this is. Item 79 fixed "the agent never sees its own prompt"; this
+       is the other half of the same hole.
+     - **The fix costs zero extra queries.** `SELECT * FROM spaces` already runs on every
+       `/agent/run` (for the model override) and `spaceRow.name` + `config_json`
+       (`template_id`, `onboarding.status`) already carry everything needed — all of it was being
+       discarded. New `workers/agents/src/launchpad/business-context.ts` resolves name / what it
+       sells (from the template's own published description, never a second hand-written copy) /
+       setup status, threaded through BOTH dispatch paths (sync and the default async
+       Workflow→TaskDO chain) so a durable run is no less informed than a blocking one, plus the
+       channel heartbeat (one indexed read per space per tick, via `loadBusinessContext`) — that
+       path answers a real CUSTOMER on WhatsApp/Slack, where not knowing what the business sells
+       is worse, not better.
+     - **The first attempt did not work, and why is the durable lesson.** Adding `business_context`
+       to the payload, deploying, and re-asking the SAME question on the SAME business produced a
+       word-for-word identical generic answer — the business name was sitting in the request and
+       the model never looked at it. One field among a dozen, behind a 4kB action protocol and five
+       tool schemas, is not somewhere a 70B model reliably reads. Fixed by ALSO stating it as prose
+       in the system message beside the identity anchor that exists for exactly the same reason
+       (see `composeSystemPrompt`'s own comment about "who are you?" being answered from the
+       machinery). **On small open-weight models, placement is a correctness property, not a
+       formatting preference** — and neither version would have been caught by any test, only by
+       asking a real business a real question and reading the answer.
+     - **Two follow-on defects, each found by re-running live rather than assuming the fix
+       landed.** (1) The internal template slug leaked: the answer read "Pixel Forge Studio, a
+       Whop-webdev-agency". Removing `kind` from the system prompt was NOT enough — the very next
+       live answer said the same thing, because the model was reading it out of the payload
+       instead. `kind` stays on the type (code uses it to resolve the offering and price list) but
+       is now stripped from what the model sees, in BOTH places (`projectBusinessForModel`).
+       (2) The first `setup_note` wording said finishing setup was "their first step, ahead of any
+       other advice", and the model read that as permission to stop: asked what to charge, it
+       replied only that setup was unfinished and answered nothing — worse than the generic advice
+       it replaced, because the question had a real answer. Rewritten: answer what was asked, in
+       full, THEN note that setup is unfinished. Unfinished setup is a fact to mention, never a
+       reason to refuse.
+     - **The business now knows its own price list.** Asked "I want to charge more than $10, what
+       should my prices be?", it gave generic advice about costs and competition — while running a
+       template that ships an explicit four-tier price list (`WEBDEV_TIERS`). `pricing` now carries
+       it, rendering a per-job tier as a RANGE rather than collapsing to a midpoint (the template's
+       own rule is to quote within the range and say what is still unsure). Final live answer:
+       *"Basic ($10), Standard ($20-100), Premium ($120-150), Enterprise B2B ($250-550)… note that
+       setup for Pixel Forge Studio is still unfinished."*
+     - **Proactivity: the wake-up now advances the business instead of only reviewing it.** The
+       competitive gap versus Polsia was never the mechanism — hooks/cron/heartbeat all exist here,
+       are per-business, and were verified seeded on the live business (`0 13 * * *` revenue
+       review + `0 8 * * 1-5` leadgen). It was what the wake-up DID: the seeded goal and the
+       profile both describe a reviewer ("tell the owner what you'd try next"), and
+       `buildWakeUpBrief` returned null entirely when nothing was broken — precisely the state
+       where there is no failure to react to and the assistant most needed telling to go and do
+       something. New `ADVANCE_DIRECTIVE` rides on EVERY proactive wake: decide the single most
+       valuable next thing and actually do it; take it if the approval policy allows, else open ONE
+       approval with a concrete proposal (what exactly, and what it costs) rather than a vague
+       suggestion. Deliberately placed in the RUNTIME wake path, not the agent profile — profiles
+       are written to R2 at provision time and would only ever have reached NEW businesses.
+       Unfinished setup is unshifted to the front of the brief, since no other work can run until
+       the owner clears it. Fixed a real bug in the same change: a non-ok diagnostics response
+       returned early and silently dropped the directive, so a diagnostics outage would also have
+       turned off the assistant's reason for waking up.
+     - **Deliberately NOT done: removing the approval gate to match Polsia's autonomy.** An
+       autonomous runner that silently spends an owner's money is not more advanced than one that
+       asks, it is less accountable. The differentiator is being better at ASKING — a specific
+       proposal the owner can answer in one tap — which is also what our durable 24h suspend/resume
+       approvals and action ledger already support and no competitor documents an equivalent of.
+     - Full four-way comparison (OpenClaw / Claude Code / Hermes / Polsia), including where we are
+       genuinely behind: `docs/COMPETITIVE_2026-08-08_autonomy_matrix.md`. Its honest headline:
+       "beats Polsia at proactivity" is now a design claim, not a measured one — nobody has yet
+       watched an unattended wake-up find work, do it, and log it, because daily crons fire daily.
+     - **Three earlier session findings were my own test-script errors, not product bugs** —
+       recorded because the pattern keeps recurring: `UID` is a readonly bash variable (so the
+       end-user-id header was silently wrong); `my-businesses` returns `space_status`, not
+       `status`; and onboarding prompts carry `question`, not `label`. Verify a suspected product
+       bug against the real contract before reporting it. Two REAL prior fixes were confirmed live
+       in passing: exactly one starter thread per prebuilt project (item 104's fix), and
+       onboarding completion correctly REFUSING with `missing:["whop_connection"]`.
+     2691/2691 tests pass (29 new: `business-context.test.ts` covering resolution, the
+     never-invent-an-offering rules, the D1 loader's fail-soft posture, system-prompt placement and
+     slug-stripping; plus 2 new wake-brief cases and 3 updated ones that had pinned the old
+     stay-silent-when-healthy behaviour). `npx turbo run typecheck` clean (76 tasks).
+     `naelao-agents` deployed 6 times across the session (bare `wrangler deploy`, item 83's
+     documented `--env production` trap), each fix verified by re-asking the same question on the
+     same live business rather than assuming the deploy landed.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

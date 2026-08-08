@@ -23,6 +23,9 @@ function makeEnv(opts: {
   doStatus?: number;
   doBody?: string;
   jobHasGoal?: boolean;
+  /** The space row `loadBusinessContext` reads, so a wake-up can be told the business is not
+   *  set up yet. Absent = the lookup finds nothing, which is what every other test here wants. */
+  spaceRow?: { name: string; config_json: string } | undefined;
 }) {
   const jobRow = {
     id: "job-1", space_id: "space-1", tenant_id: "tenant-1", project_id: null,
@@ -36,7 +39,11 @@ function makeEnv(opts: {
     PLATFORM_DB: {
       prepare: (sql: string) => ({
         bind: () => ({
-          first: async () => (sql.includes("FROM scheduled_jobs") ? jobRow : null),
+          first: async () => {
+            if (sql.includes("FROM scheduled_jobs")) return jobRow;
+            if (sql.includes("FROM spaces")) return opts.spaceRow ?? null;
+            return null;
+          },
           run: async () => ({ success: true }),
         }),
       }),
@@ -94,7 +101,7 @@ const TROUBLE = {
 };
 
 describe("wake-up brief", () => {
-  it("adds nothing when the business is healthy", async () => {
+  it("still tells a healthy business to go and do something", async () => {
     // Load-bearing: a brief on every hourly tick would spend real tokens saying "everything is
     // fine", on an account whose entire budget is a few dozen runs a day.
     const captured: Captured[] = [];
@@ -103,7 +110,20 @@ describe("wake-up brief", () => {
     } as never);
 
     expect(captured).toHaveLength(1);
-    expect(captured[0]!.goal).toBe("Review revenue and report anything that needs attention.");
+    const goal = captured[0]!.goal;
+    // The scheduled work itself is untouched.
+    expect(goal).toContain("Review revenue and report anything that needs attention.");
+    // But a healthy business is exactly when the assistant used to be told nothing at all, and
+    // its seeded goal only ever asks it to REVIEW. Reviewing is not running a business — so the
+    // standing instruction to actually advance it applies on the quiet ticks too, not only when
+    // something has broken.
+    expect(goal).toContain("decide the single most valuable thing this business needs next");
+    expect(goal).toContain("actually do it");
+    // And it must stay accountable rather than just autonomous: where permission is needed, a
+    // concrete proposal, not a silent action and not a vague suggestion.
+    expect(goal).toContain("concrete proposal");
+    // Nothing was wrong, so it should not claim otherwise.
+    expect(goal).not.toContain("Since your last wake-up");
   });
 
   it("puts what went wrong in front of the goal when there is something to say", async () => {
@@ -142,9 +162,14 @@ describe("wake-up brief", () => {
       await handleAgentTick(makeEnv({ diagnostics: TROUBLE, captured, ...broken }), {
         kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "job-1",
       } as never);
-      // Degrades to exactly the pre-existing behaviour — never to a skipped job.
+      // Never a skipped job, and never a silently-dropped instruction: the diagnostics half of
+      // the brief needs a working lookup, but "advance the business" needs nothing at all, so it
+      // survives the lookup failing.
       expect(captured).toHaveLength(1);
-      expect(captured[0]!.goal).toBe("Review revenue and report anything that needs attention.");
+      expect(captured[0]!.goal).toContain("Review revenue and report anything that needs attention.");
+      expect(captured[0]!.goal).toContain("decide the single most valuable thing");
+      // With no diagnostics it must not invent a situation report.
+      expect(captured[0]!.goal).not.toContain("Since your last wake-up");
     }
   });
 
@@ -209,5 +234,50 @@ describe("wake-up brief", () => {
     expect(captured).toHaveLength(1);
     expect(captured[0]!.goal).toContain("Since your last wake-up");
     expect(captured[0]!.goal).toContain("Poll the whop connector");
+  });
+});
+
+describe("wake-up brief: unfinished setup", () => {
+  it("makes unfinished setup the first thing, ahead of anything else it found", async () => {
+    // A business that cannot take payment yet is not a business with a marketing problem. Every
+    // other line in the brief describes work that literally cannot run until the owner finishes
+    // setup, so planning around it would be busywork dressed up as progress.
+    const captured: Captured[] = [];
+    await handleAgentTick(
+      makeEnv({
+        diagnostics: TROUBLE,
+        captured,
+        spaceRow: {
+          name: "Pixel Forge Studio",
+          config_json: JSON.stringify({ template_id: "whop-webdev-agency", onboarding: { status: "awaiting_setup" } }),
+        },
+      }),
+      { kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "job-1" } as never
+    );
+
+    const goal = captured[0]!.goal;
+    expect(goal).toContain("Setup for Pixel Forge Studio is still unfinished");
+    // Ahead of the failure lines it also had to report.
+    expect(goal.indexOf("still unfinished")).toBeLessThan(goal.indexOf("runs failed"));
+    // And the owner is the one who has to act, so it must reach them rather than retry silently.
+    expect(goal).toContain("nudge the owner");
+  });
+
+  it("says nothing about setup for a business that has finished it", async () => {
+    const captured: Captured[] = [];
+    await handleAgentTick(
+      makeEnv({
+        diagnostics: CLEAN,
+        captured,
+        spaceRow: {
+          name: "Trading Co",
+          config_json: JSON.stringify({ template_id: "whop-webdev-agency", onboarding: { status: "complete" } }),
+        },
+      }),
+      { kind: "scheduled_job", spaceId: "space-1", tenantId: "tenant-1", jobId: "job-1" } as never
+    );
+    expect(captured[0]!.goal).not.toContain("unfinished");
+    // It should still be told to advance the business.
+    expect(captured[0]!.goal).toContain("decide the single most valuable thing");
   });
 });

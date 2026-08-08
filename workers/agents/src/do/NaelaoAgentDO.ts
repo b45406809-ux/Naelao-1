@@ -42,6 +42,7 @@ import {
   type ConversationMessage,
 } from "../script-engine/conversation-context.js";
 import { isChannelType, getAdapter, type NormalizedInbound } from "../launchpad/channels.js";
+import type { BusinessContext } from "../launchpad/business-context.js";
 import {
   sanitizeSubAgentOutput,
   safeJsonParse,
@@ -2610,6 +2611,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // §A1 Harness Excellence Phase HX2: resolved by the caller (index.ts) from
       // productConfig.limits.sessionCreditCeiling — this DO has no PLATFORM_DB binding.
       sessionCreditCeiling?: number;
+      /** WHICH business this run is for (name, what it sells, whether setup is done). Resolved by
+       *  the caller (index.ts) from the space row it already fetches — this DO has no PLATFORM_DB
+       *  binding, so it cannot look the space up itself. Absent for a direct/internal caller that
+       *  never resolved one, in which case the reasoner simply omits the field. */
+      businessContext?: BusinessContext;
       /** The id the caller already handed to its client, so the persisted trace is reachable
        *  through GET .../runs/:runId/trace. Optional — direct callers omit it. */
       runId?: string;
@@ -2775,6 +2781,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // The agent's OWN identity and instructions. Loaded from R2 on every run since the script
       // engine was built, and never once handed to the model — see ReasonerDeps.agentPrompt.
       ...(config.systemPrompt ? { agentPrompt: config.systemPrompt } : {}),
+      // WHICH business this run is for. Resolved by index.ts from the space row it already
+      // fetches; omitted entirely when the caller never resolved one.
+      ...(body.businessContext ? { businessContext: body.businessContext } : {}),
     });
 
     try {
@@ -4605,7 +4614,11 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private async handleChannelHeartbeat(request: Request): Promise<Response> {
     this.ensureInit();
-    type HeartbeatBody = { spaceId?: string; agentId?: string; tenantId?: string; apiKey?: string; model?: string; max?: number };
+    // businessContext: resolved by the caller (index.ts's heartbeat dispatch) — this DO has no
+    // PLATFORM_DB binding. Without it the agent answering a real customer on WhatsApp/Slack knows
+    // its role but not what the business actually sells, which is the one thing that conversation
+    // is about.
+    type HeartbeatBody = { spaceId?: string; agentId?: string; tenantId?: string; apiKey?: string; model?: string; max?: number; businessContext?: BusinessContext };
     const body = await request.json<HeartbeatBody>().catch(() => ({}) as HeartbeatBody);
     const spaceId = body.spaceId ?? request.headers.get("x-naelao-space-id") ?? "";
     if (!spaceId) return Response.json({ error: "spaceId is required" }, { status: 400 });
@@ -4658,6 +4671,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // Same gap as the interactive path: a customer messaging a business on Slack/WhatsApp was
       // being answered by a model that had never been told what business it was answering for.
       ...(config.systemPrompt ? { agentPrompt: config.systemPrompt } : {}),
+      // WHICH business this run is for. Resolved by index.ts from the space row it already
+      // fetches; omitted entirely when the caller never resolved one.
+      ...(body.businessContext ? { businessContext: body.businessContext } : {}),
     });
 
     // Resolve config + rules once per distinct project among this batch (not per message).
