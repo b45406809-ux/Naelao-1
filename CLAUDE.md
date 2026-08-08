@@ -5072,6 +5072,38 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      caused this; plus three `isCronDue` non-finite cases), `npx turbo run typecheck` clean (76
      tasks), `naelao-agents` deployed.
 
+110. **The unattended cron fired for real — and immediately exposed the NEXT blocker, which is
+     exactly why waiting for it mattered.** At 14:01:15 UTC the hourly sweep fired this business's
+     `0 13 * * *` revenue review unattended (`last_run_at 1786197675189`, `consecutive_failures 0`),
+     and the `0 8 * * 1-5` leadgen job correctly did NOT fire — so the matcher selects rather than
+     firing blindly. The wake brief reached it too, verbatim in the resulting notification:
+     *"Since your last wake-up: - Setup for Pixel Forge Studio is still unfinished…"*, confirming
+     item 109's `ADVANCE_DIRECTIVE` and the setup-priority line are live on the proactive path.
+     - **And the run died instantly**: `reasoner gateway error 404: {"message":"Model not found:
+       claude-haiku-4-5-20251001"}`. `wakeAgentGoal` sent no `model`, so `NaelaoAgentDO` fell back
+       to a hardcoded Claude id — which on a gateway with no Anthropic provider (this account, see
+       item 68) is a guaranteed 404. **The proactive layer would have stayed broken even after the
+       scheduling fix**: cron fires, run dies, nothing happens, and the only trace is a warning
+       notification nobody is watching for. Six copies of that hardcoded id in the DO replaced with
+       `DEFAULT_WORKING_MODEL`, which was already imported and already used a few lines away —
+       item 79 fixed this class in `index.ts`'s dispatch sites and missed the DO's own fallbacks,
+       which is precisely what a cron-dispatched run lands on.
+     - `wakeAgentGoal` also sent no `businessContext`, so the recurring run — the one most in need
+       of knowing which business it is reviewing — was the only run still flying blind after item
+       105 threaded it everywhere else. New `resolveWakeContext` does ONE indexed read and supplies
+       both, preferring the business's own configured model and **re-validating it against the
+       allowlist** rather than trusting it (a stored model that has since left the allowlist would
+       otherwise reintroduce exactly the 404 this exists to prevent). Never throws.
+     - **The general lesson, and it is the one worth keeping from this whole session:** items 105-109
+       were each found by running the real thing and reading what came back, never by reading code.
+       Every one of them passed ~2,700 unit tests before being found. A scheduling bug that returns
+       `false`, a model fallback that 404s, an agent that fabricates a product — all three are
+       invisible to a test suite that supplies its own inputs, and all three are obvious within
+       seconds of watching a real business try to operate.
+     2718/2718 tests pass, `npx turbo run typecheck` clean (76 tasks), `naelao-agents` +
+     `naelao-spaces` deployed. `last_run_at` was reset so the next sweep re-runs the same job with
+     the model fix in place.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
