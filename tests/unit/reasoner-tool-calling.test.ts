@@ -408,3 +408,40 @@ describe("captured live payloads — the parser handles what these models actual
     expect(r.usage).toEqual({ input_tokens: 153, output_tokens: 32 });
   });
 });
+
+describe("a tool call naming an operation instead of an action", () => {
+  // Observed live: the model emitted a tool call named `knowledge.search` — not one of the five
+  // actions — and the whole run died with "unusable tool call ... and no parseable text". Models
+  // trained to emit direct tool calls reach for the operation name constantly, and the intent is
+  // unambiguous. Losing a turn (and at the end of a budget, the run) over a forgotten wrapper is
+  // the wrong trade.
+  it("reads a dotted operation name as a run of that operation", async () => {
+    const { coerceOperationToolCall } = await import("../../workers/agents/src/script-engine/reasoner.js");
+    const d = coerceOperationToolCall({ name: "knowledge.search", arguments: { query: "pricing" } });
+    expect(d).toEqual({ action: "run", name: "knowledge.search", params: { query: "pricing" } });
+  });
+
+  it("parses stringified arguments, which is how most providers send them", async () => {
+    const { coerceOperationToolCall } = await import("../../workers/agents/src/script-engine/reasoner.js");
+    const d = coerceOperationToolCall({ name: "commerce.list_products", arguments: '{"limit":5}' });
+    expect(d).toEqual({ action: "run", name: "commerce.list_products", params: { limit: 5 } });
+  });
+
+  it("unwraps arguments the model nested under params/arguments/input", async () => {
+    const { coerceOperationToolCall } = await import("../../workers/agents/src/script-engine/reasoner.js");
+    expect(coerceOperationToolCall({ name: "project.create", arguments: { params: { name: "Q3" } } }))
+      .toEqual({ action: "run", name: "project.create", params: { name: "Q3" } });
+  });
+
+  it("leaves a real decision action alone", async () => {
+    const { coerceOperationToolCall } = await import("../../workers/agents/src/script-engine/reasoner.js");
+    // `answer` has no dot and IS an action — coercing it to a `run` would be catastrophic.
+    expect(coerceOperationToolCall({ name: "answer", arguments: { text: "hi" } })).toBeNull();
+  });
+
+  it("does not guess at an undotted name it cannot recognise", async () => {
+    const { coerceOperationToolCall } = await import("../../workers/agents/src/script-engine/reasoner.js");
+    // An unrecognisable action should still fail visibly rather than be invented into a run.
+    expect(coerceOperationToolCall({ name: "frobnicate", arguments: {} })).toBeNull();
+  });
+});

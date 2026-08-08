@@ -57,3 +57,84 @@ describe("commerce prebuilt — mints a verified internal token instead of a sta
     expect(await verifyInternalToken(token, "tenant-1", PLATFORM_SECRET)).toBe(true);
   });
 });
+
+describe("commerce can actually put something up for sale", () => {
+  /**
+   * This capability did not exist, and its absence produced the worst failure this platform can
+   * have. Asked to create a product, the assistant had no operation for it, did not say so, and
+   * reported a detailed success instead — name, price, "now live on your storefront at
+   * shop-…naelao.com". `launchpad_products` was empty; none of it was real. An owner acting on
+   * that believes they are selling something they are not. The storefront UI has always had these
+   * routes; the agent was simply never given them, so "run a business" stopped at reading.
+   */
+  function makeSpacesEnv(capture: { url?: string; method?: string; body?: unknown; headers?: Record<string, string> }, response: unknown = { id: "prod-1" }) {
+    const spacesWorker = {
+      async fetch(reqInput: Request | string, init?: RequestInit) {
+        const req = typeof reqInput === "string" ? new Request(reqInput, init) : reqInput;
+        capture.url = new URL(req.url).pathname;
+        capture.method = req.method;
+        const h: Record<string, string> = {};
+        req.headers.forEach((v, k) => { h[k] = v; });
+        capture.headers = h;
+        capture.body = await req.clone().json().catch(() => null);
+        return Response.json(response as Record<string, unknown>);
+      },
+    };
+    return {
+      scriptsBucket: {} as never,
+      spaceId: "space-1",
+      tenantId: "tenant-1",
+      platformSecret: PLATFORM_SECRET,
+      spacesWorker: spacesWorker as unknown as Fetcher,
+    } as unknown as ScriptEngineEnv;
+  }
+
+  it("creates a product against the same route the storefront UI uses", async () => {
+    const capture: { url?: string; method?: string; body?: unknown; headers?: Record<string, string> } = {};
+    const env = makeSpacesEnv(capture);
+    const out = await commerce.operations["commerce.create_product"]!(
+      { name: "Standard Website Package", description: "Up to 5 pages", price_cents: 2000 },
+      { env, run: noopRun } as never
+    );
+
+    expect(capture.method).toBe("POST");
+    expect(capture.url).toBe("/spaces/space-1/products");
+    expect(capture.body).toMatchObject({ name: "Standard Website Package", price_cents: 2000 });
+    expect(out).toMatchObject({ id: "prod-1" });
+    // Internal routes are HMAC-gated; a static header would be forgeable.
+    const token = capture.headers?.["x-naelao-internal-token"] ?? "";
+    expect(await verifyInternalToken(token, "tenant-1", PLATFORM_SECRET)).toBe(true);
+  });
+
+  it("publishing is its own explicit step, not a side effect of drafting", async () => {
+    const capture: { url?: string; method?: string; body?: unknown } = {};
+    const env = makeSpacesEnv(capture);
+    await commerce.operations["commerce.update_product"]!(
+      { product_id: "prod-1", status: "published" },
+      { env, run: noopRun } as never
+    );
+    expect(capture.method).toBe("PATCH");
+    expect(capture.url).toBe("/spaces/space-1/products/prod-1");
+    expect(capture.body).toMatchObject({ status: "published" });
+  });
+
+  it("surfaces the upstream error text rather than a bare status", async () => {
+    // An agent told only "failed: 403" cannot tell the owner anything useful. It has to be able to
+    // say WHAT went wrong — which is the difference between a real report and a fabricated one.
+    const env = {
+      scriptsBucket: {} as never,
+      spaceId: "space-1",
+      tenantId: "tenant-1",
+      platformSecret: PLATFORM_SECRET,
+      spacesWorker: {
+        async fetch() {
+          return new Response('{"error_code":"commerce_disabled"}', { status: 403 });
+        },
+      } as unknown as Fetcher,
+    } as unknown as ScriptEngineEnv;
+
+    await expect(
+      commerce.operations["commerce.create_product"]!({ name: "x" }, { env, run: noopRun } as never)
+    ).rejects.toThrow(/403.*commerce_disabled/s);
+  });
+});
