@@ -168,6 +168,36 @@ export class ScriptToolSurface {
 
   // ── script.run ─────────────────────────────────────────────────────────────
   /**
+   * Name the real operations closest to one a model got wrong, so the next turn can correct
+   * itself instead of re-guessing until the stall budget runs out. A bare "Unknown script or
+   * operation: X" gives a model nothing to work with — and the observed real failure was a
+   * model writing a prebuilt's descriptive phrase ("notifications prebuilt") rather than an op
+   * name, which shares a token with the answer it wanted. Prebuilt ops only: they're already in
+   * memory, so a miss costs nothing, whereas listing the R2 skill library would turn every
+   * mistyped name into a bucket listing.
+   */
+  private suggestOperations(name: string): string {
+    const tokenize = (s: string) => s.toLowerCase().split(/[^a-z0-9]+/i).filter(Boolean);
+    const wanted = tokenize(name);
+    if (wanted.length === 0) return "";
+    // Match against the owning PREBUILT's name as well as the op name. Several prebuilts expose
+    // ops under a different prefix than the prebuilt they belong to (`notifications` owns
+    // `notify.email`, `notify.slack`, ...), and the prebuilt name is what a model sees listed in
+    // its own profile — so the name it reaches for is often the one that shares no token with any
+    // op. Matching op names alone would have returned nothing for the real observed failure.
+    const scored: Array<{ op: string; hits: number }> = [];
+    for (const [op, entry] of this.ops) {
+      const tokens = new Set([...tokenize(op), ...tokenize(entry.prebuilt.name)]);
+      const hits = wanted.filter((w) => tokens.has(w)).length;
+      if (hits > 0) scored.push({ op, hits });
+    }
+    if (scored.length === 0) return "";
+    scored.sort((a, b) => b.hits - a.hits || a.op.localeCompare(b.op));
+    const names = scored.slice(0, 6).map((s) => s.op);
+    return ` Did you mean one of: ${names.join(", ")}? Use the exact operation name.`;
+  }
+
+  /**
    * Run a prebuilt operation or a stored script. Records success/failure health on stored
    * scripts so stability_score stays accurate.
    */
@@ -255,7 +285,7 @@ export class ScriptToolSurface {
     if (!stored) {
       return {
         ok: false,
-        error: `Unknown script or operation: ${name}`,
+        error: `Unknown script or operation: ${name}.${this.suggestOperations(name)}`,
         tier: 1,
         duration_ms: Date.now() - started,
         tokens_used: 0,

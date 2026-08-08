@@ -57,21 +57,35 @@ export class SkillLibrary {
     return `${this.root()}/${name}`;
   }
 
+  /** True when a name is safe to use as a path segment under the script directory. */
+  private isUsableName(name: string): boolean {
+    return /^[a-zA-Z0-9._-]{1,128}$/.test(name);
+  }
+
   /** Reject names that could escape the script directory or collide with the layout. */
   private assertName(name: string): void {
-    if (!/^[a-zA-Z0-9._-]{1,128}$/.test(name)) {
+    if (!this.isUsableName(name)) {
       throw new Error(`Invalid script name: ${JSON.stringify(name)}`);
     }
   }
 
+  // NOTE: the two LOOKUPS below deliberately do NOT throw on an unusable name — they report
+  // "no such script", because their caller is a model choosing a name, not code constructing a
+  // path. A model that writes `"notifications prebuilt"` instead of `notifications.send` should
+  // see a recoverable step failure it can correct on the next turn; throwing here escapes
+  // ScriptToolSurface.run()'s per-step error handling entirely and kills the whole run. That
+  // was fatal on the unattended proactive path, where nobody is watching to retry (the job just
+  // records consecutive_failures and goes quiet). Path safety is unaffected: an unusable name
+  // never reaches the bucket. Every WRITE path still calls assertName() and still throws, since
+  // there a bad name is a bug or an attack, not a typo.
   async exists(name: string): Promise<boolean> {
-    this.assertName(name);
+    if (!this.isUsableName(name)) return false;
     const head = await this.bucket.head(`${this.dir(name)}/SCRIPT.md`);
     return head !== null;
   }
 
   async read(name: string): Promise<StoredScript | null> {
-    this.assertName(name);
+    if (!this.isUsableName(name)) return null;
     const [metaObj, codeObj] = await Promise.all([
       this.bucket.get(`${this.dir(name)}/SCRIPT.md`),
       this.bucket.get(`${this.dir(name)}/code.ts`),
