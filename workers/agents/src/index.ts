@@ -1276,6 +1276,45 @@ async function recordWakeFailure(
   }
 }
 
+/**
+ * What an unattended wake-up needs to know about the space it is waking for: which model this
+ * business actually runs on, and which business it is.
+ *
+ * One indexed read, shared by every wake path. Falls back to the platform default rather than a
+ * hardcoded provider id — the whole reason this exists is that a hardcoded Claude id 404s on a
+ * deployment whose gateway has no Anthropic provider, which killed the first real cron fire.
+ * Never throws: a background run must not be lost because its config lookup failed.
+ */
+async function resolveWakeContext(
+  env: AgentsEnv,
+  spaceId: string,
+  tenantId: string
+): Promise<{ model: string; businessContext?: BusinessContext }> {
+  try {
+    const row = await env.PLATFORM_DB.prepare(
+      "SELECT name, config_json FROM spaces WHERE id = ? AND tenant_id = ?"
+    ).bind(spaceId, tenantId).first<{ name: string | null; config_json: string | null }>();
+    if (!row) return { model: DEFAULT_WORKING_MODEL };
+    const cfg = parseSpaceConfigForContext(row.config_json);
+    let configured: string | undefined;
+    try {
+      const pc = JSON.parse(row.config_json || "{}") as { productConfig?: { modelConfig?: { model?: string } } };
+      const m = pc.productConfig?.modelConfig?.model;
+      // Re-validated rather than trusted: a stored model that is no longer in the allowlist would
+      // otherwise reintroduce exactly the 404 this function exists to prevent.
+      if (m && isAllowedModel(m)) configured = m;
+    } catch {
+      // fall through to the default
+    }
+    return {
+      model: configured ?? DEFAULT_WORKING_MODEL,
+      businessContext: resolveBusinessContext({ spaceName: row.name, config: cfg }),
+    };
+  } catch {
+    return { model: DEFAULT_WORKING_MODEL };
+  }
+}
+
 async function wakeAgentGoal(
   env: AgentsEnv,
   params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; goal: string },
@@ -1284,6 +1323,15 @@ async function wakeAgentGoal(
   const agentId = params.agentId ?? "naelao-agent";
   const stub = await getAgentDOForSpace(env, params.tenantId, params.spaceId, agentId, reqId);
   const brief = await buildWakeUpBrief(env, params.spaceId, params.tenantId);
+  // The model and the business, resolved the same way /agent/run resolves them.
+  //
+  // This sent NEITHER, and both mattered. Without a model the DO fell back to a hardcoded Claude
+  // id that does not exist on every deployment — the first real unattended cron fire on this
+  // account died instantly with `Model not found: claude-haiku-4-5-20251001`, so the proactive
+  // layer would have stayed broken even after the scheduling bug was fixed. And without the
+  // business context the recurring run — the one most in need of knowing what business it is
+  // reviewing — was the only run still flying blind after that was added everywhere else.
+  const wake = await resolveWakeContext(env, params.spaceId, params.tenantId);
   return stub.fetch(
     new Request("http://agent-do/script/run", {
       method: "POST",
@@ -1297,6 +1345,8 @@ async function wakeAgentGoal(
         ...(params.projectId ? { projectId: params.projectId } : {}),
         context: { trigger: "scheduled_job" },
         apiKey: env.ANTHROPIC_API_KEY ?? "",
+        model: wake.model,
+        ...(wake.businessContext ? { businessContext: wake.businessContext } : {}),
       }),
     })
   );

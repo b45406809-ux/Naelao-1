@@ -2774,9 +2774,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}),
         ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}),
       },
-      ctx: { spaceId, agentId, model: body.model ?? "claude-haiku-4-5-20251001" },
+      ctx: { spaceId, agentId, model: body.model ?? DEFAULT_WORKING_MODEL },
       ...(body.model ? { model: body.model } : {}),
-      fallbacks: this.resolveFailoverChain(body.model ?? "claude-haiku-4-5-20251001", body.apiKey ?? ""),
+      fallbacks: this.resolveFailoverChain(body.model ?? DEFAULT_WORKING_MODEL, body.apiKey ?? ""),
       ...(reasoningRequest ? { reasoning: reasoningRequest } : {}),
       // The agent's OWN identity and instructions. Loaded from R2 on every run since the script
       // engine was built, and never once handed to the model — see ReasonerDeps.agentPrompt.
@@ -2958,7 +2958,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           : (failureText ? failureText.slice(0, 500) : "Run did not complete successfully"),
         tokensUsed: result.result?.tokens_used ?? null,
         costCredits: result.result?.input_tokens || result.result?.output_tokens
-          ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, body.model ?? "claude-haiku-4-5-20251001")
+          ? tokensToCredits(result.result.input_tokens ?? 0, result.result.output_tokens ?? 0, body.model ?? DEFAULT_WORKING_MODEL)
           : (result.result?.tokens_used ?? null),
       });
       if (failed) {
@@ -4252,7 +4252,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     if (!tokensUsed) return;
     const credits = inputTokens || outputTokens
-      ? tokensToCredits(inputTokens, outputTokens, model ?? "claude-haiku-4-5-20251001")
+      ? tokensToCredits(inputTokens, outputTokens, model ?? DEFAULT_WORKING_MODEL)
       : tokensUsed;
 
     // §A1 Harness Excellence Phase HX2: post-run tally increment — only when this space actually
@@ -4674,7 +4674,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     // Same structural-config-first, agents.md-parse-fallback precedence as handleScriptRun above.
     const requiresApprovalFor = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];
     const tools = new ScriptToolSurface(engineEnv, config.scripts.prebuilt);
-    const model = body.model ?? "claude-haiku-4-5-20251001";
+    const model = body.model ?? DEFAULT_WORKING_MODEL;
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
       gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}) },
@@ -5657,7 +5657,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
   private resolveFailoverChain(primaryModel: string, anthropicKey: string): { model: string; apiKey: string }[] {
     const chain: { model: string; apiKey: string }[] = [];
-    const anthropicFallback = this.env.LLM_FALLBACK_MODEL ?? "claude-haiku-4-5-20251001";
+    const anthropicFallback = this.env.LLM_FALLBACK_MODEL ?? DEFAULT_WORKING_MODEL;
     if (anthropicKey && anthropicFallback && anthropicFallback !== primaryModel) {
       chain.push({ model: anthropicFallback, apiKey: anthropicKey });
     }
