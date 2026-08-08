@@ -752,6 +752,23 @@ export function businessServicePrebuilts(productConfig: {
 }
 
 /** Build an agent profile from a Launchpad agent definition (§11 → §13 realization). */
+/**
+ * How every Launchpad agent must SPEAK, as opposed to how it works.
+ *
+ * The operation names above this rule are the agent's own vocabulary for choosing what to do. To
+ * the person reading the answer they are jargon, and a small model will happily narrate them —
+ * "I would use the web-search prebuilt and then the outreach-draft skill" — because the prompt it
+ * just read is written in exactly that register. Stated once, at the end, where recency helps.
+ */
+const OWNER_FACING_LANGUAGE_RULE = `# How you talk to people
+The operation and skill names above are how you CHOOSE what to do. They are not words the owner
+or a customer knows, and they must never appear in something you say. Describe the outcome in
+plain language instead: say what you will actually do and what the person will get — "I'll find
+local businesses with weak websites and draft the first few messages for you to approve", or
+"I've sent their receipt and access" — never "I used the web-search prebuilt, then the
+outreach-draft skill". If a sentence would only make sense to someone who has read your
+configuration, rewrite it before saying it.`;
+
 export function launchpadAgentToProfile(def: LaunchpadAgentDefinition): { agentId: string; config: AgentConfig } {
   const prebuilt = new Set<string>(["r2-workspace"]); // every agent gets the workspace
   for (const skill of def.allowed_skills) {
@@ -787,7 +804,14 @@ ${triggerNote}
 Max autonomous spend per action: $${def.max_spend_per_action_usd}.${approvalNote}
 
 ${BASE_AGENTS_MD}`,
-      systemPrompt: def.system_prompt,
+      // Every core agent's prompt necessarily names the operations it should use — that is how it
+      // picks the right one. A live run showed the cost of leaving it there: asked what its job
+      // was, the lead-generation agent replied "I would use the web-search prebuilt … then the
+      // outreach-draft skill", which is meaningless to the small-business owner who asked. The
+      // runtime rule in DECISION_INSTRUCTIONS was not enough on a small model, because the prompt
+      // right above it models the opposite habit in every paragraph. Appended once here rather
+      // than rewritten into each definition, so no agent can be added later and miss it.
+      systemPrompt: `${def.system_prompt}\n\n${OWNER_FACING_LANGUAGE_RULE}`,
       scripts: {
         prebuilt: [...prebuilt],
         agent_scripts: "auto",

@@ -136,6 +136,39 @@ tests — only by asking a real business a real question and reading the answer.
 
 ---
 
+## The default model is a product decision, and it is currently costing quality
+
+Measured, not inferred. The same project agent, same business, same question — *"What is your job
+here?"* — on two models:
+
+**`@cf/meta/llama-3.3-70b-instruct-fp8-fast` (today's default):**
+> "My job is to find customers for a small web studio… by using the `web-search` prebuilt to find
+> local businesses with a weak web presence and drafting outreach messages for the owner to
+> approve."
+
+**`@cf/openai/gpt-oss-120b`, identical prompt and business:**
+> "I'm here to help Clearline Web grow its client base. My job is to locate local businesses that
+> have weak or missing web presences — no website, a dead link, a social-media page acting as a
+> site, or a site that doesn't work well on mobile — and record exactly what I see. I then draft
+> outreach messages (including a click-to-WhatsApp link when a phone number is available) for you
+> to review and approve…"
+
+The instruction not to name internal tooling is present in three places for both runs — the
+reasoner protocol, the shared owner-facing language rule appended to every agent profile, and the
+agent's own prompt. The 70B model narrates its tooling anyway, because the prompt it has just read
+necessarily names those operations so it can pick the right one, and it mirrors that register. The
+120B model follows the instruction and writes like a person.
+
+So this is a **model-capability limit, not a prompt bug** — worth stating plainly because the
+obvious next move (write yet another, firmer instruction) is the wrong one; it has already been
+tried three times. The realistic options are: raise the default model, or accept that owner-facing
+prose is weaker on the cheapest tier. That is a cost decision, not an engineering one — a larger
+model burns the ~10,000 neuron/day free allowance faster — so it is flagged here rather than
+changed unilaterally.
+
+It also sharpens the Claude Code comparison below: the gap there is not architecture, it is that
+Claude Code runs frontier models and this platform's default does not.
+
 ## Feature matrix
 
 Restricted to axes that differ. Everything in the 2026-08-05 doc's table still holds.

@@ -526,7 +526,15 @@ describe("Agent config 4 R2 files + profiles (spec §11/§13)", () => {
     for (const def of LAUNCHPAD_CORE_AGENTS) {
       const profile = launchpadAgentToProfile(def);
       expect(profile.agentId).toBe(def.id);
-      expect(profile.config.systemPrompt).toBe(def.system_prompt);
+      // The profile now appends a shared rule about how to TALK to an owner: each definition's
+      // own prose necessarily names the operations it should call, and a live run showed a small
+      // model narrating those names straight back at a business owner. The definition's
+      // instructions must still be present in full, with the rule after them.
+      expect(profile.config.systemPrompt).toContain(def.system_prompt);
+      expect(profile.config.systemPrompt).toContain("How you talk to people");
+      expect(profile.config.systemPrompt.indexOf(def.system_prompt)).toBeLessThan(
+        profile.config.systemPrompt.indexOf("How you talk to people")
+      );
       // every agent gets the workspace + notifications surface
       expect(profile.config.scripts.prebuilt).toContain("r2-workspace");
       expect(profile.config.scripts.prebuilt).toContain("notifications");

@@ -3867,7 +3867,22 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   private getWalletBalance(projectId: string): Response {
     const project = this.requireWalletProject(projectId);
     if (!project) return Response.json({ error_code: "not_found", message: "Not a wallet project" }, { status: 404 });
-    return Response.json({ project_id: projectId, balance_cents: this.walletBalance(projectId), currency: "USD" });
+    // `credited_cents` is what makes a NEVER-FUNDED wallet distinguishable from a DEPLETED one.
+    // Both are a zero balance, and the run gate used to block on the balance alone — so a business
+    // created five seconds ago, whose wallet is auto-provisioned empty by design, was refused all
+    // project-agent work with "top up to keep this agent running" before its owner had done
+    // anything. Reproduced live on a real business. See checkProjectWallet in NaelaoAgentDO.
+    const credited = queryOne<{ total: number | null }>(
+      this.ctx.storage.sql as never,
+      "SELECT SUM(delta_cents) AS total FROM wallet_ledger WHERE project_id = ? AND delta_cents > 0",
+      projectId
+    );
+    return Response.json({
+      project_id: projectId,
+      balance_cents: this.walletBalance(projectId),
+      credited_cents: credited?.total ?? 0,
+      currency: "USD",
+    });
   }
 
   private async creditWallet(projectId: string, request: Request): Promise<Response> {

@@ -4893,6 +4893,62 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      documented `--env production` trap), each fix verified by re-asking the same question on the
      same live business rather than assuming the deploy landed.
 
+106. **Live end-user testing found a second severe bug — a brand-new business was refused its own
+     agents — plus a measured proof that the remaining answer-quality problem is the MODEL, not the
+     prompt.** Continuation of item 105's session, same method: drive a real business on
+     production and read what a real owner would see.
+     - **A freshly created business blocked every project-agent run with `402 insufficient_credits`
+       — "this business's wallet is empty — top up to keep this agent running" — before its owner
+       had done anything.** Every business auto-provisions an empty wallet project at creation
+       (`seedWallet`), and `checkProjectWallet` blocked on `balance_cents <= 0`, so a NEVER-FUNDED
+       wallet and a DEPLETED one were the same state. The first thing a new owner heard from their
+       own agent was a demand for money — and it directly contradicts the platform's own stated
+       goal (item 50) of taking a business from $0 to real revenue with zero owner money in.
+       Nondeterministic in practice, which is worse: of two businesses created minutes apart from
+       the same template, one was blocked and one was not, on a difference the owner cannot see or
+       control. Fixed by making `getWalletBalance` also report `credited_cents` (SUM of positive
+       ledger deltas — money that has EVER gone in), and gating on `balance_cents <= 0 && everFunded`.
+       A missing field (an older spaces worker mid-rolling-deploy) falls back to the previous
+       balance-only behaviour rather than silently opening the gate for everyone. Live-verified: the
+       previously-blocked business now runs. **Deploy note:** the fix needed ~45s to take effect
+       because a warm SpaceDO instance keeps running old code after a deploy — a first retry
+       looked like the fix had failed.
+     - **Test-authoring note worth keeping:** creating a `kind:'wallet'` project is gated three
+       ways, and the first two attempts failed on the wrong one. It is not a header role — the
+       role is looked up from `space_members` via `created_by` — and a missing `created_by` fails
+       CLOSED unless the explicit server-derived `system_caller: true` marker is set, which is
+       exactly how the provisioner's own `seedWallet` calls it. Mirror the provisioner, not a
+       plausible-looking client call.
+     - **The remaining answer-quality problem is the model, and that is now measured rather than
+       assumed.** Item 105 stopped agents naming internal components in owner-facing answers for
+       the Space Assistant, but a project specialist still said "I would use the `web-search`
+       prebuilt … then the `outreach-draft` skill". A third instruction was added (a shared
+       `OWNER_FACING_LANGUAGE_RULE` appended to EVERY Launchpad agent profile in
+       `launchpadAgentToProfile`, so no future agent can miss it) and it still leaked. Rather than
+       writing a fourth, ran the SAME prompt on the SAME business on `@cf/openai/gpt-oss-120b`:
+       clean, plain-language, names the business, zero tool names. So the instructions are correct
+       and a capable model follows them; `@cf/meta/llama-3.3-70b-instruct-fp8-fast` (the current
+       default) mirrors the register of the prompt it just read, which necessarily names those
+       operations so it can pick the right one. **Flagged, NOT changed unilaterally** — raising the
+       default model is a cost decision against a ~10,000 neuron/day allowance, not an engineering
+       one. Full side-by-side evidence in `docs/COMPETITIVE_2026-08-08_autonomy_matrix.md`.
+     - **Also confirmed live in passing:** exactly one starter thread per prebuilt project (item
+       104's fix, verified on two fresh businesses); onboarding completion correctly refusing with
+       `missing:["whop_connection"]`; both proactive crons seeded per business (`0 13 * * *`
+       revenue review, `0 8 * * 1-5` leadgen); and provisioning latency varying from ~15s to ~50s
+       between two businesses created minutes apart — not a bug, but worth knowing before treating
+       a slow provision as a failure.
+     - **A syntax error I introduced and caught only at deploy:** backticks inside
+       `DECISION_INSTRUCTIONS` (a template literal) opened a nested template expression. `tsc`
+       passed against the incremental build; `wrangler deploy` failed with a real esbuild parse
+       error. Same lesson as item 100's circular-import bug — a passing local typecheck does not
+       prove a bundle builds.
+     2698/2698 tests pass (7 new: `new-business-wallet-gate.test.ts` driving the REAL SpaceDO
+     through the real migration chain, plus 4 gate cases in
+     `interactive-run-project-wallet-gate.test.ts` covering never-funded / genuinely-depleted /
+     overdrawn / missing-field-rolling-deploy). `npx turbo run typecheck` clean (76 tasks).
+     `naelao-spaces`, `naelao-agents` and `naelao-provisioner` deployed and live-verified.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

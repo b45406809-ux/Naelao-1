@@ -10,7 +10,13 @@ import { createDOSqlStorage } from "./helpers/sqlite-do-shim.js";
 // when the project's space wallet is empty, and degrades honestly (never blocks) when the
 // wallet is funded, unprovisioned, or transiently unreachable.
 
-type WalletState = { projectId: string | null; balanceCents: number | "unreachable" };
+type WalletState = {
+  projectId: string | null;
+  balanceCents: number | "unreachable";
+  /** Total money that has EVER gone into the wallet. Omitted entirely to simulate an older
+   *  spaces worker mid-rolling-deploy, which must keep the previous balance-only behaviour. */
+  creditedCents?: number;
+};
 
 function makeSpacesWorker(wallet: WalletState) {
   const debitCalls: Array<{ cents: number }> = [];
@@ -23,7 +29,12 @@ function makeSpacesWorker(wallet: WalletState) {
       }
       if (wallet.projectId && new RegExp(`/projects/${wallet.projectId}/wallet/balance$`).test(url.pathname)) {
         if (wallet.balanceCents === "unreachable") throw new Error("network down");
-        return Response.json({ project_id: wallet.projectId, balance_cents: wallet.balanceCents, currency: "USD" });
+        return Response.json({
+          project_id: wallet.projectId,
+          balance_cents: wallet.balanceCents,
+          ...(wallet.creditedCents === undefined ? {} : { credited_cents: wallet.creditedCents }),
+          currency: "USD",
+        });
       }
       if (wallet.projectId && new RegExp(`/projects/${wallet.projectId}/wallet/debit$`).test(url.pathname)) {
         const body = await req.json<{ cents: number }>().catch(() => ({ cents: 0 }));
@@ -99,5 +110,46 @@ describe("NaelaoAgentDO /run (interactive ReAct path) — project wallet payer g
   it("fails OPEN only on a transient wallet-lookup error (never blocks on a network hiccup)", async () => {
     const { res } = await runInteractiveForProject({ projectId: "wallet1", balanceCents: "unreachable" }, "proj1");
     expect(res.status).not.toBe(402);
+  });
+});
+
+describe("a wallet that was never funded is not a wallet that ran out", () => {
+  // Reproduced live: a business created seconds earlier was refused every project-agent run with
+  // "this business's wallet is empty — top up to keep this agent running". Every business
+  // auto-provisions an empty wallet at creation, so blocking on the balance alone made "brand new"
+  // and "spent everything" the same state — and made the first thing a new owner heard from their
+  // own agent a demand for money.
+  it("lets a brand-new business work with a zero balance it has never funded", async () => {
+    const { res } = await runInteractiveForProject(
+      { projectId: "wallet1", balanceCents: 0, creditedCents: 0 },
+      "proj1"
+    );
+    // Not 402 — it falls through to the loop, which fails for unrelated reasons in this minimal
+    // env (no reachable LLM gateway). The point is that the wallet did not turn it away.
+    expect(res.status).not.toBe(402);
+  });
+
+  it("still stops a business that was funded and has genuinely spent it all", async () => {
+    const { res, debitCalls } = await runInteractiveForProject(
+      { projectId: "wallet1", balanceCents: 0, creditedCents: 2_000 },
+      "proj1"
+    );
+    expect(res.status).toBe(402);
+    expect((await res.json() as { error_code?: string }).error_code).toBe("insufficient_credits");
+    expect(debitCalls.length).toBe(0);
+  });
+
+  it("still stops an overdrawn wallet", async () => {
+    const { res } = await runInteractiveForProject(
+      { projectId: "wallet1", balanceCents: -50, creditedCents: 1_000 },
+      "proj1"
+    );
+    expect(res.status).toBe(402);
+  });
+
+  it("keeps the old balance-only behaviour when the field is absent (rolling deploy)", async () => {
+    // A spaces worker that predates credited_cents must not silently open the gate for everyone.
+    const { res } = await runInteractiveForProject({ projectId: "wallet1", balanceCents: 0 }, "proj1");
+    expect(res.status).toBe(402);
   });
 });

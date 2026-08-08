@@ -4426,8 +4426,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
             { headers: await this.internalHeaders(tenantId) }
           ));
           if (balRes.ok) {
-            const { balance_cents } = await balRes.json<{ balance_cents: number }>();
-            if (balance_cents <= 0) return { ok: false, balance_cents };
+            const { balance_cents, credited_cents } = await balRes.json<{ balance_cents: number; credited_cents?: number }>();
+            // A wallet that has NEVER been funded is not a wallet that ran out.
+            //
+            // Every business auto-provisions an empty wallet project at creation, so blocking on
+            // a zero balance alone refused all project-agent work on a brand-new business, before
+            // its owner had done anything — reproduced live, with the message "this business's
+            // wallet is empty — top up to keep this agent running" as the first thing a new owner
+            // saw from their own agent. It also contradicts the whole point of the wallet: taking a
+            // business from $0 to real revenue with no owner money in.
+            //
+            // `credited_cents` is the evidence of real depletion: money went in and is now spent.
+            // Absent (an older spaces worker mid-rolling-deploy) falls back to the previous
+            // balance-only behaviour rather than silently opening the gate for everyone.
+            const everFunded = credited_cents === undefined ? true : credited_cents > 0;
+            if (balance_cents <= 0 && everFunded) return { ok: false, balance_cents };
           }
           return { ok: true, walletProjectId: project_id };
         }
