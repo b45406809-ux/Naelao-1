@@ -76,6 +76,30 @@ vague suggestion. It rides on the quiet ticks too, not just the broken ones. Del
 in the runtime wake path rather than the agent profile, because profiles are written to R2 at
 provision time and would only ever have reached *new* businesses.
 
+### And then the scheduled jobs turned out never to have fired at all
+
+Waiting for a real `0 13 * * *` cron on a real business, at 13:00 UTC, and watching it not happen.
+
+`enqueueAgentTicks` anchored a never-run job with ``Date.parse(`${created_at}Z`)``. D1 returns that
+column as a full ISO string that **already ends in Z**, so this produced `"…671ZZ"` → `NaN`.
+`isCronDue` then did `Math.max(NaN, earliest)` → `NaN` → its scan loop `for (m = NaN; m <= end;
+m++)` never executed → `false`. Measured against the real row: **0 minutes scanned, versus 160
+after the fix.**
+
+The failure was **self-sealing**: the job could not fire, so `last_run_at` stayed null, so the
+anchor stayed `NaN`, so it could never become due. And it was **silent** — no error, no log, and
+from outside indistinguishable from "not due yet". Every scheduled job seeded for every business
+was correct, enabled, and dead.
+
+So the honest position on the whole proactive layer, before this session: the mechanisms existed
+and were seeded per business, the wake-up brief and diagnostics were real, and **none of it ever
+ran**. Nothing in ~2,700 unit tests caught it, because every one of them passes a real number for
+`lastRunAtMs`; nothing exercised the never-run path with the string D1 actually returns.
+
+Fixed in two layers — parse both D1 timestamp shapes correctly and return `undefined` rather than
+`NaN`, and make `isCronDue` treat a non-finite anchor as unknown rather than as "never due", so a
+bad timestamp can cost one extra evaluation instead of the entire schedule.
+
 ### Where we are now genuinely ahead
 
 The instinct is to close the gap by removing the approval gate. That would be a mistake, and it is
@@ -262,7 +286,11 @@ structure is what holds.
 
 ## Still open, honestly
 
-1. **Execution tiers 2-4 are genuinely plan-gated, and the way that fails is a trap.** Uncommenting
+1. **One unattended cron fire has not yet been observed end to end.** The bug that prevented it is
+   fixed and proven at the arithmetic level against the real production row (0 minutes scanned
+   before, 160 after), and deployed — but the sweep runs hourly, so confirming it live means
+   waiting for the next one. Until that is seen, the fix is proven, the schedule running is not.
+2. **Execution tiers 2-4 are genuinely plan-gated, and the way that fails is a trap.** Uncommenting
    `[[worker_loaders]]` and running `wrangler deploy` **succeeds** — normal output, new Version ID,
    no warning. Cloudflare then silently drops the binding: the bindings API shows no `LOADER`, and
    a real Tier-2 script still fails with *"Tier 2 is unavailable: no worker_loaders binding
@@ -274,12 +302,12 @@ structure is what holds.
    Note what is NOT blocked by it: the prebuilts (web search, notifications, commerce, business
    email, MCP connectors, project/workspace admin, journal) run natively, which is why the
    autonomous project-creation proof above works today.
-2. **Model budget.** ~10,000 neurons/day ≈ 65 agent runs across the entire platform. Same unblock.
-3. **Profile changes only reach new businesses.** Profiles are written to R2 at provision time.
+3. **Model budget.** ~10,000 neurons/day ≈ 65 agent runs across the entire platform. Same unblock.
+4. **Profile changes only reach new businesses.** Profiles are written to R2 at provision time.
    Runtime paths (the reasoner, the wake brief) reach every business immediately; anything put in
    `profiles.ts` does not. Existing businesses also keep the approval allowlist snapshotted at
    *their* provision time. A backfill path is a real, unbuilt piece of work.
-4. **Polsia auto-provisions infrastructure** (servers, databases, dev environments) as part of
+5. **Polsia auto-provisions infrastructure** (servers, databases, dev environments) as part of
    starting a company. We provision a wallet, an inbox, projects and agents — but not compute for
    the business's own product. Whether that is a gap or a different product depends on whether
    Naelao businesses are meant to ship software; for the current templates (web studio, Whop
