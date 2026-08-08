@@ -109,6 +109,13 @@ index_name = "naelao-agent-memory"
 # change toggle, not a functionality cut.
 # [[worker_loaders]]
 # binding = "LOADER"
+#
+# VERIFIED 2026-08-08, and the result is a trap worth writing down: uncommenting this and running
+# `wrangler deploy` SUCCEEDS — it prints a normal deployment and a new Version ID — but Cloudflare
+# silently DROPS the binding. `GET /accounts/{id}/workers/services/naelao-agents/environments/
+# production/bindings` afterwards contains no LOADER, and a real Tier-2 script still fails with
+# "Tier 2 is unavailable: no worker_loaders binding configured in this environment".
+# So a successful deploy is NOT evidence that Worker Loaders is enabled. Check the bindings API.
 
 [[workflows]]
 name = "AgentTaskWorkflow"

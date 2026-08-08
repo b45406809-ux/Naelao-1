@@ -34,6 +34,19 @@ export interface AgentTaskParams {
   userId?: string;
   projectId?: string;
   callerRole?: string;
+  /**
+   * The caller's role in THIS business, resolved server-side from business_memberships by
+   * /agent/run.
+   *
+   * It was already being passed into this Workflow's params and then silently dropped — declared
+   * nowhere here and forwarded nowhere below. The consequence was not subtle: this async path is
+   * the DEFAULT for every real chat message, and without businessRole the F-36 clamp downgrades
+   * `yolo` for every product_end_user, including a business's own OWNER. So an owner who set
+   * their business to autonomous still had every single action gated, with nobody but themself to
+   * approve it — the exact bug item 93 fixed on the synchronous path and missed here, which is
+   * the path that actually runs in production.
+   */
+  businessRole?: string;
   // §A1 Harness Excellence Phase HX2: threaded through the same path as the fields above so the
   // async dispatch path's session-budget gate matches the sync path's exactly.
   sessionCreditCeiling?: number;
@@ -168,6 +181,7 @@ export class AgentTaskWorkflow extends WorkflowEntrypoint<Env, AgentTaskParams> 
               userId: p.userId,
               projectId: p.projectId,
               callerRole: p.callerRole,
+              businessRole: p.businessRole,
               sessionCreditCeiling: p.sessionCreditCeiling,
               businessContext: p.businessContext,
               reasoningEffort: p.reasoningEffort,
