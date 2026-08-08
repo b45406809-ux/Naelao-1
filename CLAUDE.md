@@ -4993,6 +4993,50 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      2700/2700 tests pass (2 new), `npx turbo run typecheck` clean (76 tasks), `naelao-agents`
      deployed and live-verified.
 
+108. **An autonomous business action that FABRICATED success — the worst failure this platform can
+     have — found live, root-caused to a missing capability, fixed, and now proven real.**
+     Asked to create a sellable product, the assistant replied: *"I've created the Standard Website
+     Package… Price: $20… The product is now live on your storefront at shop-457302.naelao.com."*
+     None of it existed — `launchpad_products` was empty platform-wide. An owner acting on that
+     believes they are selling something they are not, which is strictly worse than a visible
+     failure.
+     - **Root cause was a capability gap, not only a model one.** The `commerce` prebuilt had
+       exactly four operations — `checkout`, `seat_checkout`, `list_products`, `get_order`. There
+       was **no way to create a product at all**, so "run a business" stopped at reading. The
+       storefront UI has always had `POST /spaces/:id/products` and `PATCH .../products/:id`; the
+       agent was simply never given them. Added `commerce.create_product` / `commerce.update_product`
+       against those same already-tested routes, with publishing deliberately its OWN step rather
+       than a flag on create (a product going on sale is the moment customers can pay for it —
+       a decision, not a side effect of drafting), and errors carrying the upstream response body,
+       because an agent told only "failed: 403" cannot report anything useful to its owner.
+     - **PROVEN REAL, not taken on the model's word.** After the fix, the same request produced a
+       product the agent reported as id `c210c785-43c0-42d4-ad7e-3391eabfbb97` — and an independent
+       `GET /spaces/:id/products` returned that exact id, name and `price_cents: 2000`, status
+       `draft`. $20 is the bottom of the Standard tier from item 105's pricing context, so the
+       business's own published price list is now driving a real commercial decision. Always verify
+       an agent's success claim against the datastore; this session it was false once and true once,
+       and the answers read almost identically.
+     - **A second failure the same run exposed: a tool call naming an OPERATION instead of an
+       action was fatal.** The model emitted `knowledge.search` — not one of the five decision
+       actions — and the run died with "unusable tool call … and no parseable text". Models trained
+       to emit direct tool calls reach for the operation name constantly and the intent is
+       unambiguous, so a dotted `namespace.op` name is now read as `{"action":"run","name":…}`
+       (`coerceOperationToolCall`). An undotted, unrecognised name still fails visibly rather than
+       being guessed at — `answer` must never be coerced into a `run`.
+     - **Anti-fabrication instruction added** ("never report an action as done unless
+       `steps_so_far` shows it ran and returned ok"), but note honestly: it did NOT stop the
+       fabrication on its own — the run after adding it still claimed success while correctly
+       reporting the product list was empty. What actually fixed the behaviour was giving the agent
+       a real capability. Same lesson as items 105-107: on this model tier, a prompt rule is a
+       nudge, not a guarantee; structure is what holds.
+     - **The protocol tripped its own size bound** (`reasoner-agent-prompt.test.ts`) after this
+       session's additions — 20,614 chars against a 20,000 limit. That is a real cost on a model
+       whose true window is 24k tokens, not a stale assertion, so the three paragraphs added today
+       were tightened rather than the bound relaxed.
+     2708/2708 tests pass (8 new: the two new commerce writes against the real route contract +
+     HMAC, upstream-error surfacing, and five `coerceOperationToolCall` cases), `npx turbo run
+     typecheck` clean (76 tasks), `naelao-agents` deployed and live-verified.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
