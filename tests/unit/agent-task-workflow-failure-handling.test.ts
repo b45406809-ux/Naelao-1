@@ -179,3 +179,71 @@ describe("AgentTaskWorkflow — a failure always reaches a terminal TaskDO statu
     await expect(wf.run({ payload: baseParams, instanceId: "wf-5" } as never, step as never)).resolves.toBeUndefined();
   });
 });
+
+describe("AgentTaskWorkflow forwards the gate-relevant identity fields", () => {
+  /**
+   * This is the DEFAULT dispatch path for every real chat message, and it silently dropped
+   * `businessRole` — declared nowhere on AgentTaskParams, forwarded nowhere in the run-agent step,
+   * even though /agent/run was already resolving it and passing it in. Without it the F-36 clamp
+   * downgrades `yolo` for every product_end_user, including a business's OWNER: an owner who set
+   * their own business to Autonomous still had every action gated with nobody but themself to
+   * approve it. Reproduced live before the fix.
+   *
+   * The same "fixed on the sync path, missed on the async one" mistake has now happened twice, so
+   * this asserts the whole set rather than the one field that broke.
+   */
+  it("carries businessRole, callerRole, userId, projectId and businessContext through to the executor", async () => {
+    const { stub } = makeFakeTaskDO();
+    let forwarded: Record<string, unknown> = {};
+    const env = makeEnv({
+      taskDoStub: stub,
+      agentsWorkerFetch: (async (_url: string, init: RequestInit) =>
+        ((forwarded = JSON.parse(String(init.body))),
+        Response.json({ finalAnswer: "done", status: "completed" }))) as never,
+    });
+
+    const wf = new AgentTaskWorkflow({} as never, env);
+    await wf.run(
+      {
+        payload: {
+          ...baseParams,
+          userId: "user-1",
+          callerRole: "product_end_user",
+          businessRole: "owner",
+          projectId: "proj-1",
+          businessContext: { name: "Pixel Forge Studio", setup_status: "complete" },
+        },
+        instanceId: "wf-role",
+      } as never,
+      makeFakeStep() as never
+    );
+
+    // The one that broke: without it, an owner's own Autonomous setting is silently downgraded.
+    expect(forwarded["businessRole"]).toBe("owner");
+    expect(forwarded["callerRole"]).toBe("product_end_user");
+    expect(forwarded["userId"]).toBe("user-1");
+    expect(forwarded["projectId"]).toBe("proj-1");
+    expect((forwarded["businessContext"] as { name?: string })?.name).toBe("Pixel Forge Studio");
+  });
+
+  it("omits nothing merely because the caller is a builder with no business role", async () => {
+    const { stub } = makeFakeTaskDO();
+    let forwarded: Record<string, unknown> = {};
+    const env = makeEnv({
+      taskDoStub: stub,
+      agentsWorkerFetch: (async (_url: string, init: RequestInit) =>
+        ((forwarded = JSON.parse(String(init.body))),
+        Response.json({ finalAnswer: "done", status: "completed" }))) as never,
+    });
+
+    const wf = new AgentTaskWorkflow({} as never, env);
+    await wf.run(
+      { payload: { ...baseParams, userId: "builder-1", callerRole: "owner" }, instanceId: "wf-b" } as never,
+      makeFakeStep() as never
+    );
+
+    // A builder has no business_memberships row; absent is correct and must not become "member".
+    expect(forwarded["businessRole"]).toBeUndefined();
+    expect(forwarded["callerRole"]).toBe("owner");
+  });
+});
