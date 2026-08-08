@@ -1207,8 +1207,11 @@ async function buildWakeUpBrief(env: AgentsEnv, spaceId: string, tenantId: strin
       // would be busywork. The owner is the only one who can unblock it.
       lines.unshift(
         `- Setup for ${business.name} is still unfinished, so it cannot trade yet. That is the ` +
+        // Same rule as the seeded cron goal: name the real op, not the prebuilt's phrase — a
+        // model reproduces the wording it is handed, and "the notifications prebuilt" is not a
+        // script name (that prebuilt's ops are prefixed `notify.`).
         "single most valuable thing to resolve — nudge the owner with exactly what is missing " +
-        "(the notifications prebuilt), and do not plan work that depends on setup being done."
+        "(notify.email), and do not plan work that depends on setup being done."
       );
     }
 

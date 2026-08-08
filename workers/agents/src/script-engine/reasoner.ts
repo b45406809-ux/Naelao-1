@@ -189,7 +189,7 @@ export function composeSystemPrompt(agentPrompt: string | undefined, business?: 
 }
 
 const DECISION_INSTRUCTIONS = `You are the reasoning core of a script-first agent. Your entire action space is choosing ONE next action, returned as STRICT JSON (no prose, no markdown fences). Schema:
-{"action":"run","name":"<operation_or_script>","params":{...}}            // run a prebuilt op or library script
+{"action":"run","name":"<operation_or_script>","params":{...}}            // "name" is an EXACT operation name from candidates, never a description
 {"action":"distill","name":"<new_script_name>","code":"<ts source>","metadata":{"description":"...","domain":"compute","requires_tier":2},"params":{...}} // save a new reusable script then run it
 {"action":"patch","name":"<existing_script>","code":"<ts source>","reason":"..."}  // repair a drifted script
 {"action":"answer","text":"<final answer to the goal>"}                    // answer directly, no tool needed

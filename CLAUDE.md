@@ -5130,15 +5130,39 @@ appendixes are authoritative** and override the early framing. Always confirm ag
        R2 skill library would turn every mistyped name into a bucket listing.
      - **The new test was verified to catch the bug**, not merely to pass: reverting the one-line
        `read()` change fails 3 of its 5 cases, including the exact live-failure string.
-     - Live-verified after deploy: the same business now completes a real run instead of dying.
-       `last_run_at` was reset again so the 16:00 sweep re-runs the genuine wake goal end to end.
+     - **The actual root cause was my own seeded text, found by asking why an hour of waiting was
+       needed rather than five minutes.** Pulling the real `scheduled_jobs.goal` to run it directly
+       showed the goal itself says *"Only message the owner (via the notifications prebuilt)"* —
+       written by `seedDefaultRevenueReviewCron` (item 82). The model reproduced that phrase
+       verbatim as a script name. So this was never only a model failure: **a model uses the
+       wording it is handed**, and a goal that names an internal component by description hands it
+       an unusable name. Fixed at the source in both places that feed a model a tool by phrase —
+       the seeded cron goal and `buildWakeUpBrief`'s setup note — which now name the real op
+       (`notify.email`); plus one short clause in the `run` action's own protocol line
+       ("`name` is an EXACT operation name from candidates, never a description"). A new
+       provisioner test asserts a seeded goal names a runnable op and contains no "prebuilt", so
+       the phrasing cannot come back. **12 live jobs platform-wide carried the bad phrase** (not
+       just the business under test) and were repaired in D1.
+     - Live-verified after deploy, in ~2 minutes rather than an hour: dispatching the EXACT stored
+       goal now completes with a grounded answer — it read the real wallet history, refused to
+       invent a balance it could not verify, and correctly withheld a routine "all good" ping.
+     - **Waiting for the hourly sweep was the wrong instinct** and a user question caught it. The
+       sweep's own selection logic was already proven live twice (14:01:15 and 15:02:24, correctly
+       firing one job and not the other); the only unproven half was the run itself, which can be
+       dispatched directly. Prefer running the real stored input over waiting for the real trigger
+       when the trigger is independently verified — and pulling that stored input is also what
+       exposed the root cause.
+     - **Third mock-shape mistake of the session**: the new guard test hand-rolled a
+       `fetch(url, init)` double while the file already had a `makeEnv()` helper handling both
+       call shapes, so `calls` came back empty. Use the existing helper in a file before writing
+       another double.
      - **The pattern worth keeping from items 105-111:** every one of these seven bugs was found by
        running the real thing and reading what came back, and every one passed the full unit suite
        beforehand. Each fix exposed the next layer — a 404 hid a fatal-throw bug, which hid a
        prefix-mismatch confusion. Fixing a blocker is not finishing; it is earning the right to see
        what was behind it.
-     2723/2723 tests pass (5 new in `script-name-recoverable.test.ts`), `npx turbo run typecheck`
-     clean (76 tasks), `naelao-agents` deployed.
+     2724/2724 tests pass (6 new), `npx turbo run typecheck`
+     clean (76 tasks), `naelao-agents` + `naelao-provisioner` deployed.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

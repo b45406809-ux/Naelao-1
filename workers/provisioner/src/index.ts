@@ -387,7 +387,11 @@ export async function seedDefaultRevenueReviewCron(spaceId: string, tenantId: st
           goal:
             "Run your recurring revenue review. Read the project journal for what's already known, then check " +
             "business_wallet.balance/history and any storefront/commerce orders since your last review. Log what " +
-            "you find to the project journal. Only message the owner (via the notifications prebuilt) if something " +
+            // Name a REAL operation, never a prebuilt's descriptive phrase. A model copies the
+            // wording it is given: "the notifications prebuilt" was reproduced verbatim as a
+            // script name and killed this exact job in production (the `notifications` prebuilt
+            // exposes ops prefixed `notify.`, so the phrase matches nothing).
+            "you find to the project journal. Only message the owner (notify.email) if something " +
             "genuinely needs their attention — a stalled task, a real opportunity, or a problem — never a routine " +
             "'all good' ping. Never fabricate a number you can't verify from real data.",
         }),

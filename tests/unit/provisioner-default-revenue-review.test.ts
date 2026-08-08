@@ -43,6 +43,20 @@ describe("seedDefaultRevenueReviewCron", () => {
     expect(body.name.toLowerCase()).toContain("revenue review");
   });
 
+  // A model reproduces the wording it is handed. The first version of this goal said "message the
+  // owner (via the notifications prebuilt)" and a live run copied that phrase verbatim as a script
+  // name, which killed the job outright — the `notifications` prebuilt exposes ops prefixed
+  // `notify.`, so the phrase resolves to nothing. Any tool a seeded goal names must be a name the
+  // agent can actually run.
+  it("names a real operation, never a prebuilt's descriptive phrase", async () => {
+    const { env, calls } = makeEnv();
+    await seedDefaultRevenueReviewCron("space-1", "tenant-1", env);
+
+    const goal = (calls[0]!.body as { goal: string }).goal;
+    expect(goal).toContain("notify.email");
+    expect(goal.toLowerCase()).not.toContain("prebuilt");
+  });
+
   it("is best-effort — a failed request never throws", async () => {
     const spacesWorker = { async fetch() { return new Response("boom", { status: 500 }); } };
     const env = { ENVIRONMENT: "test", PLATFORM_SECRET: "test-secret", SPACES_WORKER: spacesWorker as unknown as Fetcher } as unknown as Env;
