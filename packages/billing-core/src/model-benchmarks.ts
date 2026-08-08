@@ -42,6 +42,42 @@ export interface ModelEvalResult {
   note: string;
 }
 
+/**
+ * The capability axes the agent-capability-matrix dataset measures. Taken from WildClawBench's
+ * own published categories (agency / safety alignment / long-horizon robustness / multi-source
+ * synthesis) intersected with this platform's own real production failures, so each axis is both
+ * externally recognised and something we have actually been burned by.
+ *
+ * Kept as a closed union rather than free-form strings: an axis that silently disappears from the
+ * dataset would quietly narrow what these benchmarks claim to measure, and nothing would catch it.
+ */
+export type CapabilityAxis =
+  /** Multi-step tool orchestration, including reading a write back before claiming it. */
+  | "agency"
+  /** Credential awareness and refusing to disable its own guardrails under pressure. */
+  | "safety"
+  /** Not claiming an action succeeded when it did not — the axis that matters most unattended. */
+  | "fabrication"
+  /** Adapting after a tool call fails, rather than looping on it. */
+  | "recovery"
+  /** Escalating blocked work as a specific, answerable request instead of stalling vaguely. */
+  | "proactivity"
+  /** Aggregating several real sources into a grounded, business-specific briefing. */
+  | "synthesis";
+
+export interface AxisResult {
+  /** Checks passed / checks total, from the run's own trace — a fact, not a judgement. */
+  passed: number;
+  total: number;
+  /** What actually failed, verbatim from the grader, so a number is never the whole story. */
+  note?: string;
+}
+
+/** Behavioural results per capability axis, measured on this platform's own agent loop by the
+ *  trace-graded matrix. Absent for a model that has not been run through it — deliberately
+ *  distinguishable from "run and scored zero". */
+export type AxisResults = Partial<Record<CapabilityAxis, AxisResult>>;
+
 export interface ModelBenchmark {
   id: AllowedModel;
   family: string;
@@ -55,6 +91,13 @@ export interface ModelBenchmark {
   strengths: string[];
   bestFor: string[];
   eval?: ModelEvalResult;
+  /** Per-axis behavioural results from the trace-graded capability matrix. */
+  axes?: AxisResults;
+  /** Real measured inference cost per multi-step agent run on this account's own neuron billing.
+   *  Present only where actually measured — this is the number that decides what a matrix run
+   *  costs, and it is far more actionable than a per-token price for agentic work, because one
+   *  "run" is many calls. */
+  neuronsPerRun?: number;
 }
 
 const M = (
@@ -65,7 +108,9 @@ const M = (
   costNote: string,
   strengths: string[],
   bestFor: string[],
-  evalResult?: ModelEvalResult
+  evalResult?: ModelEvalResult,
+  axes?: AxisResults,
+  neuronsPerRun?: number
 ): ModelBenchmark => ({
   id,
   family,
@@ -75,6 +120,8 @@ const M = (
   strengths,
   bestFor,
   ...(evalResult ? { eval: evalResult } : {}),
+  ...(axes ? { axes } : {}),
+  ...(neuronsPerRun !== undefined ? { neuronsPerRun } : {}),
 });
 
 const TOOL_USE_DATASET = "tool-use-policy.jsonl (this platform's own agent loop, 2026-07-25)";
@@ -103,7 +150,12 @@ export const MODEL_BENCHMARKS: Record<AllowedModel, ModelBenchmark> = {
     "Derived from 3 real measured calls against this account's own neuron billing (~$0.29 / $2.25 per 1M in/out equivalent).",
     ["The only model in our own eval that held the tool contract on every single case (6/6 usable)", "Predictable — never loops or ignores its tools"],
     ["Default working model", "Anything where reliability matters more than answer polish"],
-    { dataset: TOOL_USE_DATASET, avgScore: 1.33, usable: "6/6", note: "Most reliable model tested — never failed to produce an actionable decision, but scored low on answer quality." }
+    { dataset: TOOL_USE_DATASET, avgScore: 1.33, usable: "6/6", note: "Most reliable model tested — never failed to produce an actionable decision, but scored low on answer quality." },
+    undefined,
+    // Measured 2026-08-08 from this account's own neuron billing across two real multi-step runs
+    // (~330 each). n=2, so treat as an order-of-magnitude figure, not a precise unit price — but
+    // it is a REAL measurement, and it is what sets how many models a daily quota can cover.
+    328
   ),
   "@cf/meta/llama-4-scout-17b-16e-instruct": M(
     "@cf/meta/llama-4-scout-17b-16e-instruct", "Llama", "standard", "estimated",

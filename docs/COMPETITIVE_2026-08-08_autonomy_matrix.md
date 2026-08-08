@@ -321,3 +321,111 @@ structure is what holds.
 - [OpenClaw Automations / cron jobs — official docs](https://docs.openclaw.ai/automation/cron-jobs)
 - [OpenClaw heartbeat scheduling — SFAI Labs](https://sfailabs.com/guides/openclaw-heartbeat-scheduling)
 - [The 3 Superpowers of OpenClaw — Kryll](https://blog.kryll.io/openclaw-hooks-cron-heartbeat-ai-agent-automation/)
+
+---
+
+# Addendum — a capability benchmark we can actually run (2026-08-08, later)
+
+The comparison above is a feature and behaviour argument. This addendum adds the
+instrument: a repeatable, trace-graded benchmark that scores any model on this
+platform's own agent loop, so "we beat X" becomes a number someone else can
+re-derive rather than a claim.
+
+## Why measure on our own loop instead of importing a leaderboard
+
+Two published results settle this.
+
+`Claw-SWE-Bench` (arXiv 2606.12344) holds the model fixed and varies the harness:
+the *same* GLM 5.1 backbone scores **19.1% Pass@1 with a minimal adapter and 73.4%
+with the full one**. Across five harnesses it reports harness choice worth
+**27.4pp** against model choice's **29.4pp** — the scaffold matters about as much
+as the model. It also notes systems at similar accuracy "can differ substantially
+in total API cost."
+
+`WildClawBench` runs the same 60 tasks under OpenClaw, Claude Code, Codex CLI and
+Hermes and finds the same thing from the other direction: GPT-5.4 scores 56.8% on
+Codex and 50.3% on OpenClaw.
+
+So a generic leaderboard number would be precise about the wrong quantity. What
+decides whether *our* assistant runs a business well is this loop, these tools,
+this approval model — which is exactly what the matrix scores.
+
+## The six axes
+
+Each is taken from a published benchmark category *and* from a failure we have
+actually shipped, so no axis is invented for the convenience of passing it.
+
+| Axis | Published basis | Our own failure it exists to catch |
+|---|---|---|
+| `agency` | WildClawBench "agency (multi-step tool orchestration)" | Work claimed without reading it back |
+| `safety` | WildClawBench "Safety Alignment — adversarial robustness and credential awareness" | OpenClaw's CVE-2026-25253 shape: exfiltrate a token, then disable approvals |
+| `fabrication` | — (our domain) | Item 108: a reported product, with price and storefront URL, against an empty products table |
+| `recovery` | WildClawBench long-horizon robustness | Item 111: a mistyped tool name killing a live cron |
+| `proactivity` | The axis this product is judged on | A vague stall that leaves the owner no next step |
+| `synthesis` | WildClawBench "Productivity Flow — multi-source aggregation" | Item 105: an assistant that did not know which business it ran |
+
+## Grading from the trace, not the prose
+
+The LLM judge reads what the agent *wrote*. That is the right instrument for
+answer quality and the wrong one for "did it do this" — a model can describe work
+it never performed, and the judge scores it well because the paragraph is good.
+Item 108 is exactly that.
+
+So the objectively-checkable half is graded from the HX1 run trace: which tools
+ran, whether they succeeded, whether a write was read back, whether a failing call
+was repeated, whether the run escalated. `claweval` scores its own tool-calling
+category the same way — "deterministic (tool name + params match)" — rather than
+asking a model. Composition with the judge is **MIN, not average**: a run the
+trace proves fabricated must not be rescued by writing well about it.
+
+## The cost finding, which changed the design
+
+The configured judge model is a premium one. Measured on this account's own neuron
+billing: an agent run on the default model costs **~330 neurons**, while a judged
+case adds a premium-model call costing roughly **3× that**. Judging four cases
+would therefore cost several times the six runs being measured — the instrument
+outweighing the measurement, on a **10,000 neuron/day** free tier.
+
+Hence a two-pass design: a cheap trace-only pass ranks every candidate on
+behaviour, then a judged pass scores answer quality on the finalists. That is not
+only a budget trick — it mirrors this platform's own earlier finding that
+reliability and answer quality are different axes and should not be collapsed into
+one number. Measured budget: **~2,000 neurons per model for a 6-case pass ⇒ ~5
+models per daily quota.**
+
+## What the first real run already caught
+
+The instrument was validated against production before being trusted: the trace
+endpoint returned 13 real steps with correct phases, names and ok flags.
+
+It immediately surfaced a genuine model weakness. Asked to create a project and
+read it back, `llama-3.3-70b` hit the approval gate on `project.create`, correctly
+ran `project.list`, and then **re-chose the already-parked `project.create` five
+consecutive times** (trace seq 7–11) until stall detection ended the run. The
+harness behaved correctly throughout — it told the model "still waiting on a human
+for this one", incremented the stall counter, and asked for a closing summary on
+the final step. The model ignored all three. That is a model-capability finding,
+and precisely what the benchmark exists to expose.
+
+It also caught a flaw in our own test design: on a fresh business `project.create`
+is gated, so the `agency` case would have measured the *approval policy* rather
+than the model, and every candidate would have failed it identically. The eval
+space is now set to autonomous so the matrix measures capability; the approval
+behaviour is measured by the `proactivity` case, where it belongs.
+
+## Status
+
+- Harness, dataset and graders: **built, tested (44 new unit tests), deployed.**
+- Instrument: **validated against production.**
+- Full model matrix: **pending quota reset** — the day's 10,000 neurons were spent
+  before it could run. Numbers land in `MODEL_BENCHMARKS` (`axes`, `neuronsPerRun`)
+  and render on the Discover page.
+
+Only `neuronsPerRun` for the default model is recorded so far, because it is the
+only figure actually measured. Nothing else is filled in until it is run.
+
+## Sources
+
+- [Claw-SWE-Bench (arXiv 2606.12344)](https://arxiv.org/abs/2606.12344)
+- [WildClawBench](https://github.com/InternLM/WildClawBench/)
+- [claweval — OpenClaw Model Evaluation Suite](https://github.com/mcbuckeye/claweval)
