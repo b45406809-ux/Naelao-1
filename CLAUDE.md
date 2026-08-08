@@ -5104,6 +5104,42 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      `naelao-spaces` deployed. `last_run_at` was reset so the next sweep re-runs the same job with
      the model fix in place.
 
+111. **The re-fire confirmed item 110's model fix AND exposed the next layer: a model mistyping a
+     script name killed the entire run.** The 15:00 sweep ran the job at 15:02:24 UTC with no
+     `Model not found` — the 404 is genuinely gone. It failed for a completely different reason:
+     `{"error":"Invalid script name: \"notifications prebuilt\""}`, `consecutive_failures: 1`. The
+     model chose to run the `notifications` prebuilt by its **descriptive phrase** instead of one
+     of its real operation names, and `SkillLibrary.read()`/`exists()` asserted the name was a safe
+     path segment and **threw**. That throw escaped `ScriptToolSurface.run()`'s per-step error
+     handling entirely and killed the whole run — so a model typo was fatal rather than a step it
+     could observe and correct. Worst precisely on the unattended proactive path, where nobody is
+     watching to retry: the job records a failure and goes quiet.
+     - **Fixed by splitting lookups from writes.** The two LOOKUPS (`read`, `exists`) now report
+       "no such script" for an unusable name; all six WRITE paths (`create`/`update`/`patch`/
+       `rollback`/`delete`/`import`) still call `assertName` and still throw, since there a bad name
+       is a bug or an attack, not a typo. Path safety is unchanged either way — an unusable name
+       never reaches the bucket, asserted directly by a test that counts bucket touches.
+     - **The resulting failure now teaches the model** rather than leaving it to re-guess until the
+       stall budget runs out: `Unknown script or operation: X` gained a "Did you mean…" naming the
+       closest real operations. **That match considers the owning prebuilt's NAME as well as the op
+       name**, which turned out to be load-bearing — `notifications` owns ops prefixed `notify.`
+       (`notify.email`, `notify.slack`, …), so matching op names alone would have suggested
+       *nothing* for this exact failure. The prebuilt name is what the model sees listed in its own
+       profile, and that prefix mismatch is very likely why it reached for the wrong name at all.
+       Prebuilt ops only — they're already in memory, so a miss costs nothing, whereas listing the
+       R2 skill library would turn every mistyped name into a bucket listing.
+     - **The new test was verified to catch the bug**, not merely to pass: reverting the one-line
+       `read()` change fails 3 of its 5 cases, including the exact live-failure string.
+     - Live-verified after deploy: the same business now completes a real run instead of dying.
+       `last_run_at` was reset again so the 16:00 sweep re-runs the genuine wake goal end to end.
+     - **The pattern worth keeping from items 105-111:** every one of these seven bugs was found by
+       running the real thing and reading what came back, and every one passed the full unit suite
+       beforehand. Each fix exposed the next layer — a 404 hid a fatal-throw bug, which hid a
+       prefix-mismatch confusion. Fixing a blocker is not finishing; it is earning the right to see
+       what was behind it.
+     2723/2723 tests pass (5 new in `script-name-recoverable.test.ts`), `npx turbo run typecheck`
+     clean (76 tasks), `naelao-agents` deployed.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
