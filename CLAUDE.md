@@ -5037,6 +5037,41 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      HMAC, upstream-error surfacing, and five `coerceOperationToolCall` cases), `npx turbo run
      typecheck` clean (76 tasks), `naelao-agents` deployed and live-verified.
 
+109. **THE proactivity bug: every newly-seeded scheduled job on the platform has never fired, and
+     the failure was silent and self-sealing. Found by waiting for a real cron on a real business
+     and watching it not happen.**
+     - `enqueueAgentTicks` anchored a never-run job with ``Date.parse(`${row.created_at}Z`)``. D1
+       returns that column as a full ISO string that ALREADY ends in Z (verified on the live row:
+       `"2026-08-08T11:20:40.671Z"`), so this produced `"…671ZZ"` → **NaN**. `isCronDue` then did
+       `Math.max(NaN, earliest)` → NaN → `startMinute` NaN → the scan loop `for (m = NaN; m <=
+       end; m++)` never executed → `false`. Demonstrated against the real row: **0 minutes
+       scanned, versus 160 after the fix.**
+     - **Self-sealing**: the job could not fire, so `last_run_at` stayed null, so the anchor stayed
+       NaN, so it could never become due. And from the outside it was indistinguishable from "not
+       due yet" — no error, no log, nothing to notice. This is why item 22's default revenue-review
+       cron, and item 82's whole proactive-cycle work, never actually produced a wake-up for any
+       new business: the rows were correct, enabled, and dead.
+     - **Fixed in two layers, because either alone leaves the trap open.** New `parseTimestampMs`
+       (agents worker) handles both shapes D1 returns — ISO-with-zone parsed as-is, bare
+       `"YYYY-MM-DD HH:MM:SS"` treated as UTC (without a marker it would read as local time, a
+       silent hours-sized error) — and returns `undefined` rather than NaN, so a caller must decide
+       what a missing timestamp means instead of inheriting a value that poisons every comparison.
+       And `isCronDue` (`@naelao/events`) now treats a non-finite last-run as unknown and falls
+       back to the lookback window: a bad timestamp should cost one extra evaluation, never the
+       entire schedule. De-duplication of a genuinely-just-run job is unchanged.
+     - **Only live testing could have found this.** Every unit test passed before and after,
+       because they all pass a real number for `lastRunAtMs`; nothing exercised the
+       never-run-job path with the actual D1 string. The tests added here pin the real column
+       value verbatim.
+     - **A stale-`dist/` trap cost time again**: `@naelao/events` resolves through its compiled
+       output, so the hardened `isCronDue` was invisible to the test suite until
+       `npx tsc` was run in that package. CLAUDE.md already documents this for
+       `packages/billing-core`; it applies to every `packages/*` consumer.
+     2718/2718 tests pass (9 new: `scheduled-job-timestamp.test.ts` covering both D1 shapes, the
+     offset form, numeric passthrough, undefined-never-NaN, and the exact double-Z string that
+     caused this; plus three `isCronDue` non-finite cases), `npx turbo run typecheck` clean (76
+     tasks), `naelao-agents` deployed.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
