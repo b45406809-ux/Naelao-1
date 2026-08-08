@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  isCronDue,
   matchesEvent,
   selectMatchingRules,
   evaluateCondition,
@@ -115,5 +116,28 @@ describe("buildFireParams — the fired script always knows what triggered it", 
       { matched: true }
     );
     expect(params["thread_id"]).toBe("new-thread");
+  });
+});
+
+describe("isCronDue never silently disables a schedule", () => {
+  // Found in production: the caller computed lastRunAt with Date.parse(`${created_at}Z`) on a
+  // value that ALREADY ended in Z, yielding NaN. Math.max(NaN, …) made the scan loop never run,
+  // so isCronDue returned false forever — and because the job could not fire, last_run_at stayed
+  // null, so it could never become due. Every newly-seeded proactive cron was dead on arrival,
+  // and it looked identical to "not due yet" from the outside.
+  it("treats a NaN last-run as unknown and still fires a due job", () => {
+    const now = Date.UTC(2026, 7, 8, 13, 0, 0);
+    expect(isCronDue("0 13 * * *", Number.NaN, now)).toBe(true);
+  });
+
+  it("does the same for Infinity and other non-finite values", () => {
+    const now = Date.UTC(2026, 7, 8, 13, 0, 0);
+    expect(isCronDue("0 13 * * *", Number.POSITIVE_INFINITY, now)).toBe(true);
+  });
+
+  it("still does not refire a job that genuinely ran on the match minute", () => {
+    // The NaN fallback must not weaken the real de-duplication.
+    const matched = Date.UTC(2026, 7, 8, 13, 0, 0);
+    expect(isCronDue("0 13 * * *", matched, matched)).toBe(false);
   });
 });

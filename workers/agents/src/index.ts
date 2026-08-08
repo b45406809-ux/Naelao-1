@@ -1131,6 +1131,25 @@ const ADVANCE_DIRECTIVE = [
   "genuinely blocked, say precisely what is blocking it. Log what you did to the project journal.",
 ].join(" ");
 
+/**
+ * A D1 timestamp column to epoch milliseconds, whatever shape it arrives in.
+ *
+ * D1 hands these back as full ISO strings ("2026-08-08T11:20:40.671Z") in some tables and as
+ * SQLite's own "YYYY-MM-DD HH:MM:SS" (UTC, no zone marker) in others, and the two need opposite
+ * treatment: the first must be parsed as-is, the second needs a zone or it is read as local time.
+ * Getting that wrong is not a rounding error — it yields NaN, which silently disables whatever
+ * scheduling decision depends on it. Returns undefined rather than NaN so a caller has to decide
+ * what an unparseable timestamp means instead of inheriting a value that poisons every comparison.
+ */
+export function parseTimestampMs(raw: string | number | null | undefined): number | undefined {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : undefined;
+  if (!raw) return undefined;
+  const s = String(raw).trim();
+  // Already carries a zone (Z or ±HH:MM) — parse untouched.
+  const direct = /[Zz]$|[+-]\d{2}:?\d{2}$/.test(s) ? Date.parse(s) : Date.parse(`${s.replace(" ", "T")}Z`);
+  return Number.isFinite(direct) ? direct : undefined;
+}
+
 async function buildWakeUpBrief(env: AgentsEnv, spaceId: string, tenantId: string): Promise<string | null> {
   if (!env.SPACES_WORKER || !tenantId) return null;
   try {
@@ -4846,8 +4865,15 @@ async function enqueueAgentTicks(env: AgentsEnv): Promise<void> {
       if (jobRows.length === 0) break;
       for (const row of jobRows) {
         try {
-          const createdAtMs = Date.parse(`${row.created_at}Z`);
-          const lastRunAt = row.last_run_at ?? createdAtMs;
+          // `created_at` is ALREADY a full ISO-8601 string ending in "Z" (verified against live
+          // D1: "2026-08-08T11:20:40.671Z"). Appending another one produced "…671ZZ", which
+          // Date.parse returns NaN for — and isCronDue does Math.max(NaN, …), whose scan loop then
+          // never executes and returns false. Every job that had never run was therefore
+          // permanently un-runnable: it could not fire, so last_run_at stayed null, so it could
+          // not fire. That is every newly-seeded proactive cron on the platform, including the
+          // daily revenue review each Launchpad business is provisioned with.
+          const createdAtMs = parseTimestampMs(row.created_at);
+          const lastRunAt = row.last_run_at ?? createdAtMs ?? now;
           if (!isCronDue(row.cron_expression, lastRunAt, now)) continue;
           messages.push({ body: { kind: "scheduled_job", spaceId: row.space_id, tenantId: row.tenant_id, jobId: row.id } });
         } catch (err) {

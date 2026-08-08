@@ -465,7 +465,15 @@ export function isCronDue(
 ): boolean {
   const cron = parseCronExpression(cronExpression);
   const earliestStart = nowMs - lookbackMs;
-  const scanStart = Math.max(lastRunAtMs, earliestStart);
+  // A non-finite lastRunAt must not silently disable the job.
+  //
+  // Math.max(NaN, x) is NaN, which makes startMinute NaN, which makes the scan loop below never
+  // execute, which returns false — forever, and indistinguishably from "not due yet". That is
+  // exactly what happened in production: a caller passed NaN for every never-run job, so no
+  // newly-seeded cron on the platform could ever fire. Falling back to the lookback window means
+  // a bad timestamp costs at most one extra evaluation, instead of costing the schedule entirely.
+  const anchor = Number.isFinite(lastRunAtMs) ? lastRunAtMs : earliestStart;
+  const scanStart = Math.max(anchor, earliestStart);
   // Scan the minute AFTER scanStart through now (inclusive) — "after" so a job whose
   // last_run_at IS an exact match-minute doesn't refire immediately on the same minute.
   const startMinute = Math.floor(scanStart / 60_000) + 1;
