@@ -166,7 +166,15 @@ export interface SpaceTypeProductConfig {
    */
   assistantMode: "per-user" | "shared";
 
-  /** Allow anyone to self-serve sign up to the product portal. */
+  /**
+   * Whether a signed-in customer may create their OWN business under this product (tenant/hybrid
+   * only; ignored for "team").
+   *
+   * NOT a gate on signing up to the product — end-user signup lives in product-end-user-routes.ts
+   * and never reads this. The old wording here ("self-serve sign up to the product portal") is what
+   * produced an error message telling builders signup was disabled while customers were visibly
+   * signing up fine. The name is kept for compatibility; the meaning is this.
+   */
   allowPublicSignup: boolean;
 
   /**

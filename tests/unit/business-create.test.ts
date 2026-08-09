@@ -76,13 +76,25 @@ describe("createBusinessForEndUser", () => {
     if (!result.ok) expect(result.error_code).toBe("not_allowed");
   });
 
-  it("rejects when public signup is disabled", async () => {
+  // Found by walking the real end-user journey on a live deployment: this refusal used to say
+  // "Public signup is disabled for this product" — moments after a customer had visibly signed up
+  // fine, because end-user signup is a different route that never reads this flag. A builder would
+  // go hunting for a signup setting that does not exist. The message must name what is actually
+  // off and where to turn it on.
+  it("rejects business creation with a message that does not misdirect to 'signup'", async () => {
     const { env } = makeEnv({ membershipModel: "tenant", allowPublicSignup: false, allowedChildSpaceTypes: ["launchpad"] });
     const result = await createBusinessForEndUser(env as never, {
       resellerProductSpaceId: "prod-1", userId: "u1", name: "My Biz", spacetypeId: "launchpad",
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error_code).toBe("signup_closed");
+    if (!result.ok) {
+      expect(result.error_code).toBe("business_creation_disabled");
+      expect(result.message).toMatch(/create their own businesses/i);
+      // The whole point: never blame signup for a business-creation gate.
+      expect(result.message.toLowerCase()).not.toContain("signup");
+      // And point at the real control, so the builder knows what to do next.
+      expect(result.message).toMatch(/Product Mode/i);
+    }
   });
 
   it("rejects a spacetype not in allowedChildSpaceTypes", async () => {

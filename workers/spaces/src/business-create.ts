@@ -126,7 +126,19 @@ export async function createBusinessForEndUser(
     return { ok: false, error_code: "not_allowed", message: "This product does not allow customers to create their own businesses", status: 403 };
   }
   if (!pc.allowPublicSignup) {
-    return { ok: false, error_code: "signup_closed", message: "Public signup is disabled for this product", status: 403 };
+    // Says what this flag ACTUALLY gates. It was "Public signup is disabled for this product",
+    // which is wrong in the most confusing way: end-user signup is a different route entirely
+    // (product-end-user-routes.ts) and never consults this flag — so a builder hitting this saw
+    // "signup is disabled" moments after watching a customer sign up successfully, and would go
+    // looking for a signup setting that does not exist. This flag only decides whether a signed-in
+    // customer may create their OWN business, which is exactly how the dashboard already labels it
+    // ("Allow end users to sign up and create their own business").
+    return {
+      ok: false,
+      error_code: "business_creation_disabled",
+      message: "This product does not let customers create their own businesses yet. A builder can enable it under Configuration → Product Mode.",
+      status: 403,
+    };
   }
   const allowed = pc.allowedChildSpaceTypes ?? [];
   if (!allowed.includes(opts.spacetypeId)) {
