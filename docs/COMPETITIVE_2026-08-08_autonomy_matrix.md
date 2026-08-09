@@ -544,3 +544,42 @@ the useful thing to take from it is harness discipline, which is what the `Claw-
 - [What is OpenClaw — features and architecture (Macaron)](https://macaron.im/blog/what-is-openclaw)
 - [Hermes Agent — features overview (Nous Research docs)](https://hermes-agent.nousresearch.com/docs/user-guide/features/overview)
 - [Hermes Agent (GitHub)](https://github.com/nousresearch/hermes-agent)
+
+---
+
+# Addendum 3 — why the business templates are inert, and what it actually costs
+
+Traced this properly rather than repeating "Tier 2 is disabled".
+
+**The chain.** Every seeded skill in `webdev-skills.ts` is registered with a hardcoded
+`requires_tier: 2` (one line, covering all six). Tier 2 is a V8 isolate, which needs the
+`worker_loaders` binding. That binding is Workers-Paid-gated and — verified live — a deploy with it
+uncommented *succeeds silently and drops it*, so the only honest signal is the runtime error:
+`"Tier 2 is unavailable: no worker_loaders binding configured"`.
+
+**Tier 1 is not a fallback.** `execution-ladder.ts` is explicit: a Tier-1 stored script returns an
+error, because "we do not eval arbitrary code in the DO isolate for safety; a T1 stored script must
+be expressed through prebuilt r2-workspace ops." So there is no cheaper execution rung — on the
+free plan the *only* code that runs is a **prebuilt op**, which executes natively in the DO.
+
+**So there are exactly two ways to make a free-plan business actually operate:**
+
+1. **CF Workers Paid ($5/mo).** Tier 2–5 light up; all six skills run as written; nothing changes
+   in the codebase.
+2. **Re-express the core skills as prebuilt ops.** Technically viable — `quote-job` is deterministic
+   scoring over `WEBDEV_TIERS`, which is already Naelao-authored platform code, so it is not
+   obviously "agent-authored skill" material anyway. But it is a real re-architecture of the
+   template layer, it makes those capabilities un-learnable and un-improvable (they leave the skill
+   library, so `skill-health` and `distill` no longer apply to them), and it would need repeating
+   for every future template.
+
+**Recommendation: option 1.** Spending real engineering effort, and permanently removing
+capabilities from the self-improving skill layer, to avoid $5/month is a bad trade. Option 2 is
+worth revisiting only if the platform ever needs to run genuinely free-tier businesses at scale, in
+which case a small set of template-blessed prebuilts is the right shape — not a wholesale move.
+
+**What this means for the competitive claim.** Until one of those two happens, "the assistant can
+fully build and run a business" is true of the *structure* (verified live this session: business
+provisions, 6 projects bootstrap, onboarding gates correctly, wallet auto-provisions, crons fire
+unattended) and not yet of the *execution* (find → quote → build → deliver). That distinction is
+stated here rather than blurred, because it is the single honest caveat on the Polsia comparison.
