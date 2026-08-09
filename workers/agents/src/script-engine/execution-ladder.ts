@@ -7,6 +7,18 @@
  *   Tier 2 — V8 Isolate (Dynamic Worker) TS/JS + HTTP fetch. No fs, no native bins.
  *   Tier 3 — npm (Dynamic Worker + pkg)  Tier 2 + npm package resolution.
  *   Tier 4 — Browser (CF Browser)        DOM/click/fill/screenshot via naelao-browser proxy.
+ *                                        naelao-browser itself tries Kitesurf FIRST (a
+ *                                        lightweight, agent-first browser Cloudflare announced
+ *                                        2026-08-06 — 3-7x less CPU/memory than Chromium, ~1.7x
+ *                                        slower wall time, real per @cloudflare/puppeteer 1.3.0's
+ *                                        `WorkersLaunchOptions.browser: 'kitesurf'`) and falls
+ *                                        back to Chromium on any failure — an internal detail of
+ *                                        Tier 4, not a 6th tier, since it changes cost/reliability
+ *                                        but not capability. Known Kitesurf gaps (still beta, no
+ *                                        GA date): video playback, WebGL, bot-challenge/TLS-
+ *                                        fingerprint handshakes, persistent authenticated
+ *                                        sessions, pixel-perfect rendering — a caller that knows a
+ *                                        target needs one of those can force `engine: "chromium"`.
  *   Tier 5 — Container (SandboxDO)        Full Linux, Python/bash, native bins, multi-container.
  *
  * Tiers 2-5 execute arbitrary stored code and so are delegated to an injected

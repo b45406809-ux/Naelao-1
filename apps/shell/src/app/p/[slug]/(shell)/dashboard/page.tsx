@@ -450,7 +450,7 @@ export default function DashboardPage() {
               Manage business
             </Link>
           )}
-          <Link href={`/p/${product.slug}/dashboard/chat`} className="btn btn-primary" style={{ textDecoration: "none" }}>
+          <Link href={`/p/${product.slug}/new`} className="btn btn-primary" style={{ textDecoration: "none" }}>
             Talk to the assistant
           </Link>
         </div>

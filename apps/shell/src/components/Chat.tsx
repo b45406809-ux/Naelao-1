@@ -2,8 +2,11 @@
 
 // Chat surface — ported from apps/portal/src/app/[spaceId]/page.tsx's proven SSE client
 // (Three-Tier Platform Model, Phase 6), restyled onto the launchpad-6 mockup's markup/classes
-// instead of Tailwind. Thread panel tabs beyond Stats are honest "coming soon" placeholders —
-// Tools/Files/Artifacts need their own backend read surfaces this phase doesn't add.
+// instead of Tailwind. The side panel's Stats/Assistant tabs render inline below; everything
+// else (Config, Memory, Crons, Channels, Sub-agents, Files, Skills, Notifications) is the shared
+// AssistantSidePanels component, used identically here and formerly on the now-removed
+// /dashboard/chat page — Artifacts stays a real "coming soon" (no backend for generated
+// deliverables exists yet, unlike the rest of this list).
 
 import * as React from "react";
 import {
@@ -46,6 +49,7 @@ import {
 } from "@/lib/modelPreference";
 import { DEFAULT_WORKING_MODEL, nativeReasoningForEffort, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
 import { ContextUsageMeter } from "./ContextUsageMeter";
+import { AssistantSidePanelBody, SIDE_PANEL_TABS, type SidePanelTab } from "./AssistantSidePanels";
 import { SubthreadPanel, SubthreadEntry } from "./SubthreadPanel";
 import { LiveActivityLine, ActivitySummary } from "./ActivityFeed";
 import { InterruptedRunCard } from "./InterruptedRunCard";
@@ -58,7 +62,7 @@ import type { ThreadSummary, ConsultedThread } from "@/lib/api";
 const POLL_INTERVAL_MS = 1500;
 const MAX_POLL_DURATION_MS = 60_000;
 
-type ThreadPanelTab = "stats" | "assistant" | "tools" | "files" | "artifacts";
+type ThreadPanelTab = "stats" | "assistant" | SidePanelTab | "artifacts";
 
 /** A display name for whoever produced a message, or null when it needs no label.
  *
@@ -1228,17 +1232,28 @@ export function Chat({
       {panelOpen && (
         <div className="thread-panel">
           <div className="tp-header">
-            <span className="tp-header-title">Thread</span>
+            {/* A project thread genuinely is a "Thread" (SpaceDO's structural table); an
+                assistant/Home conversation is a "Session" (the chat transport) — these are two
+                different tables with two different lifecycles (§A1.18), and the header used to
+                say "Thread" unconditionally even here, which is the literal bug this fixes. */}
+            <span className="tp-header-title">{threadId ? "Thread" : "Session"}</span>
           </div>
           <div className="tp-tabs">
-            {(["stats", ...(threadId ? (["assistant"] as ThreadPanelTab[]) : []), "tools", "files", "artifacts"] as ThreadPanelTab[]).map((tab) => (
+            {(
+              [
+                { key: "stats" as ThreadPanelTab, label: "Stats" },
+                ...(threadId ? [{ key: "assistant" as ThreadPanelTab, label: "Assistant" }] : []),
+                ...SIDE_PANEL_TABS.map((t) => ({ key: t.key as ThreadPanelTab, label: t.label })),
+                { key: "artifacts" as ThreadPanelTab, label: "Artifacts" },
+              ]
+            ).map((t) => (
               <button
-                key={tab}
+                key={t.key}
                 type="button"
-                className={["tp-tab", panelTab === tab ? "active" : ""].filter(Boolean).join(" ")}
-                onClick={() => setPanelTab(tab)}
+                className={["tp-tab", panelTab === t.key ? "active" : ""].filter(Boolean).join(" ")}
+                onClick={() => setPanelTab(t.key)}
               >
-                {tab[0]!.toUpperCase() + tab.slice(1)}
+                {t.label}
               </button>
             ))}
           </div>
@@ -1270,7 +1285,22 @@ export function Chat({
                 />
               </>
             )}
-            {panelTab !== "stats" && panelTab !== "assistant" && (
+            {panelTab !== "stats" && panelTab !== "assistant" && panelTab !== "artifacts" && (
+              <AssistantSidePanelBody
+                spaceId={spaceId}
+                session={session}
+                tab={panelTab as SidePanelTab}
+                // Only in a project thread, and only when the switcher has an explicit agent
+                // picked (not the synthetic "Space Assistant (default)" entry, id "") — otherwise
+                // Config falls back to the space-wide policy, which is the correct behavior when
+                // nothing is explicitly bound.
+                agentId={projectId && selectedAgentId ? selectedAgentId : undefined}
+                projectId={projectId}
+                lastRunId={lastRun?.id}
+                isBusinessSpace={dockIsBusinessSpace}
+              />
+            )}
+            {panelTab === "artifacts" && (
               <div className="tp-section" style={{ textTransform: "none", color: "var(--text3)" }}>
                 Coming soon.
               </div>

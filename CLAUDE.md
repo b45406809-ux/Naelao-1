@@ -5252,6 +5252,108 @@ appendixes are authoritative** and override the early framing. Always confirm ag
        `/projects` returns a bare array. Verify against the real contract AND what the real client
        sends before reporting.
 
+113. **`/dashboard/chat` removed in favor of `/new`; its rich side panel (status/config, memory,
+     crons, channels, sub-agents, files) is now the SHARED panel on every conversation surface —
+     including project threads, which only ever showed "Coming soon" — plus Skills and
+     Notifications tabs that didn't exist anywhere before; and Kitesurf (Cloudflare's new
+     agent-first browser, researched and grounded against the real published API before writing
+     any code) is wired into the execution ladder as Tier 4's default, cheaper first attempt.**
+    - **Kitesurf, grounded not guessed.** Fetched Cloudflare's own 2026-08-06 blog post directly
+      (the first WebFetch attempt returned nothing — a real page-fetch failure, not a lack of
+      information — so re-confirmed via WebSearch + a second WebFetch): a lightweight, agent-first
+      browser (3-7x less CPU/memory than Chromium, ~1.7x slower wall time) that can't yet do video
+      playback, WebGL, bot-challenge/TLS-fingerprint handshakes, persistent authenticated
+      sessions, or pixel-perfect rendering — still beta, no GA date. Confirmed the actual API
+      contract by pulling the REAL published `@cloudflare/puppeteer@1.3.0` package (the repo was
+      pinned at a stale `^0.0.9`) and reading its `.d.ts` directly rather than trusting the blog's
+      prose: `WorkersLaunchOptions.browser?: 'kitesurf'`, passed as `puppeteer.launch(binding,
+      {browser: 'kitesurf'})`.
+    - **That investigation surfaced a real, previously-broken call in `naelao-browser`
+      (`workers/browser/src/index.ts`) — Tier 4 has likely never actually worked in production.**
+      The existing code cast the raw `BROWSER` binding itself to a fake `{launch(browser)}` shape
+      and called `.launch()` ON the binding, passing the SAME binding back to itself as an
+      argument (`@cloudflare/puppeteer` was never even imported). A `browser_rendering` binding
+      only ever implements `fetch()` — it has no `.launch` method of its own; the real contract is
+      `puppeteer.launch(endpoint, options)` where `puppeteer` is the imported package's own
+      default export and `endpoint` is data passed IN, never the receiver. Fixed by actually
+      importing `@cloudflare/puppeteer` (bumped to `^1.3.0` — both the worker's own devDependency
+      and a new root-level one, needed for Vitest's mock resolution to find the SAME module the
+      source file resolves via its own pnpm-workspace `node_modules` symlink; without the root
+      dependency, `vi.mock("@cloudflare/puppeteer", ...)` registered against an unresolvable
+      specifier and silently never applied — a real, non-obvious pnpm+Vitest workspace-boundary
+      gotcha, not a flaky test) and rewriting the launch/navigate/screenshot path against the REAL
+      `Browser`/`Page` types instead of hand-rolled stub interfaces. Also fixed in passing, caught
+      by having the real types in hand: `screenshot_base64` was built via `String.fromCharCode(
+      ...bytes)`, which risks "Maximum call stack size exceeded" on a large screenshot buffer —
+      now `Buffer.from(bytes).toString("base64")`.
+    - **Engine selection: `"auto"` (the new default) tries Kitesurf first, falls back to Chromium
+      on ANY failure, and reports which one actually ran** (`engine_used`, plus
+      `kitesurf_fallback`/`kitesurf_fallback_reason` when a fallback happened) — worth taking by
+      default since this worker's usage (launch → act → extract → close, once, never a session
+      persisted across calls) is exactly Kitesurf's sweet spot and structurally avoids most of its
+      documented gaps. An EXPLICIT `engine: "chromium"|"kitesurf"` is honored strictly with no
+      silent substitution — a caller that already knows a target needs Chromium-only capability
+      shouldn't be silently routed through a doomed Kitesurf attempt first, and a caller that
+      explicitly asked for Kitesurf and got a real failure should see that failure, not a quiet
+      swap. Threaded end-to-end: `browser-use` prebuilt (`workers/agents/.../browser-use.ts`)
+      forwards an optional `engine` on every op (`browser.navigate/click/type/extract/screenshot`)
+      only when the agent actually specified one, so the worker's own default is what applies
+      otherwise. 7 new tests (`browser-worker-kitesurf.test.ts`) — including one that pins the
+      exact `launch(endpoint, options)` argument order/shape, which is what would have caught the
+      pre-existing broken call had this test existed before.
+    - **`/dashboard/chat` removed — `/new` (Home) is now the only assistant-chat entry point.**
+      Deleted the route; the one real navigation link to it (`dashboard/page.tsx`'s "Talk to the
+      assistant" button) now points at `/new`. Its rich side panel — Status/Config, Memory, Crons,
+      Channels, Sub-agents, Files — did not exist anywhere else, and neither did the two the user
+      asked to add, Skills and Notifications; all of it is now `AssistantSidePanels.tsx`, a shared
+      component used by `Chat.tsx` (the ONE chat surface both the assistant/Home session and every
+      project thread render through) rather than duplicated per-page. **Project threads previously
+      showed a bare "Coming soon" for every panel tab beyond Stats and the consult-subthread
+      Assistant tab — now functional there too**, with two things genuinely scoped differently
+      rather than copy-pasted: Config edits the SPECIFIC project agent's own policy override when
+      the Naelao Agent Templates switcher has one explicitly selected (via the pre-existing
+      `AgentPolicyPanel`'s sibling logic — `getAgentPolicy`/`updateAgentPolicy`, 2-mode
+      always_ask/yolo), falling back to the space-wide 4-mode `assistant_policy`
+      (`gate_unless_listed`/`gate_listed` included) when nothing is explicitly bound — same
+      fallback SpaceDO's own `resolveAgentPolicy` already implements server-side, mirrored here
+      client-side only for which endpoint to call. And Files reads the PROJECT's own R2 workspace
+      (`listWorkspaceFiles`, item 13's per-project filesystem — a pre-existing endpoint with no UI
+      consumer before this) rather than the space-wide assistant workspace. Memory/Crons/Channels/
+      Sub-agents/Skills/Notifications stay space-wide in both contexts on purpose — there is no
+      per-project memory/cron/channel/notification concept, and the skill library (R2 scripts) is
+      shared platform-wide within a space, never siloed per project. The panel header used to say
+      "Thread" unconditionally, even in the assistant/Home session where there is no thread at all
+      — the literal bug the user reported; now "Session" vs "Thread" based on whether `threadId`
+      is actually set. Skills tab reads `getAssistantCapabilities` (already built, item 71's own
+      "What it can do" section, previously only ever rendered as two bare counts — this is the
+      first place the individual skill NAMES and prebuilt descriptions are shown). Notifications
+      tab reads/marks-read through the already-built `listNotifications`/`markNotificationRead`
+      (item 26) — previously only reachable via the separate `/notifications` page, now also
+      inline at the exact conversation where something went wrong.
+    - Deliberately NOT rebuilt as a duplicate: Artifacts stays a real, honest "Coming soon" — no
+      generated-deliverables backend exists yet, unlike everything else on the user's list, and
+      claiming otherwise would be exactly the fabrication class this file's own conventions (item
+      108, `no_fabricated_success`) warn against.
+    2777/2777 tests pass (7 new), `npx turbo run typecheck` clean (76 tasks), `apps/shell`
+    verified via a real `next build` (confirmed `/dashboard/chat` gone from the route list, every
+    other route present). **A deploy-tooling trap found and avoided, not just for `naelao-agents`
+    (item 83) but for `naelao-browser` too**: `workers/browser/wrangler.toml` has the identical
+    no-`name`-override `[env.production]` shape that produced the accidental
+    `naelao-agents-production` duplicate — checked the live CF API first (only one `naelao-browser`
+    service exists, no `-production` variant) and used the bare `wrangler deploy` deliberately,
+    the same rule item 83 already established. `naelao-browser`, `naelao-agents` (bare
+    `wrangler deploy` both), and `apps/shell` (rebuilt + `--branch=main`) all deployed; live-verified
+    `dashboard/chat` now 404s while `dashboard` and `new` still 200, and confirmed the new panel's
+    strings ("Assistant Autonomy", "Pre-approved actions") are present in the deployed bundle.
+    **Not done this pass:** a live click-through of the new Config/Skills/Notifications tabs with a
+    real business-admin browser session (same Playwright/TLS-handshake limitation as every prior
+    UI pass — verified via typecheck + a real `next build` + deployed-bundle content instead); an
+    actual Kitesurf navigation has not been exercised against a live target site (the worker-level
+    logic is unit-tested against a mocked `puppeteer.launch`, not run against Cloudflare's real
+    Kitesurf beta endpoint, which needs a live agent run through a business whose Tier 4 is
+    reachable — not attempted this pass to conserve the account's constrained inference budget,
+    see Live Deployment Facts).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
