@@ -5223,6 +5223,25 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      quota window, unblocks with the CF Workers Paid plan ($5/mo) or as the window ages out.
      Eval space kept for it: product `df1969c5-c1da-4095-8a29-f34125b5aa1d` (slug
      `eval-matrix-space`, disposable builder org, set to `yolo`).
+     - **A full end-user journey audit on production also ran this session
+       (`docs/E2E_2026-08-09_end_user_journey.md`) — 13 steps as a real signed-up end user, all
+       passing.** Live-confirmed two prior fixes still hold: the starter-thread dedup (item 104 —
+       0 duplicates across 6 auto-created projects) and onboarding refusing completion while naming
+       the exact unmet prompts. **One real defect found and FIXED:** creating a business returned
+       `signup_closed` / "Public signup is disabled for this product" moments after a customer had
+       visibly signed up fine — `allowPublicSignup` is read in exactly ONE place platform-wide (the
+       business-creation gate) and end-user signup never consults it, so a builder would hunt for a
+       signup setting that does not control signup. The dashboard already labelled it correctly;
+       the field's doc comment was stale and the message inherited that framing. Now
+       `business_creation_disabled` naming the real control (Configuration → Product Mode);
+       live-verified in production. **Recorded, not changed:** the creation wizard doesn't offer
+       Product Mode (so a new product defaults to `team` + signup off, and a builder wanting the
+       reseller model must know to visit Configuration), and a gated action still reports
+       `status:"failed"` when the truth is "waiting on you" (the approval card does render).
+       **Three "bugs" were my own probe errors** — `EUID` is a readonly bash variable (like `UID`);
+       `POST /spaces/:id/businesses` requires `spacetype_id` (the shell sends it correctly);
+       `/projects` returns a bare array. Verify against the real contract AND what the real client
+       sends before reporting.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
