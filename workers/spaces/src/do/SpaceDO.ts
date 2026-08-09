@@ -2353,7 +2353,19 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       this.ctx.storage.sql as never,
       // F-40: `kind` is surfaced so the frontend project-page shell can mount the natively-built
       // panel for that kind (WalletLedgerPanel etc.) via a switch at the mount point.
-      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, kind, is_singleton_kind FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at",
+      //
+      // ORDER BY created_at DESC (newest first) — this used to omit DESC entirely, which both
+      // sorted OLDEST-first (the opposite of the "recents" ordering the Sessions list already
+      // uses, ORDER BY updated_at DESC) and never actually used idx_projects_space's own
+      // (space_id, created_at DESC) index, which was built expecting exactly this direction. The
+      // reported symptom — a project a person just created/uses looking "lost" in the sidebar's
+      // collapsed-to-a-few list (item 66) — is exactly what oldest-first ordering produces, since
+      // the newest, most relevant project is the one most likely to be hidden behind "show more".
+      // `projects` has no last-ACTIVITY column (no writes on thread/session use), so this is
+      // recency-by-creation, not true last-active — same practical limitation any "recents" list
+      // without a tracked activity timestamp has; a real activity-based ordering is a separate,
+      // larger follow-up (a new column + writes from thread/session creation).
+      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, kind, is_singleton_kind FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at DESC",
       spaceId
     );
     const visible = viewerId
@@ -3177,8 +3189,15 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
   // serves both the business-member-facing inbox (status/limit only) and the heartbeat sweep's
   // "what still needs escalating to a channel" query (undelivered_only + stale_after_minutes),
   // rather than a second route — see the dispatcher comment above for why.
+  // project_id filtering: the assistant/Home chat view wants ALL notifications (the Space
+  // Assistant oversees the whole business), so omitting project_id keeps the prior unfiltered
+  // behavior. A project thread's own sidebar wants only THAT project's agent's notifications —
+  // pass project_id to scope to it. There's no "assistant-only" (project_id IS NULL) mode here,
+  // unlike scheduled_jobs/channel_links, because the ask for this tab was explicitly "all
+  // notifications" for the assistant view, not "just the space-level ones."
   private listNotifications(params: URLSearchParams): Response {
     const status = params.get("status");
+    const projectId = params.get("project_id");
     const limit = Math.min(Math.max(parseInt(params.get("limit") ?? "50", 10) || 50, 1), 200);
     if (params.get("undelivered_only") === "true") {
       const staleMinutesRaw = parseInt(params.get("stale_after_minutes") ?? "15", 10);
@@ -3193,17 +3212,16 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       );
       return Response.json({ data: rows, count: rows.length });
     }
-    const rows = status
-      ? queryAll(
-          this.ctx.storage.sql as never,
-          "SELECT * FROM notifications WHERE status = ? ORDER BY created_at DESC LIMIT ?",
-          status, limit
-        )
-      : queryAll(
-          this.ctx.storage.sql as never,
-          "SELECT * FROM notifications ORDER BY created_at DESC LIMIT ?",
-          limit
-        );
+    const clauses: string[] = [];
+    const args: unknown[] = [];
+    if (status) { clauses.push("status = ?"); args.push(status); }
+    if (projectId) { clauses.push("project_id = ?"); args.push(projectId); }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = queryAll(
+      this.ctx.storage.sql as never,
+      `SELECT * FROM notifications ${where} ORDER BY created_at DESC LIMIT ?`,
+      ...args, limit
+    );
     return Response.json({ data: rows, count: rows.length });
   }
 

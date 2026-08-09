@@ -68,6 +68,23 @@ describe("SpaceDO — /notifications (business-member inbox)", () => {
     expect(read.json.data[0].title).toBe("b");
   });
 
+  // Sidebar scoping: the assistant/Home chat view wants ALL notifications (it oversees the whole
+  // business), a project thread's own sidebar wants only that project's — see the DO's own
+  // listNotifications header comment for why there's no "assistant-only" mode here, unlike
+  // scheduled_jobs/channel_links.
+  it("filters by project_id, and stays unfiltered ('all') when omitted", async () => {
+    await call(spaceDO, "/notifications", "POST", { space_id: "s1", kind: "run_failed", title: "space-wide" });
+    await call(spaceDO, "/notifications", "POST", { space_id: "s1", project_id: "proj-1", kind: "run_failed", title: "proj-1 alert" });
+    await call(spaceDO, "/notifications", "POST", { space_id: "s1", project_id: "proj-2", kind: "run_failed", title: "proj-2 alert" });
+
+    const all = await call(spaceDO, "/notifications", "GET");
+    expect(all.json.count).toBe(3);
+
+    const scoped = await call(spaceDO, "/notifications?project_id=proj-1", "GET");
+    expect(scoped.json.count).toBe(1);
+    expect(scoped.json.data[0].title).toBe("proj-1 alert");
+  });
+
   it("mark_read is idempotent and sets read_at", async () => {
     const write = await call(spaceDO, "/notifications", "POST", { space_id: "s1", kind: "run_failed", title: "x" });
     const r1 = await call(spaceDO, "/notifications", "POST", { action: "mark_read", notification_id: write.json.id });

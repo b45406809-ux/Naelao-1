@@ -142,6 +142,62 @@ describe("WS-2 — Space Assistant surface routes require business membership fo
   });
 });
 
+// Channels side-panel scoping: ?project_id=X scopes to that project's own channel link,
+// ?scope=assistant scopes to the space-wide ones (project_id IS NULL), neither stays unfiltered
+// (Dashboard overview / dedicated Assistant page, which predate this scoping and want everything).
+describe("assistant/channels — project scoping", () => {
+  function makeScopedEnv(): AgentsEnv & { __sql: Array<{ sql: string; args: unknown[] }> } {
+    const calls: Array<{ sql: string; args: unknown[] }> = [];
+    const rows = [
+      { channel: "slack", enabled: 1, created_at: "2026-01-01", project_id: null },
+      { channel: "discord", enabled: 1, created_at: "2026-01-01", project_id: "proj-1" },
+    ];
+    const db = {
+      prepare: (sql: string) => ({
+        bind: (...args: unknown[]) => ({
+          all: async () => {
+            calls.push({ sql, args });
+            if (/project_id = \?/.test(sql)) return { results: rows.filter((r) => r.project_id === args[1]) };
+            if (/project_id IS NULL/.test(sql)) return { results: rows.filter((r) => r.project_id === null) };
+            return { results: rows };
+          },
+        }),
+      }),
+    };
+    return {
+      PLATFORM_SECRET: SECRET,
+      NAELAO_AGENT_DO: { idFromName: (name: string) => ({ toString: () => name }), get: () => ({ async fetch() { return Response.json({ ok: true }); } }) },
+      SPACES_WORKER: makeSpacesWorkerStub(true),
+      PLATFORM_DB: db as unknown as D1Database,
+      ANALYTICS: { writeDataPoint() {} },
+      __sql: calls,
+    } as unknown as AgentsEnv & { __sql: typeof calls };
+  }
+
+  it("?scope=assistant returns only project_id IS NULL rows", async () => {
+    const env = makeScopedEnv();
+    const res = await app.fetch(await req("/spaces/space1/assistant/channels?scope=assistant", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner" }), env);
+    const body = await res.json() as { data: Array<{ channel: string; project_id: string | null }> };
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]!.channel).toBe("slack");
+  });
+
+  it("?project_id=proj-1 returns only that project's own channel", async () => {
+    const env = makeScopedEnv();
+    const res = await app.fetch(await req("/spaces/space1/assistant/channels?project_id=proj-1", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner" }), env);
+    const body = await res.json() as { data: Array<{ channel: string; project_id: string | null }> };
+    expect(body.data).toHaveLength(1);
+    expect(body.data[0]!.channel).toBe("discord");
+  });
+
+  it("no param returns everything (Dashboard overview / dedicated Assistant page compat)", async () => {
+    const env = makeScopedEnv();
+    const res = await app.fetch(await req("/spaces/space1/assistant/channels", { "x-naelao-tenant-id": "tenant-1", "x-naelao-role": "owner" }), env);
+    const body = await res.json() as { data: unknown[] };
+    expect(body.data).toHaveLength(2);
+  });
+});
+
 // Sanity: mintInternalToken importable in this test's dependency graph (mirrors the pattern used
 // by requireEndUserBusinessMembership itself).
 describe("sanity", () => {

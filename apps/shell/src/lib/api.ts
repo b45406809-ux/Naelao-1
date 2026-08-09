@@ -263,6 +263,10 @@ export interface Message {
     needs_connector?: boolean;
     connector_id?: string;
     connector_name?: string;
+    /** The run that produced this message — durable (see NaelaoAgentDO's own comment on this
+     *  field), unlike the client-only `activity` below. Lets a reload re-fetch this exact run's
+     *  activity trail via getAgentRunTrace instead of losing it. */
+    run_id?: string;
   };
   /** CLIENT-ONLY, never persisted server-side: the "currently doing X" activity trail this run
    *  produced (observe/find/gate/reason/run/answer steps, live while the run was in flight — see
@@ -305,6 +309,24 @@ export interface LiveRunStep {
    *  returned one. Rendered as a separate collapsed "Thoughts" block, not folded into `detail`. */
   thinking?: string;
   ts: number;
+}
+
+/** Re-fetches a COMPLETED run's persisted activity trail (§A1 HX1's run_traces, the same shape
+ *  live_steps already used) — what makes a reload able to show ActivitySummary again for a
+ *  message that carries metadata.run_id, instead of the trail being gone the moment the client's
+ *  own in-memory copy is. Business-member end users and builders alike; see the route's own
+ *  header on the agents worker for the gating rationale. */
+export async function getAgentRunTrace(
+  spaceId: string,
+  sessionId: string,
+  runId: string,
+  session: SessionCredentials
+): Promise<LiveRunStep[]> {
+  const res = await apiFetch<{ run_id: string; trace: LiveRunStep[] }>(
+    `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}/trace`,
+    { session }
+  );
+  return res.trace ?? [];
 }
 
 /** What a run is waiting on a PERSON for — the data an inline in-chat approval card renders.
@@ -624,10 +646,11 @@ export interface AppNotification {
 export async function listNotifications(
   spaceId: string,
   session: SessionCredentials,
-  opts?: { status?: "unread" | "read"; limit?: number }
+  opts?: { status?: "unread" | "read"; limit?: number; projectId?: string | null | undefined }
 ): Promise<AppNotification[]> {
   const params = new URLSearchParams();
   if (opts?.status) params.set("status", opts.status);
+  if (opts?.projectId) params.set("project_id", opts.projectId);
   params.set("limit", String(opts?.limit ?? 50));
   const res = await apiFetch<{ data: AppNotification[] }>(
     `/v1/spaces/${spaceId}/notifications?${params.toString()}`,
@@ -932,10 +955,19 @@ export interface ScheduledJob {
   enabled: number;
   last_run_at: string | null;
   consecutive_failures: number;
+  project_id?: string | null;
 }
 
-export async function listScheduledJobs(spaceId: string, session: SessionCredentials): Promise<ScheduledJob[]> {
-  const res = await apiFetch<{ data: ScheduledJob[] }>(`/v1/spaces/${spaceId}/scheduled-jobs`, { session });
+/** scope: pass {projectId: "<id>"} to see only that project's own jobs, {projectId: null} to see
+ *  only the space-wide/assistant's own (project_id IS NULL), or omit entirely for the prior
+ *  unfiltered "everything" behavior (the Dashboard overview + dedicated Assistant page). */
+export async function listScheduledJobs(
+  spaceId: string,
+  session: SessionCredentials,
+  scope?: { projectId: string | null }
+): Promise<ScheduledJob[]> {
+  const qs = scope ? (scope.projectId ? `?project_id=${encodeURIComponent(scope.projectId)}` : "?scope=assistant") : "";
+  const res = await apiFetch<{ data: ScheduledJob[] }>(`/v1/spaces/${spaceId}/scheduled-jobs${qs}`, { session });
   return res.data;
 }
 
@@ -943,10 +975,17 @@ export interface ChannelLink {
   channel: string;
   enabled: number;
   created_at: string;
+  project_id?: string | null;
 }
 
-export async function listAssistantChannels(spaceId: string, session: SessionCredentials): Promise<ChannelLink[]> {
-  const res = await apiFetch<{ data: ChannelLink[] }>(`/v1/spaces/${spaceId}/assistant/channels`, { session });
+/** Same scoping convention as listScheduledJobs. */
+export async function listAssistantChannels(
+  spaceId: string,
+  session: SessionCredentials,
+  scope?: { projectId: string | null }
+): Promise<ChannelLink[]> {
+  const qs = scope ? (scope.projectId ? `?project_id=${encodeURIComponent(scope.projectId)}` : "?scope=assistant") : "";
+  const res = await apiFetch<{ data: ChannelLink[] }>(`/v1/spaces/${spaceId}/assistant/channels${qs}`, { session });
   return res.data;
 }
 

@@ -183,14 +183,18 @@ export async function installLaunchpadAgents(
 }
 
 /**
- * §A1.17 Phase G: seed the "guided" assistant_policy default (always_ask + a read-only
- * auto_approved_actions allowlist) for a new Launchpad space, so the business-builder assistant
- * can look around (list projects/agents, check orders, list MCP servers) without asking
- * permission for every read, but still asks before it scaffolds a project or spends anything.
- * The builder can flip this to `yolo` (fully autonomous) any time via the existing
- * PATCH /assistant-policy endpoint. Best-effort: a failed seed logs and does not fail
- * provisioning (same posture as seedOwnerMember) — fetchAssistantPolicy's own fail-closed
- * default (always_ask, no auto-approved actions) is a safe fallback if this never lands.
+ * §A1.17 Phase G, revised per explicit user direction: seed a FULLY AUTONOMOUS ("yolo")
+ * assistant_policy default for a new Launchpad space — the business-builder assistant is meant
+ * to be able to do anything on the owner's behalf out of the box, the same way a hired operator
+ * would act without asking permission for every step. The prior default was the "guided" pairing
+ * (always_ask + a read-only auto_approved_actions allowlist); that allowlist is still stored here
+ * (harmless under yolo, since yolo ignores it) so a business that later dials autonomy back down
+ * to `gate_unless_listed` lands on a sensible read-only allowlist rather than an empty one. The
+ * owner can flip back to any of the four approval modes any time via the existing
+ * PATCH /assistant-policy endpoint (Dashboard's Assistant tab, or the shell's Config side-panel).
+ * Best-effort: a failed seed logs and does not fail provisioning (same posture as seedOwnerMember)
+ * — fetchAssistantPolicy's own fail-closed default (always_ask, no auto-approved actions) is a
+ * safe fallback if this never lands, so a seeding failure degrades to MORE cautious, never less.
  */
 export async function seedLaunchpadAssistantPolicy(spaceId: string, tenantId: string, env: Env): Promise<boolean> {
   const resp = await env.SPACES_WORKER.fetch(
@@ -201,7 +205,7 @@ export async function seedLaunchpadAssistantPolicy(spaceId: string, tenantId: st
         "x-naelao-tenant-id": tenantId,
         "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
       },
-      body: JSON.stringify({ approval_mode: "always_ask", auto_approved_actions: LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED }),
+      body: JSON.stringify({ approval_mode: "yolo", auto_approved_actions: LAUNCHPAD_ASSISTANT_DEFAULT_AUTO_APPROVED }),
     })
   ).catch((err: Error) => {
     console.warn(`[provisioner] assistant policy seed request failed for ${spaceId}: ${err.message}`);

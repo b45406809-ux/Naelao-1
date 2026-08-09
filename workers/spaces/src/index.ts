@@ -1652,11 +1652,30 @@ app.get("/spaces/:spaceId/scheduled-jobs", async (c) => {
     const role = await resolveEndUserBusinessRole(c.env.PLATFORM_DB, c.req.param("spaceId"), callerIdentity.userId);
     if (!role) return c.json({ error_code: "forbidden", message: "Not a member of this business" }, 403);
   }
-  const { results } = await c.env.PLATFORM_DB.prepare(
-    `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
-            consecutive_failures, last_error, created_at, updated_at
-       FROM scheduled_jobs WHERE space_id = ? ORDER BY created_at DESC`
-  ).bind(c.req.param("spaceId")).all();
+  // Scoping for the Crons side-panel: the assistant/Home view wants its OWN (space-wide,
+  // project_id IS NULL) jobs — not a mix with every project's — while a project thread wants
+  // only that project's own. Neither query param given = unfiltered (the Dashboard overview and
+  // the dedicated Assistant settings page both want "everything" and predate this scoping).
+  const projectId = c.req.query("project_id");
+  const scope = c.req.query("scope");
+  const spaceId = c.req.param("spaceId");
+  const { results } = projectId
+    ? await c.env.PLATFORM_DB.prepare(
+        `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
+                consecutive_failures, last_error, created_at, updated_at
+           FROM scheduled_jobs WHERE space_id = ? AND project_id = ? ORDER BY created_at DESC`
+      ).bind(spaceId, projectId).all()
+    : scope === "assistant"
+    ? await c.env.PLATFORM_DB.prepare(
+        `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
+                consecutive_failures, last_error, created_at, updated_at
+           FROM scheduled_jobs WHERE space_id = ? AND project_id IS NULL ORDER BY created_at DESC`
+      ).bind(spaceId).all()
+    : await c.env.PLATFORM_DB.prepare(
+        `SELECT id, name, cron_expression, script_name, params, project_id, agent_id, goal, enabled, last_run_at,
+                consecutive_failures, last_error, created_at, updated_at
+           FROM scheduled_jobs WHERE space_id = ? ORDER BY created_at DESC`
+      ).bind(spaceId).all();
   return c.json({ data: results, count: results.length });
 });
 

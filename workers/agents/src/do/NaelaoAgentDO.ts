@@ -2911,6 +2911,12 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
           if (result.result.connector_id) answerMetadata["connector_id"] = result.result.connector_id;
           if (result.result.connector_name) answerMetadata["connector_name"] = result.result.connector_name;
         }
+        // The run's own id, so a reload can re-fetch this exact run's activity trail (run_traces,
+        // §A1 HX1) instead of losing it — the client's own in-memory `activity` is genuinely
+        // client-only and doesn't survive a reload, but the trace itself is durable; this is what
+        // lets the client find it again. Cheap: runId already resolved above for the interrupted-
+        // run checkpoint and billing settlement.
+        answerMetadata["run_id"] = runId;
         void this.writeAgentAnswerToSession(
           sessionId, spaceId, tenantId, result.result.output, agentId,
           Object.keys(answerMetadata).length > 0 ? answerMetadata : undefined

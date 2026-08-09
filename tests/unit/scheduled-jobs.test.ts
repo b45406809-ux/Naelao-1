@@ -100,6 +100,62 @@ describe("scheduled-jobs CRUD (spaces worker)", () => {
     expect(json.data[0]!.last_error).toBeNull();
   });
 
+  // Crons side-panel scoping: the assistant/Home view wants ITS OWN (space-wide) jobs, a project
+  // thread wants only that project's own — see workers/spaces/src/index.ts's own header comment
+  // on this route for why neither param given stays unfiltered (Dashboard overview compat).
+  it("?scope=assistant returns only space-wide (project_id IS NULL) jobs", async () => {
+    const env = makeSpacesEnv("space-1", "tenant-1");
+    await spacesWorker.fetch(
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Assistant job", cron_expression: "0 8 * * *", script_name: "s1" } }),
+      env as never, execCtx
+    );
+    await spacesWorker.fetch(
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Project job", cron_expression: "0 9 * * *", script_name: "s2", project_id: "proj-1" } }),
+      env as never, execCtx
+    );
+    const res = await spacesWorker.fetch(req("/spaces/space-1/scheduled-jobs?scope=assistant"), env as never, execCtx);
+    const json = await res.json() as { data: Array<{ name: string; project_id: string | null }> };
+    expect(json.data).toHaveLength(1);
+    expect(json.data[0]!.name).toBe("Assistant job");
+    expect(json.data[0]!.project_id).toBeNull();
+  });
+
+  it("?project_id=X returns only that project's own jobs", async () => {
+    const env = makeSpacesEnv("space-1", "tenant-1");
+    await spacesWorker.fetch(
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Assistant job", cron_expression: "0 8 * * *", script_name: "s1" } }),
+      env as never, execCtx
+    );
+    await spacesWorker.fetch(
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Project job", cron_expression: "0 9 * * *", script_name: "s2", project_id: "proj-1" } }),
+      env as never, execCtx
+    );
+    await spacesWorker.fetch(
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Other project job", cron_expression: "0 10 * * *", script_name: "s3", project_id: "proj-2" } }),
+      env as never, execCtx
+    );
+    const res = await spacesWorker.fetch(req("/spaces/space-1/scheduled-jobs?project_id=proj-1"), env as never, execCtx);
+    const json = await res.json() as { data: Array<{ name: string; project_id: string | null }> };
+    expect(json.data).toHaveLength(1);
+    expect(json.data[0]!.name).toBe("Project job");
+    expect(json.data[0]!.project_id).toBe("proj-1");
+  });
+
+  it("no scope/project_id param stays unfiltered (Dashboard overview / Assistant page compat)", async () => {
+    const env = makeSpacesEnv("space-1", "tenant-1");
+    await spacesWorker.fetch(
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Assistant job", cron_expression: "0 8 * * *", script_name: "s1" } }),
+      env as never, execCtx
+    );
+    await spacesWorker.fetch(
+      req("/spaces/space-1/scheduled-jobs", { method: "POST", body: { name: "Project job", cron_expression: "0 9 * * *", script_name: "s2", project_id: "proj-1" } }),
+      env as never, execCtx
+    );
+    const res = await spacesWorker.fetch(req("/spaces/space-1/scheduled-jobs"), env as never, execCtx);
+    const json = await res.json() as { data: unknown[] };
+    expect(json.data).toHaveLength(2);
+  });
+
   it("PATCH can disable a job and rejects an invalid new cron", async () => {
     const env = makeSpacesEnv("space-1", "tenant-1");
     const created = await (await spacesWorker.fetch(

@@ -23,6 +23,8 @@ import {
   type LiveRunStep,
   type PendingApproval,
   getInterruptedRun,
+  resolveInterruptedRun,
+  getAgentRunTrace,
   type InterruptedRun,
   type ChatUpload,
   getProject,
@@ -49,7 +51,7 @@ import {
 } from "@/lib/modelPreference";
 import { DEFAULT_WORKING_MODEL, nativeReasoningForEffort, isValidEffortLevel, type EffortLevel } from "@naelao/billing-core";
 import { ContextUsageMeter } from "./ContextUsageMeter";
-import { AssistantSidePanelBody, SIDE_PANEL_TABS, type SidePanelTab } from "./AssistantSidePanels";
+import { AssistantSidePanelBody, sidePanelTabs, type SidePanelTab } from "./AssistantSidePanels";
 import { SubthreadPanel, SubthreadEntry } from "./SubthreadPanel";
 import { LiveActivityLine, ActivitySummary } from "./ActivityFeed";
 import { InterruptedRunCard } from "./InterruptedRunCard";
@@ -96,6 +98,47 @@ function consultThreadSummary(spaceId: string, c: ConsultedThread): ThreadSummar
   };
 }
 
+/** Reload-safe counterpart to <ActivitySummary>: a message's client-only `activity` is gone the
+ *  moment the page reloads, but the run's own id (metadata.run_id) and its persisted trace
+ *  (run_traces, §A1 HX1) both survive. Click-to-load rather than auto-fetching for every old
+ *  message on mount — a long conversation would otherwise fire a burst of trace requests nobody
+ *  asked to see, for something that's collapsed-by-default even when it WAS fetched live. */
+function PersistedActivitySummary({
+  spaceId, sessionId, runId, session,
+}: { spaceId: string; sessionId: string; runId: string; session: SessionCredentials }) {
+  const [steps, setSteps] = React.useState<LiveRunStep[] | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [tried, setTried] = React.useState(false);
+
+  async function load() {
+    setLoading(true);
+    try {
+      setSteps(await getAgentRunTrace(spaceId, sessionId, runId, session));
+    } catch {
+      setSteps([]); // a failed fetch degrades to "nothing to show" rather than a stuck spinner
+    } finally {
+      setLoading(false);
+      setTried(true);
+    }
+  }
+
+  if (steps) return <ActivitySummary steps={steps} />;
+  if (tried) return null; // fetched and genuinely empty — same "renders nothing" rule ActivitySummary itself follows
+  return (
+    <button
+      type="button"
+      onClick={() => void load()}
+      disabled={loading}
+      style={{
+        display: "block", fontSize: 12, color: "var(--text3)", background: "transparent",
+        border: "none", cursor: loading ? "default" : "pointer", padding: "2px 0", margin: "4px 0",
+      }}
+    >
+      {loading ? "Loading activity…" : "Show activity"}
+    </button>
+  );
+}
+
 export function Chat({
   spaceId,
   session,
@@ -138,6 +181,16 @@ export function Chat({
 
   const [chatSessionId, setChatSessionId] = React.useState<string | null>(sessionId ?? null);
   const [messages, setMessages] = React.useState<Message[]>([]);
+  // The last assistant message's own persisted run id, once messages have loaded — see the
+  // Sub-agents panel's lastRunId prop for why this exists (lastRun itself is client-only state,
+  // gone on reload).
+  const latestPersistedRunId = React.useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m && m.role !== "user" && m.metadata?.run_id) return m.metadata.run_id;
+    }
+    return undefined;
+  }, [messages]);
   const [input, setInput] = React.useState("");
   const [isLoading, setIsLoading] = React.useState(false);
   const [streamingContent, setStreamingContent] = React.useState("");
@@ -147,6 +200,23 @@ export function Chat({
   // outright failure the user must retype their message over. Cleared the moment a call succeeds
   // or the retry budget is genuinely exhausted (at which point `error` takes over instead).
   const [retryStatus, setRetryStatus] = React.useState<{ attempt: number; max: number } | null>(null);
+  // Self-healing, Claude-Code-/goal-style: most run failures don't need a person — the agent gets
+  // to try fixing its own mistake (a bad tool call, running out of steps) immediately, and a
+  // provider quota/rate-limit clears on its own so it's worth a few backed-off retries before
+  // bothering anyone. Only a genuinely human-shaped failure (a spend cap, an unreachable model, a
+  // real approval) still shows the manual InterruptedRunCard — see refreshInterrupted below for
+  // the actual decision, which reads the server's own classifyFailure verdict per interrupted run.
+  const [selfHealStatus, setSelfHealStatus] = React.useState<{ mode: "fixing" | "waiting"; attempt: number; max: number } | null>(null);
+  const autoHealAttemptsRef = React.useRef(0);
+  const quotaRetryAttemptsRef = React.useRef(0);
+  const selfHealTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // attachToRun itself needs streamRun (defined further down), and refreshInterrupted (defined
+  // further UP, since pollUntilDone/streamRun both call it) needs to invoke a continuation via
+  // attachToRun — a genuine mutual dependency a plain closure can't satisfy in declaration order.
+  // A ref breaks the cycle: it's assigned fresh every render right after attachToRun is defined,
+  // so by the time continueInterruptedRun actually RUNS (never during the initial render), it's
+  // always pointing at the current one.
+  const attachToRunRef = React.useRef<(sid: string, runId: string) => void>(() => {});
   const [initializing, setInitializing] = React.useState(true);
   const [panelOpen, setPanelOpen] = React.useState(true);
   const [panelTab, setPanelTab] = React.useState<ThreadPanelTab>("stats");
@@ -309,20 +379,119 @@ export function Chat({
   }, [input]);
   // The standing "this didn't finish — continue?" offer for this thread. Server-backed, so it is
   // still here after a refresh: the offer is the only way to pick the work back up without
-  // redoing side effects that already happened.
+  // redoing side effects that already happened. Only shown for a failure kind that genuinely
+  // needs a human (see refreshInterrupted below) — everything else self-heals first.
   const [interrupted, setInterrupted] = React.useState<InterruptedRun | null>(null);
+
+  // Re-enters the SAME run (its ledger key, so already-completed actions short-circuit rather
+  // than repeat) — the shared machinery behind both the manual "Continue" button and every
+  // self-heal attempt below.
+  const continueInterruptedRun = React.useCallback(
+    async (sid: string, runId: string) => {
+      try {
+        const res = await resolveInterruptedRun(spaceId, sid, runId, "continue", session);
+        setSelfHealStatus(null);
+        if (res.run_id) {
+          setError(null);
+          setIsLoading(true);
+          storeActiveRunId(spaceId, sessionKey, res.run_id);
+          attachToRunRef.current(sid, res.run_id);
+        }
+        // else: the server declined to start a continuation (already handled elsewhere) — there's
+        // nothing to attach to, so just stop pretending we're fixing it.
+      } catch (err) {
+        // The continue CALL itself failed (network, etc.) — distinct from the resulting run
+        // failing again, which the run's own poll/stream loop already re-offers via
+        // refreshInterrupted. The standing offer is still open server-side either way, so this
+        // isn't lost — just surfaced plainly instead of retried silently forever.
+        setSelfHealStatus(null);
+        setError(err instanceof Error ? err.message : "Couldn't continue automatically.");
+      }
+    },
+    [spaceId, session, sessionKey]
+  );
+
+  // Most failures don't need a person: an agent-fixable mistake (a bad tool call, running out of
+  // steps) gets retried immediately, a provider quota/rate-limit gets a few backed-off retries
+  // since it clears on its own, and only a genuinely human-shaped failure (a spend cap, an
+  // unreachable model, a real pending approval) falls through to the manual InterruptedRunCard.
+  // Bounded on both paths so a goal that's actually unrecoverable still hands back to the person
+  // instead of retrying forever.
+  const MANUAL_ONLY_FAILURE_KINDS = React.useRef(new Set(["budget_ceiling", "model_unavailable", "approval_pending"])).current;
+  const MAX_AUTO_HEAL_ATTEMPTS = 3;
+  const MAX_QUOTA_RETRY_ATTEMPTS = 4;
+  const QUOTA_RETRY_DELAYS_MS = [5000, 15000, 30000, 60000];
+
   const refreshInterrupted = React.useCallback(
     async (sid: string) => {
       if (!session) return;
+      let got: InterruptedRun | null;
       try {
-        setInterrupted(await getInterruptedRun(spaceId, sid, session));
+        got = await getInterruptedRun(spaceId, sid, session);
       } catch {
         // Leave whatever is already shown. Clearing it on a transient read failure would tell the
         // user there is nothing to continue, which is the one wrong answer here.
+        return;
       }
+      if (!got) {
+        setInterrupted(null);
+        setSelfHealStatus(null);
+        autoHealAttemptsRef.current = 0;
+        quotaRetryAttemptsRef.current = 0;
+        return;
+      }
+      const kind = got.failure_kind ?? "unknown";
+      if (MANUAL_ONLY_FAILURE_KINDS.has(kind)) {
+        setSelfHealStatus(null);
+        setInterrupted(got);
+        return;
+      }
+      if (got.clears_on_its_own) {
+        if (quotaRetryAttemptsRef.current >= MAX_QUOTA_RETRY_ATTEMPTS) {
+          // Retried enough times — hand it back rather than waiting forever on a window that
+          // hasn't reopened yet.
+          setSelfHealStatus(null);
+          setInterrupted(got);
+          return;
+        }
+        const attempt = quotaRetryAttemptsRef.current + 1;
+        quotaRetryAttemptsRef.current = attempt;
+        const delayMs = QUOTA_RETRY_DELAYS_MS[Math.min(attempt - 1, QUOTA_RETRY_DELAYS_MS.length - 1)];
+        setInterrupted(null);
+        setSelfHealStatus({ mode: "waiting", attempt, max: MAX_QUOTA_RETRY_ATTEMPTS });
+        if (selfHealTimerRef.current) clearTimeout(selfHealTimerRef.current);
+        const runId = got.run_id;
+        selfHealTimerRef.current = setTimeout(() => { void continueInterruptedRun(sid, runId); }, delayMs);
+        return;
+      }
+      // Agent-fixable: context_overflow / step_exhaustion / tool_error / unknown. Retry now — the
+      // continuation carries the checkpoint forward, so the model gets to see what it already
+      // tried rather than repeating the exact same mistake blind.
+      if (autoHealAttemptsRef.current >= MAX_AUTO_HEAL_ATTEMPTS) {
+        setSelfHealStatus(null);
+        setInterrupted(got);
+        return;
+      }
+      autoHealAttemptsRef.current += 1;
+      setInterrupted(null);
+      setSelfHealStatus({ mode: "fixing", attempt: autoHealAttemptsRef.current, max: MAX_AUTO_HEAL_ATTEMPTS });
+      void continueInterruptedRun(sid, got.run_id);
     },
-    [spaceId, session]
+    [spaceId, session, continueInterruptedRun, MANUAL_ONLY_FAILURE_KINDS]
   );
+
+  // A manual Continue/Dismiss from the card itself, or landing on a fresh thread/session, resets
+  // the self-heal budget — a new attempt at the SAME failure shouldn't inherit an exhausted
+  // counter from a previous, unrelated one.
+  const resetSelfHealBudget = React.useCallback(() => {
+    autoHealAttemptsRef.current = 0;
+    quotaRetryAttemptsRef.current = 0;
+    if (selfHealTimerRef.current) { clearTimeout(selfHealTimerRef.current); selfHealTimerRef.current = null; }
+  }, []);
+  React.useEffect(() => {
+    resetSelfHealBudget();
+    return () => { if (selfHealTimerRef.current) clearTimeout(selfHealTimerRef.current); };
+  }, [chatSessionId, resetSelfHealBudget]);
   // Maps a resumed-run's own id (handleResumeRun mints a fresh one) back to the message that held
   // the approval it continues — set by watchForResume once the continuation actually starts, read
   // by finalizeAnswer so that run's eventual answer is folded INTO that same bubble instead of
@@ -662,6 +831,10 @@ export function Chat({
     },
     [streamRun]
   );
+  // See attachToRunRef's own declaration for why this indirection exists (breaks a genuine mutual
+  // dependency between refreshInterrupted, defined earlier, and attachToRun/streamRun, defined
+  // here).
+  React.useEffect(() => { attachToRunRef.current = attachToRun; }, [attachToRun]);
 
   // Poll (short-lived, bounded) for handleResumeRun's continuation run id to appear after an
   // approval, then attach to it via the SAME pollRun/streamRun machinery an ordinary run uses —
@@ -975,8 +1148,15 @@ export function Chat({
                     </div>
                   )}
                   {/* Claude-Code-style collapsed tool-call/thinking summary for this turn — see
-                      ActivityFeed.tsx. Renders nothing for a trivial answer-only turn. */}
+                      ActivityFeed.tsx. Renders nothing for a trivial answer-only turn. m.activity
+                      is client-only (this run happened in THIS browser session); after a reload
+                      it's gone, but the run's own id survives in metadata.run_id and the trace
+                      itself is durable server-side — PersistedActivitySummary re-fetches it on
+                      demand instead of the summary just disappearing. */}
                   {m.role !== "user" && m.activity && <ActivitySummary steps={m.activity} />}
+                  {m.role !== "user" && !m.activity && m.metadata?.run_id && chatSessionId && (
+                    <PersistedActivitySummary spaceId={spaceId} sessionId={chatSessionId} runId={m.metadata.run_id} session={session} />
+                  )}
                   {/* In-chat approval card, at the exact turn the run stopped waiting on a
                       person — see InlineApprovalCard's own header for why this doesn't need to
                       duplicate the separate /approvals inbox to be useful here. */}
@@ -1080,6 +1260,23 @@ export function Chat({
               )}
             </div>
           )}
+          {/* Self-healing in progress — the agent fixing its own mistake, or waiting out a
+              provider quota/rate-limit that clears on its own. Not the InterruptedRunCard: that's
+              reserved for when self-healing gives up or the failure genuinely needs a person. */}
+          {selfHealStatus && (
+            <div className="msg-row">
+              <div className="ai-icon">
+                <svg viewBox="0 0 14 14">
+                  <path d="M7 1L12.5 4.25V10.75L7 14L1.5 10.75V4.25L7 1Z" />
+                </svg>
+              </div>
+              <div className="bubble" style={{ color: "var(--text3)", fontStyle: "italic" }}>
+                {selfHealStatus.mode === "fixing"
+                  ? `That didn't work — trying a different approach (attempt ${selfHealStatus.attempt}/${selfHealStatus.max})…`
+                  : `Waiting for available capacity, then retrying automatically (attempt ${selfHealStatus.attempt}/${selfHealStatus.max})…`}
+              </div>
+            </div>
+          )}
           {/* The durable offer to continue. Rendered independently of `error`, which is
               in-page state and disappears on reload — this is the part that has to still be
               here tomorrow. */}
@@ -1092,12 +1289,13 @@ export function Chat({
                 session={session}
                 onContinued={(newRunId) => {
                   setInterrupted(null);
+                  resetSelfHealBudget();
                   setError(null);
                   setIsLoading(true);
                   storeActiveRunId(spaceId, sessionKey, newRunId);
                   attachToRun(chatSessionId, newRunId);
                 }}
-                onDismissed={() => setInterrupted(null)}
+                onDismissed={() => { setInterrupted(null); resetSelfHealBudget(); }}
               />
             </div>
           )}
@@ -1243,7 +1441,9 @@ export function Chat({
               [
                 { key: "stats" as ThreadPanelTab, label: "Stats" },
                 ...(threadId ? [{ key: "assistant" as ThreadPanelTab, label: "Assistant" }] : []),
-                ...SIDE_PANEL_TABS.map((t) => ({ key: t.key as ThreadPanelTab, label: t.label })),
+                // A project thread hides tabs that only make sense whole-business-wide (e.g.
+                // Heartbeats) — see sidePanelTabs' own header for why.
+                ...sidePanelTabs(Boolean(threadId)).map((t) => ({ key: t.key as ThreadPanelTab, label: t.label })),
                 { key: "artifacts" as ThreadPanelTab, label: "Artifacts" },
               ]
             ).map((t) => (
@@ -1296,7 +1496,11 @@ export function Chat({
                 // nothing is explicitly bound.
                 agentId={projectId && selectedAgentId ? selectedAgentId : undefined}
                 projectId={projectId}
-                lastRunId={lastRun?.id}
+                // lastRun resets on reload (client-only state) — without the fallback, the
+                // Sub-agents tab would say "no run yet in this conversation" right after a
+                // refresh even when the assistant genuinely ran a sub-agent last message. The
+                // last assistant message's own persisted run_id (metadata, durable) covers that.
+                lastRunId={lastRun?.id ?? latestPersistedRunId}
                 isBusinessSpace={dockIsBusinessSpace}
               />
             )}

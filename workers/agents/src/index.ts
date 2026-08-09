@@ -1592,21 +1592,27 @@ app.post(
 );
 
 // ── GET /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/trace ──────────
-// §A1 Phase HX1: the builder-facing structured trace view (script-native runs only — a
-// legacy-ReAct `handleRun` run has no run_traces rows, so this returns an empty array for one,
-// not an error). Builder-only, same rationale as agent-activity's own "builder-only view"
-// gate (workers/spaces/src/index.ts) — a trace can reveal script names/params/token spend a
-// product end user shouldn't see.
-
+// §A1 Phase HX1: the structured trace view (script-native runs only — a legacy-ReAct `handleRun`
+// run has no run_traces rows, so this returns an empty array for one, not an error). Originally
+// builder-only on the same rationale as agent-activity's own "builder-only" gate (a trace can
+// reveal script names/params/token spend), but the shell's own chat surface needs this to
+// re-render a completed run's activity trail after a reload — the client's own in-memory copy is
+// genuinely lost on reload (see writeAgentAnswerToSession's run_id metadata comment). A trace for
+// a SPECIFIC run a person's own conversation already produced is materially different exposure
+// than agent-activity's cross-thread audit rollup — same posture the Sub-agents/Memory/Files
+// panels already use — so a business-member product_end_user is allowed through, gated the same
+// way those are.
 app.get(
   "/spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/trace",
   async (c) => {
     const tenantId = await requireVerifiedTenant(c);
+    const spaceId = c.req.param("spaceId");
     if (getCallerIdentity(c).role === "product_end_user") {
-      return c.json({ error_code: "forbidden", message: "This is a builder-only view" }, 403);
+      if (!(await requireEndUserBusinessMembership(c, spaceId))) {
+        throw forbidden("Not a member of this business");
+      }
     }
 
-    const spaceId = c.req.param("spaceId");
     const sessionId = c.req.param("sessionId");
     const runId = c.req.param("runId");
 
@@ -3929,13 +3935,27 @@ app.get("/spaces/:spaceId/assistant/memory", async (c) => {
 // GET /spaces/:spaceId/assistant/channels — which channels are configured for this space (the
 // Channels panel). Read-only projection of channel_links; the signing secret itself never leaves
 // the credentials vault.
+// Scoping mirrors scheduled-jobs: ?project_id=X scopes to that project's own channel link (a
+// customer-bot project's own Slack/Discord/WhatsApp), ?scope=assistant scopes to the space-wide
+// ones the Space Assistant itself owns (project_id IS NULL), and no param keeps the prior
+// unfiltered "everything" behavior for the Dashboard overview / dedicated Assistant page.
 app.get("/spaces/:spaceId/assistant/channels", async (c) => {
   const spaceId = c.req.param("spaceId");
   await requireVerifiedTenant(c);
   if (!(await requireEndUserBusinessMembership(c, spaceId))) throw forbidden("Not a member of this business");
-  const { results } = await c.env.PLATFORM_DB.prepare(
-    "SELECT channel, enabled, created_at FROM channel_links WHERE space_id = ? ORDER BY channel"
-  ).bind(spaceId).all();
+  const projectId = c.req.query("project_id");
+  const scope = c.req.query("scope");
+  const { results } = projectId
+    ? await c.env.PLATFORM_DB.prepare(
+        "SELECT channel, enabled, created_at, project_id FROM channel_links WHERE space_id = ? AND project_id = ? ORDER BY channel"
+      ).bind(spaceId, projectId).all()
+    : scope === "assistant"
+    ? await c.env.PLATFORM_DB.prepare(
+        "SELECT channel, enabled, created_at, project_id FROM channel_links WHERE space_id = ? AND project_id IS NULL ORDER BY channel"
+      ).bind(spaceId).all()
+    : await c.env.PLATFORM_DB.prepare(
+        "SELECT channel, enabled, created_at, project_id FROM channel_links WHERE space_id = ? ORDER BY channel"
+      ).bind(spaceId).all();
   return c.json({ data: results });
 });
 

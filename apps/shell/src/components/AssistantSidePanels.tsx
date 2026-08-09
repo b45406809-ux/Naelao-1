@@ -31,6 +31,7 @@ import {
   listNotifications,
   markNotificationRead,
   listMyBusinesses,
+  getBusinessAnalytics,
   type SessionCredentials,
   type AssistantPolicy,
   type AgentPolicy,
@@ -41,6 +42,7 @@ import {
   type WorkspaceFile,
   type AssistantCapabilities,
   type AppNotification,
+  type BusinessAnalytics,
 } from "@/lib/api";
 import { useProduct } from "@/lib/product-context";
 import { canManageSpaceSettings } from "@/lib/roles";
@@ -51,21 +53,35 @@ export type SidePanelTab =
   | "memory"
   | "crons"
   | "channels"
+  | "heartbeats"
   | "sub-agents"
   | "files"
   | "skills"
   | "notifications";
 
-export const SIDE_PANEL_TABS: { key: SidePanelTab; label: string }[] = [
+const ALL_SIDE_PANEL_TABS: { key: SidePanelTab; label: string; assistantOnly?: boolean }[] = [
   { key: "config", label: "Config" },
   { key: "memory", label: "Memory" },
   { key: "crons", label: "Crons" },
   { key: "channels", label: "Channels" },
+  // Heartbeats (the wake-up cadence: heartbeats/crons that did real work vs failed) is a
+  // whole-business-oversight concept — meaningless scoped to a single project's own agent, which
+  // doesn't run on its own heartbeat cycle the way the Space Assistant does. Assistant-view only.
+  { key: "heartbeats", label: "Heartbeats", assistantOnly: true },
   { key: "sub-agents", label: "Sub-agents" },
   { key: "files", label: "Files" },
   { key: "skills", label: "Skills" },
   { key: "notifications", label: "Notifications" },
 ];
+
+/** isProjectContext = true (a project thread) hides tabs that only make sense for the
+ *  space-wide Space Assistant (currently just Heartbeats). */
+export function sidePanelTabs(isProjectContext: boolean): { key: SidePanelTab; label: string }[] {
+  return ALL_SIDE_PANEL_TABS.filter((t) => !t.assistantOnly || !isProjectContext).map((t) => ({ key: t.key, label: t.label }));
+}
+
+/** @deprecated use sidePanelTabs(isProjectContext) — kept so any stale import doesn't hard-break. */
+export const SIDE_PANEL_TABS = sidePanelTabs(false);
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -233,16 +249,17 @@ function MemoryPanel({ spaceId, session }: { spaceId: string; session: SessionCr
   );
 }
 
-function CronsPanel({ spaceId, session }: { spaceId: string; session: SessionCredentials }) {
+function CronsPanel({ spaceId, session, projectId }: { spaceId: string; session: SessionCredentials; projectId?: string | null | undefined }) {
   const [crons, setCrons] = React.useState<ScheduledJob[] | null>(null);
   React.useEffect(() => {
     let cancelled = false;
-    listScheduledJobs(spaceId, session).then((c) => { if (!cancelled) setCrons(c); }).catch(() => { if (!cancelled) setCrons([]); });
+    setCrons(null);
+    listScheduledJobs(spaceId, session, { projectId: projectId ?? null }).then((c) => { if (!cancelled) setCrons(c); }).catch(() => { if (!cancelled) setCrons([]); });
     return () => { cancelled = true; };
-  }, [spaceId, session]);
+  }, [spaceId, session, projectId]);
   return (
     <>
-      <div className="tp-section">Scheduled Jobs</div>
+      <div className="tp-section">{projectId ? "This Project's Scheduled Jobs" : "Assistant's Scheduled Jobs"}</div>
       <div style={{ padding: "0 10px 8px" }}>
         {crons === null ? (
           <div style={{ fontSize: 12, color: "var(--text3)", padding: "4px 4px" }}>Loading…</div>
@@ -272,16 +289,17 @@ function CronsPanel({ spaceId, session }: { spaceId: string; session: SessionCre
   );
 }
 
-function ChannelsPanel({ spaceId, session }: { spaceId: string; session: SessionCredentials }) {
+function ChannelsPanel({ spaceId, session, projectId }: { spaceId: string; session: SessionCredentials; projectId?: string | null | undefined }) {
   const [channels, setChannels] = React.useState<ChannelLink[] | null>(null);
   React.useEffect(() => {
     let cancelled = false;
-    listAssistantChannels(spaceId, session).then((c) => { if (!cancelled) setChannels(c); }).catch(() => { if (!cancelled) setChannels([]); });
+    setChannels(null);
+    listAssistantChannels(spaceId, session, { projectId: projectId ?? null }).then((c) => { if (!cancelled) setChannels(c); }).catch(() => { if (!cancelled) setChannels([]); });
     return () => { cancelled = true; };
-  }, [spaceId, session]);
+  }, [spaceId, session, projectId]);
   return (
     <>
-      <div className="tp-section">Integrations</div>
+      <div className="tp-section">{projectId ? "This Project's Channels" : "Assistant's Channels"}</div>
       {channels === null ? (
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>
       ) : channels.length === 0 ? (
@@ -403,15 +421,17 @@ function SkillsPanel({ spaceId, session }: { spaceId: string; session: SessionCr
   );
 }
 
-function NotificationsPanel({ spaceId, session }: { spaceId: string; session: SessionCredentials }) {
+function NotificationsPanel({ spaceId, session, projectId }: { spaceId: string; session: SessionCredentials; projectId?: string | null | undefined }) {
   const [items, setItems] = React.useState<AppNotification[] | null>(null);
   const [loadError, setLoadError] = React.useState(false);
 
+  // The assistant/Home view wants ALL notifications (it oversees the whole business); a project
+  // thread wants only its own agent's — that's what omitting vs. passing projectId does here.
   const load = React.useCallback(() => {
-    listNotifications(spaceId, session, { limit: 30 })
+    listNotifications(spaceId, session, { limit: 30, projectId })
       .then(setItems)
       .catch(() => setLoadError(true));
-  }, [spaceId, session]);
+  }, [spaceId, session, projectId]);
   React.useEffect(() => { load(); }, [load]);
 
   async function markRead(id: string) {
@@ -425,7 +445,7 @@ function NotificationsPanel({ spaceId, session }: { spaceId: string; session: Se
 
   return (
     <>
-      <div className="tp-section">Notifications</div>
+      <div className="tp-section">{projectId ? "This Project's Notifications" : "All Notifications"}</div>
       {loadError ? (
         <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Couldn't load notifications.</div>
       ) : items === null ? (
@@ -460,6 +480,61 @@ function NotificationsPanel({ spaceId, session }: { spaceId: string; session: Se
   );
 }
 
+/** Assistant-view-only: the wake-up cadence — heartbeats/crons that actually did work vs failed,
+ *  broken down by trigger. Reuses the already-built business-analytics rollup (same data the
+ *  Dashboard's own Analytics section renders) rather than a new endpoint. */
+function HeartbeatsPanel({ spaceId, session }: { spaceId: string; session: SessionCredentials }) {
+  const [data, setData] = React.useState<BusinessAnalytics | null>(null);
+  const [loadError, setLoadError] = React.useState(false);
+  React.useEffect(() => {
+    let cancelled = false;
+    getBusinessAnalytics(spaceId, session, "7d")
+      .then((d) => { if (!cancelled) setData(d); })
+      .catch(() => { if (!cancelled) setLoadError(true); });
+    return () => { cancelled = true; };
+  }, [spaceId, session]);
+
+  if (loadError) return <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Couldn&apos;t load heartbeat activity.</div>;
+  if (!data) return <div style={{ padding: "4px 14px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>;
+
+  const { completed_with_work, failed } = data.heartbeats;
+  const total = completed_with_work + failed;
+  return (
+    <>
+      <div className="tp-section">Last 7 Days</div>
+      <div style={{ display: "flex", gap: 8, padding: "0 14px 10px" }}>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 18, fontWeight: 600, color: "var(--text)" }}>{completed_with_work}</div>
+          <div style={{ fontSize: 10.5, color: "var(--text3)" }}>did real work</div>
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 18, fontWeight: 600, color: failed > 0 ? "#dc2626" : "var(--text)" }}>{failed}</div>
+          <div style={{ fontSize: 10.5, color: "var(--text3)" }}>failed</div>
+        </div>
+      </div>
+      {total === 0 ? (
+        <div style={{ padding: "0 14px 8px", fontSize: 12, color: "var(--text3)" }}>
+          No wake-ups yet — heartbeats, connector polls, and scheduled jobs will show up here once they run.
+        </div>
+      ) : data.heartbeats.by_trigger.length > 0 ? (
+        <>
+          <div className="tp-section">Failures by Trigger</div>
+          <div style={{ padding: "0 10px 8px" }}>
+            {data.heartbeats.by_trigger.map((t) => (
+              <div className="tp-tool-row" key={t.trigger}>
+                <div className="tp-tool-name" style={{ textTransform: "capitalize" }}>{t.trigger.replace(/_/g, " ")}</div>
+                <div className="tp-tool-badge" style={{ color: "#dc2626" }}>{t.failed} failed</div>
+              </div>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div style={{ padding: "0 14px 8px", fontSize: 12, color: "var(--text3)" }}>No failures this week.</div>
+      )}
+    </>
+  );
+}
+
 export function AssistantSidePanelBody({
   spaceId,
   session,
@@ -486,9 +561,11 @@ export function AssistantSidePanelBody({
     case "memory":
       return <MemoryPanel spaceId={spaceId} session={session} />;
     case "crons":
-      return <CronsPanel spaceId={spaceId} session={session} />;
+      return <CronsPanel spaceId={spaceId} session={session} projectId={projectId} />;
     case "channels":
-      return <ChannelsPanel spaceId={spaceId} session={session} />;
+      return <ChannelsPanel spaceId={spaceId} session={session} projectId={projectId} />;
+    case "heartbeats":
+      return <HeartbeatsPanel spaceId={spaceId} session={session} />;
     case "sub-agents":
       return <SubAgentsPanel spaceId={spaceId} session={session} lastRunId={lastRunId ?? ""} />;
     case "files":
@@ -496,6 +573,6 @@ export function AssistantSidePanelBody({
     case "skills":
       return <SkillsPanel spaceId={spaceId} session={session} />;
     case "notifications":
-      return <NotificationsPanel spaceId={spaceId} session={session} />;
+      return <NotificationsPanel spaceId={spaceId} session={session} projectId={projectId} />;
   }
 }

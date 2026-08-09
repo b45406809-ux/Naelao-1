@@ -5400,6 +5400,125 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     means this will take several more opportunistic windows to complete, not one. Do not present
     the current `MODEL_BENCHMARKS` axes data as a finished classification in any future summary —
     it is real, honestly partial, and improving incrementally as quota allows.
+115. **A batch of shell UX/backend fixes from live user testing: correct scoping for the shared
+     side-panel tabs (item 113), a self-healing continue loop, reload-safe activity trace,
+     autonomous-by-default assistant, and a real (not assumed) verification that project agents
+     already can't reach space-wide tools.** Model matrix work (item 121/122) was explicitly
+     paused on request ("shut the watcher, will do this later") — the background task was stopped
+     mid-window, no matrix data changed this pass.
+    - **Side-panel tabs are now correctly scoped, not uniformly space-wide.** The data model
+      already supported this — `scheduled_jobs.project_id` and `channel_links.project_id` (NULL =
+      space-wide) and `notifications.project_id` all predate this pass — the bug was that the
+      READ routes never filtered by it and the shared panel (item 113) always called them
+      unscoped. Fixed with a `?project_id=X` / `?scope=assistant` convention on
+      `GET /scheduled-jobs` (spaces worker) and `GET /assistant/channels` (agents worker): the
+      assistant/Home view now sees only its OWN (space-wide) crons/channels, a project thread
+      sees only that project's; neither param omitted keeps the prior unfiltered behavior for the
+      Dashboard overview and dedicated Assistant page, which want "everything" and predate this
+      scoping. Notifications got a `?project_id=` filter too, but the DEFAULT (assistant view)
+      stays unfiltered — "all notifications" was the explicit ask, not "just space-wide ones" —
+      while a project thread passes `project_id` to scope down. New **Heartbeats** tab
+      (assistant-view only, hidden in a project thread — a project agent doesn't run its own
+      heartbeat cycle) reuses the already-built `GET /business-analytics` rollup, no new backend.
+    - **Project agents already cannot reach `workspace-admin`/`project.create` — verified, not
+      assumed, before deciding whether to build a restriction.** Read `launchpadAgentToProfile`
+      (Launchpad's core specialist agents) and `agentTemplateToConfig` (the 7 built-in Naelao
+      Agent Templates, item 68) end to end: neither ever includes `workspace-admin` or
+      `project-coordination` in the prebuilt list a project agent's `ScriptToolSurface` is
+      constructed with (`new ScriptToolSurface(env, cfg.scripts.prebuilt)` builds its `ops` map
+      ONLY from that list — a real enforcement boundary, not a prompt suggestion; an op not in the
+      map is structurally uncallable). Only `DEFAULT_NAELAO_AGENT`/`LAUNCHPAD_ASSISTANT_PROFILE`
+      (the Space Assistant) carry those two scripts. No code change was needed here — the
+      architecture already matches "project agents can only act within their own project," which
+      is worth stating plainly rather than building a redundant guard on top of one that already
+      exists.
+    - **The Space Assistant is now autonomous (`yolo`) by default for newly-provisioned
+      businesses**, not the prior "guided" (`always_ask` + read-only allowlist) default —
+      `seedLaunchpadAssistantPolicy` (provisioner) now PATCHes `approval_mode: "yolo"` at
+      provision time. The read-only allowlist is still stored (harmless under yolo, and a
+      sensible landing point if the owner later dials back to `gate_unless_listed`). Existing
+      businesses are unaffected (this only changes the seed, not a live migration) — an owner
+      changes their own business's mode via the Dashboard tab or the shell's new Config side-panel
+      (below).
+    - **Self-healing continue loop, Claude-Code-`/goal`-style.** A failed run used to ALWAYS
+      surface the manual `InterruptedRunCard`, even for failures the model can plausibly fix
+      itself on a second attempt. `Chat.tsx`'s `refreshInterrupted` now reads the server's own
+      `classifyFailure` verdict (already returned as `failure_kind`/`clears_on_its_own` by the
+      existing `GET .../agent/interrupted` route — item 92's own classifier, previously only
+      driving the wake-up-brief text) and branches three ways: `budget_ceiling` /
+      `model_unavailable` / `approval_pending` still show the manual card immediately (these
+      genuinely need a human — a spend cap or an unreachable model isn't something to silently
+      retry around); a `clears_on_its_own` failure (`quota_exhausted`, `rate_limited`) gets up to
+      4 backed-off auto-retries (5s/15s/30s/60s) with a "Waiting for available capacity, then
+      retrying automatically (attempt x/4)…" status line, falling back to the manual card once
+      exhausted; everything else (`context_overflow`, `step_exhaustion`, `tool_error`, `unknown`)
+      gets up to 3 immediate auto-continues ("That didn't work — trying a different approach
+      (attempt x/3)…") before falling back — re-entering under the SAME run id each time, so the
+      existing action-ledger short-circuit (item 49) still prevents redoing already-completed
+      work. A real mutual-dependency ordering problem surfaced building this: the new
+      `continueInterruptedRun` needs `attachToRun` (defined later in the component, itself needing
+      `streamRun`, which calls `refreshInterrupted`) — broken with an `attachToRunRef` ref
+      indirection rather than reordering the whole file. A manual Continue/Dismiss resets the
+      auto-heal attempt counters, so a person's own intervention gets a fresh budget rather than
+      inheriting an exhausted one. **Not built this pass** (documented, not silently dropped): the
+      assistant resolving a STUCK PROJECT AGENT's run on the business's own behalf, proactively,
+      during its wake-up cycle — this project thread's own Chat.tsx already gets the SAME
+      self-healing (it's one shared component), so a person opening that thread sees it self-heal
+      too; what's not built is the assistant reaching into a DIFFERENT thread's stuck run
+      unprompted, which needs a new cross-DO op and is a real, separably-sized follow-up.
+    - **Activity trace now survives a reload — genuinely durable, not just longer-lived client
+      state.** `m.activity` (the "Thought and used 2 tools" collapsible under a completed reply)
+      was explicitly documented as CLIENT-ONLY, lost on reload. Fixed at the root: every persisted
+      assistant answer (`handleScriptRun`'s `writeAgentAnswerToSession` call) now carries its own
+      `run_id` in `messages.metadata` (cheap — the id was already resolved for billing/checkpoint
+      purposes at that call site). The trace ENDPOINT itself
+      (`GET .../agent/runs/:runId/trace`, §A1 HX1) was builder-only; relaxed to also allow a
+      business-member `product_end_user` (the shell's real caller), matching the same
+      `requireEndUserBusinessMembership` floor the Sub-agents/Memory/Files panels already use — a
+      trace for a run a person's OWN conversation produced is materially different exposure than
+      `agent-activity`'s cross-thread audit rollup. New `PersistedActivitySummary` component:
+      click-to-load (not auto-fetch-on-mount for every old message, which would burst-request a
+      long history for something collapsed-by-default even when live) — renders a "Show activity"
+      link that fetches the real trace and hands it to the same `ActivitySummary` component the
+      live path uses. The Sub-agents panel's `lastRunId` (previously `lastRun?.id`, which resets
+      on reload) now falls back to the last assistant message's own persisted `run_id`, so
+      "No run yet in this conversation" no longer wrongly shows right after a refresh when a
+      sub-agent genuinely ran in the prior message.
+    - **Investigated the reported "asked the assistant to run a sub-agent, saw nothing in the
+      Sub-agents section" bug — could not read that specific session's actual content, and that
+      is correct platform behavior, not a limitation to work around.** The platform's own
+      conversation-access model (item 40/Phase 3's triple-gated endpoint: feature flag + staff
+      approval + end-user consent) deliberately returns METADATA ONLY, never message content, and
+      there's no builder/JWT credential on file for the reported product's owning tenant to read
+      it through the ordinary business-member path either. Rather than build a backdoor around
+      that (which would contradict the platform's own stated privacy design), investigated the
+      STRUCTURAL side instead: `SubAgentsPanel` was correctly wired but scoped to `lastRun?.id`,
+      which is EXACTLY the kind of thing that goes empty after a reload or when reopening a panel
+      later — the reload-survival fix above directly addresses the most likely mechanical cause.
+      If the symptom recurs, the fastest path is the reporter checking Sub-agents right after
+      sending the message (before any reload) — or, if they want it actually decoded here, sharing
+      the goal text and outcome from their own DevTools network tab or asking the assistant itself
+      whether `agent.spawn` was actually called (traceable now via the reload-safe trace above).
+    - **Left sidebar project ordering — a real, confirmed bug, now fixed.** `SpaceDO.listProjects`
+      queried `ORDER BY created_at` with no direction — oldest-first, the opposite of the Sessions
+      list's own `ORDER BY updated_at DESC`, and never actually using the
+      `idx_projects_space(space_id, created_at DESC)` index that was already built expecting DESC.
+      A newly-created/relevant project could get pushed behind the sidebar's "show more" collapse
+      (item 66) instead of surfacing at the top — exactly the reported "lost in recents order."
+      Fixed to `ORDER BY created_at DESC`. `projects` has no last-ACTIVITY column (no writes on
+      thread/session use), so this is recency-by-creation, not true last-active; a real
+      activity-tracked ordering would need a new column + write path and is a separate, larger
+      follow-up if creation-recency isn't good enough in practice.
+    2786/2786 tests pass (9 new: crons/channels/notifications scoping in
+    `scheduled-jobs.test.ts`/`space-assistant-surface.test.ts`/`spacedo-notifications.test.ts`,
+    the trace endpoint's business-member case in `agent-run-trace-endpoint.test.ts`, the project
+    ordering fix in `spacedo-project-configurability.test.ts`, plus the autonomous-default change
+    in `launchpad-assistant-profile.test.ts`), `npx turbo run typecheck` clean (76 tasks).
+    Deployed: `naelao-spaces`, `naelao-agents` (bare `wrangler deploy`, item 83's documented
+    trap), `naelao-provisioner`, `apps/shell` (rebuilt with `next-on-pages` + `NEXT_PUBLIC_API_URL`
+    in the same command per the documented gotcha, deployed `--branch=main`) — all confirmed live
+    (200s on `/p/launchpad/spaces` and `/p/launchpad/new`; the new "Show activity" self-heal
+    strings confirmed present in the deployed bundle before calling this done).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

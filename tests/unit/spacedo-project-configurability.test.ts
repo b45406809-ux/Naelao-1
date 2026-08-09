@@ -243,3 +243,24 @@ describe("SpaceDO projects — max_threads + thread creation enforcement", () =>
     expect(t2.status).toBe(201);
   });
 });
+
+// The left sidebar's project list was ordered oldest-first (no DESC), unlike the Sessions list's
+// own ORDER BY updated_at DESC — a newly created/relevant project could be pushed behind the
+// sidebar's "show more" collapse (item 66) instead of surfacing at the top. Fixed to
+// ORDER BY created_at DESC, matching the (space_id, created_at DESC) index that already existed
+// for this exact query and Sessions' own recency convention.
+describe("SpaceDO projects — list ordering", () => {
+  it("lists newest-created project first (matches Sessions' ORDER BY ... DESC recency convention)", async () => {
+    const doInstance = makeSpaceDO();
+    const older = await call(doInstance, "/projects", "POST", { space_id: "space1", name: "Older Project" });
+    const newer = await call(doInstance, "/projects", "POST", { space_id: "space1", name: "Newer Project" });
+    // Force distinct created_at values — both rows can otherwise land in the same
+    // datetime('now') second in a fast test run, making ASC vs DESC indistinguishable.
+    const ctx = (doInstance as unknown as { ctx: { storage: { sql: { exec: (q: string, ...p: unknown[]) => unknown } } } }).ctx;
+    ctx.storage.sql.exec("UPDATE projects SET created_at = ? WHERE id = ?", "2020-01-01 00:00:00", older.json.id);
+    ctx.storage.sql.exec("UPDATE projects SET created_at = ? WHERE id = ?", "2025-01-01 00:00:00", newer.json.id);
+
+    const list = await call(doInstance, "/projects?space_id=space1", "GET");
+    expect(list.json.data.map((p: { name: string }) => p.name)).toEqual(["Newer Project", "Older Project"]);
+  });
+});

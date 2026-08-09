@@ -3,9 +3,11 @@ import { app } from "../../workers/agents/src/index.js";
 import type { AgentsEnv } from "../../workers/agents/src/index.js";
 import { mintInternalToken } from "@naelao/http";
 
-// §A1 Phase HX1: GET .../sessions/:sessionId/agent/runs/:runId/trace — the builder-facing HTTP
-// side of the structured trace. Builder-only (same rationale as agent-activity's own gate): a
-// product end user must never see script names/params/token spend from a trace.
+// §A1 Phase HX1: GET .../sessions/:sessionId/agent/runs/:runId/trace — the structured trace's
+// HTTP side. A builder JWT always passes; a product_end_user must be an actual member of the
+// target business (checked via SPACES_WORKER's /internal/business-role, same posture as the
+// Sub-agents/Memory/Files panels) so the shell's own chat surface can re-fetch a completed run's
+// activity trail after a reload.
 
 const SECRET = "test-platform-secret";
 const execCtx = { waitUntil: (p: Promise<unknown>) => { void p; }, passThroughOnException() {} } as unknown as ExecutionContext;
@@ -32,10 +34,11 @@ function makeEnv(agentDoStub: { fetch: () => Promise<Response> }) {
   } as unknown as AgentsEnv;
 }
 
-async function getTrace(env: AgentsEnv, role?: string) {
+async function getTrace(env: AgentsEnv, role?: string, userId?: string) {
   const token = await mintInternalToken(SECRET, "tenant-a");
   const headers: Record<string, string> = { "x-naelao-tenant-id": "tenant-a", "x-naelao-internal-token": token };
   if (role) headers["x-naelao-role"] = role;
+  if (userId) headers["x-naelao-user-id"] = userId;
   return app.fetch(
     new Request("https://agents.naelao.com/spaces/space-1/sessions/sess-1/agent/runs/run-1/trace", { headers }),
     env,
@@ -53,12 +56,24 @@ describe("GET .../sessions/:sessionId/agent/runs/:runId/trace", () => {
     expect(body).toEqual(traceBody);
   });
 
-  it("rejects a product_end_user caller with 403 before ever reaching the DO", async () => {
+  it("rejects a product_end_user caller who isn't a member of the business (no SPACES_WORKER to prove it, fails closed)", async () => {
     let called = false;
     const agentDoStub = { async fetch() { called = true; return Response.json({ run_id: "run-1", trace: [] }); } };
     const res = await getTrace(makeEnv(agentDoStub), "product_end_user");
     expect(res.status).toBe(403);
     expect(called).toBe(false);
+  });
+
+  it("allows a product_end_user who IS a member of the business", async () => {
+    const traceBody = { run_id: "run-1", trace: [{ seq: 0, phase: "observe", ts: 1000 }] };
+    const agentDoStub = { async fetch() { return Response.json(traceBody); } };
+    const env = {
+      ...makeEnv(agentDoStub),
+      SPACES_WORKER: { async fetch() { return Response.json({ role: "member" }); } },
+    } as unknown as AgentsEnv;
+    const res = await getTrace(env, "product_end_user", "user-1");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(traceBody);
   });
 
   it("propagates a 404 from the DO unchanged", async () => {
