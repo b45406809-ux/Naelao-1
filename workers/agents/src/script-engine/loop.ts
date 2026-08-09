@@ -240,6 +240,10 @@ export interface Reasoner {
    *  model/provider returned one (a reasoning-capable model with a reasoning level chosen — see
    *  billing-core's MODEL_CAPABILITIES). Optional — most reasoners/models never set this. */
   lastThinking?: string | undefined;
+  /** Prose the model wrote alongside a non-terminal (run/distill/patch) tool call — see
+   *  GatewayReasoner.lastNarration's own doc for why this is captured separately from
+   *  lastThinking. Optional — most reasoners/models never set this. */
+  lastNarration?: string | undefined;
 }
 
 /** Escalation thresholds (spec §11.1 agents.md "Escalation Rules"). Overridable per agent. */
@@ -581,6 +585,7 @@ export async function runScriptLoop(
         tokens: usage.input + usage.output,
         duration_ms: Date.now() - reasonStart,
         ...(thinkingOf(reasoner) ? { thinking: thinkingOf(reasoner) } : {}),
+        ...(narrationOf(reasoner) ? { narration: narrationOf(reasoner) } : {}),
       });
       if (decision.action === "patch") {
         await tools.update(decision.name, { code: decision.code }, decision.reason);
@@ -742,6 +747,7 @@ export async function runScriptLoop(
           tokens: stepUsage.input + stepUsage.output,
           duration_ms: Date.now() - reasonStart,
           ...(thinkingOf(reasoner) ? { thinking: thinkingOf(reasoner) } : {}),
+          ...(narrationOf(reasoner) ? { narration: narrationOf(reasoner) } : {}),
         });
 
         if (decision.action === "run") {
@@ -998,6 +1004,11 @@ function usageOf(reasoner: Reasoner): { input: number; output: number } {
 /** Reads the reasoner's most recently reported chain-of-thought, when it reported one. */
 function thinkingOf(reasoner: Reasoner): string | undefined {
   return reasoner.lastThinking;
+}
+
+/** Reads the reasoner's most recently reported mid-run narration, when it wrote one. */
+function narrationOf(reasoner: Reasoner): string | undefined {
+  return reasoner.lastNarration;
 }
 
 /**

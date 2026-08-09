@@ -336,6 +336,107 @@ describe("GatewayReasoner — reasoning-effort request + lastThinking capture", 
   });
 });
 
+// Mid-run narration — Claude Code's own "the agent talks to me, THEN runs a tool" pattern. A
+// model can attach a real text block alongside its tool_use with tool_choice:"required" (this is
+// exactly what a live capture already showed happening — normalizeUniversalResponse already
+// returned it, it was just discarded once the tool call itself resolved). Captured separately
+// from lastThinking (raw chain-of-thought, kept collapsed) because this is prose written to be
+// read, shown as a real reply line at the point it happened.
+describe("GatewayReasoner — lastNarration capture (mid-run reply alongside a tool call)", () => {
+  it("captures prose alongside a non-terminal (run) tool call", async () => {
+    const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      content: [
+        { type: "text", text: "I'll check the order list first." },
+        { type: "tool_use", name: "run", input: { name: "commerce.list_orders" } },
+      ],
+    }), { status: 200 })) as typeof fetch;
+    try {
+      expect(reasoner.lastNarration).toBeUndefined();
+      const d = await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
+      expect(d).toMatchObject({ action: "run", name: "commerce.list_orders" });
+      expect(reasoner.lastNarration).toBe("I'll check the order list first.");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("also captures narration on the coerced-operation near-miss path (a direct op call, not wrapped in run)", async () => {
+    const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      content: [
+        { type: "text", text: "Let me search for that." },
+        { type: "tool_use", name: "web-search.search", input: { q: "polsia ai" } },
+      ],
+    }), { status: 200 })) as typeof fetch;
+    try {
+      const d = await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: ["web-search.search"] } as never);
+      expect(d).toMatchObject({ action: "run", name: "web-search.search" });
+      expect(reasoner.lastNarration).toBe("Let me search for that.");
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("does NOT capture narration alongside a terminal answer — the answer text itself already covers that turn", async () => {
+    const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      content: [
+        { type: "text", text: "Here's my final answer:" },
+        { type: "tool_use", name: "answer", input: { text: "42" } },
+      ],
+    }), { status: 200 })) as typeof fetch;
+    try {
+      const d = await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
+      expect(d).toMatchObject({ action: "answer", text: "42" });
+      expect(reasoner.lastNarration).toBeUndefined();
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("does NOT capture narration alongside give_up either", async () => {
+    const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      content: [
+        { type: "text", text: "I can't do this." },
+        { type: "tool_use", name: "give_up", input: { reason: "blocked" } },
+      ],
+    }), { status: 200 })) as typeof fetch;
+    try {
+      await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
+      expect(reasoner.lastNarration).toBeUndefined();
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  it("resets to undefined at the start of a decide() call whose response carries no accompanying text", async () => {
+    const reasoner = new GatewayReasoner({ apiKey: "k", gateway: GATEWAY, ctx: CTX });
+    const original = globalThis.fetch;
+    let call = 0;
+    globalThis.fetch = (async () => {
+      call++;
+      const body = call === 1
+        ? { content: [{ type: "text", text: "first call narration" }, { type: "tool_use", name: "run", input: { name: "x" } }] }
+        : { content: [{ type: "tool_use", name: "run", input: { name: "y" } }] };
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    try {
+      await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
+      expect(reasoner.lastNarration).toBe("first call narration");
+      await reasoner.decide({ goal: "g", level: 2, snapshot: {}, candidates: [], availableOperations: [] } as never);
+      expect(reasoner.lastNarration).toBeUndefined();
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
+
 describe("Workers AI as a selectable model — pricing and context are real, not defaults", () => {
   const M = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
 

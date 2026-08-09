@@ -283,6 +283,10 @@ export interface Message {
    *  parked and carried on around (as opposed to pendingApproval, where the WHOLE run stopped).
    *  Rendered as the same inline card, one per entry. */
   deferredApprovals?: RunPendingApproval[];
+  /** CLIENT-ONLY, set once at creation for a message finalized from a live run THIS session (never
+   *  set on a message loaded from history). Tells RevealText to animate this bubble's text in
+   *  rather than show it instantly — a reload must never re-animate a message it already showed. */
+  justArrived?: boolean;
 }
 
 export interface ConsultedThread {
@@ -308,11 +312,14 @@ export interface LiveRunStep {
   /** A reasoning-capable model's own chain-of-thought for a "reason" step, when the model
    *  returned one. Rendered as a separate collapsed "Thoughts" block, not folded into `detail`. */
   thinking?: string;
+  /** Prose the model wrote alongside a non-terminal tool call — a real mid-run reply, shown
+   *  inline (not collapsed) at the point it happened. See TraceStep's own doc header. */
+  narration?: string;
   ts: number;
 }
 
 /** Re-fetches a COMPLETED run's persisted activity trail (§A1 HX1's run_traces, the same shape
- *  live_steps already used) — what makes a reload able to show ActivitySummary again for a
+ *  live_steps already used) — what makes a reload able to show the activity sequence again for a
  *  message that carries metadata.run_id, instead of the trail being gone the moment the client's
  *  own in-memory copy is. Business-member end users and builders alike; see the route's own
  *  header on the agents worker for the gating rationale. */

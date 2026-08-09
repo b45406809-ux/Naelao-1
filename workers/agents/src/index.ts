@@ -1452,6 +1452,12 @@ export interface LiveRunStep {
   tier?: number;
   duration_ms?: number;
   tokens?: number;
+  /** A reasoning-capable model's own chain-of-thought for a "reason" step, when reported. This
+   *  field (and the DO's own checkpoint objects that carry it) already existed — only THIS local
+   *  interface was missing it, so it was passing through untyped rather than actually dropped. */
+  thinking?: string;
+  /** Prose the model wrote alongside a non-terminal tool call — see loop.ts's TraceStep doc. */
+  narration?: string;
   ts: number;
 }
 

@@ -53,7 +53,7 @@ import { DEFAULT_WORKING_MODEL, nativeReasoningForEffort, isValidEffortLevel, ty
 import { ContextUsageMeter } from "./ContextUsageMeter";
 import { AssistantSidePanelBody, sidePanelTabs, type SidePanelTab } from "./AssistantSidePanels";
 import { SubthreadPanel, SubthreadEntry } from "./SubthreadPanel";
-import { LiveActivityLine, ActivitySummary } from "./ActivityFeed";
+import { ActivitySequence, RevealText } from "./ActivityFeed";
 import { InterruptedRunCard } from "./InterruptedRunCard";
 import { InlineApprovalCard } from "./InlineApprovalCard";
 import { InlineConnectorCard } from "./InlineConnectorCard";
@@ -98,12 +98,12 @@ function consultThreadSummary(spaceId: string, c: ConsultedThread): ThreadSummar
   };
 }
 
-/** Reload-safe counterpart to <ActivitySummary>: a message's client-only `activity` is gone the
+/** Reload-safe counterpart to <ActivitySequence>: a message's client-only `activity` is gone the
  *  moment the page reloads, but the run's own id (metadata.run_id) and its persisted trace
  *  (run_traces, §A1 HX1) both survive. Click-to-load rather than auto-fetching for every old
  *  message on mount — a long conversation would otherwise fire a burst of trace requests nobody
- *  asked to see, for something that's collapsed-by-default even when it WAS fetched live. */
-function PersistedActivitySummary({
+ *  asked to see. */
+function PersistedActivitySequence({
   spaceId, sessionId, runId, session,
 }: { spaceId: string; sessionId: string; runId: string; session: SessionCredentials }) {
   const [steps, setSteps] = React.useState<LiveRunStep[] | null>(null);
@@ -122,8 +122,10 @@ function PersistedActivitySummary({
     }
   }
 
-  if (steps) return <ActivitySummary steps={steps} />;
-  if (tried) return null; // fetched and genuinely empty — same "renders nothing" rule ActivitySummary itself follows
+  // A persisted/reloaded run never animates — it already happened, this is just re-fetching the
+  // record of it.
+  if (steps) return <ActivitySequence steps={steps} animate={false} />;
+  if (tried) return null; // fetched and genuinely empty — same "renders nothing" rule ActivitySequence itself follows
   return (
     <button
       type="button"
@@ -609,6 +611,7 @@ export function Chat({
         {
           id: `msg_${Date.now()}`, role: "assistant", content: answerText,
           created_at: new Date().toISOString(),
+          justArrived: true,
           ...(activitySteps.length > 0 ? { activity: activitySteps } : {}),
           ...(pendingApproval ? { pendingApproval } : {}),
           ...(deferredApprovals?.length ? { deferredApprovals } : {}),
@@ -1108,6 +1111,17 @@ export function Chat({
                       {authorLabel(m)}
                     </div>
                   )}
+                  {/* The sequence this turn actually went through — thinking, tool calls, mid-run
+                      replies — rendered BEFORE the final answer bubble below it, because that's
+                      the real order it happened in (see ActivityFeed.tsx). Renders nothing for a
+                      trivial answer-only turn. m.activity is client-only (this run happened in
+                      THIS browser session); after a reload it's gone, but the run's own id
+                      survives in metadata.run_id and the trace itself is durable server-side —
+                      PersistedActivitySequence re-fetches it on demand instead of it disappearing. */}
+                  {m.role !== "user" && m.activity && <ActivitySequence steps={m.activity} animate={m.justArrived} />}
+                  {m.role !== "user" && !m.activity && m.metadata?.run_id && chatSessionId && (
+                    <PersistedActivitySequence spaceId={spaceId} sessionId={chatSessionId} runId={m.metadata.run_id} session={session} />
+                  )}
                   {editingId === m.id ? (
                     <div className="bubble user" style={{ display: "grid", gap: 6, minWidth: 260 }}>
                       <textarea
@@ -1130,7 +1144,9 @@ export function Chat({
                       </div>
                     </div>
                   ) : (
-                    <div className={["bubble", m.role === "user" ? "user" : ""].filter(Boolean).join(" ")}>{m.content}</div>
+                    <div className={["bubble", m.role === "user" ? "user" : ""].filter(Boolean).join(" ")}>
+                      {m.role === "user" ? m.content : <RevealText text={m.content} animate={m.justArrived} />}
+                    </div>
                   )}
                   {/* Edit and re-ask. Only the LAST thing you said — editing something further back
                       would silently discard every exchange after it, which is a destructive act
@@ -1146,16 +1162,6 @@ export function Chat({
                         Edit
                       </button>
                     </div>
-                  )}
-                  {/* Claude-Code-style collapsed tool-call/thinking summary for this turn — see
-                      ActivityFeed.tsx. Renders nothing for a trivial answer-only turn. m.activity
-                      is client-only (this run happened in THIS browser session); after a reload
-                      it's gone, but the run's own id survives in metadata.run_id and the trace
-                      itself is durable server-side — PersistedActivitySummary re-fetches it on
-                      demand instead of the summary just disappearing. */}
-                  {m.role !== "user" && m.activity && <ActivitySummary steps={m.activity} />}
-                  {m.role !== "user" && !m.activity && m.metadata?.run_id && chatSessionId && (
-                    <PersistedActivitySummary spaceId={spaceId} sessionId={chatSessionId} runId={m.metadata.run_id} session={session} />
                   )}
                   {/* In-chat approval card, at the exact turn the run stopped waiting on a
                       person — see InlineApprovalCard's own header for why this doesn't need to
@@ -1235,8 +1241,8 @@ export function Chat({
                 </svg>
               </div>
               <div style={{ minWidth: 0 }}>
-                {liveActivity.length > 0 && <div style={{ marginBottom: 4 }}><LiveActivityLine steps={liveActivity} /></div>}
-                <div className="bubble">{streamingContent}</div>
+                {liveActivity.length > 0 && <ActivitySequence steps={liveActivity} animate live />}
+                <div className="bubble"><RevealText text={streamingContent} animate /></div>
               </div>
             </div>
           )}
@@ -1248,8 +1254,8 @@ export function Chat({
                 </svg>
               </div>
               {liveActivity.length > 0 ? (
-                <div className="bubble">
-                  <LiveActivityLine steps={liveActivity} />
+                <div style={{ minWidth: 0 }}>
+                  <ActivitySequence steps={liveActivity} animate live />
                 </div>
               ) : (
                 <div className="bubble typing-indicator">

@@ -242,6 +242,12 @@ export interface TraceStep {
    *  applies to. Rendered as a collapsed "Thoughts" block a user can expand, distinct from
    *  `detail` (which stays a short label like the chosen action). */
   thinking?: string | undefined;
+  /** Prose the model wrote ALONGSIDE a non-terminal tool call (e.g. "I'll check the order list
+   *  first" right before calling `run`) — see GatewayReasoner.lastNarration's own doc. Rendered
+   *  as a plain, always-visible reply line at the point it happened (Claude Code's own "the agent
+   *  talks to me, then runs a tool" pattern), distinct from `thinking` (which stays collapsed —
+   *  internal reasoning, not something written to be read). */
+  narration?: string | undefined;
   /** Date.now() at the moment the step was recorded. */
   ts: number;
 }

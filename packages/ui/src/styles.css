@@ -208,6 +208,7 @@
 .tool-status-dot.done{background:#22c55e}
 .tool-status-dot.error{background:#ef4444}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.activity-ellipsis{display:inline-block;margin-left:1px;animation:pulse 1s infinite}
 .tool-card-body{padding:10px 12px;border-top:1px solid var(--border);font-size:12px;color:var(--text3);font-family:'Courier New',monospace;line-height:1.5;display:none}
 .tool-card.expanded .tool-card-body{display:block}
 .tool-card-toggle{margin-left:auto;color:var(--text3);font-size:11px}

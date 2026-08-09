@@ -469,12 +469,24 @@ export class GatewayReasoner implements Reasoner {
    *  model/provider returned one (see ReasoningRequest's doc) — undefined for every model that
    *  doesn't report one. Mirrors lastUsage's "read immediately after each awaited decide()" contract. */
   lastThinking: string | undefined;
+  /** Prose the model wrote ALONGSIDE a non-terminal tool call (run/distill/patch) — e.g. "I'll
+   *  search the web for that" right before calling `run`. This is what Claude Code's own UI
+   *  shows as a mid-run reply between tool calls, and it costs nothing extra to capture: with
+   *  `tool_choice:"required"` a model can still attach a text block next to its tool_use, and
+   *  `normalizeUniversalResponse` already returns it — it was simply discarded once the tool call
+   *  itself resolved. Deliberately NOT captured for a terminal `answer`/`give_up` decision (the
+   *  answer text itself, or the give_up reason, already covers that turn — a separate narration
+   *  line there would just duplicate it). Mirrors lastThinking's "read immediately after each
+   *  awaited decide()" contract; a thinking model's real chain-of-thought and this are two
+   *  different things and both can be present on the same turn. */
+  lastNarration: string | undefined;
 
   constructor(private readonly deps: ReasonerDeps) {}
 
   async decide(input: Parameters<Reasoner["decide"]>[0]): Promise<ReasonDecision> {
     this.lastUsage = undefined;
     this.lastThinking = undefined;
+    this.lastNarration = undefined;
     const userContent = JSON.stringify({
       // Who this agent is, repeated into the payload the model is answering about.
       //
@@ -599,7 +611,12 @@ export class GatewayReasoner implements Reasoner {
     // Preferred path: a real, schema-constrained tool call.
     if (toolCall) {
       const decision = decisionFromToolCall(toolCall);
-      if (decision) return decision;
+      if (decision) {
+        if (decision.action !== "answer" && decision.action !== "give_up" && text.trim()) {
+          this.lastNarration = text.trim();
+        }
+        return decision;
+      }
       // The model called the OPERATION directly instead of wrapping it in `run`.
       //
       // Observed live: it emitted a tool call named `knowledge.search`, which is not one of the
@@ -611,7 +628,10 @@ export class GatewayReasoner implements Reasoner {
       // over a wrapper the model forgot. Gated on the dotted `namespace.op` shape every operation
       // in this platform uses, so a genuinely unrecognisable name still falls through.
       const asOperation = coerceOperationToolCall(toolCall);
-      if (asOperation) return asOperation;
+      if (asOperation) {
+        if (text.trim()) this.lastNarration = text.trim();
+        return asOperation;
+      }
       // A tool call we can't use (unknown action, or missing a required field) is a genuine
       // reasoner failure — but the model may ALSO have emitted usable prose alongside it, so fall
       // through to the text parse rather than giving up while an answer is sitting right there.
