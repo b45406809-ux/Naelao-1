@@ -5222,7 +5222,16 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      deployed, `apps/shell` deployed. **Not done: the matrix run itself** — blocked on the rolling
      quota window, unblocks with the CF Workers Paid plan ($5/mo) or as the window ages out.
      Eval space kept for it: product `df1969c5-c1da-4095-8a29-f34125b5aa1d` (slug
-     `eval-matrix-space`, disposable builder org, set to `yolo`).
+     `eval-matrix-space`, disposable builder org, set to `yolo`, `membershipModel: hybrid`).
+     **To run it once budget exists** (needs a builder JWT for that product's org — re-mint via
+     `POST /v1/auth/register` + `POST /v1/builder/products` if the old one expired):
+     `./infra/scripts/run-model-matrix.sh <space-id> <token-file>
+     tests/eval-datasets/agent-capability-matrix.jsonl <model> [<model> ...]` — it refuses to start
+     when capped, gives each model its own session, and reports real neuron spend per model. Then
+     `node infra/scripts/matrix-results-to-benchmarks.mjs` emits the exact `axes` TypeScript to
+     paste into `MODEL_BENCHMARKS`; Discover already renders it. Recommended first five, cheapest-
+     first so a partial run still yields a ranking: llama-3.3-70b (the default), granite-4.0-h-micro,
+     qwen3-30b-a3b, mistral-small-3.1-24b, gemma-4-26b.
      - **A full end-user journey audit on production also ran this session
        (`docs/E2E_2026-08-09_end_user_journey.md`) — 13 steps as a real signed-up end user, all
        passing.** Live-confirmed two prior fixes still hold: the starter-thread dedup (item 104 —
