@@ -454,3 +454,93 @@ only figure actually measured. Nothing else is filled in until it is run.
 - [Claw-SWE-Bench (arXiv 2606.12344)](https://arxiv.org/abs/2606.12344)
 - [WildClawBench](https://github.com/InternLM/WildClawBench/)
 - [claweval — OpenClaw Model Evaluation Suite](https://github.com/mcbuckeye/claweval)
+
+---
+
+# Addendum 2 — the feature comparison, substantiated (2026-08-09)
+
+Every Naelao claim below is traceable to code or to a live production test in this repo's
+changelog. Competitor claims are from their own docs/READMEs, cited at the end. Where we are
+behind, it says so — a comparison that only lists wins is marketing, not engineering.
+
+## These are not the same kind of thing
+
+This is the single most important framing, and it decides which features are even *possible*:
+
+- **OpenClaw** — a local gateway daemon for **one operator**. Its own docs: "exactly one WhatsApp
+  session per host, one Telegram bot connection." Its WhatsApp is Baileys, i.e. the operator's own
+  personal account linked as a device.
+- **Hermes** — a persistent daemon on **your own infrastructure**. "All data stays on your machine.
+  No telemetry."
+- **Claude Code** — a coding harness for a developer at a terminal.
+- **Naelao** — a **multi-tenant platform**: a builder ships a product to *their* customers, each of
+  whom gets an isolated business with its own agents, wallet, credentials and approvals.
+
+So "beats OpenClaw" is only meaningful per-axis. On a single operator's laptop, OpenClaw's model is
+simpler and in places better. On "a builder runs a business, or sells to customers who each run
+one", the single-operator assumption is structurally disqualifying.
+
+## Where the architectures genuinely differ
+
+| Capability | OpenClaw | Hermes | Claude Code | Naelao |
+|---|---|---|---|---|
+| Persistent memory across sessions | ✅ encrypted at rest | ✅ signature feature | ✗ per-session | ✅ 6-layer Memory OS, project-shared L3/L4/L6, private L5 |
+| Writes its own reusable skills | ✅ skills system | ✅ self-improving loop | ✗ | ✅ `distill` + versioned R2 library + `skill-manager` |
+| Skill **health/recency** and repair routing | ✗ not documented | ✗ not documented | ✗ | ✅ `skill-health.ts` — bounded recent-outcome window, `broken`/`degrading` verdicts route to repair |
+| Cron / scheduled unattended work | ✅ | ✅ built-in scheduler | ✗ | ✅ per-business, **verified firing live 3× unattended** |
+| Human approval for risky actions | ✅ high-risk routed to human | partial (toolsets) | ✅ permission prompts | ✅ **durable** — suspends, survives 24h, resumes |
+| Exactly-once on retry | ✗ | ✗ | ✗ | ✅ action ledger keyed to the original run |
+| Messaging channels | **20+** | **16+** incl. Signal/iMessage | ✗ | 5 (email, Slack, Discord, WhatsApp, Telegram) |
+| Model flexibility | provider-configurable | **200+ via OpenRouter** | Anthropic | 16 curated (**this account: Workers AI only**) |
+| Runs fully local / no telemetry | ✅ | ✅ | ✅ | ✗ cloud |
+| Multi-tenant isolation (sell to customers) | ✗ single operator | ✗ single operator | ✗ | ✅ per-business tenant, credentials, wallet |
+| Holds real money | ✗ | ✗ | ✗ | ✅ Whop connected-account wallet + payout approval |
+| Structured run trace / observability | ✗ | ✗ | partial | ✅ HX1 `run_traces`, builder-readable |
+
+## Where we are genuinely behind
+
+Stated plainly, because these are real:
+
+1. **Channels: 5 vs 16–20.** Notably missing Signal and iMessage. Both need a phone number bound to
+   a long-running local process — an assumption a multi-tenant platform cannot make, so this gap is
+   structural rather than lazy, but it is still a gap.
+2. **Model choice: 16 curated, and on this deployment Workers AI only** — no Claude reachable
+   (verified: 61 models on the account, zero non-`@cf/`). Hermes's 200+ via OpenRouter is a real
+   advantage for anyone who wants a specific model.
+3. **Local-first privacy.** Both competitors keep everything on the user's machine. We are cloud.
+   For an individual power user that is a genuine reason to prefer them.
+4. **Code execution is currently disabled here.** Tiers 2–5 need `worker_loaders` (CF Workers Paid).
+   Until then every seeded skill is unrunnable on this deployment — a hard, honest limitation.
+5. **Skill self-improvement is built but unproven at scale.** Hermes markets this as its signature.
+   Ours exists with health tracking they don't document — but neither has published evidence.
+
+## Where we are ahead, and why it matters for a business runner
+
+- **Durable approvals.** OpenClaw routes high-risk actions to a human; ours *suspends the run* and
+  resumes it up to 24h later. The difference is decisive unattended: an approval that expires in
+  seconds means the agent stops the moment you step away. We shipped precisely that bug and fixed
+  it — the 28-second inline poll used to report a sleeping owner as a *rejection*.
+- **Exactly-once.** A retry re-runs completed work in every competitor here. Our action ledger
+  short-circuits actions already performed under the original run id. For an agent that spends
+  money, "retry sent the invoice twice" is not a rough edge.
+- **It holds the money.** No competitor has a custody rail. A business wallet with a payout-approval
+  state machine is what makes "run a business" more than "draft emails about a business".
+- **Trace-based accountability.** We can prove what an agent did, per step, which is what made this
+  session's grader possible at all — and it caught a model *claiming* work it never performed.
+
+## The honest headline
+
+We beat OpenClaw and Hermes on **the things that matter when nobody is watching and money moves**:
+durable approvals, exactly-once execution, money custody, per-business isolation, and provable
+traces. They beat us on **reach and freedom**: more channels, far more models, fully local.
+
+Claude Code isn't a competitor on this axis at all — it is the best-in-class coding harness, and
+the useful thing to take from it is harness discipline, which is what the `Claw-SWE-Bench` result
+(19.1% → 73.4% on adapter design alone) says decides outcomes more than model choice.
+
+## Sources
+
+- [OpenClaw architecture (Valletta, 2026)](https://vallettasoftware.com/blog/post/openclaw-architecture-diagram-2026)
+- [What is OpenClaw — features and architecture (Macaron)](https://macaron.im/blog/what-is-openclaw)
+- [Hermes Agent — features overview (Nous Research docs)](https://hermes-agent.nousresearch.com/docs/user-guide/features/overview)
+- [Hermes Agent (GitHub)](https://github.com/nousresearch/hermes-agent)
