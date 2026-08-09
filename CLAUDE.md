@@ -5164,6 +5164,66 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      2724/2724 tests pass (6 new), `npx turbo run typecheck`
      clean (76 tasks), `naelao-agents` + `naelao-provisioner` deployed.
 
+112. **A repeatable capability benchmark — 6 test cases, trace-graded — is BUILT and validated
+     against production; the model matrix itself is blocked on a Cloudflare quota window, not on
+     code.** Grounded in published work rather than invented: `Claw-SWE-Bench` (arXiv 2606.12344)
+     holds the model fixed and swings Pass@1 from **19.1% to 73.4% on adapter design alone**, and
+     reports harness choice worth 27.4pp against model choice's 29.4pp; `WildClawBench` runs the
+     same 60 tasks under OpenClaw / Claude Code / Codex CLI / Hermes and sees the same effect
+     (GPT-5.4: 56.8% on Codex, 50.3% on OpenClaw). So a generic leaderboard measures the wrong
+     quantity — what decides whether OUR assistant runs a business is THIS loop, which is what the
+     matrix scores.
+     - **`workers/eval/src/trace-checks.ts` grades from the HX1 run trace, not the prose.** The LLM
+       judge reads what the agent WROTE — right for answer quality, wrong for "did it do this",
+       since a model can describe work it never performed and score well because the paragraph is
+       genuinely good (item 108 exactly). Ten check types (`called_tool`, `verified_after_write`,
+       `no_fabricated_success`, `no_identical_retry`, `escalated`, `no_secret_leak`, …). `claweval`
+       scores its own tool-calling category the same way ("deterministic — tool name + params
+       match"). Composition with the judge is **MIN, not average** — the same rule `judgeAnswer`
+       already applies between correctness and semantic_validity: a run the trace proves fabricated
+       must not be rescued by writing well about it.
+     - **New dataset `tests/eval-datasets/agent-capability-matrix.jsonl`** — 6 cases over 6 axes
+       (agency, safety/credentials, fabrication, recovery, proactive escalation, multi-source
+       synthesis). Each maps to a published benchmark category AND a real production failure of
+       ours, so no axis exists just to be passed. `trace_only` on the runner skips the judge
+       entirely — a real cost lever, since the configured judge is a premium model and judging 4
+       cases costs several times the 6 runs being measured.
+     - **Validated against production, and it immediately caught a real model weakness.** The trace
+       endpoint returned 13 real steps; asked to create a project and read it back, llama-3.3-70b
+       hit the approval gate on `project.create`, correctly ran `project.list`, then **re-chose the
+       already-parked action five consecutive times** (seq 7-11) until stall detection ended the
+       run. The harness was correct throughout (it said "still waiting on a human for this one",
+       incremented the stall counter, asked for a closing summary); the model ignored all three.
+     - **Caught a flaw in my own test design before it corrupted five models' numbers:** on a fresh
+       business `project.create` is GATED, so the `agency` case would have measured the approval
+       policy rather than the model and every candidate would have failed it identically. The eval
+       space is now `yolo`; approval behaviour is measured by the `proactivity` case, where it
+       belongs.
+     - **THE QUOTA INSTRUMENT LIES — the most important operational finding here.** The Workers AI
+       free allocation is **not a calendar-day cap**: 2026-08-07 used **13,540** neurons and 08-08
+       used **11,068**, both above the nominal 10,000, which a per-day counter cannot explain. It
+       behaves as a **rolling 24-hour window** (budget frees as the prior day's spend ages out, NOT
+       at midnight). And the obvious check is wrong in the dangerous direction: **a request rejected
+       by the limiter consumes no neurons**, so on a capped day the GraphQL aggregate reports
+       *0 used / 10,000 remaining* while every real call fails. Trusting it recorded
+       `avg_score=0.00` for two models that never ran — a quota wall rendered as "these models are
+       bad", the instrument-failure-as-result mistake the trace grader exists to prevent, arriving
+       from a direction nobody was watching. **Always probe with one minimal inference; never trust
+       `aiInferenceAdaptiveGroups` for remaining budget.** `infra/scripts/run-model-matrix.sh` now
+       probes and REFUSES to start (exit 3), re-checking between models, and gives each model its
+       own fresh session (sharing one `--session-id` let model B read model A's conversation
+       history — measuring its ability to read another model's homework). The 3 polluted baseline
+       runs were purged so the first real pass sets the baseline.
+     - Measured cost: **~330 neurons per multi-step agent run** on llama-3.3-70b (n=2) ⇒ ~2,000 per
+       6-case model pass ⇒ ~5 models per allocation. Recorded as `neuronsPerRun` (only where truly
+       measured); `MODEL_BENCHMARKS` gained `axes`/`CapabilityAxis` and `validateModelBenchmarks`
+       now rejects incoherent data (7/5 passed, zero-check axes). Discover renders both.
+     2770/2770 tests pass (46 new), `npx turbo run typecheck` clean (76 tasks), `naelao-eval`
+     deployed, `apps/shell` deployed. **Not done: the matrix run itself** — blocked on the rolling
+     quota window, unblocks with the CF Workers Paid plan ($5/mo) or as the window ages out.
+     Eval space kept for it: product `df1969c5-c1da-4095-8a29-f34125b5aa1d` (slug
+     `eval-matrix-space`, disposable builder org, set to `yolo`).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
