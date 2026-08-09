@@ -94,6 +94,9 @@ const MODEL_LABELS: Record<string, string> = {
   "@cf/nvidia/nemotron-3-120b-a12b": "Nemotron 3 120B",
   "@cf/moonshotai/kimi-k2.6": "Kimi K2.6",
   "@cf/moonshotai/kimi-k2.7-code": "Kimi K2.7 Code",
+  "google-ai-studio/gemini-flash-lite-latest": "Gemini Flash-Lite — needs a Google AI Studio key",
+  "google-ai-studio/gemini-flash-latest": "Gemini Flash — needs a Google AI Studio key",
+  "google-ai-studio/gemini-pro-latest": "Gemini Pro — needs a Google AI Studio key",
 };
 
 function centsToDisplay(cents: number, currency = "USD"): string {

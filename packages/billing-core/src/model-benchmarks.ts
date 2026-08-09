@@ -249,6 +249,40 @@ export const MODEL_BENCHMARKS: Record<AllowedModel, ModelBenchmark> = {
     ["Code-specialized variant of the Kimi K2 family", "262K context window"],
     ["Code-heavy tasks — not yet run through our own agent eval"]
   ),
+  // Google AI Studio (Gemini) — a genuinely different routing/billing relationship from every
+  // model above: BYOK to a real Google AI Studio API key (often a free-tier one), reached through
+  // the CF AI Gateway's compat endpoint rather than the account's own Workers AI/Unified Billing
+  // path (shared/ai-client.ts's isGoogleAiStudioModel doc has the full "why"). The concrete reason
+  // to offer it in the model switcher: when this account's shared Workers AI neuron allowance
+  // (CLAUDE.md's Live Deployment Facts) is exhausted, a person can switch to Gemini and keep
+  // working on their OWN key's separate quota, rather than waiting out the rolling window.
+  // These are Google's own "-latest" aliases, not pinned ids — see models.ts's MODEL_CONTEXT_WINDOWS
+  // comment for the live-tested reason (the 2.5 generation was cut off from new-user access
+  // mid-session; the aliases are Google's own designed answer to exactly this churn).
+  // costBasis "measured" — Google's own published per-1M-token pricing for whichever generation
+  // the alias currently resolves to (confirmed live: gemini-3.5/3.6-family ids), wired into
+  // computeTokenCostMicro's table above; an alias's underlying model — and its real price — can
+  // shift over time, unlike a pinned id. NOT yet run through this platform's own agent-loop eval
+  // (docs/MODEL_EVAL_2026-07-25.md / agent-capability-matrix.jsonl) — no `eval`/`axes` entries
+  // until that happens, same "don't fabricate a score" precedent as every other un-run model here.
+  "google-ai-studio/gemini-flash-lite-latest": M(
+    "google-ai-studio/gemini-flash-lite-latest", "Gemini", "economy", "measured",
+    "$0.30 / $2.50 per 1M tokens in / out — Google's own published pricing for the Gemini 3.5 Flash-Lite generation this alias currently resolves to.",
+    ["Cheapest Gemini tier", "1M-token context window", "Always tracks Google's current fastest/cheapest model — no manual re-pinning needed"],
+    ["A cheap escape hatch when the platform's own Workers AI allowance is exhausted", "High-volume simple tasks"]
+  ),
+  "google-ai-studio/gemini-flash-latest": M(
+    "google-ai-studio/gemini-flash-latest", "Gemini", "standard", "measured",
+    "$1.50 / $7.50 per 1M tokens in / out — Google's own published pricing for the Gemini 3.6 Flash generation this alias currently resolves to.",
+    ["Balanced Gemini tier", "1M-token context window", "Configurable thinking budget (none/low/medium/high)"],
+    ["General agent work on a Gemini key", "Tasks needing a bigger context window than the platform default"]
+  ),
+  "google-ai-studio/gemini-pro-latest": M(
+    "google-ai-studio/gemini-pro-latest", "Gemini", "premium", "measured",
+    "$2.00 / $12.00 per 1M tokens in / out — Google's own published pricing for the Gemini 3.1 Pro generation this alias currently resolves to (standard, ≤200K-context tier).",
+    ["Google's flagship reasoning model", "1M-token context window", "Reasoning cannot be fully disabled — always at least some thinking depth"],
+    ["Hard judgement calls on a Gemini key", "Very low free-tier RPM — expect to hit rate limits quickly on a free key (confirmed live: a real 429 on this exact tier during testing)"]
+  ),
 };
 
 /** Ordering used to rank cost tiers, cheapest first — the axis `effort.ts`'s escalation ceiling

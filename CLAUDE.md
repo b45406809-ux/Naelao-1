@@ -5520,6 +5520,95 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     (200s on `/p/launchpad/spaces` and `/p/launchpad/new`; the new "Show activity" self-heal
     strings confirmed present in the deployed bundle before calling this done).
 
+116. **Google AI Studio (Gemini) is now a second, genuinely independent LLM provider — a real
+     escape hatch when the account's shared Workers AI neuron allowance is exhausted — plus a
+     real production bug found and fixed along the way: `script.find`'s embedding call had no
+     failure handling and could kill an ENTIRE run regardless of which chat model was selected.**
+     - **Routing is a separate path, confirmed live, not assumed.** The account's normal LLM path
+       (`shared/ai-client.ts`'s `universalGatewayUrl`, `api.cloudflare.com/.../ai/v1/chat/
+       completions`) only accepts third-party (non-`@cf/...`) models under paid Unified Billing —
+       this account has none. A real Google AI Studio key is BYOK instead, which needs the OLDER
+       `gateway.ai.cloudflare.com/v1/{account}/{gateway}/compat/chat/completions` endpoint, with
+       the real Google key riding in the plain `Authorization: Bearer` header (confirmed via
+       Cloudflare's own BYOK docs) and `cf-aig-authorization` separately authenticating the
+       gateway itself (this account's gateway requires it — confirmed live via a 401 without it).
+       New `isGoogleAiStudioModel`/`googleAiStudioGatewayUrl`/`googleAiStudioGatewayHeaders`
+       (`ai-client.ts`), and `canAuthenticateLlm` gained an optional `model` param so a Gemini
+       model is checked against `googleAiStudioApiKey` specifically rather than the CF token/aig
+       token that authenticate every other model — `reasoner.ts`'s `decide()` branches on
+       `isGoogleAiStudioModel(query.model)` to pick the right URL/headers pair, with
+       `buildUniversalBody`'s own JSON body needing zero changes (it was already provider-agnostic
+       — model/messages/tools/reasoning only). New `GOOGLE_AI_STUDIO_API_KEY` secret on
+       `naelao-agents`, threaded into `NaelaoAgentDO`'s two `GatewayReasoner` construction sites.
+     - **The exact model ids chosen were a live, tested finding, not a style choice.** The
+       obvious pick — pinned `gemini-2.5-flash`/`gemini-2.5-flash-lite`/`gemini-2.5-pro` ids —
+       failed live: Google had already cut off the ENTIRE 2.5 generation from new-user access by
+       the time this was wired (`404 "This model ... is no longer available to new users"`),
+       confirmed against the real key for both flash variants; only `gemini-2.5-pro` still
+       resolved (a real `429` rate-limit, not a 404 — i.e. genuinely valid, just free-tier-tight).
+       Enumerated the account's REAL available models (`GET /v1beta/models`) and confirmed live
+       (200 OK) that Google's own `-latest` aliases — `gemini-flash-lite-latest`/
+       `gemini-flash-latest`/`gemini-pro-latest` — resolve correctly, alongside several pinned
+       3.x-generation ids (`gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.6-flash`), which
+       is the generation these aliases currently point to. Switched `ALLOWED_MODELS` to the
+       aliases specifically: Google's aggressive generation churn (confirmed within this single
+       session) makes a pinned id fragile in exactly the way the aliases are Google's own designed
+       answer to, which matters more here than this codebase's usual pinned-id-for-cost-
+       predictability convention. Pricing (`computeTokenCostMicro`, `model-benchmarks.ts`) uses
+       Google's own published rates for the generation each alias currently resolves to
+       (flash-lite $0.30/$2.50, flash $1.50/$7.50, pro $2.00/$12.00 per 1M tokens), honestly noted
+       as tracking whatever the alias points to rather than a fixed price forever.
+     - **The real bug: `script.find`'s embedding call had NO exception handling and could kill an
+       entire run before the reasoner was ever reached, regardless of chosen model.** Reproduced
+       live: dispatching a real `/agent/run` (even with `model: google-ai-studio/...` explicitly
+       set) 500'd with a raw Workers AI error (`"4006: you have used up your daily free
+       allocation of 10,000 neurons..."`) and never reached the reasoner at all — because FIND
+       runs algorithmically ahead of any model choice (per the script-native OBSERVE → FINGERPRINT
+       → FIND → GATE → EXECUTE → VERIFY → DISTILL doctrine) and used the SAME Workers AI embedder
+       either way. `script-find.ts`'s doc comment already promised graceful degradation "when no
+       Vectorize index/embedder is wired" but that branch only covered the ABSENT case — when both
+       were wired but the underlying `embed()`/`query()` call itself threw at runtime (quota
+       exhaustion, a transient outage), nothing caught it. Fixed by extracting the existing
+       tag/substring fallback into `degradedScan()` and wrapping the vector-search branch in
+       try/catch, falling back to it on ANY failure — this is precisely what makes "switch to
+       Gemini and keep working" actually true rather than just true for the reasoning call alone.
+       Found and fixed the same gap one layer over: `ScriptToolSurface.create`'s own embed call was
+       already guarded, but the `indexScriptEmbedding()` call it makes right after (used by
+       `distill`/`patch` too) was not — a script.create succeeding is now never blocked by its
+       search-index entry failing to write (a pure index-maintenance step, not the core R2 write);
+       `removeScriptEmbedding()` got the same treatment for parity on delete. `memory-os.ts`'s own
+       two embed call sites were ALREADY correctly guarded (checked, not assumed) — this was
+       specifically a `script-find.ts` gap.
+     - **The ComposerDock Effort panel navigation bug is fixed.** Selecting an effort level used
+       to call `setPanel("model")` right after committing the choice, bouncing the user back to
+       the Models panel; removed, so choosing an effort level now stays on the Effort panel until
+       the person manually changes tabs or clicks outside (which the dock already handled).
+     - **Live-verified end to end through the real deployed pipeline, not just structurally.**
+       Before the `script-find.ts` fix: every model (Gemini AND the default Llama) 500'd identically
+       with the raw neuron-quota error, confirming this was a genuine platform-wide bug, not
+       specific to Gemini. After the fix: `google-ai-studio/gemini-flash-lite-latest` and
+       `google-ai-studio/gemini-flash-latest` both completed real runs end to end
+       (`"status":"completed","final_answer":"gemini works"`) through the actual deployed
+       `naelao-agents` worker against the live `launchpad` product.
+     2811/2811 tests pass (25 new: `gemini-provider-routing.test.ts`'s 22 cases covering routing,
+     auth, and full catalog wiring — context window/reasoning capability/cost tier/effort
+     ladder/pricing — plus 3 new `script-find.ts` degradation cases and 1 new
+     `ScriptToolSurface.create` resilience case in `script-engine.test.ts`), `npx turbo run
+     typecheck` clean (76 tasks). Deployed: `naelao-agents` (bare `wrangler deploy`, item 83's
+     documented `--env production` trap, twice — once for the routing wiring, once more after the
+     model-id correction + script-find fix), `apps/shell` and `apps/dashboard` (both rebuilt with
+     `next-on-pages` + their respective `NEXT_PUBLIC_API_URL` conventions in the same command per
+     the documented gotcha — shell's bare, dashboard's with `/v1` — deployed `--branch=main`,
+     confirmed `environment: "production"` via the Pages API for the shell deploy). **Operational
+     note: `GOOGLE_AI_STUDIO_API_KEY` is now SET and LIVE-VERIFIED on `naelao-agents` — do not
+     re-prompt the user for it.** Per the user's own note, this is a rotatable dev key ("we renew
+     when with development like other keys") — if Gemini calls start 401ing, suspect a rotated key
+     before suspecting the code. **Not done:** the model matrix work (items 121/122 in the
+     session's own task list) remains explicitly paused per prior user instruction and was not
+     touched or resumed this pass; Gemini models are NOT yet run through the capability-matrix
+     eval, so they carry no `eval`/`axes` entries on the Discover page, same "don't fabricate a
+     score" precedent as every other un-run model.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
@@ -5767,6 +5856,17 @@ Re-verify before relying on any of these, but they are the real values as of thi
   ALREADY SET: `RESEND_API_KEY` on `naelao-notifications` (do not re-prompt), `PUBLIC_AGENTS_URL`,
   `CF_API_TOKEN`, `NAELAO_AIG_TOKEN`, `COMPOSIO_API_KEY`, `PIPEDREAM_*`, `AGENTMAIL_API_KEY`
   (live-verified 2026-07-30 — real inbox created/sent, see item 88) on `naelao-agents`.
+- **`GOOGLE_AI_STUDIO_API_KEY` is now SET and LIVE-VERIFIED on `naelao-agents` (item 116) — do not
+  re-prompt for it.** Google AI Studio (Gemini) is a real, working second LLM provider, reached via
+  a separate routing path (the older `gateway.ai.cloudflare.com/.../compat/chat/completions`
+  endpoint, BYOK) from every other model. The account's key is a rotatable dev key per the user's
+  own note ("we renew when with development like other keys") — if Gemini calls start 401ing,
+  suspect a rotated key first. **Google had already cut off the entire Gemini 2.5 generation from
+  new-user access by the time this was tested live** — `ALLOWED_MODELS` uses Google's own
+  `-latest` aliases (`google-ai-studio/gemini-flash-lite-latest` / `-flash-latest` / `-pro-latest`)
+  specifically because pinned 2.5-generation ids failed live with a real 404; re-verify against a
+  live `GET https://generativelanguage.googleapis.com/v1beta/models?key=...` before assuming any
+  specific Gemini id still resolves — Google's generation churn is aggressive.
 - **Router var `PRODUCT_SHELL_URL` is still `http://localhost:3100`** — breaks the clickable link
   in verification emails. Known, not fixed (the user's call to change a production var).
 - **Correct test command:** `npx vitest run --config tests/vitest.config.ts` (plain `npx vitest

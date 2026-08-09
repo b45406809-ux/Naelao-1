@@ -162,6 +162,19 @@ export function computeTokenCostMicro(
     // models: cheaper input than Haiku, but pricier output — a long-answer workload is NOT
     // automatically cheaper here.
     "@cf/meta/llama-3.3-70b-instruct-fp8-fast": { input: 0.293, output: 2.253 },
+    // Google AI Studio (Gemini) — Google's own published per-1M-token pricing for the CURRENT
+    // (3.x) generation these "-latest" aliases resolve to (see models.ts's MODEL_CONTEXT_WINDOWS
+    // comment for why aliases, not pinned ids — the 2.5 generation was cut off from new-user
+    // access mid-session). Standard tier only, not the >200K-context doubled rate for Pro — this
+    // table has no precedent for context-length-tiered pricing elsewhere. Billed to the CUSTOMER
+    // as real value even though the actual API call rides on the operator's own BYOK Google AI
+    // Studio key (often free-tier, $0 marginal cost to Naelao) — matches how every other model
+    // here is priced by real provider cost, not by what Naelao itself happens to pay. An alias's
+    // underlying model — and therefore its real price — can shift over time; revisit if Google
+    // republishes different figures for whatever these currently resolve to.
+    "google-ai-studio/gemini-flash-lite-latest": { input: 0.30, output: 2.50 },
+    "google-ai-studio/gemini-flash-latest": { input: 1.50, output: 7.50 },
+    "google-ai-studio/gemini-pro-latest": { input: 2.00, output: 12.0 },
   };
   const p = pricing[model] ?? { input: 3.0, output: 15.0 };
   const costUsd = (inputTokens / 1_000_000) * p.input + (outputTokens / 1_000_000) * p.output;

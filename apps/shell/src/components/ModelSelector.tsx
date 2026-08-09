@@ -27,6 +27,9 @@ const MODEL_LABELS: Record<string, string> = {
   "@cf/nvidia/nemotron-3-120b-a12b": "Nemotron 3 120B",
   "@cf/moonshotai/kimi-k2.6": "Kimi K2.6",
   "@cf/moonshotai/kimi-k2.7-code": "Kimi K2.7 Code",
+  "google-ai-studio/gemini-flash-lite-latest": "Gemini Flash-Lite",
+  "google-ai-studio/gemini-flash-latest": "Gemini Flash",
+  "google-ai-studio/gemini-pro-latest": "Gemini Pro",
 };
 
 export function modelLabel(model: string): string {

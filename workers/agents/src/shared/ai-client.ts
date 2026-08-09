@@ -41,6 +41,10 @@ export interface GatewayOpts {
    *  `ANTHROPIC_API_KEY` of its own. Retained across the AI REST API migration so a deployment
    *  configured the old way keeps working. */
   aigToken?: string;
+  /** A real Google AI Studio (Gemini) API key, BYOK — see isGoogleAiStudioModel's own doc for why
+   *  this is a genuinely separate routing path from every other model on this account. Supplied
+   *  via the `GOOGLE_AI_STUDIO_API_KEY` worker secret. */
+  googleAiStudioApiKey?: string;
 }
 
 // ── CF AI Gateway Universal Endpoint ─────────────────────────────────────────
@@ -63,6 +67,46 @@ export function universalGatewayUrl(opts: GatewayOpts): string {
   return `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/ai/v1/chat/completions`;
 }
 
+/**
+ * Google AI Studio (Gemini) models are a genuinely separate routing path from everything else on
+ * this account, confirmed live rather than assumed:
+ *  - The new `/ai/v1/chat/completions` REST API above only accepts third-party (non-`@cf/...`)
+ *    models under Unified Billing — a prepaid Cloudflare-credits arrangement this account does not
+ *    have (see CLAUDE.md's Live Deployment Facts). A raw probe against it for a Gemini model with
+ *    only a Cloudflare token returns Cloudflare's own error for exactly this case.
+ *  - The OLDER `gateway.ai.cloudflare.com/v1/{account}/{gateway}` host is where the migration note
+ *    above says the raw providers-array shape is gone — but that host's newer `/compat/chat/
+ *    completions` suffix is a DIFFERENT, still-live route: a real BYOK path where the caller's own
+ *    provider key travels in the plain `Authorization: Bearer` header (per Cloudflare's own BYOK
+ *    docs) and `cf-aig-authorization` authenticates the gateway itself. This is what lets a real,
+ *    free-tier Google AI Studio key (no Cloudflare credits, no per-token billing to us) actually
+ *    work.
+ * `google-ai-studio/{model}` (Cloudflare's own provider-prefix convention) is the trigger for this
+ * whole alternate path — see googleAiStudioGatewayUrl/Headers below.
+ */
+export function isGoogleAiStudioModel(model: string): boolean {
+  return model.startsWith("google-ai-studio/");
+}
+
+/** The compat-endpoint URL for a Google AI Studio (Gemini) call — see isGoogleAiStudioModel. */
+export function googleAiStudioGatewayUrl(opts: GatewayOpts): string {
+  return `https://gateway.ai.cloudflare.com/v1/${opts.accountId}/${opts.gatewayId}/compat/chat/completions`;
+}
+
+/** Headers for a Google AI Studio (Gemini) compat-endpoint call. The real Google key rides in the
+ *  plain `Authorization` header (BYOK, per Cloudflare's own docs for this route — NOT the same
+ *  meaning `authorization` carries on universalGatewayHeaders, where it's a Cloudflare token);
+ *  `cf-aig-authorization` is the separate header that authenticates the gateway itself and is
+ *  required whenever the gateway is configured as an Authenticated Gateway (this account's gateway
+ *  already requires it — confirmed live: an unauthenticated call to this route 401s). */
+export function googleAiStudioGatewayHeaders(opts: GatewayOpts): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    ...(opts.googleAiStudioApiKey ? { authorization: `Bearer ${opts.googleAiStudioApiKey}` } : {}),
+    ...(opts.aigToken ? { "cf-aig-authorization": `Bearer ${opts.aigToken}` } : {}),
+  };
+}
+
 /** Headers for an AI REST API request. Auth is a Cloudflare API token with the AI Gateway
  *  permission (`cfApiToken`); `cf-aig-gateway-id` routes the call through OUR named gateway so
  *  its logging/caching/rate-limiting still apply (without it, requests go to the account's
@@ -80,8 +124,14 @@ export function universalGatewayHeaders(opts: GatewayOpts): Record<string, strin
 /** Whether an LLM call can actually authenticate. The AI REST API authenticates with a Cloudflare
  *  API token, so that is now the primary credential; the older gateway token and a direct provider
  *  key still count so a deployment configured the previous way fails honestly rather than
- *  silently. None of them → give up at the call site instead of firing a doomed request. */
-export function canAuthenticateLlm(opts: GatewayOpts, apiKey: string): boolean {
+ *  silently. None of them → give up at the call site instead of firing a doomed request.
+ *
+ *  A Google AI Studio model is checked separately: it never authenticates with the Cloudflare
+ *  token/aigToken alone (see isGoogleAiStudioModel's doc) — it needs a real `googleAiStudioApiKey`,
+ *  full stop, or the request is a guaranteed 401. `model` is optional so every pre-existing call
+ *  site (which doesn't know or care about a specific model) keeps its old behavior unchanged. */
+export function canAuthenticateLlm(opts: GatewayOpts, apiKey: string, model?: string): boolean {
+  if (model && isGoogleAiStudioModel(model)) return Boolean(opts.googleAiStudioApiKey);
   return Boolean(opts.cfApiToken) || Boolean(opts.aigToken) || Boolean(apiKey);
 }
 

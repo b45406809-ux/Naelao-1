@@ -41,6 +41,25 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "@cf/zai-org/glm-5.2": 262_144,
   "@cf/moonshotai/kimi-k2.6": 262_144,
   "@cf/moonshotai/kimi-k2.7-code": 262_144,
+  // Google AI Studio (Gemini), reached via the CF AI Gateway compat endpoint with a BYOK Google
+  // key (see shared/ai-client.ts's isGoogleAiStudioModel doc) — a genuinely different account/
+  // billing relationship from every `@cf/...` entry above, added so a free-tier Google AI Studio
+  // key can serve as a real fallback once the account's Workers AI neuron allowance is exhausted.
+  //
+  // These are deliberately Google's OWN "-latest" aliases, not pinned dated ids, and that was a
+  // real, live finding, not a style choice: pinning "gemini-2.5-flash"/"gemini-2.5-flash-lite" and
+  // testing them against a real key returned "This model ... is no longer available to new users"
+  // (404) — Google had already cut off the ENTIRE 2.5 generation for this key by the time this was
+  // wired, with "gemini-2.5-pro" alone still resolving (though free-tier-rate-limited, confirmed by
+  // a real 429 rather than a 404 — i.e. genuinely valid, just quota-tight). The "-latest" aliases
+  // (gemini-flash-lite-latest / gemini-flash-latest / gemini-pro-latest) are Google's own designed
+  // answer to exactly this churn — confirmed live (200 OK) against the same key, alongside several
+  // pinned 3.x-generation ids (gemini-3.5-flash, gemini-3.5-flash-lite, gemini-3.6-flash), which
+  // is the generation these aliases currently resolve to. 1,048,576 is Google's published context
+  // window for the current Gemini 3.x/3.5 generation these aliases resolve to.
+  "google-ai-studio/gemini-pro-latest": 1_048_576,
+  "google-ai-studio/gemini-flash-latest": 1_048_576,
+  "google-ai-studio/gemini-flash-lite-latest": 1_048_576,
 };
 
 /**
@@ -76,6 +95,12 @@ export const ALLOWED_MODELS = [
   "@cf/nvidia/nemotron-3-120b-a12b",
   "@cf/moonshotai/kimi-k2.6",
   "@cf/moonshotai/kimi-k2.7-code",
+  // Google AI Studio (Gemini) — BYOK, see MODEL_CONTEXT_WINDOWS' own comment above for why these
+  // are Google's "-latest" aliases rather than pinned dated ids, and for the live confirmation
+  // each one actually resolves on the account's real key.
+  "google-ai-studio/gemini-flash-lite-latest",
+  "google-ai-studio/gemini-flash-latest",
+  "google-ai-studio/gemini-pro-latest",
 ] as const;
 
 export type AllowedModel = (typeof ALLOWED_MODELS)[number];
@@ -174,6 +199,16 @@ export const MODEL_CAPABILITIES: Record<string, ModelCapability> = {
   // the same pending independent confirmation of its own docs page.
   "@cf/moonshotai/kimi-k2.6": { reasoningLevels: ["off", "on"], reasoningParam: "kimi_thinking" },
   "@cf/moonshotai/kimi-k2.7-code": { reasoningLevels: ["off", "on"], reasoningParam: "kimi_thinking" },
+  // Google AI Studio (Gemini). Confirmed via Google's own OpenAI-compatibility docs: the
+  // OpenAI-shaped `reasoning_effort` field is accepted directly and maps internally onto Gemini's
+  // native `thinking_budget` (none→0, low→1024, medium→8192, high→24576) — the SAME
+  // "reasoning_effort" wire shape gpt-oss/glm-5.2 already use above, so no new ReasoningParamShape
+  // is needed. Flash and Flash-Lite can fully disable thinking ("none"); Pro cannot — Google's own
+  // docs state reasoning cannot be turned off for Pro (or the 3-series generally), so its ladder
+  // starts at "low" rather than "none".
+  "google-ai-studio/gemini-flash-lite-latest": { reasoningLevels: ["none", "low", "medium", "high"], reasoningParam: "reasoning_effort" },
+  "google-ai-studio/gemini-flash-latest": { reasoningLevels: ["none", "low", "medium", "high"], reasoningParam: "reasoning_effort" },
+  "google-ai-studio/gemini-pro-latest": { reasoningLevels: ["low", "medium", "high"], reasoningParam: "reasoning_effort" },
 };
 
 /** Reasoning capability for a model string, degrading to NO_REASONING for anything not in the

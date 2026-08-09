@@ -422,10 +422,7 @@ export function ComposerDock({
                   type="button"
                   className={`dock-pill${opt.level === effort ? " on" : ""}`}
                   style={{ flex: 1, justifyContent: "center", padding: "8px 0" }}
-                  onClick={() => {
-                    onEffortChange(opt.level);
-                    setPanel("model");
-                  }}
+                  onClick={() => onEffortChange(opt.level)}
                 >
                   {opt.label}
                 </button>

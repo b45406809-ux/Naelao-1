@@ -139,6 +139,57 @@ describe("script.find — degraded text scan when no Vectorize (spec §16)", () 
     expect(results.length).toBeGreaterThan(0);
     expect(results[0]!.name).toBe("send_email");
   });
+
+  // A real production request 500'd with a raw Workers AI "4006: daily neuron allocation
+  // exhausted" error and never reached the reasoner at all — because a Vectorize index AND an
+  // embedder WERE wired (so the "no Vectorize configured" degraded path above never engaged),
+  // and the underlying embed() call itself threw with no try/catch around it. FIND runs
+  // algorithmically ahead of any model choice, so this killed the whole run regardless of which
+  // chat model the caller had picked (including a request that had deliberately switched away
+  // from Workers AI specifically to keep working through the quota cap). These two cases prove
+  // the fix: wired-but-failing degrades exactly like unwired, rather than propagating.
+  it("degrades to the tag/substring scan when the embedder is wired but its embed() call throws", async () => {
+    const env: ScriptEngineEnv = {
+      ...makeEnv(),
+      embedder: { embed: async () => { throw new Error("4006: daily neuron allocation exhausted"); } },
+      vectorIndex: { query: async () => ({ matches: [] }), upsert: async () => {}, deleteByIds: async () => {} } as never,
+    };
+    const lib = new SkillLibrary(env.scriptsBucket, env.spaceId);
+    await lib.create({ name: "send_email", code: "x", metadata: { description: "send an email to a customer", domain: "comms", requires_tier: 2, tags: ["email", "customer"] } });
+
+    const results = await scriptFind(env, "email customer");
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0]!.name).toBe("send_email");
+  });
+
+  it("degrades to the tag/substring scan when the ANN query call throws (embed succeeded, Vectorize itself failed)", async () => {
+    const env: ScriptEngineEnv = {
+      ...makeEnv(),
+      embedder: { embed: async () => [0.1, 0.2] },
+      vectorIndex: { query: async () => { throw new Error("Vectorize unavailable"); }, upsert: async () => {}, deleteByIds: async () => {} } as never,
+    };
+    const lib = new SkillLibrary(env.scriptsBucket, env.spaceId);
+    await lib.create({ name: "send_email", code: "x", metadata: { description: "send an email to a customer", domain: "comms", requires_tier: 2, tags: ["email", "customer"] } });
+
+    const results = await scriptFind(env, "email customer");
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0]!.name).toBe("send_email");
+  });
+
+  it("script.create never fails just because indexing its embedding failed — R2 write is the real data, the vector is a search index", async () => {
+    const env: ScriptEngineEnv = {
+      ...makeEnv(),
+      embedder: { embed: async () => { throw new Error("4006: daily neuron allocation exhausted"); } },
+      vectorIndex: { query: async () => ({ matches: [] }), upsert: async () => { throw new Error("should never reach upsert"); }, deleteByIds: async () => {} } as never,
+    };
+    const tools = new ScriptToolSurface(env, ["r2-workspace"]);
+    const created = await tools.create({
+      name: "new_skill",
+      code: "x",
+      metadata: { description: "a brand new skill", domain: "compute", requires_tier: 1 },
+    });
+    expect(created.name).toBe("new_skill");
+  });
 });
 
 describe("observe_filesystem (spec §9) produces a stable fingerprint", () => {

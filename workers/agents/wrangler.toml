@@ -235,6 +235,15 @@ NAELAO_GATEWAY_ID = "naelao-gateway"
 # in the CF dashboard, enable Authentication, and set the gateway token:
 #   wrangler secret put NAELAO_AIG_TOKEN
 # When NAELAO_AIG_TOKEN is unset AND no ANTHROPIC_API_KEY is provided, LLM calls fail honestly.
+#
+# Google AI Studio (Gemini) — a genuinely separate provider relationship, BYOK to a real Google
+# key (not held by the CF Gateway itself). Lets the model switcher offer Gemini models
+# (google-ai-studio/gemini-flash-lite-latest / -flash-latest / -pro-latest) as a real fallback
+# when the account's shared Workers AI neuron allowance is exhausted — see shared/ai-client.ts's
+# isGoogleAiStudioModel doc for the routing details.
+#   wrangler secret put GOOGLE_AI_STUDIO_API_KEY
+# When unset, those model ids degrade honestly (give_up naming the missing secret) rather than
+# firing a doomed request.
 
 # CF Workers AI — used by free-tier agents and sub-agent vision tasks.
 [ai]

@@ -902,6 +902,13 @@ export interface AgentDOEnv {
   NAELAO_AIG_TOKEN?: string;
   /** Optional since the vendor cutover — see NAELAO_AIG_TOKEN. */
   ANTHROPIC_API_KEY?: string;
+  /** A real Google AI Studio (Gemini) API key, BYOK — lets the model switcher offer Gemini models
+   *  (`google-ai-studio/...`) routed through the AI Gateway's compat endpoint (see
+   *  shared/ai-client.ts's isGoogleAiStudioModel doc for why this is a separate path from every
+   *  other model). Set via `wrangler secret put GOOGLE_AI_STUDIO_API_KEY`. Absent → those model ids
+   *  degrade honestly to a `give_up` naming the missing secret, same as every other credential gap
+   *  in this file. */
+  GOOGLE_AI_STUDIO_API_KEY?: string;
   /** CF API token — enables the Universal Endpoint's Workers AI fallback provider (spec §15
    *  cross-provider failover). Required for Workers AI via the universal endpoint (distinct from
    *  the AI binding, which is for direct binding calls). Set via `wrangler secret put
@@ -2773,6 +2780,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
         ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}),
         ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}),
+        ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}),
       },
       ctx: { spaceId, agentId, model: body.model ?? DEFAULT_WORKING_MODEL },
       ...(body.model ? { model: body.model } : {}),
@@ -4683,7 +4691,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const model = body.model ?? DEFAULT_WORKING_MODEL;
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
-      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}) },
+      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}) },
       ctx: { spaceId, agentId, model },
       model,
       fallbacks: this.resolveFailoverChain(model, body.apiKey ?? ""),

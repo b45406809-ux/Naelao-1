@@ -20,6 +20,9 @@ import {
   normalizeUniversalResponse,
   universalGatewayUrl,
   universalGatewayHeaders,
+  googleAiStudioGatewayUrl,
+  googleAiStudioGatewayHeaders,
+  isGoogleAiStudioModel,
   canAuthenticateLlm,
   callWorkersAI,
   type AIClientContext,
@@ -542,16 +545,26 @@ export class GatewayReasoner implements Reasoner {
 
     // No provider key AND no gateway-stored-key auth → the call can't authenticate. Fail honestly
     // here rather than firing a doomed request (whose 401 would just surface as a vague give_up).
-    if (!canAuthenticateLlm(this.deps.gateway, this.deps.apiKey)) {
-      return { action: "give_up", reason: "no LLM credentials configured: set NAELAO_AIG_TOKEN (CF AI Gateway stored key) or a provider apiKey" };
+    const isGemini = isGoogleAiStudioModel(query.model);
+    if (!canAuthenticateLlm(this.deps.gateway, this.deps.apiKey, query.model)) {
+      return {
+        action: "give_up",
+        reason: isGemini
+          ? "no Google AI Studio credentials configured: set GOOGLE_AI_STUDIO_API_KEY"
+          : "no LLM credentials configured: set NAELAO_AIG_TOKEN (CF AI Gateway stored key) or a provider apiKey",
+      };
     }
 
-    const url = universalGatewayUrl(this.deps.gateway);
+    // A Gemini model routes through a genuinely different endpoint/auth pair than every other
+    // model on this account — see isGoogleAiStudioModel's own doc for why. The request BODY is
+    // still the same OpenAI-shaped payload buildUniversalBody produces either way.
+    const url = isGemini ? googleAiStudioGatewayUrl(this.deps.gateway) : universalGatewayUrl(this.deps.gateway);
+    const headers = isGemini ? googleAiStudioGatewayHeaders(this.deps.gateway) : universalGatewayHeaders(this.deps.gateway);
     let resp: Response;
     try {
       resp = await fetch(url, {
         method: "POST",
-        headers: universalGatewayHeaders(this.deps.gateway),
+        headers,
         body: buildUniversalBody({
           apiKey: this.deps.apiKey,
           ...(this.deps.gateway.cfApiToken ? { cfApiToken: this.deps.gateway.cfApiToken } : {}),

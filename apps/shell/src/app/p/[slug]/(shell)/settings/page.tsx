@@ -63,6 +63,9 @@ const MODEL_LABELS: Record<string, string> = {
   "@cf/qwen/qwen3-30b-a3b-fp8": "Qwen3 30B",
   "@cf/mistralai/mistral-small-3.1-24b-instruct": "Mistral Small",
   "@cf/ibm-granite/granite-4.0-h-micro": "Granite Micro — cheapest",
+  "google-ai-studio/gemini-flash-lite-latest": "Gemini Flash-Lite — needs a Google AI Studio key",
+  "google-ai-studio/gemini-flash-latest": "Gemini Flash — needs a Google AI Studio key",
+  "google-ai-studio/gemini-pro-latest": "Gemini Pro — needs a Google AI Studio key",
 };
 
 type TabId = "general" | "members" | "billing" | "apps" | "ai" | "personal";
