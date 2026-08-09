@@ -5349,6 +5349,24 @@ Re-verify before relying on any of these, but they are the real values as of thi
 - **Workers AI free tier is ~10,000 neurons/day ≈ 65 agent runs/day platform-wide**, and
   `worker_loaders` is commented out in `workers/agents/wrangler.toml` (execution Tiers 2-4
   unavailable). Both unblock with the CF Workers Paid plan ($5/mo).
+- **The neuron allowance is a ROLLING 24-HOUR WINDOW, not a calendar-day reset** (measured
+  2026-08-07: 13,540 and 08-08: 11,068 — both above the nominal 10,000/day, which a per-day counter
+  cannot explain). Capacity returns as the previous day's heaviest hours age out, so "retry after
+  midnight" is wrong; query `aiInferenceAdaptiveGroups` by `datetimeHour` to find when the big hour
+  drops out. **NEVER use the GraphQL aggregate to decide whether budget remains** — a request
+  rejected by the limiter consumes NO neurons, so on a capped day it reports `0 used / 10,000
+  remaining` while every real call fails. Probe the real thing instead: one `max_tokens:1` call to
+  `/ai/run/@cf/meta/llama-3.3-70b-instruct-fp8-fast`; `"code":4006` means capped.
+  `infra/scripts/run-model-matrix.sh` does this and refuses to start rather than record zeros that
+  read as model failures.
+- **CORRECTION to the "no Claude models" line below: Claude IS reachable through the AI Gateway's
+  provider path, it just has no budget.** A direct call to
+  `gateway.ai.cloudflare.com/v1/{acct}/naelao-gateway/anthropic/v1/messages` returns
+  `402 code 2021 "Insufficient wholesale credits"` — NOT "model not found". So there are TWO
+  independent paid unlocks, for different things: the **Workers Paid plan** (Workers AI neurons +
+  execution Tiers 2-5) and **AI Gateway wholesale credits** (Anthropic/OpenAI/etc via the gateway).
+  Item 68's `?search=claude → 0 results` was querying the Workers AI model catalogue, which by
+  definition never lists third-party provider models.
 - **`WHOP_OAUTH_CLIENT_ID`/`WHOP_OAUTH_CLIENT_SECRET` (on `naelao-agents`) and `TAVILY_API_KEY`
   (on `naelao-knowledge`) are now SET and LIVE-VERIFIED (2026-07-26).** One-click "Connect with
   Whop" is real end to end: minted a real internal token for the live product's tenant
