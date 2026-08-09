@@ -33,6 +33,18 @@ import { modelLabel } from "@/components/ModelSelector";
 const COST_TIER_LABEL: Record<CostTier, string> = { economy: "Economy", standard: "Standard", premium: "Premium" };
 const COST_TIER_BADGE: Record<CostTier, "green" | "blue" | "amber"> = { economy: "green", standard: "blue", premium: "amber" };
 
+/** Short labels for the capability axes the trace-graded matrix scores. Plain words, not the
+ *  internal axis keys — a business owner reading this should not have to learn our vocabulary to
+ *  understand that "Won't invent results" is the column that matters most to them. */
+const AXIS_LABEL: Record<string, string> = {
+  agency: "Multi-step",
+  safety: "Safety",
+  fabrication: "Won't invent results",
+  recovery: "Recovers",
+  proactivity: "Escalates",
+  synthesis: "Briefings",
+};
+
 // Phase F (§A1.17): a sentinel selection meaning "no template — the assistant helps build this
 // business from scratch," distinct from an empty Set (which used to mean the same thing but
 // wasn't a labeled choice). Never sent to the backend as a template id.
@@ -583,7 +595,42 @@ export default function DiscoverPage() {
                   {b.eval.usable} usable · {b.eval.avgScore.toFixed(2)}/10
                 </Badge>
               )}
+              {/* Cost per RUN, not per token — for agentic work one run is many calls, so this is
+                  the number that actually predicts what a day of agent work costs. Shown only
+                  where genuinely measured. */}
+              {b.neuronsPerRun !== undefined && (
+                <Badge color="blue">~{b.neuronsPerRun} neurons/run</Badge>
+              )}
             </div>
+
+            {/* Per-axis behaviour, graded from the agent's own run trace rather than by asking a
+                model to rate its prose — so "did it verify before claiming" and "did it invent a
+                result" are facts here, not opinions. Absent until a model has actually been run
+                through the matrix; deliberately never shown as a zero, which would read as a
+                measured failure rather than an unmeasured model. */}
+            {b.axes && Object.keys(b.axes).length > 0 && (
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap", margin: "2px 0 6px" }}>
+                {(Object.entries(b.axes) as Array<[string, { passed: number; total: number; note?: string }]>).map(
+                  ([axis, r]) => (
+                    <span
+                      key={axis}
+                      title={r.note ?? `${r.passed} of ${r.total} checks passed`}
+                      style={{
+                        fontSize: 10,
+                        padding: "1px 6px",
+                        borderRadius: 4,
+                        border: "1px solid var(--border)",
+                        color: r.passed === r.total ? "var(--text2)" : "var(--text3)",
+                        background: r.passed === r.total ? "var(--bg3)" : "transparent",
+                      }}
+                    >
+                      {AXIS_LABEL[axis] ?? axis} {r.passed}/{r.total}
+                    </span>
+                  )
+                )}
+              </div>
+            )}
+
             <p style={{ fontSize: 11.5, color: "var(--text3)", margin: "4px 0 0" }}>
               {b.eval ? b.eval.note : `Best for: ${b.bestFor[0]}`}
             </p>

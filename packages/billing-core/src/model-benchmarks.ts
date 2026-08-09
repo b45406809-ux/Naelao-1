@@ -273,4 +273,17 @@ export function validateModelBenchmarks(): void {
       throw new Error(`model-benchmarks: ModelBenchmark entry '${id}' is not in ALLOWED_MODELS`);
     }
   }
+  // Measured data must be internally coherent. These numbers are transcribed by hand from a matrix
+  // run, and a transposed pair ("7/5 checks passed") or a zero-check axis would render as a
+  // confident, meaningless figure on the Discover page — worse than showing nothing, because a
+  // reader has no way to tell it is wrong.
+  for (const b of Object.values(MODEL_BENCHMARKS)) {
+    for (const [axis, r] of Object.entries(b.axes ?? {})) {
+      if (r.total <= 0) throw new Error(`model-benchmarks: ${b.id} axis '${axis}' has total ${r.total}; an axis with no checks is not a measurement`);
+      if (r.passed < 0 || r.passed > r.total) throw new Error(`model-benchmarks: ${b.id} axis '${axis}' reports ${r.passed}/${r.total}`);
+    }
+    if (b.neuronsPerRun !== undefined && b.neuronsPerRun <= 0) {
+      throw new Error(`model-benchmarks: ${b.id} neuronsPerRun is ${b.neuronsPerRun}`);
+    }
+  }
 }

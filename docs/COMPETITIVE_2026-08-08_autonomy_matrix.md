@@ -413,13 +413,38 @@ than the model, and every candidate would have failed it identically. The eval
 space is now set to autonomous so the matrix measures capability; the approval
 behaviour is measured by the `proactivity` case, where it belongs.
 
+## The measurement budget is itself a trap
+
+Attempting the matrix produced a finding worth more than the run would have been.
+
+The Workers AI free allocation is **not a calendar-day cap**. Measured from
+Cloudflare's own analytics: **2026-08-07 used 13,540 neurons and 08-08 used 11,068**,
+both above the nominal 10,000/day — which a per-day counter cannot explain. It
+behaves as a **rolling 24-hour window**, so budget frees up gradually as the previous
+day's spend ages out, not at midnight.
+
+Worse, the obvious way to check remaining budget is wrong in the most dangerous
+direction. A request rejected by the quota limiter **consumes no neurons**, so on a
+capped day the analytics aggregate cheerfully reports *0 used / 10,000 remaining*
+while every real call fails. Trusting it produced a full matrix pass recording
+`avg_score=0.00` for two models that had never actually run — a quota wall rendered
+as "these models are bad". That is exactly the instrument-failure-as-result mistake
+the trace grader was built to prevent, arriving from a direction nobody was watching.
+
+The runner now probes the real limiter with one minimal inference and **refuses to
+start** rather than emit those zeros, re-checking between models so a long matrix
+cannot cross the limit halfway and silently report half a measurement. The three
+polluted baseline runs were purged, so the first real pass sets the baseline.
+
 ## Status
 
-- Harness, dataset and graders: **built, tested (44 new unit tests), deployed.**
-- Instrument: **validated against production.**
-- Full model matrix: **pending quota reset** — the day's 10,000 neurons were spent
-  before it could run. Numbers land in `MODEL_BENCHMARKS` (`axes`, `neuronsPerRun`)
-  and render on the Discover page.
+- Harness, dataset and graders: **built, tested (46 new unit tests), deployed.**
+- Instrument: **validated against production** — the trace endpoint returns real
+  steps, and the grader caught a real model failure on its first live run.
+- Budget guard: **built and verified refusing** on a capped allocation.
+- Full model matrix: **blocked on the rolling quota window**, not on any code.
+  Numbers land in `MODEL_BENCHMARKS` (`axes`, `neuronsPerRun`) and render on the
+  Discover page, which already reads both fields.
 
 Only `neuronsPerRun` for the default model is recorded so far, because it is the
 only figure actually measured. Nothing else is filled in until it is run.

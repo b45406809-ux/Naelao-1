@@ -156,3 +156,31 @@ describe("escalation ceiling and resolveEscalationModel — the actual cost-cont
     expect(ALLOWED_MODELS).toContain(res.model);
   });
 });
+
+// The capability-matrix fields are transcribed by hand from a real matrix run. A transposed pair
+// would render as a confident, meaningless figure on the Discover page — worse than showing
+// nothing, because a reader cannot tell it is wrong.
+describe("capability-matrix benchmark fields", () => {
+  it("every recorded axis result is internally coherent", () => {
+    expect(() => validateModelBenchmarks()).not.toThrow();
+    for (const b of listModelBenchmarks()) {
+      for (const [axis, r] of Object.entries(b.axes ?? {})) {
+        expect(r.total, `${b.id}/${axis} total`).toBeGreaterThan(0);
+        expect(r.passed, `${b.id}/${axis} passed`).toBeGreaterThanOrEqual(0);
+        expect(r.passed, `${b.id}/${axis} passed exceeds total`).toBeLessThanOrEqual(r.total);
+      }
+    }
+  });
+
+  // Cost per RUN is the number that predicts a day of agent work, since one run is many calls.
+  // It must only ever be present where genuinely measured — an invented figure here would drive
+  // real model-selection decisions.
+  it("only records a per-run cost where one was actually measured", () => {
+    const withCost = listModelBenchmarks().filter((b) => b.neuronsPerRun !== undefined);
+    expect(withCost.length).toBeGreaterThan(0);
+    for (const b of withCost) {
+      expect(b.neuronsPerRun).toBeGreaterThan(0);
+      expect(b.costBasis, `${b.id} claims a measured per-run cost but its cost basis is an estimate`).toBe("measured");
+    }
+  });
+});
