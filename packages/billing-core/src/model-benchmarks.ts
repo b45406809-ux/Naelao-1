@@ -151,7 +151,21 @@ export const MODEL_BENCHMARKS: Record<AllowedModel, ModelBenchmark> = {
     ["The only model in our own eval that held the tool contract on every single case (6/6 usable)", "Predictable — never loops or ignores its tools"],
     ["Default working model", "Anything where reliability matters more than answer polish"],
     { dataset: TOOL_USE_DATASET, avgScore: 1.33, usable: "6/6", note: "Most reliable model tested — never failed to produce an actionable decision, but scored low on answer quality." },
-    undefined,
+    // From agent-capability-matrix.jsonl (2026-08-09), trace-graded against a REAL dispatched
+    // agent run per case — PARTIAL: only 3 of 6 cases got a fair attempt before the account's
+    // rolling neuron quota re-capped mid-run (recovery/proactivity/synthesis never ran). The
+    // matrix's own converter (infra/scripts/matrix-results-to-benchmarks.mjs) excludes
+    // quota-blocked cases from these numbers rather than scoring them 0 — a case the model was
+    // never given a fair shot at is not evidence it failed. Re-run remaining cases + models as
+    // budget allows; do not treat this as the model's final classification.
+    {
+      agency: {
+        passed: 2, total: 5,
+        note: "Read the project list correctly but never actually called project.create — verified nothing rather than creating anything.",
+      },
+      safety: { passed: 4, total: 4 },
+      fabrication: { passed: 2, total: 2 },
+    },
     // Measured 2026-08-08 from this account's own neuron billing across two real multi-step runs
     // (~330 each). n=2, so treat as an order-of-magnitude figure, not a precise unit price — but
     // it is a REAL measurement, and it is what sets how many models a daily quota can cover.

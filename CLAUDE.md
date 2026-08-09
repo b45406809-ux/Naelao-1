@@ -5354,6 +5354,53 @@ appendixes are authoritative** and override the early framing. Always confirm ag
     reachable — not attempted this pass to conserve the account's constrained inference budget,
     see Live Deployment Facts).
 
+114. **The capability matrix (item 112) produced its first REAL result — genuinely partial, and
+     recorded as such rather than either discarded or presented as complete.** The account's
+     rolling-window quota opened after a 140-minute wait (12:00Z), but the window itself was
+     small: `llama-3.3-70b-instruct-fp8-fast` completed real, trace-graded dispatched-agent runs
+     on 3 of 6 cases (agency 2/5, safety 4/4, fabrication 2/2) before the SAME run hit the quota
+     wall again mid-pass (cases recovery/proactivity/synthesis never got a fair attempt) — 998
+     real neurons spent, and every OTHER candidate model's own probe-check then reported capped
+     before it could even start.
+    - **A real bug in the converter, found by this exact partial run.** `matrix-results-to-
+      benchmarks.mjs`'s dispatch-failure detection only matched the DISPATCH-layer error shape
+      (`"agent/run HTTP ... 500"`), missing the REASONER-layer shape a mid-run 429 produces
+      (`"reasoner gateway error 429 ... code":4006 ..."`) — undercounting real infrastructure
+      failures and letting at least one of them silently score as a 0/N task failure instead of
+      being excluded as "never got a fair attempt." Fixed: `isInfraFailure()` now matches
+      Cloudflare's quota-error text regardless of which layer it surfaced at, and a matched case
+      is EXCLUDED from that axis's passed/total entirely (never scored 0) — the exact
+      instrument-failure-as-result mistake this whole harness exists to prevent, caught one layer
+      deeper than the original whole-model gate reached.
+    - **Recorded honestly, not discarded and not oversold.** `MODEL_BENCHMARKS["@cf/meta/
+      llama-3.3-70b-instruct-fp8-fast"].axes` now carries the 3 real cases, with an inline comment
+      stating plainly that this is PARTIAL (3/6) and not the model's final classification —
+      Discover's own UI already renders whatever `axes` data exists per model, so this shows up
+      as real signal (not a placeholder) without claiming completeness it doesn't have. The one
+      qualitative finding worth noting: on `agency` (multi-step create-then-verify), the model
+      read the project list correctly but never actually called `project.create` — it verified
+      nothing rather than creating anything, a partial-credit failure mode distinct from either a
+      clean pass or a fabricated-success failure (which `fabrication` separately confirmed it did
+      NOT do, 2/2).
+    - **Re-armed for the remaining 4 candidate models** (granite-4.0-h-micro, qwen3-30b-a3b,
+      mistral-small-3.1-24b, gemma-4-26b), deliberately reordered to breadth-first — every
+      still-untested model goes before deepening llama-3.3-70b's own remaining 3 cases, since
+      "classify each model" is better served by covering more models partially than one model
+      fully while four stay at zero. Same `run-in-background`-tracked watcher pattern as before
+      (not a bare `nohup`, which is what silently died once already this session — see item 112's
+      own note); this time the harness-tracked background task DID survive and notify correctly
+      on completion, which is how this partial result was caught at all instead of being missed.
+    2777/2777 tests pass, `npx turbo run typecheck` clean (76 tasks), `packages/billing-core`
+    rebuilt (`npx tsc` — required, consumers resolve via `dist/`), `apps/shell` redeployed and
+    live-verified (200 on the Discover route; the new axes strings confirmed present in the
+    deployed bundle before deploying, same "verify content, not just that the command succeeded"
+    discipline this file has documented needing before). **Still not done:** 4 of 5 candidate
+    models have zero real data yet, and even the one model that ran has only half its dataset
+    scored — the account's demonstrated per-window budget (~1000 usable neurons before recapping)
+    means this will take several more opportunistic windows to complete, not one. Do not present
+    the current `MODEL_BENCHMARKS` axes data as a finished classification in any future summary —
+    it is real, honestly partial, and improving incrementally as quota allows.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

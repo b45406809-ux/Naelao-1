@@ -56,6 +56,20 @@ function passedTotalFrom(row, totalChecks) {
   return { passed, total: totalChecks };
 }
 
+// A case whose OWN dispatch/reasoning call hit the account's neuron quota mid-run is not evidence
+// the MODEL failed that case — the model was never given a fair attempt. Found live: a run that
+// opened with real quota budget can still exhaust it partway through a 6-case pass, producing a
+// mix of real scores (cases the model actually completed) and quota-wall errors (cases it never
+// got to) in the SAME run. The original check here only matched the dispatch-layer shape
+// ("agent/run HTTP ... 500"), missing the reasoner-layer shape a mid-run 429 produces
+// ("reasoner gateway error 429 ... code":4006 ...") — undercounting real infra failures and
+// letting them silently score as 0/N task failures. Broadened to match Cloudflare's own quota
+// error text regardless of which layer it surfaced at.
+function isInfraFailure(actualOutput) {
+  const s = actualOutput ?? "";
+  return /agent\/run HTTP|daily free allocation|"code":\s*4006|reasoner gateway error 4\d\d/.test(s);
+}
+
 const CHECK_COUNTS = [5, 4, 2, 3, 3, 3]; // per case, from agent-capability-matrix.jsonl
 
 async function main() {
@@ -81,32 +95,37 @@ async function main() {
       "SELECT case_index, score, judge_reasoning, actual_output FROM eval_results WHERE run_id = ? ORDER BY case_index",
       [runs[0].id]
     );
-    const dispatchFailures = rows.filter((r) => (r.actual_output ?? "").includes("agent/run HTTP")).length;
-    if (dispatchFailures > rows.length / 2) {
-      console.error(`  ${model}: ${dispatchFailures}/${rows.length} cases never dispatched — REFUSING to record (measures infrastructure, not the model)`);
+    const infraFailures = rows.filter((r) => isInfraFailure(r.actual_output)).length;
+    if (infraFailures >= rows.length) {
+      console.error(`  ${model}: all ${rows.length} cases hit the quota wall — REFUSING to record (measures infrastructure, not the model)`);
       continue;
+    }
+    if (infraFailures > 0) {
+      console.error(`  ${model}: ${infraFailures}/${rows.length} case(s) blocked by quota mid-run — excluded from axes below, not scored as failures. Real coverage: ${rows.length - infraFailures}/${rows.length} cases.`);
     }
 
     const axes = {};
     for (const r of rows) {
       const axis = AXIS_BY_INDEX[r.case_index];
       if (!axis) continue;
+      if (isInfraFailure(r.actual_output)) continue; // no fair attempt — omit rather than score 0
       const { passed, total } = passedTotalFrom(r, CHECK_COUNTS[r.case_index] ?? 1);
       const note = /all trace checks passed/i.test(r.judge_reasoning ?? "")
         ? undefined
         : (r.judge_reasoning ?? "").slice(0, 140);
       axes[axis] = { passed, total, ...(note ? { note } : {}) };
     }
-    out.push({ model, axes, cases: rows.length });
+    out.push({ model, axes, cases: rows.length, realCases: rows.length - infraFailures });
   }
 
   console.log("\n// ---- paste into MODEL_BENCHMARKS entries (the `axes` argument) ----");
   for (const entry of out) {
-    console.log(`\n// ${entry.model}  (${entry.cases} cases)`);
+    const partial = entry.realCases < entry.cases ? ` — PARTIAL: ${entry.realCases}/${entry.cases} cases (rest blocked by quota, not model failure)` : "";
+    console.log(`\n// ${entry.model}  (${entry.cases} cases)${partial}`);
     console.log(JSON.stringify(entry.axes, null, 2));
     const totalPassed = Object.values(entry.axes).reduce((a, r) => a + r.passed, 0);
     const totalChecks = Object.values(entry.axes).reduce((a, r) => a + r.total, 0);
-    console.log(`// overall: ${totalPassed}/${totalChecks} checks passed`);
+    console.log(`// overall (of cases actually run): ${totalPassed}/${totalChecks} checks passed`);
   }
   console.log("\n// -------------------------------------------------------------------");
 }
