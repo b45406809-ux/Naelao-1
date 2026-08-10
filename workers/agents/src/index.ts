@@ -1458,6 +1458,11 @@ export interface LiveRunStep {
   thinking?: string;
   /** Prose the model wrote alongside a non-terminal tool call — see loop.ts's TraceStep doc. */
   narration?: string;
+  /** This step is still being written — the model is mid-sentence and its text will grow on the
+   *  next tick. A client renders it as in-flight and REPLACES it (same seq) rather than appending
+   *  the next update as another row. Never set on a persisted trace step, which is by definition
+   *  finished. */
+  partial?: boolean;
   ts: number;
 }
 
@@ -1472,11 +1477,11 @@ export interface RunPendingApproval {
 
 async function fetchRunOrTaskStatus(
   env: AgentsEnv, tenantId: string, sessionId: string, spaceId: string, runId: string
-): Promise<{ status: number; body: { id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] } }> {
+): Promise<{ status: number; body: { id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] } }> {
   const stub = await getAgentDO(env, tenantId, sessionId);
   const doResponse = await stub.fetch(new Request(`http://agent-do/runs/${runId}`, { method: "GET" }));
   if (doResponse.ok) {
-    const doBody = await doResponse.json<{ id: string; status: string; final_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>();
+    const doBody = await doResponse.json<{ id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; react_steps?: unknown[]; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>();
     return { status: 200, body: doBody };
   }
   if (!env.TASK_DO) return { status: doResponse.status, body: { id: runId, status: "failed", error: "run not found" } };
@@ -1685,32 +1690,36 @@ app.get(
     const pollTask = async (): Promise<void> => {
       let lastSentAnswer = "";
       // §A1 Harness Excellence (chat UI parity): the "currently doing X" activity feed. Each
-      // fetchRunOrTaskStatus tick may carry NEW entries in `live_steps` (NaelaoAgentDO's
-      // in-memory, still-running progress — see handleGetRun) — track the highest seq already
-      // forwarded so only the delta since the last tick is sent, same shape as the answer delta
-      // just above it.
-      let lastActivitySeq = -1;
+      // fetchRunOrTaskStatus tick may carry new OR UPDATED entries in `live_steps` (NaelaoAgentDO's
+      // in-memory, still-running progress — see handleGetRun).
+      //
+      // Tracking only the highest seq already sent is not enough now that a step's own text grows
+      // while the model writes it: a partial reason step keeps the SAME seq and gains characters
+      // every chunk, so a seq-only filter would send the first fragment and then silently drop the
+      // rest of the sentence. Comparing the serialized step catches both cases with one rule, and
+      // is bounded by MAX_LIVE_STEPS (60) so the map cannot grow.
+      const sentSteps = new Map<number, string>();
       try {
         const deadline = Date.now() + 120_000;
         while (Date.now() < deadline) {
           const { body: run } = await fetchRunOrTaskStatus(c.env, tenantId, sessionId, spaceId, runId);
 
           if (run.live_steps?.length) {
-            const newSteps = run.live_steps.filter((s) => s.seq > lastActivitySeq);
-            if (newSteps.length) {
-              await sendEvent({ type: "activity", run_id: runId, steps: newSteps });
-              lastActivitySeq = Math.max(...run.live_steps.map((s) => s.seq));
+            const changed = run.live_steps.filter((s) => sentSteps.get(s.seq) !== JSON.stringify(s));
+            if (changed.length) {
+              await sendEvent({ type: "activity", run_id: runId, steps: changed });
+              for (const s of changed) sentSteps.set(s.seq, JSON.stringify(s));
             }
           }
 
-          // §A1.27: honest partial progress — if the run has already accumulated more final_answer
-          // text than we've sent (a run whose underlying execution writes incremental output),
-          // forward the NEW portion as a real delta rather than only a content-free status ping.
-          // Today's script-engine/ReAct runs still only populate final_answer once, at
-          // completion, so in practice this fires once with the whole answer rather than
-          // incrementally — true token-level incremental writes are tracked as follow-up work
-          // (see docs/spec-appendix's A1.27 note), not silently claimed here.
-          const currentAnswer = run.final_answer ?? "";
+          // Honest partial progress — forward the NEW portion of the answer as a real delta.
+          //
+          // `partial_answer` is the answer as the model is writing it (NaelaoAgentDO's live-run
+          // entry, fed by the reasoner's own streamed output); `final_answer` is the finished
+          // article. Preferring the final one when present means the last delta always reconciles
+          // against the authoritative text, and the startsWith guard means a partial that somehow
+          // diverged is skipped rather than corrupting what the reader already has.
+          const currentAnswer = run.final_answer || run.partial_answer || "";
           if (currentAnswer.length > lastSentAnswer.length && currentAnswer.startsWith(lastSentAnswer)) {
             await sendEvent({ type: "delta", run_id: runId, content: currentAnswer.slice(lastSentAnswer.length) });
             lastSentAnswer = currentAnswer;
@@ -1741,7 +1750,10 @@ app.get(
             break;
           }
 
-          await new Promise<void>((r) => setTimeout(r, 1000));
+          // Fast enough that streamed text arrives as a flowing sentence rather than one-second
+          // blocks, slow enough that a two-minute run is a few hundred DO-local reads and not a
+          // busy loop. The client smooths the remaining granularity when it renders.
+          await new Promise<void>((r) => setTimeout(r, 350));
         }
       } catch (err) {
         try {

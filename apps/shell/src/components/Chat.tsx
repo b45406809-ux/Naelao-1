@@ -16,6 +16,7 @@ import {
   getApprovalResumeStatus,
   listApprovals,
   pollRun,
+  mergeActivitySteps,
   sendMessage,
   startSession,
   type AgentRun,
@@ -666,7 +667,10 @@ export function Chat({
             setLiveActivity(latestActivity);
           }
           if (run.status === "running") {
-            if (run.final_answer) setStreamingContent(run.final_answer);
+            // partial_answer is the reply as the model is writing it; final_answer only exists
+            // once the run has finished, so on a live tick the partial is the real signal.
+            const growing = run.partial_answer ?? run.final_answer;
+            if (growing) setStreamingContent(growing);
             return;
           }
           settled = true;
@@ -753,7 +757,10 @@ export function Chat({
             deferred_approvals?: AgentRun["deferred_approvals"];
           };
           if (data.type === "activity" && data.steps?.length) {
-            activitySteps = [...activitySteps, ...data.steps];
+            // Merge, never append: the stream re-sends a step whenever its text has grown (that's
+            // what makes a sentence appear as it's written), so appending would print each
+            // fragment as its own row. See mergeActivitySteps.
+            activitySteps = mergeActivitySteps(activitySteps, data.steps);
             setLiveActivity(activitySteps);
           } else if (data.type === "delta" && data.content) {
             accumulated += data.content;

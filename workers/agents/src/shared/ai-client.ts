@@ -213,6 +213,16 @@ export function buildUniversalBody(opts: {
   /** Set only for a model whose MODEL_CAPABILITIES entry supports it; absent means "send nothing
    *  reasoning-related" (the model either doesn't support it or the caller didn't choose a level). */
   reasoning?: ReasoningRequest;
+  /**
+   * Ask the provider to stream the reply back as Server-Sent Events instead of returning it whole.
+   *
+   * This is what makes the agent's own text arrive AS it is generated rather than only once the
+   * whole reasoning call has finished — the difference between a chat that sits silent for eight
+   * seconds and one you can watch think. `stream_options.include_usage` is set alongside it
+   * because a streamed OpenAI-compatible response otherwise omits token usage entirely, and the
+   * loop's budget accounting (and per-run billing) depends on real numbers, not estimates.
+   */
+  stream?: boolean;
 }): string {
   const { query, tools, reasoning } = opts;
   return JSON.stringify({
@@ -222,7 +232,239 @@ export function buildUniversalBody(opts: {
     ...(tools && tools.length > 0 ? { tools: toolsWire(tools), tool_choice: "required" } : {}),
     ...(reasoning?.param === "reasoning_effort" ? { reasoning_effort: reasoning.level } : {}),
     ...(reasoning?.param === "kimi_thinking" ? { chat_template_kwargs: { thinking: reasoning.level === "on" } } : {}),
+    ...(opts.stream ? { stream: true, stream_options: { include_usage: true } } : {}),
   });
+}
+
+/**
+ * Read a JSON string value out of a buffer that may be TRUNCATED partway through it.
+ *
+ * A streamed tool call arrives as JSON fragments — `{"say":"Let me ch` — so `JSON.parse` cannot be
+ * used until the very last chunk, which would defeat the entire point of streaming. This walks the
+ * buffer by hand and returns whatever of `key`'s value has arrived so far, unescaped, whether or
+ * not the closing quote has been seen yet. Returns undefined when the key hasn't appeared yet (as
+ * opposed to "" — the key present with an empty value so far), so a caller can tell "not started"
+ * from "started, still empty".
+ */
+export function partialJsonString(buffer: string, key: string): string | undefined {
+  const needle = `"${key}"`;
+  const k = buffer.indexOf(needle);
+  if (k === -1) return undefined;
+  let i = k + needle.length;
+  while (i < buffer.length && /\s/.test(buffer[i]!)) i++;
+  if (buffer[i] !== ":") return undefined;
+  i++;
+  while (i < buffer.length && /\s/.test(buffer[i]!)) i++;
+  // The value hasn't started arriving yet, or isn't a string at all.
+  if (i >= buffer.length) return undefined;
+  if (buffer[i] !== '"') return undefined;
+  i++;
+  let out = "";
+  while (i < buffer.length) {
+    const ch = buffer[i]!;
+    if (ch === "\\") {
+      const nxt = buffer[i + 1];
+      // A backslash as the very last character means the escape itself is mid-flight: stop here
+      // rather than emitting a lone backslash that will be replaced a chunk later.
+      if (nxt === undefined) return out;
+      switch (nxt) {
+        case "n": out += "\n"; break;
+        case "t": out += "\t"; break;
+        case "r": out += "\r"; break;
+        case "b": out += "\b"; break;
+        case "f": out += "\f"; break;
+        case '"': out += '"'; break;
+        case "\\": out += "\\"; break;
+        case "/": out += "/"; break;
+        case "u": {
+          const hex = buffer.slice(i + 2, i + 6);
+          if (hex.length < 4) return out; // \uXXXX still arriving
+          out += String.fromCharCode(parseInt(hex, 16));
+          i += 4;
+          break;
+        }
+        default: out += nxt;
+      }
+      i += 2;
+      continue;
+    }
+    if (ch === '"') return out; // closing quote — the value is complete
+    out += ch;
+    i++;
+  }
+  return out; // still open: this is the growing partial
+}
+
+/** What one streamed chunk has accumulated SO FAR — handed to the caller's onChunk on every
+ *  update, so a UI can render text as it is generated rather than after the fact. */
+export interface StreamProgress {
+  /** Plain assistant text accumulated so far (prose outside any tool call). */
+  text: string;
+  /** The tool the model is calling, once its name has arrived. */
+  toolName?: string;
+  /** That tool's arguments as raw, possibly-incomplete JSON — read with partialJsonString. */
+  toolArguments: string;
+}
+
+/**
+ * Consume an OpenAI-compatible SSE stream and return the SAME normalized shape
+ * `normalizeUniversalResponse` produces for a non-streamed reply, calling `onChunk` as content
+ * arrives.
+ *
+ * Deliberately reconstructs a whole response rather than exposing the raw stream: every caller
+ * still wants one decision at the end, and keeping the streamed and non-streamed paths converging
+ * on one shape is what stops them drifting apart. A stream that dies mid-flight yields whatever
+ * arrived (the caller's own error handling then treats an empty result as a failed turn), which is
+ * strictly better than throwing away a nearly-complete reply.
+ */
+export async function parseUniversalStream(
+  resp: Response,
+  onChunk?: (progress: StreamProgress) => void
+): Promise<{
+  text: string;
+  usage: { input_tokens: number; output_tokens: number } | undefined;
+  toolCall?: ToolCall;
+  thinking?: string;
+}> {
+  const body = resp.body;
+  const progress: StreamProgress = { text: "", toolArguments: "" };
+  let thinking = "";
+  let usage: { input_tokens: number; output_tokens: number } | undefined;
+  if (!body) return { text: "", usage: undefined };
+
+  // Asking for a stream is a request, not a guarantee. A provider (or a gateway in front of it)
+  // may answer a `stream:true` request with an ordinary JSON body, and reading that as SSE finds
+  // no `data:` frames at all — yielding an empty reply, which the loop can only report as a failed
+  // turn. That would silently break every interactive run against any provider that behaves this
+  // way, so honour what actually came back rather than what was asked for.
+  if (!(resp.headers.get("content-type") ?? "").includes("text/event-stream")) {
+    try {
+      return normalizeUniversalResponse(await resp.json());
+    } catch {
+      return { text: "", usage: undefined };
+    }
+  }
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  /** Everything read, kept for the salvage path below — a stream LABELLED as SSE that turns out to
+   *  carry a plain JSON body would otherwise be indistinguishable from an empty reply. */
+  let raw = "";
+
+  const handleEvent = (raw: string): void => {
+    const line = raw.trim();
+    if (!line.startsWith("data:")) return;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === "[DONE]") return;
+    let evt: Record<string, unknown>;
+    try {
+      evt = JSON.parse(payload) as Record<string, unknown>;
+    } catch {
+      return; // a malformed frame must never abort a stream that is otherwise fine
+    }
+    const u = evt["usage"] as { prompt_tokens?: number; completion_tokens?: number; input_tokens?: number; output_tokens?: number } | undefined;
+    if (u) {
+      usage = {
+        input_tokens: u.prompt_tokens ?? u.input_tokens ?? 0,
+        output_tokens: u.completion_tokens ?? u.output_tokens ?? 0,
+      };
+    }
+    const choice = (evt["choices"] as Array<Record<string, unknown>> | undefined)?.[0];
+    const delta = choice?.["delta"] as Record<string, unknown> | undefined;
+    if (!delta) return;
+
+    let changed = false;
+    if (typeof delta["content"] === "string" && delta["content"]) {
+      progress.text += delta["content"] as string;
+      changed = true;
+    }
+    // Reasoning models stream chain-of-thought on a separate field, and the two names in the wild
+    // are `reasoning` and `reasoning_content` (see normalizeUniversalResponse's own note — a real
+    // captured payload carried BOTH, with `reasoning` the fuller of the two).
+    for (const key of ["reasoning", "reasoning_content"]) {
+      if (typeof delta[key] === "string" && delta[key]) thinking += delta[key] as string;
+    }
+    const calls = delta["tool_calls"] as Array<Record<string, unknown>> | undefined;
+    const fn = calls?.[0]?.["function"] as Record<string, unknown> | undefined;
+    if (fn) {
+      if (typeof fn["name"] === "string" && fn["name"]) {
+        progress.toolName = fn["name"] as string;
+        changed = true;
+      }
+      if (typeof fn["arguments"] === "string" && fn["arguments"]) {
+        progress.toolArguments += fn["arguments"] as string;
+        changed = true;
+      }
+    }
+    if (changed && onChunk) {
+      try { onChunk({ ...progress }); } catch { /* a throwing consumer never breaks the stream */ }
+    }
+  };
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      raw += chunk;
+      buffered += chunk;
+      // SSE frames are separated by a blank line; a frame may span several network chunks.
+      let sep = buffered.indexOf("\n\n");
+      while (sep !== -1) {
+        const frame = buffered.slice(0, sep);
+        buffered = buffered.slice(sep + 2);
+        for (const l of frame.split("\n")) handleEvent(l);
+        sep = buffered.indexOf("\n\n");
+      }
+    }
+  } catch {
+    // A dropped stream keeps whatever arrived — see this function's own doc.
+  } finally {
+    // Flush the tail in `finally`, not on the success path only: a stream that dies can leave a
+    // complete `data:` line in the buffer that simply never got its terminating blank line, and
+    // discarding it would throw away a frame that actually arrived. A genuinely truncated frame
+    // is malformed JSON and handleEvent ignores it, so this can only ever recover, never corrupt.
+    try {
+      for (const l of buffered.split("\n")) handleEvent(l);
+    } catch { /* a tail that can't be parsed is simply not there */ }
+    try { reader.releaseLock(); } catch { /* already released */ }
+  }
+
+  // Salvage: SSE content-type, but not a single frame parsed out of a non-empty body. The most
+  // likely explanation by far is a whole JSON response mislabelled as a stream, and reporting an
+  // empty turn when a perfectly good reply is sitting in the buffer would be the worse mistake.
+  if (!progress.toolName && !progress.text && raw.trim().startsWith("{")) {
+    try {
+      return normalizeUniversalResponse(JSON.parse(raw));
+    } catch {
+      /* genuinely unusable — fall through to the empty result below */
+    }
+  }
+
+  let toolCall: ToolCall | undefined;
+  if (progress.toolName) {
+    let args: Record<string, unknown> = {};
+    try {
+      const parsed = JSON.parse(progress.toolArguments || "{}");
+      if (parsed && typeof parsed === "object") args = parsed as Record<string, unknown>;
+    } catch {
+      // Truncated arguments: salvage the string fields we can still read, so a stream that died
+      // one byte short of valid JSON still yields a usable decision instead of none at all.
+      for (const key of ["name", "text", "reason", "say", "code"]) {
+        const v = partialJsonString(progress.toolArguments, key);
+        if (v !== undefined) args[key] = v;
+      }
+    }
+    toolCall = { name: progress.toolName, arguments: args };
+  }
+
+  return {
+    text: progress.text,
+    usage,
+    ...(toolCall ? { toolCall } : {}),
+    ...(thinking ? { thinking } : {}),
+  };
 }
 
 /**

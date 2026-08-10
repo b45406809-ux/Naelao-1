@@ -25,6 +25,7 @@ import {
   type ScriptEngineEnv,
   type ExecutionTier,
   type TraceStep,
+  type LiveCheckpoint,
   type LoopResult,
   type ScriptRunResult,
 } from "../script-engine/index.js";
@@ -2379,8 +2380,16 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private liveRuns = new Map<
     string,
     {
-      steps: Array<Omit<TraceStep, "ts"> & { ts: number }>;
+      steps: Array<Omit<TraceStep, "ts"> & { ts: number; partial?: boolean }>;
       updatedAt: number;
+      /**
+       * The final answer as the model is writing it, before the run has finished.
+       *
+       * This is what makes a long reply appear as it is generated instead of landing whole after
+       * a silence. The poller diffs it exactly the way it already diffs a completed `final_answer`,
+       * so the growing text needs no separate transport — see handleGetRun.
+       */
+      partialAnswer?: string;
       /**
        * Set once the run resolves, and the entry then LINGERS rather than being deleted.
        *
@@ -2417,15 +2426,37 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     return { param: reasoningParam, level };
   }
 
-  private recordLiveProgress(runId: string, checkpoint: Omit<TraceStep, "seq" | "ts">): void {
+  private recordLiveProgress(runId: string, checkpoint: LiveCheckpoint): void {
     const entry = this.liveRuns.get(runId) ?? { steps: [], updatedAt: Date.now() };
-    entry.steps.push({ seq: entry.steps.length, ts: Date.now(), ...checkpoint });
+    const { partial, answer_preview, ...step } = checkpoint;
+
+    // The final answer as it is being written belongs on the RUN, not on a step — it becomes the
+    // reply bubble, and the poller diffs it exactly the way it already diffs a completed
+    // final_answer, so this needs no separate client mechanism.
+    if (answer_preview) entry.partialAnswer = answer_preview;
+
+    if (partial) {
+      // A partial is the same step arriving again with more of its text — it must replace what is
+      // already there rather than append, or one reasoning turn would emit a row per chunk. It
+      // updates the step in flight: either an earlier partial of the same phase, or the "starting"
+      // checkpoint the loop pushed before the call began (which has no duration_ms yet).
+      const last = entry.steps[entry.steps.length - 1];
+      if (last && last.phase === step.phase && last.duration_ms === undefined) {
+        entry.steps[entry.steps.length - 1] = { ...last, ...step, partial: true, seq: last.seq, ts: Date.now() };
+        entry.updatedAt = Date.now();
+        this.liveRuns.set(runId, entry);
+        return;
+      }
+      entry.steps.push({ seq: entry.steps.length, ts: Date.now(), ...step, partial: true });
+    } else {
+      entry.steps.push({ seq: entry.steps.length, ts: Date.now(), ...step });
+    }
     if (entry.steps.length > NaelaoAgentDO.MAX_LIVE_STEPS) entry.steps.shift();
     entry.updatedAt = Date.now();
     this.liveRuns.set(runId, entry);
   }
 
-  private buildLiveProgressReporter(runId: string): (checkpoint: Omit<TraceStep, "seq" | "ts">) => void {
+  private buildLiveProgressReporter(runId: string): (checkpoint: LiveCheckpoint) => void {
     return (checkpoint) => this.recordLiveProgress(runId, checkpoint);
   }
 
@@ -2463,8 +2494,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
    *  when both apply) into one — each fires independently and a throwing one never blocks the
    *  others, same "never fails the run" contract loop.ts's own reportProgress already has. */
   private composeProgressReporters(
-    reporters: Array<((checkpoint: Omit<TraceStep, "seq" | "ts">) => void | Promise<void>) | undefined>
-  ): ((checkpoint: Omit<TraceStep, "seq" | "ts">) => Promise<void>) | undefined {
+    reporters: Array<((checkpoint: LiveCheckpoint) => void | Promise<void>) | undefined>
+  ): ((checkpoint: LiveCheckpoint) => Promise<void>) | undefined {
     const active = reporters.filter((r): r is (checkpoint: Omit<TraceStep, "seq" | "ts">) => void | Promise<void> => !!r);
     if (active.length === 0) return undefined;
     return async (checkpoint) => {
@@ -5727,6 +5758,10 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         id: runId,
         status: "running",
         live_steps: live.steps,
+        // The answer as it is being written. Named separately from `final_answer` on purpose: a
+        // caller must be able to tell "this is still growing" from "this is the result", and the
+        // stream endpoint diffs it into real delta events without ever treating it as terminal.
+        ...(live.partialAnswer ? { partial_answer: live.partialAnswer } : {}),
       });
     }
 

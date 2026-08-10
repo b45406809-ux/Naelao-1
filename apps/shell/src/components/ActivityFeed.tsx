@@ -101,10 +101,12 @@ function RevealText({ text, animate }: { text: string; animate?: boolean | undef
 
 /** One live-progress checkpoint fires TWICE for a "reason"/"run" step — once right before it
  *  starts (name/detail set, no duration_ms/tokens yet) and once when it completes (the same
- *  phase+name, now with duration_ms/tokens/ok) — see loop.ts's `onProgress` doc. Persisted trace
- *  steps only ever carry the completed half, so this is a no-op pass-through for them; for a live
- *  feed it collapses each start+complete pair into ONE row instead of two, and marks whichever
- *  step is still only half-arrived as `active` (currently in flight). */
+ *  phase+name, now with duration_ms/tokens/ok) — see loop.ts's `onProgress` doc. In between, a
+ *  reasoning step is UPDATED IN PLACE as the model writes (`partial`), so the growing sentence
+ *  arrives as one row rather than one row per fragment. Persisted trace steps carry only the
+ *  completed half, so this is a no-op pass-through for them; for a live feed it collapses each
+ *  start(/partials)+complete run into ONE row and marks whichever step is still only half-arrived
+ *  as `active` (currently in flight). */
 function mergeSteps(raw: LiveRunStep[]): { step: LiveRunStep; active: boolean }[] {
   const merged: { step: LiveRunStep; active: boolean }[] = [];
   for (const s of raw) {
@@ -116,9 +118,16 @@ function mergeSteps(raw: LiveRunStep[]): { step: LiveRunStep; active: boolean }[
       prev.step.duration_ms === undefined &&
       s.duration_ms !== undefined;
     if (completesPrev) {
-      merged[merged.length - 1] = { step: s, active: false };
+      // Carry forward text the in-flight row had accumulated but the completed one didn't report.
+      // A model that streamed a mid-run reply and then failed to repeat it on the final chunk
+      // should not have its own words disappear the instant the step finishes.
+      const narration = s.narration ?? prev.step.narration;
+      merged[merged.length - 1] = {
+        step: narration ? { ...s, narration } : s,
+        active: false,
+      };
     } else {
-      const active = s.duration_ms === undefined && (s.phase === "reason" || s.phase === "run");
+      const active = s.partial === true || (s.duration_ms === undefined && (s.phase === "reason" || s.phase === "run"));
       merged.push({ step: s, active });
     }
   }
@@ -190,7 +199,10 @@ export function ActivitySequence({ steps, animate, live }: { steps: LiveRunStep[
                   collapsed (it was written to be read, unlike thinking). */}
               {hasNarration && (
                 <div style={{ fontSize: 13, color: "var(--text1)", padding: "2px 0 4px 19px", lineHeight: 1.5 }}>
-                  <RevealText text={step.narration!} animate={animate && active === false} />
+                  {/* Animated while a run is live INCLUDING mid-write: the text really is arriving
+                      progressively from the server, and RevealText extends rather than restarts
+                      when it grows, so this smooths the gap between polls instead of stuttering. */}
+                  <RevealText text={step.narration!} animate={animate} />
                 </div>
               )}
               {isOpen && expandable && (

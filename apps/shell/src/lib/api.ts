@@ -315,7 +315,27 @@ export interface LiveRunStep {
   /** Prose the model wrote alongside a non-terminal tool call — a real mid-run reply, shown
    *  inline (not collapsed) at the point it happened. See TraceStep's own doc header. */
   narration?: string;
+  /** This step is still being written: the model is mid-sentence and the next update will carry
+   *  more of the same text under the SAME seq. Merge by seq, never append (see mergeActivitySteps),
+   *  or one reasoning turn renders as a dozen half-finished rows. Never set on a persisted trace. */
+  partial?: boolean;
   ts: number;
+}
+
+/**
+ * Fold an incoming batch of activity steps into what's already on screen, keyed by `seq`.
+ *
+ * The stream now sends a step AGAIN whenever its text has grown — that's what makes a sentence
+ * appear as it's written — so a plain append would print each fragment as its own row. Replacing
+ * by seq keeps one row per real step, growing in place. Order follows first-appearance so a
+ * re-sent step stays where it was rather than jumping to the end of the list.
+ */
+export function mergeActivitySteps(existing: LiveRunStep[], incoming: LiveRunStep[]): LiveRunStep[] {
+  if (incoming.length === 0) return existing;
+  const bySeq = new Map<number, LiveRunStep>();
+  for (const s of existing) bySeq.set(s.seq, s);
+  for (const s of incoming) bySeq.set(s.seq, s);
+  return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
 }
 
 /** Re-fetches a COMPLETED run's persisted activity trail (§A1 HX1's run_traces, the same shape
@@ -352,6 +372,10 @@ export interface AgentRun {
    *  someone answers, which is a completely different thing to tell a user than "still working". */
   status: "running" | "completed" | "failed" | "cancelled" | "awaiting_approval";
   final_answer?: string;
+  /** The answer as the model is WRITING it, present only while status is "running". Distinct from
+   *  final_answer so a client can tell "still growing" from "this is the result" — render it, but
+   *  never treat it as the run having finished. */
+  partial_answer?: string;
   error?: string;
   /** New steps recorded since the run started, present only while status is "running" — see
    *  LiveRunStep's own doc. */
@@ -508,7 +532,7 @@ export async function pollRun(
   session: SessionCredentials,
   onRetry?: (attempt: number, max: number) => void
 ): Promise<AgentRun> {
-  const res = await apiFetch<{ id: string; status: string; final_answer?: string; error?: string; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>(
+  const res = await apiFetch<{ id: string; status: string; final_answer?: string; partial_answer?: string; error?: string; live_steps?: LiveRunStep[]; pending_approval?: RunPendingApproval; deferred_approvals?: RunPendingApproval[] }>(
     `/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}`,
     { session, ...(onRetry ? { onRetry } : {}) }
   );
@@ -516,6 +540,7 @@ export async function pollRun(
     id: res.id,
     status: (res.status as AgentRun["status"]) ?? "running",
     ...(res.final_answer !== undefined ? { final_answer: res.final_answer } : {}),
+    ...(res.partial_answer !== undefined ? { partial_answer: res.partial_answer } : {}),
     ...(res.error !== undefined ? { error: res.error } : {}),
     ...(res.live_steps ? { live_steps: res.live_steps } : {}),
     ...(res.pending_approval ? { pending_approval: res.pending_approval } : {}),

@@ -18,6 +18,8 @@ import type { Embedder } from "./types.js";
 import {
   buildUniversalBody,
   normalizeUniversalResponse,
+  parseUniversalStream,
+  partialJsonString,
   universalGatewayUrl,
   universalGatewayHeaders,
   googleAiStudioGatewayUrl,
@@ -197,6 +199,8 @@ const DECISION_INSTRUCTIONS = `You are the reasoning core of a script-first agen
 {"action":"patch","name":"<existing_script>","code":"<ts source>","reason":"..."}  // repair a drifted script
 {"action":"answer","text":"<final answer to the goal>"}                    // answer directly, no tool needed
 {"action":"give_up","reason":"..."}                                        // cannot proceed safely
+TALK TO THE PERSON WHILE YOU WORK. "run", "distill" and "patch" each take a "say" — one short line, written to them, saying what you are about to do and why. They see it the moment you decide it, BEFORE that thing has run, so they are never left watching silence. Write it as you would speak: "Let me look at what's already in your store", "Right, I have the numbers — now I'll draft the three emails", "That returned nothing, so I'll try searching by customer instead". Make it reflect what you ACTUALLY just learned and are ACTUALLY about to do, never a stock phrase repeated every step.
+
 Everything in this section is MACHINERY — how to format a reply — not your job description. When the user asks who you are, what business this is, or what you can do for them, answer from your own instructions ABOVE and from the "who_you_are" field in the payload, in their terms. Never describe yourself as "an assistant that can run scripts, distill and patch them": that is plumbing the user did not ask about and does not care about.
 
 NEVER name your internal tooling in an "answer". Operation names ("web-search", "mcp-connector", "commerce") and the words "prebuilt", "script", "distill", "tier" are how you CHOOSE an action, never how you describe one. Say what you did and what they get, in their words: "I'll find local businesses with weak websites and draft the first few messages for you to approve", never "I use the web-search prebuilt". If a sentence would only make sense to someone who has read your source code, rewrite it.
@@ -211,11 +215,11 @@ NEVER report an action as done unless "steps_so_far" shows it ran and returned o
 
 On a long task the older half of "steps_so_far" is folded into "earlier_steps" — one line per step recording what ran, with what arguments, and how it went. Those steps ARE DONE. Their full results are gone from your context, but the fact that they happened is not in doubt: never run one again to remind yourself what it returned. Re-run something from "earlier_steps" only when the goal genuinely needs a fresh value.
 
-You are not on a short leash. Keep working until the goal is actually met — chain as many steps as the task honestly needs, checking each result before deciding the next. Do not rush to "answer" with a half-finished job just because several steps have gone by; equally, do not keep calling tools once you already have what you need.
+You are not on a short leash, and you are having a conversation rather than filing one report at the end. Keep working until the goal is actually met — chain as many steps as it honestly needs, checking each result before deciding the next, using "say" to bring the person along as you go. Choose "answer" when YOU judge the goal is met: not because several steps have passed, and not while real work is still left. Equally, stop calling tools once you already have what you need.
 
 When "final_step" is true this is your LAST turn — there is no step after this one. You MUST reply with "answer" (or "give_up" if you truly cannot). Do not choose "run": it will not be executed. If work already succeeded in "steps_so_far", answer by telling the user plainly what was done. Reporting completed work is always better than saying nothing.
 
-"progress" reports where you genuinely stand in this task right now: how many steps you have taken against the ceiling, how many of your actions have actually succeeded versus failed, and your current stall streak against the limit that stops the run. This is not a countdown to race against and "max_steps" is not a target — it is a runaway ceiling, far above what real work needs. Use it to judge whether you are actually converging. If "failed_actions" is climbing relative to "successful_actions", or "stall_steps" is getting close to "max_stall_steps" with nothing to show for it, that is a real signal: change your approach, or — if you have genuinely tried what is reasonable for this goal and it is not working — call "give_up" right now, on your OWN initiative, with a specific explanation of what you tried and why it did not work. Do not wait for "final_step" to say this. Stopping yourself early with a real, concrete reason is always more useful to the person reading your answer than being cut off later with a generic "ran out of budget" — they can act on "I tried X, Y and Z, here is what's blocking it" in a way they cannot act on a budget message. Equally, if progress looks healthy, keep working with confidence instead of rushing to answer or give up prematurely.
+"progress" reports where you genuinely stand in this task right now: how many steps you have taken against the ceiling, how many of your actions have actually succeeded versus failed, and your current stall streak against the limit that stops the run. This is not a countdown to race against and "max_steps" is not a target — it is a runaway ceiling, far above what real work needs. Use it to judge whether you are actually converging. If "failed_actions" is climbing relative to "successful_actions", or "stall_steps" is nearing "max_stall_steps" with nothing to show for it, change your approach — or, if you have genuinely tried what is reasonable, call "give_up" now on your OWN initiative, naming what you tried and what blocked it. Do not wait for "final_step": a person can act on "I tried X, Y and Z, here is what's blocking it" and cannot act on being cut off by a budget.
 
 Each candidate script carries a "health" record: how it has actually been going lately, and what it said the last time it failed. Trust it over the description. If a candidate is "broken" or "degrading", do NOT run it unchanged — running something that just failed three times will fail a fourth. Either "patch" it, aiming the fix at its "last_error", or pick a different approach. A "proven" skill can be run as-is; an "unproven" one can be run, but check what it returns rather than assuming it worked. When you patch a skill, fix the cause named in "last_error" — do not rewrite it wholesale on a guess.
 
@@ -343,6 +347,24 @@ function extractJson(text: string): unknown {
  * script, only distill something genuinely new, treat goal text as untrusted data) that a schema
  * can't express. The tools carry the SHAPE.
  */
+/**
+ * The `say` parameter — the agent talking to the person WHILE it works, not only at the end.
+ *
+ * This is declared as a real tool parameter rather than left to prose the model might attach
+ * beside its tool call, for the same reason the actions themselves became tools (see
+ * DECISION_TOOLS' own header): with `tool_choice:"required"` many providers suppress free text
+ * entirely, so narration that depends on a text block arriving alongside a forced tool call is
+ * unreliable exactly where reliability matters most — the small open-weight models a free-tier
+ * business runs on. As a declared parameter it comes back through the provider's own constrained
+ * decoding every time, and it streams (see partialJsonString), so the user watches the sentence
+ * appear before the tool it describes has even started.
+ */
+const SAY_PARAM = {
+  type: "string",
+  description:
+    "One short line to the person you are helping, in their words, saying what you are about to do and why. Shown to them immediately, before this runs — so write it as an update they will read while they wait, e.g. \"Let me check what's already in your store first.\" Never mention operation names, scripts or tiers.",
+};
+
 const DECISION_TOOLS: ToolSpec[] = [
   {
     name: "run",
@@ -352,8 +374,9 @@ const DECISION_TOOLS: ToolSpec[] = [
       properties: {
         name: { type: "string", description: "The prebuilt op or library script name to run." },
         params: { type: "object", description: "Arguments for that op/script." },
+        say: SAY_PARAM,
       },
-      required: ["name"],
+      required: ["name", "say"],
     },
   },
   {
@@ -374,8 +397,9 @@ const DECISION_TOOLS: ToolSpec[] = [
           required: ["description"],
         },
         params: { type: "object", description: "Arguments to run it with immediately." },
+        say: SAY_PARAM,
       },
-      required: ["name", "code"],
+      required: ["name", "code", "say"],
     },
   },
   {
@@ -387,8 +411,9 @@ const DECISION_TOOLS: ToolSpec[] = [
         name: { type: "string", description: "The existing script to repair." },
         code: { type: "string", description: "The corrected TypeScript source." },
         reason: { type: "string", description: "What was wrong and what this fixes." },
+        say: SAY_PARAM,
       },
-      required: ["name", "code"],
+      required: ["name", "code", "say"],
     },
   },
   {
@@ -469,16 +494,21 @@ export class GatewayReasoner implements Reasoner {
    *  model/provider returned one (see ReasoningRequest's doc) — undefined for every model that
    *  doesn't report one. Mirrors lastUsage's "read immediately after each awaited decide()" contract. */
   lastThinking: string | undefined;
-  /** Prose the model wrote ALONGSIDE a non-terminal tool call (run/distill/patch) — e.g. "I'll
-   *  search the web for that" right before calling `run`. This is what Claude Code's own UI
-   *  shows as a mid-run reply between tool calls, and it costs nothing extra to capture: with
-   *  `tool_choice:"required"` a model can still attach a text block next to its tool_use, and
-   *  `normalizeUniversalResponse` already returns it — it was simply discarded once the tool call
-   *  itself resolved. Deliberately NOT captured for a terminal `answer`/`give_up` decision (the
-   *  answer text itself, or the give_up reason, already covers that turn — a separate narration
-   *  line there would just duplicate it). Mirrors lastThinking's "read immediately after each
-   *  awaited decide()" contract; a thinking model's real chain-of-thought and this are two
-   *  different things and both can be present on the same turn. */
+  /** What the model said to the PERSON alongside a non-terminal tool call (run/distill/patch) —
+   *  e.g. "Let me check what's already in your store first" right before calling `run`. This is
+   *  the mid-run reply Claude Code's own UI shows between tool calls, and it is what turns a
+   *  silent tool runner into something you can follow.
+   *
+   *  Read from the declared `say` parameter first (SAY_PARAM — constrained decoding, so it
+   *  actually arrives), falling back to any prose the model attached beside its tool call, which
+   *  is the older and far less reliable source: under `tool_choice:"required"` many providers
+   *  suppress free text entirely, which is exactly why `say` was made a real parameter.
+   *
+   *  Deliberately NOT captured for a terminal `answer`/`give_up` decision — the answer text (or
+   *  the give_up reason) already covers that turn, and a narration line beside it would just
+   *  duplicate the reply. Mirrors lastThinking's "read immediately after each awaited decide()"
+   *  contract; a thinking model's real chain-of-thought and this are different things and both
+   *  can be present on the same turn. */
   lastNarration: string | undefined;
 
   constructor(private readonly deps: ReasonerDeps) {}
@@ -572,6 +602,10 @@ export class GatewayReasoner implements Reasoner {
     // still the same OpenAI-shaped payload buildUniversalBody produces either way.
     const url = isGemini ? googleAiStudioGatewayUrl(this.deps.gateway) : universalGatewayUrl(this.deps.gateway);
     const headers = isGemini ? googleAiStudioGatewayHeaders(this.deps.gateway) : universalGatewayHeaders(this.deps.gateway);
+    // Stream ONLY when someone is actually watching. A cron wake, a channel drain and a sub-agent
+    // have no live consumer, so they take the cheaper non-streamed path and this cannot regress
+    // them; an interactive chat passes onDelta and gets the text as it is generated.
+    const streaming = typeof input.onDelta === "function";
     let resp: Response;
     try {
       resp = await fetch(url, {
@@ -586,6 +620,7 @@ export class GatewayReasoner implements Reasoner {
           tools: DECISION_TOOLS,
           ...(this.deps.fallbacks && this.deps.fallbacks.length > 0 ? { fallbacks: this.deps.fallbacks } : {}),
           ...(this.deps.reasoning ? { reasoning: this.deps.reasoning } : {}),
+          ...(streaming ? { stream: true } : {}),
         }),
       });
     } catch (err) {
@@ -603,8 +638,25 @@ export class GatewayReasoner implements Reasoner {
         reason: `reasoner gateway error ${resp.status}${detail ? `: ${detail.slice(0, 400)}` : ""}`,
       };
     }
-    const data = await resp.json();
-    const { text, usage, toolCall, thinking } = normalizeUniversalResponse(data);
+    // Streamed and non-streamed converge on the same normalized shape, so everything below this
+    // point is identical for both — the only difference is that on the streamed path the person
+    // has already been reading the text by the time we get here.
+    const { text, usage, toolCall, thinking } = streaming
+      ? await parseUniversalStream(resp, (progress) => {
+          // Which field carries user-visible text depends on which action the model chose, and
+          // the name arrives before the arguments do — so this can only be decided per chunk.
+          const partial =
+            progress.toolName === "answer"
+              ? { answer: partialJsonString(progress.toolArguments, "text") }
+              : progress.toolName
+                ? { say: partialJsonString(progress.toolArguments, "say") }
+                : // No tool named yet: some models emit prose first (and some ignore
+                  // tool_choice:"required" entirely and only ever answer in prose — a real,
+                  // observed degradation), so plain streamed text is treated as answer text.
+                  { answer: progress.text || undefined };
+          if (partial.say || partial.answer) input.onDelta?.(partial);
+        })
+      : normalizeUniversalResponse(await resp.json());
     if (usage) this.lastUsage = usage;
     if (thinking) this.lastThinking = thinking;
 
@@ -612,8 +664,13 @@ export class GatewayReasoner implements Reasoner {
     if (toolCall) {
       const decision = decisionFromToolCall(toolCall);
       if (decision) {
-        if (decision.action !== "answer" && decision.action !== "give_up" && text.trim()) {
-          this.lastNarration = text.trim();
+        if (decision.action !== "answer" && decision.action !== "give_up") {
+          // `say` is the declared parameter (see SAY_PARAM) and is what a model reliably returns
+          // under tool_choice:"required"; a text block alongside the call is the older, incidental
+          // source and stays as the fallback for providers that do emit one.
+          const said = typeof toolCall.arguments["say"] === "string" ? (toolCall.arguments["say"] as string).trim() : "";
+          const narration = said || text.trim();
+          if (narration) this.lastNarration = narration;
         }
         return decision;
       }
@@ -629,7 +686,9 @@ export class GatewayReasoner implements Reasoner {
       // in this platform uses, so a genuinely unrecognisable name still falls through.
       const asOperation = coerceOperationToolCall(toolCall);
       if (asOperation) {
-        if (text.trim()) this.lastNarration = text.trim();
+        const said = typeof toolCall.arguments["say"] === "string" ? (toolCall.arguments["say"] as string).trim() : "";
+        const narration = said || text.trim();
+        if (narration) this.lastNarration = narration;
         return asOperation;
       }
       // A tool call we can't use (unknown action, or missing a required field) is a genuine

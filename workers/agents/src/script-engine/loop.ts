@@ -21,6 +21,7 @@ import type {
   EscalationLevel,
   HITLGateway,
   TraceStep,
+  LiveCheckpoint,
   ScriptRunResult,
 } from "./types.js";
 
@@ -231,6 +232,19 @@ export interface Reasoner {
       tokens_used: number;
       max_tokens?: number;
     };
+    /**
+     * Called repeatedly WHILE the model is generating, with whatever user-visible text has
+     * arrived so far — the mid-run reply it is writing (`say`) or the final answer it is
+     * composing (`answer`). Each call carries the CUMULATIVE value, not an incremental fragment,
+     * so a dropped update can never corrupt what the reader sees.
+     *
+     * Present only when someone is actually watching: an interactive chat passes it, while a cron
+     * wake, a channel drain and a sub-agent do not — and a reasoner that receives none takes the
+     * cheaper non-streamed path. That is deliberate. Streaming costs an extra connection held open
+     * for the duration of the call, and there is no point paying it for a run whose output nobody
+     * will see until it is finished anyway.
+     */
+    onDelta?: (partial: { say?: string | undefined; answer?: string | undefined }) => void;
   }): Promise<ReasonDecision>;
   /** Token usage from the most recently completed decide() call, when the backing LLM
    *  client reports it. Optional — reasoners that can't report it (e.g. test fakes) leave
@@ -377,16 +391,36 @@ export interface RunLoopOptions {
    * Never awaited into the critical path failing the run — a throwing onProgress is swallowed,
    * not propagated.
    */
-  onProgress?: (checkpoint: Omit<TraceStep, "seq" | "ts">) => void | Promise<void>;
+  onProgress?: (checkpoint: LiveCheckpoint) => void | Promise<void>;
 }
 
-async function reportProgress(opts: RunLoopOptions, checkpoint: Omit<TraceStep, "seq" | "ts">): Promise<void> {
+async function reportProgress(opts: RunLoopOptions, checkpoint: LiveCheckpoint): Promise<void> {
   if (!opts.onProgress) return;
   try {
     await opts.onProgress(checkpoint);
   } catch {
     /* progress reporting is a convenience, never fails the run */
   }
+}
+
+/**
+ * The bridge from "the model is generating" to "the person can read it".
+ *
+ * Returns the callback handed to `reasoner.decide` so each partial arrives as a live checkpoint
+ * updating the in-flight reason step, or undefined when nobody is watching — which is also the
+ * signal the reasoner uses to skip streaming entirely and take the cheaper path.
+ */
+function deltaReporter(opts: RunLoopOptions): ((p: { say?: string | undefined; answer?: string | undefined }) => void) | undefined {
+  if (!opts.onProgress) return undefined;
+  return (p) => {
+    void reportProgress(opts, {
+      phase: "reason",
+      detail: "Thinking",
+      partial: true,
+      ...(p.say ? { narration: p.say } : {}),
+      ...(p.answer ? { answer_preview: p.answer } : {}),
+    });
+  };
 }
 
 /**
@@ -576,6 +610,7 @@ export async function runScriptLoop(
         availableOperations: tools.availableOperations(),
         ...(opts.conversation ? { conversation: opts.conversation } : {}),
         repairTarget: { name: top!.name, failureReason: repairReason ?? "fingerprint drift (partial match)" },
+        ...(deltaReporter(opts) ? { onDelta: deltaReporter(opts)! } : {}),
       });
       const usage = usageOf(reasoner);
       pushTrace({
@@ -722,6 +757,7 @@ export async function runScriptLoop(
             tokens_used: usageAcc.input + usageAcc.output,
             ...(budget.maxTokens !== undefined ? { max_tokens: budget.maxTokens } : {}),
           },
+          ...(deltaReporter(opts) ? { onDelta: deltaReporter(opts)! } : {}),
         });
         longestStepMs = Math.max(longestStepMs, Date.now() - reasonStart);
         const stepUsage = usageOf(reasoner);
@@ -938,6 +974,7 @@ export async function runScriptLoop(
             priorSteps: closing.recent,
             ...(closing.digest.length > 0 ? { earlierSteps: closing.digest } : {}),
             finalStep: true,
+            ...(deltaReporter(opts) ? { onDelta: deltaReporter(opts)! } : {}),
           });
           const summaryUsage = usageOf(reasoner);
           usageAcc.input += summaryUsage.input;

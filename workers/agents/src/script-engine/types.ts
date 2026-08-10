@@ -252,6 +252,31 @@ export interface TraceStep {
   ts: number;
 }
 
+/**
+ * A live progress checkpoint — a TraceStep before it has a place in the trace, plus the two fields
+ * that only make sense WHILE something is happening and are therefore never persisted.
+ *
+ * The distinction matters: `TraceStep` is the durable record of what a run did, read back long
+ * after the fact from `run_traces`. This is the transient view of a run in flight, and it carries
+ * text that is still growing — so a consumer has to know whether what it is holding is finished.
+ */
+export type LiveCheckpoint = Omit<TraceStep, "seq" | "ts"> & {
+  /**
+   * This checkpoint UPDATES the step already in flight rather than describing a new one — the
+   * model is mid-sentence and this is the sentence so far. A consumer replaces its current step
+   * in place instead of appending, or a single reasoning turn would produce dozens of rows.
+   */
+  partial?: boolean | undefined;
+  /**
+   * The final answer as it is being written, for a turn where the model chose to answer.
+   *
+   * Kept apart from `narration` because the two end up in different places on screen: narration is
+   * a line inside the activity sequence, whereas this becomes the assistant's actual reply bubble.
+   * Merging them would print the answer twice.
+   */
+  answer_preview?: string | undefined;
+};
+
 export interface LoopResult {
   level: EscalationLevel;
   script_name?: string;

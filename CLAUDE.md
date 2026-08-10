@@ -5690,6 +5690,78 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      effect built here is a real, honest improvement to how EXISTING text is presented, not a
      replacement for that larger, still-open architecture change.
 
+118. **Real streaming, and the agent now TALKS between tool calls — item 117's two stated
+     limitations are both closed.** The user's correction was structural, not cosmetic: Claude Code
+     has no hardcoded "tools then one final answer" shape; the model streams as it generates,
+     speaks to the user as many times as it decides to, and stops when it judges the job done. Two
+     of those three were genuinely missing here.
+     - **The reasoning call is now streamed** (`stream: true` + `stream_options.include_usage`,
+       new `parseUniversalStream` in `shared/ai-client.ts`). The hard part is that a tool call
+       arrives as JSON *fragments* — `{"say":"Let me ch` — so `JSON.parse` is unusable until the
+       final chunk, which would defeat the point. New `partialJsonString(buffer, key)` walks the
+       buffer by hand and returns whatever of a value has arrived, unescaped, whether or not the
+       closing quote has been seen (stopping at a half-arrived `\` or `\uXXXX` rather than emitting
+       a character the next chunk replaces). Streaming is **opt-in per call** via a new
+       `Reasoner.decide({onDelta})`: an interactive chat passes it, a cron wake / channel drain /
+       sub-agent does not, so those keep the cheaper non-streamed path and cannot regress.
+     - **Mid-run replies are a first-class tool parameter, not incidental prose.** Item 117
+       captured text a model *happened* to attach beside its tool call — but under
+       `tool_choice:"required"` many providers suppress free text entirely, so that source is
+       unreliable exactly where reliability matters most (the small open-weight models a free-tier
+       business runs on). `run`/`distill`/`patch` now each declare a **required `say`**, so it
+       comes back through the provider's own constrained decoding every time, and it streams — the
+       user reads the sentence before the tool it describes has started. `DECISION_INSTRUCTIONS`
+       gained a paragraph telling the model to write it as speech reflecting what it just learned,
+       never a stock phrase; the existing "not on a short leash" paragraph absorbed the
+       conversation framing (keep going as long as the goal needs, `answer` when YOU judge it met).
+     - **Growing text needed a new checkpoint kind.** New `LiveCheckpoint = TraceStep + {partial,
+       answer_preview}` (`script-engine/types.ts`) — deliberately NOT on `TraceStep` itself, which
+       is the durable record. `NaelaoAgentDO.recordLiveProgress` updates the in-flight step **in
+       place** for a partial (or one reasoning turn becomes a dozen rows) and puts a growing answer
+       on the RUN as `partialAnswer`, surfaced as `partial_answer` — kept apart from `narration`
+       because they land in different places on screen (activity line vs. the reply bubble), and
+       merging them would print the answer twice. The SSE endpoint's `lastActivitySeq` filter was
+       **wrong** once a step's own text could grow (same seq, more characters — it would send the
+       first fragment and silently drop the rest of the sentence); now compares the serialized
+       step. Poll cadence 1000ms → 350ms. Client: new `mergeActivitySteps` merges by seq instead of
+       appending.
+     - **A real robustness hole, found by an existing test rather than by review.** Asking for a
+       stream is a request, not a guarantee: a provider or gateway may answer `stream:true` with an
+       ordinary JSON body, and reading that as SSE finds no frames — an empty reply, reported as a
+       failed turn. That would have broken every interactive run against such a provider.
+       `parseUniversalStream` now checks content-type and falls back to whole-body JSON, plus
+       salvages a body mislabelled as a stream. `live-activity-feed.test.ts` and
+       `sub-agent-effort-escalation.test.ts` both failed on exactly this and passed again the
+       moment it was fixed — worth recording that they were pinning real production behaviour, not
+       stale assertions.
+     - Two more fixes came out of writing the tests: the tail-frame flush moved into `finally` (a
+       stream that dies can leave a complete `data:` line that never got its blank line —
+       discarding it costs a real answer; verified by reverting and watching the test fail), and my
+       own first test was wrong because **`controller.error()` DISCARDS anything still queued**, so
+       enqueue-then-error in one tick means the chunk never reaches the reader at all. Use a
+       pull-based stream that errors on the second pull.
+     - The protocol tripped its own 20,000-char bound again (item 108's precedent). Tightened the
+       new paragraphs and trimmed real duplication out of the `progress` paragraph rather than
+       relaxing the bound — it is a genuine cost on a 24k-token window.
+     - **Live-verified end to end on production, not just in tests.** A real dispatched run against
+       the live `launchpad` business returned a 12-step live trace containing `partial: true` steps
+       (proving `onDelta` genuinely fired mid-generation) and a real streamed mid-run reply —
+       *"Let me check your product listings to see what Lau…"* — recorded at the reasoning step and
+       carried onto its completed step. The sequence now reads: observe → find → gate → think →
+       **reply** → run `commerce.list_products` → think → answer. Note the first post-deploy run
+       showed no narration: CF worker versions propagate across isolates over ~a minute (item 96's
+       own documented gotcha), so give a deploy a moment before concluding a change didn't land.
+     2839/2839 tests pass (23 new: `reasoner-streaming.test.ts` covering partial-JSON extraction,
+     stream parsing, both degradation paths and per-call opt-in; `live-partial-progress.test.ts`
+     covering in-place DO merging and the client's `mergeActivitySteps`), `npx turbo run typecheck`
+     clean (76 tasks). `naelao-agents` (bare `wrangler deploy`, item 83's documented trap) and
+     `apps/shell` (rebuilt + `--branch=main`, `environment: "production"` confirmed via the Pages
+     API) both deployed. **Still not done, honestly:** the client reads deltas by polling at 350ms
+     rather than holding an open pipe from the DO, so text arrives in ~third-of-a-second chunks
+     (smoothed by `RevealText`) rather than token by token. Closing that last gap means either the
+     DO exposing its own SSE stream for the worker to pipe, or per-chunk fan-out through the
+     already-built `WsHubDO` — a real, scoped follow-up, not claimed here.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
