@@ -16,6 +16,7 @@ import {
   getApprovalResumeStatus,
   listApprovals,
   pollRun,
+  getActiveRun,
   mergeActivitySteps,
   sendMessage,
   startSession,
@@ -751,7 +752,7 @@ export function Chat({
       es.onmessage = (evt) => {
         try {
           const data = JSON.parse(evt.data) as {
-            type: string; content?: string; run_id?: string; message?: string; steps?: LiveRunStep[];
+            type: string; content?: string; offset?: number; run_id?: string; message?: string; steps?: LiveRunStep[];
             status?: AgentRun["status"]; final_answer?: string; error?: string;
             pending_approval?: AgentRun["pending_approval"];
             deferred_approvals?: AgentRun["deferred_approvals"];
@@ -763,7 +764,14 @@ export function Chat({
             activitySteps = mergeActivitySteps(activitySteps, data.steps);
             setLiveActivity(activitySteps);
           } else if (data.type === "delta" && data.content) {
-            accumulated += data.content;
+            // Splice at the offset the server names rather than blindly appending. Appending is
+            // correct exactly once: a reconnect, or attaching to a run already in progress,
+            // would otherwise concatenate text that is already there. `offset` is absent on
+            // older servers, where appending remains the right behaviour.
+            accumulated =
+              typeof data.offset === "number"
+                ? accumulated.slice(0, data.offset) + data.content
+                : accumulated + data.content;
             setStreamingContent(accumulated);
           } else if (data.type === "done") {
             if (doneHandled) return;
@@ -890,21 +898,47 @@ export function Chat({
     void refreshInterrupted(chatSessionId);
   }, [chatSessionId, refreshInterrupted]);
 
+  // Reattach to a run that is still going.
+  //
+  // The server is asked first, and that is the whole point: sessionStorage is per-tab, so a run
+  // started before you closed the tab was invisible to the tab you came back in — the agent kept
+  // working and you saw a silent transcript. `getActiveRun` answers from durable state, so this
+  // works from a new tab, another browser, or a different device. The stored id is kept as a
+  // fallback for the case the server lookup itself fails, since it is still right within one tab.
+  //
+  // What arrives with the answer matters as much as the id: the steps and half-written reply
+  // accumulated while you were away are painted immediately, THEN the live stream continues — so
+  // coming back looks like catching up, not like starting over.
   React.useEffect(() => {
     if (!chatSessionId) return;
-    const activeRunId = getActiveRunId(spaceId, sessionKey);
-    if (!activeRunId) return;
     let cancelled = false;
     (async () => {
+      let activeRunId: string | null = null;
+      try {
+        const active = await getActiveRun(spaceId, chatSessionId, session);
+        if (cancelled) return;
+        if (active.active && active.run_id) {
+          activeRunId = active.run_id;
+          if (active.live_steps?.length) setLiveActivity(active.live_steps);
+          if (active.partial_answer) setStreamingContent(active.partial_answer);
+        }
+      } catch {
+        // Fall back to this tab's own memory of what it started.
+        activeRunId = getActiveRunId(spaceId, sessionKey);
+      }
+      if (cancelled || !activeRunId) return;
       try {
         const run = await pollRun(spaceId, chatSessionId, activeRunId, session);
         if (cancelled) return;
         if (run.status === "running") {
           setIsLoading(true);
+          storeActiveRunId(spaceId, activeRunId, sessionKey);
           attachToRun(chatSessionId, activeRunId);
         } else {
           // Already resolved while we were away — history (fetched above) already reflects it.
           clearActiveRunId(spaceId, sessionKey);
+          setLiveActivity([]);
+          setStreamingContent("");
         }
       } catch {
         // Can't confirm the run's state — leave it be rather than guess; the next send will

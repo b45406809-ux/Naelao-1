@@ -513,6 +513,23 @@ export class GatewayReasoner implements Reasoner {
 
   constructor(private readonly deps: ReasonerDeps) {}
 
+  /**
+   * Re-run the same turn with streaming off, for a stream that came back unusable.
+   *
+   * Terminates by construction: dropping `onDelta` is exactly what makes `streaming` false, and
+   * only the streaming path ever calls this. Returns null on a retry that is itself unusable, so
+   * the caller reports the original honest failure instead of a second layer of confusion.
+   */
+  private async decideWithoutStreaming(input: Parameters<Reasoner["decide"]>[0]): Promise<ReasonDecision | null> {
+    const { onDelta: _dropped, ...withoutStreaming } = input;
+    try {
+      const decision = await this.decide(withoutStreaming);
+      return decision.action === "give_up" ? null : decision;
+    } catch {
+      return null;
+    }
+  }
+
   async decide(input: Parameters<Reasoner["decide"]>[0]): Promise<ReasonDecision> {
     this.lastUsage = undefined;
     this.lastThinking = undefined;
@@ -707,6 +724,10 @@ export class GatewayReasoner implements Reasoner {
       // burning a turn on a decision the loop cannot act on.
       const asAnswer = stripDecisionJson(text);
       if (asAnswer) return { action: "answer", text: asAnswer };
+      if (streaming) {
+        const retried = await this.decideWithoutStreaming(input);
+        if (retried) return retried;
+      }
       return { action: "give_up", reason: "the model returned JSON that isn't one of the five actions" };
     } catch (err) {
       if (toolCall) {
@@ -722,7 +743,22 @@ export class GatewayReasoner implements Reasoner {
       // any non-empty text as the intended answer; only give up when the model truly said
       // nothing at all.
       const trimmed = text.trim();
-      if (trimmed) {
+      // A reply that BEGINS with `{` was the model trying to emit a decision, not prose — so what
+      // we are holding is a truncated decision, never a real answer. Handing it to the user
+      // produces exactly the reported nonsense: a chat message reading `{"`.
+      //
+      // Observed live on Gemini through the compat endpoint, whose streaming shape differs from
+      // the other providers' (it emits a tool-call entry carrying only a thought signature, then
+      // streams the decision itself as ordinary content, one token per frame). Rather than guess
+      // at every provider's streaming dialect and hope, retry the same call WITHOUT streaming —
+      // the non-streamed path is the one every provider agrees on, and it is already proven to
+      // work for this exact model. Costs one extra call only in the broken case, and makes it
+      // impossible for a half-parsed stream to reach a person as their answer.
+      if (streaming && trimmed.startsWith("{")) {
+        const retried = await this.decideWithoutStreaming(input);
+        if (retried) return retried;
+      }
+      if (trimmed && !trimmed.startsWith("{")) {
         return { action: "answer", text: trimmed };
       }
       return { action: "give_up", reason: `unparseable reasoner output: ${err instanceof Error ? err.message : String(err)}` };

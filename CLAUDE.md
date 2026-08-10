@@ -5762,6 +5762,66 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      DO exposing its own SSE stream for the worker to pipe, or per-chunk fan-out through the
      already-built `WsHubDO` — a real, scoped follow-up, not claimed here.
 
+119. **Close the tab, come back, and the run is still there with what you missed already loaded —
+     plus a real corrupted-answer bug found by testing it.** Item 118 shipped streaming that only
+     lived in memory; the user's follow-up named the actual gap: durability and resumption, "not
+     something broken."
+     - **Why it genuinely did not survive a closed tab.** Live progress and the growing answer sat
+       in `NaelaoAgentDO.liveRuns`, an in-memory map that dies with hibernation or eviction; and
+       the client's record of "a run is in flight" was in **sessionStorage, per-tab by
+       construction**. So the two states a returning person could reach were "nothing appears to
+       be happening" and "it finished" — everything in between was lost while the run itself kept
+       going. `apps/shell`'s own `chatSession.ts` comment had said exactly this since §A1.27.
+     - **The mechanism, which is the same one any resumable stream uses**: persist the output as
+       it is produced, let clients read it from a cursor, and make "what is in flight" a
+       server-side question. New `run_state` + `run_stream` tables in the agent DO. Deliberately
+       NOT an event row per delta — a growing answer is ONE fact that keeps changing, so it is an
+       UPSERT on a single row (throttled ~400ms), while a step is a row keyed by its own seq that
+       a partial rewrites in place. Writes track real progress, not token count. `run_traces` was
+       not reused: it is the finished audit record, written once at the end, and by definition
+       holds nothing while the run is the thing you want to watch.
+     - `handleGetRun` falls back to storage when memory is empty; new `GET .../agent/active-run`
+       answers "is anything running in this conversation?" from the session id alone — the only
+       thing a new tab knows — and returns the steps and partial answer **with** the id, so the
+       client paints what it missed and then continues, rather than starting blank. A run whose DO
+       died mid-flight (nothing ever reports terminal) is aged out after 5 minutes so it is not
+       offered as live forever. Delta events gained an `offset` so a reconnect splices rather than
+       appends — additive, older clients unaffected.
+     - **Three real bugs found while building it, two of them mine:**
+       (1) `getDOName(tenantId, secret, "agent", sessionId)` — wrong argument order, so the new
+       route addressed a different DO and reported "nothing running" for a run that was very much
+       running. Now uses the existing `getAgentDO` helper. Caught by live testing, not review.
+       (2) The durable-write throttle clock was shared between partial and step-boundary writes, so
+       every step reset it and **the first partial after any step was always dropped** — on a short
+       answer, the growing reply was never written through at all. Caught by a test, fixed by
+       giving partials their own clock.
+       (3) **A live-reported corrupted answer: the chat replied with the literal text `{"`.**
+       Root-caused with real captured wire data (temporary `console.log` + `wrangler tail`, then
+       reverted): Gemini through the compat endpoint sends a `tool_calls` entry carrying only
+       `extra_content.google.thought_signature` and then streams the decision itself as ordinary
+       **content**, one token per frame — a shape this parser mishandles, leaving only the first
+       token. Rather than guess at each provider's streaming dialect, `decide()` now retries the
+       same turn **without streaming** whenever the streamed result is a text beginning with `{`
+       (a decision the model was midway through writing is never prose, so this can never
+       misfire on a real answer). Terminates by construction — dropping `onDelta` is what makes
+       the retry non-streamed. Live-verified: the same prompt that returned `{"` now returns a
+       full 2,189-character four-paragraph plan.
+     - **Live-verified end to end on production**, from a separate request that knew only the
+       session id: at 5s and 10s into a real run it reported `active: true` with 6 recovered steps,
+       and `active: false` once the run completed — the close-the-tab case working for real.
+     - **Honest limitation worth keeping:** with the corruption guard in place, a Gemini run whose
+       stream is unusable falls back to non-streamed, so on THAT provider the activity feed streams
+       live but the answer arrives whole at the end. Providers whose streaming parses correctly
+       stream the answer too. And deltas still reach the browser by polling (350ms) rather than an
+       open pipe from the DO — smoothed by `RevealText`, but not token-by-token. Both remain real,
+       scoped follow-ups rather than claimed work.
+     2849/2849 tests pass (10 new: `durable-run-stream.test.ts` drives TWO separately-constructed
+     DO instances over one shared storage — a second instance is exactly what a hibernated-and-woken
+     DO is, so anything that only lived in the first one's memory is genuinely gone; plus 4 new
+     unusable-stream-retry cases), `npx turbo run typecheck` clean (76 tasks). `naelao-agents`
+     (bare `wrangler deploy`) and `apps/shell` (`--branch=main`, production confirmed via the Pages
+     API) deployed.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

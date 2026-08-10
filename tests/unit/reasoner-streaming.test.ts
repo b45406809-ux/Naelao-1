@@ -277,3 +277,77 @@ describe("GatewayReasoner — streaming is opt-in per call", () => {
     expect(reasoner.lastNarration).toBe("Let me check your store first");
   });
 });
+
+describe("a stream that comes back unusable never reaches a person as their answer", () => {
+  afterEach(() => { globalThis.fetch = ORIGINAL_FETCH; });
+
+  const baseInput = {
+    goal: "write me a plan",
+    level: "L4" as const,
+    snapshot: { type: "none" } as never,
+    candidates: [],
+    availableOperations: [],
+  };
+
+  function reasoner(): GatewayReasoner {
+    // A Gemini model on purpose — this is the provider the corruption was observed on — which
+    // means the Google credential has to be present or the call is refused before it is made.
+    return new GatewayReasoner({
+      apiKey: "k",
+      gateway: { accountId: "a", gatewayId: "g", googleAiStudioApiKey: "gkey" },
+      ctx: { tenantId: "t", model: "google-ai-studio/gemini-flash-latest" } as never,
+    });
+  }
+
+  it("retries without streaming when the stream yields a truncated decision", async () => {
+    // The exact live failure: Gemini through the compat endpoint sends a tool-call entry carrying
+    // only a thought signature, then streams the decision itself as ordinary content — and what
+    // came back was the single token `{"`. That was handed to the user AS THEIR REPLY. A message
+    // beginning with `{` is a decision the model was midway through writing, never prose, so it
+    // is never a legitimate answer.
+    const bodies: string[] = [];
+    globalThis.fetch = (async (_url: string, init?: RequestInit) => {
+      bodies.push(String(init?.body ?? ""));
+      if (JSON.parse(String(init?.body ?? "{}")).stream) {
+        return sseResponse([JSON.stringify({ choices: [{ delta: { content: '{"' } }] })]);
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ function: { name: "answer", arguments: '{"text":"Here is the real four-paragraph plan."}' } }] } }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as unknown as typeof fetch;
+
+    const decision = await reasoner().decide({ ...baseInput, onDelta: () => {} });
+    expect(decision).toEqual({ action: "answer", text: "Here is the real four-paragraph plan." });
+    // Two calls: the stream, then the retry. The retry must NOT ask for a stream, or it would
+    // hit the same wall and recurse.
+    expect(bodies).toHaveLength(2);
+    expect(JSON.parse(bodies[0]!).stream).toBe(true);
+    expect(JSON.parse(bodies[1]!).stream).toBeUndefined();
+  });
+
+  it("reports the honest failure when the retry is unusable too, rather than compounding it", async () => {
+    globalThis.fetch = (async () => sseResponse([JSON.stringify({ choices: [{ delta: { content: '{"' } }] })])) as unknown as typeof fetch;
+    const decision = await reasoner().decide({ ...baseInput, onDelta: () => {} });
+    expect(decision.action).toBe("give_up");
+    // Never the truncated fragment dressed up as a reply.
+    expect(JSON.stringify(decision)).not.toContain('"text":"{');
+  });
+
+  it("does not retry a non-streamed call, so it can never recurse", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"' } }] }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const decision = await reasoner().decide(baseInput);
+    expect(calls).toBe(1);
+    expect(decision.action).toBe("give_up");
+  });
+
+  it("still treats genuine prose as the answer — the guard is about `{`, not about length", async () => {
+    globalThis.fetch = (async () => sseResponse([JSON.stringify({ choices: [{ delta: { content: "Yes." } }] })])) as unknown as typeof fetch;
+    const decision = await reasoner().decide({ ...baseInput, onDelta: () => {} });
+    expect(decision).toEqual({ action: "answer", text: "Yes." });
+  });
+});

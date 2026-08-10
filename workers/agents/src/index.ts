@@ -1572,6 +1572,36 @@ app.get(
   }
 );
 
+// ── GET /spaces/:spaceId/sessions/:sessionId/agent/active-run ─────────────────
+//
+// "Is anything still running in this conversation?" — the question a tab that was closed while
+// the agent was working has no way to answer for itself. The client used to track the in-flight
+// run in sessionStorage, which is per-tab by definition: close it, and the run kept going with
+// nobody watching, and reopening showed a silent transcript. This makes the server the source of
+// truth, so reattaching works from a new tab, a different browser, or another device entirely.
+//
+// Deliberately a sibling of `runs/:runId` rather than a sub-path of it — a dynamic segment
+// followed by a static suffix is the shape that has repeatedly corrupted this app's route table
+// (see the record-install note in workers/spaces/src/index.ts).
+app.get("/spaces/:spaceId/sessions/:sessionId/agent/active-run", async (c) => {
+  const tenantId = await requireVerifiedTenant(c);
+  const spaceId = c.req.param("spaceId");
+  const sessionId = c.req.param("sessionId");
+
+  const space = await c.env.PLATFORM_DB.prepare("SELECT id FROM spaces WHERE id = ? AND tenant_id = ?")
+    .bind(spaceId, tenantId)
+    .first<{ id: string }>();
+  if (!space) throw notFound("Space");
+
+  // getAgentDO, NOT a hand-rolled idFromName: the run this is looking for executes on the DO that
+  // helper addresses, and reaching a different instance would report "nothing running" for a run
+  // that is very much running — which is precisely the bug this route exists to fix.
+  const stub = await getAgentDO(c.env, tenantId, sessionId);
+  const resp = await stub.fetch(`http://agent-do/active-run?session_id=${encodeURIComponent(sessionId)}`);
+  if (!resp.ok) return c.json({ active: false });
+  return c.json(await resp.json());
+});
+
 // ── POST /spaces/:spaceId/sessions/:sessionId/agent/runs/:runId/cancel ────────
 
 app.post(
@@ -1721,7 +1751,18 @@ app.get(
           // diverged is skipped rather than corrupting what the reader already has.
           const currentAnswer = run.final_answer || run.partial_answer || "";
           if (currentAnswer.length > lastSentAnswer.length && currentAnswer.startsWith(lastSentAnswer)) {
-            await sendEvent({ type: "delta", run_id: runId, content: currentAnswer.slice(lastSentAnswer.length) });
+            await sendEvent({
+              type: "delta",
+              run_id: runId,
+              content: currentAnswer.slice(lastSentAnswer.length),
+              // Where this fragment belongs in the answer. A client that only ever appends is
+              // correct exactly once — an EventSource reconnect, or a client attaching to a run
+              // already in progress, would otherwise concatenate the same text twice. With an
+              // offset the write is idempotent: splice at a known position rather than append to
+              // whatever happens to be there. Additive, so older clients that ignore it behave
+              // exactly as before.
+              offset: lastSentAnswer.length,
+            });
             lastSentAnswer = currentAnswer;
           }
 

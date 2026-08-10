@@ -144,6 +144,10 @@ const APPROVAL_INLINE_WAIT_MS = 20_000;
 const RUN_WALL_CLOCK_MS = 10 * 60 * 1000;
 /** The outcome of a resolved run, retained briefly so a client polling just after completion gets
  *  the answer rather than a 404. See NaelaoAgentDO.finishLiveRun. */
+/** One live-progress step as it is held in memory and stored in `run_stream` — a TraceStep plus
+ *  the transient `partial` marker (the model is mid-sentence and this row will be rewritten). */
+type LiveRunStepRow = Omit<TraceStep, "ts"> & { ts: number; partial?: boolean };
+
 interface FinishedRunState {
   status: string;
   final_answer?: string;
@@ -1025,6 +1029,45 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     `);
     this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_run_traces_run ON run_traces(run_id)`);
 
+    // The durable stream: a run's live progress and its answer AS IT IS BEING WRITTEN.
+    //
+    // This exists so a person can close the tab and come back. The in-memory `liveRuns` map is
+    // per-instance and dies with hibernation or eviction, so before this the only two states a
+    // returning client could see were "still running, no idea what it has done" and "finished".
+    // Everything in between — the tool calls it had made, the half-written reply — was gone.
+    //
+    // `run_traces` above is deliberately NOT reused: it is the finished audit record, written once
+    // at the end, and by definition holds nothing while the run is the thing you want to watch.
+    //
+    // Two tables rather than an append-only event log per delta: a growing answer is ONE fact that
+    // keeps changing, not a thousand facts, so it is an UPSERT on a single row (throttled), and a
+    // step is a row keyed by its own seq so a partial can be updated in place. That keeps writes
+    // proportional to real progress rather than to token count.
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS run_state (
+        run_id         TEXT PRIMARY KEY,
+        session_id     TEXT NOT NULL,
+        status         TEXT NOT NULL,
+        partial_answer TEXT,
+        terminal_json  TEXT,
+        started_at     INTEGER NOT NULL,
+        updated_at     INTEGER NOT NULL
+      )
+    `);
+    // Finding "is anything running in this conversation?" is what lets a NEW tab reattach at all —
+    // the client cannot be the source of truth for that, because a new tab has no memory.
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_run_state_session ON run_state(session_id, started_at DESC)`);
+    this.ctx.storage.sql.exec(`CREATE INDEX IF NOT EXISTS idx_run_state_age ON run_state(updated_at)`);
+    this.ctx.storage.sql.exec(`
+      CREATE TABLE IF NOT EXISTS run_stream (
+        run_id  TEXT NOT NULL,
+        seq     INTEGER NOT NULL,
+        step_json TEXT NOT NULL,
+        ts      INTEGER NOT NULL,
+        PRIMARY KEY (run_id, seq)
+      )
+    `);
+
     // Compacted-conversation summaries. Kept in the agent DO rather than SpaceDO because this is
     // derived reasoning context, not conversation data of record — SpaceDO still holds every
     // message verbatim, which is what conversation.search reads. `covered_messages` is how many
@@ -1442,6 +1485,25 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // the notify-the-owner side effect — see notifyApprovalRequested.
       if (method === "POST" && url.pathname === "/approvals/create-external") {
         return this.handleCreateExternalApproval(request);
+      }
+
+      // GET /active-run?session_id= — "is anything still running in this conversation?"
+      //
+      // A new tab has no memory of a run it was never open for, so this cannot be answered from
+      // the client. Answering it here is what lets someone close the laptop, come back, and find
+      // the work still going rather than a silent transcript.
+      if (method === "GET" && url.pathname === "/active-run") {
+        const sessionId = url.searchParams.get("session_id") ?? "";
+        const active = sessionId ? this.findActiveRunForSession(sessionId) : null;
+        if (!active) return Response.json({ active: false });
+        const durable = this.readDurableRun(active.run_id);
+        return Response.json({
+          active: true,
+          run_id: active.run_id,
+          status: "running",
+          live_steps: durable?.steps ?? [],
+          ...(durable?.partial_answer ? { partial_answer: durable.partial_answer } : {}),
+        });
       }
 
       // GET /runs/:runId
@@ -2380,7 +2442,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   private liveRuns = new Map<
     string,
     {
-      steps: Array<Omit<TraceStep, "ts"> & { ts: number; partial?: boolean }>;
+      steps: LiveRunStepRow[];
       updatedAt: number;
       /**
        * The final answer as the model is writing it, before the run has finished.
@@ -2456,8 +2518,130 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     this.liveRuns.set(runId, entry);
   }
 
-  private buildLiveProgressReporter(runId: string): (checkpoint: LiveCheckpoint) => void {
-    return (checkpoint) => this.recordLiveProgress(runId, checkpoint);
+  private buildLiveProgressReporter(runId: string, sessionId?: string): (checkpoint: LiveCheckpoint) => void {
+    if (sessionId) this.openDurableRun(runId, sessionId);
+    return (checkpoint) => {
+      this.recordLiveProgress(runId, checkpoint);
+      this.persistLiveRun(runId, checkpoint.partial === true);
+    };
+  }
+
+  /** How often a still-growing answer is written through to SQLite. A reply arrives token by
+   *  token; persisting each one would trade a real cost for precision nobody can perceive, since
+   *  what this protects is a person coming back seconds or minutes later. Step boundaries are
+   *  always written immediately regardless — they are bounded and each one is real news. */
+  private static readonly DURABLE_PARTIAL_INTERVAL_MS = 400;
+  /** Resolved runs older than this are pruned. Long enough to cover coming back after a coffee;
+   *  short enough that a busy DO's storage cannot grow without bound. */
+  private static readonly DURABLE_RUN_TTL_MS = 6 * 60 * 60 * 1000;
+  private lastDurableWrite = new Map<string, number>();
+
+  /** Register a run as in flight BEFORE any progress exists, so a client that reconnects during
+   *  the first slow reasoning call finds "running" rather than nothing at all. */
+  private openDurableRun(runId: string, sessionId: string): void {
+    try {
+      const now = Date.now();
+      this.ctx.storage.sql.exec(
+        `INSERT INTO run_state (run_id, session_id, status, started_at, updated_at) VALUES (?, ?, 'running', ?, ?)
+         ON CONFLICT(run_id) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at`,
+        runId, sessionId, now, now
+      );
+      this.pruneDurableRuns();
+    } catch { /* durability is an enhancement to observability; it never fails a run */ }
+  }
+
+  /** Write the current live state through to SQLite so it survives hibernation and eviction. */
+  private persistLiveRun(runId: string, isPartial: boolean): void {
+    const entry = this.liveRuns.get(runId);
+    if (!entry) return;
+    const now = Date.now();
+    // The throttle clock is advanced by PARTIAL writes only. Sharing it with step boundaries meant
+    // every step reset it, so the first partial after any step was always dropped — and on a short
+    // answer that finished inside one interval, the growing reply was never written through at all
+    // until the run ended. Step boundaries are bounded by the step count, so writing each one
+    // immediately costs nothing worth throttling.
+    if (isPartial) {
+      const last = this.lastDurableWrite.get(runId) ?? 0;
+      if (now - last < NaelaoAgentDO.DURABLE_PARTIAL_INTERVAL_MS) return;
+      this.lastDurableWrite.set(runId, now);
+    }
+    try {
+      this.ctx.storage.sql.exec(
+        `UPDATE run_state SET partial_answer = ?, updated_at = ? WHERE run_id = ?`,
+        entry.partialAnswer ?? null, now, runId
+      );
+      // Only the tail is rewritten: earlier steps are immutable once complete, and rewriting the
+      // whole list on every checkpoint would make a long run quadratic.
+      for (const step of entry.steps.slice(-2)) {
+        this.ctx.storage.sql.exec(
+          `INSERT INTO run_stream (run_id, seq, step_json, ts) VALUES (?, ?, ?, ?)
+           ON CONFLICT(run_id, seq) DO UPDATE SET step_json = excluded.step_json, ts = excluded.ts`,
+          runId, step.seq, JSON.stringify(step), step.ts
+        );
+      }
+    } catch { /* see openDurableRun */ }
+  }
+
+  /** Read a run back from SQLite — the path a client takes after the DO has hibernated, or from a
+   *  tab that was not even open when the run started. */
+  private readDurableRun(runId: string): { steps: LiveRunStepRow[]; partial_answer?: string; terminal?: FinishedRunState; status: string } | null {
+    try {
+      const state = (this.ctx.storage.sql
+        .exec(`SELECT status, partial_answer, terminal_json FROM run_state WHERE run_id = ?`, runId)
+        .toArray() as unknown as Array<{ status: string; partial_answer: string | null; terminal_json: string | null }>)[0];
+      if (!state) return null;
+      const steps = (this.ctx.storage.sql
+        .exec(`SELECT step_json FROM run_stream WHERE run_id = ? ORDER BY seq ASC`, runId)
+        .toArray() as unknown as Array<{ step_json: string }>)
+        .map((r) => { try { return JSON.parse(r.step_json) as LiveRunStepRow; } catch { return null; } })
+        .filter((s): s is LiveRunStepRow => s !== null);
+      let terminal: FinishedRunState | undefined;
+      if (state.terminal_json) {
+        try { terminal = JSON.parse(state.terminal_json) as FinishedRunState; } catch { /* keep undefined */ }
+      }
+      return {
+        steps,
+        status: state.status,
+        ...(state.partial_answer ? { partial_answer: state.partial_answer } : {}),
+        ...(terminal ? { terminal } : {}),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /** The newest run still in flight for a conversation — what lets a brand-new tab reattach.
+   *  A run that never reported a terminal state (its DO died mid-flight) would otherwise look
+   *  in-flight forever, so anything untouched for a few minutes is treated as no longer live. */
+  private findActiveRunForSession(sessionId: string): { run_id: string; status: string; updated_at: number } | null {
+    try {
+      const row = (this.ctx.storage.sql
+        .exec(
+          `SELECT run_id, status, updated_at FROM run_state
+           WHERE session_id = ? AND terminal_json IS NULL ORDER BY started_at DESC LIMIT 1`,
+          sessionId
+        )
+        .toArray() as unknown as Array<{ run_id: string; status: string; updated_at: number }>)[0];
+      if (!row) return null;
+      if (Date.now() - row.updated_at > 5 * 60 * 1000) return null;
+      return row;
+    } catch {
+      return null;
+    }
+  }
+
+  private pruneDurableRuns(): void {
+    try {
+      const cutoff = Date.now() - NaelaoAgentDO.DURABLE_RUN_TTL_MS;
+      const stale = (this.ctx.storage.sql
+        .exec(`SELECT run_id FROM run_state WHERE updated_at < ? LIMIT 50`, cutoff)
+        .toArray() as unknown as Array<{ run_id: string }>);
+      for (const { run_id } of stale) {
+        this.ctx.storage.sql.exec(`DELETE FROM run_stream WHERE run_id = ?`, run_id);
+        this.ctx.storage.sql.exec(`DELETE FROM run_state WHERE run_id = ?`, run_id);
+        this.lastDurableWrite.delete(run_id);
+      }
+    } catch { /* pruning is housekeeping, never load-bearing */ }
   }
 
   /**
@@ -2475,6 +2659,19 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     entry.updatedAt = Date.now();
     this.liveRuns.set(runId, entry);
     this.pruneLiveRuns();
+    // Also durably: this is what a client that reconnects AFTER the run finished reads, and it is
+    // what stops findActiveRunForSession offering a run that is already over.
+    try {
+      // Flush the tail unconditionally — the last partial is very often the one the throttle
+      // skipped, and losing the end of the answer is the most visible way this could fail.
+      this.lastDurableWrite.delete(runId);
+      this.persistLiveRun(runId, false);
+      this.ctx.storage.sql.exec(
+        `UPDATE run_state SET status = ?, terminal_json = ?, updated_at = ? WHERE run_id = ?`,
+        terminal.status, JSON.stringify(terminal), Date.now(), runId
+      );
+      this.lastDurableWrite.delete(runId);
+    } catch { /* see openDurableRun */ }
   }
 
   /** Drop resolved entries past their TTL, and the oldest resolved ones if the map is still over
@@ -2830,7 +3027,8 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       const maxTokensFromContext = body.context?.["max_tokens"];
       const deadlineMsFromContext = body.context?.["deadline_ms"];
       const onProgress = this.composeProgressReporters([
-        this.buildLiveProgressReporter(runId),
+        // sessionId is what makes this run findable again from a tab that was never open for it.
+        this.buildLiveProgressReporter(runId, sessionId),
         this.buildSubAgentProgressReporter(body.context),
       ]);
       // The thread's own history — without it the agent has no memory of the conversation it is
@@ -5762,6 +5960,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // caller must be able to tell "this is still growing" from "this is the result", and the
         // stream endpoint diffs it into real delta events without ever treating it as terminal.
         ...(live.partialAnswer ? { partial_answer: live.partialAnswer } : {}),
+      });
+    }
+
+    // Nothing in memory — but that does not mean nothing happened. This instance may have
+    // hibernated since, or this may be a different tab entirely that was never here for the live
+    // half. Reading the durable copy is what turns "close the laptop and come back" from a blank
+    // screen into the conversation picking up where it left off.
+    const durable = this.readDurableRun(runId);
+    if (durable) {
+      if (durable.terminal) return Response.json({ id: runId, live_steps: durable.steps, ...durable.terminal });
+      return Response.json({
+        id: runId,
+        status: "running",
+        live_steps: durable.steps,
+        ...(durable.partial_answer ? { partial_answer: durable.partial_answer } : {}),
       });
     }
 

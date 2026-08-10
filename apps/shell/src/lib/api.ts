@@ -524,6 +524,25 @@ export async function getStreamUrl(spaceId: string, sessionId: string, runId: st
   }
 }
 
+/**
+ * Is anything still running in this conversation?
+ *
+ * The in-flight run used to be tracked in sessionStorage, which is per-tab by construction — so
+ * closing the tab meant the run carried on with nobody watching, and reopening showed a silent
+ * transcript with no sign the agent was still working. The server knows, so ask it: this works
+ * from a new tab, a different browser, or another device.
+ *
+ * Returns the steps and partial answer accumulated so far alongside the id, so the caller can
+ * paint what it missed immediately and then continue live, rather than starting from blank.
+ */
+export async function getActiveRun(
+  spaceId: string,
+  sessionId: string,
+  session: SessionCredentials
+): Promise<{ active: boolean; run_id?: string; live_steps?: LiveRunStep[]; partial_answer?: string }> {
+  return apiFetch(`/v1/spaces/${spaceId}/sessions/${sessionId}/agent/active-run`, { session });
+}
+
 /** Polling fallback for environments without SSE. `onRetry` — see sendMessage's own doc. */
 export async function pollRun(
   spaceId: string,
