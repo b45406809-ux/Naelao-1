@@ -28,6 +28,9 @@ export type FailureKind =
   | "model_unavailable"
   /** A script or tool call failed. */
   | "tool_error"
+  /** Stopped deliberately, mid-run, by the person watching it — not a failure of any kind, and
+   *  never something waiting or retrying can fix; only a human decides whether to continue. */
+  | "user_cancelled"
   | "unknown";
 
 export interface FailureClassification {
@@ -56,6 +59,18 @@ interface Rule {
  * (waiting for a reset that will never come, or asking the owner for money it doesn't need).
  */
 const RULES: Rule[] = [
+  {
+    kind: "user_cancelled",
+    clears_on_its_own: false,
+    agent_actionable: false,
+    summary: "You stopped this run. Continue picks up from where it left off — nothing is redone.",
+    // The loop's own cancellation exit (script-engine/loop.ts) writes this exact string as
+    // `result.error` — checked first, ahead of every other rule, since a run stopped mid-step can
+    // otherwise carry incidental text (a half-finished tool call, a provider hiccup) that would
+    // wrongly match a DIFFERENT rule below and tell the person to just wait, when what actually
+    // happened is that THEY stopped it.
+    patterns: [/^stopped by you\b/i],
+  },
   {
     kind: "budget_ceiling",
     clears_on_its_own: false,
@@ -216,6 +231,7 @@ export const FAILURE_KINDS: FailureKind[] = [
   "approval_pending",
   "model_unavailable",
   "tool_error",
+  "user_cancelled",
   "unknown",
 ];
 

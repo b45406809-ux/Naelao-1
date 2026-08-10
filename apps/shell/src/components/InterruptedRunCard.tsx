@@ -61,7 +61,9 @@ export function InterruptedRunCard({
     <div className="interrupted-card">
       <div className="interrupted-head">
         <span className="interrupted-dot" aria-hidden />
-        <span className="interrupted-title">This didn&apos;t finish</span>
+        <span className="interrupted-title">
+          {interrupted.failure_kind === "user_cancelled" ? "Stopped" : "This didn't finish"}
+        </span>
       </div>
       <p className="interrupted-reason">{interrupted.reason}</p>
       {/* What the error actually means, in words. A raw provider string ("4006") leaves the person

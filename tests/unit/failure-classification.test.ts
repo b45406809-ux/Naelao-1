@@ -86,4 +86,16 @@ describe("classifyFailure", () => {
     expect(c.kind).toBe("tool_error");
     expect(c.agent_actionable).toBe(true);
   });
+
+  it("recognises the loop's own cancellation marker as a deliberate stop, not a failure to fix or wait out", () => {
+    // This is the exact string script-engine/loop.ts's shouldCancel branch writes as result.error
+    // — a change to it here without updating that string (or vice versa) would silently regress
+    // the Stop button back to showing the wrong offer (auto-retry, or nothing at all).
+    const c = classifyFailure("Stopped by you before finishing.");
+    expect(c.kind).toBe("user_cancelled");
+    // Neither "wait, it'll clear itself" (it won't — nobody is retrying a deliberate stop) nor
+    // "the agent can fix this itself" (it can't — only the person decides whether to continue).
+    expect(c.clears_on_its_own).toBe(false);
+    expect(c.agent_actionable).toBe(false);
+  });
 });

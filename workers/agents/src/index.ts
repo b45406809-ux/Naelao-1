@@ -2046,6 +2046,16 @@ app.post("/internal/tasks/:taskId/run", async (c) => {
           businessContext: body.businessContext,
           reasoningEffort: body.reasoningEffort,
           effort: body.effort,
+          // Root cause of the Stop button being a complete no-op on the default async dispatch
+          // path (every real chat message, since apps/shell never sends `Prefer: respond-sync`):
+          // without this, handleScriptRun's `body.runId ?? crypto.randomUUID()` always minted a
+          // FRESH random id, disconnected from `taskId` — which is what the client actually
+          // receives as `run_id`/`id` and sends back to `POST /runs/:runId/cancel`. The cancel
+          // request landed on the correct DO instance but for an id nothing inside that DO was
+          // ever tracking, so `isCancelRequested` could never return true and the loop never saw
+          // it. The synchronous (`Prefer: respond-sync`) dispatch path a few lines above already
+          // did this correctly (`runId: scriptRunId`) — only this async path was missing it.
+          runId: body.taskId,
         }),
       })
     );

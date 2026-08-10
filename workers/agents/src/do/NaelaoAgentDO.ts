@@ -3258,14 +3258,21 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         // heads-up; a tool that keeps throwing is something the owner should actually look at.
         // Notifying at 'warning' for both trains people to ignore the whole channel.
         const classification = classifyFailure(failureText);
-        void this.createSpaceNotification(spaceId, tenantId, {
-          kind: "run_failed",
-          title: `'${agentId}' couldn't finish: ${body.goal.slice(0, 80)}`,
-          body: `${failureText ? failureText.slice(0, 400) : "Run did not complete successfully"}\n\n${classification.summary}`,
-          severity: classification.clears_on_its_own ? "info" : "warning",
-          projectId: projectId ?? null,
-          sourceAgentId: agentId,
-        });
+        // A run the person themselves stopped is not a failure notification waiting to happen —
+        // they are the one who just did it, right there, watching. logAgentActivity's run_failed
+        // row above still records it (a real, honest fact for the audit trail); this is only the
+        // push-style notification, which would otherwise read as "your agent couldn't finish" for
+        // something entirely under the person's own control.
+        if (classification.kind !== "user_cancelled") {
+          void this.createSpaceNotification(spaceId, tenantId, {
+            kind: "run_failed",
+            title: `'${agentId}' couldn't finish: ${body.goal.slice(0, 80)}`,
+            body: `${failureText ? failureText.slice(0, 400) : "Run did not complete successfully"}\n\n${classification.summary}`,
+            severity: classification.clears_on_its_own ? "info" : "warning",
+            projectId: projectId ?? null,
+            sourceAgentId: agentId,
+          });
+        }
       }
 
       // Keep this run answerable for a short window. A script-native run has no `agent_runs` row,

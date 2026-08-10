@@ -60,6 +60,30 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   "google-ai-studio/gemini-pro-latest": 1_048_576,
   "google-ai-studio/gemini-flash-latest": 1_048_576,
   "google-ai-studio/gemini-flash-lite-latest": 1_048_576,
+  // Groq — a THIRD, genuinely independent BYOK provider (same `{provider}/{model}` compat-route
+  // convention as Gemini above; "groq/" confirmed as Cloudflare's own literal provider slug for
+  // this route via Cloudflare's own AI Gateway docs, not assumed). The concrete reason to add it:
+  // Groq's free tier is 14,400 requests/day against Gemini's 20 — the difference between being
+  // able to test this platform properly and not, on an account whose shared Workers AI neuron
+  // allowance is also capped (see CLAUDE.md's Live Deployment Facts). Every context window below
+  // is Groq's own REAL served `context_window` figure, read live from `GET
+  // https://api.groq.com/openai/v1/models` against a real key on 2026-08-10 — not the model's
+  // upstream nominal figure, matching this file's own llama-3.3-70b-on-Workers-AI precedent of
+  // never assuming a hosted window matches what the model family nominally supports.
+  //
+  // Deliberately excludes `groq/openai/gpt-oss-120b`: dispatched twice, live, through the real
+  // deployed reasoning loop, and it failed BOTH times with "attempted to call tool 'json' which
+  // was not in request.tools" — independent of reasoning effort (tried low and high) and not a
+  // rate-limit (a distinct, clean 429 was observed separately). This is the SAME model family
+  // that already failed the tool-calling contract on Workers AI (see model-benchmarks.ts's own
+  // "@cf/openai/gpt-oss-120b" eval note — "ignored the tool contract outright") — a second,
+  // independent hosting provider reproducing the same failure points at the model family's own
+  // harmony/channel response format, not a Groq-specific bug. gpt-oss-20b, hosted on the SAME
+  // Groq account, was verified working cleanly — this exclusion is specific to the 120B variant.
+  "groq/openai/gpt-oss-20b": 131_072,
+  "groq/llama-3.3-70b-versatile": 131_072,
+  "groq/llama-3.1-8b-instant": 131_072,
+  "groq/qwen/qwen3.6-27b": 131_072,
 };
 
 /**
@@ -101,6 +125,19 @@ export const ALLOWED_MODELS = [
   "google-ai-studio/gemini-flash-lite-latest",
   "google-ai-studio/gemini-flash-latest",
   "google-ai-studio/gemini-pro-latest",
+  // Groq — see MODEL_CONTEXT_WINDOWS' own comment above for why, and for why gpt-oss-120b is
+  // excluded (the only one of the account's real candidates that didn't survive a LIVE dispatched
+  // test through the real reasoning loop). The remaining four were each confirmed present and
+  // `"active": true` on `GET https://api.groq.com/openai/v1/models` against a real key, declare
+  // `"tools"` in `supported_features` (required — the reasoner declares its whole action space as
+  // provider tools), AND completed a real `/agent/run` end to end on 2026-08-10. Deliberately
+  // excludes `groq/compound`/`groq/compound-mini` (Groq's own built-in agentic systems — no
+  // `tools` in their supported_features) and every audio/prompt-guard/tiny-context model on the
+  // account (not chat-capable for this platform's use).
+  "groq/openai/gpt-oss-20b",
+  "groq/llama-3.3-70b-versatile",
+  "groq/llama-3.1-8b-instant",
+  "groq/qwen/qwen3.6-27b",
 ] as const;
 
 export type AllowedModel = (typeof ALLOWED_MODELS)[number];
@@ -209,6 +246,24 @@ export const MODEL_CAPABILITIES: Record<string, ModelCapability> = {
   "google-ai-studio/gemini-flash-lite-latest": { reasoningLevels: ["none", "low", "medium", "high"], reasoningParam: "reasoning_effort" },
   "google-ai-studio/gemini-flash-latest": { reasoningLevels: ["none", "low", "medium", "high"], reasoningParam: "reasoning_effort" },
   "google-ai-studio/gemini-pro-latest": { reasoningLevels: ["low", "medium", "high"], reasoningParam: "reasoning_effort" },
+  // Groq. Confirmed via Groq's own docs (console.groq.com/docs/reasoning), not inferred from the
+  // Workers AI entries above even though this is the SAME underlying model — Groq is a different
+  // hosting provider and could in principle expose a different parameter surface; it happens to
+  // use the identical "reasoning_effort" field name and low/medium/high values gpt-oss already
+  // uses elsewhere in this table, confirmed independently for the Groq-hosted copy. (gpt-oss-120b
+  // is NOT offered on Groq — see models.ts's own ALLOWED_MODELS comment for the live failure that
+  // excluded it; tried both "low" and "high" here and neither fixed it.)
+  "groq/openai/gpt-oss-20b": { reasoningLevels: ["low", "medium", "high"], reasoningParam: "reasoning_effort" },
+  // Llama on Groq has no configurable reasoning mode (it isn't a reasoning-trained model at all —
+  // same as its Workers AI sibling above).
+  "groq/llama-3.3-70b-versatile": NO_REASONING,
+  "groq/llama-3.1-8b-instant": NO_REASONING,
+  // Qwen 3.6 27B on Groq: confirmed via Groq's own docs — a 2-level toggle, "none" (disable
+  // reasoning) or "default" (let Qwen reason), NOT the low/medium/high shape gpt-oss uses. Reuses
+  // "reasoning_effort" as the wire param name (Groq's own field for this model too) — only the
+  // VALUES differ from gpt-oss, which effort.ts's generic ladder-length logic already handles
+  // (a 2-native-level model gets a 3-position Effort ladder, saturating at its own top for "high").
+  "groq/qwen/qwen3.6-27b": { reasoningLevels: ["none", "default"], reasoningParam: "reasoning_effort" },
 };
 
 /** Reasoning capability for a model string, degrading to NO_REASONING for anything not in the

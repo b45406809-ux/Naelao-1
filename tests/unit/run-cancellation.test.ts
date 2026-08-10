@@ -60,7 +60,12 @@ describe("stopping a run", () => {
       escalation: { confidenceFloor: 1 },
     });
 
-    expect(result.result.ok).toBe(true);
+    // ok:false (not true) is deliberate — it's what makes NaelaoAgentDO.handleScriptRun
+    // checkpoint an interrupted-run offer to Continue, instead of silently treating a stop as an
+    // ordinary completed answer with nothing to resume. `error` carries the exact marker
+    // packages/events' classifyFailure matches to "user_cancelled".
+    expect(result.result.ok).toBe(false);
+    expect(result.result.error).toBe("Stopped by you before finishing.");
     expect(String(result.result.output)).toContain("Stopped");
     // Without the check the loop would run to its runaway ceiling; three boundaries proves the
     // stop is what ended it.

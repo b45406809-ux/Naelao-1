@@ -714,13 +714,22 @@ export async function runScriptLoop(
           pushTrace({ phase: "give_up", ok: false, detail: "stopped by the user" });
           notes.push(`${level} stopped at the user's request after ${priorSteps.length} step(s)`);
           const done = priorSteps.filter((p) => p.ok).map((p) => p.name);
+          // `ok: false` (not `ok: true`) is what makes this an interrupted run rather than a plain
+          // completed answer — the caller (NaelaoAgentDO.handleScriptRun) only checkpoints an
+          // offer to continue when `result.ok === false`, and that offer is the whole point of
+          // stopping deliberately rather than losing the work outright. `error` carries the exact,
+          // stable marker `packages/events`' classifyFailure matches on ("user_cancelled") — never
+          // change this string without updating that pattern too. `output` still carries the
+          // human-readable summary, which is written into the transcript exactly like any other
+          // answer (NaelaoAgentDO checks for a non-empty `output`, not `ok`).
           return finish(withTokenUsage({
             level,
             result: {
-              ok: true,
+              ok: false,
               output: done.length > 0
                 ? `Stopped. I had already finished: ${done.join(", ")}.`
                 : "Stopped before anything ran.",
+              error: "Stopped by you before finishing.",
               tier: 1,
               duration_ms: 0,
               tokens_used: 0,

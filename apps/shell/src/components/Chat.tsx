@@ -423,7 +423,15 @@ export function Chat({
   // unreachable model, a real pending approval) falls through to the manual InterruptedRunCard.
   // Bounded on both paths so a goal that's actually unrecoverable still hands back to the person
   // instead of retrying forever.
-  const MANUAL_ONLY_FAILURE_KINDS = React.useRef(new Set(["budget_ceiling", "model_unavailable", "approval_pending"])).current;
+  // "user_cancelled": a run stopped by the person themselves must never be retried on their
+  // behalf — self-healing exists to fix the AGENT's own mistakes, not to override a deliberate
+  // stop the moment they refresh the page.
+  const MANUAL_ONLY_FAILURE_KINDS = React.useRef(new Set(["budget_ceiling", "model_unavailable", "approval_pending", "user_cancelled"])).current;
+  // The loop's own cancellation exit (script-engine/loop.ts) writes this exact string as the
+  // run's error — matched here so the generic error banner doesn't duplicate the InterruptedRunCard
+  // that refreshInterrupted is about to show for the same event; the card already says it, with a
+  // Continue button attached, which a plain red error line cannot offer.
+  const isUserStoppedError = React.useCallback((text: string | undefined) => !!text && text.startsWith("Stopped by you"), []);
   const MAX_AUTO_HEAL_ATTEMPTS = 3;
   const MAX_QUOTA_RETRY_ATTEMPTS = 4;
   const QUOTA_RETRY_DELAYS_MS = [5000, 15000, 30000, 60000];
@@ -690,7 +698,7 @@ export function Chat({
           if ((run.status === "completed" || run.status === "awaiting_approval") && run.final_answer) {
             finalizeAnswer(runId, run.final_answer, latestActivity, run.pending_approval, run.deferred_approvals);
           } else if (run.status === "failed" || run.status === "cancelled") {
-            setError(run.error ?? "The agent run failed");
+            if (!isUserStoppedError(run.error)) setError(run.error ?? "The agent run failed");
             // The run left a checkpoint; show the offer to continue it rather than only an error
             // the user can do nothing with except retype their request.
             void refreshInterrupted(sid);
@@ -726,7 +734,7 @@ export function Chat({
         }
       }, POLL_INTERVAL_MS);
     },
-    [spaceId, session, stopPolling, finalizeAnswer, refreshInterrupted]
+    [spaceId, session, stopPolling, finalizeAnswer, refreshInterrupted, isUserStoppedError]
   );
 
   const streamRun = React.useCallback(
@@ -795,7 +803,7 @@ export function Chat({
             if ((status === "completed" || status === "awaiting_approval") && answerText) {
               finalizeAnswer(data.run_id ?? runId, answerText, activitySteps, data.pending_approval, data.deferred_approvals);
             } else if (status === "failed" || status === "cancelled") {
-              setError(data.error ?? "The agent run failed");
+              if (!isUserStoppedError(data.error)) setError(data.error ?? "The agent run failed");
               void refreshInterrupted(sid);
               // Same "a real, still-open approval must not vanish along with an unrelated
               // failure" rule as the plain-polling fallback below.
@@ -838,7 +846,7 @@ export function Chat({
         }
       };
     },
-    [spaceId, sessionKey, session, closeSSE, pollUntilDone, finalizeAnswer]
+    [spaceId, sessionKey, session, closeSSE, pollUntilDone, finalizeAnswer, refreshInterrupted, isUserStoppedError]
   );
 
   // Single entry point for "start following this run's status" — both send() (a run it just

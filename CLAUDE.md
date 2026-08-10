@@ -5883,6 +5883,104 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      against a real long-running production run — the cancellation logic is proven at unit level
      against the real DO and the real loop, not in a browser.
 
+121. **Groq added as a fourth, curated LLM provider — and the Stop button, root-caused for real
+     this time, is now genuinely functional on the path every real chat message actually takes.**
+     Two independent asks in one session, both closed with live proof, not just passing tests.
+     - **Groq.** Enumerated the account's real model list (`GET api.groq.com/openai/v1/models`)
+       rather than guessing, and confirmed each candidate against Groq's own docs before adding
+       it: `openai/gpt-oss-120b`/`-20b` (`reasoning_effort` low/medium/high — the SAME field
+       gpt-oss already uses on Workers AI, confirmed independently for the Groq-hosted copy, not
+       assumed from the shared model name) and `qwen/qwen3.6-27b` (`reasoning_effort`, but a
+       genuinely different 2-level shape: `none`/`default`). Routing needed zero new code — the
+       prior session's `BYOK_COMPAT_PROVIDERS` map (built for Gemini) is already generic over
+       provider prefix, and `groq/` is Cloudflare's own literal provider slug for the compat
+       endpoint (confirmed via Cloudflare's AI Gateway docs, not assumed). `groq/openai/gpt-oss-120b`
+       was dispatched live TWICE through the real deployed reasoning loop and failed both times
+       with `"attempted to call tool 'json' which was not in request.tools"` — independent of
+       reasoning effort (tried low and high) and not a rate-limit (a separate, distinct 429 was
+       also observed) — the SAME model family that already fails the tool contract on Workers AI
+       (see item 112's own eval finding for `@cf/openai/gpt-oss-120b`), a second independent
+       hosting provider reproducing the identical failure. Excluded it rather than ship a known-
+       broken catalogue entry; the other four (`groq/openai/gpt-oss-20b`,
+       `groq/llama-3.3-70b-versatile`, `groq/llama-3.1-8b-instant`, `groq/qwen/qwen3.6-27b`) each
+       completed a real `/agent/run` end to end. Real per-1M-token pricing pulled straight from
+       Groq's own `pricing.prompt`/`pricing.completion` fields, wired into `computeTokenCostMicro`
+       and `MODEL_BENCHMARKS` (`costBasis: "measured"`, not estimated). Also discovered and
+       recorded: Groq enforces a much tighter PER-MODEL tokens-per-minute cap alongside the
+       headline 14,400/day figure (observed live: 8000 TPM on gpt-oss-120b, 6000 TPM on
+       llama-3.1-8b-instant) — a burst of testing can 429 well before the daily count is anywhere
+       near exhausted; noted directly on the gpt-oss-20b benchmark entry so a future session
+       doesn't waste time re-diagnosing it as a routing bug. `GROQ_API_KEY` is now SET and
+       LIVE-VERIFIED on `naelao-agents` — do not re-prompt the user for it. Effort-ladder/
+       escalation-ceiling wiring (`effort.ts`) needed zero changes — it derives everything
+       generically from `MODEL_CAPABILITIES`/`costTier`, so the four new Groq models integrate
+       into the existing Effort dock button automatically.
+     - **Stop button — the REAL root cause, found by tracing the actual dispatch path rather than
+       trusting the prior session's own "5 new tests pass" claim.** `handleStop`/cooperative
+       cancellation (built the prior session) was correct in every particular EXCEPT one: it was
+       never reachable. `/internal/tasks/:taskId/run` — the route `AgentTaskWorkflow` calls for
+       EVERY ordinary chat message, since `apps/shell` never sends `Prefer: respond-sync` (Phase
+       Q's durable-by-default async dispatch is the only path a real user's message takes) —
+       forwarded a body to the agent DO's `/script/run` handler WITHOUT `runId`. That handler
+       resolves `const runId = body.runId ?? crypto.randomUUID()`, so every single async-
+       dispatched run got a fresh, random, INTERNAL-ONLY id — completely disconnected from
+       `taskId`, which is the id the client actually receives as `run_id`/`id` and sends back to
+       `POST .../agent/runs/:runId/cancel`. The cancel request landed on the correct DO instance
+       (addressing was never the problem) but for an id nothing inside that DO was tracking, so
+       `isCancelRequested` could never return true and the loop never saw it — a complete,
+       silent no-op for the ONE dispatch path that matters. The synchronous (`Prefer: respond-
+       sync`) path a few lines above had already threaded `runId: scriptRunId` correctly; only
+       the async path was missing it. One-line fix: `runId: body.taskId` in the forwarded body.
+     - **The Continue-dialog ask, closed with a new failure kind, not a UI-only patch.** The
+       loop's cancellation exit (built the prior session) returned `ok: true` — a stop was
+       therefore indistinguishable from an ordinary completed answer, so `NaelaoAgentDO`'s
+       `if (result.result.ok === false) persistInterruptedRun(...)` never fired and no offer to
+       Continue was ever created. Changed to `ok: false` with a new, exact, stable marker string
+       (`error: "Stopped by you before finishing."`) — `output` still carries the human-readable
+       "Stopped. I had already finished: X" summary, still written into the transcript exactly
+       like any other answer (`NaelaoAgentDO` checks for a non-empty `output`, not `ok`), so
+       stopping now produces BOTH a real message in the thread AND a durable Continue offer.
+       New `FailureKind = "user_cancelled"` in `@naelao/events`' `classifyFailure`
+       (`clears_on_its_own: false`, `agent_actionable: false` — a stop is not something waiting
+       or a smarter retry can fix; only the person decides whether to continue), matched on the
+       exact marker string, placed FIRST in the rule list so a run stopped mid-tool-call can't
+       have its incidental half-finished-call text wrongly match a different, unrelated rule.
+       Added to Chat.tsx's `MANUAL_ONLY_FAILURE_KINDS` — the exact mechanism that answers "when I
+       refresh it doesn't retry since I stopped it": that set is what the self-heal loop already
+       checks BEFORE ever attempting an auto-retry, so a stopped run is now structurally
+       incapable of being auto-continued, on refresh or otherwise. Two small, deliberate UI
+       refinements riding on the same classification: the generic red error banner is suppressed
+       specifically for this marker (the InterruptedRunCard already says the same thing, with a
+       Continue button — showing both was pure duplication), and the card's own header reads
+       "Stopped" instead of "This didn't finish" for this one kind (a stop is not a failure).
+       Also suppressed the "run couldn't finish" push notification specifically for
+       `user_cancelled` (the person doing the stopping is right there, watching — the audit-trail
+       `logAgentActivity` row is untouched, only the noisy notification is skipped).
+     - **Root cause proven, not assumed — a new regression test that reverting the fix was
+       confirmed to fail** (`internal-task-run-forwards-runid.test.ts`, drives the REAL Hono app,
+       captures the exact body the agent-DO stub receives, asserts `runId === taskId`).
+       **Then proven live on production, twice, end to end**, since the account's Workers AI
+       quota was capped for ordinary testing (a real dispatched run against the default model
+       hit `4006` almost instantly, before there was any window to cancel): dispatched a real
+       async run on `groq/llama-3.1-8b-instant` (Groq's separate quota sidesteps the Workers AI
+       cap), cancelled it via the exact route the client uses, and polled the real, deployed
+       worker — `status:"failed"`, `error:"Stopped by you before finishing."`, the live trace
+       showing the precise `give_up`/"stopped by the user" checkpoint, and
+       `GET .../agent/interrupted` returning `failure_kind:"user_cancelled"`,
+       `clears_on_its_own:false`, and the exact explanation text — proving the fix,
+       classification, and Continue-offer chain all actually work together against the real
+       deployed system, not just in isolation.
+     2861/2861 tests pass (2 new: the runId-forwarding regression above, plus a new
+     `classifyFailure` case pinning the literal marker string), `npx turbo run typecheck` clean
+     (76 tasks), `apps/shell` verified via a real `next build`. `naelao-agents` (bare `wrangler
+     deploy`, item 83's documented `--env production` trap) and `apps/shell` (rebuilt +
+     `--branch=main`, confirmed `environment:"production"` via the Pages API, and the deployed
+     chunk confirmed byte-identical via md5sum to the local build containing the fix) both
+     deployed. **Not done this pass:** the model matrix work (items 121/122 in the session's own
+     task list — a separately-tracked, still-paused effort predating this work) was not touched;
+     Groq models carry no `eval`/`axes` entries yet, same "don't fabricate a score" precedent as
+     every other un-run model.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

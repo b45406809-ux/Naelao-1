@@ -175,6 +175,17 @@ export function computeTokenCostMicro(
     "google-ai-studio/gemini-flash-lite-latest": { input: 0.30, output: 2.50 },
     "google-ai-studio/gemini-flash-latest": { input: 1.50, output: 7.50 },
     "google-ai-studio/gemini-pro-latest": { input: 2.00, output: 12.0 },
+    // Groq — real per-1M-token pricing read directly off `GET
+    // https://api.groq.com/openai/v1/models`'s own `pricing.prompt`/`pricing.completion` fields
+    // (quoted per-token there; multiplied by 1e6 here) on 2026-08-10, not estimated. Billed to the
+    // customer as real value even though the actual call rides on the operator's own free-tier
+    // Groq key ($0 marginal cost to Naelao today) — same convention this table already applies to
+    // the Gemini rows above. gpt-oss-120b deliberately absent — see models.ts's ALLOWED_MODELS
+    // comment for the live tool-calling failure that excluded it from the catalogue.
+    "groq/openai/gpt-oss-20b": { input: 0.075, output: 0.30 },
+    "groq/llama-3.3-70b-versatile": { input: 0.59, output: 0.79 },
+    "groq/llama-3.1-8b-instant": { input: 0.05, output: 0.08 },
+    "groq/qwen/qwen3.6-27b": { input: 0.60, output: 3.00 },
   };
   const p = pricing[model] ?? { input: 3.0, output: 15.0 };
   const costUsd = (inputTokens / 1_000_000) * p.input + (outputTokens / 1_000_000) * p.output;
