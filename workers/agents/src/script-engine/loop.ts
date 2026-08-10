@@ -392,6 +392,18 @@ export interface RunLoopOptions {
    * not propagated.
    */
   onProgress?: (checkpoint: LiveCheckpoint) => void | Promise<void>;
+  /**
+   * Has someone asked for this run to stop?
+   *
+   * Cooperative on purpose: a loop mid-way through a tool call cannot be torn down safely — the
+   * side effect it is performing (an email, a payment, a created project) either happens or does
+   * not, and killing it partway leaves nobody able to say which. So the run finishes the action it
+   * is in and stops at the NEXT step boundary, reporting the work it genuinely completed.
+   *
+   * Checked once per step. Absent for every non-interactive caller (cron, channel drain,
+   * sub-agent), which have no one watching to press a button.
+   */
+  shouldCancel?: () => boolean | Promise<boolean>;
 }
 
 async function reportProgress(opts: RunLoopOptions, checkpoint: LiveCheckpoint): Promise<void> {
@@ -695,6 +707,27 @@ export async function runScriptLoop(
        *  gate, which never reaches here). */
       const attemptedCalls = new Map<string, { ok: boolean; output?: unknown; error?: string }>();
       for (let step = 0; ; step++) {
+        // Stopped by a person. Not an error and not a failure: the steps already taken are real
+        // and are reported, which is the difference between "I stopped, here is what I did" and a
+        // run that simply vanishes.
+        if (opts.shouldCancel && (await opts.shouldCancel())) {
+          pushTrace({ phase: "give_up", ok: false, detail: "stopped by the user" });
+          notes.push(`${level} stopped at the user's request after ${priorSteps.length} step(s)`);
+          const done = priorSteps.filter((p) => p.ok).map((p) => p.name);
+          return finish(withTokenUsage({
+            level,
+            result: {
+              ok: true,
+              output: done.length > 0
+                ? `Stopped. I had already finished: ${done.join(", ")}.`
+                : "Stopped before anything ran.",
+              tier: 1,
+              duration_ms: 0,
+              tokens_used: 0,
+            },
+            notes,
+          }, usageAcc));
+        }
         const assessment = assessBudget(budget, {
           step,
           tokensUsed: usageAcc.input + usageAcc.output,

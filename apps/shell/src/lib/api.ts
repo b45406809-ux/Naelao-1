@@ -543,6 +543,25 @@ export async function getActiveRun(
   return apiFetch(`/v1/spaces/${spaceId}/sessions/${sessionId}/agent/active-run`, { session });
 }
 
+/**
+ * Ask a run to stop.
+ *
+ * Cooperative, not a kill: the agent finishes whatever action it is inside and stops at the next
+ * step boundary. Tearing it down mid-action would leave a side effect — an email, a payment, a
+ * created project — in a state nobody could report on afterwards.
+ */
+export async function cancelRun(
+  spaceId: string,
+  sessionId: string,
+  runId: string,
+  session: SessionCredentials
+): Promise<void> {
+  await apiFetch(`/v1/spaces/${spaceId}/sessions/${sessionId}/agent/runs/${runId}/cancel`, {
+    method: "POST",
+    session,
+  });
+}
+
 /** Polling fallback for environments without SSE. `onRetry` — see sendMessage's own doc. */
 export async function pollRun(
   spaceId: string,

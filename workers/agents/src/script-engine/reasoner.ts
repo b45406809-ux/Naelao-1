@@ -22,8 +22,9 @@ import {
   partialJsonString,
   universalGatewayUrl,
   universalGatewayHeaders,
-  googleAiStudioGatewayUrl,
-  googleAiStudioGatewayHeaders,
+  compatGatewayUrl,
+  compatGatewayHeaders,
+  isCompatProviderModel,
   isGoogleAiStudioModel,
   canAuthenticateLlm,
   callWorkersAI,
@@ -604,21 +605,24 @@ export class GatewayReasoner implements Reasoner {
 
     // No provider key AND no gateway-stored-key auth → the call can't authenticate. Fail honestly
     // here rather than firing a doomed request (whose 401 would just surface as a vague give_up).
-    const isGemini = isGoogleAiStudioModel(query.model);
+    // A BYOK provider (Gemini, Groq) routes through the gateway's compat endpoint with its OWN
+    // key; everything else goes to the AI REST API on a Cloudflare token.
+    const isByok = isCompatProviderModel(query.model);
     if (!canAuthenticateLlm(this.deps.gateway, this.deps.apiKey, query.model)) {
+      const secret = isGoogleAiStudioModel(query.model) ? "GOOGLE_AI_STUDIO_API_KEY" : "GROQ_API_KEY";
       return {
         action: "give_up",
-        reason: isGemini
-          ? "no Google AI Studio credentials configured: set GOOGLE_AI_STUDIO_API_KEY"
+        reason: isByok
+          ? `no credentials configured for this provider: set ${secret}`
           : "no LLM credentials configured: set NAELAO_AIG_TOKEN (CF AI Gateway stored key) or a provider apiKey",
       };
     }
 
-    // A Gemini model routes through a genuinely different endpoint/auth pair than every other
-    // model on this account — see isGoogleAiStudioModel's own doc for why. The request BODY is
-    // still the same OpenAI-shaped payload buildUniversalBody produces either way.
-    const url = isGemini ? googleAiStudioGatewayUrl(this.deps.gateway) : universalGatewayUrl(this.deps.gateway);
-    const headers = isGemini ? googleAiStudioGatewayHeaders(this.deps.gateway) : universalGatewayHeaders(this.deps.gateway);
+    // A BYOK model routes through a genuinely different endpoint/auth pair than the rest — see
+    // isGoogleAiStudioModel's own doc for why. The request BODY is the same OpenAI-shaped payload
+    // buildUniversalBody produces either way.
+    const url = isByok ? compatGatewayUrl(this.deps.gateway) : universalGatewayUrl(this.deps.gateway);
+    const headers = isByok ? compatGatewayHeaders(this.deps.gateway, query.model) : universalGatewayHeaders(this.deps.gateway);
     // Stream ONLY when someone is actually watching. A cron wake, a channel drain and a sub-agent
     // have no live consumer, so they take the cheaper non-streamed path and this cannot regress
     // them; an interactive chat passes onDelta and gets the text as it is generated.

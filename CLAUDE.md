@@ -5845,6 +5845,44 @@ appendixes are authoritative** and override the early framing. Always confirm ag
        pipe would carry almost nothing extra today. The upstream parsing/provider behaviour is the
        real constraint; the pipe is the right end-state after it, not before.
 
+120. **Stop button, message queueing, and a second free provider — plus a cancel path that had
+     never worked.** `POST .../runs/:runId/cancel` existed end to end, and `handleCancelRun` read
+     `agent_runs` — a table only the retired ReAct path ever wrote to. Every real chat message
+     since the dispatch cutover is script-native and writes no such row, so **cancel 404'd for
+     exactly the runs anyone would want to stop**; nothing in the loop checked a cancel flag
+     either, so even a successful status write would have stopped nothing. Cancellation is now
+     cooperative and checked once per step: a run finishes the action it is INSIDE (tearing down
+     mid-tool-call leaves a side effect nobody can report on) and stops at the next boundary,
+     returning what it genuinely completed rather than an error. The flag is durable
+     (`run_state.status='cancelling'`), so a cancel landing on a woken instance rather than the
+     executing one is still honoured. Only the interactive path passes `shouldCancel` — a cron
+     wake or channel drain has nobody watching, and pays nothing.
+     **Queueing:** the composer was disabled mid-run, so a thought you had while waiting was
+     simply lost. It now stays live; Enter queues, and a drain effect sends queued messages one at
+     a time in order once the agent is idle (sending them together would collapse separate
+     thoughts into one goal). Stop replaces Send while a run is in flight and the box is empty.
+     **Second provider (the real unblock):** Gemini's free tier is 20 requests/day, which is not
+     enough to test anything. Researched rather than assumed — **Groq is 14,400 requests/day**
+     (30 RPM, no card); Cerebras gives 1M tokens/day but caps context at 8,192, which this
+     platform's own ~4-5k-token system prompt plus payload would overflow constantly, so it is
+     disqualified for this use; OpenRouter free is 50/day without a prior purchase. The gateway's
+     `compat/chat/completions` route turned out to be GENERIC BYOK — it infers the provider from
+     the model-id prefix — so the Gemini path was generalized into a `BYOK_COMPAT_PROVIDERS` map
+     (prefix → which `GatewayOpts` field holds that provider's key) rather than duplicated.
+     Adding a provider is now a map entry plus a secret. `GROQ_API_KEY` is wired through the DO
+     env at both reasoner construction sites. **Not done: no Groq model ids added to
+     `ALLOWED_MODELS` yet** — item 116's lesson was that pinned ids go stale silently (Google had
+     already killed the whole Gemini 2.5 generation), so the catalogue entries wait until a real
+     key exists and `GET https://api.groq.com/openai/v1/models` can be enumerated live.
+     2859/2859 tests pass (5 new in `run-cancellation.test.ts` — a relentless reasoner that would
+     never stop on its own, proving the stop is what ends it; a cancel accepted for a run with no
+     `agent_runs` row; and a cancel honoured by a SECOND DO instance, which is what proves the
+     flag is durable rather than in-memory), `npx turbo run typecheck` clean (76 tasks).
+     `naelao-agents` and `apps/shell` deployed. **Not live-verified end to end:** Gemini's daily
+     quota was exhausted by this session's own debugging, so the Stop button has not been pressed
+     against a real long-running production run — the cancellation logic is proven at unit level
+     against the real DO and the real loop, not in a browser.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

@@ -45,6 +45,10 @@ export interface GatewayOpts {
    *  this is a genuinely separate routing path from every other model on this account. Supplied
    *  via the `GOOGLE_AI_STUDIO_API_KEY` worker secret. */
   googleAiStudioApiKey?: string;
+  /** A real Groq API key, BYOK through the same compat route Gemini uses. Supplied via the
+   *  `GROQ_API_KEY` worker secret. Groq's free tier is 14,400 requests/day against Gemini's 20,
+   *  which is the difference between being able to test this platform properly and not. */
+  groqApiKey?: string;
 }
 
 // ── CF AI Gateway Universal Endpoint ─────────────────────────────────────────
@@ -88,9 +92,53 @@ export function isGoogleAiStudioModel(model: string): boolean {
   return model.startsWith("google-ai-studio/");
 }
 
-/** The compat-endpoint URL for a Google AI Studio (Gemini) call — see isGoogleAiStudioModel. */
-export function googleAiStudioGatewayUrl(opts: GatewayOpts): string {
+/**
+ * Providers reached BYOK through the gateway's compat endpoint, keyed by the model-id prefix the
+ * endpoint uses to route, mapped to which `GatewayOpts` field holds that provider's own key.
+ *
+ * The compat route is generic — it infers the provider from the prefix — so adding one is a map
+ * entry and a secret, not a new code path. Every model on this account whose id carries one of
+ * these prefixes goes here instead of the AI REST API, because a BYOK provider cannot be reached
+ * with a Cloudflare token alone.
+ */
+const BYOK_COMPAT_PROVIDERS: Record<string, keyof Pick<GatewayOpts, "googleAiStudioApiKey" | "groqApiKey">> = {
+  "google-ai-studio/": "googleAiStudioApiKey",
+  "groq/": "groqApiKey",
+};
+
+/** Which BYOK key this model needs, or null when it is an ordinary AI-REST-API model. */
+export function byokKeyFieldForModel(model: string): keyof GatewayOpts | null {
+  for (const [prefix, field] of Object.entries(BYOK_COMPAT_PROVIDERS)) {
+    if (model.startsWith(prefix)) return field;
+  }
+  return null;
+}
+
+/** Does this model route through the compat endpoint rather than the AI REST API? */
+export function isCompatProviderModel(model: string): boolean {
+  return byokKeyFieldForModel(model) !== null;
+}
+
+/** The compat-endpoint URL for a BYOK provider call. */
+export function compatGatewayUrl(opts: GatewayOpts): string {
   return `https://gateway.ai.cloudflare.com/v1/${opts.accountId}/${opts.gatewayId}/compat/chat/completions`;
+}
+
+/** Headers for a BYOK compat-endpoint call — the provider's OWN key in `authorization`, and the
+ *  separate gateway-authenticating header when this gateway requires one. */
+export function compatGatewayHeaders(opts: GatewayOpts, model: string): Record<string, string> {
+  const field = byokKeyFieldForModel(model);
+  const key = field ? (opts[field] as string | undefined) : undefined;
+  return {
+    "content-type": "application/json",
+    ...(key ? { authorization: `Bearer ${key}` } : {}),
+    ...(opts.aigToken ? { "cf-aig-authorization": `Bearer ${opts.aigToken}` } : {}),
+  };
+}
+
+/** Retained name for the Gemini-specific call sites and their tests; the route is the same. */
+export function googleAiStudioGatewayUrl(opts: GatewayOpts): string {
+  return compatGatewayUrl(opts);
 }
 
 /** Headers for a Google AI Studio (Gemini) compat-endpoint call. The real Google key rides in the
@@ -100,11 +148,7 @@ export function googleAiStudioGatewayUrl(opts: GatewayOpts): string {
  *  required whenever the gateway is configured as an Authenticated Gateway (this account's gateway
  *  already requires it — confirmed live: an unauthenticated call to this route 401s). */
 export function googleAiStudioGatewayHeaders(opts: GatewayOpts): Record<string, string> {
-  return {
-    "content-type": "application/json",
-    ...(opts.googleAiStudioApiKey ? { authorization: `Bearer ${opts.googleAiStudioApiKey}` } : {}),
-    ...(opts.aigToken ? { "cf-aig-authorization": `Bearer ${opts.aigToken}` } : {}),
-  };
+  return compatGatewayHeaders(opts, "google-ai-studio/");
 }
 
 /** Headers for an AI REST API request. Auth is a Cloudflare API token with the AI Gateway
@@ -131,7 +175,10 @@ export function universalGatewayHeaders(opts: GatewayOpts): Record<string, strin
  *  full stop, or the request is a guaranteed 401. `model` is optional so every pre-existing call
  *  site (which doesn't know or care about a specific model) keeps its old behavior unchanged. */
 export function canAuthenticateLlm(opts: GatewayOpts, apiKey: string, model?: string): boolean {
-  if (model && isGoogleAiStudioModel(model)) return Boolean(opts.googleAiStudioApiKey);
+  // A BYOK provider needs its OWN key, full stop — a Cloudflare token cannot stand in, so the
+  // request would be a guaranteed 401 and is better refused here with a message naming the secret.
+  const field = model ? byokKeyFieldForModel(model) : null;
+  if (field) return Boolean(opts[field]);
   return Boolean(opts.cfApiToken) || Boolean(opts.aigToken) || Boolean(apiKey);
 }
 

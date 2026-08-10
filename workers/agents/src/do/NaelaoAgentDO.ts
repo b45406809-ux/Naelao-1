@@ -914,6 +914,8 @@ export interface AgentDOEnv {
    *  degrade honestly to a `give_up` naming the missing secret, same as every other credential gap
    *  in this file. */
   GOOGLE_AI_STUDIO_API_KEY?: string;
+  /** Groq BYOK key — free tier is 14,400 requests/day, which is what makes real testing possible. */
+  GROQ_API_KEY?: string;
   /** CF API token — enables the Universal Endpoint's Workers AI fallback provider (spec §15
    *  cross-provider failover). Required for Workers AI via the universal endpoint (distinct from
    *  the AI binding, which is for direct binding calls). Set via `wrangler secret put
@@ -1515,6 +1517,13 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
       // POST /runs/:runId/cancel
       const cancelMatch = url.pathname.match(/^\/runs\/([^/]+)\/cancel$/);
       if (method === "POST" && cancelMatch?.[1]) {
+        // A script-native run — which is every real chat message since the dispatch cutover —
+        // writes no `agent_runs` row, so the legacy handler below 404'd for exactly the runs a
+        // person would want to stop. Ask the live run to stop first; fall through to the legacy
+        // table only for a run that predates the script-native path.
+        if (this.requestCancel(cancelMatch[1])) {
+          return Response.json({ id: cancelMatch[1], status: "cancelling" });
+        }
         return this.handleCancelRun(cancelMatch[1]);
       }
 
@@ -2630,6 +2639,43 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
   }
 
+  /** Runs a person has asked to stop, since this DO instance woke. The durable copy in
+   *  `run_state.status` is what makes a cancel land even if the request arrives at an instance
+   *  that is not the one executing — this set is only the fast path. */
+  private cancelledRuns = new Set<string>();
+
+  /** Ask a run to stop. Cooperative: the loop finishes the action it is inside and stops at the
+   *  next step boundary, so a half-completed side effect is never left ambiguous. */
+  private requestCancel(runId: string): boolean {
+    this.cancelledRuns.add(runId);
+    try {
+      const updated = this.ctx.storage.sql
+        .exec(`UPDATE run_state SET status = 'cancelling', updated_at = ? WHERE run_id = ? AND terminal_json IS NULL RETURNING run_id`, Date.now(), runId)
+        .toArray();
+      // A run with no durable row at all is one this DO never started — say so honestly rather
+      // than reporting a stop that will never happen.
+      return updated.length > 0 || this.liveRuns.has(runId);
+    } catch {
+      return this.liveRuns.has(runId);
+    }
+  }
+
+  /** Read by the loop once per step. Checks memory first, then storage — so a cancel issued
+   *  against a different instance of this DO (or before it woke) is still honoured. */
+  private isCancelRequested(runId: string): boolean {
+    if (this.cancelledRuns.has(runId)) return true;
+    try {
+      const row = (this.ctx.storage.sql
+        .exec(`SELECT status FROM run_state WHERE run_id = ?`, runId)
+        .toArray() as unknown as Array<{ status: string }>)[0];
+      if (row?.status === "cancelling") {
+        this.cancelledRuns.add(runId);
+        return true;
+      }
+    } catch { /* a storage hiccup must never cancel a run that nobody asked to stop */ }
+    return false;
+  }
+
   private pruneDurableRuns(): void {
     try {
       const cutoff = Date.now() - NaelaoAgentDO.DURABLE_RUN_TTL_MS;
@@ -3008,7 +3054,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway",
         ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}),
         ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}),
-        ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}),
+        ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}),
       },
       ctx: { spaceId, agentId, model: body.model ?? DEFAULT_WORKING_MODEL },
       ...(body.model ? { model: body.model } : {}),
@@ -3042,6 +3088,9 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
         approvalMode,
         runId,
         sessionId,
+        // Checked once per step, so a Stop button actually stops something. Only wired here —
+        // the interactive path — since a cron wake or channel drain has nobody watching it.
+        shouldCancel: () => this.isCancelRequested(runId),
         ...(body.preApprovedActions?.length ? { preApprovedActions: body.preApprovedActions } : {}),
         ...(body.ledgerKey ? { ledgerKey: body.ledgerKey } : {}),
         ...(body.resumeSteps?.length ? { resumeSteps: body.resumeSteps } : {}),
@@ -4920,7 +4969,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     const model = body.model ?? DEFAULT_WORKING_MODEL;
     const reasoner = new GatewayReasoner({
       apiKey: body.apiKey ?? "",
-      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}) },
+      gateway: { accountId: this.env.NAELAO_ACCOUNT_ID ?? "placeholder", gatewayId: this.env.NAELAO_GATEWAY_ID ?? "naelao-gateway", ...(this.env.CF_API_TOKEN ? { cfApiToken: this.env.CF_API_TOKEN } : {}), ...(this.env.NAELAO_AIG_TOKEN ? { aigToken: this.env.NAELAO_AIG_TOKEN } : {}), ...(this.env.GOOGLE_AI_STUDIO_API_KEY ? { googleAiStudioApiKey: this.env.GOOGLE_AI_STUDIO_API_KEY } : {}), ...(this.env.GROQ_API_KEY ? { groqApiKey: this.env.GROQ_API_KEY } : {}) },
       ctx: { spaceId, agentId, model },
       model,
       fallbacks: this.resolveFailoverChain(model, body.apiKey ?? ""),

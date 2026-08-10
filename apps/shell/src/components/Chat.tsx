@@ -17,6 +17,7 @@ import {
   listApprovals,
   pollRun,
   getActiveRun,
+  cancelRun,
   mergeActivitySteps,
   sendMessage,
   startSession,
@@ -197,6 +198,7 @@ export function Chat({
   }, [messages]);
   const [input, setInput] = React.useState("");
   const [isLoading, setIsLoading] = React.useState(false);
+  const [stopping, setStopping] = React.useState(false);
   const [streamingContent, setStreamingContent] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
   // A transient network/gateway hiccup being retried, live — Claude Code CLI's own "retrying…
@@ -676,6 +678,7 @@ export function Chat({
           }
           settled = true;
           stopPolling();
+          setStopping(false);
           setStreamingContent("");
           setIsLoading(false);
           setLiveActivity([]);
@@ -779,6 +782,7 @@ export function Chat({
             closeSSE();
             setStreamingContent("");
             setIsLoading(false);
+            setStopping(false);
             setLiveActivity([]);
             clearActiveRunId(spaceId, sessionKey);
             // The backend sends "done" for completed/failed/cancelled/awaiting_approval alike
@@ -1038,12 +1042,53 @@ export function Chat({
     }
   }, [isLoading, pendingUploads, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, selectedEffort, selectedReasoningLevel, selectedAgentId]);
 
+  /**
+   * A message typed while the agent is still working.
+   *
+   * The composer used to be disabled outright, which meant a thought you had mid-run was simply
+   * lost unless you held it in your head until the reply landed. Queued messages are sent
+   * automatically, in order, as soon as the run finishes — so you can keep talking at your own
+   * pace rather than the agent's.
+   */
+  const [queued, setQueued] = React.useState<string[]>([]);
+  const queuedRef = React.useRef<string[]>([]);
+  queuedRef.current = queued;
+
+  /** Stop the run in flight. Optimistic on the button, authoritative on the server: the agent
+   *  reports what it had already completed, so stopping is never the same as losing the work. */
+  const handleStop = React.useCallback(async () => {
+    const runId = lastRun?.id ?? getActiveRunId(spaceId, sessionKey);
+    if (!runId || !chatSessionId) return;
+    setStopping(true);
+    try {
+      await cancelRun(spaceId, chatSessionId, runId, session);
+    } catch {
+      // The run may have finished in the same instant — the poll below settles it either way, so
+      // there is nothing useful to show for a failed stop on an already-finished run.
+    }
+  }, [lastRun, chatSessionId, spaceId, sessionKey, session]);
+
   const handleSubmit = React.useCallback(async () => {
     const trimmed = input.trim();
     if (!trimmed) return;
     setInput("");
+    // Mid-run, the message is queued rather than dropped — the drain effect below sends it the
+    // moment the agent is free, in the order you typed.
+    if (isLoading) {
+      setQueued((prev) => [...prev, trimmed]);
+      return;
+    }
     await send(trimmed);
-  }, [input, send]);
+  }, [input, send, isLoading]);
+
+  // Drain the queue when the agent goes idle. One at a time and in order: sending them together
+  // would collapse several separate thoughts into one goal, which is not what was typed.
+  React.useEffect(() => {
+    if (isLoading || queued.length === 0) return;
+    const [next, ...rest] = queued;
+    setQueued(rest);
+    void send(next!);
+  }, [isLoading, queued, send]);
 
   // Home hands its opening line over here rather than duplicating the chat surface on the landing
   // page. Guarded by a ref, not just the empty-history check: React 18 StrictMode double-invokes
@@ -1446,9 +1491,8 @@ export function Chat({
               <div className="input-top">
                 <textarea
                   className="msg-input"
-                  placeholder="Message…"
+                  placeholder={isLoading ? "Type your next message — it'll send when this finishes…" : "Message…"}
                   value={input}
-                  disabled={isLoading}
                   ref={inputRef}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => {
@@ -1461,12 +1505,37 @@ export function Chat({
                 />
                 {/* No chatSessionId gate here — a fresh thread/Home has none yet by design
                     (lazy creation), and the input must stay usable so the first send can mint one. */}
-                <button className="send-btn" type="button" disabled={isLoading || !input.trim()} onClick={() => void handleSubmit()}>
+                {isLoading && !input.trim() ? (
+                  <button
+                    className="send-btn"
+                    type="button"
+                    aria-label="Stop"
+                    title="Stop — the agent finishes what it's doing and reports what it completed"
+                    disabled={stopping}
+                    onClick={() => void handleStop()}
+                  >
+                    {stopping ? "…" : "■"}
+                  </button>
+                ) : (
+                <button className="send-btn" type="button" disabled={!input.trim()} onClick={() => void handleSubmit()}>
                   <svg viewBox="0 0 24 24" fill="none" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
                     <path d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
                   </svg>
                 </button>
+                )}
               </div>
+              {queued.length > 0 && (
+                <div style={{ fontSize: 11.5, color: "var(--text3)", padding: "4px 2px 0" }}>
+                  {queued.length === 1 ? "1 message queued" : `${queued.length} messages queued`} — sending when this finishes.
+                  <button
+                    type="button"
+                    onClick={() => setQueued([])}
+                    style={{ marginLeft: 8, background: "transparent", border: "none", color: "var(--text3)", cursor: "pointer", textDecoration: "underline" }}
+                  >
+                    clear
+                  </button>
+                </div>
+              )}
             </div>
           </ComposerDock>
           {uploadNotice && <p style={{ fontSize: 11.5, color: "var(--text3)", marginTop: 4 }}>{uploadNotice}</p>}
