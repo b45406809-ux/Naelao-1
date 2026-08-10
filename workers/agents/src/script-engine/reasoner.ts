@@ -658,7 +658,16 @@ export class GatewayReasoner implements Reasoner {
     // Streamed and non-streamed converge on the same normalized shape, so everything below this
     // point is identical for both — the only difference is that on the streamed path the person
     // has already been reading the text by the time we get here.
-    const { text, usage, toolCall, thinking } = streaming
+    // Typed as the wider of the two shapes: only the streamed path can report a provider failure
+    // that arrives PART WAY THROUGH an otherwise-200 response, so `error` is absent by
+    // construction on the non-streamed one.
+    const parsed: {
+      text: string;
+      usage: { input_tokens: number; output_tokens: number } | undefined;
+      toolCall?: ToolCall | undefined;
+      thinking?: string | undefined;
+      error?: string | undefined;
+    } = streaming
       ? await parseUniversalStream(resp, (progress) => {
           // Which field carries user-visible text depends on which action the model chose, and
           // the name arrives before the arguments do — so this can only be decided per chunk.
@@ -674,8 +683,22 @@ export class GatewayReasoner implements Reasoner {
           if (partial.say || partial.answer) input.onDelta?.(partial);
         })
       : normalizeUniversalResponse(await resp.json());
+    const { text, usage, toolCall, thinking, error: streamError } = parsed;
     if (usage) this.lastUsage = usage;
     if (thinking) this.lastThinking = thinking;
+
+    // The provider failed part way through a 200 response.
+    //
+    // This is what actually produced the reported reply of `{"`: one token arrived, the provider
+    // sent an error frame, and — because nothing looked for it — the fragment was handed to the
+    // person as the agent's answer. A failure has to be louder than the partial output it
+    // interrupts. Retry the turn without streaming first, since the common causes (a transient
+    // rate limit, a hiccup) often clear; only report the provider's own words if that fails too.
+    if (streamError) {
+      const retried = await this.decideWithoutStreaming(input);
+      if (retried) return retried;
+      return { action: "give_up", reason: `reasoner stream failed part way through: ${streamError}` };
+    }
 
     // Preferred path: a real, schema-constrained tool call.
     if (toolCall) {
@@ -754,7 +777,12 @@ export class GatewayReasoner implements Reasoner {
       // the non-streamed path is the one every provider agrees on, and it is already proven to
       // work for this exact model. Costs one extra call only in the broken case, and makes it
       // impossible for a half-parsed stream to reach a person as their answer.
-      if (streaming && trimmed.startsWith("{")) {
+      // Retry non-streamed for a stream that produced nothing usable: text beginning with `{` is a
+      // decision the model was midway through writing, and an EMPTY stream is a turn that never
+      // happened at all (observed live — a provider closing the connection without an error frame).
+      // Both are stream-shaped failures rather than anything the model actually said, and reporting
+      // either as "unparseable reasoner output" tells a person nothing they can act on.
+      if (streaming && (trimmed === "" || trimmed.startsWith("{"))) {
         const retried = await this.decideWithoutStreaming(input);
         if (retried) return retried;
       }

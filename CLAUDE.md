@@ -5821,6 +5821,29 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      unusable-stream-retry cases), `npx turbo run typecheck` clean (76 tasks). `naelao-agents`
      (bare `wrangler deploy`) and `apps/shell` (`--branch=main`, production confirmed via the Pages
      API) deployed.
+     - **FOLLOW-UP, same session — the `{"` corruption was root-caused for real, and it was worse
+       than a parsing bug: a provider error arriving mid-stream was silently swallowed and the
+       truncated output returned as though the call had succeeded.** Proven by replaying the
+       VERBATIM captured Gemini wire shapes through the real parser in a test: a `tool_calls` entry
+       carrying only `extra_content.google.thought_signature` followed by content tokens parses
+       perfectly, so the parser was never the fault. What was: `handleEvent` looked only for
+       `choices[0].delta` and ignored an `error` frame entirely. Gemini emitted one token, hit its
+       free-tier limit (20 requests/day), sent an error frame, and the fragment `{"` was delivered
+       to a person as the agent's reply. `parseUniversalStream` now returns `error`; the reasoner
+       retries non-streamed and, failing that, reports the provider's own words. Same treatment for
+       an EMPTY stream (a provider closing with no content and no error frame — also observed
+       live), which used to surface as "unparseable reasoner output", a message about our parser
+       describing nothing anyone can act on. Live-verified: three real long-answer runs now return
+       either a full 2,714-character answer or the genuine `429 ... Quota exceeded for metric:
+       generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20`.
+     - **Correction to this entry's own framing of the transport:** the browser↔Worker leg was
+       ALREADY a real open SSE pipe (a `TransformStream` held open in the agents worker) — it is
+       the internal Worker→DO leg that polls at 350ms, which is where the chunking comes from.
+       Making that leg a stream too is achievable (a DO can return a `ReadableStream` fed by the
+       running loop) but is NOT the current bottleneck: step events are seconds apart, and the
+       answer does not stream token-by-token on the only provider working on this account, so a
+       pipe would carry almost nothing extra today. The upstream parsing/provider behaviour is the
+       real constraint; the pipe is the right end-state after it, not before.
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

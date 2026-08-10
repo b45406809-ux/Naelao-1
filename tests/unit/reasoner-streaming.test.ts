@@ -351,3 +351,103 @@ describe("a stream that comes back unusable never reaches a person as their answ
     expect(decision).toEqual({ action: "answer", text: "Yes." });
   });
 });
+
+describe("a provider that fails part way through a 200 stream", () => {
+  afterEach(() => { globalThis.fetch = ORIGINAL_FETCH; });
+
+  const baseInput = {
+    goal: "write me a plan",
+    level: "L4" as const,
+    snapshot: { type: "none" } as never,
+    candidates: [],
+    availableOperations: [],
+  };
+
+  function reasoner(): GatewayReasoner {
+    return new GatewayReasoner({
+      apiKey: "k",
+      gateway: { accountId: "a", gatewayId: "g", googleAiStudioApiKey: "gkey" },
+      ctx: { tenantId: "t", model: "google-ai-studio/gemini-flash-latest" } as never,
+    });
+  }
+
+  it("surfaces a mid-stream error instead of returning the truncated text as an answer", async () => {
+    // The literal production failure. One token arrived, the provider sent an error frame, and the
+    // fragment `{"` was delivered to a person as their reply. Proven against the real captured
+    // wire shape: a tool-call entry carrying only a thought signature, then content, then error.
+    const result = await parseUniversalStream(sseResponse([
+      JSON.stringify({ choices: [{ delta: { role: "assistant", tool_calls: [{ extra_content: { google: { thought_signature: "EtMU" } } }] } }] }),
+      JSON.stringify({ choices: [{ delta: { content: '{"' } }] }),
+      JSON.stringify({ error: { message: "RESOURCE_EXHAUSTED: quota exceeded", code: 429 } }),
+    ]));
+    expect(result.error).toContain("RESOURCE_EXHAUSTED");
+    expect(result.text).toBe('{"');
+  });
+
+  it("reads a bare-string error as readily as an object one", async () => {
+    const result = await parseUniversalStream(sseResponse([JSON.stringify({ error: "upstream unavailable" })]));
+    expect(result.error).toBe("upstream unavailable");
+  });
+
+  it("retries without streaming when the stream errors, and answers properly", async () => {
+    globalThis.fetch = (async (_u: string, init?: RequestInit) => {
+      if (JSON.parse(String(init?.body ?? "{}")).stream) {
+        return sseResponse([
+          JSON.stringify({ choices: [{ delta: { content: '{"' } }] }),
+          JSON.stringify({ error: { message: "RESOURCE_EXHAUSTED" } }),
+        ]);
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ function: { name: "answer", arguments: '{"text":"the real answer"}' } }] } }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as unknown as typeof fetch;
+    const decision = await reasoner().decide({ ...baseInput, onDelta: () => {} });
+    expect(decision).toEqual({ action: "answer", text: "the real answer" });
+  });
+
+  it("reports the provider's own words when the retry fails too", async () => {
+    globalThis.fetch = (async (_u: string, init?: RequestInit) => {
+      if (JSON.parse(String(init?.body ?? "{}")).stream) {
+        return sseResponse([
+          JSON.stringify({ choices: [{ delta: { content: '{"' } }] }),
+          JSON.stringify({ error: { message: "RESOURCE_EXHAUSTED: quota exceeded" } }),
+        ]);
+      }
+      return new Response("upstream is down", { status: 503 });
+    }) as unknown as typeof fetch;
+    const decision = await reasoner().decide({ ...baseInput, onDelta: () => {} });
+    expect(decision.action).toBe("give_up");
+    // The person deserves the real reason, not a generic parse complaint about a fragment.
+    expect(JSON.stringify(decision)).toContain("RESOURCE_EXHAUSTED");
+  });
+});
+
+describe("an empty stream is a turn that never happened, not an answer", () => {
+  afterEach(() => { globalThis.fetch = ORIGINAL_FETCH; });
+
+  it("retries without streaming when the stream closes having said nothing", async () => {
+    // Observed live: a provider closed the connection with no content and no error frame. That
+    // used to surface as "unparseable reasoner output: no JSON object in reasoner output" — a
+    // message about our parser, describing nothing the person can act on, for a turn the model
+    // never actually took.
+    globalThis.fetch = (async (_u: string, init?: RequestInit) => {
+      if (JSON.parse(String(init?.body ?? "{}")).stream) return sseResponse([]);
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: null, tool_calls: [{ function: { name: "answer", arguments: '{"text":"recovered"}' } }] } }] }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as unknown as typeof fetch;
+
+    const reasoner = new GatewayReasoner({
+      apiKey: "k",
+      gateway: { accountId: "a", gatewayId: "g", googleAiStudioApiKey: "gkey" },
+      ctx: { tenantId: "t", model: "google-ai-studio/gemini-flash-latest" } as never,
+    });
+    const decision = await reasoner.decide({
+      goal: "hello", level: "L4", snapshot: { type: "none" } as never,
+      candidates: [], availableOperations: [], onDelta: () => {},
+    });
+    expect(decision).toEqual({ action: "answer", text: "recovered" });
+  });
+});

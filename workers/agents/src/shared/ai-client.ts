@@ -325,10 +325,21 @@ export async function parseUniversalStream(
   usage: { input_tokens: number; output_tokens: number } | undefined;
   toolCall?: ToolCall;
   thinking?: string;
+  /**
+   * A provider error delivered PART WAY THROUGH an otherwise-200 stream.
+   *
+   * This is not a theoretical case. A run in production replied to a person with the literal text
+   * `{"` — the model had emitted one token, the provider then sent an error frame, and because
+   * nothing looked for it the truncated fragment was returned as though the call had succeeded.
+   * An error arriving mid-stream has to be louder than the partial output it interrupts, or a
+   * failure is silently rendered as an answer.
+   */
+  error?: string;
 }> {
   const body = resp.body;
   const progress: StreamProgress = { text: "", toolArguments: "" };
   let thinking = "";
+  let streamError: string | undefined;
   let usage: { input_tokens: number; output_tokens: number } | undefined;
   if (!body) return { text: "", usage: undefined };
 
@@ -362,6 +373,15 @@ export async function parseUniversalStream(
       evt = JSON.parse(payload) as Record<string, unknown>;
     } catch {
       return; // a malformed frame must never abort a stream that is otherwise fine
+    }
+    // Every provider signals a mid-stream failure differently in the detail, but all of them put
+    // it under `error` — as an object with a message, or as a bare string.
+    const errField = evt["error"];
+    if (errField) {
+      const msg = typeof errField === "string"
+        ? errField
+        : (errField as { message?: string })?.message ?? JSON.stringify(errField);
+      streamError = String(msg).slice(0, 300);
     }
     const u = evt["usage"] as { prompt_tokens?: number; completion_tokens?: number; input_tokens?: number; output_tokens?: number } | undefined;
     if (u) {
@@ -464,6 +484,7 @@ export async function parseUniversalStream(
     usage,
     ...(toolCall ? { toolCall } : {}),
     ...(thinking ? { thinking } : {}),
+    ...(streamError ? { error: streamError } : {}),
   };
 }
 
