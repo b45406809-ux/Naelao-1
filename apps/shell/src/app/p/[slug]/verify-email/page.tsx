@@ -48,6 +48,23 @@ export default function VerifyEmailPage() {
     }).catch(() => {});
   }, [creds, product.space_id]);
 
+  // Live-reported bug: landing here (from the layout banner's "Verify now" button, or a stale
+  // bookmark — anything without ?token=) showed a passive "check your email" message with a
+  // SEPARATE "Resend" button below it — someone who never noticed the original signup email (or
+  // whose mail client buried a bare token string with no clickable link, before
+  // PRODUCT_SHELL_URL was actually configured — see that var's own comment) had to realize a
+  // second explicit click was needed, which several real users didn't. Landing here with a known
+  // account and no token IS the request for a fresh email — fire it once automatically rather
+  // than making that a second, easy-to-miss step. Guarded so this can't double-fire on React 18
+  // StrictMode's dev-mode double-invoke (the same pattern this codebase already uses for "don't
+  // bill/send twice" effects).
+  const autoResendFiredRef = React.useRef(false);
+  React.useEffect(() => {
+    if (urlToken || !knownEmail || autoResendFiredRef.current) return;
+    autoResendFiredRef.current = true;
+    resendVerification(product.space_id, knownEmail).catch(() => {}).finally(() => setResendSent(true));
+  }, [urlToken, knownEmail, product.space_id]);
+
   const runVerify = React.useCallback(async (token: string) => {
     setStatus("verifying");
     setMessage(null);

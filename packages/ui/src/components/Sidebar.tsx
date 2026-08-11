@@ -52,6 +52,11 @@ export interface SidebarProps {
   };
   iconOnly?: boolean;
   onToggleCollapse?: () => void;
+  /** Below the mockup's 900px breakpoint the sidebar becomes an off-canvas drawer
+   *  (`#sidebar.mobile-open` in packages/ui/src/styles.css) — this is what the mobile top bar's
+   *  hamburger button toggles. No effect above that breakpoint (the CSS rule only exists inside
+   *  the media query), so a caller doesn't need to know the current viewport width itself. */
+  mobileOpen?: boolean;
 }
 
 /** How many projects render before the sidebar collapses the rest behind "… more projects" —
@@ -77,13 +82,14 @@ export function Sidebar({
   spaceSwitcher,
   iconOnly,
   onToggleCollapse,
+  mobileOpen,
 }: SidebarProps) {
   const [moreOpen, setMoreOpen] = React.useState(false);
   const [projectsOpen, setProjectsOpen] = React.useState(false);
   const [threadsOpen, setThreadsOpen] = React.useState(true);
 
   return (
-    <nav id="sidebar" className={iconOnly ? "icon-only" : undefined}>
+    <nav id="sidebar" className={[iconOnly ? "icon-only" : "", mobileOpen ? "mobile-open" : ""].filter(Boolean).join(" ") || undefined}>
       <div className="sidebar-logo">
         <div className="logo-mark">
           <svg viewBox="0 0 14 14">

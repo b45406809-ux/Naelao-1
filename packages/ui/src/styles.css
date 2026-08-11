@@ -589,6 +589,10 @@
 
 /* the toolbar row — inside the same card as the input, separated by a hairline */
 .dock-bar{display:flex;align-items:center;gap:2px;padding:8px 10px;border-top:1px solid var(--border)}
+.dock-primary{display:flex;align-items:center;gap:9px;flex-shrink:0;background:var(--surface2);border:none;border-radius:999px;padding:9px 17px 9px 13px;font-family:'DM Sans',sans-serif;font-size:13.5px;color:var(--text2);cursor:pointer;transition:all var(--transition);max-width:220px}
+.dock-primary:hover,.dock-primary.open{background:var(--surface3);color:var(--text)}
+.dock-primary svg{width:17px;height:17px;stroke:currentColor;flex-shrink:0}
+.dock-primary span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dock-btn{position:relative;width:36px;height:36px;flex-shrink:0;background:none;border:none;border-radius:999px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text3);transition:all var(--transition)}
 .dock-btn:hover{background:var(--surface2);color:var(--text)}
 .dock-btn.open{background:var(--surface3);color:var(--text)}
@@ -611,6 +615,7 @@
 @media (max-width:640px){
   .dock-tips{grid-template-columns:1fr;gap:6px}
   .dock-tip,.dock-tip:first-child,.dock-tip:last-child{border-radius:14px}
+  .dock-primary{max-width:140px;padding-left:10px;padding-right:12px}
   .dock-sep{margin:0 3px}
 }
 
@@ -628,7 +633,17 @@
   .mobile-topbar{display:flex}
   #main{width:100%}
 
-  .thread-panel,.thread-panel.hidden{width:0;border-left:none;overflow:hidden}
+  /* Live-reported bug: this used to unconditionally collapse .thread-panel to zero width on
+     mobile REGARDLESS of whether it was open — the existing desktop "toggle panel" button already
+     mounts/unmounts it (see Chat.tsx's panelOpen), so on a phone that toggle silently did nothing
+     visible. Turned into the same off-canvas-drawer pattern #sidebar already uses (mirrored to
+     the right edge) instead of hiding it outright — it only exists in the DOM while open, so no
+     transform/transition is needed to slide it in from off-screen. */
+  .thread-panel{position:fixed;top:0;right:0;height:100%;width:min(86vw,340px);z-index:200;
+           padding-top:env(safe-area-inset-top);box-shadow:var(--shadow-lg)}
+  .thread-panel-backdrop{display:none}
+  .thread-panel-backdrop.show{display:block;position:fixed;inset:0;background:rgba(0,0,0,0.45);
+           backdrop-filter:blur(2px);z-index:199}
   .assistant-panel{display:none}
 
   .spaces-layout,.settings-layout,.assistant-layout{flex-direction:column}

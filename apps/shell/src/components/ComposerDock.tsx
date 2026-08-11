@@ -778,11 +778,23 @@ export function ComposerDock({
       {panel === "compose" && <div className="dock-compose">{children}</div>}
 
       <div className="dock-bar">
-        {/* No dedicated "Message"/compose button — compose is already the dock's default panel
-           (useState above), and every other panel's own toggle button already returns here when
-           clicked a second time (see `toggle`), plus Escape and clicking outside the dock (see the
-           effects below) — so a separate button+icon whose only job was "go back to the default"
-           was pure redundancy, not a second way to reach something otherwise unreachable. */}
+        {/* Item 107 removed this as "redundant" (every other panel's own button already returns
+           to compose on a second click, plus Escape/outside-click) — reinstated on request: on a
+           phone there's no Escape key, and a tap outside the dock is an easy miss on a small
+           screen, so an explicit, always-visible way back to the message input earns its place
+           even though it duplicates existing affordances on desktop. */}
+        <button
+          type="button"
+          className={`dock-primary${panel === "compose" ? " open" : ""}`}
+          onClick={() => setPanel("compose")}
+          title="Write a message"
+        >
+          <Icon path={ICONS.compose} />
+          <span>Message</span>
+        </button>
+
+        <div className="dock-sep" />
+
         <button type="button" className={`dock-btn${panel === "model" ? " open" : ""}`} onClick={() => toggle("model")} title={`Model: ${modelLabel(model)}`}>
           <Icon path={ICONS.cube} />
           {capability.reasoningLevels.length > 0 && reasoningLevel && <span className="dock-btn-dot" />}

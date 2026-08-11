@@ -91,6 +91,15 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
   // makes it easy to miss that something needs a decision.
   const [pendingApprovals, setPendingApprovals] = React.useState(0);
   const [switcherOpen, setSwitcherOpen] = React.useState(false);
+  // Live-reported bug: below the mockup's 900px breakpoint, #sidebar has always been rendered
+  // permanently off-canvas (packages/ui's own ported CSS transforms it out of view unless it
+  // carries a `mobile-open` class) — but nothing here ever added that class or gave a person any
+  // way to bring it back. There was no hamburger button, no drawer state, nothing: the sidebar
+  // was simply unreachable on a phone. Fixed by wiring the mobile top bar's hamburger to a real
+  // toggle, and closing the drawer automatically on every navigation (matching the mockup's own
+  // closeMobileSidebar()-on-every-nav behaviour).
+  const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
+  React.useEffect(() => { setMobileNavOpen(false); }, [pathname]);
   // hybrid/tenant products (Launchpad) are business-first: nothing chattable exists at the
   // product root, every thread/project/session belongs to a business. "team" mode is the
   // universal Journey-1B shell for a non-Launchpad SpaceType, where the product root IS the one
@@ -245,8 +254,39 @@ function ShellLayoutInner({ children }: { children: React.ReactNode }) {
 
   return (
     <div id="app">
+      {/* Only visible below the 900px breakpoint (packages/ui/src/styles.css's own media query) —
+          a persistent bar carrying the one control a phone otherwise has no way to reach: opening
+          the off-canvas sidebar. */}
+      <div className="mobile-topbar">
+        <button
+          type="button"
+          className="mobile-menu-btn"
+          aria-label="Open menu"
+          onClick={() => setMobileNavOpen((v) => !v)}
+        >
+          <svg viewBox="0 0 16 16" fill="none" strokeWidth={1.5} stroke="currentColor">
+            <line x1="2" y1="4" x2="14" y2="4" />
+            <line x1="2" y1="8" x2="14" y2="8" />
+            <line x1="2" y1="12" x2="14" y2="12" />
+          </svg>
+        </button>
+        <div className="mt-logo">
+          <div className="logo-mark">
+            <svg viewBox="0 0 14 14">
+              <path d="M7 1L12.5 4.25V10.75L7 14L1.5 10.75V4.25L7 1Z" />
+            </svg>
+          </div>
+          <span>{manifest?.space_name ?? product.product_name}</span>
+        </div>
+        <div className="mt-spacer" />
+      </div>
+      <div
+        className={["mobile-backdrop", mobileNavOpen ? "show" : ""].filter(Boolean).join(" ")}
+        onClick={() => setMobileNavOpen(false)}
+      />
       <Sidebar
         brandName={manifest?.space_name ?? product.product_name}
+        mobileOpen={mobileNavOpen}
         activeKey={activeKey}
         onNavigate={(key) => router.push(`/p/${product.slug}/${key}`)}
         primaryNav={primaryNav}

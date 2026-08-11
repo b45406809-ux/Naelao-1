@@ -1700,7 +1700,12 @@ export function Chat({
       </div>
 
       {panelOpen && (
-        <div className="thread-panel">
+        <>
+          {/* Mobile-only (CSS-gated — see packages/ui's own media query): .thread-panel becomes a
+              fixed drawer below 900px, and this is what lets a tap outside it close it, matching
+              #sidebar's own backdrop in the shell layout. */}
+          <div className="thread-panel-backdrop show" onClick={() => setPanelOpen(false)} />
+          <div className="thread-panel">
           <div className="tp-header">
             {/* A project thread genuinely is a "Thread" (SpaceDO's structural table); an
                 assistant/Home conversation is a "Session" (the chat transport) — these are two
@@ -1783,6 +1788,7 @@ export function Chat({
             )}
           </div>
         </div>
+        </>
       )}
     </div>
   );

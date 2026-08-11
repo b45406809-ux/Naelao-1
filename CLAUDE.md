@@ -6471,6 +6471,85 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      PROJECT-scoped wallet top-up UI/route (flagged, not silently dropped — same gap CLAUDE.md's
      Live Deployment Facts and item 116 already document).
 
+129. **Investigated the reported "no credits dialog with 5000 credits" bug thoroughly — all four
+     distinct billing gates were confirmed HEALTHY for the account at investigation time; most
+     likely a timing issue, not a live code bug. Plus three real, independently-reported UI/UX
+     gaps, all fixed: mobile sidebars unreachable, the Message/text-tab button missing from the
+     composer dock, and the verification email carrying no usable link.**
+     - **Credits-dialog investigation.** Read-only (zero LLM cost, via a temporary service-bound
+       worker mirroring items 128/62's own established technique) checks against all FOUR
+       distinct `insufficient_credits`/`quota_exceeded` sources in `NaelaoAgentDO.enforceRunGates`
+       + the org-level pre-dispatch quota check in `index.ts`: the granted personal balance
+       (`5000` credits, intact), Test 1's project wallet (`balance_cents: 996`, `credited_cents:
+       1000` — funded, not empty), and the org's monthly `llm_tokens` quota (`enterprise` tier,
+       200,000,000 limit, `166,745` used this month) — all healthy, none would trigger the
+       dialog. Also audited every code path for a Gemini/Groq/CF PROVIDER-level failure (a 429/
+       rate-limit/quota-exhaustion from the LLM itself, mid-run) ever being mislabeled with one
+       of the four billing `error_code`s — found none: those already route through the SEPARATE
+       `classifyFailure`/`FailureKind` system (`quota_exhausted`/`rate_limited`/
+       `model_unavailable`) into `InterruptedRunCard`'s self-heal flow, never `UpgradeDialog`.
+       Confirmed the live shell IS running the exact deploy carrying the error_code fix
+       (`e089dbaf`, `environment:"production"`). Conclusion: if the dialog is seen again, it is
+       very likely a real gate genuinely firing at that moment (the account has real, separate
+       state per gate) rather than a mislabeling bug — capturing the EXACT message text next time
+       narrows it immediately, since each of the four has distinct wording. Temporary read-only
+       worker deleted immediately after use, same discipline as item 128.
+     - **Mobile sidebars were completely unreachable — root cause: the CSS was already ported
+       from the mockup but nothing in React ever wired it up.** `packages/ui/src/styles.css`
+       already carried `#sidebar.mobile-open`/`.mobile-topbar`/`.mobile-backdrop` (ported earlier
+       from `apps/launchpad/src/index.html`'s own off-canvas-drawer pattern) — but no hamburger
+       button, no drawer state, and no class toggle existed anywhere in `apps/shell`, so
+       `#sidebar` sat permanently `transform:translateX(-100%)` on any screen ≤900px with
+       genuinely no way to bring it back. Fixed: `Sidebar` (`@naelao/ui`) gained a `mobileOpen`
+       prop; the shell layout gained real drawer state, a `.mobile-topbar` (hamburger + brand),
+       and a `.mobile-backdrop` that closes on tap — closed automatically on every navigation
+       (`pathname` change), matching the mockup's own `closeMobileSidebar()`-on-every-nav
+       behaviour. **The right `.thread-panel` had the opposite bug — its own toggle button
+       already worked, but a CSS rule unconditionally forced `width:0` on mobile regardless of
+       open state** (`.thread-panel,.thread-panel.hidden{width:0;...}` — every `.thread-panel`,
+       not just a hidden one), so clicking "Toggle panel" silently did nothing visible. The
+       mockup's own answer was to just hide it outright on mobile (`display:none`), but since our
+       shell's right panel carries real functionality (approvals, config, activity — not
+       decorative), it's now a proper right-edge drawer instead: `position:fixed;right:0;width:
+       min(86vw,340px)`, no transform/transition needed since the panel is already conditionally
+       MOUNTED (Chat.tsx's existing `panelOpen` state), plus a new `.thread-panel-backdrop` that
+       closes it on tap.
+     - **The composer dock's "Message" pill (removed by item 107 as "redundant" — every other
+       panel already returns to compose on toggle/Escape/outside-click) is restored, per explicit
+       request.** Item 107's reasoning held on desktop; on a phone there is no Escape key and a
+       tap outside a full-width mobile drawer is an easy miss, so an explicit, always-visible way
+       back earns its place even though it duplicates existing desktop affordances. Restored
+       verbatim from git history (`ComposerDock.tsx`'s button + `.dock-primary` CSS, including its
+       640px-breakpoint width override) rather than reinventing it.
+     - **Verify-email root-caused: `workers/spaces/wrangler.toml`'s `PRODUCT_SHELL_URL` was an
+       empty string in every environment** (deliberately left blank per item 41's own comment,
+       "rather than guessing a production domain") — meaning the verification email has ALWAYS
+       degraded to its documented fallback (a bare token string, no clickable link) in this
+       account's real deployment, exactly matching "I don't see any message code in my email" (a
+       raw opaque token buried in email text is easy to miss entirely, not just inconvenient to
+       use). Fixed at the root: set to the real, live Product Shell domain
+       (`https://naelao-shell.pages.dev`) in both the top-level `[vars]` (what a real bare
+       `wrangler deploy` actually uses — item 83's own documented convention) and `[env.
+       production]` (kept in sync so a future `--env production` deploy doesn't silently regress).
+       **Also fixed a real UX gap independent of the link/no-link question:** landing on
+       `/verify-email` without a token (i.e. via the layout banner's "Verify now" button) only
+       ever showed a passive "check your email" message with a SEPARATE, easy-to-miss "Resend"
+       button below it — several real users evidently never noticed a second click was needed.
+       Now auto-fires one resend the moment the page knows the signed-in account's email (guarded
+       against React 18 StrictMode's double-invoke, the same pattern this codebase already uses
+       for "never bill/send twice" effects), so simply landing on the page IS the resend request.
+     2916/2916 tests pass, `npx turbo run typecheck` clean (76 tasks), `apps/shell` verified via a
+     real `next build`. Deployed: `naelao-spaces` (bare `wrangler deploy`, carrying the
+     `PRODUCT_SHELL_URL` fix) and `apps/shell` (rebuilt with `next-on-pages`, `--branch=main`,
+     confirmed `environment:"production"` via the Pages API) — both live-verified via non-LLM
+     checks only (200s on the shell's `/p/launchpad/new` and `/p/launchpad/verify-email`), per the
+     user's standing "don't use my AI credits, I want to test it myself" instruction. **Not done
+     this pass:** a live browser click-through of the mobile drawers or a real end-to-end email
+     receipt confirmation (both would need either a live LLM-adjacent dispatch or a real device/
+     inbox the user has, not this session — the CSS/wiring is structurally verified via a real
+     Next.js build and the exact git-history restoration for the composer button, not a live
+     screenshot).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 
