@@ -6592,6 +6592,73 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      API, 200s on `/p/launchpad/{new,spaces,dashboard}`). **Not verified against a live model run**,
      per the standing instruction to leave inference credits for the user's own testing.
 
+131. **The mobile right-panel bug was worse than "can't open it" — it opened BY DEFAULT and
+     covered nearly the whole screen, hiding the chat entirely on first load. Proven live with a
+     real before/after screenshot, not assumed from reading the CSS. Also root-caused the
+     verify-email report to Resend's sandbox-domain deliverability (already a known, documented
+     limitation, now empirically confirmed) and fixed a real, separate defect it exposed: plain-
+     text emails were sent as unescaped `html` with literal `\n`, collapsing into one run-on
+     paragraph.**
+     - **Root cause.** `Chat.tsx`'s `panelOpen` state (`.thread-panel`, the Stats/Assistant/Config/
+       Memory/… side panel) defaults to `true` unconditionally — correct on desktop, where it's a
+       docked 260px column beside the chat. Below the 900px breakpoint the SAME element becomes a
+       `position:fixed` drawer at `min(86vw,340px)` (item 129's own mobile-drawer CSS) — opening BY
+       DEFAULT means it covers nearly the entire viewport with nothing behind it but a dark backdrop
+       sliver, so a phone user landing on any thread saw the panel, not the composer or messages,
+       before touching anything. A real screenshot at 390×844 confirmed it exactly: "Stats / Session
+       — / Messages 0 / Last run —" filling the screen, chat invisible. Fixed with a `useEffect` that
+       runs once after mount and closes the panel on a narrow viewport
+       (`window.matchMedia("(max-width: 900px)")`) — deliberately NOT a lazy `useState` initializer
+       reading `window`, which would hydration-mismatch against the server-rendered markup (no
+       `window` at SSR time); the effect approach keeps the first render identical on both sides and
+       only adjusts after commit. Re-screenshotted after deploy: the panel is gone, the full chat
+       (title, composer, "Message" button) renders correctly. The left sidebar's own mobile
+       hamburger (item 129's `.mobile-menu-btn` → `setMobileNavOpen` → `Sidebar`'s
+       `mobileOpen`/`.mobile-open` CSS class) was untouched by this fix and confirmed correct by
+       reading the wiring end to end; a second confirming screenshot of the click itself could not be
+       taken — Cloudflare Browser Rendering rate-limited this account for the rest of the session
+       (429 on every retry across several minutes, the same recurring account-level constraint item
+       104 already documented), not something more waiting resolved.
+     - **Email investigation: the code is not broken, and this was already a known tradeoff.**
+       Diagnosed live rather than guessed: a temporary, fully-reverted diagnostic (captured Resend's
+       own message id + a debug route reading `GET /emails/:id` from Resend, using the same
+       service-bound-temporary-worker technique as item 128) showed a real verification email to
+       the reporting account's own address came back `"last_event": "delivered"` — Resend/AWS SES
+       genuinely handed it to Gmail's mail servers, no bounce, no rejection. The actual explanation
+       was already written into this exact file by an earlier pass
+       (`workers/notifications/src/index.ts`'s own `RESEND_FROM_ADDRESS` doc comment, dated
+       2026-08-07): this account owns **zero DNS zones**, so no real domain is verified in Resend,
+       and every send falls back to `onboarding@resend.dev` — Resend's own shared, zero-setup sender
+       address, notorious for Gmail routing it to Spam/Junk since it carries no domain-specific
+       reputation or DKIM alignment. Not a new finding, but now empirically confirmed rather than
+       theoretical — the real, permanent fix is a verified domain (needs the user to register one
+       and set `RESEND_FROM_ADDRESS`, blocked on the same zero-DNS-zones fact CLAUDE.md's Live
+       Deployment Facts already records); the immediate workaround is checking Spam/Junk.
+     - **A real, separate, fixable defect found in the same investigation.** `sendEmailNow`
+       (`workers/notifications/src/index.ts`) has always sent a caller's plain-text message
+       (verify-email, password-reset, approval notices — all pass a `\n\n`-separated string as
+       `html`) to Resend completely unescaped and un-line-broken. HTML gives literal newlines no
+       meaning, so even an email FOUND in spam would render as one unbroken run-on paragraph — the
+       token, the link text, and the expiry note all mashed together. New `plainTextToHtml()`
+       escapes `&`/`</>`, then converts `\n` → `<br>`, applied at the single shared choke point
+       `sendEmailNow` (covering every current and future plain-text caller platform-wide in one
+       place) — gated on a simple heuristic (`/<[a-z][\s\S]*>/i`) so a caller that already sends real
+       HTML (a loaded template) is left untouched. 2 new tests in
+       `notifications-internal-notify.test.ts` pin the exact transformation (verified against the
+       real verify-email message shape) and confirm real HTML passes through byte-identical.
+     2918/2918 tests pass (2 new), `npx turbo run typecheck` clean (76 tasks). Deployed:
+     `naelao-notifications` (bare `wrangler deploy`) and `apps/shell` (rebuilt with
+     `next-on-pages` + `NEXT_PUBLIC_API_URL` in the same command, `--branch=main`, confirmed
+     `environment: "production"` via the Pages API) — both live-verified: the mobile panel fix via
+     two real Browser Rendering screenshots (broken, then fixed) against a real disposable
+     business/project/thread created for this purpose; the email fix via the temporary diagnostic
+     described above (fully reverted — `git diff --stat` showed the file back to its pre-diagnostic
+     state before the real fix was written and redeployed). **Not done:** a confirming screenshot of
+     the hamburger actually opening the left sidebar (CF Browser Rendering rate-limited for the rest
+     of the session — the wiring itself is unchanged, pre-existing, and confirmed correct by reading
+     it); registering a real domain and setting `RESEND_FROM_ADDRESS` (needs the user's own domain
+     purchase — this account has no DNS zones to verify one against Resend even if code were ready).
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

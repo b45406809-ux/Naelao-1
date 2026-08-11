@@ -55,6 +55,48 @@ describe("POST /internal/notify", () => {
     );
   });
 
+  it("converts a plain-text body's line breaks to <br> before sending to Resend, instead of one unbroken run-on paragraph", async () => {
+    // Live-reported bug (verify-email link "not arriving"): Resend's own delivery tracking showed
+    // every send was accepted and delivered — the real defect was downstream, every plain-text
+    // caller (verify-email, reset-password, approval notices) hands its message in as `html` with
+    // literal \n\n line breaks, which HTML renders as nothing at all.
+    const env = makeEnv();
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ id: "email-2" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    await notificationsWorker.fetch(
+      req({
+        channel: "email",
+        space_id: "space-1",
+        to: "jane@acme.com",
+        subject: "Verify your email",
+        body: "Verification token: abc123\n\nOr click this link: https://app.example.com/verify?token=abc123\n\nThis token expires in 24 hours.",
+      }),
+      env as never, execCtx
+    );
+
+    const sentBody = JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body));
+    expect(sentBody.html).not.toContain("\n");
+    expect(sentBody.html).toBe(
+      "Verification token: abc123<br><br>Or click this link: https://app.example.com/verify?token=abc123<br><br>This token expires in 24 hours."
+    );
+  });
+
+  it("leaves an already-HTML body untouched (a real template, not plain text)", async () => {
+    const env = makeEnv();
+    const fetchSpy = vi.fn(async () => new Response(JSON.stringify({ id: "email-3" }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    const realHtml = "<p>Hello</p>\n<p>World</p>";
+    await notificationsWorker.fetch(
+      req({ channel: "email", space_id: "space-1", to: "jane@acme.com", subject: "Hi", html: realHtml }),
+      env as never, execCtx
+    );
+
+    const sentBody = JSON.parse(String(fetchSpy.mock.calls[0]?.[1]?.body));
+    expect(sentBody.html).toBe(realHtml);
+  });
+
   it("does not attribute an audit row when there's no platform user_id (external end-user email)", async () => {
     const env = makeEnv();
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));

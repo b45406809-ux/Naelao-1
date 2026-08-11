@@ -239,7 +239,20 @@ export function Chat({
   // always pointing at the current one.
   const attachToRunRef = React.useRef<(sid: string, runId: string) => void>(() => {});
   const [initializing, setInitializing] = React.useState(true);
+  // Starts true to match server-rendered markup (no window at SSR time, so a lazy-viewport-check
+  // initializer here would hydration-mismatch). On desktop that's the right default — a docked
+  // 260px column beside the chat. On mobile, .thread-panel becomes a `position:fixed` drawer at
+  // `min(86vw,340px)` (packages/ui's own 900px breakpoint) — opening BY DEFAULT means it covers
+  // nearly the entire screen and hides the chat before the user has done anything. This effect
+  // runs once, right after mount, and closes it on a narrow viewport — a real bug caught by
+  // screenshotting a real phone-width load: the composer/messages were completely invisible
+  // behind the panel on first render.
   const [panelOpen, setPanelOpen] = React.useState(true);
+  React.useEffect(() => {
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 900px)").matches) {
+      setPanelOpen(false);
+    }
+  }, []);
   const [panelTab, setPanelTab] = React.useState<ThreadPanelTab>("stats");
   const [lastRun, setLastRun] = React.useState<AgentRun | null>(null);
   // Model switcher (Claude-Code-style per-session model + capability config) — a client-side

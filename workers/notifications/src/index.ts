@@ -375,6 +375,25 @@ async function loadEmailTemplate(
 
 // ── Shared email send (used by both the async queue consumer and the synchronous
 // /internal/notify HTTP route — same Resend call + same D1 audit row, one implementation). ──
+/** Most callers of `sendEmailNow` (verify-email, reset-password, approval-request notices, the
+ *  `business-email`/`notifications` prebuilts) build a plain-text message and hand it in as
+ *  `html` — this field has always been sent to Resend verbatim, so a real multi-paragraph message
+ *  with `\n\n` line breaks arrived as one unbroken run-on paragraph (newlines carry no meaning in
+ *  HTML). Found live while diagnosing a "the verify-email link never arrives" report: Resend's
+ *  own delivery tracking showed the send WAS accepted and delivered, so the actual bug was
+ *  downstream of transport — this is the one, real, fixable defect on that path (the rest is
+ *  `onboarding@resend.dev` sandbox-domain deliverability, a known, already-documented limitation
+ *  above, not something this function can fix). Only touches content that doesn't already look
+ *  like real markup, so an actual HTML template (loaded below) is left untouched. */
+function plainTextToHtml(text: string): string {
+  if (/<[a-z][\s\S]*>/i.test(text)) return text;
+  const escaped = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  return escaped.replace(/\n/g, "<br>");
+}
+
 async function sendEmailNow(
   env: NotificationsEnv,
   msg: Pick<NotificationMessage, "tenantId" | "userId" | "email" | "subject" | "html" | "templateId">
@@ -391,6 +410,7 @@ async function sendEmailNow(
   }
 
   if (!msg.email) return { ok: false };
+  html = plainTextToHtml(html);
 
   const res = await fetch(`${env.RESEND_API_URL}/emails`, {
     method: "POST",
