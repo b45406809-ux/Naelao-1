@@ -104,6 +104,30 @@ export async function writeAgentConfig(
   ]);
 }
 
+/**
+ * Live-reported bug: a business's Space Assistant claimed a real, shipped capability
+ * (`thread.create`) "isn't supported" — the operation genuinely wasn't in `scripts.prebuilt` for
+ * that specific agent, because `scripts.json` is written ONCE at provision time and nothing ever
+ * re-syncs it when the code-level profile (profiles.ts) gains a new prebuilt script later. A
+ * business provisioned before `project-coordination`/`business-diagnostics` were added to the
+ * Space Assistant profile is permanently missing them — not a one-off, this affects every
+ * already-provisioned business for every prebuilt added since. There is no builder-facing UI to
+ * individually trim which prebuilt SCRIPTS an agent has (only per-ACTION approval policy), so a
+ * script present in the current profile but absent from a persisted list is staleness, never an
+ * intentional trim — safe to add, additive-only (never removes anything persisted), preserving
+ * the existing order and appending only what's missing so a caller can skip a needless write when
+ * nothing changed.
+ */
+export function mergeMissingPrebuilt(
+  scripts: ScriptsConfig,
+  additions: string[]
+): { merged: ScriptsConfig; changed: boolean; added: string[] } {
+  const existing = new Set(scripts.prebuilt);
+  const added = additions.filter((name) => !existing.has(name));
+  if (added.length === 0) return { merged: scripts, changed: false, added: [] };
+  return { merged: { ...scripts, prebuilt: [...scripts.prebuilt, ...added] }, changed: true, added };
+}
+
 /** List the agentIds provisioned under a space. */
 export async function listSpaceAgents(bucket: R2Bucket, spaceId: string): Promise<string[]> {
   const prefix = `spaces/${spaceId}/agents/`;

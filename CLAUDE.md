@@ -6347,6 +6347,56 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      want to use my own credits to test" instruction; verified instead via unit tests against the
      real request/response contracts, which were confirmed to genuinely fail without the fix).
 
+127. **Root cause of item 126's own fix not working, found by reading a real business's actual
+     persisted R2 file rather than guessing: `scripts.json` is written ONCE at provision time and
+     nothing ever re-syncs it when the code-level profile later gains a new prebuilt script.**
+     The user re-tested with "Use thread.create" and got the identical "doesn't exist" claim —
+     item 126's grouped-operations fix was correct but couldn't have helped, because `thread.
+     create` genuinely wasn't in THIS business's `ScriptToolSurface` at all: `loadAgentConfig`
+     reads a PERSISTED `spaces/{spaceId}/agents/{agentId}/scripts.json`, written once by
+     `writeAgentConfig` at provision time and never touched again. Confirmed directly against the
+     live business ("Test 1", provisioned 2026-07-26): its persisted `prebuilt` list was missing
+     `project-coordination` and `business-diagnostics` — both added to `LAUNCHPAD_ASSISTANT_
+     PROFILE`/`DEFAULT_NAELAO_AGENT` sometime after that date. This is not specific to one
+     business or one script: EVERY business provisioned before ANY given prebuilt script was added
+     to the profile is permanently missing it, silently, with no error — a general platform bug,
+     not a one-off.
+     - **Fix: `NaelaoAgentDO.loadAgentConfigHealed`**, the same self-heal-on-load pattern
+       `SpaceTypeRegistryDO.ensureInit()` already established for an empty registry (item 63). For
+       the ONE hardcoded Space Assistant agentId (`"naelao-agent"` — every dispatcher
+       platform-wide already hardcodes this), it unions the persisted `prebuilt` list against
+       BOTH `DEFAULT_NAELAO_AGENT.config.scripts.prebuilt` and `LAUNCHPAD_ASSISTANT_PROFILE.
+       config.scripts.prebuilt` (this DO has no D1 access to know which SpaceType variant
+       applies, and there is no builder-facing UI to individually trim which prebuilt SCRIPTS an
+       agent has — only per-ACTION approval policy — so a script the current code declares but a
+       persisted list lacks is staleness, never an intentional trim). New pure primitive
+       `mergeMissingPrebuilt(scripts, additions)` in `agent-config.ts` (additive-only, preserves
+       persisted order, reports `changed:false` so a no-op case skips a needless write). All 3
+       `loadAgentConfig` call sites in `NaelaoAgentDO.ts` (`handleTriggerFire`, `handleScriptRun`,
+       and a third internal dispatch path) now go through the healed wrapper. Best-effort
+       re-persist (fire-and-forget, matches `logAgentActivity`/`notifyApprovalRequested`'s own
+       established posture) so this heals once per agent, not every run; a write failure never
+       blocks the run — the in-memory union still applies to that run either way. A
+       project-scoped specialist agent (a distinct, per-business agentId — Support Assistant,
+       Content & Marketing Agent, etc.) is deliberately untouched, preserving item 130's
+       restricted-tool-access split.
+     - **Repaired the live reporting business directly** (`a26a1942-4ad5-4908-9c46-ccf9b062b46c`,
+       "Test 1") via a raw R2 PUT — the exact same additive merge the deployed self-heal now does
+       automatically on its very next run, done immediately so the fix takes effect without
+       costing the user another message. Confirmed via read-back: `project-coordination` and
+       `business-diagnostics` are now present in its persisted `scripts.json`.
+     5 new tests (`agent-config-self-heal.test.ts` drives the REAL `NaelaoAgentDO.
+     loadAgentConfigHealed` via a cast, the same pattern `send-to-thread-orchestration-hook.
+     test.ts` established — heals a stale config, re-persists it, is a true no-op when nothing's
+     missing, and leaves a non-"naelao-agent" agentId untouched; plus 3 pure `mergeMissingPrebuilt`
+     cases in `script-engine.test.ts`), 2911/2911 tests pass, `npx turbo run typecheck` clean (76
+     tasks). `naelao-agents` deployed (bare `wrangler deploy`, item 83's documented `--env
+     production` trap; Version ID `26242d2c-901d-4ffb-ae99-95b88b1365ac`). **Not done this pass:**
+     no live `/agent/run` was dispatched to re-confirm the model's own reply now works (the fix
+     and the live R2 repair were verified structurally — via unit tests and a direct R2 read-back
+     — per the user's own standing "use my own credits to test" instruction); the user's own next
+     message against "Test 1" is the real end-to-end confirmation.
+
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.
 

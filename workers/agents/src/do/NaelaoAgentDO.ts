@@ -22,12 +22,17 @@ import {
   runScriptLoop,
   parseRequiresApprovalFor,
   loadAgentConfig,
+  writeAgentConfig,
+  mergeMissingPrebuilt,
+  DEFAULT_NAELAO_AGENT,
+  LAUNCHPAD_ASSISTANT_PROFILE,
   type ScriptEngineEnv,
   type ExecutionTier,
   type TraceStep,
   type LiveCheckpoint,
   type LoopResult,
   type ScriptRunResult,
+  type AgentConfig,
 } from "../script-engine/index.js";
 import { createTracer } from "@naelao/tracing";
 import { GatewayReasoner, WorkersAIEmbedder } from "../script-engine/reasoner.js";
@@ -2890,6 +2895,41 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
   }
 
   /**
+   * Live-reported: the Space Assistant flatly claimed `thread.create` "isn't supported" — a real,
+   * shipped capability. Root cause (confirmed by reading the actual persisted R2 file for the
+   * reporting business): `scripts.json` is written ONCE at provision time
+   * (`writeAgentConfig`/the provisioner) and NOTHING re-syncs it when profiles.ts later gains a
+   * new prebuilt script — that business was provisioned before `project-coordination` was added
+   * to the Space Assistant's profile, so its persisted `prebuilt` list genuinely never had it.
+   * This is not a one-off: every prebuilt added to the profile since ANY business's provisioning
+   * date is equally missing for that business, silently.
+   *
+   * Self-heals the SAME way `SpaceTypeRegistryDO.ensureInit()` does for an empty registry: on
+   * every load for the ONE hardcoded Space Assistant agentId ("naelao-agent" — every dispatcher
+   * platform-wide already hardcodes this, see profiles.ts), union in whatever the CURRENT code's
+   * Space Assistant profiles declare (both DEFAULT_NAELAO_AGENT and LAUNCHPAD_ASSISTANT_PROFILE —
+   * this DO has no D1 access to know which SpaceType variant applies, and there is no builder UI
+   * to individually trim which prebuilt SCRIPTS an agent has, only per-action approval policy, so
+   * a script the CURRENT code declares but a persisted list lacks is staleness, never an
+   * intentional trim). Additive only — never removes anything persisted. A project-scoped
+   * specialist agent (a different, per-business agentId, deliberately restricted per the F-36/
+   * item-130 access split) is untouched. Best-effort re-persist so this heals once per agent, not
+   * every run; a write failure never blocks the run itself — the union still applies in memory.
+   */
+  private async loadAgentConfigHealed(bucket: R2Bucket, spaceId: string, agentId: string): Promise<AgentConfig | null> {
+    const config = await loadAgentConfig(bucket, spaceId, agentId);
+    if (!config || agentId !== "naelao-agent") return config;
+    const wanted = [...new Set([...DEFAULT_NAELAO_AGENT.config.scripts.prebuilt, ...LAUNCHPAD_ASSISTANT_PROFILE.config.scripts.prebuilt])];
+    const { merged, changed } = mergeMissingPrebuilt(config.scripts, wanted);
+    if (!changed) return config;
+    const healed: AgentConfig = { ...config, scripts: merged };
+    writeAgentConfig(bucket, spaceId, agentId, healed).catch(() => {
+      /* best-effort — the in-memory union below still applies to THIS run either way */
+    });
+    return healed;
+  }
+
+  /**
    * Fires an @naelao/events trigger action — runs the named script DIRECTLY via
    * ScriptToolSurface, bypassing the OBSERVE/FIND/GATE loop and the reasoner entirely. A
    * trigger firing is meant to be cheap and deterministic (the builder's own example: a
@@ -2916,7 +2956,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     if (!engineEnv) {
       return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
     }
-    const config = await loadAgentConfig(engineEnv.scriptsBucket, body.spaceId, body.agentId);
+    const config = await this.loadAgentConfigHealed(engineEnv.scriptsBucket, body.spaceId, body.agentId);
     if (!config) {
       return Response.json({ error: `agent '${body.agentId}' is not provisioned in space '${body.spaceId}'` }, { status: 404 });
     }
@@ -3099,7 +3139,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
     }
 
     // Load the agent's 4-file config; without it the agent is not provisioned.
-    const config = await loadAgentConfig(engineEnv.scriptsBucket, spaceId, agentId);
+    const config = await this.loadAgentConfigHealed(engineEnv.scriptsBucket, spaceId, agentId);
     if (!config) {
       return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
     }
@@ -5082,7 +5122,7 @@ export class NaelaoAgentDO extends DurableObject<AgentDOEnv> {
 
     const engineEnv = this.buildScriptEngineEnv(spaceId, agentId, tenantId);
     if (!engineEnv) return Response.json({ error: "script engine unavailable: SCRIPTS_R2 not bound" }, { status: 503 });
-    const config = await loadAgentConfig(engineEnv.scriptsBucket, spaceId, agentId);
+    const config = await this.loadAgentConfigHealed(engineEnv.scriptsBucket, spaceId, agentId);
     if (!config) return Response.json({ error: `agent '${agentId}' is not provisioned in space '${spaceId}'` }, { status: 404 });
     // Same structural-config-first, agents.md-parse-fallback precedence as handleScriptRun above.
     const requiresApprovalFor = config.requiresApprovalFor ?? [...parseRequiresApprovalFor(config.agentsMd)];

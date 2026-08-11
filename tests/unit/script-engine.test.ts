@@ -4,7 +4,7 @@ import { ScriptToolSurface } from "../../workers/agents/src/script-engine/tool-s
 import { scriptFind } from "../../workers/agents/src/script-engine/script-find.js";
 import { runScriptLoop, type Reasoner, type ReasonDecision } from "../../workers/agents/src/script-engine/loop.js";
 import { observeFilesystem } from "../../workers/agents/src/script-engine/observe.js";
-import { writeAgentConfig, loadAgentConfig } from "../../workers/agents/src/script-engine/agent-config.js";
+import { writeAgentConfig, loadAgentConfig, mergeMissingPrebuilt } from "../../workers/agents/src/script-engine/agent-config.js";
 import { launchpadAgentToProfile, DEFAULT_NAELAO_AGENT, SPACE_ASSISTANT_PROFILE } from "../../workers/agents/src/script-engine/profiles.js";
 import { LAUNCHPAD_CORE_AGENTS } from "../../workers/agents/src/launchpad/spacetype.js";
 import type { ScriptEngineEnv } from "../../workers/agents/src/script-engine/types.js";
@@ -586,6 +586,38 @@ describe("Agent config 4 R2 files + profiles (spec §11/§13)", () => {
 
   it("SPACE_ASSISTANT_PROFILE is the same profile as DEFAULT_NAELAO_AGENT (one bundle, not two)", () => {
     expect(SPACE_ASSISTANT_PROFILE).toBe(DEFAULT_NAELAO_AGENT);
+  });
+
+  // Live-reported: a business's Space Assistant claimed thread.create "isn't supported" — a real,
+  // shipped capability. Root cause: scripts.json is written ONCE at provision time and nothing
+  // re-syncs it when profiles.ts later gains a new prebuilt script. mergeMissingPrebuilt is the
+  // pure additive-union primitive the self-heal (NaelaoAgentDO.loadAgentConfigHealed) is built on.
+  describe("mergeMissingPrebuilt — additive union for a stale persisted prebuilt list", () => {
+    it("adds only what's missing, preserving persisted order", () => {
+      const { merged, changed, added } = mergeMissingPrebuilt(
+        { prebuilt: ["r2-workspace", "web-search"], startup_observe: "observe_filesystem" },
+        ["web-search", "project-coordination", "business-diagnostics"]
+      );
+      expect(changed).toBe(true);
+      expect(added).toEqual(["project-coordination", "business-diagnostics"]);
+      expect(merged.prebuilt).toEqual(["r2-workspace", "web-search", "project-coordination", "business-diagnostics"]);
+    });
+
+    it("reports changed:false and returns the SAME object when nothing is missing (skip a needless write)", () => {
+      const scripts = { prebuilt: ["r2-workspace", "project-coordination"], startup_observe: "observe_filesystem" };
+      const result = mergeMissingPrebuilt(scripts, ["project-coordination"]);
+      expect(result.changed).toBe(false);
+      expect(result.added).toEqual([]);
+      expect(result.merged).toBe(scripts);
+    });
+
+    it("never removes anything already persisted, even if it's not in `additions`", () => {
+      const { merged } = mergeMissingPrebuilt(
+        { prebuilt: ["r2-workspace", "local-machine"], startup_observe: "observe_filesystem" },
+        ["r2-workspace", "web-search"]
+      );
+      expect(merged.prebuilt).toContain("local-machine");
+    });
   });
 
   it("the Space Assistant profile reflects continuous existence, channels, and honest escalation (spec §05/A1.3)", () => {
