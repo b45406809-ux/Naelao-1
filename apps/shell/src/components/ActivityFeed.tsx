@@ -24,19 +24,6 @@
 import * as React from "react";
 import type { LiveRunStep } from "@/lib/api";
 
-function phaseIcon(phase: string): string {
-  switch (phase) {
-    case "observe": return "👁";
-    case "find": return "🔍";
-    case "gate": return "🚦";
-    case "reason": return "🧠";
-    case "run": return "🔧";
-    case "answer": return "✅";
-    case "give_up": return "⚠️";
-    default: return "•";
-  }
-}
-
 function stepLabel(step: LiveRunStep, active: boolean): string {
   switch (step.phase) {
     case "run":
@@ -135,6 +122,157 @@ function mergeSteps(raw: LiveRunStep[]): { step: LiveRunStep; active: boolean }[
 }
 
 /**
+ * One item in the grouped rendering: either a standalone loop-bookkeeping row (observe/find/gate
+ * — not a tool call, no narration) or a SEGMENT of consecutive reason/run activity.
+ *
+ * A segment is Claude Code's own "the agent talks to me, then runs a tool, then runs another"
+ * pattern: the model's mandatory narration for whichever tool call is CURRENT is the always-
+ * visible headline (an EARLIER narration in the same segment is overridden, never stacked — the
+ * headline always shows what's happening now), and every tool call the model has made without
+ * yet replying to the user collapses into ONE running summary below it. A segment ends the moment
+ * the model actually answers (or gives up) — that reply is the message's own bubble, rendered
+ * outside this component, not a row here — so the NEXT tool call after an answer starts a
+ * genuinely new, separate segment.
+ */
+type ToolRow = { step: LiveRunStep; active: boolean; idx: number };
+type ThoughtRow = { step: LiveRunStep; idx: number };
+type Grouped =
+  | { kind: "plain"; step: LiveRunStep; active: boolean; idx: number }
+  | { kind: "segment"; narration?: string; narrationActive: boolean; tools: ToolRow[]; thoughts: ThoughtRow[]; anyActive: boolean; startIdx: number };
+
+function groupSteps(merged: { step: LiveRunStep; active: boolean }[]): Grouped[] {
+  const out: Grouped[] = [];
+  let current: Extract<Grouped, { kind: "segment" }> | null = null;
+  const closeSegment = () => {
+    if (current && (current.tools.length > 0 || current.thoughts.length > 0 || current.narration)) out.push(current);
+    current = null;
+  };
+  merged.forEach(({ step, active }, idx) => {
+    if (step.phase === "observe" || step.phase === "find" || step.phase === "gate") {
+      closeSegment();
+      out.push({ kind: "plain", step, active, idx });
+      return;
+    }
+    if (step.phase === "answer" || step.phase === "give_up") {
+      // Terminal for this segment — the reply/give-up text is rendered by the caller (the
+      // message bubble / error banner), not as a row here.
+      closeSegment();
+      return;
+    }
+    if (!current) current = { kind: "segment", narrationActive: false, tools: [], thoughts: [], anyActive: false, startIdx: idx };
+    if (step.narration) {
+      current.narration = step.narration; // latest wins — never stack prior narration
+      current.narrationActive = active;
+    }
+    if (step.phase === "reason" && step.thinking) current.thoughts.push({ step, idx });
+    if (step.phase === "run") current.tools.push({ step, active, idx });
+    if (active) current.anyActive = true;
+  });
+  closeSegment();
+  return out;
+}
+
+function segmentHeader(seg: Extract<Grouped, { kind: "segment" }>): string {
+  const activeTools = seg.tools.filter((t) => t.active).length;
+  const doneTools = seg.tools.length - activeTools;
+  const totalTools = seg.tools.length;
+  let toolPart: string | null = null;
+  if (activeTools > 0 && doneTools === 0) {
+    toolPart = `${activeTools} tool${activeTools === 1 ? "" : "s"} running`;
+  } else if (totalTools > 0) {
+    toolPart = `${totalTools} tool${totalTools === 1 ? "" : "s"}`;
+  }
+  const thoughtPart = seg.thoughts.length > 0 ? `${seg.thoughts.length} thought${seg.thoughts.length === 1 ? "" : "s"}` : null;
+  return [toolPart, thoughtPart].filter(Boolean).join(" · ") || (seg.anyActive ? "Thinking" : "Working");
+}
+
+function ToolRowView({
+  row, isOpen, onToggle,
+}: { row: ToolRow; isOpen: boolean; onToggle: () => void }) {
+  const { step, active } = row;
+  const failed = step.ok === false;
+  let paramsText: string | null = null;
+  if (step.params !== undefined) {
+    try {
+      paramsText = typeof step.params === "string" ? step.params : JSON.stringify(step.params, null, 2);
+    } catch {
+      paramsText = null;
+    }
+  }
+  const expandable = !!paramsText || !!step.output || !!step.detail || step.duration_ms !== undefined;
+  return (
+    <div style={{ borderTop: "1px solid var(--border, #e5e7eb)" }}>
+      <button
+        type="button"
+        onClick={() => expandable && onToggle()}
+        style={{
+          display: "flex", width: "100%", alignItems: "center", gap: 6, fontSize: 12,
+          color: active ? "var(--text2)" : "var(--text3)", background: "transparent", border: "none",
+          cursor: expandable ? "pointer" : "default", padding: "5px 8px", textAlign: "left",
+        }}
+      >
+        <span style={{ flex: 1, fontFamily: "var(--font-mono, monospace)" }}>
+          {step.name ?? "tool"}
+          {active && <span className="activity-ellipsis">…</span>}
+        </span>
+        {step.duration_ms !== undefined && <span style={{ fontSize: 10.5 }}>{step.duration_ms}ms</span>}
+        {failed && <span style={{ color: "#dc2626", fontSize: 11 }}>failed</span>}
+        {expandable && <span style={{ color: "var(--text3)", fontSize: 10 }}>{isOpen ? "▲" : "▼"}</span>}
+      </button>
+      {isOpen && expandable && (
+        <div style={{ fontSize: 11.5, color: "var(--text3)", padding: "0 8px 8px", lineHeight: 1.6 }}>
+          {paramsText && (
+            <div style={{ marginBottom: 4 }}>
+              <div style={{ fontWeight: 600, color: "var(--text2)", marginBottom: 2 }}>Command</div>
+              <pre style={{ margin: 0, padding: 8, background: "var(--surface2)", borderRadius: 8, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 11 }}>
+                {paramsText}
+              </pre>
+            </div>
+          )}
+          {(step.output || (failed && step.detail)) && (
+            <div style={{ marginBottom: 4 }}>
+              <div style={{ fontWeight: 600, color: failed ? "#dc2626" : "var(--text2)", marginBottom: 2 }}>
+                {failed ? "Error" : "Result"}
+              </div>
+              <pre style={{ margin: 0, padding: 8, background: "var(--surface2)", borderRadius: 8, whiteSpace: "pre-wrap", wordBreak: "break-word", fontSize: 11 }}>
+                {failed ? step.detail : step.output}
+              </pre>
+            </div>
+          )}
+          {!!step.tokens && step.tokens > 0 && <div>{step.tokens} tokens</div>}
+          {step.tier !== undefined && <div>Tier {step.tier}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ThoughtRowView({ row, isOpen, onToggle }: { row: ThoughtRow; isOpen: boolean; onToggle: () => void }) {
+  return (
+    <div style={{ borderTop: "1px solid var(--border, #e5e7eb)" }}>
+      <button
+        type="button"
+        onClick={onToggle}
+        style={{
+          display: "flex", width: "100%", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text3)",
+          background: "transparent", border: "none", cursor: "pointer", padding: "5px 8px", textAlign: "left",
+        }}
+      >
+        <span style={{ flex: 1 }}>Thought</span>
+        <span style={{ color: "var(--text3)", fontSize: 10 }}>{isOpen ? "▲" : "▼"}</span>
+      </button>
+      {isOpen && (
+        <div style={{ padding: "0 8px 8px" }}>
+          <div style={{ padding: 8, background: "var(--surface2)", borderRadius: 8, whiteSpace: "pre-wrap", fontSize: 11.5, color: "var(--text3)", lineHeight: 1.6 }}>
+            {row.step.thinking}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * The full sequence, live or persisted — replaces the old LiveActivityLine (single line) and
  * ActivitySummary (collapsed-after-the-fact) with one renderer. `animate` gates the client-side
  * reveal effect on freshly-arriving narration/thinking text (never on a persisted/reloaded run).
@@ -142,81 +280,110 @@ function mergeSteps(raw: LiveRunStep[]): { step: LiveRunStep; active: boolean }[
  * in flight) — a row under every single message would be noise, not signal.
  */
 export function ActivitySequence({ steps, animate, live }: { steps: LiveRunStep[]; animate?: boolean | undefined; live?: boolean | undefined }) {
-  const [openStep, setOpenStep] = React.useState<number | null>(null);
   const merged = React.useMemo(() => mergeSteps(steps), [steps]);
+  const grouped = React.useMemo(() => groupSteps(merged), [merged]);
+  // Segment collapsibles the person opened by hand — a segment also renders open automatically
+  // while it's still in flight, without needing an entry here (see the `isOpen` computation
+  // below), so this only has to track "opened on purpose" and "manually closed after finishing".
+  const [openSegments, setOpenSegments] = React.useState<Set<number>>(new Set());
+  const [closedLiveSegments, setClosedLiveSegments] = React.useState<Set<number>>(new Set());
+  const [openRows, setOpenRows] = React.useState<Set<string>>(new Set());
+  const toggleRow = React.useCallback((key: string) => {
+    setOpenRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
 
-  const toolCount = merged.filter((m) => m.step.phase === "run" && !m.active).length;
-  const thoughtCount = merged.filter((m) => m.step.phase === "reason" && !!m.step.thinking).length;
+  const toolCount = grouped.reduce((n, g) => (g.kind === "segment" ? n + g.tools.filter((t) => !t.active).length : n), 0);
+  const thoughtCount = grouped.reduce((n, g) => (g.kind === "segment" ? n + g.thoughts.length : n), 0);
   const anyActive = merged.some((m) => m.active);
+  const anyNarration = grouped.some((g) => g.kind === "segment" && !!g.narration);
 
-  if (merged.length === 0) return null;
+  if (grouped.length === 0) return null;
   // A live run shows SOMETHING for every step it takes — even a lone "Observed current state"
   // in the first instant — because the person is actively waiting and any real feedback beats a
   // blank row. A persisted/reloaded run hides entirely when there's nothing worth reading (no
   // tool use, no thinking, no narration) — a row under every single trivial Q&A would be noise.
-  if (!live && !anyActive && toolCount === 0 && thoughtCount === 0 && !merged.some((m) => m.step.narration)) return null;
+  if (!live && !anyActive && toolCount === 0 && thoughtCount === 0 && !anyNarration) return null;
 
   return (
     <div style={{ margin: "2px 0 8px", maxWidth: 520 }}>
-      {/* A compact running tally once there's more than one thing to summarize — "3 tool calls,
-          1 thought" — the same aggregate Claude Code shows while several tool calls stack up.
-          Purely informational; the rows below already show everything this restates. */}
-      {toolCount + thoughtCount > 1 && (
-        <div style={{ fontSize: 11, color: "var(--text3)", marginBottom: 3 }}>
-          {[
-            toolCount > 0 ? `${toolCount} tool call${toolCount === 1 ? "" : "s"}` : null,
-            thoughtCount > 0 ? `${thoughtCount} thought${thoughtCount === 1 ? "" : "s"}` : null,
-          ].filter(Boolean).join(" · ")}
-        </div>
-      )}
-      <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-        {merged.map(({ step, active }, i) => {
-          const hasNarration = !!step.narration;
-          const hasThinking = !!step.thinking;
-          const inspectable = step.duration_ms !== undefined || step.tokens !== undefined || (!!step.detail && step.phase !== "reason");
-          const expandable = hasThinking || inspectable;
-          const isOpen = openStep === i;
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {grouped.map((g, gi) => {
+          if (g.kind === "plain") {
+            return (
+              <div key={`plain-${g.idx}`} style={{ fontSize: 12, color: g.active ? "var(--text2)" : "var(--text3)" }}>
+                {stepLabel(g.step, g.active)}
+                {g.active && <span className="activity-ellipsis">…</span>}
+              </div>
+            );
+          }
+          const rows = [...g.tools.map((t) => ({ type: "tool" as const, idx: t.idx, row: t })), ...g.thoughts.map((t) => ({ type: "thought" as const, idx: t.idx, row: t }))]
+            .sort((a, b) => a.idx - b.idx);
+          const isOpen = !closedLiveSegments.has(gi) && (g.anyActive || openSegments.has(gi));
           return (
-            <div key={`${step.seq}-${step.phase}-${step.name ?? ""}`}>
-              <button
-                type="button"
-                onClick={() => expandable && setOpenStep(isOpen ? null : i)}
-                style={{
-                  display: "flex", width: "100%", alignItems: "center", gap: 6, fontSize: 12,
-                  color: active ? "var(--text2)" : "var(--text3)", background: "transparent", border: "none",
-                  cursor: expandable ? "pointer" : "default", padding: "2px 0", textAlign: "left",
-                }}
-              >
-                <span aria-hidden style={{ fontSize: 11, opacity: active ? 1 : 0.75 }}>{phaseIcon(step.phase)}</span>
-                <span style={{ flex: 1 }}>
-                  {stepLabel(step, active)}
-                  {active && <span className="activity-ellipsis">…</span>}
-                </span>
-                {step.ok === false && <span style={{ color: "#dc2626", fontSize: 11 }}>failed</span>}
-                {expandable && <span style={{ color: "var(--text3)", fontSize: 10 }}>{isOpen ? "▲" : "▼"}</span>}
-              </button>
-              {/* Narration — a real reply the model wrote, always visible where it happened, never
-                  collapsed (it was written to be read, unlike thinking). */}
-              {hasNarration && (
-                <div style={{ fontSize: 13, color: "var(--text1)", padding: "2px 0 4px 19px", lineHeight: 1.5 }}>
-                  {/* Animated while a run is live INCLUDING mid-write: the text really is arriving
-                      progressively from the server, and RevealText extends rather than restarts
-                      when it grows, so this smooths the gap between polls instead of stuttering. */}
-                  <RevealText text={step.narration!} animate={animate} />
+            <div key={`seg-${g.startIdx}`}>
+              {/* The model's own narration for whatever it's doing RIGHT NOW — always visible,
+                  never collapsed (it was written to be read), in italics to read as speech rather
+                  than a status label. */}
+              {g.narration && (
+                <div style={{ fontSize: 13, color: "var(--text1)", fontStyle: "italic", padding: "0 0 4px", lineHeight: 1.5 }}>
+                  <RevealText text={g.narration} animate={animate && g.narrationActive} />
                 </div>
               )}
-              {isOpen && expandable && (
-                <div style={{ fontSize: 11.5, color: "var(--text3)", padding: "2px 0 6px 19px", lineHeight: 1.6 }}>
-                  {step.detail && step.phase !== "reason" && <div>{step.detail}</div>}
-                  {step.duration_ms !== undefined && <div>{step.duration_ms}ms</div>}
-                  {!!step.tokens && step.tokens > 0 && <div>{step.tokens} tokens</div>}
-                  {step.tier !== undefined && <div>Tier {step.tier}</div>}
-                  {hasThinking && (
+              {rows.length > 0 && (
+                <div style={{ border: "1px solid var(--border, #e5e7eb)", borderRadius: 8, overflow: "hidden" }}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (isOpen) {
+                        setClosedLiveSegments((prev) => new Set(prev).add(gi));
+                        setOpenSegments((prev) => { const n = new Set(prev); n.delete(gi); return n; });
+                      } else {
+                        setOpenSegments((prev) => new Set(prev).add(gi));
+                        setClosedLiveSegments((prev) => { const n = new Set(prev); n.delete(gi); return n; });
+                      }
+                    }}
+                    style={{
+                      display: "flex", width: "100%", alignItems: "center", gap: 6, fontSize: 11.5,
+                      color: "var(--text3)", background: "var(--surface2)", border: "none", cursor: "pointer",
+                      padding: "5px 8px", textAlign: "left",
+                    }}
+                  >
+                    <span style={{ flex: 1 }}>
+                      {segmentHeader(g)}
+                      {g.anyActive && <span className="activity-ellipsis">…</span>}
+                    </span>
+                    <span style={{ fontSize: 10 }}>{isOpen ? "▲" : "▼"}</span>
+                  </button>
+                  {/* One-column table of every tool call this segment has made so far, plus any
+                      thoughts the model had along the way — Claude Code's own table-of-tool-calls
+                      view rather than a per-tool-call standalone row. */}
+                  {isOpen && (
                     <div>
-                      <div style={{ marginTop: 4, marginBottom: 2, fontWeight: 600, color: "var(--text2)" }}>Thoughts</div>
-                      <div style={{ padding: 8, background: "var(--surface2)", borderRadius: 8, whiteSpace: "pre-wrap" }}>
-                        {step.thinking}
-                      </div>
+                      {rows.map(({ type, idx, row }) => {
+                        const key = `${gi}-${idx}`;
+                        if (type === "tool") {
+                          return (
+                            <ToolRowView
+                              key={key}
+                              row={row as ToolRow}
+                              isOpen={openRows.has(key)}
+                              onToggle={() => toggleRow(key)}
+                            />
+                          );
+                        }
+                        return (
+                          <ThoughtRowView
+                            key={key}
+                            row={row as ThoughtRow}
+                            isOpen={openRows.has(key)}
+                            onToggle={() => toggleRow(key)}
+                          />
+                        );
+                      })}
                     </div>
                   )}
                 </div>

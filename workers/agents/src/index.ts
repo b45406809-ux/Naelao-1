@@ -1318,6 +1318,39 @@ async function resolveWakeContext(
   }
 }
 
+/**
+ * A real, durable SpaceDO session for a heartbeat/cron wake — replacing the synthetic
+ * `` `scheduled-job-${Date.now()}` `` id that was never registered via POST /spaces/:id/sessions.
+ * That id was never a real session at all: every subsequent write-back (writeAgentAnswerToSession)
+ * 404'd against SpaceDO's appendMessage (which requires the session to already exist) and was
+ * silently swallowed — so nothing a heartbeat wake ever said was durably recorded anywhere, and
+ * there was nothing to find on the Sessions page or the Heartbeats sidebar tab. Marked
+ * `session_kind: "heartbeat"` in metadata (no schema change needed — sessions.metadata is already
+ * free-form JSON) so listSessions can exclude it from the ordinary recents list by default.
+ * Best-effort: a failure here falls back to the old synthetic (never-persisted) id rather than
+ * blocking the wake — a heartbeat that can't get a session should still try to do its job.
+ */
+async function createHeartbeatSession(env: AgentsEnv, spaceId: string, tenantId: string, title: string): Promise<string> {
+  const fallback = `scheduled-job-${Date.now()}`;
+  if (!env.SPACES_WORKER) return fallback;
+  try {
+    const res = await env.SPACES_WORKER.fetch(new Request(`http://spaces-worker/spaces/${spaceId}/sessions`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-naelao-tenant-id": tenantId,
+        "x-naelao-internal-token": await mintInternalToken(env.PLATFORM_SECRET, tenantId),
+      },
+      body: JSON.stringify({ metadata: { session_kind: "heartbeat", title } }),
+    }));
+    if (!res.ok) return fallback;
+    const created = await res.json<{ id: string }>();
+    return created.id || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 async function wakeAgentGoal(
   env: AgentsEnv,
   params: { spaceId: string; tenantId: string; agentId?: string; projectId?: string; goal: string },
@@ -1326,6 +1359,10 @@ async function wakeAgentGoal(
   const agentId = params.agentId ?? "naelao-agent";
   const stub = await getAgentDOForSpace(env, params.tenantId, params.spaceId, agentId, reqId);
   const brief = await buildWakeUpBrief(env, params.spaceId, params.tenantId);
+  const heartbeatSessionId = await createHeartbeatSession(
+    env, params.spaceId, params.tenantId,
+    `Heartbeat — ${new Date().toISOString().slice(0, 16).replace("T", " ")}`
+  );
   // The model and the business, resolved the same way /agent/run resolves them.
   //
   // This sent NEITHER, and both mattered. Without a model the DO fell back to a hardcoded Claude
@@ -1344,7 +1381,7 @@ async function wakeAgentGoal(
         spaceId: params.spaceId,
         agentId,
         tenantId: params.tenantId,
-        sessionId: `scheduled-job-${Date.now()}`,
+        sessionId: heartbeatSessionId,
         ...(params.projectId ? { projectId: params.projectId } : {}),
         context: { trigger: "scheduled_job" },
         apiKey: env.ANTHROPIC_API_KEY ?? "",
@@ -1458,6 +1495,10 @@ export interface LiveRunStep {
   thinking?: string;
   /** Prose the model wrote alongside a non-terminal tool call — see loop.ts's TraceStep doc. */
   narration?: string;
+  /** For a "run" phase step: the exact tool arguments — see loop.ts's TraceStep doc. */
+  params?: unknown;
+  /** For a "run" phase step that succeeded: a size-capped stringified return value. */
+  output?: string;
   /** This step is still being written — the model is mid-sentence and its text will grow on the
    *  next tick. A client renders it as in-flight and REPLACES it (same seq) rather than appending
    *  the next update as another row. Never set on a persisted trace step, which is by definition

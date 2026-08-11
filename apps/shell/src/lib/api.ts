@@ -315,6 +315,13 @@ export interface LiveRunStep {
   /** Prose the model wrote alongside a non-terminal tool call — a real mid-run reply, shown
    *  inline (not collapsed) at the point it happened. See TraceStep's own doc header. */
   narration?: string;
+  /** For a "run" phase step: the exact arguments the tool was called with — the real command,
+   *  not just a duration (Claude Code's own cmd-tool view). Set on both the "begin" and
+   *  "complete" checkpoints for the same step. */
+  params?: unknown;
+  /** For a "run" phase step that succeeded: a size-capped, stringified view of the tool's raw
+   *  return value. A failed call's outcome is in `detail` instead. */
+  output?: string;
   /** This step is still being written: the model is mid-sentence and the next update will carry
    *  more of the same text under the SAME seq. Merge by seq, never append (see mergeActivitySteps),
    *  or one reasoning turn renders as a dozen half-finished rows. Never set on a persisted trace. */
@@ -416,16 +423,42 @@ export interface SessionSummary {
   title: string | null;
 }
 
+/**
+ * If the given session is a heartbeat/cron-wake session (metadata.session_kind === "heartbeat"),
+ * clears that flag so it starts appearing in the ordinary Sessions list/recents like any other
+ * conversation — the "continue a heartbeat session as a normal one" ask. Never a no-op silent
+ * failure: an already-promoted or ordinary session is simply left alone. `metadata` is a whole-
+ * object PATCH server-side (updateSession), not a merge — so this reads the current value first
+ * and writes back everything except the one key, rather than clobbering `title`/anything else.
+ */
+export async function promoteSessionIfHeartbeat(spaceId: string, sessionId: string, session: SessionCredentials): Promise<void> {
+  try {
+    const res = await apiFetch<{ metadata?: string }>(`/v1/spaces/${spaceId}/sessions/${sessionId}`, { session });
+    const meta = JSON.parse(res.metadata ?? "{}") as Record<string, unknown>;
+    if (meta["session_kind"] !== "heartbeat") return;
+    delete meta["session_kind"];
+    await apiFetch(`/v1/spaces/${spaceId}/sessions/${sessionId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ metadata: meta }),
+      session,
+    });
+  } catch {
+    // Best-effort — a failed promote just means this session stays filed as a heartbeat one;
+    // never blocks the actual message being sent.
+  }
+}
+
 /** GET /v1/spaces/:spaceId/sessions — the signed-in user's own recent conversations. The
  *  end_user_id filter is applied SERVER-side from verified claims; a client-supplied one is
  *  ignored, so this can only ever return the caller's own sessions. */
 export async function listSessions(
   spaceId: string,
   session: SessionCredentials,
-  limit = 20
+  limit = 20,
+  kind?: "heartbeat"
 ): Promise<SessionSummary[]> {
   const res = await apiFetch<{ data?: Array<{ id: string; status: string; created_at: string; updated_at: string; metadata?: string }> }>(
-    `/v1/spaces/${spaceId}/sessions?limit=${limit}`,
+    `/v1/spaces/${spaceId}/sessions?limit=${limit}${kind ? `&kind=${kind}` : ""}`,
     { session }
   );
   return (res.data ?? []).map((row) => {

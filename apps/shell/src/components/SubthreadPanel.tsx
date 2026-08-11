@@ -19,10 +19,33 @@ function authorLabel(m: Message): string {
   return m.role === "user" ? "Assistant" : "Agent";
 }
 
+/** A DOM id shared between the sidebar's list entry and the inline card the same consult produces
+ *  in the main thread transcript — what lets clicking one scroll to and briefly highlight the
+ *  other. */
+export function consultAnchorId(threadId: string): string {
+  return `consult-${threadId}`;
+}
+
+/** Scrolls to and briefly highlights an inline consult card in the main transcript — the sidebar's
+ *  own "click to jump to where this happened" affordance, since the sidebar list otherwise has no
+ *  connection back to the exact turn a consult occurred at. */
+function scrollToConsultCard(threadId: string) {
+  const el = document.getElementById(consultAnchorId(threadId));
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.classList.add("consult-highlight");
+  window.setTimeout(() => el.classList.remove("consult-highlight"), 1600);
+}
+
 // Exported so Chat.tsx can render the SAME expandable card inline in the main transcript, at the
 // exact turn where a consult happened (item 79) — not just here in the separate "Assistant" tab,
 // which still lists every subthread for a thread regardless of whether it's tied to one message.
-export function SubthreadEntry({ spaceId, thread, session }: { spaceId: string; thread: ThreadSummary; session: SessionCredentials }) {
+// `inline` distinguishes the two call sites: only the SIDEBAR copy (inline=false, the default)
+// offers "jump to where this happened in the transcript" — the inline card IS that spot, jumping
+// to itself would be a no-op.
+export function SubthreadEntry({
+  spaceId, thread, session, inline = false,
+}: { spaceId: string; thread: ThreadSummary; session: SessionCredentials; inline?: boolean }) {
   const [expanded, setExpanded] = React.useState(false);
   const [messages, setMessages] = React.useState<Message[] | null>(null);
   const [loading, setLoading] = React.useState(false);
@@ -45,18 +68,35 @@ export function SubthreadEntry({ spaceId, thread, session }: { spaceId: string; 
   }
 
   return (
-    <div style={{ border: "1px solid var(--border, #e5e7eb)", borderRadius: 8, marginBottom: 8, overflow: "hidden" }}>
-      <button
-        type="button"
-        onClick={() => void toggle()}
-        style={{
-          width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
-          padding: "8px 10px", background: "transparent", border: "none", cursor: "pointer", fontSize: 13,
-        }}
-      >
-        <span>{thread.title ?? "Consult"}</span>
-        <span style={{ color: "var(--text3)" }}>{expanded ? "−" : "+"}</span>
-      </button>
+    <div
+      id={inline ? consultAnchorId(thread.id) : undefined}
+      style={{ border: "1px solid var(--border, #e5e7eb)", borderRadius: 8, marginBottom: 8, overflow: "hidden" }}
+    >
+      <div style={{ display: "flex", alignItems: "center" }}>
+        <button
+          type="button"
+          onClick={() => void toggle()}
+          style={{
+            flex: 1, display: "flex", justifyContent: "space-between", alignItems: "center",
+            padding: "8px 10px", background: "transparent", border: "none", cursor: "pointer", fontSize: 13,
+          }}
+        >
+          <span>{thread.title ?? "Consult"}</span>
+          <span style={{ color: "var(--text3)" }}>{expanded ? "−" : "+"}</span>
+        </button>
+        {/* Sidebar-only: jump to the exact turn in the transcript this consult happened at — the
+            inline card itself doesn't need a link back to itself. */}
+        {!inline && (
+          <button
+            type="button"
+            onClick={() => scrollToConsultCard(thread.id)}
+            title="Jump to where this happened"
+            style={{ padding: "8px 10px", background: "transparent", border: "none", cursor: "pointer", color: "var(--text3)", fontSize: 12 }}
+          >
+            ↗
+          </button>
+        )}
+      </div>
       {expanded && (
         <div style={{ padding: "0 10px 10px", fontSize: 12 }}>
           {loading ? (
@@ -107,7 +147,8 @@ export function SubthreadPanel({ spaceId, threadId, session }: { spaceId: string
     );
   }
   return (
-    <div>
+    // Scrollable: a busy project can accumulate more consults than fit the sidebar's fixed height.
+    <div style={{ maxHeight: 480, overflowY: "auto" }}>
       {threads.map((t) => (
         <SubthreadEntry key={t.id} spaceId={spaceId} thread={t} session={session} />
       ))}

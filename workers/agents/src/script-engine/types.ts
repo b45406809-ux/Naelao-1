@@ -248,6 +248,14 @@ export interface TraceStep {
    *  talks to me, then runs a tool" pattern), distinct from `thinking` (which stays collapsed —
    *  internal reasoning, not something written to be read). */
   narration?: string | undefined;
+  /** For a "run" phase step: the exact arguments the tool was called with — what lets an
+   *  expanded tool call show the real command, not just a duration. Attached at both the "begin"
+   *  checkpoint (before the call resolves) and the "complete" one (unchanged). */
+  params?: unknown;
+  /** For a "run" phase step that succeeded: a size-capped, stringified view of the tool's raw
+   *  return value (see loop.ts's `formatToolOutput`). A failed call's outcome lives in `detail`/
+   *  `error` instead — this is only ever set on success. */
+  output?: string | undefined;
   /** Date.now() at the moment the step was recorded. */
   ts: number;
 }

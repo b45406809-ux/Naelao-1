@@ -533,6 +533,10 @@ app.all("/spaces/:spaceId/sessions*", async (c) => {
     if (isProductEndUser) qs.set("end_user_id", callerId);
     const limit = url.searchParams.get("limit");
     if (limit) qs.set("limit", limit);
+    // Sessions-page filter (ordinary vs heartbeat/cron-wake) — only "heartbeat" does anything;
+    // anything else is dropped rather than forwarded blind, same allowlist discipline as limit.
+    const kind = url.searchParams.get("kind");
+    if (kind === "heartbeat") qs.set("kind", kind);
     search = `?${qs.toString()}`;
   } else if (c.req.method === "GET" && /^\/sessions\/([^/]+)(\/messages)?$/.test(doPath) && isProductEndUser) {
     // For GET /sessions/:id and GET /sessions/:id/messages, pass end_user_id so SpaceDO can verify

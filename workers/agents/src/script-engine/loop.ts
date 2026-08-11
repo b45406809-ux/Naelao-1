@@ -497,6 +497,22 @@ export async function runScriptLoop(
     // phase (ok/tokens/duration_ms filled in) with zero extra call sites — see onProgress's doc.
     if (opts.onProgress) void reportProgress(opts, step);
   };
+
+  /** A size-capped, stringified view of a tool's raw return value — what lets the activity feed
+   *  show "the command and its result" (Claude Code's own cmd-tool view) instead of only a
+   *  duration/token count. Capped so one large tool result can never bloat run_traces or the live
+   *  progress payload; a failure result already has its own message in `error`/`detail`, so this
+   *  is only ever attached on success. */
+  const OUTPUT_CAP = 4000;
+  const formatToolOutput = (output: unknown): string | undefined => {
+    if (output === undefined) return undefined;
+    try {
+      const text = typeof output === "string" ? output : JSON.stringify(output);
+      return text.length > OUTPUT_CAP ? `${text.slice(0, OUTPUT_CAP)}\n… (truncated)` : text;
+    } catch {
+      return undefined;
+    }
+  };
   /** Parked-for-approval actions accumulated by the L3/L4 block, attached by finish() to whichever
    *  exit the run takes — so a run that answered around a parked action still reports it, rather
    *  than the outstanding work quietly disappearing with the reply. */
@@ -603,10 +619,13 @@ export async function runScriptLoop(
       if (gate.verdict === "denied") {
         return finish({ level, script_name: top!.name, result: { ok: false, error: gateRejectedMessage(top!.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes });
       }
-      await reportProgress(opts, { phase: "run", name: top!.name, detail: `Running ${top!.name}` });
+      await reportProgress(opts, { phase: "run", name: top!.name, detail: `Running ${top!.name}`, params });
       const result = await runOnce(top!.name, params);
       notes.push(`L1 run ${top!.name}: ${result.ok ? "ok" : "fail"}`);
-      pushTrace({ phase: "run", name: top!.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
+      pushTrace({
+        phase: "run", name: top!.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used,
+        ok: result.ok, detail: result.error, params, ...(result.ok ? { output: formatToolOutput(result.output) } : {}),
+      });
       return finish({ level, script_name: top!.name, result, notes });
     }
 
@@ -923,7 +942,7 @@ export async function runScriptLoop(
           if (gate.verdict === "denied") {
             return finish(withTokenUsage({ level, script_name: decision.name, result: { ok: false, error: gateRejectedMessage(decision.name), tier: 1 as const, duration_ms: 0, tokens_used: 0 }, notes }, usageAcc));
           }
-          await reportProgress(opts, { phase: "run", name: decision.name, detail: `Running ${decision.name}` });
+          await reportProgress(opts, { phase: "run", name: decision.name, detail: `Running ${decision.name}`, params: decision.params });
           const result = await runOnce(decision.name, decision.params);
           // A slow tool eats the wall clock exactly as a slow model does, so the deadline margin
           // has to be measured over the whole turn, not just the reasoning half of it.
@@ -933,7 +952,11 @@ export async function runScriptLoop(
           // of those in a row is the signal to stop and report rather than keep paying.
           stallSteps = result.ok ? 0 : stallSteps + 1;
           notes.push(`${level} run ${decision.name}: ${result.ok ? "ok" : "fail"}`);
-          pushTrace({ phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used, ok: result.ok, detail: result.error });
+          pushTrace({
+            phase: "run", name: decision.name, tier: result.tier, duration_ms: result.duration_ms, tokens: result.tokens_used,
+            ok: result.ok, detail: result.error, params: decision.params,
+            ...(result.ok ? { output: formatToolOutput(result.output) } : {}),
+          });
           // The real outcome, recorded for the repeat guard above — see its own comment for why
           // this must never be assumed to be a success.
           attemptedCalls.set(callKey, {

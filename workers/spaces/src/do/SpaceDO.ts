@@ -1007,6 +1007,19 @@ const MIGRATIONS: Migration[] = [
         ON agent_activity_log(space_id, failure_kind, created_at DESC);
     `,
   },
+  {
+    // "recent" projects ordering was created_at-only — an assistant<->agent consult (or any real
+    // activity in a project's own threads) never bumped a project back to the top, the reported
+    // bug. last_activity_at is touched from ONE choke point, appendMessage (every message write —
+    // human chat, consult subthread messages, anything thread-linked — already lands there), by
+    // resolving the project via threads.project_id for the session, so this covers ordinary
+    // project-thread chat and consult subthreads uniformly with no NaelaoAgentDO-side change.
+    version: 37,
+    description: "projects.last_activity_at (touched on any thread-linked message) — recent ordering",
+    up: `
+      ALTER TABLE projects ADD COLUMN last_activity_at TEXT;
+    `,
+  },
 ];
 
 export interface SpaceDOEnv {
@@ -1719,16 +1732,24 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const endUserId = params.get("end_user_id");
     const limit = Math.min(Math.max(Number(params.get("limit")) || 20, 1), 100);
     const notThreadLinked = "id NOT IN (SELECT session_id FROM threads WHERE session_id IS NOT NULL)";
+    // Heartbeat/cron-wake sessions (metadata.session_kind === "heartbeat") are deliberately kept
+    // out of the ordinary recents list — the only two places they're meant to surface are here
+    // with ?kind=heartbeat (the Sessions page's own filter tab) and the Heartbeats sidebar tab,
+    // both of which call this with that param explicitly.
+    const kind = params.get("kind");
+    const kindClause = kind === "heartbeat"
+      ? "json_extract(metadata, '$.session_kind') = 'heartbeat'"
+      : "(json_extract(metadata, '$.session_kind') IS NULL OR json_extract(metadata, '$.session_kind') != 'heartbeat')";
     const rows = endUserId
       ? queryAll<SessionRow>(
           this.ctx.storage.sql as never,
-          `SELECT * FROM sessions WHERE end_user_id = ? AND ${notThreadLinked} ORDER BY updated_at DESC LIMIT ?`,
+          `SELECT * FROM sessions WHERE end_user_id = ? AND ${notThreadLinked} AND ${kindClause} ORDER BY updated_at DESC LIMIT ?`,
           endUserId,
           limit
         )
       : queryAll<SessionRow>(
           this.ctx.storage.sql as never,
-          `SELECT * FROM sessions WHERE ${notThreadLinked} ORDER BY updated_at DESC LIMIT ?`,
+          `SELECT * FROM sessions WHERE ${notThreadLinked} AND ${kindClause} ORDER BY updated_at DESC LIMIT ?`,
           limit
         );
     return Response.json({ data: rows, count: rows.length });
@@ -1886,6 +1907,29 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       now,
       sessionId
     );
+
+    // Migration v37: bump the project's own "recent" ordering on any thread-linked message write
+    // — ordinary chat in a project thread AND consult subthreads alike, since both land here via
+    // this SAME choke point (a subthread is still a real `threads` row with `project_id` set).
+    // Best-effort: a session with no linked thread (Home/assistant sessions, the common case)
+    // simply finds nothing and this is a no-op.
+    try {
+      const linkedThread = queryOne<{ project_id: string | null }>(
+        this.ctx.storage.sql as never,
+        "SELECT project_id FROM threads WHERE session_id = ?",
+        sessionId
+      );
+      if (linkedThread?.project_id) {
+        execute(
+          this.ctx.storage.sql as never,
+          "UPDATE projects SET last_activity_at = ? WHERE id = ?",
+          now,
+          linkedThread.project_id
+        );
+      }
+    } catch {
+      /* recency ordering is a nicety, never blocks a real message write */
+    }
 
     return Response.json(
       {
@@ -2347,7 +2391,7 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
     const rows = queryAll<{
       id: string; space_id: string; name: string; description: string; status: string;
       default_agent_id: string | null; max_threads: number; allowed_agent_ids: string | null;
-      visibility: string; created_by: string | null; created_at: string;
+      visibility: string; created_by: string | null; created_at: string; last_activity_at: string | null;
       kind: string; is_singleton_kind: number;
     }>(
       this.ctx.storage.sql as never,
@@ -2361,11 +2405,11 @@ export class SpaceDO extends DurableObject<SpaceDOEnv> {
       // reported symptom — a project a person just created/uses looking "lost" in the sidebar's
       // collapsed-to-a-few list (item 66) — is exactly what oldest-first ordering produces, since
       // the newest, most relevant project is the one most likely to be hidden behind "show more".
-      // `projects` has no last-ACTIVITY column (no writes on thread/session use), so this is
-      // recency-by-creation, not true last-active — same practical limitation any "recents" list
-      // without a tracked activity timestamp has; a real activity-based ordering is a separate,
-      // larger follow-up (a new column + writes from thread/session creation).
-      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, kind, is_singleton_kind FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY created_at DESC",
+      // Migration v37 closed the gap this comment used to describe: last_activity_at (touched by
+      // appendMessage on every thread-linked message write — ordinary project chat AND consult
+      // subthreads alike) now takes precedence over created_at, so a project an assistant just
+      // consulted an agent about really does come back to the top, not just one a human typed in.
+      "SELECT id, space_id, name, description, status, default_agent_id, max_threads, allowed_agent_ids, visibility, created_by, created_at, last_activity_at, kind, is_singleton_kind FROM projects WHERE space_id = ? AND status != 'archived' ORDER BY COALESCE(last_activity_at, created_at) DESC",
       spaceId
     );
     const visible = viewerId

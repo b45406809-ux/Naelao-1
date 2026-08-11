@@ -5980,6 +5980,124 @@ appendixes are authoritative** and override the early framing. Always confirm ag
      task list — a separately-tracked, still-paused effort predating this work) was not touched;
      Groq models carry no `eval`/`axes` entries yet, same "don't fabricate a score" precedent as
      every other un-run model.
+122. **A large batch of live-reported chat UX bugs and gaps: tool-call rendering grouped and
+     enriched (Claude-Code-style), self-heal retry made reload-safe, Stop functional during a
+     retry wait, heartbeat sessions made durable and browsable, project "recent" ordering fixed
+     for consult activity, subthread sidebar polish, and the anti-fabrication instruction
+     hardened.** Per explicit instruction, this pass deliberately dispatched NO live `/agent/run`
+     calls to verify any of it — verification is tests/typecheck/build/deploy-health only; the
+     user tests the live behavior themselves.
+     - **Activity sequence rewrite** (`apps/shell/src/components/ActivityFeed.tsx`). Previously a
+       flat per-step row list with no grouping — every narration line stacked, no distinction
+       between "still working on the same tool-call run" and "the model actually replied." New
+       `groupSteps()` splits the merged step list into SEGMENTS, breaking only at a real
+       `answer`/`give_up` step (that reply is rendered by the message bubble itself, not a row
+       here): within a segment, the LATEST narration overrides any earlier one as the always-
+       visible italic headline (never stacked), and every tool call/thought in that segment
+       collapses into ONE running summary ("1 tool running…" → "N tools · Y thoughts") whose body
+       is a one-column table of tool calls — Claude Code's own pattern. Each row expands to show
+       the real command (`params`) and result (`output`/error), not just duration/tokens. Per-
+       phase emoji icons (`phaseIcon`) removed outright, per explicit ask.
+     - **Tool params/output threaded end to end** (`script-engine/loop.ts`, `types.ts`, agents
+       `index.ts`, `apps/shell/src/lib/api.ts`): `pushTrace`'s two "run"-phase call sites (L1 fast
+       path + the main L3/L4 loop) now carry `params` (the real arguments) and a size-capped
+       (`formatToolOutput`, 4000-char cap) stringified `output` on success — previously only
+       `detail`/`duration_ms`/`tokens`/`ok` reached the client, so expanding a tool call showed
+       none of "the command and the result" the user compared to Claude Code's cmd-tool view.
+       `distill`/`patch`'s own two "run" pushes were deliberately left unenriched (scoped down —
+       `applyTerminalDecision` doesn't share `runScriptLoop`'s closure, and those are the rarer
+       write paths, not the everyday tool-call one).
+     - **`run_traces` persistence gap closed** (`NaelaoAgentDO.ts`): the table only ever had
+       `run_id, seq, phase, name, tier, duration_ms, tokens, ok, detail, ts` — `narration`/
+       `thinking` were silently DROPPED at persistence despite `TraceStep` always carrying them,
+       which is why a reload could never show what the model said mid-run or its chain-of-
+       thought, only bare tool-call metadata. New nullable columns `narration, thinking, params,
+       output` (the established `try { ALTER TABLE ... ADD COLUMN } catch {}` idempotent-migration
+       pattern this DO already uses elsewhere), wired through both `persistRunTrace` and
+       `readRunTrace`. `run_stream`'s own durable-live-view table needed no change — it stores a
+       whole `step_json` blob per checkpoint, so the new fields flow through automatically.
+     - **Self-heal retry: reload-safe, and Stop actually stops it.** `refreshInterrupted` was ONE
+       function used both on every mount (unconditional) AND from a live poll/stream failure, with
+       its retry-budget refs reset on every `chatSessionId` change — so a page reload could re-arm
+       a full fresh round of auto-heal/quota-retry attempts against an already-exhausted or
+       already-stopped interruption, exactly the reported "it auto-retries x/4 on refresh even
+       though I already stopped it." Split into `checkInterruptedRun` (mount-safe, passive — shows
+       the durable dialog if one exists, NEVER starts a retry timer) and `handleLiveFailure` (the
+       full chain, called only from the two live failure branches). New `stopPendingRetry`: the
+       Stop button's visibility condition widened to also show during `selfHealStatus.mode ===
+       "waiting"` (previously invisible exactly when a retry was pending, since `isLoading` is
+       false throughout that window), and clicking it during a wait clears the pending timer,
+       exhausts both retry budgets so nothing can re-arm, and shows the interrupted-run dialog
+       immediately with `failure_kind: "user_cancelled"` and reason "Retry stopped by you." —
+       reusing `InterruptedRunCard`'s existing "Stopped" header for that kind rather than a new UI.
+     - **Heartbeat/cron-wake sessions made real and durable.** `wakeAgentGoal` minted a synthetic
+       `` `scheduled-job-${Date.now()}` `` id that was NEVER registered via `POST /spaces/:id/
+       sessions` — every subsequent `writeAgentAnswerToSession` write 404'd against SpaceDO's
+       `appendMessage` (which requires the session to already exist) and was silently swallowed,
+       so nothing a heartbeat wake ever said was durably recorded anywhere. New
+       `createHeartbeatSession` (agents `index.ts`) mints a REAL session with
+       `metadata: {session_kind: "heartbeat", title}` before dispatching, falling back to the old
+       synthetic id on any failure (never blocks the wake). `SpaceDO.listSessions` gained a `kind`
+       query param (`json_extract(metadata,'$.session_kind')`): default excludes heartbeat
+       sessions from the ordinary recents list; `?kind=heartbeat` returns only them — the ONLY two
+       places they're meant to surface (the Sessions page's new filter tab, and a new session list
+       on the Heartbeats sidebar tab, both calling this explicitly). **A real bug found and fixed
+       in the same pass**: the spaces worker's `GET /sessions` proxy (`workers/spaces/src/
+       index.ts`) rebuilds its own query string from scratch for the list route (only forwarding
+       `end_user_id`/`limit`) — a new `?kind=` param would have been silently dropped at this
+       layer even with the DO-side filter correct; added explicit `kind` forwarding (allowlisted
+       to `"heartbeat"` only, matching the existing `limit` pattern). Sessions page
+       (`apps/shell/.../sessions/page.tsx`) gained a Sessions/Heartbeat-sessions tab toggle and an
+       instant client-side title search (a real backend content-search-by-keyword-in-messages
+       route was explicitly scoped OUT this pass — documented, not silently dropped). New
+       `promoteSessionIfHeartbeat` (api.ts): the first message sent into a session opened by
+       explicit id (the `sessionId` prop, never a fresh Home/thread session) clears
+       `metadata.session_kind` if it was `"heartbeat"` — reading current metadata first since
+       `updateSession`'s PATCH replaces the whole object, not a merge — so it starts appearing in
+       the ordinary Sessions list like any other conversation, guarded to fire at most once per
+       mount.
+     - **Project "recent" ordering — migration v37.** `listProjects` already ordered
+       `created_at DESC` (item 115's own fix) but had no real activity tracking, so an assistant↔
+       agent consult (or any thread activity) never bumped a project back to the top — the
+       reported bug. New `projects.last_activity_at` (nullable), touched from ONE choke point,
+       `SpaceDO.appendMessage` (every message write — ordinary project chat AND consult subthread
+       messages alike already land here), by resolving the project via `threads.project_id` for
+       the session and forward-looking `UPDATE projects SET last_activity_at = ?`. `listProjects`
+       now orders `COALESCE(last_activity_at, created_at) DESC`. No `NaelaoAgentDO`-side change
+       needed — the fix is entirely inside the one shared write path.
+     - **Consult subthread sidebar polish.** `SubthreadPanel`'s list is now scrollable
+       (`max-height` + `overflow-y`) for a project with many consults. New `consultAnchorId`/
+       `scrollToConsultCard`: the sidebar's "Assistant" tab entries gained a jump (↗) button that
+       scrolls to and briefly CSS-highlights (`.consult-highlight`, `packages/ui/src/styles.css`)
+       the matching INLINE card already rendered in the main thread transcript (item 79's own
+       mechanism, already correct — investigation confirmed inline consult cards already render at
+       the right timestamp with the right per-interruption separation; only the sidebar's link
+       back to that exact spot was missing).
+     - **Fabrication hardening, scoped honestly.** Investigated a reported case where the
+       assistant claimed "the thread is fully active" when no thread actually existed. Root cause:
+       `agent.consult`/`thread.create` genuinely work and only log a `consulted_threads` entry
+       when a real `thread_id` comes back — the gap is that NOTHING stops the model from answering
+       `{"action":"answer",...}` on its very first turn with zero prior `run` calls, and
+       `applyTerminalDecision` trusts that text verbatim. Unlike item 108's `commerce.
+       create_product` case (a missing CAPABILITY), this is pure model-compliance — the capability
+       already exists. Tightened `DECISION_INSTRUCTIONS`' anti-fabrication paragraph with one
+       short added clause naming "I've connected/set up/activated X" explicitly (kept within the
+       documented ~20,000-char protocol budget — a first draft tripped the bound at 20,121 chars,
+       trimmed to fit). **Deliberately NOT built**: a structural zero-run-answer gate for "action-
+       shaped" goals — that needs goal-language pattern-matching and live-model tuning to avoid
+       false positives on genuinely answer-only goals, which the "no AI credits" constraint rules
+       out verifying this pass; flagged as a real, larger follow-up, not silently dropped.
+     2861/2861 tests pass, `npx turbo run typecheck` clean (76 tasks), `apps/shell` verified via a
+     real `next build`. Deployed: `naelao-agents` (bare `wrangler deploy`), `naelao-spaces` (bare
+     `wrangler deploy`), `apps/shell` (`next-on-pages` + `wrangler pages deploy --branch=main`,
+     confirmed `environment:"production"` via the Pages API). Post-deploy verification deliberately
+     limited to non-LLM liveness checks (200s on the shell's `/spaces`/`/new` routes, a 401-not-500
+     from the agents worker's cancel route, 200 from the router's by-slug lookup) — no `/agent/run`
+     dispatched, per the explicit "use my own credits to test" instruction. **Not done this pass:**
+     a real backend content-search-by-keyword route for the Sessions page search bar (client-side
+     title filter only); the structural fabrication-prevention gate; a live browser click-through
+     of the new grouped activity UI (same standing Playwright/TLS-handshake limitation as every
+     prior UI pass in this session).
 
 > **Keep this section current.** As direction evolves, update this block and the appendix,
 > and commit — future sessions rely on it.

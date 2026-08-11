@@ -28,6 +28,7 @@ import {
   getInterruptedRun,
   resolveInterruptedRun,
   getAgentRunTrace,
+  promoteSessionIfHeartbeat,
   type InterruptedRun,
   type ChatUpload,
   getProject,
@@ -436,7 +437,14 @@ export function Chat({
   const MAX_QUOTA_RETRY_ATTEMPTS = 4;
   const QUOTA_RETRY_DELAYS_MS = [5000, 15000, 30000, 60000];
 
-  const refreshInterrupted = React.useCallback(
+  // Passive, mount-safe check: does a durable interrupted run exist for this session? Shows the
+  // dialog if so, but NEVER starts a retry timer. This is deliberately the ONLY thing a
+  // mount/reload is allowed to do — see handleLiveFailure below for the full auto-heal/quota-retry
+  // chain, which must only ever be entered reactively, from an actual failure THIS tab just
+  // watched happen. Without this split, mounting after a reload (or after the user deliberately
+  // stopped a retry — see handleStop's "waiting" branch) would re-arm a fresh budget and fire a
+  // brand-new round of automatic retries the person never asked for and may have already declined.
+  const checkInterruptedRun = React.useCallback(
     async (sid: string) => {
       if (!session) return;
       let got: InterruptedRun | null;
@@ -445,6 +453,32 @@ export function Chat({
       } catch {
         // Leave whatever is already shown. Clearing it on a transient read failure would tell the
         // user there is nothing to continue, which is the one wrong answer here.
+        return;
+      }
+      if (!got) {
+        setInterrupted(null);
+        setSelfHealStatus(null);
+        return;
+      }
+      // Purely a display decision — never touches the retry budget refs, never schedules a timer.
+      setSelfHealStatus(null);
+      setInterrupted(got);
+    },
+    [spaceId, session]
+  );
+
+  // The full self-heal chain: classify → auto-heal immediately, or back off and retry, or (once
+  // exhausted) fall back to the manual card. Called ONLY from the live poll/stream failure
+  // branches below — i.e. only reachable while this exact tab just watched a run fail in real
+  // time. A page reload never reaches this function; see checkInterruptedRun above for what a
+  // mount does instead.
+  const handleLiveFailure = React.useCallback(
+    async (sid: string) => {
+      if (!session) return;
+      let got: InterruptedRun | null;
+      try {
+        got = await getInterruptedRun(spaceId, sid, session);
+      } catch {
         return;
       }
       if (!got) {
@@ -492,6 +526,38 @@ export function Chat({
       void continueInterruptedRun(sid, got.run_id);
     },
     [spaceId, session, continueInterruptedRun, MANUAL_ONLY_FAILURE_KINDS]
+  );
+
+  /** Ends a pending retry the person stopped before it fired — clears the backoff timer, stops the
+   *  budget from advancing further, and shows the interrupted-run dialog immediately with a
+   *  distinguishing message, instead of silently no-op'ing (there is no server-side run to cancel
+   *  during the wait — the run that failed already terminated; this is purely ending the client's
+   *  own retry loop). */
+  const stopPendingRetry = React.useCallback(
+    (sid: string) => {
+      if (selfHealTimerRef.current) {
+        clearTimeout(selfHealTimerRef.current);
+        selfHealTimerRef.current = null;
+      }
+      // Exhaust both budgets so neither handleLiveFailure nor a future mount can re-arm a retry for
+      // this same interruption.
+      autoHealAttemptsRef.current = MAX_AUTO_HEAL_ATTEMPTS;
+      quotaRetryAttemptsRef.current = MAX_QUOTA_RETRY_ATTEMPTS;
+      setSelfHealStatus(null);
+      setInterrupted((prev) =>
+        prev ? { ...prev, failure_kind: "user_cancelled", reason: "Retry stopped by you." } : prev
+      );
+      if (!interrupted) {
+        // Nothing was in local state yet (e.g. the very first waiting cycle) — fetch the real
+        // record so the card has real context instead of nothing to show.
+        void getInterruptedRun(spaceId, sid, session)
+          .then((got) => {
+            if (got) setInterrupted({ ...got, failure_kind: "user_cancelled", reason: "Retry stopped by you." });
+          })
+          .catch(() => {});
+      }
+    },
+    [interrupted, spaceId, session]
   );
 
   // A manual Continue/Dismiss from the card itself, or landing on a fresh thread/session, resets
@@ -700,8 +766,9 @@ export function Chat({
           } else if (run.status === "failed" || run.status === "cancelled") {
             if (!isUserStoppedError(run.error)) setError(run.error ?? "The agent run failed");
             // The run left a checkpoint; show the offer to continue it rather than only an error
-            // the user can do nothing with except retype their request.
-            void refreshInterrupted(sid);
+            // the user can do nothing with except retype their request. This is a LIVE failure
+            // this tab just watched happen — the full self-heal chain applies (unlike a mount).
+            void handleLiveFailure(sid);
             // A run can fail on something UNRELATED while still carrying a real, still-open
             // approval it parked earlier — that approval must not vanish along with the error
             // banner, since it's a completely separate, still-actionable thing.
@@ -734,7 +801,7 @@ export function Chat({
         }
       }, POLL_INTERVAL_MS);
     },
-    [spaceId, session, stopPolling, finalizeAnswer, refreshInterrupted, isUserStoppedError]
+    [spaceId, session, stopPolling, finalizeAnswer, handleLiveFailure, isUserStoppedError]
   );
 
   const streamRun = React.useCallback(
@@ -804,7 +871,7 @@ export function Chat({
               finalizeAnswer(data.run_id ?? runId, answerText, activitySteps, data.pending_approval, data.deferred_approvals);
             } else if (status === "failed" || status === "cancelled") {
               if (!isUserStoppedError(data.error)) setError(data.error ?? "The agent run failed");
-              void refreshInterrupted(sid);
+              void handleLiveFailure(sid);
               // Same "a real, still-open approval must not vanish along with an unrelated
               // failure" rule as the plain-polling fallback below.
               if (data.deferred_approvals?.length) {
@@ -846,7 +913,7 @@ export function Chat({
         }
       };
     },
-    [spaceId, sessionKey, session, closeSSE, pollUntilDone, finalizeAnswer, refreshInterrupted, isUserStoppedError]
+    [spaceId, sessionKey, session, closeSSE, pollUntilDone, finalizeAnswer, handleLiveFailure, isUserStoppedError]
   );
 
   // Single entry point for "start following this run's status" — both send() (a run it just
@@ -907,8 +974,8 @@ export function Chat({
   // have an unfinished run to continue and nothing currently running.
   React.useEffect(() => {
     if (!chatSessionId) return;
-    void refreshInterrupted(chatSessionId);
-  }, [chatSessionId, refreshInterrupted]);
+    void checkInterruptedRun(chatSessionId);
+  }, [chatSessionId, checkInterruptedRun]);
 
   // Reattach to a run that is still going.
   //
@@ -1006,6 +1073,12 @@ export function Chat({
   // Files attached via the dock's Uploads panel before the message that references them is sent.
   // Cleared once folded into an outgoing goal — see `send` below.
   const [pendingUploads, setPendingUploads] = React.useState<ChatUpload[]>([]);
+  // "Continue a heartbeat session as a normal one": the first real message SENT into an existing
+  // session opened by explicit id (sessionId prop — a fresh Home/thread session is never a
+  // heartbeat one, so this is safely scoped to skip the extra round trip in the common case)
+  // promotes it out of the heartbeat filter. Guarded so this fires at most once per mount — after
+  // the first attempt it's either already promoted (no-op) or genuinely not a heartbeat session.
+  const heartbeatPromoteAttemptedRef = React.useRef(false);
 
   const send = React.useCallback(async (text: string) => {
     const trimmed = text.trim();
@@ -1019,6 +1092,10 @@ export function Chat({
     setMessages((prev) => [...prev, optimistic]);
     try {
       const sid = await ensureSessionId();
+      if (sessionId && !heartbeatPromoteAttemptedRef.current) {
+        heartbeatPromoteAttemptedRef.current = true;
+        void promoteSessionIfHeartbeat(spaceId, sid, session);
+      }
       // A path relative to the agent's OWN r2-workspace root (see workspacePrefix() /
       // uploadsPrefix() on the agents worker) — the model can read it directly with
       // r2-workspace.read_file without needing to discover its own session id first.
@@ -1048,7 +1125,7 @@ export function Chat({
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
       setError(err instanceof Error ? err.message : "Failed to send message");
     }
-  }, [isLoading, pendingUploads, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, selectedEffort, selectedReasoningLevel, selectedAgentId]);
+  }, [isLoading, pendingUploads, ensureSessionId, spaceId, sessionKey, session, attachToRun, selectedModel, selectedEffort, selectedReasoningLevel, selectedAgentId, sessionId]);
 
   /**
    * A message typed while the agent is still working.
@@ -1062,11 +1139,21 @@ export function Chat({
   const queuedRef = React.useRef<string[]>([]);
   queuedRef.current = queued;
 
-  /** Stop the run in flight. Optimistic on the button, authoritative on the server: the agent
-   *  reports what it had already completed, so stopping is never the same as losing the work. */
+  /** Stop the run in flight — OR, if the agent is between retry attempts (the backoff wait, no
+   *  server-side run actually executing), end that retry loop right here. Optimistic on the
+   *  button, authoritative on the server: the agent reports what it had already completed, so
+   *  stopping is never the same as losing the work. */
   const handleStop = React.useCallback(async () => {
+    if (!chatSessionId) return;
+    // Waiting between retries: there is nothing running server-side to cancel — the run that
+    // failed already terminated. Clicking Stop here ends the retry loop and shows the dialog
+    // immediately, distinguishing "you stopped it" from a run that's still genuinely executing.
+    if (selfHealStatus?.mode === "waiting") {
+      stopPendingRetry(chatSessionId);
+      return;
+    }
     const runId = lastRun?.id ?? getActiveRunId(spaceId, sessionKey);
-    if (!runId || !chatSessionId) return;
+    if (!runId) return;
     setStopping(true);
     try {
       await cancelRun(spaceId, chatSessionId, runId, session);
@@ -1074,7 +1161,7 @@ export function Chat({
       // The run may have finished in the same instant — the poll below settles it either way, so
       // there is nothing useful to show for a failed stop on an already-finished run.
     }
-  }, [lastRun, chatSessionId, spaceId, sessionKey, session]);
+  }, [lastRun, chatSessionId, spaceId, sessionKey, session, selfHealStatus, stopPendingRetry]);
 
   const handleSubmit = React.useCallback(async () => {
     const trimmed = input.trim();
@@ -1304,7 +1391,7 @@ export function Chat({
                       never appended to this visible transcript itself. */}
                   {m.metadata?.consulted_threads?.map((c) => (
                     <div key={c.thread_id} style={{ marginTop: 6, maxWidth: 420 }}>
-                      <SubthreadEntry spaceId={spaceId} thread={consultThreadSummary(spaceId, c)} session={session} />
+                      <SubthreadEntry spaceId={spaceId} thread={consultThreadSummary(spaceId, c)} session={session} inline />
                     </div>
                   ))}
                 </div>
@@ -1512,13 +1599,21 @@ export function Chat({
                   rows={1}
                 />
                 {/* No chatSessionId gate here — a fresh thread/Home has none yet by design
-                    (lazy creation), and the input must stay usable so the first send can mint one. */}
-                {isLoading && !input.trim() ? (
+                    (lazy creation), and the input must stay usable so the first send can mint one.
+                    Also shown during the retry backoff wait (selfHealStatus.mode === "waiting") —
+                    nothing is running server-side then, but the agent IS about to try again on a
+                    timer, and clicking Stop here ends that retry loop instead of silently doing
+                    nothing (see handleStop). */}
+                {(isLoading || selfHealStatus?.mode === "waiting") && !input.trim() ? (
                   <button
                     className="send-btn"
                     type="button"
                     aria-label="Stop"
-                    title="Stop — the agent finishes what it's doing and reports what it completed"
+                    title={
+                      selfHealStatus?.mode === "waiting"
+                        ? "Stop — cancels the pending automatic retry"
+                        : "Stop — the agent finishes what it's doing and reports what it completed"
+                    }
                     disabled={stopping}
                     onClick={() => void handleStop()}
                   >

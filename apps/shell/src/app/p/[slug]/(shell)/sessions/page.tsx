@@ -22,14 +22,23 @@ export default function SessionsPage() {
   const { activeSpaceId } = useActiveSpace();
   const [sessions, setSessions] = React.useState<SessionSummary[]>([]);
   const [loading, setLoading] = React.useState(true);
+  // Ordinary vs heartbeat/cron-wake sessions — the only two places heartbeat sessions are meant
+  // to surface are this filter tab and the Heartbeats sidebar tab in an open conversation.
+  const [tab, setTab] = React.useState<"sessions" | "heartbeats">("sessions");
+  // Instant client-side title filter over whatever the current tab already loaded. Real content
+  // search (matching a keyword inside a session's own messages, not just its title) needs a
+  // backend route this pass didn't add — deliberately scoped down; documented as a real, separate
+  // follow-up rather than silently dropped.
+  const [query, setQuery] = React.useState("");
 
   const refresh = React.useCallback(() => {
     if (!session) return;
-    listSessions(activeSpaceId, { sessionToken: session.session_token, endUserId: session.end_user_id }, 100)
+    setLoading(true);
+    listSessions(activeSpaceId, { sessionToken: session.session_token, endUserId: session.end_user_id }, 100, tab === "heartbeats" ? "heartbeat" : undefined)
       .then(setSessions)
       .catch(() => setSessions([]))
       .finally(() => setLoading(false));
-  }, [activeSpaceId, session]);
+  }, [activeSpaceId, session, tab]);
 
   React.useEffect(() => {
     refresh();
@@ -42,6 +51,10 @@ export default function SessionsPage() {
     return () => window.removeEventListener("focus", refresh);
   }, [refresh]);
 
+  const filtered = query.trim()
+    ? sessions.filter((s) => (s.title ?? "Untitled conversation").toLowerCase().includes(query.trim().toLowerCase()))
+    : sessions;
+
   return (
     <div className="page-view">
       <div className="page-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -52,15 +65,50 @@ export default function SessionsPage() {
         <Button onClick={() => router.push(`/p/${product.slug}`)}>New session</Button>
       </div>
 
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button
+            type="button"
+            onClick={() => setTab("sessions")}
+            className={tab === "sessions" ? "btn-primary" : "btn-ghost"}
+            style={{ fontSize: 12.5, padding: "5px 10px" }}
+          >
+            Sessions
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab("heartbeats")}
+            className={tab === "heartbeats" ? "btn-primary" : "btn-ghost"}
+            style={{ fontSize: 12.5, padding: "5px 10px" }}
+          >
+            Heartbeat sessions
+          </button>
+        </div>
+        <input
+          type="text"
+          placeholder="Search by title…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          style={{
+            flex: "1 1 200px", minWidth: 160, fontSize: 13, padding: "6px 10px",
+            border: "1px solid var(--border)", borderRadius: 8, background: "var(--surface1)", color: "var(--text1)",
+          }}
+        />
+      </div>
+
       {loading ? (
         <p style={{ color: "var(--text3)", fontSize: 13 }}>Loading…</p>
-      ) : sessions.length === 0 ? (
+      ) : filtered.length === 0 ? (
         <p style={{ color: "var(--text3)", fontSize: 13 }}>
-          No conversations yet — start one from Home.
+          {query.trim()
+            ? "No sessions match that search."
+            : tab === "heartbeats"
+              ? "No heartbeat sessions yet — these appear once the assistant's own scheduled/cron wake-ups start running."
+              : "No conversations yet — start one from Home."}
         </p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          {sessions.map((s) => (
+          {filtered.map((s) => (
             <Link
               key={s.id}
               href={`/p/${product.slug}/sessions/${s.id}`}

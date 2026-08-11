@@ -32,6 +32,7 @@ import {
   markNotificationRead,
   listMyBusinesses,
   getBusinessAnalytics,
+  listSessions,
   type SessionCredentials,
   type AssistantPolicy,
   type AgentPolicy,
@@ -43,6 +44,7 @@ import {
   type AssistantCapabilities,
   type AppNotification,
   type BusinessAnalytics,
+  type SessionSummary,
 } from "@/lib/api";
 import { useProduct } from "@/lib/product-context";
 import { canManageSpaceSettings } from "@/lib/roles";
@@ -484,13 +486,23 @@ function NotificationsPanel({ spaceId, session, projectId }: { spaceId: string; 
  *  broken down by trigger. Reuses the already-built business-analytics rollup (same data the
  *  Dashboard's own Analytics section renders) rather than a new endpoint. */
 function HeartbeatsPanel({ spaceId, session }: { spaceId: string; session: SessionCredentials }) {
+  const product = useProduct();
   const [data, setData] = React.useState<BusinessAnalytics | null>(null);
   const [loadError, setLoadError] = React.useState(false);
+  // Actual heartbeat/cron-wake sessions — one of the ONLY two places these are meant to surface
+  // (the Sessions page's own filter tab is the other). Deliberately a SEPARATE fetch/failure state
+  // from the analytics rollup above: a session-list failure shouldn't blank the stats, and vice
+  // versa.
+  const [sessions, setSessions] = React.useState<SessionSummary[] | null>(null);
+  const [sessionsError, setSessionsError] = React.useState(false);
   React.useEffect(() => {
     let cancelled = false;
     getBusinessAnalytics(spaceId, session, "7d")
       .then((d) => { if (!cancelled) setData(d); })
       .catch(() => { if (!cancelled) setLoadError(true); });
+    listSessions(spaceId, session, 20, "heartbeat")
+      .then((s) => { if (!cancelled) setSessions(s); })
+      .catch(() => { if (!cancelled) setSessionsError(true); });
     return () => { cancelled = true; };
   }, [spaceId, session]);
 
@@ -530,6 +542,31 @@ function HeartbeatsPanel({ spaceId, session }: { spaceId: string; session: Sessi
         </>
       ) : (
         <div style={{ padding: "0 14px 8px", fontSize: 12, color: "var(--text3)" }}>No failures this week.</div>
+      )}
+      <div className="tp-section">Heartbeat Sessions</div>
+      {sessionsError ? (
+        <div style={{ padding: "0 14px 8px", fontSize: 12, color: "var(--text3)" }}>Couldn&apos;t load heartbeat sessions.</div>
+      ) : sessions === null ? (
+        <div style={{ padding: "0 14px 8px", fontSize: 12, color: "var(--text3)" }}>Loading…</div>
+      ) : sessions.length === 0 ? (
+        <div style={{ padding: "0 14px 8px", fontSize: 12, color: "var(--text3)" }}>
+          Nothing yet — a wake-up's own conversation shows up here once one runs.
+        </div>
+      ) : (
+        <div style={{ padding: "0 10px 8px", display: "flex", flexDirection: "column", gap: 2 }}>
+          {sessions.map((s) => (
+            <Link
+              key={s.id}
+              href={`/p/${product.slug}/sessions/${s.id}`}
+              className="tp-tool-row"
+              style={{ textDecoration: "none", color: "inherit" }}
+            >
+              <div className="tp-tool-name" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {s.title ?? "Untitled wake-up"}
+              </div>
+            </Link>
+          ))}
+        </div>
       )}
     </>
   );
